@@ -39,6 +39,7 @@
     let versionsLoading = $state(false);
     let versionsError = $state('');
     let restoringVersion = $state<string | null>(null);
+    let duplicateMutationBusy = $state<string | null>(null);
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
@@ -168,6 +169,57 @@
     async function copyDuplicatePath(itemPath: string) {
         try { await navigator.clipboard.writeText(itemPath); }
         catch (e) { error = `Could not copy duplicate path: ${String(e)}`; }
+    }
+
+    function duplicateDriveParts(itemPath: string): { driveId: string; path: string } | null {
+        if (!itemPath.startsWith('crisp+drive://')) return null;
+        const rest = itemPath.slice('crisp+drive://'.length);
+        const slash = rest.indexOf('/');
+        if (slash < 0) return null;
+        try {
+            return { driveId: rest.slice(0, slash), path: normalizeDrivePath(decodeURIComponent(rest.slice(slash))) };
+        } catch {
+            return null;
+        }
+    }
+
+    async function mutateCloudDuplicate(itemPath: string, operation: 'move' | 'delete'): Promise<void> {
+        const parts = duplicateDriveParts(itemPath);
+        if (!parts || duplicateMutationBusy === itemPath) return;
+        try {
+            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
+            if (operation === 'delete' && !caps.delete) throw new Error('Provider does not support delete/trash.');
+            if (operation === 'move' && !caps.move_path) throw new Error('Provider does not support move.');
+            const name = parts.path.split('/').filter(Boolean).at(-1) ?? parts.path;
+            let destinationPath: string | undefined;
+            if (operation === 'delete') {
+                if (!window.confirm(`Move duplicate “${name}” to provider trash?`)) return;
+            } else {
+                const destination = window.prompt('Move duplicate to remote path', parts.path);
+                if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
+                destinationPath = normalizeDrivePath(destination);
+            }
+            duplicateMutationBusy = itemPath;
+            if (operation === 'delete') {
+                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.path });
+            } else {
+                if (!destinationPath) return;
+                await invoke('drive_move_path', {
+                    driveId: parts.driveId,
+                    source: parts.path,
+                    destination: destinationPath,
+                });
+            }
+            if (rightPanel?.source.kind === 'DuplicateGroup') {
+                const items = operation === 'delete'
+                    ? rightPanel.source.items.filter((item) => item.path !== itemPath)
+                    : rightPanel.source.items.map((item) => item.path === itemPath
+                        ? { ...item, path: `crisp+drive://${parts.driveId}${destinationPath}` }
+                        : item);
+                rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
+            }
+        } catch (e) { error = `Could not ${operation} cloud duplicate: ${String(e)}`; }
+        finally { duplicateMutationBusy = null; }
     }
 
     function setDuplicateDecision(decision: DuplicateDecision) {
@@ -305,6 +357,21 @@
                             <span class="duplicate-actions">
                                 <button onclick={() => openDuplicateItem(item.path)}>Open</button>
                                 <button onclick={() => copyDuplicatePath(item.path)}>Copy path</button>
+                                {#if duplicateDriveParts(item.path)}
+                                    <button
+                                        onclick={() => mutateCloudDuplicate(item.path, 'move')}
+                                        disabled={duplicateMutationBusy === item.path}
+                                        title="Move cloud duplicate">
+                                        Move
+                                    </button>
+                                    <button
+                                        class="danger"
+                                        onclick={() => mutateCloudDuplicate(item.path, 'delete')}
+                                        disabled={duplicateMutationBusy === item.path}
+                                        title="Move cloud duplicate to trash">
+                                        Trash
+                                    </button>
+                                {/if}
                             </span>
                         </li>
                     {/each}

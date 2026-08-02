@@ -3044,8 +3044,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Cloud-backup archive hits now offer L3 promotion through the existing
     configured `retrieve.py` path; first use prompts for that script and
     refreshes the search after restoration/indexing. ✅ 2026-08-02
-  - [ ] Add provider-aware duplicate selection; this remains open before the
-    whole actionable-results item can close.
+  - [x] Duplicate groups now expose capability-gated move/trash controls for
+    `crisp+drive://` items, preserving local-only groups and updating the
+    contextual group after a successful mutation. ✅ 2026-08-02
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
