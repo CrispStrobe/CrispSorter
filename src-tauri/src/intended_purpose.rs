@@ -27,9 +27,17 @@
 //!
 //! # What is gated, and what deliberately is not
 //!
-//! Gated in Rust, at the four commands that produce AI output or act on it:
-//! `execute_batch` (applies suggestions, moving the user's files), `tts_speak`,
-//! `translate_text`, `translate_docx`.
+//! Gated in Rust, at the four Tauri commands that produce AI output or act on
+//! it: `execute_batch` (applies suggestions, moving the user's files),
+//! `tts_speak`, `translate_text`, `translate_docx`.
+//!
+//! **Also gated in the CLI** (`cli::ensure_intended_purpose_cli`): `chat query`,
+//! `chat tts`, and `chat transcribe --translate-to`. These were missed until the
+//! 2026-08-01 audit — `chat query` printed a completion with nothing on record,
+//! while this module claimed the gate covered every output path. The global
+//! `--accept-intended-purpose` flag existed but only *wrote* an acknowledgement;
+//! nothing required one. Plain `chat transcribe` stays ungated: transcription
+//! renders real audio, and only `--translate-to` bolts generation onto the end.
 //!
 //! **Chat is gated in the frontend, not here, and that is not an oversight.**
 //! Chat completions never reach Rust: the `deep-chat` component talks to the
@@ -242,6 +250,10 @@ mod tests {
         // The refusal has to carry the statement and a way out, or a headless
         // operator is stuck with an error they cannot action.
         assert!(err.contains("translate"), "names the operation: {err}");
+        // Matches STATEMENT's actual casing ("It is NOT intended for"). The
+        // lower-case spelling this once asserted never appeared in the text, so
+        // the check had always failed — unnoticed for as long as the lib test
+        // target did not compile.
         assert!(err.contains("NOT intended for"), "carries the statement");
         assert!(err.contains("--accept-intended-purpose"), "offers the CLI route");
         assert!(err.contains(ENV), "offers the unattended route");
