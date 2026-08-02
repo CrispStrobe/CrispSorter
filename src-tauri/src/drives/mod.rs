@@ -1065,6 +1065,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
             ),
             (
                 DriveType::Filen,
@@ -1074,6 +1075,7 @@ mod tests {
                 true,
                 false,
                 false,
+                cfg!(feature = "drive-filen-native"),
                 cfg!(feature = "drive-filen-native"),
             ),
             (
@@ -1085,6 +1087,7 @@ mod tests {
                 false,
                 false,
                 cfg!(feature = "drive-internxt-native"),
+                cfg!(feature = "drive-internxt-native"),
             ),
             (
                 DriveType::WebDav,
@@ -1095,6 +1098,7 @@ mod tests {
                 false,
                 false,
                 true,
+                false,
             ),
             (
                 DriveType::OneDrive,
@@ -1104,6 +1108,7 @@ mod tests {
                 false,
                 true,
                 true,
+                false,
                 false,
             ),
             (
@@ -1115,11 +1120,21 @@ mod tests {
                 true,
                 true,
                 false,
+                false,
             ),
         ];
 
-        for (kind, create_dir, rename, move_path, copy, share_links, versions, native_transfers) in
-            cases
+        for (
+            kind,
+            create_dir,
+            rename,
+            move_path,
+            copy,
+            share_links,
+            versions,
+            streaming,
+            resumable,
+        ) in cases
         {
             let config = DriveConfig {
                 id: format!("capability-{kind:?}"),
@@ -1141,13 +1156,13 @@ mod tests {
             assert_eq!(caps.copy, copy, "{kind:?} copy");
             assert_eq!(caps.share_links, share_links, "{kind:?} share_links");
             assert_eq!(caps.versions, versions, "{kind:?} versions");
-            assert_eq!(caps.streaming, native_transfers, "{kind:?} streaming");
+            assert_eq!(caps.streaming, streaming, "{kind:?} streaming");
             assert_eq!(
-                caps.resumable_upload, native_transfers,
+                caps.resumable_upload, resumable,
                 "{kind:?} resumable upload"
             );
             assert_eq!(
-                caps.resumable_download, native_transfers,
+                caps.resumable_download, resumable,
                 "{kind:?} resumable download"
             );
         }
