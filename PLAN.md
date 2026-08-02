@@ -3865,6 +3865,24 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
   *use*, this one about data *egress*, and conflating them would satisfy
   neither. Copy the shape of `index::license_consent`: one-time, per provider,
   recorded, before the first cloud call.
+
+  **Verified 2026-08-02 — this is a hard requirement, not an interpretation.**
+  The guideline's own words:
+
+  > You must clearly disclose where personal data will be shared with third
+  > parties, **including with third-party AI**, and obtain explicit permission
+  > before doing so. […] Apps that share user data without user consent […]
+  > may be removed from sale.
+
+  Two obligations, and we currently meet neither: *disclose where it goes*, and
+  *obtain explicit permission first*. A user's own documents are personal data
+  by any reading, and the app sends their text to a provider the user selected
+  but was never asked to consent to as a *recipient*. Note that "the user typed
+  in an API key" is not consent to data egress — it is configuration.
+
+  **This is now the last code item standing between the build and a
+  submission**, since Phase 3 turned out to be done and P36.14/P36.15 are
+  closed. Sized in hours: the `license_consent` shape already exists to copy.
 - [x] **P36.14 — age rating + AI content.** **Done 2026-08-02: 4+ → 13+**,
   set via the ASC API against peer evidence rather than guesswork.
 
@@ -3914,10 +3932,19 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
   it. If a future build ever re-enables `aitoolkit`, this declaration has to be
   revisited, not inherited.
 
-  **Still open (not a rating question):** whether Guideline 1.2 wants
-  reporting/blocking affordances on the chat surface. 1.2 is aimed at
-  user-generated *social* content; a BYO-key model passthrough is a weaker fit,
-  but it has not been checked properly.
+  **Guideline 1.2 — checked, and it does not apply.** Read in full rather than
+  guessed at. 1.2 governs "apps with user-generated content **or social
+  networking services**", and two of its four required affordances are
+  structurally meaningless here: *"the ability to block abusive users from the
+  service"* (there are no other users) and *"filtering objectionable material
+  from being **posted to** the app"* (nothing is posted anywhere). Its examples
+  — Chatroulette-style experiences, anonymous chat, bullying, objectification
+  of real people — are all multi-user. A model reply rendered to the one person
+  who asked for it is not user-generated content in this sense.
+
+  The half that *does* apply is already satisfied: 1.2 requires *"published
+  contact information so users can easily reach you"*, which the support URL
+  provides. Nothing to build.
 
 - [x] **P36.15 — privacy nutrition label.** **Done** — the plan had this
   wrong. `../appstore.md` records *"App Privacy — Data Not Collected ✅ (set
