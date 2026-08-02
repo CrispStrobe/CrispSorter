@@ -87,6 +87,18 @@
         }
     }
 
+    async function openDriveSearchResult(result: { path: string }): Promise<void> {
+        const resultPath = normalizeDrivePath(result.path);
+        rightPanel = cloudDrivePanel(driveId, resultPath);
+        selected = null;
+        selectedStat = null;
+        try {
+            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: resultPath });
+        } catch (e) {
+            error = `Could not inspect search result: ${String(e)}`;
+        }
+    }
+
     async function loadDrives() {
         try {
             drives = await invoke<Drive[]>('drive_list');
@@ -387,7 +399,7 @@
                 <span class="muted">No provider-visible matches.</span>
             {:else}
                 {#each driveSearchResults as result (result.path)}
-                    <button class="drive-search-result" onclick={() => { path = normalizeDrivePath(result.path); void refresh(); }}>
+                    <button class="drive-search-result" onclick={() => void openDriveSearchResult(result)}>
                         <span>{result.path}</span>
                         {#if result.size !== null}<span class="entry-size">{result.size.toLocaleString()} B</span>{/if}
                     </button>
