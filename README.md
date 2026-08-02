@@ -197,7 +197,7 @@ crispsorter drives search --drive <drive-id> "report" --path /documents
 crispsorter drives search --drive <drive-id> "invoice" --content --json
 ```
 
-Search is bounded to depth 8 and 100 results by default. Filename matching is
+Search is bounded to depth 8 (maximum 32) and 100 results by default. Filename matching is
 the default; `--content` additionally reads only provider-readable files up to
 256 KiB. This is a bounded fallback, not unrestricted provider full-text
 search.

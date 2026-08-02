@@ -593,7 +593,8 @@ pub async fn drive_search(
         return Err(format!("{} does not support listing", drive.drive_type().label()));
     }
     let mut errors = |_path: &Path, _error: anyhow::Error| {};
-    let entries = super::walk(&*drive, Path::new(&root), max_depth.or(Some(8)), &mut errors);
+    let depth = max_depth.unwrap_or(8).min(32);
+    let entries = super::walk(&*drive, Path::new(&root), Some(depth), &mut errors);
     let limit = max_results.unwrap_or(100).clamp(1, 1000);
     let content = content.unwrap_or(false);
     Ok(entries

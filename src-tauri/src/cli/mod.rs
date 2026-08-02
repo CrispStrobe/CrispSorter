@@ -11725,7 +11725,7 @@ fn cmd_drives(
             }
             let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};
             let rows: Vec<_> = crate::drives::walk(
-                drive.as_ref(), std::path::Path::new(&path), Some(max_depth), &mut walk_errors,
+                drive.as_ref(), std::path::Path::new(&path), Some(max_depth.min(32)), &mut walk_errors,
             ).into_iter().filter(|entry| entry.path.file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
