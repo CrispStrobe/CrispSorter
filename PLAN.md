@@ -3028,6 +3028,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Local and registered-drive result cards now offer a provenance-safe
     copy-path action; cloud paths retain their drive id and remote path rather
     than being mistaken for local filesystem paths. ✅ 2026-08-01
+  - [x] Result cards now support selecting two hits for a side-by-side
+    metadata/snippet comparison while preserving local/cloud provenance.
+    ✅ 2026-08-02
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,

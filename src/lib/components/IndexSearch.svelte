@@ -81,6 +81,7 @@
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
     let limit       = $state(20);
     let results     = $state<SearchResult[]>([]);
+    let compareResults = $state<SearchResult[]>([]);
     let loading     = $state(false);
     let error       = $state('');
     let shareBusy    = $state<string | null>(null);
@@ -710,6 +711,7 @@
         error    = '';
         searched = true;
         similarHeader = '';
+        compareResults = [];
         // P13.5 — wipe per-result translation state on every new
         // query.  Otherwise the user types a different query and
         // sees stale "Translated en" badges on rows that haven't
@@ -949,8 +951,24 @@
     function clearSearch() {
         query    = '';
         results  = [];
+        compareResults = [];
         searched = false;
         error    = '';
+    }
+
+    function toggleCompare(result: SearchResult): void {
+        const existing = compareResults.findIndex((item) => item.doc_id === result.doc_id);
+        if (existing >= 0) {
+            compareResults = compareResults.filter((_, index) => index !== existing);
+            return;
+        }
+        compareResults = [...compareResults.slice(-1), result];
+    }
+
+    function compareLabel(uri: string): string {
+        const drive = driveUriParts(uri);
+        if (drive) return `Cloud drive ${drive.driveId}:${drive.remotePath}`;
+        return localPathFromSearchUri(uri) ?? uri;
     }
 
     async function openFile(uri: string) {
@@ -1443,6 +1461,35 @@
                 </div>
             {/if}
 
+            {#if compareResults.length > 0}
+                <section class="compare-panel" aria-label="Search result comparison">
+                    <div class="compare-heading">
+                        <strong>Compare results</strong>
+                        <span>{compareResults.length}/2 selected</span>
+                        <button class="clear-similar" onclick={() => compareResults = []}>Clear</button>
+                    </div>
+                    {#if compareResults.length < 2}
+                        <p class="hint">Select one more result to compare metadata and snippets.</p>
+                    {:else}
+                        <div class="compare-columns">
+                            {#each compareResults as item (item.doc_id)}
+                                <article>
+                                    <strong>{item.title || item.filename || item.doc_id}</strong>
+                                    <code title={item.location_uri}>{compareLabel(item.location_uri)}</code>
+                                    <dl>
+                                        <dt>Score</dt><dd>{item.score.toFixed(3)}</dd>
+                                        <dt>Type</dt><dd>{item.ext || '—'}</dd>
+                                        <dt>Author</dt><dd>{item.author || '—'}</dd>
+                                        <dt>Year</dt><dd>{item.year ?? '—'}</dd>
+                                    </dl>
+                                    <p>{item.snippet || 'No snippet available.'}</p>
+                                </article>
+                            {/each}
+                        </div>
+                    {/if}
+                </section>
+            {/if}
+
             {#each displayedGroups as group (group.doc_id)}
                 {@const r = group.best}
                 <div class="result-card">
@@ -1483,6 +1530,12 @@
                                 onclick={(e) => { e.stopPropagation(); openPreview(r); }}
                                 title="Vorschau (Preview)">
                                 <Eye size={13} />
+                            </button>
+                            <button class="open-btn"
+                                class:active={compareResults.some((item) => item.doc_id === r.doc_id)}
+                                onclick={(e) => { e.stopPropagation(); toggleCompare(r); }}
+                                title="Compare with another result">
+                                ⇄
                             </button>
                             <button class="open-btn"
                                 onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
@@ -2237,6 +2290,18 @@
     .tagcloud-toggle:hover { background: #3f3f46; }
     .tagcloud-toggle.active { background: #1d4ed8; border-color: #2563eb; color: #fff; }
     .search-tagcloud-wrap { margin: 6px 0 4px; }
+    .compare-panel { margin: 8px 0; padding: 10px; border: 1px solid #3f3f46; border-radius: 8px; background: #151518; }
+    .compare-heading { display: flex; align-items: center; gap: 10px; color: #d4d4d8; font-size: .78rem; }
+    .compare-heading span { color: #a1a1aa; }
+    .compare-heading .clear-similar { margin-left: auto; }
+    .compare-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+    .compare-columns article { min-width: 0; padding: 8px; border: 1px solid #27272a; border-radius: 6px; background: #18181b; }
+    .compare-columns article > strong, .compare-columns article > code { display: block; overflow-wrap: anywhere; }
+    .compare-columns article > code { margin-top: 4px; color: #a1a1aa; font-size: .68rem; }
+    .compare-columns dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; margin: 8px 0; font-size: .7rem; }
+    .compare-columns dt { color: #71717a; } .compare-columns dd { margin: 0; text-align: right; }
+    .compare-columns p { margin: 0; color: #d4d4d8; font-size: .74rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (max-width: 700px) { .compare-columns { grid-template-columns: 1fr; } }
 
     .result-card {
         background: #18181b; border: 1px solid #27272a; border-radius: 8px; overflow: hidden;
