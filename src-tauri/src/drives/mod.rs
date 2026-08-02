@@ -854,6 +854,17 @@ mod tests {
         (tmp, drive)
     }
 
+    #[test]
+    fn limited_walk_stops_before_enumerating_the_entire_tree() {
+        let (_tmp, drive) = fixture();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            drive.write_file(Path::new(name), name.as_bytes()).unwrap();
+        }
+        let mut errors = |_path: &Path, _error: anyhow::Error| {};
+        let rows = walk_limited(&drive, Path::new(""), Some(2), Some(2), &mut errors);
+        assert_eq!(rows.len(), 2);
+    }
+
     struct CapabilityStub;
 
     impl CloudDrive for CapabilityStub {
