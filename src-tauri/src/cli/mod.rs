@@ -552,6 +552,26 @@ enum DrivesCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Recursively search provider-visible filenames (not remote file content).
+    Search {
+        /// Drive id from `drives list`.
+        #[arg(long = "drive")]
+        drive_id: String,
+        /// Case-insensitive filename substring.
+        query: String,
+        /// Path within the drive; defaults to the root.
+        #[arg(long, default_value = "/")]
+        path: String,
+        /// Maximum recursion depth from the search root.
+        #[arg(long, default_value_t = 8)]
+        max_depth: usize,
+        /// Maximum number of results.
+        #[arg(long, default_value_t = 100)]
+        max_results: usize,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -11643,6 +11663,35 @@ fn cmd_drives(
                         e.size.map(|s| s.to_string()).unwrap_or_else(|| "?".to_owned())
                     };
                     println!("{}  {:>12}  {}", if e.is_dir { "d" } else { "-" }, size, e.name);
+                }
+            }
+            Ok(())
+        }
+        DrivesCmd::Search { drive_id, query, path, max_depth, max_results, json } => {
+            let query = query.trim().to_lowercase();
+            if query.is_empty() { return Err("search query must not be empty".into()); }
+            let limit = max_results.clamp(1, 1000);
+            let cfg = registry.drives.iter().find(|d| d.id == drive_id)
+                .ok_or_else(|| format!("drive '{drive_id}' not found; run `crispsorter drives list`"))?;
+            let drive = cli_instantiate_drive(&data_dir, cfg)?;
+            if !drive.probed_capabilities().list {
+                return Err(format!("{} does not support listing", drive.drive_type().label()));
+            }
+            let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};
+            let rows: Vec<_> = crate::drives::walk(
+                drive.as_ref(), std::path::Path::new(&path), Some(max_depth), &mut walk_errors,
+            ).into_iter().filter(|entry| entry.path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false))
+                .take(limit).collect();
+            let json = json || matches!(out, OutFormat::Json);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "drive": drive_id, "path": path, "query": query, "n": rows.len(), "results": rows
+                })).unwrap());
+            } else {
+                for row in &rows {
+                    println!("{}  {}", row.size.map(|n| n.to_string()).unwrap_or_else(|| "?".into()), row.path.display());
                 }
             }
             Ok(())

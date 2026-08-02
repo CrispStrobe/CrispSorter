@@ -1527,7 +1527,7 @@ will surface.
     calls the owner-scoped `/api/manifest/resolve` path+hash lookup, validates
     identity, replaces the local path at the index level, and only
     then removes the durable conflict. ✅ 2026-08-01
-- [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
+- [x] **Tests.** ✅ 10 unit tests shipped with the module (see above).
   Manual queue persistence/deduplication coverage now ships in
   `sync::tests::manual_conflicts_are_durable_and_deduplicated`; the exact
   manifest resolver has Python API coverage and a Rust hermetic HTTP parser
@@ -3001,7 +3001,7 @@ a transfer without leaving the search/catalog workflow.
   - [x] The right context pane now renders provenance details for all six
     typed panel sources, including local paths, catalog archives, and remote
     search provider/query context. ✅ 2026-08-01
-- [>] **Actionable search results.** From any result: reveal/open in context,
+- [x] **Actionable search results.** From any result: reveal/open in context,
   select related chunks/duplicates, compare files, copy/move/rename/delete,
   share, promote remote L1 rows, download for offline use, and send selected
   items to the batch sorter.  Preserve provenance (`crisp+drive://`,
@@ -3041,11 +3041,16 @@ a transfer without leaving the search/catalog workflow.
   - [x] Registered-drive L1 rows can now be promoted through the existing
     bounded remote-fetch and full-indexing pipeline; capability checks keep
     unsupported providers read-only. ✅ 2026-08-02
-  - [x] Cloud-backup archive hits now offer L3 promotion through the existing
-    configured `retrieve.py` path; first use prompts for that script and
-    refreshes the search after restoration/indexing. ✅ 2026-08-02
-  - [ ] Add provider-aware duplicate selection; this remains open before the
-    whole actionable-results item can close.
+  - [x] Cloud-backup remote-search rows now offer “Download & index”,
+    composing sha-verified streaming download with `index_ingest_path` and
+    preserving the user-selected destination. ✅ 2026-08-02
+  - [x] Provider-aware duplicate handling now keeps `crisp+drive://`
+    candidates in the registered-drive browser and exposes capability-gated
+    move/trash controls with explicit confirmation. ✅ 2026-08-02
+  - [x] Provider-aware duplicate mutations now persist a validated audit;
+    cloud moves can be undone by reversing the move, while trash remains
+    explicitly non-undoable until providers expose restore semantics.
+    ✅ 2026-08-02
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
@@ -3437,8 +3442,13 @@ a transfer without leaving the search/catalog workflow.
     virtual search-result folders in the contextual browser. ✅ 2026-08-02
   - [x] Local text/code previews now provide bounded edit/save/cancel controls;
     truncated previews and non-local URIs remain read-only. ✅ 2026-08-02
-  - [ ] Richer provider full-text search and configurable file associations
-    remain open.
+  - [x] Configurable extension-to-viewer-kind associations are persisted,
+    validated, and applied by the universal viewer; malformed entries are
+    ignored and unsupported kinds cannot be selected. ✅ 2026-08-02
+  - [>] Registered drives now provide bounded recursive filename/path search
+    through their listing capability; provider content/full-text search remains
+    open where the remote API does not expose it. The same bounded search is
+    now available as `crispsorter drives search`. ✅ 2026-08-02
 - [ ] Add FUSE write support only after the mutation API and queue are stable;
   retain read-only FUSE for indexing during the transition.
 - [ ] Add local REST API, plugin hooks, cron/webhook automation, and system

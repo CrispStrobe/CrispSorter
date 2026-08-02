@@ -63,6 +63,7 @@
         return out;
     }
     import { getSetting, saveSetting } from '../store';
+    import { normalizeFileAssociations } from './viewer/associations';
     import { i18n, type Language } from '../i18n.svelte';
     import { getDefaultPrompt, batchManager } from '../batch/store.svelte';
     import {
@@ -550,6 +551,8 @@
     let indexBackendType    = $state<'local' | 'remote' | 'hybrid'>('local');
     let indexRemoteUrl      = $state('');
     let indexRemoteApiKey   = $state('');
+    let fileAssociationsJson = $state('{}');
+    let fileAssociationsError = $state('');
     let indexProxyUrl       = $state('');
     let indexProxyUsername  = $state('');
     let indexProxyPassword  = $state('');
@@ -1293,6 +1296,8 @@
         indexBackendType   = await getSetting('indexBackendType', 'local') as any;
         indexRemoteUrl     = await getSetting('indexRemoteUrl', '');
         indexRemoteApiKey  = await getSetting('indexRemoteApiKey', '');
+        fileAssociationsJson = JSON.stringify(
+            normalizeFileAssociations(await getSetting('fileAssociations', {})), null, 2);
         indexEmbedderModel = await getSetting('indexEmbedderModel', 'bge_m3') as any;
         indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
@@ -1565,6 +1570,23 @@
         }
     }
 
+    async function persistFileAssociations(): Promise<boolean> {
+        try {
+            const parsed: unknown = JSON.parse(fileAssociationsJson);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error('Expected a JSON object mapping extensions to viewer kinds.');
+            }
+            const normalized = normalizeFileAssociations(parsed);
+            fileAssociationsJson = JSON.stringify(normalized, null, 2);
+            fileAssociationsError = '';
+            await saveSetting('fileAssociations', normalized);
+            return true;
+        } catch (e: any) {
+            fileAssociationsError = String(e?.message ?? e);
+            return false;
+        }
+    }
+
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
         // If the user typed a fresh API key into a provider field, the
@@ -1645,6 +1667,7 @@
         await saveSetting('indexBackendType',   indexBackendType);
         await saveSetting('indexRemoteUrl',     indexRemoteUrl);
         await saveSetting('indexRemoteApiKey',  indexRemoteApiKey);
+        if (!await persistFileAssociations()) return;
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
@@ -3838,6 +3861,15 @@
                 </select>
             </div>
 
+            <div class="section-card">
+                <label for="file-associations"><Code size={16} /> File associations</label>
+                <p class="hint">Optional JSON overrides: extension → viewer kind (`text`, `pdf`, `image`, `docx`, `epub`, `html`, `csv`, or `fallback`).</p>
+                <textarea id="file-associations" rows="5" bind:value={fileAssociationsJson}
+                    spellcheck="false" placeholder={'{\n  "log": "text"\n}'}></textarea>
+                {#if fileAssociationsError}<p class="error">{fileAssociationsError}</p>{/if}
+                <button class="action-btn small" onclick={persistFileAssociations}>Save file associations</button>
+            </div>
+
             <!-- Backend -->
             <div class="section-card">
                 <label for="index-backend-select"><HardDrive size={16} /> {i18n.t.settings.index.backend}</label>
@@ -4221,7 +4253,8 @@
                 <label for='index-conflict-policy' style='margin-top:14px;'>
                     Conflict policy
                 </label>
-                <select id='index-conflict-policy' bind:value={indexConflictPolicy}>
+                <select id='index-conflict-policy' bind:value={indexConflictPolicy}
+                    onchange={() => { if (indexConflictPolicy === 'manual') void refreshConflicts(); }}>
                     <option value='newest_wins'>Newest wins</option>
                     <option value='local_wins'>Local wins</option>
                     <option value='remote_wins'>Remote wins</option>

@@ -87,7 +87,6 @@
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
-    let promoteBusy  = $state<string | null>(null);
     let promoteBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
     let batchSelection = $state<Set<string>>(new Set());
@@ -167,6 +166,7 @@
         error?: string;
     }
     let remoteDownloads = $state<Map<string, RemoteDownloadState>>(new Map());
+    let remotePromoteBusy = $state<string | null>(null);
 
     // Stage S — federated search state.
     interface FederatedHit {
@@ -945,6 +945,40 @@
                 error: String(e),
             });
             remoteDownloads = fail;
+        }
+    }
+
+    /** Download a remote L1 hit with sha verification, then index it locally. */
+    async function promoteRemoteRow(hit: RemoteHit): Promise<void> {
+        if (remotePromoteBusy === hit.sha256) return;
+        const dest = await save({
+            defaultPath: hit.filename ?? hit.sha256,
+            title: 'Save and index cloud-backup file locally',
+        });
+        if (!dest) return;
+        remotePromoteBusy = hit.sha256;
+        try {
+            await invoke('sync_cb_download_file', {
+                sha256: hit.sha256,
+                destPath: dest as string,
+            });
+            await invoke('index_ingest_path', {
+                path: dest as string,
+                ownerId: null,
+                title: hit.title ?? null,
+                author: hit.author ?? null,
+                year: hit.year ?? null,
+                language: hit.language ?? null,
+            });
+            const done = new Map(remoteDownloads);
+            done.set(hit.sha256, { downloading: false, dest: dest as string });
+            remoteDownloads = done;
+        } catch (e: any) {
+            const fail = new Map(remoteDownloads);
+            fail.set(hit.sha256, { downloading: false, error: String(e?.message ?? e) });
+            remoteDownloads = fail;
+        } finally {
+            remotePromoteBusy = null;
         }
     }
 
@@ -2148,6 +2182,13 @@
                                             disabled={d?.downloading}>
                                         {#if d?.downloading}<Loader2 size={13} class="spin" />{/if}
                                         Download bytes
+                                    </button>
+                                    <button class="open-btn"
+                                            onclick={() => promoteRemoteRow(hit)}
+                                            disabled={remotePromoteBusy === hit.sha256}
+                                            title="Download, extract, and add to the local index">
+                                        {#if remotePromoteBusy === hit.sha256}<Loader2 size={13} class="spin" />{/if}
+                                        Download & index
                                     </button>
                                     {#if d?.bytes}
                                         <span class="remote-dl-ok">

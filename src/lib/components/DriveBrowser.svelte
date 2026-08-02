@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
-    import { ChevronRight, Copy, Folder, FolderPlus, RefreshCw, Trash2 } from 'lucide-svelte';
+    import { ChevronRight, Copy, Folder, FolderPlus, Loader2, RefreshCw, Search, Trash2 } from 'lucide-svelte';
     import {
         availableDriveActions,
         joinDrivePath,
@@ -13,12 +13,15 @@
     } from '$lib/drives/browser';
     import {
         loadDuplicateAudit,
+        loadDuplicateMutationAudit,
         latestDuplicateDecision,
         saveDuplicateAudit,
+        saveDuplicateMutationAudit,
+        type DuplicateMutationAudit,
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
-    import { subscribeBrowserContext } from '$lib/drives/browserContext';
+    import { requestBrowserContext, subscribeBrowserContext } from '$lib/drives/browserContext';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
@@ -39,8 +42,13 @@
     let versionsLoading = $state(false);
     let versionsError = $state('');
     let restoringVersion = $state<string | null>(null);
+    let duplicateMutationBusy = $state<string | null>(null);
+    let driveSearchQuery = $state('');
+    let driveSearchBusy = $state(false);
+    let driveSearchResults = $state<Array<{ path: string; is_dir: boolean; size: number | null; mtime_unix: number | null }>>([]);
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
+    let duplicateMutationAudit = $state<DuplicateMutationAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
     async function refresh() {
@@ -56,6 +64,38 @@
             entries = [];
         } finally {
             loading = false;
+        }
+    }
+
+    async function searchDrive() {
+        if (!driveId || !driveSearchQuery.trim()) return;
+        driveSearchBusy = true;
+        error = '';
+        try {
+            driveSearchResults = await invoke('drive_search', {
+                driveId,
+                root: path,
+                query: driveSearchQuery.trim(),
+                maxDepth: 8,
+                maxResults: 100,
+            });
+        } catch (e) {
+            error = `Could not search drive: ${String(e)}`;
+            driveSearchResults = [];
+        } finally {
+            driveSearchBusy = false;
+        }
+    }
+
+    async function openDriveSearchResult(result: { path: string }): Promise<void> {
+        const resultPath = normalizeDrivePath(result.path);
+        rightPanel = cloudDrivePanel(driveId, resultPath);
+        selected = null;
+        selectedStat = null;
+        try {
+            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: resultPath });
+        } catch (e) {
+            error = `Could not inspect search result: ${String(e)}`;
         }
     }
 
@@ -161,6 +201,17 @@
     }
 
     async function openDuplicateItem(itemPath: string) {
+        if (itemPath.startsWith('crisp+drive://')) {
+            const rest = itemPath.slice('crisp+drive://'.length);
+            const slash = rest.indexOf('/');
+            if (slash > 0) {
+                requestBrowserContext(cloudDrivePanel(
+                    rest.slice(0, slash),
+                    decodeURIComponent(rest.slice(slash)),
+                ));
+                return;
+            }
+        }
         try { await openPath(itemPath); }
         catch (e) { error = `Could not open duplicate: ${String(e)}`; }
     }
@@ -168,6 +219,85 @@
     async function copyDuplicatePath(itemPath: string) {
         try { await navigator.clipboard.writeText(itemPath); }
         catch (e) { error = `Could not copy duplicate path: ${String(e)}`; }
+    }
+
+    function duplicateDriveParts(itemPath: string): { driveId: string; path: string } | null {
+        if (!itemPath.startsWith('crisp+drive://')) return null;
+        const rest = itemPath.slice('crisp+drive://'.length);
+        const slash = rest.indexOf('/');
+        if (slash < 0) return null;
+        try {
+            return { driveId: rest.slice(0, slash), path: normalizeDrivePath(decodeURIComponent(rest.slice(slash))) };
+        } catch {
+            return null;
+        }
+    }
+
+    async function mutateCloudDuplicate(itemPath: string, operation: 'move' | 'delete'): Promise<void> {
+        const parts = duplicateDriveParts(itemPath);
+        if (!parts || duplicateMutationBusy === itemPath) return;
+        try {
+            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
+            if (operation === 'delete' && !caps.delete) throw new Error('Provider does not support delete/trash.');
+            if (operation === 'move' && !caps.move_path) throw new Error('Provider does not support move.');
+            const name = parts.path.split('/').filter(Boolean).at(-1) ?? parts.path;
+            let destinationPath: string | undefined;
+            if (operation === 'delete') {
+                if (!window.confirm(`Move duplicate “${name}” to provider trash?`)) return;
+            } else {
+                const destination = window.prompt('Move duplicate to remote path', parts.path);
+                if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
+                destinationPath = normalizeDrivePath(destination);
+            }
+            duplicateMutationBusy = itemPath;
+            if (operation === 'delete') {
+                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.path });
+            } else {
+                if (!destinationPath) return;
+                await invoke('drive_move_path', {
+                    driveId: parts.driveId,
+                    source: parts.path,
+                    destination: destinationPath,
+                });
+            }
+            if (rightPanel?.source.kind === 'DuplicateGroup') {
+                const items = operation === 'delete'
+                    ? rightPanel.source.items.filter((item) => item.path !== itemPath)
+                    : rightPanel.source.items.map((item) => item.path === itemPath
+                        ? { ...item, path: `crisp+drive://${parts.driveId}${destinationPath}` }
+                        : item);
+                rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
+            }
+            if (rightPanel?.source.kind === 'DuplicateGroup') {
+                const groupId = rightPanel.source.groupId;
+                duplicateMutationAudit = [...duplicateMutationAudit, {
+                    groupId,
+                    driveId: parts.driveId,
+                    operation,
+                    from: parts.path,
+                    to: destinationPath ?? null,
+                    at: Date.now(),
+                }].slice(-200);
+                saveDuplicateMutationAudit(duplicateMutationAudit);
+            }
+        } catch (e) { error = `Could not ${operation} cloud duplicate: ${String(e)}`; }
+        finally { duplicateMutationBusy = null; }
+    }
+
+    async function undoLastCloudMove(): Promise<void> {
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'move');
+        if (!panel || !last?.to || duplicateMutationBusy) return;
+        duplicateMutationBusy = last.to;
+        try {
+            await invoke('drive_move_path', { driveId: last.driveId, source: last.to, destination: last.from });
+            const current = panel.items.map((item) => item.path === `crisp+drive://${last.driveId}${last.to}`
+                ? { ...item, path: `crisp+drive://${last.driveId}${last.from}` } : item);
+            rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
+            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
+        finally { duplicateMutationBusy = null; }
     }
 
     function setDuplicateDecision(decision: DuplicateDecision) {
@@ -206,6 +336,7 @@
 
     onMount(() => {
         duplicateAudit = loadDuplicateAudit();
+        duplicateMutationAudit = loadDuplicateMutationAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
             if (panel.source.kind === 'DuplicateGroup') {
                 const restored = latestDuplicateDecision(duplicateAudit, panel.source.groupId);
@@ -237,8 +368,13 @@
                 <option value="" disabled>Select drive</option>
                 {#each drives as drive}<option value={drive.id}>{drive.label} ({drive.kind})</option>{/each}
             </select>
-            <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
-        </div>
+        <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
+        <input class="drive-search" bind:value={driveSearchQuery} placeholder="Search names…"
+            onkeydown={(event) => event.key === 'Enter' && void searchDrive()} />
+        <button onclick={searchDrive} disabled={driveSearchBusy || !driveSearchQuery.trim()}>
+            {#if driveSearchBusy}<Loader2 size={14} class="spin" />{:else}<Search size={14} />{/if} Search
+        </button>
+    </div>
     </header>
 
     <div class="browser-toolbar">
@@ -256,6 +392,21 @@
     </div>
 
     {#if error}<div class="browser-error">{error}</div>{/if}
+    {#if driveSearchQuery.trim() && !driveSearchBusy}
+        <div class="drive-search-results">
+            <strong>Filename matches ({driveSearchResults.length})</strong>
+            {#if driveSearchResults.length === 0}
+                <span class="muted">No provider-visible matches.</span>
+            {:else}
+                {#each driveSearchResults as result (result.path)}
+                    <button class="drive-search-result" onclick={() => void openDriveSearchResult(result)}>
+                        <span>{result.path}</span>
+                        {#if result.size !== null}<span class="entry-size">{result.size.toLocaleString()} B</span>{/if}
+                    </button>
+                {/each}
+            {/if}
+        </div>
+    {/if}
     {#if !drives.length && !loading}<div class="empty">No registered drives yet.</div>
     {:else if loading}<div class="empty">Loading…</div>
     {:else}<div class="entry-list">
@@ -281,6 +432,8 @@
                 <code>{rightPanel.source.query}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
                 {@const dupSource = rightPanel.source}
+                {@const cloudMutations = duplicateMutationAudit.filter((entry) => entry.groupId === dupSource.groupId)}
+                {@const lastCloudMutation = cloudMutations.at(-1)}
                 <code>group: {dupSource.groupId}</code>
                 <div class="duplicate-decision">
                     <span class="context-label">Dry-run decision</span>
@@ -292,6 +445,24 @@
                     </select>
                     {#if duplicateAudit.some((entry) => entry.groupId === dupSource.groupId)}
                         <button class="duplicate-undo" onclick={undoDuplicateDecision}>Undo last decision</button>
+                    {/if}
+                    {#if cloudMutations.length > 0}
+                        <details class="duplicate-audit">
+                            <summary>Cloud mutation audit ({cloudMutations.length})</summary>
+                            <div class="audit-list">
+                                {#each cloudMutations.slice().reverse() as entry}
+                                    <div class="audit-entry">
+                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : `${entry.from} → provider trash`}</span>
+                                        <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
+                                    </div>
+                                {/each}
+                            </div>
+                            {#if lastCloudMutation?.operation === 'move'}
+                                <button class="duplicate-undo" onclick={undoLastCloudMove} disabled={duplicateMutationBusy !== null}>Undo last cloud move</button>
+                            {:else}
+                                <span class="muted">Trash actions cannot be restored from this provider API.</span>
+                            {/if}
+                        </details>
                     {/if}
                 </div>
                 <ul class="duplicate-context-list">
@@ -305,6 +476,21 @@
                             <span class="duplicate-actions">
                                 <button onclick={() => openDuplicateItem(item.path)}>Open</button>
                                 <button onclick={() => copyDuplicatePath(item.path)}>Copy path</button>
+                                {#if duplicateDriveParts(item.path)}
+                                    <button
+                                        onclick={() => mutateCloudDuplicate(item.path, 'move')}
+                                        disabled={duplicateMutationBusy === item.path}
+                                        title="Move cloud duplicate">
+                                        Move
+                                    </button>
+                                    <button
+                                        class="danger"
+                                        onclick={() => mutateCloudDuplicate(item.path, 'delete')}
+                                        disabled={duplicateMutationBusy === item.path}
+                                        title="Move cloud duplicate to trash">
+                                        Trash
+                                    </button>
+                                {/if}
                             </span>
                         </li>
                     {/each}
@@ -377,6 +563,9 @@
     .browser-controls { display: flex; gap: 8px; } select, button { border: 1px solid var(--border, #3a3a44); background: var(--surface, #202027); color: inherit; border-radius: 6px; padding: 7px 9px; }
     button { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; } button:disabled { opacity: .45; cursor: default; } .icon-button { padding: 7px; }
     .browser-toolbar { flex-wrap: wrap; padding: 8px; background: var(--surface, #202027); border-radius: 8px; }
+    .drive-search { min-width: 180px; flex: 1; padding: 7px 9px; border: 1px solid var(--border, #3a3a44); border-radius: 6px; background: var(--surface, #202027); color: inherit; }
+    .drive-search-results { grid-column: 1 / -1; display: grid; gap: 5px; padding: 8px; border: 1px solid var(--border, #3a3a44); border-radius: 8px; }
+    .drive-search-result { width: 100%; justify-content: space-between; text-align: left; font-family: ui-monospace, monospace; font-size: .78rem; }
     .crumb { border: 0; background: transparent; padding: 3px 4px; } .crumb.current { color: var(--text-muted, #8a8a96); } .toolbar-spacer { flex: 1; }
     .entry-list { grid-column: 1; grid-row: 4; display: flex; flex-direction: column; border: 1px solid var(--border, #3a3a44); border-radius: 8px; overflow: hidden; }
     .entry { width: 100%; border: 0; border-bottom: 1px solid var(--border, #3a3a44); border-radius: 0; text-align: left; } .entry:last-child { border-bottom: 0; } .entry.selected { background: #263b58; }

@@ -8,7 +8,10 @@
      *
      * Works cross-platform including mobile (no native PDF viewer needed).
      */
-    import { uriToPath, extOf, detectKind, type ViewerKind } from './types';
+    import { onMount } from 'svelte';
+    import { getSetting } from '$lib/store';
+    import { uriToPath, extOf, type ViewerKind } from './types';
+    import { normalizeFileAssociations, viewerKindForExtension, type FileAssociations } from './associations';
     import PdfViewer from './PdfViewer.svelte';
     import ImageViewer from './ImageViewer.svelte';
     import TextViewer from './TextViewer.svelte';
@@ -29,7 +32,12 @@
 
     let path = $derived(uriToPath(locationUri));
     let ext = $derived(extOf(locationUri || filename));
-    let kind: ViewerKind = $derived(path ? detectKind(ext) : 'fallback');
+    let associations = $state<FileAssociations>({});
+    let kind: ViewerKind = $derived(path ? viewerKindForExtension(ext, associations) : 'fallback');
+
+    onMount(async () => {
+        associations = normalizeFileAssociations(await getSetting('fileAssociations', {}));
+    });
 </script>
 
 <div class="document-viewer">
