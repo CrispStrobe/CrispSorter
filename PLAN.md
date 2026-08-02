@@ -3850,6 +3850,13 @@ session. Persisting access across launches needs **security-scoped bookmarks**.
 
 Apply to iOS and MAS equally; independent of Phases 1–3.
 
+> Cross-check against `../appstore.md` before working any of these: the App
+> Store Connect record already has answers for some, set 2026-07-10, and the
+> plan was written without consulting it. P36.15 turned out to be done;
+> P36.14 turned out to be answered with a value that predates the current
+> chat surface. `../appstore.md` is the source of truth for what ASC actually
+> holds — this file is the source of truth for what the *code* does.
+
 - [ ] **P36.13 — third-party AI data-sharing consent (Guideline 5.1.2(i)).**
   `llm/client.ts:41-48` can send document text to Groq, OpenRouter, Mistral,
   OpenAI, Nebius, Scaleway, Anthropic and Google. Apple requires explicit
@@ -3862,8 +3869,32 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
   AIToolkit image generation. Answer Apple's AI questionnaire honestly; expect
   17+ absent filtering, and check whether Guideline 1.2 wants reporting/blocking
   on the chat surface.
-- [ ] **P36.15 — privacy nutrition label.** Open since P31; browser-only, Apple
-  blocks it via API. "Data Not Collected", policy URL already live.
+
+  ⚠️ **This is already answered in App Store Connect, and the answer needs
+  re-examining rather than confirming.** Per `../appstore.md`, the live record
+  says *"Age rating — All NONE/false (no objectionable content)"*, set
+  2026-07-10. Two of the three inputs have since changed:
+
+  * **Image generation is gone from shipped builds** (P36.16), which removes
+    the strongest argument for a higher rating. Good.
+  * **Unrestricted third-party chat remains.** `llm/client.ts` will still send
+    a prompt to Groq / OpenRouter / Mistral / OpenAI / Nebius / Scaleway /
+    Anthropic / Google and render whatever comes back, with no filtering on
+    our side. "No objectionable content" is a claim about *our* content; a
+    passthrough to an arbitrary model is not obviously covered by it.
+
+  So the open question is narrower than the plan assumed but not closed:
+  does an unfiltered BYO-key chat surface, with no image generation, still
+  answer NONE across the board? That is a judgement for the account holder,
+  not a code change — but it should be made deliberately rather than left at
+  a value set before the chat surface existed in this form.
+
+- [x] **P36.15 — privacy nutrition label.** **Done** — the plan had this
+  wrong. `../appstore.md` records *"App Privacy — Data Not Collected ✅ (set
+  by human in browser)"* on 2026-07-10, along with the privacy policy URL
+  (`https://crispstrobe.github.io/CrispSorter/privacy.html`, GitHub Pages) and
+  `PrivacyInfo.xcprivacy` with its Required Reason API declarations
+  (`CA92.1`, `C617.1`, `E174.1`). Nothing outstanding.
 
 - [x] **P36.16 — the admin/experimental surfaces leave shipped builds.**
   Decided and implemented 2026-08-02. Both AIToolkit and cloud-backup exist
