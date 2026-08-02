@@ -468,13 +468,19 @@ pub async fn sync_pair_push(
         return Err("sync pair is configured for remote-to-local direction".into());
     }
     if let Some(policy) = conflict_policy {
-        if policy != super::conflict::ConflictPolicy::LocalWins {
+        if !matches!(policy, super::conflict::ConflictPolicy::LocalWins | super::conflict::ConflictPolicy::NewestWins) {
             return Err(format!(
-                "sync pair push cannot apply {policy:?} without remote metadata; use local-wins or run a remote comparison first"
+                "sync pair push cannot apply {policy:?} without a per-file resolver; use local-wins/newest-wins or run a remote comparison first"
             ));
         }
     }
     let plan = super::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
+    let plan = if conflict_policy == Some(super::conflict::ConflictPolicy::NewestWins) {
+        let remote = sync_pair_remote_plan(state.clone(), id.clone()).await?;
+        super::pairs::local_push_plan(&plan, &remote, super::conflict::ConflictPolicy::NewestWins)
+    } else {
+        plan
+    };
     let dry_run = dry_run.unwrap_or(false);
     let started_at = sync_pair_now_ms();
     if dry_run || plan.is_empty() {

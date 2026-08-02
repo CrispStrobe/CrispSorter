@@ -3214,8 +3214,8 @@ a transfer without leaving the search/catalog workflow.
     local-wins/remote-wins application through the existing guarded pair push
     and pull commands. ✅ 2026-08-02
   - [ ] Add per-file newest-wins, keep-both, and manual resolution for sync
-    pairs; whole-pair local/remote application remains intentionally limited
-    to the two policies with complete mutation semantics.
+    pairs; newest-wins local push now skips remote-newer files using remote
+    metadata, while keep-both/manual remain explicitly guarded.
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and
     relative remote paths remain guarded. ✅ 2026-08-01
