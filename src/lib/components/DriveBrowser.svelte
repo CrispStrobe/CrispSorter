@@ -44,6 +44,7 @@
     let restoringVersion = $state<string | null>(null);
     let duplicateMutationBusy = $state<string | null>(null);
     let driveSearchQuery = $state('');
+    let driveSearchContent = $state(false);
     let driveSearchBusy = $state(false);
     let driveSearchResults = $state<Array<{ path: string; is_dir: boolean; size: number | null; mtime_unix: number | null }>>([]);
     let rightPanel = $state<ContextPanel | null>(null);
@@ -78,6 +79,7 @@
                 query: driveSearchQuery.trim(),
                 maxDepth: 8,
                 maxResults: 100,
+                content: driveSearchContent,
             });
         } catch (e) {
             error = `Could not search drive: ${String(e)}`;
@@ -371,6 +373,7 @@
         <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
         <input class="drive-search" bind:value={driveSearchQuery} placeholder="Search names…"
             onkeydown={(event) => event.key === 'Enter' && void searchDrive()} />
+        <label class="drive-search-content"><input type="checkbox" bind:checked={driveSearchContent} /> Content ≤256 KiB</label>
         <button onclick={searchDrive} disabled={driveSearchBusy || !driveSearchQuery.trim()}>
             {#if driveSearchBusy}<Loader2 size={14} class="spin" />{:else}<Search size={14} />{/if} Search
         </button>
@@ -564,6 +567,7 @@
     button { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; } button:disabled { opacity: .45; cursor: default; } .icon-button { padding: 7px; }
     .browser-toolbar { flex-wrap: wrap; padding: 8px; background: var(--surface, #202027); border-radius: 8px; }
     .drive-search { min-width: 180px; flex: 1; padding: 7px 9px; border: 1px solid var(--border, #3a3a44); border-radius: 6px; background: var(--surface, #202027); color: inherit; }
+    .drive-search-content { display: inline-flex; align-items: center; gap: 4px; font-size: .75rem; color: var(--text-muted, #8a8a96); white-space: nowrap; }
     .drive-search-results { grid-column: 1 / -1; display: grid; gap: 5px; padding: 8px; border: 1px solid var(--border, #3a3a44); border-radius: 8px; }
     .drive-search-result { width: 100%; justify-content: space-between; text-align: left; font-family: ui-monospace, monospace; font-size: .78rem; }
     .crumb { border: 0; background: transparent; padding: 3px 4px; } .crumb.current { color: var(--text-muted, #8a8a96); } .toolbar-spacer { flex: 1; }

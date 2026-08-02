@@ -570,6 +570,7 @@ pub async fn drive_search(
     query: String,
     max_depth: Option<usize>,
     max_results: Option<usize>,
+    content: Option<bool>,
 ) -> Result<Vec<super::WalkEntry>, String> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -594,9 +595,21 @@ pub async fn drive_search(
     let mut errors = |_path: &Path, _error: anyhow::Error| {};
     let entries = super::walk(&*drive, Path::new(&root), max_depth.or(Some(8)), &mut errors);
     let limit = max_results.unwrap_or(100).clamp(1, 1000);
+    let content = content.unwrap_or(false);
     Ok(entries
         .into_iter()
-        .filter(|entry| drive_search_path_matches(&entry.path, &query))
+        .filter(|entry| {
+            if drive_search_path_matches(&entry.path, &query) {
+                return true;
+            }
+            if !content || entry.is_dir || entry.size.unwrap_or(u64::MAX) > 256 * 1024 {
+                return false;
+            }
+            drive.read_file(&entry.path)
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_lowercase().contains(&query))
+                .unwrap_or(false)
+        })
         .take(limit)
         .collect())
 }

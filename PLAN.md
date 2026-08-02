@@ -3446,9 +3446,11 @@ a transfer without leaving the search/catalog workflow.
     validated, and applied by the universal viewer; malformed entries are
     ignored and unsupported kinds cannot be selected. ✅ 2026-08-02
   - [>] Registered drives now provide bounded recursive filename/path search
-    through their listing capability; provider content/full-text search remains
-    open where the remote API does not expose it. The same bounded search is
-    now available as `crispsorter drives search`. ✅ 2026-08-02
+    through their listing capability; optional `--content` / GUI content mode
+    inspects only provider-readable files ≤256 KiB. Unbounded provider
+    full-text search remains open where the remote API does not expose it.
+    The same bounded search is available as `crispsorter drives search`.
+    ✅ 2026-08-02
 - [ ] Add FUSE write support only after the mutation API and queue are stable;
   retain read-only FUSE for indexing during the transition.
 - [ ] Add local REST API, plugin hooks, cron/webhook automation, and system

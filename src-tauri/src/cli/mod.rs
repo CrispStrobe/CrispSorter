@@ -568,6 +568,9 @@ enum DrivesCmd {
         /// Maximum number of results.
         #[arg(long, default_value_t = 100)]
         max_results: usize,
+        /// Also inspect provider-readable files up to 256 KiB for text matches.
+        #[arg(long)]
+        content: bool,
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -11635,7 +11638,7 @@ fn cmd_drives(
             }
             Ok(())
         }
-        DrivesCmd::Search { drive_id, query, path, max_depth, max_results, json } => {
+        DrivesCmd::Search { drive_id, query, path, max_depth, max_results, content, json } => {
             let query = query.trim().to_lowercase();
             if query.is_empty() { return Err("search query must not be empty".into()); }
             let limit = max_results.clamp(1, 1000);
@@ -11650,7 +11653,10 @@ fn cmd_drives(
                 drive.as_ref(), std::path::Path::new(&path), Some(max_depth), &mut walk_errors,
             ).into_iter().filter(|entry| entry.path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false))
+                .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
+                || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= 256 * 1024
+                    && drive.read_file(&entry.path).ok().map(|bytes|
+                        String::from_utf8_lossy(&bytes).to_lowercase().contains(&query)).unwrap_or(false)))
                 .take(limit).collect();
             let json = json || matches!(out, OutFormat::Json);
             if json {
