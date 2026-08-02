@@ -11720,10 +11720,11 @@ fn cmd_drives(
             let cfg = registry.drives.iter().find(|d| d.id == drive_id)
                 .ok_or_else(|| format!("drive '{drive_id}' not found; run `crispsorter drives list`"))?;
             let drive = cli_instantiate_drive(&data_dir, cfg)?;
-            if !drive.probed_capabilities().list {
+            let capabilities = drive.probed_capabilities();
+            if !capabilities.list {
                 return Err(format!("{} does not support listing", drive.drive_type().label()));
             }
-            if content && !drive.probed_capabilities().read {
+            if content && !capabilities.read {
                 return Err(format!("{} does not support content reads", drive.drive_type().label()));
             }
             let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};

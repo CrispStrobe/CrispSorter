@@ -589,11 +589,12 @@ pub async fn drive_search(
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive = instantiate_registered(&state, cfg).await?;
-    if !drive.capabilities().list {
+    let capabilities = drive.capabilities();
+    if !capabilities.list {
         return Err(format!("{} does not support listing", drive.drive_type().label()));
     }
     let content = content.unwrap_or(false);
-    if content && !drive.capabilities().read {
+    if content && !capabilities.read {
         return Err(format!("{} does not support content reads", drive.drive_type().label()));
     }
     let mut errors = |_path: &Path, _error: anyhow::Error| {};
