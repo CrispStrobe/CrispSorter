@@ -3209,11 +3209,13 @@ a transfer without leaving the search/catalog workflow.
     sibling name, and manual rejects until review. Pure decision tests cover
     every mutation policy; the broader preview/resolution surface remains
     open. ✅ 2026-08-01
-  - [>] Settings now provides a sync-pair comparison table with explicit
+  - [x] Settings now provides a sync-pair comparison table with explicit
     policy selection and local/remote metadata. It offers confirmed one-click
     local-wins/remote-wins application through the existing guarded pair push
-    and pull commands; newest-wins, keep-both, and manual remain per-file
-    review work. ✅ 2026-08-02
+    and pull commands. ✅ 2026-08-02
+  - [ ] Add per-file newest-wins, keep-both, and manual resolution for sync
+    pairs; whole-pair local/remote application remains intentionally limited
+    to the two policies with complete mutation semantics.
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and
     relative remote paths remain guarded. ✅ 2026-08-01
