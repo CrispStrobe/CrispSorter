@@ -10645,6 +10645,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn drives_search_parses_bounded_content_options() {
+        let cli = Cli::try_parse_from([
+            "crispsorter", "drives", "search", "--drive", "drive-1", "invoice",
+            "--path", "/docs", "--max-depth", "4", "--max-results", "7", "--content", "--json",
+        ]).unwrap();
+        match cli.command {
+            Command::Drives { cmd: DrivesCmd::Search { drive_id, query, path, max_depth, max_results, content, json }, .. } => {
+                assert_eq!(drive_id, "drive-1");
+                assert_eq!(query, "invoice");
+                assert_eq!(path, "/docs");
+                assert_eq!(max_depth, 4);
+                assert_eq!(max_results, 7);
+                assert!(content && json);
+            }
+            other => panic!("expected Drives Search, got {other:?}"),
+        }
+    }
+
     /// P13 — `images extensions` is the cheapest reachable subcommand
     /// (no data dir touched), so it's the canary for "the Images
     /// surface parses at all".  Failure here means a clap derive macro
