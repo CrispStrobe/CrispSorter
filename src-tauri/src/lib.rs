@@ -3155,6 +3155,7 @@ pub fn run() {
             drives::tauri_commands::drive_move_path,
             drives::tauri_commands::drive_copy_path,
             drives::tauri_commands::drive_delete_path,
+            drives::tauri_commands::drive_restore_deleted,
             drives::tauri_commands::drive_share_link,
             drives::tauri_commands::drive_list_versions,
             drives::tauri_commands::drive_restore_version,

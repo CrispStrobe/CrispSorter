@@ -3087,10 +3087,13 @@ a transfer without leaving the search/catalog workflow.
   - [x] The legacy duplicate tab continues to generate reviewable,
     platform-specific deletion scripts; scripts never execute automatically.
     ✅ 2026-08-01
-  - [ ] Add provider-aware trash-first mutation with conflict-policy checks,
-    durable undo records, and restore support. This remains deferred until a
-    common reversible-trash contract exists for LocalDrive, Internxt, Filen,
-    and WebDAV.
+  - [>] Add provider-aware trash-first mutation with conflict-policy checks,
+    durable undo records, and restore support. A common `CloudDrive` contract
+    now exposes `reversible_trash` plus guarded `restore_deleted`; native
+    Internxt and Filen adapters use their real provider trash/restore APIs.
+    LocalDrive and generic WebDAV remain explicitly unsupported until they
+    have genuine recoverable-trash semantics. ✅ contract/native adapters
+    2026-08-02
 - [x] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

@@ -101,6 +101,10 @@ pub struct DriveCapabilities {
     pub resumable_download: bool,
     pub share_links: bool,
     pub versions: bool,
+    /// The backend can restore an item previously removed by `delete`.
+    /// This is separate from `delete`: WebDAV DELETE and local filesystem
+    /// removal are not recoverable operations.
+    pub reversible_trash: bool,
 }
 
 impl DriveCapabilities {
@@ -120,6 +124,7 @@ impl DriveCapabilities {
             resumable_download: false,
             share_links: false,
             versions: false,
+            reversible_trash: false,
         }
     }
 }
@@ -204,6 +209,16 @@ pub trait CloudDrive: Send + Sync {
 
     /// Delete a file or empty directory.
     fn delete(&self, path: &Path) -> Result<()>;
+
+    /// Restore an item from the provider's recoverable trash. Backends
+    /// without a real restore API fail explicitly instead of pretending that
+    /// DELETE can be undone.
+    fn restore_deleted(&self, _trash_path: &Path, _destination: Option<&Path>) -> Result<()> {
+        Err(anyhow!(
+            "{} does not support restoring deleted items",
+            self.drive_type().label()
+        ))
+    }
 
     /// File/directory metadata.
     fn stat(&self, path: &Path) -> Result<FileStat>;
@@ -1006,6 +1021,7 @@ mod tests {
         assert!(!capabilities.copy);
         assert!(!capabilities.share_links);
         assert!(!capabilities.versions);
+        assert!(!capabilities.reversible_trash);
 
         assert!(drive.create_dir(Path::new("new")).is_err());
         assert!(drive
@@ -1017,6 +1033,9 @@ mod tests {
         assert_eq!(drive.share_link(Path::new("file")).unwrap(), None);
         assert!(drive.list_versions(Path::new("file")).unwrap().is_empty());
         assert!(drive.restore_version(Path::new("file"), "v1").is_err());
+        assert!(drive
+            .restore_deleted(Path::new("trash/file"), None)
+            .is_err());
     }
 
     #[test]

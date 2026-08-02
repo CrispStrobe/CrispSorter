@@ -204,6 +204,27 @@ impl CloudDrive for NativeInternxtDrive {
         client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })
     }
 
+    fn restore_deleted(&self, trash_path: &Path, destination: Option<&Path>) -> Result<()> {
+        let (_session, client) = self.parts()?;
+        let name = trash_path
+            .file_name()
+            .ok_or_else(|| anyhow!("Internxt trash path has no item name"))?
+            .to_string_lossy();
+        let item = client
+            .list_trash(None, usize::MAX)?
+            .into_iter()
+            .find(|item| item.name == name)
+            .ok_or_else(|| anyhow!("Internxt trash item not found: {}", trash_path.display()))?;
+        let destination = destination
+            .ok_or_else(|| anyhow!("Internxt restore requires a destination folder"))?;
+        let (_session, _client, folder_uuid) = self.resolve_parent(destination, false)?;
+        client.restore_from_trash(
+            &item.uuid,
+            if item.is_dir { "folders" } else { "files" },
+            &folder_uuid,
+        )
+    }
+
     fn capabilities(&self) -> DriveCapabilities {
         DriveCapabilities {
             create_dir: true,
@@ -213,6 +234,7 @@ impl CloudDrive for NativeInternxtDrive {
             streaming: true,
             resumable_upload: true,
             resumable_download: true,
+            reversible_trash: true,
             ..DriveCapabilities::basic()
         }
     }

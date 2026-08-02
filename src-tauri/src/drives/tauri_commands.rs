@@ -808,6 +808,39 @@ pub async fn drive_delete_path(
         .map_err(|e| e.to_string())
 }
 
+/// Restore an item from a provider's recoverable trash.
+#[tauri::command]
+pub async fn drive_restore_deleted(
+    state: State<'_, AppState>,
+    drive_id: String,
+    trash_path: String,
+    destination: Option<String>,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = instantiate_registered(&state, cfg).await?;
+    if !drive.probed_capabilities().reversible_trash {
+        return Err(format!(
+            "{} does not support restoring deleted items",
+            drive.drive_type().label()
+        ));
+    }
+    let destination = destination.as_deref().map(std::path::Path::new);
+    drive
+        .restore_deleted(std::path::Path::new(&trash_path), destination)
+        .map_err(|e| e.to_string())
+}
+
 /// Generate a public share link for a file on a registered drive.
 /// Providers without a public-link implementation return a clear error
 /// rather than silently returning an unusable local URL.
