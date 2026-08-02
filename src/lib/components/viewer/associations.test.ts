@@ -9,7 +9,8 @@ describe('file associations', () => {
     });
 
     it('ignores malformed or oversized extension keys', () => {
-        expect(normalizeFileAssociations({ 'a'.repeat(17): 'text', '../md': 'text', md: 4 })).toEqual({});
+        const oversized = 'a'.repeat(17);
+        expect(normalizeFileAssociations({ [oversized]: 'text', '../md': 'text', md: 4 })).toEqual({});
     });
 
     it('falls back to built-in detection', () => {
