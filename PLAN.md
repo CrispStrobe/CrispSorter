@@ -3041,6 +3041,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Registered-drive L1 rows can now be promoted through the existing
     bounded remote-fetch and full-indexing pipeline; capability checks keep
     unsupported providers read-only. ✅ 2026-08-02
+  - [x] Cloud-backup remote-search rows now offer “Download & index”,
+    composing sha-verified streaming download with `index_ingest_path` and
+    preserving the user-selected destination. ✅ 2026-08-02
   - [x] Provider-aware duplicate handling now keeps `crisp+drive://`
     candidates in the registered-drive browser and exposes capability-gated
     move/trash controls with explicit confirmation. ✅ 2026-08-02
