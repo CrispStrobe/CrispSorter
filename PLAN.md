@@ -3352,8 +3352,8 @@ a transfer without leaving the search/catalog workflow.
     loopback/deep-link callback handling, token refresh, and revocation. Never
     ship a client secret; support user-supplied public client IDs where needed.
     Desktop loopback PKCE, keychain-only token exchange, explicit refresh,
-    Google revocation, and Microsoft local credential clearing are implemented;
-    mobile deep links and Microsoft’s provider-side logout remain.
+    Google revocation, Microsoft local credential clearing, and Microsoft’s
+    provider-side browser logout are implemented; mobile deep links remain.
   - [>] Add the desktop/mobile login UI: browser sign-in for Google/OneDrive,
     native email/password plus conditional TOTP for Filen/Internxt, and
     WebDAV username/password or app-password entry without persistence in UI
@@ -3368,7 +3368,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] Browser OAuth UI now polls only boolean credential presence after
       the loopback callback, with a bounded timeout and no token exposure.
       ✅ 2026-08-01
-    - [ ] Mobile deep-link login and provider-specific logout remain deferred.
+    - [>] Mobile deep-link login remains deferred; OneDrive disconnect now also
+      opens Microsoft’s provider logout endpoint after local keychain clearing.
   - [>] Add unit and hermetic HTTP coverage for PKCE/state validation, token
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic
