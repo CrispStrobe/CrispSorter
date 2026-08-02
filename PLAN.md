@@ -3031,6 +3031,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] Result cards now support selecting two hits for a side-by-side
     metadata/snippet comparison while preserving local/cloud provenance.
     ✅ 2026-08-02
+  - [x] Expanded result chunks can also be selected into the same comparison
+    view, retaining document id and chunk index. ✅ 2026-08-02
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,

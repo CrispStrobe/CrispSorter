@@ -957,7 +957,8 @@
     }
 
     function toggleCompare(result: SearchResult): void {
-        const existing = compareResults.findIndex((item) => item.doc_id === result.doc_id);
+        const existing = compareResults.findIndex((item) =>
+            item.doc_id === result.doc_id && item.chunk_index === result.chunk_index);
         if (existing >= 0) {
             compareResults = compareResults.filter((_, index) => index !== existing);
             return;
@@ -1472,7 +1473,7 @@
                         <p class="hint">Select one more result to compare metadata and snippets.</p>
                     {:else}
                         <div class="compare-columns">
-                            {#each compareResults as item (item.doc_id)}
+                            {#each compareResults as item (`${item.doc_id}:${item.chunk_index}`)}
                                 <article>
                                     <strong>{item.title || item.filename || item.doc_id}</strong>
                                     <code title={item.location_uri}>{compareLabel(item.location_uri)}</code>
@@ -1837,6 +1838,12 @@
                                         {/if}
                                     </div>
                                     <span class="chunk-score">{chunk.score.toFixed(3)}</span>
+                                    <button class="chunk-compare"
+                                        class:active={compareResults.some((item) => item.doc_id === chunk.doc_id && item.chunk_index === chunk.chunk_index)}
+                                        onclick={(e) => { e.stopPropagation(); toggleCompare(chunk); }}
+                                        title="Compare this chunk">
+                                        ⇄
+                                    </button>
                                 </div>
                             {/each}
                         </div>
@@ -2418,6 +2425,8 @@
     .chunk-idx { font-size: 0.7rem; color: #52525b; flex-shrink: 0; width: 24px; padding-top: 2px; }
     .chunk-text { flex: 1; font-size: 0.78rem; color: #a1a1aa; line-height: 1.45; }
     .chunk-score { font-size: 0.7rem; color: #52525b; flex-shrink: 0; }
+    .chunk-compare { border: 1px solid #3f3f46; border-radius: 4px; padding: 2px 5px; color: #a1a1aa; background: transparent; cursor: pointer; flex-shrink: 0; }
+    .chunk-compare.active { color: #93c5fd; border-color: #2563eb; background: #1e3a8a33; }
 
     :global(mark) { background: #854d0e55; color: #fbbf24; border-radius: 2px; padding: 0 1px; }
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
