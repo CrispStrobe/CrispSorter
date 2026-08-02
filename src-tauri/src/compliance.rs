@@ -349,6 +349,106 @@ mod tests {
         );
     }
 
+    /// The private-backend surfaces stay out of shipped builds.
+    ///
+    /// PLAN P36.16. `aitoolkit` and `cloud-backup` are HTTP clients for
+    /// backends that live in private repos, so for every user who is not on
+    /// the dev team they are tabs that connect to nothing — Guideline 2.1,
+    /// the same failure as the dead OCR tab.
+    ///
+    /// `aitoolkit` carries more than dead weight, which is why it is pinned
+    /// rather than left to judgement: it is the app's only
+    /// image-generation surface and its only *unwatermarked* audio surface
+    /// (`/api/tts/synthesize`, classified as such in
+    /// `the_aitoolkit_client_exposes_no_unclassified_endpoint` above).
+    /// Shipping it re-opens the third-party-AI consent and age-rating
+    /// questions (P36.13, P36.14) for a feature nobody outside this team
+    /// can reach.
+    ///
+    /// If you are here because this test failed: enabling one of these for
+    /// a release means answering Apple's AI questionnaire differently. That
+    /// is a decision, not a build fix.
+    #[test]
+    fn no_build_recipe_enables_a_private_backend_surface() {
+        let repo = repo_root();
+        let mut offenders = Vec::new();
+        let gated = ["aitoolkit", "cloud-backup"];
+
+        let mut workflows: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(repo.join(".github/workflows")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str());
+                if matches!(ext, Some("yml") | Some("yaml")) {
+                    workflows.push(path);
+                }
+            }
+        }
+        assert!(
+            !workflows.is_empty(),
+            "no workflows found — this guard would pass by scanning nothing"
+        );
+
+        for path in &workflows {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            for (n, line) in text.lines().enumerate() {
+                let enables = line.contains("--features") || line.contains("tauri_args");
+                if !enables {
+                    continue;
+                }
+                // `cargo test` may enable these, and should. The requirement
+                // is "not shipped", not "never compiled" — unlike
+                // `dev-tools`, this is code we want kept working, and a
+                // 2,820-line client that CI never type-checks rots. What
+                // must stay clean is anything that produces an artifact:
+                // `tauri_args` (bundling) and `cargo build`.
+                if line.contains("cargo test") {
+                    continue;
+                }
+                for feature in gated {
+                    // Match the feature as a list element, not as a
+                    // substring: `cloud-backup` must not be found inside a
+                    // hypothetical `cloud-backup-tests`, and `aitoolkit`
+                    // must not match a longer name either.
+                    let named = line
+                        .split(|c: char| c == ',' || c == ' ' || c == '\'' || c == '"')
+                        .any(|token| token == feature);
+                    if named {
+                        offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+
+        let manifest = std::fs::read_to_string(repo.join("src-tauri/Cargo.toml"))
+            .expect("read src-tauri/Cargo.toml");
+        for line in manifest.lines() {
+            let l = line.trim();
+            if l.starts_with('#') {
+                continue;
+            }
+            for feature in gated {
+                // The declaration itself (`aitoolkit = []`) is fine; another
+                // feature listing it in its array is what turns it on.
+                if l.starts_with(&format!("{feature} =")) {
+                    continue;
+                }
+                if l.contains(&format!("\"{feature}\"")) {
+                    offenders.push(format!("Cargo.toml: {l}"));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a build recipe enables a private-backend surface. Both reach \
+             backends no user outside this team can run — see PLAN.md \
+             P36.16:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
     /// The Mac App Store SKU differs from the `.dmg` by one feature.
     ///
     /// Pinned because the split is easy to undo by accident: someone adds a

@@ -29,7 +29,7 @@
 //! and stored client-side in the OS keychain through
 //! [`super::secret`].
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -591,6 +591,32 @@ pub struct CloudBackupClient {
     client:   Client,
 }
 
+/// The one place cloud-backup can be switched off — PLAN P36.16.
+///
+/// Every route that talks to cb-api (21 `sync_cb_*` Tauri commands, the
+/// `cloud-backup` CLI subcommand tree, the offline replay queue) reaches
+/// the network by constructing a [`CloudBackupClient`]. Refusing here
+/// therefore covers all of them, and it keeps working when someone adds a
+/// twenty-second route without reading this comment — which a per-route
+/// check would not.
+///
+/// Gating the *module* was the obvious alternative and is wrong: its types
+/// are used by `bg_ingest` (`ManifestRow::from_raw_document`) and the local
+/// index path, so `#[cfg]`-ing it out cascades far past the network
+/// surface. The feature is about not shipping a client for a private
+/// server, not about deleting the wire format.
+#[inline]
+fn ensure_cloud_backup_enabled() -> Result<()> {
+    if cfg!(feature = "cloud-backup") {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "cloud-backup sync is not available in this build: the server it \
+         talks to is not public, so the feature ships off. Rebuild with \
+         `--features cloud-backup` if you run a cb-api instance."
+    ))
+}
+
 impl CloudBackupClient {
     /// Build a client with sensible defaults: 30 s timeout, default
     /// reqwest connection-pool settings.  `base_url` is trimmed
@@ -607,6 +633,7 @@ impl CloudBackupClient {
         api_key: impl Into<String>,
         proxy: &ProxyConfig,
     ) -> Result<Self> {
+        ensure_cloud_backup_enabled()?;
         let client = super::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
         let url = base_url.into().trim_end_matches('/').to_string();
         Ok(Self { base_url: url, api_key: api_key.into(), client })
@@ -1291,7 +1318,12 @@ impl CloudBackupClient {
     }
 }
 
-#[cfg(test)]
+// PLAN P36.16 — these are cloud-backup tests, so they need the feature
+// that lets a client exist. CI enables it on the `cargo test` line (the
+// code is meant to keep working, it is just not shipped); a default
+// `cargo test` compiles them out rather than failing on a constructor
+// that correctly refused.
+#[cfg(all(test, feature = "cloud-backup"))]
 mod tests {
     //! Mock-server unit tests for every cloud-backup wire command.
     //!
@@ -2263,7 +2295,12 @@ mod tests {
 //     CB_SYNC_TEST_API_KEY=cbk_... \
 //         cargo test -p crispsorter --lib --no-default-features --ignored cb_sync_live
 //
-#[cfg(test)]
+// PLAN P36.16 — these are cloud-backup tests, so they need the feature
+// that lets a client exist. CI enables it on the `cargo test` line (the
+// code is meant to keep working, it is just not shipped); a default
+// `cargo test` compiles them out rather than failing on a constructor
+// that correctly refused.
+#[cfg(all(test, feature = "cloud-backup"))]
 mod live_tests {
     use super::*;
 

@@ -28,6 +28,10 @@ export interface Capabilities {
 	desktop: boolean;
 	sidecars: boolean;
 	dev_tools: boolean;
+	/** PLAN P36.16 — the AIToolkit panels. Off in shipped builds. */
+	aitoolkit: boolean;
+	/** PLAN P36.16 — cloud-backup (cb-api) sync. Off in shipped builds. */
+	cloud_backup: boolean;
 
 	local_llm: boolean;
 	launch_local_servers: boolean;
@@ -73,6 +77,8 @@ const UNKNOWN: Capabilities = {
 	desktop: false,
 	sidecars: false,
 	dev_tools: false,
+	aitoolkit: false,
+	cloud_backup: false,
 	local_llm: false,
 	launch_local_servers: false,
 	ocr: false,

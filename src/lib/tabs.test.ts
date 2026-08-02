@@ -21,20 +21,44 @@ vi.mock('lucide-svelte', () => ({
 import { AITOOLKIT_TABS, CORE_TABS, MOBILE_TABS, visibleTabs } from './tabs';
 
 describe('tab registry', () => {
-	it('core tabs are always visible (no requires)', () => {
+	it('core tabs without `requires` are visible on every build', () => {
 		const ids = visibleTabs(CORE_TABS, new Set()).map((t) => t.id);
-		expect(ids).toContain('batch');
-		expect(ids).toContain('aitoolkit');
+		// The document workflow is the product; it is never gated.
+		expect(ids).toEqual(expect.arrayContaining(['batch', 'drives', 'chat', 'catalog', 'pdf']));
+		// Exactly the tabs carrying `requires` are the ones that drop out.
+		const gated = CORE_TABS.filter((t) => t.requires?.length).map((t) => t.id);
+		expect(gated.sort()).toEqual(['aitoolkit', 'ocr']);
+		for (const id of gated) expect(ids).not.toContain(id);
 	});
 
 	it('AIToolkit tabs are gated by service:* capabilities', () => {
 		expect(visibleTabs(AITOOLKIT_TABS, new Set()).length).toBe(0);
-		const ids = visibleTabs(AITOOLKIT_TABS, new Set(['service:chat', 'service:extract'])).map(
-			(t) => t.id,
-		);
+		const ids = visibleTabs(
+			AITOOLKIT_TABS,
+			new Set(['build:aitoolkit', 'service:chat', 'service:extract']),
+		).map((t) => t.id);
 		expect(ids).toContain('ai:chat');
 		expect(ids).toContain('ai:extract');
 		expect(ids).not.toContain('ai:vision');
+	});
+
+	// PLAN P36.16. The AIToolkit backend lives in a private repo, so a
+	// shipped build must not offer the tabs at all — not the parent, and not
+	// the eight capability children even if a stale `service:*` set survives.
+	it('every AIToolkit tab needs the build to carry AIToolkit', () => {
+		expect(visibleTabs(CORE_TABS, new Set()).map((t) => t.id)).not.toContain('aitoolkit');
+		expect(visibleTabs(CORE_TABS, new Set(['build:aitoolkit'])).map((t) => t.id)).toContain(
+			'aitoolkit',
+		);
+
+		// The children are the subtle case: gating only the parent would
+		// leave these rendering, because `visibleTabs` filters each tab
+		// independently rather than walking a hierarchy.
+		const everyService = new Set(AITOOLKIT_TABS.map((t) => `service:${t.id.slice(3)}`));
+		expect(visibleTabs(AITOOLKIT_TABS, everyService)).toHaveLength(0);
+		expect(
+			visibleTabs(AITOOLKIT_TABS, new Set([...everyService, 'build:aitoolkit'])),
+		).toHaveLength(AITOOLKIT_TABS.length);
 	});
 
 	it('MOBILE_TABS is the core mobile subset', () => {

@@ -56,7 +56,10 @@ export const CORE_TABS: TabDef[] = [
 	{ id: 'translate', icon: Languages, mobile: true },
 	{ id: 'ocr', icon: ScanText, mobile: true, requires: ['build:ocr'] },
 	{ id: 'pdf', icon: FileText },
-	{ id: 'aitoolkit', icon: Sparkles, label: 'AIToolkit', separatorBefore: true },
+	// PLAN P36.16 — the AIToolkit backend lives in a private repo, so for
+	// anyone outside the dev team this tab connects to nothing. Off in every
+	// shipped build; enable the `aitoolkit` cargo feature to get it back.
+	{ id: 'aitoolkit', icon: Sparkles, label: 'AIToolkit', separatorBefore: true, requires: ['build:aitoolkit'] },
 ];
 
 /**
@@ -72,18 +75,25 @@ export const MOBILE_TABS: TabDef[] = CORE_TABS.filter((t) => t.mobile);
 
 /**
  * AIToolkit sidecar capabilities as first-class tabs. Ids are namespaced `ai:<cap>`
- * and gated by the `service:<cap>` capability the backend advertises, so they only
- * appear when connected + the feature is enabled.
+ * and gated by two things: `build:aitoolkit` (was the surface compiled into this
+ * build at all — PLAN P36.16) and the `service:<cap>` capability the backend
+ * advertises, so they only appear when the build carries AIToolkit *and* a
+ * backend is connected *and* it offers that capability.
+ *
+ * Both keys are required on every entry rather than the parent tab being
+ * trusted to gate its children: `visibleTabs` filters each tab independently,
+ * so a child with only its `service:` key would still render if a stale
+ * capability set survived the build gate.
  */
 export const AITOOLKIT_TABS: TabDef[] = [
-	{ id: 'ai:chat', icon: MessageSquare, label: 'AI Chat', requires: ['service:chat'], separatorBefore: true },
-	{ id: 'ai:translate', icon: Languages, label: 'AI Translate', requires: ['service:translate'] },
-	{ id: 'ai:vision', icon: Eye, label: 'AI Vision', requires: ['service:vision'] },
-	{ id: 'ai:ocr', icon: ScanText, label: 'AI OCR', requires: ['service:ocr'] },
-	{ id: 'ai:transcription', icon: Mic, label: 'AI Transcribe', requires: ['service:transcription'] },
-	{ id: 'ai:tts', icon: Volume2, label: 'AI Speak', requires: ['service:tts'] },
-	{ id: 'ai:images', icon: Image, label: 'AI Images', requires: ['service:images'] },
-	{ id: 'ai:extract', icon: FileText, label: 'AI Extract', requires: ['service:extract'] },
+	{ id: 'ai:chat', icon: MessageSquare, label: 'AI Chat', requires: ['build:aitoolkit', 'service:chat'], separatorBefore: true },
+	{ id: 'ai:translate', icon: Languages, label: 'AI Translate', requires: ['build:aitoolkit', 'service:translate'] },
+	{ id: 'ai:vision', icon: Eye, label: 'AI Vision', requires: ['build:aitoolkit', 'service:vision'] },
+	{ id: 'ai:ocr', icon: ScanText, label: 'AI OCR', requires: ['build:aitoolkit', 'service:ocr'] },
+	{ id: 'ai:transcription', icon: Mic, label: 'AI Transcribe', requires: ['build:aitoolkit', 'service:transcription'] },
+	{ id: 'ai:tts', icon: Volume2, label: 'AI Speak', requires: ['build:aitoolkit', 'service:tts'] },
+	{ id: 'ai:images', icon: Image, label: 'AI Images', requires: ['build:aitoolkit', 'service:images'] },
+	{ id: 'ai:extract', icon: FileText, label: 'AI Extract', requires: ['build:aitoolkit', 'service:extract'] },
 ];
 
 /** Tabs whose required capabilities are all present. */

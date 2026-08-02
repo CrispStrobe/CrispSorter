@@ -60,6 +60,15 @@ pub struct Capabilities {
     /// Developer-only routes are compiled in. Never true in a release
     /// artifact — see `compliance.rs`.
     pub dev_tools: bool,
+    /// The AIToolkit panels are compiled in (PLAN P36.16). Off in shipped
+    /// builds: the backend is private, so for anyone outside the dev team
+    /// the tabs connect to nothing.
+    pub aitoolkit: bool,
+    /// cloud-backup (cb-api) sync is reachable (PLAN P36.16). Off in
+    /// shipped builds for the same reason. The client code is still
+    /// compiled — only the network seam refuses — so this reports whether
+    /// the routes will *work*, which is what the UI needs to know.
+    pub cloud_backup: bool,
 
     // ── Inference ──────────────────────────────────────────────────────
     /// In-process LLM inference (mistral.rs). Independent of `sidecars`:
@@ -181,6 +190,8 @@ pub fn capabilities() -> Capabilities {
         desktop: cfg!(feature = "desktop"),
         sidecars,
         dev_tools: cfg!(feature = "dev-tools"),
+        aitoolkit: cfg!(feature = "aitoolkit"),
+        cloud_backup: cfg!(feature = "cloud-backup"),
 
         local_llm,
         launch_local_servers: sidecars,
@@ -235,6 +246,8 @@ impl Capabilities {
         add("desktop", self.desktop);
         add("sidecars", self.sidecars);
         add("dev-tools", self.dev_tools);
+        add("aitoolkit", self.aitoolkit);
+        add("cloud-backup", self.cloud_backup);
         add("local-llm", self.local_llm);
         add("launch-local-servers", self.launch_local_servers);
         add("ocr", self.ocr);

@@ -7,6 +7,7 @@
     import { writeFile } from '@tauri-apps/plugin-fs';
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
+    import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
     import {
@@ -191,7 +192,20 @@
         url?: string | null;
         tags?: string[] | null;
     }
+    // PLAN P36.16 — cloud-backup is only a real backend when the build
+    // carries it. Derived rather than a constant so the toggle disappears
+    // instead of offering a backend whose every query would fail at the
+    // network seam.
+    let fedBackendsAvailable = $derived(
+        ['local', 'cloud_backup', 'crisplens'].filter(
+            (b) => b !== 'cloud_backup' || $caps.cloud_backup,
+        ),
+    );
     let fedBackends     = $state<string[]>(['local', 'cloud_backup', 'crisplens']);
+    // Whatever the user selected, never *send* a backend this build cannot
+    // reach: `fedBackends` is seeded before the capability probe resolves,
+    // and it is persisted across builds.
+    let fedBackendsActive = $derived(fedBackends.filter((b) => fedBackendsAvailable.includes(b)));
     let fedResults      = $state<FederatedHit[]>([]);
     let fedLoading      = $state(false);
     let fedSearched     = $state(false);
@@ -251,7 +265,7 @@
                 {
                     q,
                     limit,
-                    backends: fedBackends.join(','),
+                    backends: fedBackendsActive.join(','),
                     ext: filterExt ? filterExt.split(',').map(s => s.trim()).filter(Boolean) : null,
                     lang: filterLang || null,
                     yearMin: filterYearMin,
@@ -1357,7 +1371,7 @@
         </button>
         <!-- Stage S — federated search across all backends. -->
         <button class="filter-toggle fed-btn" onclick={runFederatedSearch}
-                disabled={fedLoading || !query.trim() || fedBackends.length === 0}
+                disabled={fedLoading || !query.trim() || fedBackendsActive.length === 0}
                 title="Search all backends (local + cloud-backup + CrispLens) with RRF merge">
             {#if fedLoading}<Loader2 size={15} class="spin" />{:else}🔀{/if}
             Alle
@@ -2248,7 +2262,7 @@
                 <strong>🔀 Federated results</strong>
                 {#if fedLoading}<Loader2 size={14} class="spin" />{/if}
                 <span class="remote-meta">
-                    {#if fedTags.size > 0}{displayedFedResults.length} / {/if}{fedResults.length} hit(s) across {fedBackends.join(', ')}
+                    {#if fedTags.size > 0}{displayedFedResults.length} / {/if}{fedResults.length} hit(s) across {fedBackendsActive.join(', ')}
                 </span>
                 {#if fedTagFacets.length > 0}
                     <button
@@ -2262,7 +2276,7 @@
                 {/if}
                 <!-- backend filter checkboxes -->
                 <span class="fed-toggles">
-                    {#each ['local', 'cloud_backup', 'crisplens'] as b}
+                    {#each fedBackendsAvailable as b}
                         <label class="fed-toggle">
                             <input type="checkbox"
                                    checked={fedBackends.includes(b)}

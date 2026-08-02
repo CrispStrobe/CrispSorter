@@ -4210,6 +4210,15 @@
                  catalog DB vps_worker.py manages.  URL +
                  toggles live in IndexConfig (JSON-safe); API key
                  goes to the OS keychain via sync_cb_set_token. -->
+            <!-- PLAN P36.16 — the whole cloud-backup surface. cb-api lives in
+                 a private repo on one host, so for anyone outside the dev team
+                 this panel configures a sync target that cannot be reached.
+                 The routes refuse at the network seam regardless
+                 (`CloudBackupClient::new`), but a settings panel whose every
+                 button errors is worse than no panel: it reads as broken
+                 rather than absent. Enable the `cloud-backup` cargo feature
+                 to get it back. -->
+            {#if $caps.cloud_backup}
             <div class="section-card">
                 <label><Server size={16} /> {i18n.t.settings.index.cloud_backup_section ?? 'Cloud-backup sync'}</label>
                 <p class="hint">{i18n.t.settings.index.cloud_backup_section_hint ?? ''}</p>
@@ -4644,6 +4653,7 @@
                     {/if}
                 </details>
             </div>
+            {/if}
 
             <!-- Compute device — options depend on the selected engine.
                  ONNX (FastEmbed) supports Auto/CPU/Metal/CUDA via ORT

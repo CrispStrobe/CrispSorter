@@ -14,7 +14,7 @@
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
     import { CORE_TABS, AITOOLKIT_TABS, MOBILE_TABS, visibleTabs } from '$lib/tabs';
     import { aitoolkitCaps } from '$lib/aitoolkit';
-    import { buildFlags, loadCapabilities } from '$lib/capabilities';
+    import { caps, buildFlags, loadCapabilities } from '$lib/capabilities';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
@@ -509,9 +509,16 @@
                 <OcrWorkbench />
             {:else if activeTab === 'pdf'}
                 <PdfWorkspace />
-            {:else if activeTab === 'aitoolkit'}
+            <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that
+                 asked for them. The nav already hides these tabs, so this
+                 second check is for the state the nav cannot reach: an
+                 `activeTab` that was set before the probe resolved, or by a
+                 future deep link. Gating the *mount* rather than trusting the
+                 nav means the client never connects to a backend this build
+                 was not supposed to talk to. -->
+            {:else if activeTab === 'aitoolkit' && $caps.aitoolkit}
                 <AIToolkitView />
-            {:else if activeTab.startsWith('ai:')}
+            {:else if activeTab.startsWith('ai:') && $caps.aitoolkit}
                 <AIToolkitCapability capability={activeTab.slice(3)} />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>

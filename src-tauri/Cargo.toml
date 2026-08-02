@@ -287,6 +287,39 @@ sidecars = ["desktop", "dep:tauri-plugin-shell", "dep:tauri-plugin-process"]
 # Forces the native drive clients on, because the Python-CLI drives are
 # exactly what a sandboxed build cannot run.
 desktop-mas = ["desktop", "drive-filen-native", "drive-internxt-native"]
+# P36.16 — the AIToolkit panels.
+#
+# An HTTP client for a backend that lives in a **private** repo and runs on
+# one VPS, so for every user who is not on the dev team the whole surface is a
+# tab that connects to nothing. Guideline 2.1 again, and worse than the dead
+# OCR tab because this one also carries obligations: AIToolkit is the app's
+# only image-generation surface and its only *unwatermarked* audio surface
+# (`/api/tts/synthesize`), which is what drives the third-party-AI consent
+# (P36.13) and 17+ age-rating (P36.14) questions.
+#
+# The code is entirely frontend — `aitoolkit.ts` plus three components — so
+# this feature carries no Rust at all. It exists to be reported by
+# `capabilities()`, which is what actually hides the tabs. Enable it and the
+# panels come back exactly as they were.
+aitoolkit = []
+# P36.16 — the cloud-backup (cb-api) sync surface.
+#
+# Same reasoning as `aitoolkit`: the server is a private repo on one VPS, so
+# for anyone else the Settings panel offers a sync target that cannot be
+# reached. Unlike AIToolkit this one has real Rust behind it — a 2,820-line
+# client, 21 `sync_cb_*` commands and a `cloud-backup` CLI subcommand tree.
+#
+# Gated at the seam rather than by `#[cfg]`-ing the module out: the module's
+# types are used by `bg_ingest` (`ManifestRow::from_raw_document`) and the
+# local index path, so removing it would cascade well past the routes. Every
+# route instead reaches the network through `CloudBackupClient::new` /
+# `new_with_proxy`, and those refuse without this feature — one choke point
+# covering the GUI commands, the CLI and the offline replay queue alike.
+#
+# **Deliberately still compiled and tested in CI.** This is code we want to
+# keep working, not code that must never exist — which is why the guard in
+# `compliance.rs` forbids it in *bundle* recipes but allows `cargo test`.
+cloud-backup = []
 # P36.4 — developer-only routes that no shipped artifact may carry.
 #
 # Today: `index_promote_cb_archive`, which shells out to a `retrieve.py`

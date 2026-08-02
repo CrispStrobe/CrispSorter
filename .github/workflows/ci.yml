@@ -298,7 +298,7 @@ jobs:
         # features. Those sub-features only select the ggml backend inside the
         # sibling crates, so the CrispSorter code compiled is identical and CI
         # needs no Vulkan SDK; backend-specific breakage stays release-only.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter

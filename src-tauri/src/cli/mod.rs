@@ -10506,6 +10506,9 @@ mod tests {
         }
     }
 
+    // PLAN P36.16 — drives a real `CloudBackupClient` against a mock
+    // server, so it needs the feature that lets one be constructed.
+    #[cfg(feature = "cloud-backup")]
     #[tokio::test]
     async fn delta_cli_uploads_only_changed_block() {
         use crate::sync::cloud_backup::CloudBackupClient;

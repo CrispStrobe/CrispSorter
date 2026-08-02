@@ -3830,14 +3830,57 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
 - [ ] **P36.15 — privacy nutrition label.** Open since P31; browser-only, Apple
   blocks it via API. "Data Not Collected", policy URL already live.
 
-- [ ] **P36.16 — the admin/experimental surfaces leave shipped builds.**
-  Decided 2026-08-02. Both AIToolkit and cloud-backup exist to talk to
-  **private** backends that no user outside the dev team can reach, so
-  shipping either to the store is shipping a dead end — Guideline 2.1 again,
-  and in AIToolkit's case a substantial compliance surface for a feature
-  nobody can use.
+- [x] **P36.16 — the admin/experimental surfaces leave shipped builds.**
+  Decided and implemented 2026-08-02. Both AIToolkit and cloud-backup exist
+  to talk to **private** backends that no user outside the dev team can
+  reach, so shipping either to the store is shipping a dead end — Guideline
+  2.1 again, and in AIToolkit's case a substantial compliance surface for a
+  feature nobody can use.
 
-  Mechanism: two cargo features, off by default, named in no release recipe,
+  **Two different cuts, because the two surfaces are shaped differently:**
+
+  * `aitoolkit` gates *rendering*. The tab and all eight `ai:*` children now
+    carry `requires: ['build:aitoolkit', …]`, and the mount points in
+    `+page.svelte` check `$caps.aitoolkit` as well — the second check is for
+    the state the nav cannot reach (an `activeTab` set before the probe
+    resolves), and it is what stops the client connecting to a backend this
+    build was not meant to talk to. Note the children need the key
+    *individually*: `visibleTabs` filters each tab independently rather than
+    walking a hierarchy, so gating only the parent would have left all eight
+    rendering.
+  * `cloud-backup` gates *the network seam*, not the module.
+    `CloudBackupClient::new` / `new_with_proxy` refuse without the feature,
+    which covers all 21 `sync_cb_*` commands, the CLI subcommand tree and
+    the offline replay queue from one place — and keeps working when someone
+    adds a twenty-second route. `#[cfg]`-ing the module out was the obvious
+    alternative and is wrong: `bg_ingest` uses
+    `ManifestRow::from_raw_document` and the local index path depends on the
+    wire types, so removal cascades well past the network surface. The UI is
+    gated separately (the 434-line Settings section-card, and the
+    `cloud_backup` federated-search backend, which is now derived from the
+    capability rather than a hardcoded list).
+
+  **These stay compiled and tested, unlike `dev-tools`.** That distinction
+  is deliberate and the compliance guard encodes it: `dev-tools` executes a
+  caller-chosen script and should never be built, while these are code we
+  want kept working and merely not shipped. So
+  `no_build_recipe_enables_a_private_backend_surface` skips `cargo test`
+  lines and fails only on bundle recipes (`tauri_args`, `cargo build`), and
+  `ci.yml`'s test line names both features. The tests that drive a real
+  client are `#[cfg(feature = "cloud-backup")]` — 41 of them failed the
+  first time round, which is how the seam's reach got measured.
+
+  Verified: gated **off** 1369 tests pass; gated **on** 1416 pass;
+  svelte-check 0 errors; vitest 41 pass.
+
+  **Caveat worth recording:** a cargo feature cannot remove TypeScript from
+  the vite bundle. The AIToolkit components are unreachable in a shipped
+  build but still present in the JS. Removing them for real needs a
+  vite-level flag with dead-code elimination — worth doing if bundle size or
+  a source-level audit ever demands it, not needed for either store's
+  review.
+
+  Mechanism: two cargo features, off by default, named in no bundle recipe,
   guarded by a `compliance.rs` test — the same shape as
   `images-crisplens-identify` and `dev-tools`. **Not** plugin crates: real
   extraction was considered and rejected for cloud-backup because the sync
