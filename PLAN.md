@@ -3432,8 +3432,10 @@ a transfer without leaving the search/catalog workflow.
     available through the catalog/dual-panel surfaces. ✅ 2026-08-01
   - [x] Saved searches persist query/mode/limit and now open directly as
     virtual search-result folders in the contextual browser. ✅ 2026-08-02
-  - [ ] Generic text/code editing, richer provider full-text search, and
-    configurable file associations remain open.
+  - [x] Local text/code previews now provide bounded edit/save/cancel controls;
+    truncated previews and non-local URIs remain read-only. ✅ 2026-08-02
+  - [ ] Richer provider full-text search and configurable file associations
+    remain open.
 - [ ] Add FUSE write support only after the mutation API and queue are stable;
   retain read-only FUSE for indexing during the transition.
 - [ ] Add local REST API, plugin hooks, cron/webhook automation, and system
