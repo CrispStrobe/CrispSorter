@@ -549,6 +549,16 @@ pub async fn drive_list_dir(
         .map_err(|e| e.to_string())
 }
 
+fn drive_search_path_matches(path: &Path, query: &str) -> bool {
+    if query.is_empty() {
+        return false;
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_lowercase().contains(query))
+        .unwrap_or(false)
+}
+
 /// Search provider-visible paths by filename. This deliberately does not
 /// claim remote full-text support: providers expose listing, not content
 /// indexing. Results are bounded to keep a slow/large drive responsive.
@@ -586,13 +596,7 @@ pub async fn drive_search(
     let limit = max_results.unwrap_or(100).clamp(1, 1000);
     Ok(entries
         .into_iter()
-        .filter(|entry| {
-            entry.path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_lowercase().contains(&query))
-                .unwrap_or(false)
-        })
+        .filter(|entry| drive_search_path_matches(&entry.path, &query))
         .take(limit)
         .collect())
 }
@@ -1415,6 +1419,32 @@ mod credential_status_tests {
             "has_session",
         ] {
             assert!(json.contains(field), "missing presence field {field}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod drive_search_tests {
+    use super::drive_search_path_matches;
+    use std::path::Path;
+
+    #[test]
+    fn matches_only_the_filename_case_insensitively() {
+        assert!(drive_search_path_matches(Path::new("/docs/Report.PDF"), "report"));
+        assert!(!drive_search_path_matches(Path::new("/docs/report.pdf"), "docs"));
+        assert!(!drive_search_path_matches(Path::new("/docs/报告.pdf"), "report"));
+    }
+
+    #[test]
+    fn empty_or_non_utf8_names_do_not_match() {
+        assert!(!drive_search_path_matches(Path::new("/docs/readme.md"), ""));
+        #[cfg(unix)]
+        {
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt;
+            let raw = OsString::from_vec(vec![b'/', 0xff, b'.', b't', b'x', b't']);
+            let path = Path::new(&raw);
+            assert!(!drive_search_path_matches(path, "txt"));
         }
     }
 }
