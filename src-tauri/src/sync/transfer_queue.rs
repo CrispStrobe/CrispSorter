@@ -696,6 +696,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owned_drive_adapters_route_read_and_write_through_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let drive: Arc<dyn crate::drives::CloudDrive> =
+            Arc::new(crate::drives::LocalDrive::new("test-local", root.path()));
+        let queue = TransferQueue::with_concurrency(1);
+
+        let upload = queue.submit_drive_upload(
+            "local-test".into(),
+            drive.clone(),
+            PathBuf::from("nested/file.txt"),
+            b"queued provider bytes".to_vec(),
+        );
+        upload.handle.await.unwrap().unwrap();
+
+        let download = queue.submit_drive_download(
+            "local-test".into(),
+            drive,
+            PathBuf::from("nested/file.txt"),
+            Some(21),
+        );
+        let bytes = download.handle.await.unwrap().unwrap();
+        assert_eq!(bytes, b"queued provider bytes");
+        assert_eq!(queue.snapshot().len(), 2);
+        assert!(queue
+            .snapshot()
+            .iter()
+            .all(|job| job.state == TransferState::Done));
+    }
+
+    #[tokio::test]
     async fn upload_reports_done_state() {
         let queue = TransferQueue::new();
         let h = queue.submit_upload(

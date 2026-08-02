@@ -1367,7 +1367,7 @@ independently with no shared concurrency limit or retry policy.
   `TransferState` (Queued/Active/Retrying/Done/Failed/Cancelled).
   Backoff: `min(2^attempt * 500ms, 30s)` with jitter; transient network,
   timeout, and 5xx-style failures are retried while the semaphore permit is
-  released.  `active_count()` for monitoring.  10 unit tests (concurrency
+  released.  `active_count()` for monitoring.  11 unit tests (concurrency
   limit, 4th-job-waits, progress reporting, failure state, transient retry
   recovery, cancellation during retry backoff, serde round-trip).
 - [>] **Wire all 5 CloudDrive impls through the queue.**  Replace
@@ -3217,7 +3217,7 @@ a transfer without leaving the search/catalog workflow.
     Nextcloud/ownCloud use the separate CrispCloud delta app when available,
     while Internxt, Filen, and generic WebDAV retain whole-file fallback.
     ✅ 2026-08-01
-  - [>] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
+  - [x] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
     PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud
     delta protocol is now implemented: detect
