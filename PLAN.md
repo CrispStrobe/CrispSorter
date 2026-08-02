@@ -1482,6 +1482,8 @@ If the network drops mid-sync, operations are lost.
   - [x] Startup maintenance now applies independent 60s-to-600s exponential
     backoff to staged provider replay failures while manifest draining remains
     on its regular 30s ticker. ✅ 2026-08-01
+  - [x] Provider replay now uses the centralized owned-drive transfer adapter,
+    keeping manual replay and startup replay on the same queue boundary. ✅ 2026-08-02
 - [x] **Frontend: offline indicator.**  Transfer status header shows
   the queued count even when collapsed; expanding opens the per-operation
   list and provides an explicit "Retry now" action.

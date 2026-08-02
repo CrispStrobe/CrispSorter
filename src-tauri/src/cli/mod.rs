@@ -6874,12 +6874,8 @@ async fn cmd_sync_cloud_backup(
                     Ok(data) => {
                         let retry_data = data.clone();
                         let retry_path = drive_path.clone();
-                        let drive_for_transfer = Arc::clone(&drive);
-                        let transfer = transfer_queue.submit_upload(
-                            drive_id.clone(),
-                            drive_path.clone(),
-                            data,
-                            move |path, bytes| drive_for_transfer.write_file(path, bytes),
+                        let transfer = transfer_queue.submit_drive_upload(
+                            drive_id.clone(), Arc::clone(&drive), drive_path.clone(), data,
                         );
                         match transfer.handle.await {
                             Ok(Ok(_)) => {
@@ -7002,11 +6998,8 @@ async fn cmd_sync_cloud_backup(
             };
 
             let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
-            let transfer = TransferQueue::shared().submit_download(
-                drive_id.clone(),
-                tar_path.clone(),
-                None,
-                move |path| drive.read_file(path),
+            let transfer = TransferQueue::shared().submit_drive_download(
+                drive_id.clone(), Arc::clone(&drive), tar_path.clone(), None,
             );
             let data = match transfer.handle.await {
                 Ok(Ok(data)) => data,
