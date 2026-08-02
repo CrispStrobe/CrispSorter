@@ -193,7 +193,8 @@ ones already known, because the risk is a surface nobody audited:
 | Machine translation — `Translate` panel | synthetic text (+ a written `.docx`) | ✅ badge on the output banner; ✅ stamped in the file |
 | Machine translation — `IndexSearch` doc-tools strip | synthetic text | ✅ badge (added 2026-08-02; §6) |
 | Settings: connection test + provider benchmark | synthetic text (free-form prompt in the benchmark) | ✅ badge + gate (added 2026-08-02; §6) |
-| `crispsorter chat transcribe --translate-to` | synthetic text written to a file | ✅ `ai_generated` in the JSON envelope; txt/SRT/VTT warn that they carry no marking (§6) |
+| `crispsorter chat transcribe --translate-to` | synthetic text written to a file | ✅ JSON envelope + WebVTT `NOTE` in-band; `.ai.json` sidecar for txt/SRT (§7) |
+| BibTeX export (`buildBibFile`) | AI-inferred metadata written to a `.bib` | ✅ marked in the preamble (added 2026-08-02; §7) |
 | Batch metadata suggestions — `suggested_title` / `_author` / `_year`, and the `target_path` derived from them | machine-inferred text that renames and moves the user's files | ✅ section-level badge (added 2026-08-01; previously the largest unmarked surface) |
 | TTS speech | synthetic audio | ✅ watermarked in the signal by CrispASR, test-enforced |
 | ASR transcription | rendering of real audio, not generated content | n/a — Art 50(2) does not reach transcription |
@@ -312,8 +313,22 @@ classification suggestions, which look like ordinary application behaviour.
 
 ### 4. Art 4 — AI literacy
 
-An organisational duty on providers and deployers since February 2025. Nothing
-to implement in code; recorded here so it is not mistaken for a code gap.
+An organisational duty on providers and deployers since February 2025. There is
+nothing to *implement*, which is why this section read "nothing to do here" for
+a year — but "no code change discharges it" is not the same as "no provider
+measure exists". A deployer cannot train their staff on failure modes we have
+never written down.
+
+So [`ai-literacy.md`](ai-literacy.md) ships alongside this document
+(2026-08-02): per-capability failure modes in operational terms, how to read a
+confidence score, why the exclusion list is about Art 25(1)(c) liability rather
+than etiquette, and a five-point baseline for whoever is responsible for a team.
+Linked from the README and from the intended-purpose gate — the one screen every
+operator is guaranteed to see.
+
+Deliberately **not** folded into `STATEMENT`: that would bump
+`STATEMENT_VERSION` and re-prompt every existing install, which is a poor trade
+for adding a link. The gate renders it as a secondary action instead.
 
 ### 5. Remote generative surfaces — the AIToolkit panels
 
@@ -517,13 +532,51 @@ was 6.3 that let it sit there, since neither call matched a needle.
   extractive sentence-slicing and the command is called from no view. Corrected
   in en + de — overstating the badge is its own kind of inaccurate disclosure.
 
-**Still open after this pass.** Synthetic *text* has no in-band marking except
-`translate_docx`. Chat answers copied out of the app carry nothing, and
-`chat transcribe --translate-to` marks the JSON envelope
-(`translation.ai_generated`) but cannot mark txt/SRT/VTT — prepending a banner
-to a subtitle file is not a marking, it is a broken subtitle, so those formats
-warn on stderr instead. That is a floor, not a solution; a real one needs a text
-provenance convention this project does not get to invent alone.
+### 7. Synthetic text now travels marked — and the carriers are not equal
+
+The residual after § 6 was that `translate_docx` was the *only* artifact
+carrying a marking off the machine. Closed 2026-08-02 by giving each format the
+strongest carrier it allows, rather than picking one mechanism and forcing every
+format through it:
+
+| Artifact | Carrier | Survives |
+|---|---|---|
+| Machine-translated `.docx` | `cp:contentStatus` + `dc:description` in `docProps/core.xml` | copying, mailing; lost on export-to-other-format |
+| Transcript JSON envelope | `translation.ai_generated` + `digital_source_type` | anything that keeps the JSON |
+| **WebVTT** | `NOTE` block (W3C WebVTT § 4.2) — spec-defined, ignored by players | copying; lost on conversion to SRT |
+| **SRT, plain text** | `<file>.ai.json` sidecar | only as long as the sidecar travels with the file |
+| stdout | nothing — stated on stderr | n/a |
+| **BibTeX export** | `%` preamble lines (`ai-generated: true`) | copying; survives every reader, since text outside an `@entry` is universally ignored |
+| Local TTS | AudioSeal watermark in the signal | re-encoding |
+| AIToolkit image / audio | XMP / ID3 metadata assertion, or AudioSeal + C2PA where the CrispASR path is used | metadata: copying only. Watermark: re-encoding |
+
+**The BibTeX export was a fifth finding**, discovered while wiring the rest:
+`buildBibFile` writes AI-inferred title/author/year to a `.bib` that leaves the
+machine, and § 2b had no row for it. The badge in `BatchReview` tells the person
+who ran the export and nobody who receives the file. Now marked, with a test
+asserting the marking lands in the preamble rather than inside an entry —
+a marking that corrupts the bibliography is one the first user deletes.
+
+**Why not one mechanism everywhere.** A banner line in a `.txt` is
+indistinguishable from the transcript; in an `.srt` it renders on screen as a
+subtitle. Damaging the artifact while claiming to label it is worse than leaving
+it unlabelled, because the damage is what gets noticed and removed. So those two
+get a sidecar and the CLI *names the file it wrote*, since a sidecar nobody
+knows about is one that gets left behind on the next copy.
+
+**Stated plainly because it matters to anyone relying on this:** a sidecar is
+separable, and a separated sidecar marks nothing. It is the weakest carrier
+here. It is also not nothing, and "no standard exists for marking plain text" is
+a reason to use the best available carrier, not a reason to ship unmarked.
+
+**Still open, and not closeable from here.** Chat answers the user copies out of
+the app. The copy affordance lives inside the `deep-chat` web component's shadow
+DOM; the app's own clipboard actions (paths, logs, extracted source text) carry
+no generated content. Marking that would mean either reaching into a third
+party's shadow DOM or shipping a parallel copy button — the first is fragile, the
+second competes with the one users will actually press. The panel badge remains
+the disclosure for that surface. Recorded as a known limit rather than fixed
+badly.
 
 ## Not covered by this audit
 

@@ -9,6 +9,12 @@ export const translations = {
             intro: 'Please read this once before CrispSorter produces AI output.',
             accept: 'I have read this',
             blocked: 'AI output is paused until the note above is acknowledged.',
+            // Art 4 (AI literacy) is an organisational duty, but pointing at the
+            // material from the one screen every operator sees is the cheapest
+            // thing a provider can do about it. Deliberately not folded into
+            // STATEMENT: that would bump STATEMENT_VERSION and re-prompt every
+            // existing install to add a link.
+            literacy: 'How this AI fails, and how to check it',
         },
         aiDisclosure: {
             badge: 'AI-generated',
@@ -1165,6 +1171,7 @@ export const translations = {
             intro: 'Bitte einmal lesen, bevor CrispSorter KI-Ausgaben erzeugt.',
             accept: 'Ich habe das gelesen',
             blocked: 'KI-Ausgaben sind pausiert, bis der Hinweis bestätigt wurde.',
+            literacy: 'Wie diese KI scheitert und wie man das prüft',
         },
         aiDisclosure: {
             badge: 'KI-generiert',

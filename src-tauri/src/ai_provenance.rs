@@ -5,9 +5,17 @@
 //! receives the file afterwards. So documents we generate carry the mark
 //! themselves.
 //!
-//! Currently: machine-translated `.docx`. Not needed for TTS audio (CrispASR
-//! watermarks the signal) and not applicable to ASR transcripts or OCR text,
-//! which are renderings of real input rather than generated content.
+//! Covers machine-translated `.docx` (an OOXML metadata part), WebVTT (a spec
+//! `NOTE` block) and — where the format has nowhere to put it — a `.ai.json`
+//! sidecar. Not needed for TTS audio (CrispASR watermarks the signal), and not
+//! applicable to *untranslated* ASR transcripts or OCR text, which are
+//! renderings of real input rather than generated content.
+//!
+//! The carriers are deliberately not equivalent, and the module does not
+//! pretend otherwise: a signal watermark survives re-encoding, an in-file part
+//! survives copying, a sidecar survives neither if someone moves the file
+//! alone. Each surface gets the strongest carrier its format allows, and the
+//! CLI tells the operator which one they got.
 //!
 //! # Why the OOXML dance
 //!
@@ -169,6 +177,88 @@ pub fn stamp_docx(path: &Path, status: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── Plain-text and subtitle outputs ────────────────────────────────────────
+//
+// `.docx` has a metadata part to write into. Transcripts do not, and the three
+// formats fail differently, so they get three answers rather than one
+// compromise:
+//
+// * **WebVTT** has `NOTE` in the spec (W3C WebVTT § 4.2) — a real comment block
+//   that players ignore. So the marking goes *in the file*, which is the layer
+//   Art 50(2) is about.
+// * **SRT** has no comment syntax. Inventing one produces a file that renders
+//   the marking as a subtitle or breaks the parser, which is worse than no
+//   marking: it damages the artifact while claiming to label it.
+// * **Plain text** is by definition structureless; a prepended banner is
+//   indistinguishable from content and corrupts anything that diffs or parses
+//   the transcript.
+//
+// For those two, the marking goes in a sidecar. State the limitation plainly:
+// **a sidecar is separable, and a separated sidecar marks nothing.** It is
+// weaker than the VTT note, which is weaker than the DOCX part, which is weaker
+// than a signal watermark. What it is not is nothing, and "no standard exists"
+// is a reason to pick the best available carrier, not to ship unmarked.
+
+/// The marking for machine-translated text, in whatever carrier holds it.
+pub const TEXT_MARK: &str = "AI-generated: machine translation (CrispSorter)";
+
+/// IPTC `digitalSourceType` vocabulary — the same term the AIToolkit backend
+/// uses for its XMP/ID3 assertions, so a consumer sees one vocabulary across
+/// everything this app and its backend produce.
+pub const DIGITAL_SOURCE_TYPE: &str = "trainedAlgorithmicMedia";
+
+/// The marking as structured data. `detail` carries whatever the caller knows
+/// about the generation (source/target language, backend), merged in at the top
+/// level so a consumer reads one flat object.
+pub fn marking_json(detail: serde_json::Value) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "ai_generated": true,
+        "digital_source_type": DIGITAL_SOURCE_TYPE,
+        "marking": TEXT_MARK,
+        "produced_by": "CrispSorter",
+    });
+    if let (Some(map), Some(extra)) = (out.as_object_mut(), detail.as_object()) {
+        for (k, v) in extra {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// A WebVTT `NOTE` block, for insertion directly after the `WEBVTT` header.
+///
+/// Blank lines terminate a NOTE block, so the JSON is emitted on one line and
+/// any the caller supplied are stripped — a marking that silently truncates
+/// into a cue is the failure this function exists to avoid.
+pub fn vtt_note(detail: serde_json::Value) -> String {
+    let json = marking_json(detail).to_string().replace(['\n', '\r'], " ");
+    format!("NOTE {TEXT_MARK}\nNOTE {json}\n\n")
+}
+
+/// Where the sidecar for `output` goes: `<output>.ai.json`.
+///
+/// Appended rather than substituted, so `transcript.srt` → `transcript.srt.ai.json`
+/// and the sidecar for a `.txt` and a `.srt` of the same name cannot collide.
+pub fn sidecar_path(output: &Path) -> std::path::PathBuf {
+    let mut name = output.as_os_str().to_owned();
+    name.push(".ai.json");
+    std::path::PathBuf::from(name)
+}
+
+/// Write the machine-readable marking beside an output that cannot carry one.
+///
+/// Returns the path written so the caller can name it to the operator: a
+/// sidecar nobody knows about is a sidecar that gets left behind on the next
+/// copy, which is the whole weakness of the mechanism.
+pub fn write_sidecar(output: &Path, detail: serde_json::Value) -> Result<std::path::PathBuf, String> {
+    let path = sidecar_path(output);
+    let body = serde_json::to_string_pretty(&marking_json(detail))
+        .map_err(|e| format!("serialising the AI marking: {e}"))?;
+    std::fs::write(&path, body + "\n")
+        .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +381,69 @@ mod tests {
         let p = d.path().join("not.docx");
         std::fs::write(&p, b"plain text").unwrap();
         assert!(stamp_docx(&p, DOCX_MARK).is_err());
+    }
+
+    // ── text / subtitle carriers ───────────────────────────────────────────
+
+    #[test]
+    fn the_marking_is_machine_readable_and_carries_the_caller_detail() {
+        let m = marking_json(serde_json::json!({ "from": "de", "to": "en" }));
+        assert_eq!(m["ai_generated"], true);
+        assert_eq!(m["digital_source_type"], DIGITAL_SOURCE_TYPE);
+        // Caller detail is merged flat, not nested under a key the consumer
+        // would have to know about.
+        assert_eq!(m["from"], "de");
+        assert_eq!(m["to"], "en");
+    }
+
+    #[test]
+    fn a_vtt_note_cannot_break_out_into_a_cue() {
+        // A blank line ends a NOTE block in WebVTT, so a newline smuggled in
+        // through `detail` would turn the rest of the marking into a subtitle
+        // — visible on screen, and no longer a marking.
+        let note = vtt_note(serde_json::json!({ "backend": "a\nb\r\nc" }));
+        let body = note.strip_suffix("\n\n").expect("trailing blank line ends the block");
+        for line in body.lines() {
+            assert!(line.starts_with("NOTE "), "escaped the NOTE block: {line:?}");
+        }
+        assert!(note.starts_with("NOTE "));
+        assert!(note.contains(TEXT_MARK));
+    }
+
+    #[test]
+    fn a_marked_vtt_still_starts_with_its_required_header() {
+        // WEBVTT must be the first line or the file is not a WebVTT file at
+        // all. Marking an artifact must never invalidate it.
+        let vtt = format!("WEBVTT\n\n{}", vtt_note(serde_json::json!({})));
+        assert!(vtt.starts_with("WEBVTT\n"));
+        assert!(vtt.contains("NOTE "));
+    }
+
+    #[test]
+    fn the_sidecar_name_appends_rather_than_replaces_the_extension() {
+        // `transcript.srt` and `transcript.txt` of the same run must not both
+        // resolve to `transcript.ai.json` and silently overwrite each other.
+        assert_eq!(
+            sidecar_path(Path::new("/tmp/transcript.srt")),
+            Path::new("/tmp/transcript.srt.ai.json")
+        );
+        assert_ne!(
+            sidecar_path(Path::new("/tmp/t.srt")),
+            sidecar_path(Path::new("/tmp/t.txt"))
+        );
+    }
+
+    #[test]
+    fn the_sidecar_round_trips_as_json() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("transcript.txt");
+        std::fs::write(&out, "hallo").unwrap();
+        let side = write_sidecar(&out, serde_json::json!({ "to": "en" })).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&side).unwrap()).unwrap();
+        assert_eq!(parsed["ai_generated"], true);
+        assert_eq!(parsed["to"], "en");
+        // The transcript itself is untouched — the point of a sidecar.
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "hallo");
     }
 }

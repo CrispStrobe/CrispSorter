@@ -48,7 +48,11 @@ re-encoding or converting can strip it. Where the backend reports that it could
 not mark a file, the panel says so. See [`docs/ai-act.md`](docs/ai-act.md) § 5.
 
 The full inventory — every AI capability, its classification, and the reasoning
-— is in [`docs/ai-act.md`](docs/ai-act.md).
+— is in [`docs/ai-act.md`](docs/ai-act.md). If you are the one *using* it, or
+responsible for people who do, read
+[`docs/ai-literacy.md`](docs/ai-literacy.md) instead: what each capability gets
+wrong, how to spot it, and how a document sorter turns into a high-risk system
+without anybody deciding to build one.
 
 ## AI backends
 

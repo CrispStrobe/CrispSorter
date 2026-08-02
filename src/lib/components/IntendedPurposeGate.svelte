@@ -80,6 +80,22 @@
         busy = false;
     }
 
+    /// Art 4 (AI literacy). Points at the published copy rather than a bundled
+    /// file: the doc is versioned with the source, and a link that opens the
+    /// current one beats a snapshot frozen at install time. Failing to open a
+    /// browser must not block the acknowledgement, so this reports and returns.
+    const LITERACY_URL =
+        'https://github.com/CrispStrobe/CrispSorter/blob/main/docs/ai-literacy.md';
+
+    async function openLiteracy() {
+        try {
+            const { openUrl } = await import('@tauri-apps/plugin-opener');
+            await openUrl(LITERACY_URL);
+        } catch (e: any) {
+            error = `Could not open ${LITERACY_URL}: ${e?.message ?? e}`;
+        }
+    }
+
     onMount(async () => {
         error = await probeOnce();
         onchange(sharedStatus()?.acknowledged ?? false);
@@ -98,6 +114,11 @@
             <pre class="ip-statement">{status?.statement}</pre>
             {#if error}<p class="ip-error">{error}</p>{/if}
             <div class="ip-actions">
+                <!-- Art 4: the literacy material, from the one screen every
+                     operator is guaranteed to see. -->
+                <button class="ip-literacy" onclick={openLiteracy}>
+                    {i18n.t.intendedPurpose.literacy}
+                </button>
                 <button class="ip-accept" onclick={accept} disabled={busy}>
                     {i18n.t.intendedPurpose.accept}
                 </button>
@@ -153,7 +174,19 @@
         background: var(--muted-bg, rgba(127, 127, 127, 0.08));
     }
     .ip-error { margin: 0 0 0.5rem; color: #b3261e; font-size: 0.82rem; }
-    .ip-actions { display: flex; justify-content: flex-end; }
+    .ip-actions { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; }
+    /* Reads as the secondary action it is — the accept button stays the one
+       thing that looks like the way forward. */
+    .ip-literacy {
+        padding: 0.42rem 0;
+        border: none;
+        background: none;
+        color: var(--muted-fg, #666);
+        text-decoration: underline;
+        cursor: pointer;
+        font-size: 0.82rem;
+        text-align: left;
+    }
     .ip-accept {
         padding: 0.42rem 0.9rem;
         border: 1px solid var(--border, #d0d0d0);
