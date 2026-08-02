@@ -115,6 +115,184 @@ mod tests {
         );
     }
 
+    /// Every `.svelte` file under the frontend `src/`.
+    fn svelte_sources() -> Vec<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri has a parent")
+            .join("src");
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("svelte") {
+                    out.push(path);
+                }
+            }
+        }
+        out
+    }
+
+    /// The methods on `AIToolkitClient` that return model-generated content.
+    /// Calling any of them makes the calling view an Art 50 surface.
+    const GENERATIVE_CLIENT_CALLS: [&str; 5] = [
+        ".chat(",
+        ".translate(",
+        ".vision(",       // captioning — generated text about an image
+        ".generateImage(", // synthetic image
+        ".tts(",           // synthetic audio, NOT watermarked (remote backend)
+    ];
+
+    /// Art 50: a view that generates content must disclose it and must satisfy
+    /// the intended-purpose gate.
+    ///
+    /// The Rust-only guard above cannot see this class of surface at all: the
+    /// AIToolkit panels are TypeScript calling a remote HTTP backend, so no
+    /// Rust identifier appears and no Rust command is involved. That is exactly
+    /// how a fully wired image-generation and (unwatermarked) speech-synthesis
+    /// surface shipped while `docs/ai-act.md` recorded both as absent — found
+    /// in the 2026-08-01 audit.
+    ///
+    /// If you are here because this test failed: you added a generative call to
+    /// a view that carries neither `AiGeneratedBadge` nor `IntendedPurposeGate`.
+    /// Add both — do not add the file to an exemption list.
+    #[test]
+    fn every_generative_frontend_surface_discloses_and_gates() {
+        let mut offenders = Vec::new();
+        for path in svelte_sources() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let calls: Vec<&str> = GENERATIVE_CLIENT_CALLS
+                .iter()
+                .copied()
+                .filter(|needle| text.contains(needle))
+                .collect();
+            if calls.is_empty() {
+                continue;
+            }
+            let mut missing = Vec::new();
+            if !text.contains("AiGeneratedBadge") {
+                missing.push("AiGeneratedBadge");
+            }
+            if !text.contains("IntendedPurposeGate") {
+                missing.push("IntendedPurposeGate");
+            }
+            if !missing.is_empty() {
+                offenders.push(format!(
+                    "{}: generates via {} but lacks {}",
+                    path.display(),
+                    calls.join(", "),
+                    missing.join(" + ")
+                ));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "an undisclosed generative surface reached the frontend — see \
+             docs/ai-act.md before changing this test:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// Art 50(2): a marked artifact is only marked if the client actually uses
+    /// the marked copy.
+    ///
+    /// The AIToolkit backend marks every generated image and returns the marked
+    /// bytes in `b64_json`, keeping the provider's ORIGINAL (unmarked) `url`
+    /// alongside it — explicitly "so the client never has to be trusted to mark
+    /// on download". CrispSorter then did `img?.url ?? img?.b64_json`, which
+    /// prefers the unmarked original and throws the marking away. The output was
+    /// unmarked in the one place it counts: the file the user saves.
+    ///
+    /// Nothing about that reads as a compliance bug at review time — it looks
+    /// like ordinary "prefer a URL over a data blob". So it is pinned: the image
+    /// source must come from `markedImageSrc`, which encodes the preference once.
+    #[test]
+    fn generated_images_are_taken_from_the_marked_copy() {
+        let mut offenders = Vec::new();
+        for path in svelte_sources() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            if !text.contains(".generateImage(") {
+                continue;
+            }
+            if !text.contains("markedImageSrc") {
+                offenders.push(format!(
+                    "{}: generates images without markedImageSrc",
+                    path.display()
+                ));
+            }
+            // The specific shape that caused this: reaching for `.url` first.
+            if text.contains("?.url ??") || text.contains(".url ?? ") {
+                offenders.push(format!(
+                    "{}: prefers the unmarked provider url over the marked b64_json",
+                    path.display()
+                ));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a generated image is being shown from the unmarked source — see \
+             docs/ai-act.md § 5:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// A new backend endpoint is how the *next* unaudited generative surface
+    /// arrives — the client gains a method, a view calls it, and nothing in the
+    /// tree records whether its output is generated or merely rendered.
+    ///
+    /// So the client's endpoint list is pinned. Adding one fails here until
+    /// somebody classifies it and, if it generates content, adds its call to
+    /// `GENERATIVE_CLIENT_CALLS` above so the disclosure guard covers it.
+    #[test]
+    fn the_aitoolkit_client_exposes_no_unclassified_endpoint() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri has a parent")
+            .join("src/lib/aitoolkit.ts");
+        let text = std::fs::read_to_string(&path).expect("read src/lib/aitoolkit.ts");
+
+        // Endpoints reviewed on 2026-08-01, and what each returns.
+        let reviewed = [
+            "/api/health",             // status — not content
+            "/api/config",             // capability probe — not content
+            "/api/auth/login",         // auth — not content
+            "/api/providers",          // capability probe — not content
+            "/api/extract",            // renders text already in the file
+            "/api/ocr",                // renders pixels
+            "/api/transcription/sync", // renders real audio
+            "/api/chat/completions",   // GENERATES text
+            "/api/translate/text",     // GENERATES text
+            "/api/vision/analyze",     // GENERATES text (captioning)
+            "/api/images/generate",    // GENERATES images
+            "/api/tts/synthesize",     // GENERATES audio (no watermark)
+        ];
+
+        let mut unknown = Vec::new();
+        for (idx, _) in text.match_indices("/api/") {
+            let rest = &text[idx..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || "/_-.".contains(c)))
+                .unwrap_or(rest.len());
+            let endpoint = &rest[..end];
+            if !reviewed.contains(&endpoint) && !unknown.contains(&endpoint.to_string()) {
+                unknown.push(endpoint.to_string());
+            }
+        }
+
+        assert!(
+            unknown.is_empty(),
+            "the AIToolkit client reaches an endpoint no audit has classified. \
+             Decide whether it returns generated content; if it does, add its \
+             call to GENERATIVE_CLIENT_CALLS and mark the surface. See \
+             docs/ai-act.md:\n  {}",
+            unknown.join("\n  ")
+        );
+    }
+
     /// The scan has to actually be looking at files, or the assertion above is
     /// vacuously true and would keep passing after a refactor moved `src/`.
     #[test]
@@ -130,6 +308,46 @@ mod tests {
             sources.iter().any(|p| p.ends_with("asr/mod.rs")),
             "asr/mod.rs is where synthesis lives; if it is not in the scan the \
              guard is not guarding anything"
+        );
+
+        // Same for the frontend scan. A moved or renamed `src/` would make the
+        // disclosure guard pass by finding nothing at all.
+        let views = svelte_sources();
+        assert!(
+            views.len() > 15,
+            "expected the frontend component tree, found {} .svelte files",
+            views.len()
+        );
+        assert!(
+            views
+                .iter()
+                .any(|p| p.ends_with("AIToolkitCapability.svelte")),
+            "AIToolkitCapability.svelte is the surface that generates images and \
+             unwatermarked speech; if it is not in the scan the guard is not \
+             guarding anything"
+        );
+        assert!(
+            views.iter().any(|p| {
+                std::fs::read_to_string(p)
+                    .map(|t| GENERATIVE_CLIENT_CALLS.iter().any(|n| t.contains(n)))
+                    .unwrap_or(false)
+            }),
+            "no view matched any generative call — the needles have drifted from \
+             the client's method names and the guard now passes vacuously"
+        );
+
+        // `generated_images_are_taken_from_the_marked_copy` only inspects files
+        // containing `.generateImage(`. If that string stops appearing — renamed
+        // method, moved call — the guard reviews nothing and reports success,
+        // which is precisely the state that let the unmarked-url bug ship.
+        assert!(
+            views.iter().any(|p| {
+                std::fs::read_to_string(p)
+                    .map(|t| t.contains(".generateImage("))
+                    .unwrap_or(false)
+            }),
+            "no view calls .generateImage() — the marked-image guard is inspecting \
+             nothing; re-point it at wherever image generation moved"
         );
     }
 }

@@ -5528,7 +5528,15 @@ async fn cmd_sync_backup_job(
             } else {
                 let ids: Vec<_> = jobs.iter().map(|job| job.id.clone()).collect();
                 for id in ids {
-                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::Run { job_id: id, dry_run }).await?;
+                    // `Box::pin` because this is a recursive `async fn` — `Due`
+                    // dispatches each due job through `Run`, which would make the
+                    // future infinitely sized without the indirection.
+                    Box::pin(cmd_sync_backup_job(
+                        out,
+                        data_dir,
+                        BackupJobCmd::Run { job_id: id, dry_run },
+                    ))
+                    .await?;
                 }
             }
         }
@@ -5540,7 +5548,14 @@ async fn cmd_sync_backup_job(
                 let snapshot = crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
                     .map_err(|e| e.to_string())?;
                 if !snapshot.due_job_ids.is_empty() {
-                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::RunDue { dry_run }).await?;
+                    // Boxed for the same reason as the `Due` arm above: `Watch`
+                    // re-enters this fn once per cycle.
+                    Box::pin(cmd_sync_backup_job(
+                        out,
+                        data_dir,
+                        BackupJobCmd::RunDue { dry_run },
+                    ))
+                    .await?;
                 }
                 cycles = cycles.saturating_add(1);
                 if once || (max_cycles > 0 && cycles >= max_cycles) { break; }
@@ -8538,9 +8553,29 @@ async fn cmd_images_crisplens(
 
 // ── chat ──────────────────────────────────────────────────────────────────
 
+/// The intended-purpose gate for CLI commands that produce AI output.
+///
+/// The GUI reaches the gate through `ensure_intended_purpose` on the Tauri
+/// commands, but the CLI is a *fifth* output path that used to bypass it
+/// entirely — `chat query` printed a completion to stdout with no
+/// acknowledgement on record (2026-08-01 audit). The escape hatches the gate
+/// documents (`--accept-intended-purpose`, `CRISPSORTER_ACCEPT_INTENDED_PURPOSE=1`)
+/// already exist and are handled before dispatch, so unattended runs stay
+/// scriptable; the error text names both.
+///
+/// `resolve_data_dir(None)` deliberately ignores a subcommand's `--data-dir`:
+/// it has to read the acknowledgement from wherever `--accept-intended-purpose`
+/// *wrote* it, and that writer resolves the same way. Reading a per-command dir
+/// would refuse a machine that had acknowledged.
+fn ensure_intended_purpose_cli(operation: &str) -> Result<(), String> {
+    let dir = resolve_data_dir(None)?;
+    crate::intended_purpose::ensure(&dir, operation)
+}
+
 fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
     match cmd {
         ChatCmd::Query { prompt, llm_url, llm_model, api_key, system, context_files } => {
+            ensure_intended_purpose_cli("chat query")?;
             // Build context from optional files.
             let mut context = String::new();
             for path in &context_files {
@@ -8604,6 +8639,12 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
             policy, fallback_backend, lid_model, lid_method,
             translate_to, translate_backend, translate_model, translate_max_tokens,
         } => {
+            // Transcription itself renders real audio and is not gated. Asking
+            // for `--translate-to` bolts machine translation onto the end, and
+            // that *is* generated content.
+            if translate_to.is_some() {
+                ensure_intended_purpose_cli("chat transcribe --translate-to")?;
+            }
             cmd_chat_transcribe(
                 out, path, backend, model, language, output, data_dir, pure_rust, stream,
                 transcript_format,
@@ -8614,6 +8655,7 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
         ChatCmd::Tts {
             text, backend, model, voice, voice_ref_text, speaker, output, data_dir,
         } => {
+            ensure_intended_purpose_cli("chat tts")?;
             cmd_chat_tts(out, text, backend, model, voice, voice_ref_text, speaker, output, data_dir)?;
         }
     }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AIToolkitClient, capabilitiesFromFeatures } from './aitoolkit';
+import { AIToolkitClient, capabilitiesFromFeatures, markedImageSrc } from './aitoolkit';
 
 function stubFetch(status: number, body: unknown) {
 	const fn = vi.fn(
@@ -21,6 +21,35 @@ describe('capabilitiesFromFeatures', () => {
 		expect(caps.has('service:chat')).toBe(true);
 		expect(caps.has('service:tts')).toBe(false);
 		expect(caps.has('service:extract')).toBe(true);
+	});
+});
+
+describe('markedImageSrc', () => {
+	// AI Act Art 50(2). The backend returns the provider's unmarked `url` next to
+	// a marked `b64_json`; picking `url` shows and saves the unmarked original.
+	it('prefers the marked b64 over the unmarked provider url', () => {
+		const r = markedImageSrc({ url: 'https://cdn/orig.png', b64_json: 'iVBORw0KGgo=', marked: true });
+		expect(r.src).toBe('data:image/png;base64,iVBORw0KGgo=');
+		expect(r.src).not.toContain('cdn/orig.png');
+		expect(r.marked).toBe(true);
+	});
+
+	it('sniffs jpeg so the data URL is not mislabelled as png', () => {
+		expect(markedImageSrc({ b64_json: '/9j/4AAQSkZJRg==' }).src).toContain('data:image/jpeg;base64,');
+	});
+
+	it('falls back to the url and reports it unmarked when there is no b64', () => {
+		const r = markedImageSrc({ url: 'https://cdn/orig.png' });
+		expect(r.src).toBe('https://cdn/orig.png');
+		expect(r.marked).toBe(false);
+	});
+
+	it('reports unmarked when the backend says it could not mark', () => {
+		expect(markedImageSrc({ b64_json: 'iVBORw0KGgo=', marked: false }).marked).toBe(false);
+	});
+
+	it('handles a missing image without throwing', () => {
+		expect(markedImageSrc(undefined)).toEqual({ src: '', marked: false });
 	});
 });
 

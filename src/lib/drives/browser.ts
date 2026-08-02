@@ -1,9 +1,28 @@
+/**
+ * Mirrors the Rust `DriveCapabilities` (src-tauri/src/drives/mod.rs).
+ *
+ * The mutation flags the browser gates its buttons on are required; the rest are
+ * optional because this type is also built by hand in tests and by callers that
+ * only care about mutations. They are declared rather than omitted so reading a
+ * field the backend genuinely sends is not a type error — `versions` was missing
+ * entirely, which made `DriveBrowser.svelte` fail to type-check even though the
+ * value was there at runtime.
+ */
 export type DriveCapabilities = {
     create_dir: boolean;
     rename: boolean;
     move_path: boolean;
     copy: boolean;
     delete: boolean;
+    list?: boolean;
+    read?: boolean;
+    write?: boolean;
+    stat?: boolean;
+    streaming?: boolean;
+    resumable_upload?: boolean;
+    resumable_download?: boolean;
+    share_links?: boolean;
+    versions?: boolean;
 };
 
 export type DriveBrowserAction = 'create_dir' | 'rename' | 'move' | 'copy' | 'delete';

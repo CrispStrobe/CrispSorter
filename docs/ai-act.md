@@ -9,7 +9,9 @@ document rather than re-derived under time pressure.
 regulation. Classification decisions and the declarations that follow from them
 belong to the provider of record.
 
-- **Audited:** 2026-08-01, against the source tree, not from memory.
+- **Audited:** 2026-08-01, against the source tree, not from memory. **Re-audited
+  the same day** after the first pass missed the AIToolkit panels entirely — see
+  §5. Two capabilities this document had recorded as *absent* were fully wired.
 - **Timing:** Article 50 (transparency) and the Annex III high-risk regime apply
   from **2 August 2026**. Prohibitions (Art 5) and AI literacy (Art 4) have
   applied since 2 February 2025; the GPAI chapter since 2 August 2025.
@@ -35,6 +37,9 @@ belong to the provider of record.
 | Embeddings, reranking, NER, dedup, LID | `index/` | Minimal risk |
 | Face **detection** (local) | `images/face.rs` | Out of scope by design — see below |
 | Face recognition (optional external service) | default-off feature; absent from shipped builds | **Annex III(1)** — see below |
+| **Remote image generation** | `AIToolkitCapability.svelte` → `/api/images/generate` | **Art 50(2)** — synthetic image; **Art 50(4)** if used for deep fakes |
+| **Remote speech synthesis** | `AIToolkitCapability.svelte` → `/api/tts/synthesize` | **Art 50(2)** — synthetic audio, **not** watermarked |
+| **Remote chat / translate / captioning** | `AIToolkitCapability.svelte`, `AIToolkitView.svelte` | **Art 50(2)** — synthetic text |
 
 ## Established positions
 
@@ -189,10 +194,20 @@ ones already known, because the risk is a surface nobody audited:
 | OCR text | rendering of pixels, not generated content | n/a |
 | NER tags, embeddings, dedup, LID | inferences/scores, not content | n/a |
 | Camera `ImageDescription` (EXIF) | written by the camera, not by us | n/a |
+| AIToolkit chat / translate | synthetic text | ✅ panel badge + gate (added 2026-08-01, §5) |
+| AIToolkit vision ("Describe this image") | synthetic text | ✅ panel badge + gate (§5) |
+| AIToolkit images | synthetic **image** | ✅ backend embeds an XMP/iTXt assertion; client now uses the marked copy (§5) |
+| AIToolkit TTS | synthetic **audio** | ✅ backend embeds XMP (WAV) / ID3v2 (MP3); marking travels in the bytes (§5) |
 
-Checked and **not** present: no VLM image captioning, no image generation, no
-LLM rewriting of OCR output (the one "proofread" mention is a comment about
-confidence scores, not a rewrite path).
+Checked and **not** present *in the Rust/local surfaces*: no LLM rewriting of OCR
+output (the one "proofread" mention is a comment about confidence scores, not a
+rewrite path).
+
+⚠️ **This section previously claimed "no VLM image captioning, no image
+generation" full stop. That was wrong** — see §5. The enumeration was done by
+searching the Rust tree, and every surface it missed is TypeScript calling a
+remote HTTP backend. The lesson is recorded there rather than quietly fixed
+here, because the *method* is what failed, not the conclusion about `src-tauri/`.
 
 ### 2c. Human oversight is the app's strongest position — record it
 
@@ -243,10 +258,21 @@ satisfy the gate so nobody meets a raw error string:
 | `translate_docx` | Rust (`translate/tauri_commands.rs`, via `app.state()`) | `Translate` actions row (inline) |
 | `tts_speak` | Rust (`lib.rs`) | `Chat` (blocking overlay) |
 | chat completion | **frontend only — see below** | `Chat` (blocking overlay) |
+| `crispsorter chat query` | Rust (`cli/mod.rs`) | CLI flag / env var |
+| `crispsorter chat tts` | Rust (`cli/mod.rs`) | CLI flag / env var |
+| `crispsorter chat transcribe --translate-to` | Rust (`cli/mod.rs`) | CLI flag / env var |
+| AIToolkit generative panels | **frontend only** (remote backend) | `AIToolkit*` (blocking overlay) |
 
-All four Rust sites go through one `ensure_intended_purpose(&state, op)` helper
+All four Tauri sites go through one `ensure_intended_purpose(&state, op)` helper
 rather than four copied blocks: the gate's value is that *every* output path uses
-it, and copies are chances to forget one.
+it, and copies are chances to forget one. The CLI sites go through the sibling
+`ensure_intended_purpose_cli(op)`, which differs only in resolving the data dir
+from disk instead of from `AppState`.
+
+**The CLI was missed on the first pass** (added 2026-08-01): `chat query` printed
+a completion to stdout with nothing on record, while this table asserted the gate
+covered every output path. `--accept-intended-purpose` existed but only *wrote* an
+acknowledgement — nothing ever *required* one outside the GUI.
 
 **Chat is the exception, by necessity.** Its completions never reach Rust —
 `deep-chat` calls the provider directly, and `Chat.svelte` invokes only
@@ -273,11 +299,157 @@ classification suggestions, which look like ordinary application behaviour.
 An organisational duty on providers and deployers since February 2025. Nothing
 to implement in code; recorded here so it is not mistaken for a code gap.
 
+### 5. Remote generative surfaces — the AIToolkit panels
+
+**What the first pass got wrong.** This document recorded image generation and
+image captioning as *not present*, and treated AIToolkit as somebody else's
+audit. Both were mistakes of the same kind: the enumeration searched
+`src-tauri/**/*.rs`, and these surfaces are `.svelte` files calling a remote HTTP
+backend. Nothing in Rust mentions them.
+
+They are not hypothetical or half-built. `src/lib/components/AIToolkitCapability.svelte`
+is bundled unconditionally, rendered from `+page.svelte`, and reachable as
+first-class nav tabs (`src/lib/tabs.ts`) as soon as a connected backend
+advertises the capability:
+
+| Capability | Endpoint | Output |
+|---|---|---|
+| `images` | `/api/images/generate` | synthetic image, rendered inline |
+| `tts` | `/api/tts/synthesize` | synthetic audio, played inline |
+| `chat` | `/api/chat/completions` | synthetic text |
+| `translate` | `/api/translate/text` | synthetic text |
+| `vision` | `/api/vision/analyze` (`"Describe this image."`) | synthetic text |
+
+**Why this was worse than an inventory gap.** `AiGeneratedBadge.svelte` says in a
+comment that audio needs no badge because *"CrispASR watermarks that in the signal
+itself"*. True of every CrispASR path — and false here. The AIToolkit TTS panel is
+a second synthesis path that CrispASR never touches, so the app had an unmarked
+synthetic-audio surface behind a guarantee that read as absolute.
+
+**Why the existing guard could not have caught it.**
+`compliance.rs::tts_never_bypasses_the_synthetic_audio_watermark` greps Rust for
+two CrispASR identifiers. A TypeScript `fetch` to `/api/tts/synthesize` contains
+neither. The guard was not weak, it was **scoped to the wrong tree** — and its
+passing was being read as a property of the app rather than of `src-tauri/`.
+
+**The guards were not running at all.** Worth stating separately, because it
+undercuts every "enforced by a test" claim in this document: on this branch
+`cargo test --package crispsorter --lib` did not **compile** (six errors in
+`sync/`, `translate/` and `cli/` — a `super::` that meant `self::`, a missing
+`?`, an uninferrable `None`, an unboxed recursive `async fn`, and a `PathBuf`
+formatted without `.display()` — the last one inside the AI-provenance failure
+path itself). A test that cannot build cannot fail, so the watermark and
+face-identification guards had silently stopped protecting anything, and a
+long-broken assertion in `intended_purpose` (`"not intended for"` vs the
+statement's `"NOT intended for"`) had never once run. Fixed 2026-08-01; the
+compliance suite compiles and passes.
+
+The general lesson: **"enforced by a test" is a claim about CI, not about the
+test file.** If the suite is red or unbuildable, the invariants are documentation
+again — which is exactly the state this document described as unacceptable.
+
+**Now enforced** (`compliance.rs`):
+
+* `every_generative_frontend_surface_discloses_and_gates` — any `.svelte` file
+  calling a generative client method must also carry `AiGeneratedBadge` **and**
+  `IntendedPurposeGate`. No exemption list; the fix is to mark the surface.
+* `the_aitoolkit_client_exposes_no_unclassified_endpoint` — the client's `/api/…`
+  set is pinned to the twelve endpoints reviewed here. A thirteenth fails the
+  build until somebody decides whether it generates content. This is the guard
+  that would have caught the original miss, because it fails on *arrival* of a
+  capability rather than on somebody remembering to re-audit.
+* The non-vacuity test now also asserts the `.svelte` scan finds the tree, finds
+  `AIToolkitCapability.svelte` specifically, and that at least one view still
+  matches a generative needle — so a rename of the client's methods surfaces as
+  a failure instead of a silently empty scan.
+
+**The artifacts ARE marked — and CrispSorter was throwing the marking away.**
+
+A first version of this section claimed the image and audio artifacts carried no
+embedded marking, on the reasoning that a file generated remotely arrives already
+encoded. That reasoning was never checked against the backend, and it was wrong.
+`crossplatform/pybackend/routers/` marks both:
+
+| Path | Marking |
+|---|---|
+| `tts.py` | writes the assertion **into the bytes** — an XMP `_PMX` chunk for WAV, ID3v2.4 `TXXX` frames (`DigitalSourceType`) for MP3 — and returns `X-AI-Marked`. Its own comment notes response headers "are gone the moment the client saves the file", so headers are only a hint. |
+| `images.py` | marks every returned image in place; for URL-only provider responses it **fetches the image through the SSRF guard and returns marked base64**, so that "the client never has to be trusted to mark on download". Ships `marked` per image plus `ai_generated`, `digital_source_type` and the Art 50(4) `disclosure` text. |
+
+Both are metadata assertions, not watermarks — `ai_act.py` says so itself: weaker
+than a watermark, does not survive re-encoding, but machine-readable and
+detectable, "the difference between marked and entirely unmarked output".
+
+**The real defect was on our side, and it was invisible.** The backend hands back
+the provider's original `url` *and* a marked `b64_json`. CrispSorter did:
+
+```js
+imgUrl = img?.url ?? (img?.b64_json ? `data:image/png;base64,${img.b64_json}` : '');
+```
+
+`url` wins. So the app displayed and saved the **unmarked original** and discarded
+the marked copy the backend had gone out of its way to produce — defeating, from
+the client, a duty the server had already discharged. Nothing about that line
+reads as a compliance bug; it reads as "prefer a URL over a data blob". That is
+what makes it worth a test rather than a note.
+
+Fixed: `markedImageSrc` (`src/lib/aitoolkit.ts`) encodes the preference once —
+`b64_json` always wins, MIME sniffed from the base64 prefix — and
+`generated_images_are_taken_from_the_marked_copy` fails the build if a view
+generates images without it, or reaches for `.url ??` again. TTS now reads
+`X-AI-Marked` and reports the real state instead of assuming either way.
+
+**Where that leaves Art 50(2).** Satisfied for the text panels (badge at the
+surface) and, for images and audio, satisfied *in the artifact* by the backend's
+in-band assertion — which is the layer the article actually cares about. The
+residual limits are stated in the UI rather than papered over: the panel says the
+marking lives in metadata and that re-encoding can strip it
+(`aiDisclosure.markedArtifact`), and shows `unmarkedArtifact` when the backend
+reports `marked: false` for a format it could not handle. Neither state is
+inferred; both are read from the response.
+
+**Update 2026-08-02 — the watermark path now exists.** The strengthening above
+was described as belonging to the backend. It did belong there, and it was
+already built there: AIToolkit's CrispASR path applies an AudioSeal watermark in
+the signal plus C2PA Content Credentials, and `assert_no_marking_opt_out` makes
+disabling it a hard error. It was simply **not wired into the HTTP sidecar** —
+`routers/tts.py` reached only remote OpenAI-audio providers, its docstring
+calling the local transport "stubbed", so every response fell back to the
+metadata assertion even where the strong path was installed. Fixed in AIToolkit
+(`COMPLIANCE.md` § 11); the sidecar now routes `provider == "CrispASR"` through
+the binary.
+
+So there are two marking strengths, and the difference is the one Art 50(2)
+readers care about — whether the mark survives re-encoding:
+
+| Transport | Marking | Survives re-encode |
+|---|---|---|
+| `X-AI-Marking-Path: crispasr` | AudioSeal watermark + C2PA | **yes** |
+| `X-AI-Marking-Path: provider-metadata` | XMP / ID3 assertion | no |
+
+CrispSorter reads that header and says which one the user has
+(`aiDisclosure.watermarkedArtifact` vs `markedArtifact`, en + de) rather than
+describing every marked artifact with the weaker sentence. For third-party
+OpenAI-audio providers the metadata floor remains the ceiling — those hand back
+finished bytes and there is no encoder to reach.
+
+**Worth keeping:** this gap survived four internal AIToolkit audits and was
+found from the client side, in one question — *does the audio I receive actually
+carry a watermark?* An internal audit reads the capability and confirms it
+exists; a client can only see what arrives on the wire. That asymmetry is the
+argument for auditing across the integration boundary rather than per-repo.
+
+**Art 50(4).** A prompt-driven image generator can produce deep fakes, and that
+disclosure duty falls on the *deployer*. The backend ships the wording in
+`disclosure` precisely so clients neither invent nor omit one; CrispSorter was
+discarding that field too, and now renders it beneath the image.
+
 ## Not covered by this audit
 
-- **AIToolkit** ships image generation (`ui/image_gen_tab.py`) — Art 50(2)
-  synthetic images and potentially Art 50(4) deep-fake disclosure. A larger
-  surface than anything in CrispSorter, and a separate audit.
+- **AIToolkit's own UI** (`ui/image_gen_tab.py` and the rest of that product's
+  surface) remains a separate audit with its own provider obligations. What
+  changed on 2026-08-01 is that *CrispSorter's client for it* is no longer
+  treated as out of scope — see §5. Shipping the UI for a capability makes it
+  ours to disclose, whoever runs the model.
 - **The external image service** is out of scope: separate product, separate
   provider, separate conformity work.
 - **Deployment context.** Nothing here is Annex III on its own, but a *deployer*

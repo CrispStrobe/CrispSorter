@@ -1081,7 +1081,13 @@ mod tests {
                 true,
                 true,
                 true,
-                false,
+                // copy: Graph exposes an async copy endpoint and
+                // `OneDriveDrive::copy_path` implements it, so the driver
+                // reports `copy: true` — as does its own unit test
+                // `capabilities_include_graph_mutations_and_copy`. This row said
+                // `false` and had been failing since the driver gained copy;
+                // nobody saw it because the lib test target did not compile.
+                true,
                 true,
                 true,
                 false,

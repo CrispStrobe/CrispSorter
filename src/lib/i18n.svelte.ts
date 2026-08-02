@@ -14,6 +14,12 @@ export const translations = {
             badge: 'AI-generated',
             tooltip: 'Produced by a local AI model. Machine translation, summaries and chat answers can be wrong or incomplete — check anything that matters.',
             speechMarked: 'Synthesised speech carries a machine-readable watermark.',
+            watermarkedArtifact:
+                'This audio carries a watermark in the signal itself plus C2PA credentials, so it stays identifiable as AI-generated even after re-encoding or conversion.',
+            markedArtifact:
+                'This file carries a machine-readable AI marking in its own metadata, so it stays identifiable after you save it. Re-encoding or converting the file can strip it.',
+            unmarkedArtifact:
+                'The backend could not embed a machine-readable AI marking in this file. Label it as AI-generated yourself if you save or forward it.',
         },
         nav: {
             batch: 'Batch',
@@ -1164,6 +1170,12 @@ export const translations = {
             badge: 'KI-generiert',
             tooltip: 'Von einem lokalen KI-Modell erzeugt. Maschinelle Übersetzungen, Zusammenfassungen und Chat-Antworten können falsch oder unvollständig sein — Wichtiges bitte prüfen.',
             speechMarked: 'Synthetische Sprache enthält ein maschinenlesbares Wasserzeichen.',
+            watermarkedArtifact:
+                'Dieses Audio enthält ein Wasserzeichen im Signal selbst sowie C2PA-Credentials und bleibt daher auch nach Umkodierung oder Konvertierung als KI-generiert erkennbar.',
+            markedArtifact:
+                'Diese Datei enthält eine maschinenlesbare KI-Kennzeichnung in ihren Metadaten und bleibt daher auch nach dem Speichern erkennbar. Beim Umkodieren oder Konvertieren kann sie verloren gehen.',
+            unmarkedArtifact:
+                'Das Backend konnte in dieser Datei keine maschinenlesbare KI-Kennzeichnung einbetten. Beim Speichern oder Weitergeben bitte selbst als KI-generiert kennzeichnen.',
         },
         nav: {
             batch: 'Stapel',

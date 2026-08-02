@@ -37,9 +37,15 @@ document classification to CV screening, credit files, exam material or
 law-enforcement records enters the Annex III high-risk regime and takes on those
 obligations directly. Doing that is outside the intended use.
 
-Synthesised speech is watermarked by default (CrispASR's marked synthesis path,
-enforced by a test). Chat, summary and translation output is machine-generated
-and should be treated as such when you pass it on.
+Speech synthesised **on your machine** is watermarked by default (CrispASR's
+marked synthesis path, enforced by a test). Chat, summary and translation output
+is machine-generated and should be treated as such when you pass it on.
+
+If you connect an **AIToolkit backend**, the images and speech it generates carry
+a machine-readable AI marking embedded in the file's own metadata (XMP for WAV and
+images, ID3v2 for MP3), so they stay identifiable after you save them —
+re-encoding or converting can strip it. Where the backend reports that it could
+not mark a file, the panel says so. See [`docs/ai-act.md`](docs/ai-act.md) § 5.
 
 The full inventory — every AI capability, its classification, and the reasoning
 — is in [`docs/ai-act.md`](docs/ai-act.md).

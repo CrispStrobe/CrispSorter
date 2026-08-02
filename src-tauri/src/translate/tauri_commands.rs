@@ -245,7 +245,7 @@ pub async fn translate_docx(
         crate::app_log!(
             "warn",
             "translate_docx: wrote {} but could not stamp AI provenance: {e}",
-            out_path
+            out_path.display()
         );
     }
 

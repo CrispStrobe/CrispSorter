@@ -89,12 +89,94 @@ pub(crate) fn install_mock_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyring::mock::default_credential_builder;
-    use std::sync::Once;
+    use std::collections::HashMap;
+    use std::sync::{Once, OnceLock};
 
     pub(crate) fn install_mock_for_tests() {
         static ONCE: Once = Once::new();
-        ONCE.call_once(|| keyring::set_default_credential_builder(default_credential_builder()));
+        ONCE.call_once(|| keyring::set_default_credential_builder(shared_store_builder()));
+    }
+
+    // ── A test keychain that survives across `Entry` values ──────────────────
+    //
+    // `keyring::mock` keeps the secret *inside* the `Credential` object, so two
+    // `Entry::new(service, id)` calls for the same id get two unrelated stores.
+    // Every public function here builds its own `Entry` — `set_credentials`
+    // stores through one, `get_credentials` reads through another — so against
+    // the stock mock a round-trip through the public API always reads back
+    // `None`, no matter how correct the code is.
+    //
+    // `public_credential_and_session_api_round_trips_and_deletes` asserted
+    // exactly that round-trip and had therefore never passed; it went unnoticed
+    // because the lib test target did not compile (see docs/ai-act.md § 5).
+    // Marking it `#[ignore]` would have made the suite green while deleting the
+    // only coverage of the API the app actually calls, so instead the store is
+    // keyed by (target, service, user) and shared between credentials — which is
+    // how a real keychain behaves, and is what the assertions were written for.
+    #[derive(Debug)]
+    struct SharedStoreCredential {
+        key: (String, String, String),
+    }
+
+    fn store() -> &'static std::sync::Mutex<HashMap<(String, String, String), Vec<u8>>> {
+        static STORE: OnceLock<std::sync::Mutex<HashMap<(String, String, String), Vec<u8>>>> =
+            OnceLock::new();
+        STORE.get_or_init(Default::default)
+    }
+
+    impl keyring::credential::CredentialApi for SharedStoreCredential {
+        fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+            store().lock().unwrap().insert(self.key.clone(), secret.to_vec());
+            Ok(())
+        }
+
+        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+            store()
+                .lock()
+                .unwrap()
+                .get(&self.key)
+                .cloned()
+                .ok_or(keyring::Error::NoEntry)
+        }
+
+        fn delete_credential(&self) -> keyring::Result<()> {
+            match store().lock().unwrap().remove(&self.key) {
+                Some(_) => Ok(()),
+                None => Err(keyring::Error::NoEntry),
+            }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    #[derive(Debug)]
+    struct SharedStoreBuilder;
+
+    impl keyring::credential::CredentialBuilderApi for SharedStoreBuilder {
+        fn build(
+            &self,
+            target: Option<&str>,
+            service: &str,
+            user: &str,
+        ) -> keyring::Result<Box<keyring::credential::Credential>> {
+            Ok(Box::new(SharedStoreCredential {
+                key: (
+                    target.unwrap_or_default().to_owned(),
+                    service.to_owned(),
+                    user.to_owned(),
+                ),
+            }))
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn shared_store_builder() -> Box<keyring::credential::CredentialBuilder> {
+        Box::new(SharedStoreBuilder)
     }
 
     #[test]
@@ -124,11 +206,11 @@ mod tests {
             refresh_token: Some("refresh".into()),
             client_id: Some("public-client".into()),
         };
-        // keyring::mock is intentionally EntryOnly: it cannot model the
-        // persistence boundary between the separate Entry values used by
-        // set_credentials/get_credentials. Test the exact serialized payload
-        // through one entry; production persistence is supplied by the OS
-        // keychain backend.
+        // Goes through one entry on purpose: this test is about the exact
+        // serialized payload on the wire to the keychain, not about persistence.
+        // (The round-trip across separate entries is covered by
+        // `public_credential_and_session_api_round_trips_and_deletes`, which the
+        // shared-store test backend above finally makes possible.)
         let serialized = serde_json::to_string(&credentials).unwrap();
         let stored = credentials_entry(id).unwrap();
         stored.set_password(&serialized).unwrap();

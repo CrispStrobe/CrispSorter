@@ -30,6 +30,29 @@ aitoolkit.subscribe((s) => {
 /** Capabilities advertised by the connected backend (drives which AI tabs show). */
 export const aitoolkitCaps = writable<Set<string>>(new Set());
 
+/**
+ * Pick the image source that carries the Art 50(2) marking.
+ *
+ * The backend returns the provider's original `url` *and* a marked `b64_json`
+ * copy. Preferring `url` — which is what a plain `url ?? b64_json` does — shows
+ * and saves the UNMARKED original and silently discards the marking the backend
+ * created for exactly this reason. So `b64_json` wins whenever it exists, and
+ * the caller is told which one it got rather than left to assume.
+ */
+export function markedImageSrc(img: { url?: string; b64_json?: string; marked?: boolean } | undefined): {
+	src: string;
+	marked: boolean;
+} {
+	if (!img) return { src: '', marked: false };
+	if (img.b64_json) {
+		// Sniff the base64 prefix: the backend marks PNG and JPEG, and labelling a
+		// JPEG as image/png makes some viewers refuse it.
+		const mime = img.b64_json.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+		return { src: `data:${mime};base64,${img.b64_json}`, marked: img.marked !== false };
+	}
+	return { src: img.url ?? '', marked: false };
+}
+
 export function capabilitiesFromFeatures(features: Record<string, boolean>): Set<string> {
 	const caps = new Set<string>();
 	for (const [k, v] of Object.entries(features)) if (v) caps.add(`service:${k}`);
@@ -111,13 +134,38 @@ export class AIToolkitClient {
 	transcribe(provider: string, model: string, file: File) {
 		return this.multipart<{ text: string }>('/api/transcription/sync', file, { provider, model });
 	}
+	/// Art 50(2): the backend marks every image it returns and puts the marked
+	/// copy in `b64_json` — deliberately, "so the client never has to be trusted
+	/// to mark on download". `url` is the provider's ORIGINAL and is unmarked, so
+	/// never prefer it; see `markedImageSrc`. `disclosure` ships the Art 50(4)
+	/// deep-fake wording so clients neither invent nor omit one.
 	generateImage(provider: string, model: string, prompt: string) {
-		return this.req<{ images: { url?: string; b64_json?: string }[] }>('/api/images/generate', {
+		return this.req<{
+			images: { url?: string; b64_json?: string; marked?: boolean }[];
+			ai_generated?: boolean;
+			digital_source_type?: string;
+			disclosure?: string;
+		}>('/api/images/generate', {
 			method: 'POST',
 			body: JSON.stringify({ provider, model, prompt }),
 		});
 	}
-	async tts(provider: string, model: string, voice: string, text: string): Promise<Blob> {
+	/// The audio bytes carry the marking in-band, so a saved file stays marked.
+	/// Two strengths, and the difference matters to the user:
+	///   · `crispasr` — AudioSeal watermark in the signal + C2PA. Survives
+	///     re-encoding.
+	///   · `provider-metadata` — an XMP chunk (WAV) or ID3v2 frames (MP3) around
+	///     a third-party provider's bytes. Machine-readable, but lost on
+	///     re-encode.
+	/// `X-AI-Marked` reports whether the backend managed to mark at all (it
+	/// returns `false` for formats it cannot handle); `X-AI-Marking-Path` says
+	/// which of the two it was. Neither is assumed.
+	async tts(
+		provider: string,
+		model: string,
+		voice: string,
+		text: string,
+	): Promise<{ blob: Blob; marked: boolean; markingPath: string }> {
 		const headers = new Headers({ 'Content-Type': 'application/json' });
 		if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
 		const res = await fetch(`${this.baseUrl}/api/tts/synthesize`, {
@@ -126,6 +174,10 @@ export class AIToolkitClient {
 			body: JSON.stringify({ provider, model, voice, text }),
 		});
 		if (!res.ok) throw new Error((await res.text()) || res.statusText);
-		return res.blob();
+		return {
+			blob: await res.blob(),
+			marked: res.headers.get('X-AI-Marked') === 'true',
+			markingPath: res.headers.get('X-AI-Marking-Path') ?? '',
+		};
 	}
 }
