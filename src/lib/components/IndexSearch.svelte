@@ -87,6 +87,7 @@
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
+    let promoteBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
     let batchSelection = $state<Set<string>>(new Set());
     let searched    = $state(false);
@@ -1129,6 +1130,35 @@
         }
     }
 
+    /** Promote a remote registered-drive L1 row through the normal ingest
+     * pipeline. The Rust command fetches the remote bytes, stages them under
+     * app data, and re-ingests them; no remote path is treated as local. */
+    async function promoteDriveResult(result: SearchResult): Promise<void> {
+        const parts = driveUriParts(result.location_uri);
+        if (!parts) return;
+        promoteBusy = result.location_uri;
+        try {
+            const capabilities = await invoke<{ streaming?: boolean }>('drive_capabilities', {
+                driveId: parts.driveId,
+            });
+            if (capabilities.streaming !== true) {
+                throw new Error('This provider does not support remote promotion.');
+            }
+            await invoke('index_promote_drive_archive', {
+                docId: result.doc_id,
+                driveId: parts.driveId,
+                remotePath: parts.remotePath,
+                ownerId: null,
+            });
+            error = `Promoted ${result.filename || parts.remotePath} to full local indexing.`;
+            await runSearch();
+        } catch (e: any) {
+            error = `Could not promote remote result: ${String(e?.message ?? e)}`;
+        } finally {
+            promoteBusy = null;
+        }
+    }
+
     function openDriveInContext(uri: string): void {
         const parts = driveUriParts(uri);
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
@@ -1670,6 +1700,12 @@
                                     onclick={(e) => { e.stopPropagation(); void downloadDriveFile(r.location_uri, r.filename); }}
                                     title="Download for offline use">
                                     {#if downloadBusy === r.location_uri}<Loader2 size={13} class="spin" />{:else}<Download size={13} />{/if}
+                                </button>
+                                <button class="open-btn"
+                                    disabled={promoteBusy === r.location_uri}
+                                    onclick={(e) => { e.stopPropagation(); void promoteDriveResult(r); }}
+                                    title="Promote remote result to full indexing">
+                                    {#if promoteBusy === r.location_uri}<Loader2 size={13} class="spin" />{:else}L3{/if}
                                 </button>
                                 <button class="open-btn"
                                     disabled={mutationBusy === r.location_uri}

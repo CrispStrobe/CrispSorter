@@ -3038,8 +3038,11 @@ a transfer without leaving the search/catalog workflow.
     rename, and trash actions with explicit remote-path prompts/confirmation;
     unsupported providers remain read-only and mutations re-run the search.
     ✅ 2026-08-02
-  - [ ] Promote remote L1 rows and add provider-aware duplicate selection;
-    these remain open before the whole actionable-results item can close.
+  - [x] Registered-drive L1 rows can now be promoted through the existing
+    bounded remote-fetch and full-indexing pipeline; capability checks keep
+    unsupported providers read-only. ✅ 2026-08-02
+  - [ ] Add provider-aware duplicate selection; this remains open before the
+    whole actionable-results item can close.
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
