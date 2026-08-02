@@ -241,6 +241,7 @@
         try {
             const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
             if (operation === 'delete' && !caps.delete) throw new Error('Provider does not support delete/trash.');
+            if (operation === 'delete' && !caps.reversible_trash) throw new Error('Provider does not expose recoverable trash; duplicate deletion is blocked.');
             if (operation === 'move' && !caps.move_path) throw new Error('Provider does not support move.');
             const name = parts.path.split('/').filter(Boolean).at(-1) ?? parts.path;
             let destinationPath: string | undefined;
