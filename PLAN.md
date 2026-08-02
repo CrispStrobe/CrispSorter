@@ -3092,8 +3092,9 @@ a transfer without leaving the search/catalog workflow.
     now exposes `reversible_trash` plus guarded `restore_deleted`; native
     Internxt and Filen adapters use their real provider trash/restore APIs.
     LocalDrive and generic WebDAV remain explicitly unsupported until they
-    have genuine recoverable-trash semantics. ✅ contract/native adapters
-    2026-08-02
+    have genuine recoverable-trash semantics. The duplicate pane now exposes
+    guarded restore-from-trash for providers advertising the capability. ✅
+    contract/native adapters/UI 2026-08-02
 - [x] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

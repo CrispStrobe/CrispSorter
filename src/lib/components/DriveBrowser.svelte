@@ -302,6 +302,24 @@
         finally { duplicateMutationBusy = null; }
     }
 
+    async function restoreLastCloudTrash(): Promise<void> {
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'delete');
+        if (!panel || !last || duplicateMutationBusy) return;
+        if (!window.confirm(`Restore “${last.from}” from provider trash?`)) return;
+        duplicateMutationBusy = last.from;
+        try {
+            await invoke('drive_restore_deleted', {
+                driveId: last.driveId,
+                trashPath: last.from,
+                destination: null,
+            });
+            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        } catch (e) { error = `Could not restore cloud duplicate: ${String(e)}`; }
+        finally { duplicateMutationBusy = null; }
+    }
+
     function setDuplicateDecision(decision: DuplicateDecision) {
         if (rightPanel?.source.kind !== 'DuplicateGroup') return;
         if (rightPanel.source.decision === decision) return;
@@ -464,8 +482,10 @@
                             </div>
                             {#if lastCloudMutation?.operation === 'move'}
                                 <button class="duplicate-undo" onclick={undoLastCloudMove} disabled={duplicateMutationBusy !== null}>Undo last cloud move</button>
+                            {:else if lastCloudMutation?.operation === 'delete'}
+                                <button class="duplicate-undo" onclick={restoreLastCloudTrash} disabled={duplicateMutationBusy !== null}>Restore from provider trash</button>
                             {:else}
-                                <span class="muted">Trash actions cannot be restored from this provider API.</span>
+                                <span class="muted">No reversible cloud mutation is available.</span>
                             {/if}
                         </details>
                     {/if}
