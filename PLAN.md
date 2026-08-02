@@ -1516,10 +1516,10 @@ will surface.
   index config and sync Tauri boundary. The cloud-backup pull CLI now accepts
   a one-shot `--conflict-policy newest|local|remote|keep-both|manual` override
   without rewriting Settings. ✅ 2026-08-01
-- [ ] **Frontend: conflict review panel.**  When `Manual` policy is
+- [x] **Frontend: conflict review panel.**  When `Manual` policy is
   active and unresolved conflicts exist, show a review panel listing
   each conflict with local vs remote metadata side-by-side and
-  accept/reject buttons.
+  accept/reject buttons. ✅ 2026-08-02
   - [x] Settings now loads the durable queue and renders local/remote
     title/hash/timestamp metadata with refresh and safe "Keep local"
     acknowledgement. ✅ 2026-08-01
@@ -1532,6 +1532,9 @@ will surface.
   `sync::tests::manual_conflicts_are_durable_and_deduplicated`; the exact
   manifest resolver has Python API coverage and a Rust hermetic HTTP parser
   test. ✅ 2026-08-01
+  - [ ] One-click resolution for the separate sync-pair comparison table
+    remains deferred; it is intentionally read-only until a complete remote
+    mutation transaction can be made atomic.
 
 #### Priority 5 — Share link generation
 
