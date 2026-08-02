@@ -3803,13 +3803,48 @@ session. Persisting access across launches needs **security-scoped bookmarks**.
 
 #### Phase 3 — MAS packaging
 
-- [ ] **P36.11** — `Apple Distribution` cert (app) + `3rd Party Mac Developer
-  Installer` cert (pkg), `productbuild`, `altool --type macos`. Scoped already
-  in P31's remaining items; `entitlements.plist`, `ExportOptions.plist`,
-  `PrivacyInfo.xcprivacy` and hardened runtime all exist.
-- [ ] **P36.12** — two macOS SKUs from one codebase: `.dmg` (Developer ID,
-  `--features desktop,...`, full ladder) and `.pkg` (MAS,
-  `--features desktop-mas,...`). Same source, one flag.
+> **This phase was already done, and the plan did not know it.** Checking
+> `../appstore.md` on 2026-08-02: CrispSorter has **two VALID macOS builds in
+> App Store Connect** (`v0.10.0` build #1 and `v127`), delivered 2026-07-17 by
+> a working `release-macos-appstore` job — certs, provisioning profile,
+> `productbuild`, `altool --upload-package --type macos`, the lot. So P36 was
+> written as though Phase 3 were ahead of us when it is behind us, and the
+> real content of P36.11/P36.12 is *replacing a workaround*, not building a
+> pipeline.
+
+- [x] **P36.11** — `Apple Distribution` cert (app) + `3rd Party Mac Developer
+  Installer` cert (pkg), `productbuild`, `altool --type macos`. **Already
+  shipping.** Both certs live in the `DIST_CERT_P12_BASE64` secret; MAS
+  profile `CrispSorter MacAppStore CI` (`5CYMQ538G6`); app id `6789543049`.
+  `entitlements.plist`, `ExportOptions.plist`, `PrivacyInfo.xcprivacy` and
+  hardened runtime all exist. Full detail and the gotcha list live in
+  `../appstore.md` — do not re-derive them here.
+- [x] **P36.12** — two macOS SKUs from one codebase. **Done, and it replaced
+  a real workaround.**
+
+  What the delivered pipeline did before P36: build `--features desktop`, then
+  *patch* `src-tauri/capabilities/default.json` to delete the `shell:default`
+  and `process:default` grants. The plugins were compiled in and merely
+  ungranted. That passes review, and it was the right call at the time — but
+  "compiled but ungranted" is a property nothing can check. Any new
+  `Command::new` would have shipped inside that artifact, granted or not, and
+  nothing in the tree would have said so.
+
+  `release-macos-appstore` now builds `--features desktop-mas,audio-glint,
+  pdf-zpdf`. The two plugins are not dependencies at all, and every spawn site
+  is behind `sidecars` with a guard asserting it. `drive-filen-native` and
+  `drive-internxt-native` are deliberately *not* named on that line — the
+  feature forces them, which is the point of P36.1.
+
+  ⚠️ **The capability patch is still required, and is not redundant.** With
+  the plugins absent, `shell:default` / `process:default` become
+  *unresolvable* permission strings rather than unused grants, and the build
+  fails without the patch. Tauri capability JSON has no `cfg`, so gating the
+  compile and patching the grants are two different mechanisms and both are
+  needed. "Same source, one flag" is therefore one flag *plus a JSON patch* —
+  worth knowing before someone tries `--features desktop-mas` locally and
+  hits an opaque permission error. A `tauri.mas.conf.json` pointing at a
+  second capability set would make it genuinely one flag; not done.
 
 #### Phase 4 — review items that are not about sandboxing
 
@@ -3915,10 +3950,46 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
   is one `requires:` per tab once the features exist — which is why P36.5 was
   built first.
 
+#### What actually blocks iOS (corrected 2026-08-02)
+
+P36's title — "Mac App Store first, iOS behind it" — reads as a queue. It is
+not. Per `../appstore.md`, iOS was attempted on 2026-07-17, the CI plumbing
+was fixed and merged, and the build then hit a wall that has nothing to do
+with sandboxing:
+
+**`src-tauri/Cargo.toml` has `default = []`, but `lance`, `lancedb`,
+`fastembed` (→ `ort` / ONNX Runtime), `arrow` and `crispcat` are
+non-optional.** The whole desktop index/embed stack therefore compiles on
+every build, including `aarch64-apple-ios`. First failure is cosmetic
+(`patches/lance-linalg/build.rs` has no `aarch64 + ios` branch — a one-line
+fix); the real one is that `ort` has no iOS arm64 binary, with more dominoes
+behind it.
+
+So shipping iOS means **making the index/embed stack optional behind a
+feature and cfg-gating its call sites** — a port of comparable size to all of
+P36 Phase 1, not a packaging step. Nothing in Phases 1–3 unblocks it.
+
+Two things do carry over, and are worth banking:
+
+* **P36.5's capability probe is the mechanism a reduced iOS app needs.** An
+  iOS build without the index stack must hide search, catalog, dedup and the
+  embedder settings. That is now `requires: ['build:…']` on a tab plus a
+  `cfg!` in `capabilities.rs` — the same one-line-per-surface move that fixed
+  the dead OCR tab, rather than a second sweep through the UI.
+* **The `desktop` / `sidecars` split is the shape that port wants too**: an
+  umbrella feature the code cfgs against, with the expensive optional pieces
+  hanging off it.
+
 #### Ordering, and what would make this not worth finishing
 
-Phase 1 → P36.10 (the Metal smoke test) → Phase 2 → Phase 3. Phase 4 in
-parallel with any of it.
+Phase 1 → P36.10 (the Metal smoke test) → Phase 2. **Phase 3 is already
+done** (see above). Phase 4 in parallel with any of it.
+
+P36.10 has become the only thing gating Phase 2, and it is now cheaper to run
+than when this was written: `release-macos-appstore` already produces a
+signed, sandboxed, hardened-runtime `.app` on every `mac_appstore` dispatch.
+The smoke test is "run that artifact and ask it for one local inference",
+not "build and sign something first".
 
 Phase 1 is worth doing **regardless of whether MAS ever ships**: P36.5 fixes
 the iOS dead tabs and the `isDesktop` bug, P36.3 removes a runtime dependency
