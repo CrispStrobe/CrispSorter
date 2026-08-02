@@ -121,6 +121,10 @@ impl GoogleDriveDrive {
     /// Resolve a path like "Documents/Work/report.pdf" to a Google Drive
     /// file ID by walking the folder hierarchy from root.
     fn resolve_id(&self, path: &Path) -> Result<String> {
+        self.resolve_id_with_trash(path, false)
+    }
+
+    fn resolve_id_with_trash(&self, path: &Path, include_trashed: bool) -> Result<String> {
         let rel = path.to_string_lossy();
         let rel = rel.trim_start_matches('/');
         if rel.is_empty() || rel == "." {
@@ -133,8 +137,10 @@ impl GoogleDriveDrive {
         for (i, name) in components.iter().enumerate() {
             let escaped = name.replace('\'', "\\'");
             let q = format!(
-                "'{}' in parents and name = '{}' and trashed = false",
-                parent_id, escaped
+                "'{}' in parents and name = '{}' and trashed = {}",
+                parent_id,
+                escaped,
+                if include_trashed { "true" } else { "false" }
             );
             let url = format!(
                 "{}/files?q={}&fields=files(id,name)&pageSize=1",
@@ -195,6 +201,7 @@ impl CloudDrive for GoogleDriveDrive {
             copy: true,
             share_links: true,
             versions: true,
+            reversible_trash: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -405,6 +412,29 @@ impl CloudDrive for GoogleDriveDrive {
 
         if !resp.status().is_success() && resp.status().as_u16() != 404 {
             return Err(anyhow!("Google Drive delete: HTTP {}", resp.status()));
+        }
+        Ok(())
+    }
+
+    fn restore_deleted(&self, trash_path: &Path, destination: Option<&Path>) -> Result<()> {
+        let file_id = self.resolve_id_with_trash(trash_path, true)?;
+        let mut query = Vec::new();
+        let body = serde_json::json!({"trashed": false});
+        if let Some(destination) = destination {
+            let parent_id = self.resolve_id(destination)?;
+            query.push(("addParents", parent_id));
+        }
+        let url = format!("{}/files/{}", self.api_base, file_id);
+        let response = self
+            .client
+            .patch(&url)
+            .query(&query)
+            .header("Authorization", self.auth_header())
+            .json(&body)
+            .send()
+            .with_context(|| format!("Google Drive restore trash: {}", trash_path.display()))?;
+        if !response.status().is_success() {
+            return Err(anyhow!("Google Drive restore trash: HTTP {}", response.status()));
         }
         Ok(())
     }
@@ -635,6 +665,38 @@ mod tests {
         assert!(capabilities.share_links);
         assert!(capabilities.versions);
         assert!(!capabilities.streaming);
+        assert!(capabilities.reversible_trash);
+    }
+
+    #[test]
+    fn restore_deleted_clears_google_trash_and_can_add_parent() {
+        let mut server = Server::new();
+        let resolve = server
+            .mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::Any)
+            .expect(2)
+            .with_status(200)
+            .with_body(r#"{"files":[{"id":"file-1","name":"report.pdf"}]}"#)
+            .create();
+        let restore = server
+            .mock("PATCH", "/drive/v3/files/file-1")
+            .match_query(mockito::Matcher::UrlEncoded("addParents".into(), "archive".into()))
+            .match_body(mockito::Matcher::JsonString(r#"{"trashed":false}"#.into()))
+            .with_status(200)
+            .create();
+        let drive = GoogleDriveDrive::with_api_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/drive/v3", server.url()),
+        );
+        drive
+            .restore_deleted(Path::new("report.pdf"), Some(Path::new("archive")))
+            .unwrap();
+        resolve.assert();
+        restore.assert();
     }
 
     #[test]
