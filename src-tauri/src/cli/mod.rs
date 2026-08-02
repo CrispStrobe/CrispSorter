@@ -11724,8 +11724,9 @@ fn cmd_drives(
                 return Err(format!("{} does not support listing", drive.drive_type().label()));
             }
             let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};
-            let rows: Vec<_> = crate::drives::walk(
-                drive.as_ref(), std::path::Path::new(&path), Some(max_depth.min(32)), &mut walk_errors,
+            let scan_limit = limit.saturating_mul(100).max(limit);
+            let rows: Vec<_> = crate::drives::walk_limited(
+                drive.as_ref(), std::path::Path::new(&path), Some(max_depth.min(32)), Some(scan_limit), &mut walk_errors,
             ).into_iter().filter(|entry| entry.path.file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)

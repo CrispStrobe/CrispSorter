@@ -594,8 +594,9 @@ pub async fn drive_search(
     }
     let mut errors = |_path: &Path, _error: anyhow::Error| {};
     let depth = max_depth.unwrap_or(8).min(32);
-    let entries = super::walk(&*drive, Path::new(&root), Some(depth), &mut errors);
     let limit = max_results.unwrap_or(100).clamp(1, 1000);
+    let scan_limit = limit.saturating_mul(100).max(limit);
+    let entries = super::walk_limited(&*drive, Path::new(&root), Some(depth), Some(scan_limit), &mut errors);
     let content = content.unwrap_or(false);
     Ok(entries
         .into_iter()

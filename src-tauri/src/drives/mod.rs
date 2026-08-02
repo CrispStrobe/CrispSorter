@@ -367,10 +367,26 @@ pub fn walk(
     max_depth: Option<usize>,
     on_error: &mut dyn FnMut(&Path, anyhow::Error),
 ) -> Vec<WalkEntry> {
+    walk_limited(drive, root, max_depth, None, on_error)
+}
+
+/// Recursive walk with an optional file-entry scan budget. The budget is
+/// useful for interactive provider search, where a result limit must also
+/// prevent enumerating an unbounded remote tree.
+pub fn walk_limited(
+    drive: &dyn CloudDrive,
+    root: &Path,
+    max_depth: Option<usize>,
+    max_files: Option<usize>,
+    on_error: &mut dyn FnMut(&Path, anyhow::Error),
+) -> Vec<WalkEntry> {
     let mut out = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
     while let Some((dir, depth)) = stack.pop() {
+        if max_files.is_some_and(|limit| out.len() >= limit) {
+            break;
+        }
         if let Some(max) = max_depth {
             if depth > max {
                 continue;
@@ -384,6 +400,9 @@ pub fn walk(
             }
         };
         for ent in entries {
+            if max_files.is_some_and(|limit| out.len() >= limit) {
+                break;
+            }
             // Build the full path relative to the drive root.
             let full = if dir.as_os_str().is_empty() {
                 PathBuf::from(&ent.name)
