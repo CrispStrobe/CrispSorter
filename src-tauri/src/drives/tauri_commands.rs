@@ -549,6 +549,54 @@ pub async fn drive_list_dir(
         .map_err(|e| e.to_string())
 }
 
+/// Search provider-visible paths by filename. This deliberately does not
+/// claim remote full-text support: providers expose listing, not content
+/// indexing. Results are bounded to keep a slow/large drive responsive.
+#[tauri::command]
+pub async fn drive_search(
+    state: State<'_, AppState>,
+    drive_id: String,
+    root: String,
+    query: String,
+    max_depth: Option<usize>,
+    max_results: Option<usize>,
+) -> Result<Vec<super::WalkEntry>, String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = instantiate_registered(&state, cfg).await?;
+    if !drive.capabilities().list {
+        return Err(format!("{} does not support listing", drive.drive_type().label()));
+    }
+    let mut errors = |_path: &Path, _error: anyhow::Error| {};
+    let entries = super::walk(&*drive, Path::new(&root), max_depth.or(Some(8)), &mut errors);
+    let limit = max_results.unwrap_or(100).clamp(1, 1000);
+    Ok(entries
+        .into_iter()
+        .filter(|entry| {
+            entry.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_lowercase().contains(&query))
+                .unwrap_or(false)
+        })
+        .take(limit)
+        .collect())
+}
+
 /// Stat a file or directory on a drive.
 #[tauri::command]
 pub async fn drive_stat(

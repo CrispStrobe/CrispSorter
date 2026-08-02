@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
-    import { ChevronRight, Copy, Folder, FolderPlus, RefreshCw, Trash2 } from 'lucide-svelte';
+    import { ChevronRight, Copy, Folder, FolderPlus, Loader2, RefreshCw, Search, Trash2 } from 'lucide-svelte';
     import {
         availableDriveActions,
         joinDrivePath,
@@ -43,6 +43,9 @@
     let versionsError = $state('');
     let restoringVersion = $state<string | null>(null);
     let duplicateMutationBusy = $state<string | null>(null);
+    let driveSearchQuery = $state('');
+    let driveSearchBusy = $state(false);
+    let driveSearchResults = $state<Array<{ path: string; is_dir: boolean; size: number | null; mtime_unix: number | null }>>([]);
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
     let duplicateMutationAudit = $state<DuplicateMutationAudit[]>([]);
@@ -61,6 +64,26 @@
             entries = [];
         } finally {
             loading = false;
+        }
+    }
+
+    async function searchDrive() {
+        if (!driveId || !driveSearchQuery.trim()) return;
+        driveSearchBusy = true;
+        error = '';
+        try {
+            driveSearchResults = await invoke('drive_search', {
+                driveId,
+                root: path,
+                query: driveSearchQuery.trim(),
+                maxDepth: 8,
+                maxResults: 100,
+            });
+        } catch (e) {
+            error = `Could not search drive: ${String(e)}`;
+            driveSearchResults = [];
+        } finally {
+            driveSearchBusy = false;
         }
     }
 
@@ -333,8 +356,13 @@
                 <option value="" disabled>Select drive</option>
                 {#each drives as drive}<option value={drive.id}>{drive.label} ({drive.kind})</option>{/each}
             </select>
-            <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
-        </div>
+        <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
+        <input class="drive-search" bind:value={driveSearchQuery} placeholder="Search names…"
+            onkeydown={(event) => event.key === 'Enter' && void searchDrive()} />
+        <button onclick={searchDrive} disabled={driveSearchBusy || !driveSearchQuery.trim()}>
+            {#if driveSearchBusy}<Loader2 size={14} class="spin" />{:else}<Search size={14} />{/if} Search
+        </button>
+    </div>
     </header>
 
     <div class="browser-toolbar">
@@ -352,6 +380,21 @@
     </div>
 
     {#if error}<div class="browser-error">{error}</div>{/if}
+    {#if driveSearchQuery.trim() && !driveSearchBusy}
+        <div class="drive-search-results">
+            <strong>Filename matches ({driveSearchResults.length})</strong>
+            {#if driveSearchResults.length === 0}
+                <span class="muted">No provider-visible matches.</span>
+            {:else}
+                {#each driveSearchResults as result (result.path)}
+                    <button class="drive-search-result" onclick={() => { path = normalizeDrivePath(result.path); void refresh(); }}>
+                        <span>{result.path}</span>
+                        {#if result.size !== null}<span class="entry-size">{result.size.toLocaleString()} B</span>{/if}
+                    </button>
+                {/each}
+            {/if}
+        </div>
+    {/if}
     {#if !drives.length && !loading}<div class="empty">No registered drives yet.</div>
     {:else if loading}<div class="empty">Loading…</div>
     {:else}<div class="entry-list">
@@ -508,6 +551,9 @@
     .browser-controls { display: flex; gap: 8px; } select, button { border: 1px solid var(--border, #3a3a44); background: var(--surface, #202027); color: inherit; border-radius: 6px; padding: 7px 9px; }
     button { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; } button:disabled { opacity: .45; cursor: default; } .icon-button { padding: 7px; }
     .browser-toolbar { flex-wrap: wrap; padding: 8px; background: var(--surface, #202027); border-radius: 8px; }
+    .drive-search { min-width: 180px; flex: 1; padding: 7px 9px; border: 1px solid var(--border, #3a3a44); border-radius: 6px; background: var(--surface, #202027); color: inherit; }
+    .drive-search-results { grid-column: 1 / -1; display: grid; gap: 5px; padding: 8px; border: 1px solid var(--border, #3a3a44); border-radius: 8px; }
+    .drive-search-result { width: 100%; justify-content: space-between; text-align: left; font-family: ui-monospace, monospace; font-size: .78rem; }
     .crumb { border: 0; background: transparent; padding: 3px 4px; } .crumb.current { color: var(--text-muted, #8a8a96); } .toolbar-spacer { flex: 1; }
     .entry-list { grid-column: 1; grid-row: 4; display: flex; flex-direction: column; border: 1px solid var(--border, #3a3a44); border-radius: 8px; overflow: hidden; }
     .entry { width: 100%; border: 0; border-bottom: 1px solid var(--border, #3a3a44); border-radius: 0; text-align: left; } .entry:last-child { border-bottom: 0; } .entry.selected { background: #263b58; }

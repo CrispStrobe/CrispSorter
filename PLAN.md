@@ -3445,7 +3445,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Configurable extension-to-viewer-kind associations are persisted,
     validated, and applied by the universal viewer; malformed entries are
     ignored and unsupported kinds cannot be selected. ✅ 2026-08-02
-  - [ ] Richer provider full-text search remains open.
+  - [>] Registered drives now provide bounded recursive filename/path search
+    through their listing capability; provider content/full-text search remains
+    open where the remote API does not expose it. ✅ 2026-08-02
 - [ ] Add FUSE write support only after the mutation API and queue are stable;
   retain read-only FUSE for indexing during the transition.
 - [ ] Add local REST API, plugin hooks, cron/webhook automation, and system
