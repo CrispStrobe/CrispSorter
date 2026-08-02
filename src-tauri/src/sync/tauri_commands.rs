@@ -176,9 +176,9 @@ pub async fn backup_job_restore(
     if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
     let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
     let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-    let source = std::sync::Arc::clone(&drive);
-    let transfer = state.transfer_queue.clone().submit_download(job.drive_id.clone(), remote,
-        Some(expected), move |path| source.read_file(path));
+    let transfer = state.transfer_queue.clone().submit_drive_download(
+        job.drive_id.clone(), drive, remote, Some(expected),
+    );
     let data = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     if data.len() as u64 != expected {
         return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
@@ -422,10 +422,8 @@ pub async fn sync_pair_pull(
     for entry in &remote {
         let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
         let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-        let drive_for_download = drive.clone();
-        let transfer = state.transfer_queue.clone().submit_download(
-            pair.drive_id.clone(), remote_path,
-            Some(entry.size), move |path| drive_for_download.read_file(path),
+        let transfer = state.transfer_queue.clone().submit_drive_download(
+            pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
         );
         let bytes = match transfer.handle.await {
             Ok(Ok(bytes)) => bytes,
@@ -550,12 +548,8 @@ pub async fn sync_pair_push(
         let retry_data = bytes.clone();
         let retry_path = remote_path.clone();
         let retry_drive_id = pair.drive_id.clone();
-        let drive_for_upload = drive.clone();
-        let transfer = state.transfer_queue.clone().submit_upload(
-            pair.drive_id.clone(),
-            remote_path,
-            bytes,
-            move |path, data| drive_for_upload.write_file(path, data),
+        let transfer = state.transfer_queue.clone().submit_drive_upload(
+            pair.drive_id.clone(), drive.clone(), remote_path, bytes,
         );
         match transfer.handle.await {
             Ok(Ok(_)) => {

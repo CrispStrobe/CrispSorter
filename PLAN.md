@@ -1380,8 +1380,13 @@ independently with no shared concurrency limit or retry policy.
   CLI cloud-backup shard backup/restore and index archive promotion reads
   now use the queue as well. The lower-level FUSE read callback remains
   intentionally direct because its synchronous filesystem trait cannot
-  safely await the async queue; provider-internal calls still need an
-  explicit shared-queue boundary.
+  safely await the async queue. Added `submit_drive_upload` and
+  `submit_drive_download` adapters so owned `Arc<dyn CloudDrive>` call sites
+  share one queue boundary instead of duplicating provider closures. The
+  remaining provider-internal raw-method split is deferred: implementing it
+  safely requires changing the synchronous trait to carry an owned connector
+  handle, otherwise a provider method cannot capture `&self` in the queue's
+  `'static` worker closure without recursion or unsafe lifetime extension.
 - [x] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
   speed, cancel button). It polls the shared `transfer_queue_status`

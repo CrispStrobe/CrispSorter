@@ -927,13 +927,9 @@ pub async fn drive_read_file(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive: Arc<dyn super::CloudDrive> = Arc::from(instantiate_registered(&state, cfg).await?);
     let path = std::path::PathBuf::from(path);
-    let path_for_transfer = path.clone();
-    let transfer = state
-        .transfer_queue
-        .clone()
-        .submit_download(drive_id, path, None, move |_| {
-            drive.read_file(&path_for_transfer)
-        });
+    let transfer = state.transfer_queue.clone().submit_drive_download(
+        drive_id, drive, path, None,
+    );
     match transfer.handle.await {
         Ok(Ok(data)) => Ok(data),
         Ok(Err(error)) => Err(error.to_string()),
@@ -968,13 +964,10 @@ pub async fn drive_write_file(
     let retry_data = data.clone();
     let retry_path = path.clone();
     let retry_drive_id = drive_id.clone();
-    let transfer =
-        state
-            .transfer_queue
-            .clone()
-            .submit_upload(drive_id, path, data, move |path, data| {
-                drive.write_file(path, data)
-            });
+    let transfer = state
+        .transfer_queue
+        .clone()
+        .submit_drive_upload(drive_id, drive, path, data);
     match transfer.handle.await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(error)) => {

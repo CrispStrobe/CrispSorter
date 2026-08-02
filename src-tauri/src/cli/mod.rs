@@ -5418,9 +5418,9 @@ async fn cmd_sync_backup_job(
                 };
                 let local_hash = format!("{:x}", Sha256::digest(&data));
                 let remote = snapshot.join(&relative);
-                let target = Arc::clone(&drive);
-                let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
-                    move |path, data| target.write_file(path, data));
+                let transfer = queue.submit_drive_upload(
+                    job.drive_id.clone(), Arc::clone(&drive), remote.clone(), data,
+                );
                 match transfer.handle.await {
                     Ok(Ok(_)) if !job.verify_integrity => { completed += 1; bytes += size; }
                     Ok(Ok(_)) => match drive.stat(&remote) {
@@ -5523,9 +5523,9 @@ async fn cmd_sync_backup_job(
             if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
             let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
             let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-            let source = Arc::clone(&drive);
-            let transfer = TransferQueue::shared().submit_download(job.drive_id.clone(), remote, Some(expected),
-                move |path| source.read_file(path));
+            let transfer = TransferQueue::shared().submit_drive_download(
+                job.drive_id.clone(), Arc::clone(&drive), remote, Some(expected),
+            );
             let data = transfer.handle.await.map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
             if data.len() as u64 != expected {
@@ -5807,9 +5807,9 @@ async fn cmd_sync_pair(
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
                 let bytes = std::fs::read(&local).map_err(|e| format!("reading {}: {e}", local.display()))?;
                 let remote = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
-                let drive_for_upload = drive.clone();
-                let transfer = queue.submit_upload(pair.drive_id.clone(), remote, bytes,
-                    move |path, data| drive_for_upload.write_file(path, data));
+                let transfer = queue.submit_drive_upload(
+                    pair.drive_id.clone(), drive.clone(), remote, bytes,
+                );
                 match transfer.handle.await {
                     Ok(Ok(_)) => { uploaded += 1; watermark = watermark.max(entry.mtime_unix); }
                     Ok(Err(error)) => return Err(error.to_string()),
@@ -5867,8 +5867,9 @@ async fn cmd_sync_pair(
             for entry in &remote {
                 let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-                let drive_for_download = drive.clone();
-                let transfer = queue.submit_download(pair.drive_id.clone(), remote_path, Some(entry.size), move |path| drive_for_download.read_file(path));
+                let transfer = queue.submit_drive_download(
+                    pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
+                );
                 let bytes = match transfer.handle.await {
                     Ok(Ok(bytes)) => bytes,
                     Ok(Err(error)) => return Err(error.to_string()),

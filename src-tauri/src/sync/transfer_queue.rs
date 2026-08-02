@@ -375,6 +375,34 @@ impl TransferQueue {
         }
     }
 
+    /// Submit a transfer against an owned drive handle. Keeping this adapter
+    /// here makes the queue boundary explicit for provider call sites and
+    /// avoids repeating subtly different `Arc` capture closures.
+    pub fn submit_drive_upload(
+        &self,
+        drive_id: String,
+        drive: Arc<dyn crate::drives::CloudDrive>,
+        remote_path: PathBuf,
+        data: Vec<u8>,
+    ) -> TransferHandle {
+        self.submit_upload(drive_id, remote_path, data, move |path, data| {
+            drive.write_file(path, data)
+        })
+    }
+
+    /// Download through an owned provider handle and the shared queue.
+    pub fn submit_drive_download(
+        &self,
+        drive_id: String,
+        drive: Arc<dyn crate::drives::CloudDrive>,
+        remote_path: PathBuf,
+        size_hint: Option<u64>,
+    ) -> TransferHandle {
+        self.submit_download(drive_id, remote_path, size_hint, move |path| {
+            drive.read_file(path)
+        })
+    }
+
     /// Run an upload from a synchronous caller while still using this queue's
     /// semaphore, retry policy, and job registry.  A short-lived runtime is
     /// isolated on a worker thread so this is safe from FUSE/provider code
