@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { decodeDuplicateAudit, encodeDuplicateAudit, latestDuplicateDecision } from './duplicateAudit';
+import {
+    decodeDuplicateAudit,
+    decodeDuplicateMutationAudit,
+    encodeDuplicateAudit,
+    latestDuplicateDecision,
+} from './duplicateAudit';
 
 describe('duplicate decision audit persistence', () => {
     it('round-trips valid records and rejects malformed entries', () => {
@@ -36,5 +41,23 @@ describe('duplicate decision audit persistence', () => {
         ];
         expect(latestDuplicateDecision(entries, 'g1')).toBe('keep_destination');
         expect(latestDuplicateDecision(entries, 'missing')).toBeNull();
+    });
+
+    it('validates and bounds cloud mutation audit records', () => {
+        const records = Array.from({ length: 202 }, (_, at) => ({
+            groupId: `g${at}`,
+            driveId: 'drive-1',
+            operation: 'move' as const,
+            from: `/old/${at}`,
+            to: `/new/${at}`,
+            at,
+        }));
+        const decoded = decodeDuplicateMutationAudit(JSON.stringify(records));
+        expect(decoded).toHaveLength(200);
+        expect(decoded[0].groupId).toBe('g2');
+        expect(decodeDuplicateMutationAudit(JSON.stringify([
+            { groupId: 'bad', driveId: 'd', operation: 'move', from: '/a', to: '/b', at: 'now' },
+            { groupId: 'bad', driveId: 'd', operation: 'unknown', from: '/a', to: '/b', at: 1 },
+        ]))).toEqual([]);
     });
 });

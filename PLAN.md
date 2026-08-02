@@ -3044,7 +3044,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Provider-aware duplicate handling now keeps `crisp+drive://`
     candidates in the registered-drive browser and exposes capability-gated
     move/trash controls with explicit confirmation. ✅ 2026-08-02
-  - [ ] Provider-aware duplicate mutation undo/audit integration remains open.
+  - [x] Provider-aware duplicate mutations now persist a validated audit;
+    cloud moves can be undone by reversing the move, while trash remains
+    explicitly non-undoable until providers expose restore semantics.
+    ✅ 2026-08-02
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,

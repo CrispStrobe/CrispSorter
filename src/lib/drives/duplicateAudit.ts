@@ -7,7 +7,17 @@ export type DuplicateDecisionAudit = {
     at: number;
 };
 
+export type DuplicateMutationAudit = {
+    groupId: string;
+    driveId: string;
+    operation: 'move' | 'delete';
+    from: string;
+    to: string | null;
+    at: number;
+};
+
 const STORAGE_KEY = 'crispsorter.duplicate-decision-audit.v1';
+const MUTATION_STORAGE_KEY = 'crispsorter.duplicate-mutation-audit.v1';
 const decisions = new Set<DuplicateDecision>([
     'review', 'keep_source', 'keep_destination', 'keep_both',
 ]);
@@ -51,5 +61,35 @@ export function loadDuplicateAudit(): DuplicateDecisionAudit[] {
 
 export function saveDuplicateAudit(entries: DuplicateDecisionAudit[]): void {
     try { localStorage.setItem(STORAGE_KEY, encodeDuplicateAudit(entries)); }
+    catch { /* private browsing or non-browser preview */ }
+}
+
+export function decodeDuplicateMutationAudit(raw: string | null): DuplicateMutationAudit[] {
+    if (!raw) return [];
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((entry): entry is DuplicateMutationAudit => {
+            if (!entry || typeof entry !== 'object') return false;
+            const value = entry as Record<string, unknown>;
+            return typeof value.groupId === 'string'
+                && typeof value.driveId === 'string'
+                && (value.operation === 'move' || value.operation === 'delete')
+                && typeof value.from === 'string'
+                && (value.to === null || typeof value.to === 'string')
+                && typeof value.at === 'number' && Number.isFinite(value.at);
+        }).slice(-200);
+    } catch {
+        return [];
+    }
+}
+
+export function loadDuplicateMutationAudit(): DuplicateMutationAudit[] {
+    try { return decodeDuplicateMutationAudit(localStorage.getItem(MUTATION_STORAGE_KEY)); }
+    catch { return []; }
+}
+
+export function saveDuplicateMutationAudit(entries: DuplicateMutationAudit[]): void {
+    try { localStorage.setItem(MUTATION_STORAGE_KEY, JSON.stringify(entries.slice(-200))); }
     catch { /* private browsing or non-browser preview */ }
 }

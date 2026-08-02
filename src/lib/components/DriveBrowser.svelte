@@ -13,8 +13,11 @@
     } from '$lib/drives/browser';
     import {
         loadDuplicateAudit,
+        loadDuplicateMutationAudit,
         latestDuplicateDecision,
         saveDuplicateAudit,
+        saveDuplicateMutationAudit,
+        type DuplicateMutationAudit,
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
@@ -42,6 +45,7 @@
     let duplicateMutationBusy = $state<string | null>(null);
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
+    let duplicateMutationAudit = $state<DuplicateMutationAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
     async function refresh() {
@@ -229,7 +233,35 @@
                         : item);
                 rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
             }
+            if (rightPanel?.source.kind === 'DuplicateGroup') {
+                const groupId = rightPanel.source.groupId;
+                duplicateMutationAudit = [...duplicateMutationAudit, {
+                    groupId,
+                    driveId: parts.driveId,
+                    operation,
+                    from: parts.path,
+                    to: destinationPath ?? null,
+                    at: Date.now(),
+                }].slice(-200);
+                saveDuplicateMutationAudit(duplicateMutationAudit);
+            }
         } catch (e) { error = `Could not ${operation} cloud duplicate: ${String(e)}`; }
+        finally { duplicateMutationBusy = null; }
+    }
+
+    async function undoLastCloudMove(): Promise<void> {
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'move');
+        if (!panel || !last?.to || duplicateMutationBusy) return;
+        duplicateMutationBusy = last.to;
+        try {
+            await invoke('drive_move_path', { driveId: last.driveId, source: last.to, destination: last.from });
+            const current = panel.items.map((item) => item.path === `crisp+drive://${last.driveId}${last.to}`
+                ? { ...item, path: `crisp+drive://${last.driveId}${last.from}` } : item);
+            rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
+            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
@@ -269,6 +301,7 @@
 
     onMount(() => {
         duplicateAudit = loadDuplicateAudit();
+        duplicateMutationAudit = loadDuplicateMutationAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
             if (panel.source.kind === 'DuplicateGroup') {
                 const restored = latestDuplicateDecision(duplicateAudit, panel.source.groupId);
@@ -355,6 +388,26 @@
                     </select>
                     {#if duplicateAudit.some((entry) => entry.groupId === dupSource.groupId)}
                         <button class="duplicate-undo" onclick={undoDuplicateDecision}>Undo last decision</button>
+                    {/if}
+                    {@const cloudMutations = duplicateMutationAudit.filter((entry) => entry.groupId === dupSource.groupId)}
+                    {#if cloudMutations.length > 0}
+                        {@const lastCloudMutation = cloudMutations.at(-1)}
+                        <details class="duplicate-audit">
+                            <summary>Cloud mutation audit ({cloudMutations.length})</summary>
+                            <div class="audit-list">
+                                {#each cloudMutations.slice().reverse() as entry}
+                                    <div class="audit-entry">
+                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : `${entry.from} → provider trash`}</span>
+                                        <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
+                                    </div>
+                                {/each}
+                            </div>
+                            {#if lastCloudMutation?.operation === 'move'}
+                                <button class="duplicate-undo" onclick={undoLastCloudMove} disabled={duplicateMutationBusy !== null}>Undo last cloud move</button>
+                            {:else}
+                                <span class="muted">Trash actions cannot be restored from this provider API.</span>
+                            {/if}
+                        </details>
                     {/if}
                 </div>
                 <ul class="duplicate-context-list">
