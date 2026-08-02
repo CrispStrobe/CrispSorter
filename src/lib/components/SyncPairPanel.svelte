@@ -24,7 +24,9 @@
     let policy = $state<Policy>('manual');
     let rows = $state<Row[]>([]);
     let loading = $state(false);
+    let applying = $state(false);
     let error = $state('');
+    let message = $state('');
 
     async function refreshPairs() {
         try {
@@ -39,6 +41,7 @@
         if (!selectedId) return;
         loading = true;
         error = '';
+        message = '';
         try {
             rows = await invoke<Row[]>('sync_pair_compare', { id: selectedId, policy });
         } catch (e) {
@@ -46,6 +49,33 @@
             rows = [];
         } finally {
             loading = false;
+        }
+    }
+
+    async function applyPolicy() {
+        if (!selectedId || applying) return;
+        if (policy !== 'local_wins' && policy !== 'remote_wins') {
+            error = 'One-click resolution currently supports only local-wins and remote-wins; review the other policies per file.';
+            return;
+        }
+        const direction = policy === 'local_wins' ? 'push local changes' : 'pull remote changes';
+        if (!window.confirm(`Apply ${policy.replaceAll('_', ' ')} and ${direction} for the selected sync pair?`)) return;
+        applying = true;
+        error = '';
+        message = '';
+        try {
+            const command = policy === 'local_wins' ? 'sync_pair_push' : 'sync_pair_pull';
+            const result = await invoke<{ planned: number; uploaded?: number; downloaded?: number }>(command, {
+                id: selectedId,
+                dryRun: false,
+                conflictPolicy: policy,
+            });
+            message = `Applied ${policy.replaceAll('_', ' ')}: ${result.uploaded ?? result.downloaded ?? 0} item(s) changed.`;
+            await compare();
+        } catch (e) {
+            error = `Could not apply sync-pair policy: ${String(e)}`;
+        } finally {
+            applying = false;
         }
     }
 
@@ -81,10 +111,14 @@
                 <option value="remote_wins">Remote wins</option>
                 <option value="keep_both">Keep both</option>
             </select>
-            <button type="button" onclick={compare} disabled={loading}>{loading ? 'Comparing…' : 'Compare'}</button>
+            <button type="button" onclick={compare} disabled={loading || applying}>{loading ? 'Comparing…' : 'Compare'}</button>
+            <button type="button" onclick={applyPolicy} disabled={loading || applying || rows.length === 0}>
+                {applying ? 'Applying…' : 'Apply policy'}
+            </button>
         </div>
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
+    {#if message}<p class="success">{message}</p>{/if}
     {#if rows.length > 0}
         <div class="comparison-table-wrap">
             <table>
@@ -122,4 +156,5 @@
     .action-unchanged { color: #86efac; } .action-manual_review { color: #fbbf24; }
     .action-use_remote, .action-remote_only { color: #93c5fd; } .action-use_local, .action-local_only { color: #c4b5fd; }
     .error { color: #fca5a5; font-size: .82rem; }
+    .success { color: #86efac; font-size: .82rem; }
 </style>

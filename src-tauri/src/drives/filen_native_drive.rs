@@ -150,6 +150,20 @@ impl CloudDrive for NativeFilenDrive {
         let (_s, c, item) = self.resolve(path)?;
         c.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })
     }
+
+    fn restore_deleted(&self, trash_path: &Path, _destination: Option<&Path>) -> Result<()> {
+        let (_session, client) = self.parts()?;
+        let name = trash_path
+            .file_name()
+            .ok_or_else(|| anyhow!("Filen trash path has no item name"))?
+            .to_string_lossy();
+        let item = client
+            .list_trash()?
+            .into_iter()
+            .find(|item| item.name == name)
+            .ok_or_else(|| anyhow!("Filen trash item not found: {}", trash_path.display()))?;
+        client.restore(&item.uuid, if item.is_dir { "folder" } else { "file" })
+    }
     fn stat(&self, path: &Path) -> Result<FileStat> {
         let (_s, _c, item) = self.resolve(path)?;
         Ok(FileStat {
@@ -174,6 +188,7 @@ impl CloudDrive for NativeFilenDrive {
             streaming: true,
             resumable_upload: true,
             resumable_download: true,
+            reversible_trash: true,
             ..DriveCapabilities::basic()
         }
     }

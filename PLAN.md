@@ -1367,7 +1367,7 @@ independently with no shared concurrency limit or retry policy.
   `TransferState` (Queued/Active/Retrying/Done/Failed/Cancelled).
   Backoff: `min(2^attempt * 500ms, 30s)` with jitter; transient network,
   timeout, and 5xx-style failures are retried while the semaphore permit is
-  released.  `active_count()` for monitoring.  10 unit tests (concurrency
+  released.  `active_count()` for monitoring.  11 unit tests (concurrency
   limit, 4th-job-waits, progress reporting, failure state, transient retry
   recovery, cancellation during retry backoff, serde round-trip).
 - [>] **Wire all 5 CloudDrive impls through the queue.**  Replace
@@ -1380,8 +1380,13 @@ independently with no shared concurrency limit or retry policy.
   CLI cloud-backup shard backup/restore and index archive promotion reads
   now use the queue as well. The lower-level FUSE read callback remains
   intentionally direct because its synchronous filesystem trait cannot
-  safely await the async queue; provider-internal calls still need an
-  explicit shared-queue boundary.
+  safely await the async queue. Added `submit_drive_upload` and
+  `submit_drive_download` adapters so owned `Arc<dyn CloudDrive>` call sites
+  share one queue boundary instead of duplicating provider closures. The
+  remaining provider-internal raw-method split is deferred: implementing it
+  safely requires changing the synchronous trait to carry an owned connector
+  handle, otherwise a provider method cannot capture `&self` in the queue's
+  `'static` worker closure without recursion or unsafe lifetime extension.
 - [x] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
   speed, cancel button). It polls the shared `transfer_queue_status`
@@ -1477,6 +1482,8 @@ If the network drops mid-sync, operations are lost.
   - [x] Startup maintenance now applies independent 60s-to-600s exponential
     backoff to staged provider replay failures while manifest draining remains
     on its regular 30s ticker. ✅ 2026-08-01
+  - [x] Provider replay now uses the centralized owned-drive transfer adapter,
+    keeping manual replay and startup replay on the same queue boundary. ✅ 2026-08-02
 - [x] **Frontend: offline indicator.**  Transfer status header shows
   the queued count even when collapsed; expanding opens the per-operation
   list and provides an explicit "Retry now" action.
@@ -1516,10 +1523,10 @@ will surface.
   index config and sync Tauri boundary. The cloud-backup pull CLI now accepts
   a one-shot `--conflict-policy newest|local|remote|keep-both|manual` override
   without rewriting Settings. ✅ 2026-08-01
-- [ ] **Frontend: conflict review panel.**  When `Manual` policy is
+- [x] **Frontend: conflict review panel.**  When `Manual` policy is
   active and unresolved conflicts exist, show a review panel listing
   each conflict with local vs remote metadata side-by-side and
-  accept/reject buttons.
+  accept/reject buttons. ✅ 2026-08-02
   - [x] Settings now loads the durable queue and renders local/remote
     title/hash/timestamp metadata with refresh and safe "Keep local"
     acknowledgement. ✅ 2026-08-01
@@ -1532,6 +1539,9 @@ will surface.
   `sync::tests::manual_conflicts_are_durable_and_deduplicated`; the exact
   manifest resolver has Python API coverage and a Rust hermetic HTTP parser
   test. ✅ 2026-08-01
+  - [ ] One-click resolution for the separate sync-pair comparison table
+    remains deferred; it is intentionally read-only until a complete remote
+    mutation transaction can be made atomic.
 
 #### Priority 5 — Share link generation
 
@@ -2753,7 +2763,7 @@ resource endpoints. The work is generalising one provider into *any* provider.
 
 #### Items
 
-- [ ] **P35.1 — Generic remote-provider plugin surface.** A manifest (`id`,
+- [>] **P35.1 — Generic remote-provider plugin surface.** A manifest (`id`,
   display name, base-URL setting, auth kind, advertised capabilities,
   contributed `TabDef`s, entry component) plus a small generic Rust surface —
   configure, login, probe, request — replacing the current provider-specific
@@ -2768,6 +2778,8 @@ resource endpoints. The work is generalising one provider into *any* provider.
   through the transport; credentials retrievable only by the plugin id that
   stored them; explicit install-time consent naming host and capabilities. A
   plugin surface that can reach `127.0.0.1` freely is a local-service scanner.
+  Implementation notes and the provider/security handover are consolidated in
+  [`docs/cloud-provider-parity.md`](docs/cloud-provider-parity.md).
 
 - [ ] **P35.2 — The image-service client as the first plugin, in a private
   repo.** Manifest + UI + client, targeting P35.1. Private because the service
@@ -3077,10 +3089,17 @@ a transfer without leaving the search/catalog workflow.
   - [x] The legacy duplicate tab continues to generate reviewable,
     platform-specific deletion scripts; scripts never execute automatically.
     ✅ 2026-08-01
-  - [ ] Add provider-aware trash-first mutation with conflict-policy checks,
-    durable undo records, and restore support. This remains deferred until a
-    common reversible-trash contract exists for LocalDrive, Internxt, Filen,
-    and WebDAV.
+  - [>] Add provider-aware trash-first mutation with conflict-policy checks,
+    durable undo records, and restore support. A common `CloudDrive` contract
+    now exposes `reversible_trash` plus guarded `restore_deleted`; native
+    Internxt and Filen adapters use their real provider trash/restore APIs.
+    LocalDrive and generic WebDAV remain explicitly unsupported until they
+    have genuine recoverable-trash semantics. The duplicate pane now exposes
+    guarded restore-from-trash for providers advertising the capability and
+    blocks duplicate deletion when recoverable trash is unavailable. ✅
+    contract/native adapters/UI 2026-08-02. Restore actions are retained as
+    explicit mutation-audit events instead of erasing the original trash
+    record.
 - [x] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
@@ -3192,9 +3211,13 @@ a transfer without leaving the search/catalog workflow.
     sibling name, and manual rejects until review. Pure decision tests cover
     every mutation policy; the broader preview/resolution surface remains
     open. ✅ 2026-08-01
-  - [x] Settings now provides a read-only sync-pair comparison table with
-    explicit policy selection and local/remote metadata; it never invokes a
-    mutation command. One-click resolution remains deferred. ✅ 2026-08-01
+  - [x] Settings now provides a sync-pair comparison table with explicit
+    policy selection and local/remote metadata. It offers confirmed one-click
+    local-wins/remote-wins application through the existing guarded pair push
+    and pull commands. ✅ 2026-08-02
+  - [ ] Add per-file newest-wins, keep-both, and manual resolution for sync
+    pairs; newest-wins local push now skips remote-newer files using remote
+    metadata, while keep-both/manual remain explicitly guarded.
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and
     relative remote paths remain guarded. ✅ 2026-08-01
@@ -3207,7 +3230,7 @@ a transfer without leaving the search/catalog workflow.
     Nextcloud/ownCloud use the separate CrispCloud delta app when available,
     while Internxt, Filen, and generic WebDAV retain whole-file fallback.
     ✅ 2026-08-01
-  - [>] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
+  - [x] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
     PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud
     delta protocol is now implemented: detect
@@ -3349,8 +3372,8 @@ a transfer without leaving the search/catalog workflow.
     loopback/deep-link callback handling, token refresh, and revocation. Never
     ship a client secret; support user-supplied public client IDs where needed.
     Desktop loopback PKCE, keychain-only token exchange, explicit refresh,
-    Google revocation, and Microsoft local credential clearing are implemented;
-    mobile deep links and Microsoft’s provider-side logout remain.
+    Google revocation, Microsoft local credential clearing, and Microsoft’s
+    provider-side browser logout are implemented; mobile deep links remain.
   - [>] Add the desktop/mobile login UI: browser sign-in for Google/OneDrive,
     native email/password plus conditional TOTP for Filen/Internxt, and
     WebDAV username/password or app-password entry without persistence in UI
@@ -3365,7 +3388,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] Browser OAuth UI now polls only boolean credential presence after
       the loopback callback, with a bounded timeout and no token exposure.
       ✅ 2026-08-01
-    - [ ] Mobile deep-link login and provider-specific logout remain deferred.
+    - [>] Mobile deep-link login remains deferred; OneDrive disconnect now also
+      opens Microsoft’s provider logout endpoint after local keychain clearing.
   - [>] Add unit and hermetic HTTP coverage for PKCE/state validation, token
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic
@@ -3390,6 +3414,11 @@ a transfer without leaving the search/catalog workflow.
       refresh, and public client-ID fields are stored without crossing IPC.
     - [ ] Gated live auth/read/write tests remain opt-in and require explicit
       test credentials; no automatic credential discovery is permitted.
+
+- [x] Google Drive trash restoration now has hermetic `trashed=false` HTTP
+  coverage and an opt-in live delete/restore/read round trip. OneDrive restore
+  remains gated because Microsoft documents the recycle-bin restore endpoint
+  for OneDrive Personal only and it requires an opaque deleted-item ID.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
@@ -3445,12 +3474,13 @@ a transfer without leaving the search/catalog workflow.
   - [x] Configurable extension-to-viewer-kind associations are persisted,
     validated, and applied by the universal viewer; malformed entries are
     ignored and unsupported kinds cannot be selected. ✅ 2026-08-02
-  - [>] Registered drives now provide bounded recursive filename/path search
+  - [x] Registered drives provide bounded recursive filename/path search
     through their listing capability; optional `--content` / GUI content mode
-    inspects only provider-readable files ≤256 KiB. Unbounded provider
-    full-text search remains open where the remote API does not expose it.
-    The same bounded search is available as `crispsorter drives search`.
-    ✅ 2026-08-02
+    inspects only provider-readable files ≤256 KiB. The same bounded search is
+    available as `crispsorter drives search`. ✅ 2026-08-02
+  - [ ] Unrestricted provider full-text search remains open where the remote
+    API does not expose it; do not silently turn the bounded client-side scan
+    into an unbounded provider walk.
 - [ ] Add FUSE write support only after the mutation API and queue are stable;
   retain read-only FUSE for indexing during the transition.
 - [ ] Add local REST API, plugin hooks, cron/webhook automation, and system

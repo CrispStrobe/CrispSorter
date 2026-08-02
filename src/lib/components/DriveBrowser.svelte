@@ -241,6 +241,7 @@
         try {
             const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
             if (operation === 'delete' && !caps.delete) throw new Error('Provider does not support delete/trash.');
+            if (operation === 'delete' && !caps.reversible_trash) throw new Error('Provider does not expose recoverable trash; duplicate deletion is blocked.');
             if (operation === 'move' && !caps.move_path) throw new Error('Provider does not support move.');
             const name = parts.path.split('/').filter(Boolean).at(-1) ?? parts.path;
             let destinationPath: string | undefined;
@@ -296,9 +297,32 @@
             const current = panel.items.map((item) => item.path === `crisp+drive://${last.driveId}${last.to}`
                 ? { ...item, path: `crisp+drive://${last.driveId}${last.from}` } : item);
             rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
-            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            duplicateMutationAudit = [...duplicateMutationAudit, {
+                ...last,
+                operation: 'restore' as const,
+                to: null,
+                at: Date.now(),
+            }].slice(-200);
             saveDuplicateMutationAudit(duplicateMutationAudit);
         } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
+        finally { duplicateMutationBusy = null; }
+    }
+
+    async function restoreLastCloudTrash(): Promise<void> {
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'delete');
+        if (!panel || !last || duplicateMutationBusy) return;
+        if (!window.confirm(`Restore “${last.from}” from provider trash?`)) return;
+        duplicateMutationBusy = last.from;
+        try {
+            await invoke('drive_restore_deleted', {
+                driveId: last.driveId,
+                trashPath: last.from,
+                destination: null,
+            });
+            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        } catch (e) { error = `Could not restore cloud duplicate: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
@@ -373,8 +397,8 @@
         <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
         <input class="drive-search" bind:value={driveSearchQuery} placeholder="Search names…"
             onkeydown={(event) => event.key === 'Enter' && void searchDrive()} />
-        <label class="drive-search-content" title={capabilities.read ? 'Inspect readable files up to 256 KiB' : 'Provider does not advertise file reads'}>
-            <input type="checkbox" bind:checked={driveSearchContent} disabled={!capabilities.read} /> Content ≤256 KiB
+        <label class="drive-search-content" title={capabilities.read ? 'Searches listings recursively to depth 8, returns at most 100 results, and inspects readable files up to 256 KiB.' : 'Provider does not advertise file reads'}>
+            <input type="checkbox" bind:checked={driveSearchContent} disabled={!capabilities.read} aria-label="Enable bounded content search" /> Content ≤256 KiB
         </label>
         <button onclick={searchDrive} disabled={driveSearchBusy || !driveSearchQuery.trim()}>
             {#if driveSearchBusy}<Loader2 size={14} class="spin" />{:else}<Search size={14} />{/if} Search
@@ -399,7 +423,7 @@
     {#if error}<div class="browser-error">{error}</div>{/if}
     {#if driveSearchQuery.trim() && !driveSearchBusy}
         <div class="drive-search-results">
-            <strong>Filename matches ({driveSearchResults.length})</strong>
+            <strong>{driveSearchContent ? 'Filename + bounded content matches' : 'Filename matches'} ({driveSearchResults.length})</strong>
             {#if driveSearchResults.length === 0}
                 <span class="muted">No provider-visible matches.</span>
             {:else}
@@ -457,15 +481,17 @@
                             <div class="audit-list">
                                 {#each cloudMutations.slice().reverse() as entry}
                                     <div class="audit-entry">
-                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : `${entry.from} → provider trash`}</span>
+                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : entry.operation === 'delete' ? `${entry.from} → provider trash` : `${entry.from} ← provider trash`}</span>
                                         <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
                                     </div>
                                 {/each}
                             </div>
                             {#if lastCloudMutation?.operation === 'move'}
                                 <button class="duplicate-undo" onclick={undoLastCloudMove} disabled={duplicateMutationBusy !== null}>Undo last cloud move</button>
+                            {:else if lastCloudMutation?.operation === 'delete'}
+                                <button class="duplicate-undo" onclick={restoreLastCloudTrash} disabled={duplicateMutationBusy !== null}>Restore from provider trash</button>
                             {:else}
-                                <span class="muted">Trash actions cannot be restored from this provider API.</span>
+                                <span class="muted">No reversible cloud mutation is available.</span>
                             {/if}
                         </details>
                     {/if}

@@ -10,7 +10,7 @@ export type DuplicateDecisionAudit = {
 export type DuplicateMutationAudit = {
     groupId: string;
     driveId: string;
-    operation: 'move' | 'delete';
+    operation: 'move' | 'delete' | 'restore';
     from: string;
     to: string | null;
     at: number;
@@ -74,7 +74,7 @@ export function decodeDuplicateMutationAudit(raw: string | null): DuplicateMutat
             const value = entry as Record<string, unknown>;
             return typeof value.groupId === 'string'
                 && typeof value.driveId === 'string'
-                && (value.operation === 'move' || value.operation === 'delete')
+                && (value.operation === 'move' || value.operation === 'delete' || value.operation === 'restore')
                 && typeof value.from === 'string'
                 && (value.to === null || typeof value.to === 'string')
                 && typeof value.at === 'number' && Number.isFinite(value.at);

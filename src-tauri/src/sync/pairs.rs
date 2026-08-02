@@ -118,6 +118,23 @@ pub fn compare_plans(
         .collect()
 }
 
+/// Select the local entries that are safe to upload under a local-oriented
+/// conflict policy. Remote-only and remote-newer entries are deliberately
+/// excluded; this helper never deletes or overwrites remote data by itself.
+pub fn local_push_plan(
+    local: &[SyncPlanEntry],
+    remote: &[SyncRemoteEntry],
+    policy: super::conflict::ConflictPolicy,
+) -> Vec<SyncPlanEntry> {
+    compare_plans(local, remote, policy)
+        .into_iter()
+        .filter_map(|entry| match entry.action {
+            SyncComparisonAction::LocalOnly | SyncComparisonAction::UseLocal => entry.local,
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncPairRun {
     pub id: i64,
@@ -590,5 +607,20 @@ mod tests {
         assert_eq!(rows[3].action, SyncComparisonAction::Unchanged);
         let manual = compare_plans(&local, &remote, crate::sync::conflict::ConflictPolicy::Manual);
         assert_eq!(manual[0].action, SyncComparisonAction::ManualReview);
+    }
+
+    #[test]
+    fn local_push_plan_skips_remote_newer_entries() {
+        let local = vec![
+            SyncPlanEntry { relative_path: "local-newer.txt".into(), size: 2, mtime_unix: 20 },
+            SyncPlanEntry { relative_path: "remote-newer.txt".into(), size: 2, mtime_unix: 10 },
+            SyncPlanEntry { relative_path: "local-only.txt".into(), size: 1, mtime_unix: 1 },
+        ];
+        let remote = vec![
+            SyncRemoteEntry { relative_path: "local-newer.txt".into(), size: 3, mtime_unix: Some(10) },
+            SyncRemoteEntry { relative_path: "remote-newer.txt".into(), size: 3, mtime_unix: Some(20) },
+        ];
+        let plan = local_push_plan(&local, &remote, crate::sync::conflict::ConflictPolicy::NewestWins);
+        assert_eq!(plan.iter().map(|entry| entry.relative_path.as_str()).collect::<Vec<_>>(), vec!["local-newer.txt", "local-only.txt"]);
     }
 }

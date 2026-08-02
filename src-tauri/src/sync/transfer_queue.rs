@@ -375,6 +375,34 @@ impl TransferQueue {
         }
     }
 
+    /// Submit a transfer against an owned drive handle. Keeping this adapter
+    /// here makes the queue boundary explicit for provider call sites and
+    /// avoids repeating subtly different `Arc` capture closures.
+    pub fn submit_drive_upload(
+        &self,
+        drive_id: String,
+        drive: Arc<dyn crate::drives::CloudDrive>,
+        remote_path: PathBuf,
+        data: Vec<u8>,
+    ) -> TransferHandle {
+        self.submit_upload(drive_id, remote_path, data, move |path, data| {
+            drive.write_file(path, data)
+        })
+    }
+
+    /// Download through an owned provider handle and the shared queue.
+    pub fn submit_drive_download(
+        &self,
+        drive_id: String,
+        drive: Arc<dyn crate::drives::CloudDrive>,
+        remote_path: PathBuf,
+        size_hint: Option<u64>,
+    ) -> TransferHandle {
+        self.submit_download(drive_id, remote_path, size_hint, move |path| {
+            drive.read_file(path)
+        })
+    }
+
     /// Run an upload from a synchronous caller while still using this queue's
     /// semaphore, retry policy, and job registry.  A short-lived runtime is
     /// isolated on a worker thread so this is safe from FUSE/provider code
@@ -665,6 +693,36 @@ mod tests {
             observed_max <= 2,
             "max concurrent {observed_max} exceeded limit of 2"
         );
+    }
+
+    #[tokio::test]
+    async fn owned_drive_adapters_route_read_and_write_through_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let drive: Arc<dyn crate::drives::CloudDrive> =
+            Arc::new(crate::drives::LocalDrive::new("test-local", root.path()));
+        let queue = TransferQueue::with_concurrency(1);
+
+        let upload = queue.submit_drive_upload(
+            "local-test".into(),
+            drive.clone(),
+            PathBuf::from("nested/file.txt"),
+            b"queued provider bytes".to_vec(),
+        );
+        upload.handle.await.unwrap().unwrap();
+
+        let download = queue.submit_drive_download(
+            "local-test".into(),
+            drive,
+            PathBuf::from("nested/file.txt"),
+            Some(21),
+        );
+        let bytes = download.handle.await.unwrap().unwrap();
+        assert_eq!(bytes, b"queued provider bytes");
+        assert_eq!(queue.snapshot().len(), 2);
+        assert!(queue
+            .snapshot()
+            .iter()
+            .all(|job| job.state == TransferState::Done));
     }
 
     #[tokio::test]

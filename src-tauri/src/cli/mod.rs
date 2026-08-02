@@ -552,6 +552,17 @@ enum DrivesCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Restore an item from a provider's recoverable trash.
+    RestoreDeleted {
+        /// Drive id from `drives list`.
+        #[arg(long = "drive")]
+        drive_id: String,
+        /// Provider-relative trash item path or name.
+        trash_path: String,
+        /// Optional destination folder for providers that support choosing it.
+        #[arg(long)]
+        destination: Option<String>,
+    },
     /// Recursively search provider-visible filenames (not remote file content).
     Search {
         /// Drive id from `drives list`.
@@ -5426,9 +5437,9 @@ async fn cmd_sync_backup_job(
                 };
                 let local_hash = format!("{:x}", Sha256::digest(&data));
                 let remote = snapshot.join(&relative);
-                let target = Arc::clone(&drive);
-                let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
-                    move |path, data| target.write_file(path, data));
+                let transfer = queue.submit_drive_upload(
+                    job.drive_id.clone(), Arc::clone(&drive), remote.clone(), data,
+                );
                 match transfer.handle.await {
                     Ok(Ok(_)) if !job.verify_integrity => { completed += 1; bytes += size; }
                     Ok(Ok(_)) => match drive.stat(&remote) {
@@ -5531,9 +5542,9 @@ async fn cmd_sync_backup_job(
             if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
             let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
             let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-            let source = Arc::clone(&drive);
-            let transfer = TransferQueue::shared().submit_download(job.drive_id.clone(), remote, Some(expected),
-                move |path| source.read_file(path));
+            let transfer = TransferQueue::shared().submit_drive_download(
+                job.drive_id.clone(), Arc::clone(&drive), remote, Some(expected),
+            );
             let data = transfer.handle.await.map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
             if data.len() as u64 != expected {
@@ -5815,9 +5826,9 @@ async fn cmd_sync_pair(
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
                 let bytes = std::fs::read(&local).map_err(|e| format!("reading {}: {e}", local.display()))?;
                 let remote = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
-                let drive_for_upload = drive.clone();
-                let transfer = queue.submit_upload(pair.drive_id.clone(), remote, bytes,
-                    move |path, data| drive_for_upload.write_file(path, data));
+                let transfer = queue.submit_drive_upload(
+                    pair.drive_id.clone(), drive.clone(), remote, bytes,
+                );
                 match transfer.handle.await {
                     Ok(Ok(_)) => { uploaded += 1; watermark = watermark.max(entry.mtime_unix); }
                     Ok(Err(error)) => return Err(error.to_string()),
@@ -5875,8 +5886,9 @@ async fn cmd_sync_pair(
             for entry in &remote {
                 let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-                let drive_for_download = drive.clone();
-                let transfer = queue.submit_download(pair.drive_id.clone(), remote_path, Some(entry.size), move |path| drive_for_download.read_file(path));
+                let transfer = queue.submit_drive_download(
+                    pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
+                );
                 let bytes = match transfer.handle.await {
                     Ok(Ok(bytes)) => bytes,
                     Ok(Err(error)) => return Err(error.to_string()),
@@ -6881,12 +6893,8 @@ async fn cmd_sync_cloud_backup(
                     Ok(data) => {
                         let retry_data = data.clone();
                         let retry_path = drive_path.clone();
-                        let drive_for_transfer = Arc::clone(&drive);
-                        let transfer = transfer_queue.submit_upload(
-                            drive_id.clone(),
-                            drive_path.clone(),
-                            data,
-                            move |path, bytes| drive_for_transfer.write_file(path, bytes),
+                        let transfer = transfer_queue.submit_drive_upload(
+                            drive_id.clone(), Arc::clone(&drive), drive_path.clone(), data,
                         );
                         match transfer.handle.await {
                             Ok(Ok(_)) => {
@@ -7009,11 +7017,8 @@ async fn cmd_sync_cloud_backup(
             };
 
             let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
-            let transfer = TransferQueue::shared().submit_download(
-                drive_id.clone(),
-                tar_path.clone(),
-                None,
-                move |path| drive.read_file(path),
+            let transfer = TransferQueue::shared().submit_drive_download(
+                drive_id.clone(), Arc::clone(&drive), tar_path.clone(), None,
             );
             let data = match transfer.handle.await {
                 Ok(Ok(data)) => data,
@@ -10740,6 +10745,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn drives_restore_deleted_parses_provider_paths() {
+        let cli = Cli::try_parse_from([
+            "crispsorter",
+            "drives",
+            "restore-deleted",
+            "--drive",
+            "drive-1",
+            "report.pdf",
+            "--destination",
+            "/archive",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Drives {
+                cmd:
+                    DrivesCmd::RestoreDeleted {
+                        drive_id,
+                        trash_path,
+                        destination,
+                    },
+                ..
+            } => {
+                assert_eq!(drive_id, "drive-1");
+                assert_eq!(trash_path, "report.pdf");
+                assert_eq!(destination.as_deref(), Some("/archive"));
+            }
+            other => panic!("expected Drives RestoreDeleted, got {other:?}"),
+        }
+    }
+
     /// P13 — `images extensions` is the cheapest reachable subcommand
     /// (no data dir touched), so it's the canary for "the Images
     /// surface parses at all".  Failure here means a clap derive macro
@@ -11807,6 +11843,26 @@ fn cmd_drives(
                 }
             }
             Ok(())
+        }
+        DrivesCmd::RestoreDeleted { drive_id, trash_path, destination } => {
+            let cfg = registry
+                .drives
+                .iter()
+                .find(|d| d.id == drive_id)
+                .ok_or_else(|| format!("drive '{drive_id}' not found; run `crispsorter drives list`"))?;
+            let drive = cli_instantiate_drive(&data_dir, cfg)?;
+            if !drive.probed_capabilities().reversible_trash {
+                return Err(format!(
+                    "{} does not support restoring deleted items",
+                    drive.drive_type().label()
+                ));
+            }
+            drive
+                .restore_deleted(
+                    std::path::Path::new(&trash_path),
+                    destination.as_deref().map(std::path::Path::new),
+                )
+                .map_err(|e| e.to_string())
         }
         DrivesCmd::Search { drive_id, query, path, max_depth, max_results, content, json } => {
             let query = query.trim().to_lowercase();

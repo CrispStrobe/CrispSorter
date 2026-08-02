@@ -176,9 +176,9 @@ pub async fn backup_job_restore(
     if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
     let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
     let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-    let source = std::sync::Arc::clone(&drive);
-    let transfer = state.transfer_queue.clone().submit_download(job.drive_id.clone(), remote,
-        Some(expected), move |path| source.read_file(path));
+    let transfer = state.transfer_queue.clone().submit_drive_download(
+        job.drive_id.clone(), drive, remote, Some(expected),
+    );
     let data = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     if data.len() as u64 != expected {
         return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
@@ -422,10 +422,8 @@ pub async fn sync_pair_pull(
     for entry in &remote {
         let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
         let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-        let drive_for_download = drive.clone();
-        let transfer = state.transfer_queue.clone().submit_download(
-            pair.drive_id.clone(), remote_path,
-            Some(entry.size), move |path| drive_for_download.read_file(path),
+        let transfer = state.transfer_queue.clone().submit_drive_download(
+            pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
         );
         let bytes = match transfer.handle.await {
             Ok(Ok(bytes)) => bytes,
@@ -470,13 +468,19 @@ pub async fn sync_pair_push(
         return Err("sync pair is configured for remote-to-local direction".into());
     }
     if let Some(policy) = conflict_policy {
-        if policy != super::conflict::ConflictPolicy::LocalWins {
+        if !matches!(policy, super::conflict::ConflictPolicy::LocalWins | super::conflict::ConflictPolicy::NewestWins) {
             return Err(format!(
-                "sync pair push cannot apply {policy:?} without remote metadata; use local-wins or run a remote comparison first"
+                "sync pair push cannot apply {policy:?} without a per-file resolver; use local-wins/newest-wins or run a remote comparison first"
             ));
         }
     }
     let plan = super::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
+    let plan = if conflict_policy == Some(super::conflict::ConflictPolicy::NewestWins) {
+        let remote = sync_pair_remote_plan(state.clone(), id.clone()).await?;
+        super::pairs::local_push_plan(&plan, &remote, super::conflict::ConflictPolicy::NewestWins)
+    } else {
+        plan
+    };
     let dry_run = dry_run.unwrap_or(false);
     let started_at = sync_pair_now_ms();
     if dry_run || plan.is_empty() {
@@ -550,12 +554,8 @@ pub async fn sync_pair_push(
         let retry_data = bytes.clone();
         let retry_path = remote_path.clone();
         let retry_drive_id = pair.drive_id.clone();
-        let drive_for_upload = drive.clone();
-        let transfer = state.transfer_queue.clone().submit_upload(
-            pair.drive_id.clone(),
-            remote_path,
-            bytes,
-            move |path, data| drive_for_upload.write_file(path, data),
+        let transfer = state.transfer_queue.clone().submit_drive_upload(
+            pair.drive_id.clone(), drive.clone(), remote_path, bytes,
         );
         match transfer.handle.await {
             Ok(Ok(_)) => {
@@ -967,11 +967,11 @@ pub async fn replay_offline_queue(
                     .map_err(|e| e.to_string())?,
                 );
             let bytes = std::fs::read(local_path).map_err(|e| e.to_string())?;
-            let transfer = state.transfer_queue.clone().submit_upload(
+            let transfer = state.transfer_queue.clone().submit_drive_upload(
                 drive_id.to_owned(),
+                drive,
                 std::path::PathBuf::from(remote_path),
                 bytes,
-                move |path, data| drive.write_file(path, data),
             );
             match transfer.handle.await {
                 Ok(Ok(_)) => Ok(()),
@@ -2169,12 +2169,8 @@ pub async fn sync_cb_backup_shards(
             Ok(data) => {
                 let retry_data = data.clone();
                 let retry_path = drive_path.clone();
-                let drive_for_transfer = Arc::clone(&drive);
-                let transfer = transfer_queue.submit_upload(
-                    drive_id.clone(),
-                    drive_path.clone(),
-                    data,
-                    move |path, bytes| drive_for_transfer.write_file(path, bytes),
+                let transfer = transfer_queue.submit_drive_upload(
+                    drive_id.clone(), Arc::clone(&drive), drive_path.clone(), data,
                 );
                 match transfer.handle.await {
                     Ok(Ok(_)) => {
@@ -2297,12 +2293,8 @@ pub async fn sync_cb_restore_shard(
 
     let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
     let transfer_queue = state.transfer_queue.clone();
-    let drive_for_transfer = Arc::clone(&drive);
-    let transfer = transfer_queue.submit_download(
-        drive_id.clone(),
-        tar_path.clone(),
-        None,
-        move |path| drive_for_transfer.read_file(path),
+    let transfer = transfer_queue.submit_drive_download(
+        drive_id.clone(), Arc::clone(&drive), tar_path.clone(), None,
     );
     let data = match transfer.handle.await {
         Ok(Ok(data)) => data,

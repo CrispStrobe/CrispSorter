@@ -4,6 +4,85 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## Cloud-drive transfer and mutation boundaries (2026-08-02)
+
+### Queue synchronous providers through owned handles
+
+`CloudDrive` is synchronous, while `TransferQueue` is asynchronous and runs
+provider calls in `spawn_blocking`. The safe shared boundary is therefore an
+owned `Arc<dyn CloudDrive>` captured by a queue adapter such as
+`submit_drive_upload` or `submit_drive_download`. A provider method taking
+`&self` cannot capture itself in the queue's required `'static` worker closure:
+trying to make the provider method queue itself creates either a lifetime
+problem or recursive submission. Keep the raw provider call inside the queue
+callback and keep FUSE's synchronous callback direct until its write model is
+designed.
+
+Offline replay must use the same owned-drive adapter as foreground transfers.
+Connectivity failure is not an operation failure: the health probe backs off
+without consuming an operation's retry budget. Once a staged operation is
+actually attempted, its bytes and diagnostic remain durable in the offline
+queue. Unknown operation types are terminal, inspectable failures rather than
+entries that block FIFO replay forever.
+
+### Recoverable trash is a capability, not a synonym for delete
+
+Provider `delete` methods do not all have the same semantics. Filen and
+Internxt native clients can use their real trash/restore APIs; Google Drive
+can clear `trashed` and optionally add a parent. Generic WebDAV and
+`LocalDrive` do not automatically become reversible merely because a UI calls
+the action “Trash”. Duplicate cleanup must require `reversible_trash`, while
+ordinary explicit file-manager deletion may remain available as a destructive
+operation. Mutation audit history should append a restore event instead of
+erasing the original delete event.
+
+### Sync policies need remote metadata before mutation
+
+Local-wins and remote-wins can safely be exposed as confirmed whole-pair
+actions because their mutation direction is explicit. `newest-wins` must be
+resolved per path: compare local mtime with remote mtime, upload only
+local-only/local-newer entries, and never overwrite a remote-newer file.
+Keep-both and manual require a per-file transaction/collision policy and must
+stay guarded until that resolver exists. A read-only comparison table is not
+permission to apply a policy implicitly.
+
+### Registered-drive search is deliberately bounded
+
+The current provider search is a listing walk, not a server-side full-text
+index. Default depth is 8 (maximum 32), result limit is capped at 1000, the
+walk budget is bounded to `max_results * 100`, and optional content probing
+requires provider read capability and a file no larger than 256 KiB. Do not
+remove these limits to make a provider appear to have generic full-text
+search; providers without a reliable search API remain bounded client-side.
+
+### Pin policy validation is not handshake pinning
+
+The built-in certificate data and rotation sets can be validated and matched
+by hostname, but the current native-tls/reqwest construction path does not
+expose the verified root certificate chain to the portable SPKI verifier.
+Root pins must not be silently converted into leaf pins, and a validation
+check at client construction is not evidence that the TLS handshake is
+enforced. Finish this only with a deliberate rustls/custom-verifier or
+equivalent platform implementation and provider-specific tests.
+
+### CI is the build host when the local target volume is constrained
+
+This workspace can consume substantial disk space during Cargo builds. For
+the provider pass, static `git diff --check` was run locally; commits were
+merged with `git fetch origin main && git merge --no-edit origin/main` and
+pushed to `origin/main` for GitHub CI. Always inspect concurrent remote-main
+commits before pushing; do not reset or overwrite them.
+
+### Reqwest request helpers are feature-gated
+
+In reqwest 0.13, `RequestBuilder::query` is behind the crate's `query`
+feature, including for the blocking client. A new `.query(...)` call can
+therefore fail in the clean CI dependency graph with `no method named query`.
+Keep `src-tauri/Cargo.toml`'s feature list aligned with the request-builder
+APIs used by provider connectors.
+
+---
+
 ## CI release refs must use tagged releases, not commit SHAs
 
 The release workflow downloads pre-built native libs (libcrispembed,

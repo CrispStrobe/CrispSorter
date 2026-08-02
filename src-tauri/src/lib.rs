@@ -30,6 +30,7 @@ pub mod pdf_redact;
 pub mod pdf_session;
 pub mod pdf_text_edit;
 pub mod pdf_text_region;
+pub mod plugins;
 pub mod platform_share;
 pub mod secrets;
 pub mod sync;
@@ -3310,6 +3311,7 @@ pub fn run() {
             drives::tauri_commands::drive_move_path,
             drives::tauri_commands::drive_copy_path,
             drives::tauri_commands::drive_delete_path,
+            drives::tauri_commands::drive_restore_deleted,
             drives::tauri_commands::drive_share_link,
             drives::tauri_commands::drive_list_versions,
             drives::tauri_commands::drive_restore_version,

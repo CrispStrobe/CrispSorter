@@ -814,6 +814,39 @@ pub async fn drive_delete_path(
         .map_err(|e| e.to_string())
 }
 
+/// Restore an item from a provider's recoverable trash.
+#[tauri::command]
+pub async fn drive_restore_deleted(
+    state: State<'_, AppState>,
+    drive_id: String,
+    trash_path: String,
+    destination: Option<String>,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = instantiate_registered(&state, cfg).await?;
+    if !drive.probed_capabilities().reversible_trash {
+        return Err(format!(
+            "{} does not support restoring deleted items",
+            drive.drive_type().label()
+        ));
+    }
+    let destination = destination.as_deref().map(std::path::Path::new);
+    drive
+        .restore_deleted(std::path::Path::new(&trash_path), destination)
+        .map_err(|e| e.to_string())
+}
+
 /// Generate a public share link for a file on a registered drive.
 /// Providers without a public-link implementation return a clear error
 /// rather than silently returning an unusable local URL.
@@ -933,13 +966,9 @@ pub async fn drive_read_file(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive: Arc<dyn super::CloudDrive> = Arc::from(instantiate_registered(&state, cfg).await?);
     let path = std::path::PathBuf::from(path);
-    let path_for_transfer = path.clone();
-    let transfer = state
-        .transfer_queue
-        .clone()
-        .submit_download(drive_id, path, None, move |_| {
-            drive.read_file(&path_for_transfer)
-        });
+    let transfer = state.transfer_queue.clone().submit_drive_download(
+        drive_id, drive, path, None,
+    );
     match transfer.handle.await {
         Ok(Ok(data)) => Ok(data),
         Ok(Err(error)) => Err(error.to_string()),
@@ -974,13 +1003,10 @@ pub async fn drive_write_file(
     let retry_data = data.clone();
     let retry_path = path.clone();
     let retry_drive_id = drive_id.clone();
-    let transfer =
-        state
-            .transfer_queue
-            .clone()
-            .submit_upload(drive_id, path, data, move |path, data| {
-                drive.write_file(path, data)
-            });
+    let transfer = state
+        .transfer_queue
+        .clone()
+        .submit_drive_upload(drive_id, drive, path, data);
     match transfer.handle.await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(error)) => {

@@ -190,6 +190,10 @@ removes its remote fixtures. Run these only against accounts dedicated to
 test mutations. The manual GitHub Actions live job accepts the same values as
 repository secrets; ordinary CI remains hermetic.
 
+See [docs/cloud-provider-parity.md](docs/cloud-provider-parity.md) for the
+provider contract, security lessons, queue/restore design, test matrix, and
+remaining implementation gaps.
+
 ## Headless CLI mode
 
 The same binary doubles as a CLI tool. Detection is on the first argument — running `crispsorter` with no args (the typical GUI launch) bypasses clap entirely.
