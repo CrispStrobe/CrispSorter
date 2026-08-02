@@ -552,6 +552,17 @@ enum DrivesCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Restore an item from a provider's recoverable trash.
+    RestoreDeleted {
+        /// Drive id from `drives list`.
+        #[arg(long = "drive")]
+        drive_id: String,
+        /// Provider-relative trash item path or name.
+        trash_path: String,
+        /// Optional destination folder for providers that support choosing it.
+        #[arg(long)]
+        destination: Option<String>,
+    },
     /// Recursively search provider-visible filenames (not remote file content).
     Search {
         /// Drive id from `drives list`.
@@ -10723,6 +10734,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn drives_restore_deleted_parses_provider_paths() {
+        let cli = Cli::try_parse_from([
+            "crispsorter",
+            "drives",
+            "restore-deleted",
+            "--drive",
+            "drive-1",
+            "report.pdf",
+            "--destination",
+            "/archive",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Drives {
+                cmd:
+                    DrivesCmd::RestoreDeleted {
+                        drive_id,
+                        trash_path,
+                        destination,
+                    },
+                ..
+            } => {
+                assert_eq!(drive_id, "drive-1");
+                assert_eq!(trash_path, "report.pdf");
+                assert_eq!(destination.as_deref(), Some("/archive"));
+            }
+            other => panic!("expected Drives RestoreDeleted, got {other:?}"),
+        }
+    }
+
     /// P13 — `images extensions` is the cheapest reachable subcommand
     /// (no data dir touched), so it's the canary for "the Images
     /// surface parses at all".  Failure here means a clap derive macro
@@ -11790,6 +11832,26 @@ fn cmd_drives(
                 }
             }
             Ok(())
+        }
+        DrivesCmd::RestoreDeleted { drive_id, trash_path, destination } => {
+            let cfg = registry
+                .drives
+                .iter()
+                .find(|d| d.id == drive_id)
+                .ok_or_else(|| format!("drive '{drive_id}' not found; run `crispsorter drives list`"))?;
+            let drive = cli_instantiate_drive(&data_dir, cfg)?;
+            if !drive.probed_capabilities().reversible_trash {
+                return Err(format!(
+                    "{} does not support restoring deleted items",
+                    drive.drive_type().label()
+                ));
+            }
+            drive
+                .restore_deleted(
+                    std::path::Path::new(&trash_path),
+                    destination.as_deref().map(std::path::Path::new),
+                )
+                .map_err(|e| e.to_string())
         }
         DrivesCmd::Search { drive_id, query, path, max_depth, max_results, content, json } => {
             let query = query.trim().to_lowercase();
