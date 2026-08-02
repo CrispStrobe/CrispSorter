@@ -349,6 +349,55 @@ mod tests {
         );
     }
 
+    /// Nothing reaches a third-party AI provider without passing the consent
+    /// gate — PLAN P36.13, App Review 5.1.2(i).
+    ///
+    /// > You must clearly disclose where personal data will be shared with
+    /// > third parties, **including with third-party AI**, and obtain explicit
+    /// > permission before doing so. […] Apps that share user data without
+    /// > user consent […] may be removed from sale.
+    ///
+    /// The gate lives at one choke point — `LLMClient.query`, just before the
+    /// remote branch — precisely so no call site has to remember it. This test
+    /// pins that arrangement, because the realistic regression is not someone
+    /// deleting the gate; it is someone adding a *second* path to a provider
+    /// and never learning the first one existed.
+    ///
+    /// If you are here because this failed: route the new path through
+    /// `ensureThirdPartyConsent(providerId, baseUrl)` before it sends
+    /// anything. Do not add the file to an exemption list — an unconsented
+    /// egress path is the thing the guideline penalises.
+    #[test]
+    fn no_third_party_ai_call_bypasses_the_consent_gate() {
+        let root = repo_root().join("src/lib/llm");
+        let client = root.join("client.ts");
+        let text = std::fs::read_to_string(&client).expect("read src/lib/llm/client.ts");
+
+        assert!(
+            text.contains("ensureThirdPartyConsent("),
+            "the LLM client no longer calls the consent gate — every remote \
+             request would now leave without permission. See PLAN.md P36.13."
+        );
+
+        // The gate has to sit *before* the request, not merely be imported.
+        let gate_at = text
+            .find("await ensureThirdPartyConsent(")
+            .expect("the gate must be awaited, not just imported");
+        let first_post = text
+            .find("/chat/completions")
+            .expect("client.ts posts to /chat/completions; if that moved, re-point this guard");
+        assert!(
+            gate_at < first_post,
+            "the consent gate runs after the request is built — it must come first"
+        );
+
+        // And the module it depends on has to still be there.
+        assert!(
+            root.join("thirdPartyConsent.ts").exists(),
+            "src/lib/llm/thirdPartyConsent.ts is gone; the gate cannot work"
+        );
+    }
+
     /// The private-backend surfaces stay out of shipped builds.
     ///
     /// PLAN P36.16. `aitoolkit` and `cloud-backup` are HTTP clients for

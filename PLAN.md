@@ -3887,7 +3887,7 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
 > chat surface. `../appstore.md` is the source of truth for what ASC actually
 > holds — this file is the source of truth for what the *code* does.
 
-- [ ] **P36.13 — third-party AI data-sharing consent (Guideline 5.1.2(i)).**
+- [x] **P36.13 — third-party AI data-sharing consent (Guideline 5.1.2(i)).**
   `llm/client.ts:41-48` can send document text to Groq, OpenRouter, Mistral,
   OpenAI, Nebius, Scaleway, Anthropic and Google. Apple requires explicit
   permission before sharing personal data with third-party AI. **The
@@ -3913,6 +3913,41 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
   **This is now the last code item standing between the build and a
   submission**, since Phase 3 turned out to be done and P36.14/P36.15 are
   closed. Sized in hours: the `license_consent` shape already exists to copy.
+
+  **Shipped 2026-08-03.** `src/lib/llm/thirdPartyConsent.ts` + a global
+  `ThirdPartyAiConsent.svelte` dialog + a Settings surface to review and
+  revoke, EN/DE.
+
+  Three decisions worth recording:
+
+  * **The gate asks; it does not just refuse.** The obvious shape — throw, let
+    each caller catch and re-run — puts the obligation on every call site, and
+    the next one added is the one nobody wraps. Instead the UI *registers a
+    prompter* with the gate, so `LLMClient.query`'s single choke point covers
+    chat, batch metadata and the Settings benchmark alike, and a fourth caller
+    is covered before it is written. Injected rather than imported so the
+    module stays Svelte-free for the CLI and the tests.
+  * **Egress is judged by URL, not by provider id.** `baseUrl` is
+    user-editable: someone can point the "ollama" provider at a hosted
+    endpoint, and an id-based allowlist would wave that straight through. The
+    URL decides, loopback (incl. `127.0.0.0/8` and bracketed IPv6) is not
+    egress, and an unparseable URL is treated as remote — over-asking is a
+    worse experience, under-asking is a violation.
+  * **Consent is per provider and revocable.** Agreeing to send text to Groq
+    says nothing about Google, and 5.1.2(i) is about ongoing permission rather
+    than a one-off click.
+
+  Pinned by `no_third_party_ai_call_bypasses_the_consent_gate`
+  (`compliance.rs`), which checks the gate is not merely imported but awaited
+  *before* the request is built, and by 13 unit tests. One of those found a
+  real bug during development: `URL.hostname` brackets IPv6 literals, so
+  `http://[::1]:8000` was being classified as remote — the app would have
+  asked permission to talk to the user's own machine.
+
+  **Not covered: the CLI.** `crispsorter chat`/`translate` reach providers
+  through `crisp-docx-llm` in Rust, which never passes this gate. That is out
+  of scope for the store artifact (the `.app` bundles the GUI binary), but it
+  is a gap in the same obligation and should get the same treatment.
 - [x] **P36.14 — age rating + AI content.** **Done 2026-08-02: 4+ → 13+**,
   set via the ASC API against peer evidence rather than guesswork.
 

@@ -17,6 +17,7 @@
     import { caps, buildFlags, loadCapabilities } from '$lib/capabilities';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
+    import ThirdPartyAiConsent from '$lib/components/ThirdPartyAiConsent.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
@@ -533,6 +534,12 @@
     </main>
 
     <TransferDrawer />
+
+    <!-- PLAN P36.13 / App Review 5.1.2(i). Mounted once at the shell level:
+         it registers itself as the prompter for the LLM egress gate, so
+         every path that could send document text to a third party is
+         covered without any call site knowing it exists. -->
+    <ThirdPartyAiConsent />
 
     <!-- Mobile bottom tab bar — visible only on small screens -->
     <nav class="mobile-nav">

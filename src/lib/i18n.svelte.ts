@@ -27,6 +27,23 @@ export const translations = {
             unmarkedArtifact:
                 'The backend could not embed a machine-readable AI marking in this file. Label it as AI-generated yourself if you save or forward it.',
         },
+        // PLAN P36.13 / App Review 5.1.2(i) — disclose where personal data
+        // goes and ask before it goes there.
+        consent: {
+            third_party_ai_title: 'Send this text to',
+            third_party_ai_body:
+                'To answer this, CrispSorter has to send your text — which may include the contents of your documents — to a service run by a third party. It leaves your device.',
+            third_party_ai_endpoint: 'Sent to',
+            third_party_ai_note:
+                'Your choice is remembered for this provider and can be changed in Settings. Local providers (mistral.rs, Ollama, llama.cpp, MLX, WebLLM) never leave your device and are never asked about.',
+            third_party_ai_deny: "Don't send",
+            third_party_ai_allow: 'Send to',
+            third_party_ai_settings: 'Third-party AI providers you have allowed',
+            third_party_ai_settings_hint:
+                'Each of these may receive text from your documents when you pick it in Chat or batch processing. Revoking means CrispSorter asks again before the next request.',
+            third_party_ai_revoke: 'Revoke',
+            third_party_ai_none: 'None yet — you will be asked the first time a cloud provider is used.',
+        },
         nav: {
             batch: 'Batch',
             history: 'History',
@@ -1183,6 +1200,21 @@ export const translations = {
                 'Diese Datei enthält eine maschinenlesbare KI-Kennzeichnung in ihren Metadaten und bleibt daher auch nach dem Speichern erkennbar. Beim Umkodieren oder Konvertieren kann sie verloren gehen.',
             unmarkedArtifact:
                 'Das Backend konnte in dieser Datei keine maschinenlesbare KI-Kennzeichnung einbetten. Beim Speichern oder Weitergeben bitte selbst als KI-generiert kennzeichnen.',
+        },
+        consent: {
+            third_party_ai_title: 'Diesen Text senden an',
+            third_party_ai_body:
+                'Zur Beantwortung muss CrispSorter Ihren Text — der auch Inhalte Ihrer Dokumente enthalten kann — an einen Dienst eines Drittanbieters senden. Er verlässt damit Ihr Gerät.',
+            third_party_ai_endpoint: 'Gesendet an',
+            third_party_ai_note:
+                'Ihre Entscheidung wird für diesen Anbieter gespeichert und kann in den Einstellungen geändert werden. Lokale Anbieter (mistral.rs, Ollama, llama.cpp, MLX, WebLLM) verlassen Ihr Gerät nie und werden nie abgefragt.',
+            third_party_ai_deny: 'Nicht senden',
+            third_party_ai_allow: 'Senden an',
+            third_party_ai_settings: 'Freigegebene KI-Anbieter von Drittanbietern',
+            third_party_ai_settings_hint:
+                'Jeder dieser Anbieter kann Text aus Ihren Dokumenten erhalten, wenn Sie ihn im Chat oder in der Stapelverarbeitung auswählen. Nach dem Widerruf fragt CrispSorter vor der nächsten Anfrage erneut.',
+            third_party_ai_revoke: 'Widerrufen',
+            third_party_ai_none: 'Noch keine — Sie werden gefragt, sobald zum ersten Mal ein Cloud-Anbieter genutzt wird.',
         },
         nav: {
             batch: 'Stapel',
