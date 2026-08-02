@@ -87,6 +87,7 @@
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
+    let batchSelection = $state<Set<string>>(new Set());
     let searched    = $state(false);
     let showFilters = $state(false);
     let expanded    = $state<Set<string>>(new Set());
@@ -712,6 +713,7 @@
         searched = true;
         similarHeader = '';
         compareResults = [];
+        batchSelection = new Set();
         // P13.5 — wipe per-result translation state on every new
         // query.  Otherwise the user types a different query and
         // sees stale "Translated en" badges on rows that haven't
@@ -778,6 +780,7 @@
         similarHeader = r.title || r.filename || r.doc_id.slice(0, 20);
         clearTranslations();
         searchTags = new Set();
+        batchSelection = new Set();
         try {
             results = await invoke<SearchResult[]>('index_find_similar', {
                 docId: r.doc_id,
@@ -855,6 +858,7 @@
         searched = true;
         clearTranslations();
         searchTags = new Set();
+        batchSelection = new Set();
         try {
             results = await invoke<SearchResult[]>('index_search_by_image', {
                 imagePath,
@@ -952,6 +956,7 @@
         query    = '';
         results  = [];
         compareResults = [];
+        batchSelection = new Set();
         searched = false;
         error    = '';
     }
@@ -1101,6 +1106,37 @@
             batchManager.addItem(path, result.filename || pathBaseName(path), 0);
         } catch (e: any) {
             error = `Could not add search result to batch: ${String(e?.message ?? e)}`;
+        }
+    }
+
+    function toggleBatchSelection(result: SearchResult): void {
+        const next = new Set(batchSelection);
+        if (next.has(result.doc_id)) next.delete(result.doc_id);
+        else next.add(result.doc_id);
+        batchSelection = next;
+    }
+
+    async function addSelectedToBatch(): Promise<void> {
+        const selected = results.filter((result) => batchSelection.has(result.doc_id));
+        const local = selected
+            .map((result) => ({ result, path: localPathFromSearchUri(result.location_uri) }))
+            .filter((item): item is { result: SearchResult; path: string } => Boolean(item.path));
+        if (local.length === 0) {
+            error = 'Select at least one local search result for the batch sorter.';
+            return;
+        }
+        try {
+            const { batchManager } = await import('$lib/batch/store.svelte');
+            for (const { result, path } of local) {
+                batchManager.addItem(path, result.filename || pathBaseName(path), 0);
+            }
+            const skipped = selected.length - local.length;
+            error = skipped > 0
+                ? `Added ${local.length} local result${local.length === 1 ? '' : 's'}; skipped ${skipped} cloud result${skipped === 1 ? '' : 's'}.`
+                : `Added ${local.length} result${local.length === 1 ? '' : 's'} to the batch sorter.`;
+            batchSelection = new Set();
+        } catch (e: any) {
+            error = `Could not add selected results to batch: ${String(e?.message ?? e)}`;
         }
     }
 
@@ -1404,7 +1440,7 @@
             {#if similarHeader}
                 <div class="similar-header">
                     Similar to: <strong>{similarHeader}</strong>
-                    <button class="clear-similar" onclick={() => { similarHeader = ''; results = []; searched = false; }}>
+                    <button class="clear-similar" onclick={() => { similarHeader = ''; results = []; batchSelection = new Set(); searched = false; }}>
                         <X size={12} /> Clear
                     </button>
                 </div>
@@ -1441,6 +1477,11 @@
                 >
                     <FolderOpen size={11} /> Context
                 </button>
+                {#if batchSelection.size > 0}
+                    <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} title="Add selected local results to batch sorter">
+                        <ListPlus size={11} /> Batch ({batchSelection.size})
+                    </button>
+                {/if}
                 {#if refinementScope.length > 0}
                     <span class="refine-badge" title="Searching within {refinementScope.length} docs from previous results">
                         Scoped to {refinementScope.length} docs
@@ -1537,6 +1578,12 @@
                                 onclick={(e) => { e.stopPropagation(); toggleCompare(r); }}
                                 title="Compare with another result">
                                 ⇄
+                            </button>
+                            <button class="open-btn"
+                                class:active={batchSelection.has(r.doc_id)}
+                                onclick={(e) => { e.stopPropagation(); toggleBatchSelection(r); }}
+                                title={batchSelection.has(r.doc_id) ? 'Remove from batch selection' : 'Select for batch sorter'}>
+                                <ListPlus size={13} />
                             </button>
                             <button class="open-btn"
                                 onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
