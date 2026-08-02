@@ -86,6 +86,7 @@
     let error       = $state('');
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
+    let mutationBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
     let batchSelection = $state<Set<string>>(new Set());
     let searched    = $state(false);
@@ -1081,6 +1082,53 @@
         }
     }
 
+    /**
+     * Run a provider-aware mutation from a search hit.  Search results carry
+     * remote paths, never local filesystem paths; the command boundary keeps
+     * capability checks and conflict policy in Rust.  Delete is confirmed
+     * separately because the drive adapter may implement it as recoverable
+     * trash, while move/rename always require an explicit destination.
+     */
+    async function mutateDriveResult(uri: string, operation: 'move' | 'rename' | 'delete'): Promise<void> {
+        const parts = driveUriParts(uri);
+        if (!parts) return;
+        const name = pathBaseName(parts.remotePath) || parts.remotePath;
+        try {
+            const capabilities = await invoke<{ delete: boolean; rename: boolean; move_path: boolean }>(
+                'drive_capabilities', { driveId: parts.driveId });
+            if (operation === 'delete' && !capabilities.delete) {
+                throw new Error('This provider does not support delete/trash.');
+            }
+            if (operation === 'rename' && !capabilities.rename) {
+                throw new Error('This provider does not support rename.');
+            }
+            if (operation === 'move' && !capabilities.move_path) {
+                throw new Error('This provider does not support move.');
+            }
+            if (operation === 'delete') {
+                if (!window.confirm(`Move “${name}” to provider trash?`)) return;
+                mutationBusy = uri;
+                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.remotePath });
+            } else {
+                const label = operation === 'rename' ? 'new remote path/name' : 'destination remote path';
+                const destination = window.prompt(`Enter ${label} for “${name}”:`, parts.remotePath);
+                if (!destination?.trim() || destination.trim() === parts.remotePath) return;
+                mutationBusy = uri;
+                await invoke('drive_move_path', {
+                    driveId: parts.driveId,
+                    source: parts.remotePath,
+                    destination: destination.trim(),
+                });
+            }
+            error = `${operation === 'delete' ? 'Moved to trash' : operation === 'rename' ? 'Renamed' : 'Moved'}: ${name}`;
+            await runSearch();
+        } catch (e: any) {
+            error = `Could not ${operation} cloud result: ${String(e?.message ?? e)}`;
+        } finally {
+            mutationBusy = null;
+        }
+    }
+
     function openDriveInContext(uri: string): void {
         const parts = driveUriParts(uri);
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
@@ -1614,6 +1662,24 @@
                                     onclick={(e) => { e.stopPropagation(); void downloadDriveFile(r.location_uri, r.filename); }}
                                     title="Download for offline use">
                                     {#if downloadBusy === r.location_uri}<Loader2 size={13} class="spin" />{:else}<Download size={13} />{/if}
+                                </button>
+                                <button class="open-btn"
+                                    disabled={mutationBusy === r.location_uri}
+                                    onclick={(e) => { e.stopPropagation(); void mutateDriveResult(r.location_uri, 'move'); }}
+                                    title="Move cloud file">
+                                    ↗
+                                </button>
+                                <button class="open-btn"
+                                    disabled={mutationBusy === r.location_uri}
+                                    onclick={(e) => { e.stopPropagation(); void mutateDriveResult(r.location_uri, 'rename'); }}
+                                    title="Rename cloud file">
+                                    ✎
+                                </button>
+                                <button class="open-btn danger-btn"
+                                    disabled={mutationBusy === r.location_uri}
+                                    onclick={(e) => { e.stopPropagation(); void mutateDriveResult(r.location_uri, 'delete'); }}
+                                    title="Move cloud file to trash">
+                                    <Trash2 size={13} />
                                 </button>
                             {/if}
                             {#if localPathFromSearchUri(r.location_uri)}

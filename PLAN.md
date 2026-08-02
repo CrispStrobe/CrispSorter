@@ -3001,7 +3001,7 @@ a transfer without leaving the search/catalog workflow.
   - [x] The right context pane now renders provenance details for all six
     typed panel sources, including local paths, catalog archives, and remote
     search provider/query context. ✅ 2026-08-01
-- [ ] **Actionable search results.** From any result: reveal/open in context,
+- [>] **Actionable search results.** From any result: reveal/open in context,
   select related chunks/duplicates, compare files, copy/move/rename/delete,
   share, promote remote L1 rows, download for offline use, and send selected
   items to the batch sorter.  Preserve provenance (`crisp+drive://`,
@@ -3034,6 +3034,12 @@ a transfer without leaving the search/catalog workflow.
   - [x] Search results now support multi-selecting local hits and adding the
     selected set to the batch sorter; cloud hits are skipped with an explicit
     provenance-safe status message. ✅ 2026-08-02
+  - [x] Registered-drive result cards now expose capability-gated move,
+    rename, and trash actions with explicit remote-path prompts/confirmation;
+    unsupported providers remain read-only and mutations re-run the search.
+    ✅ 2026-08-02
+  - [ ] Promote remote L1 rows and add provider-aware duplicate selection;
+    these remain open before the whole actionable-results item can close.
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
