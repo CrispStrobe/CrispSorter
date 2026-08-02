@@ -11723,6 +11723,9 @@ fn cmd_drives(
             if !drive.probed_capabilities().list {
                 return Err(format!("{} does not support listing", drive.drive_type().label()));
             }
+            if content && !drive.probed_capabilities().read {
+                return Err(format!("{} does not support content reads", drive.drive_type().label()));
+            }
             let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};
             let scan_limit = limit.saturating_mul(100).max(limit);
             let rows: Vec<_> = crate::drives::walk_limited(

@@ -592,12 +592,15 @@ pub async fn drive_search(
     if !drive.capabilities().list {
         return Err(format!("{} does not support listing", drive.drive_type().label()));
     }
+    let content = content.unwrap_or(false);
+    if content && !drive.capabilities().read {
+        return Err(format!("{} does not support content reads", drive.drive_type().label()));
+    }
     let mut errors = |_path: &Path, _error: anyhow::Error| {};
     let depth = max_depth.unwrap_or(8).min(32);
     let limit = max_results.unwrap_or(100).clamp(1, 1000);
     let scan_limit = limit.saturating_mul(100).max(limit);
     let entries = super::walk_limited(&*drive, Path::new(&root), Some(depth), Some(scan_limit), &mut errors);
-    let content = content.unwrap_or(false);
     Ok(entries
         .into_iter()
         .filter(|entry| {
