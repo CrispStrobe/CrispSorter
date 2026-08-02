@@ -79,7 +79,7 @@
                 query: driveSearchQuery.trim(),
                 maxDepth: 8,
                 maxResults: 100,
-                content: driveSearchContent,
+                content: driveSearchContent && capabilities.read,
             });
         } catch (e) {
             error = `Could not search drive: ${String(e)}`;
@@ -373,7 +373,9 @@
         <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
         <input class="drive-search" bind:value={driveSearchQuery} placeholder="Search names…"
             onkeydown={(event) => event.key === 'Enter' && void searchDrive()} />
-        <label class="drive-search-content"><input type="checkbox" bind:checked={driveSearchContent} /> Content ≤256 KiB</label>
+        <label class="drive-search-content" title={capabilities.read ? 'Inspect readable files up to 256 KiB' : 'Provider does not advertise file reads'}>
+            <input type="checkbox" bind:checked={driveSearchContent} disabled={!capabilities.read} /> Content ≤256 KiB
+        </label>
         <button onclick={searchDrive} disabled={driveSearchBusy || !driveSearchQuery.trim()}>
             {#if driveSearchBusy}<Loader2 size={14} class="spin" />{:else}<Search size={14} />{/if} Search
         </button>
