@@ -1292,6 +1292,14 @@
                                 </span>
                             </button>
                             <button
+                                class="saved-context"
+                                onclick={() => requestBrowserContext(searchResultsPanel(s.query, `Saved search: ${s.name}`))}
+                                title="Open saved search as a virtual folder"
+                                aria-label="Open saved search as a virtual folder"
+                            >
+                                <FolderOpen size={12} />
+                            </button>
+                            <button
                                 class="saved-del"
                                 onclick={() => deleteSavedSearch(i)}
                                 title="Delete saved search"
@@ -2264,6 +2272,14 @@
         padding: 4px;
     }
     .saved-del:hover { color: #ef4444; }
+    .saved-context {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #71717a;
+        padding: 4px;
+    }
+    .saved-context:hover { color: #60a5fa; }
 
     /* PLAN P7.3 — live preview pane. Slides in from the right when a
        result row's eye-icon is clicked; results-area shrinks to share
