@@ -11736,7 +11736,7 @@ fn cmd_drives(
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
                 || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= 256 * 1024
                     && drive.read_file(&entry.path).ok().map(|bytes|
-                        String::from_utf8_lossy(&bytes).to_lowercase().contains(&query)).unwrap_or(false)))
+                        crate::drives::content_search_matches(&bytes, &query)).unwrap_or(false)))
                 .take(limit).collect();
             let json = json || matches!(out, OutFormat::Json);
             if json {

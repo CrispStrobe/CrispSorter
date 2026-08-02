@@ -427,6 +427,15 @@ pub fn walk_limited(
     out
 }
 
+/// Case-insensitive text probe used by bounded provider content search.
+/// Invalid UTF-8 is treated lossily; empty queries never match.
+pub fn content_search_matches(bytes: &[u8], query: &str) -> bool {
+    !query.is_empty()
+        && String::from_utf8_lossy(bytes)
+            .to_lowercase()
+            .contains(query)
+}
+
 // ── LocalDrive ──────────────────────────────────────────────────────────────
 
 /// Delegates all operations to `std::fs`.  Covers any path the OS can see:
@@ -863,6 +872,14 @@ mod tests {
         let mut errors = |_path: &Path, _error: anyhow::Error| {};
         let rows = walk_limited(&drive, Path::new(""), Some(2), Some(2), &mut errors);
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn content_search_matching_is_case_insensitive_and_bounded_by_query() {
+        assert!(content_search_matches(b"Invoice TOTAL: 42", "total"));
+        assert!(!content_search_matches(b"Invoice TOTAL: 42", "receipt"));
+        assert!(!content_search_matches(b"anything", ""));
+        assert!(content_search_matches(&[b'A', 0xff, b'B'], "a"));
     }
 
     struct CapabilityStub;

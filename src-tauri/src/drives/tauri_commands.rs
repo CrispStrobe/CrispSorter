@@ -613,7 +613,7 @@ pub async fn drive_search(
             }
             drive.read_file(&entry.path)
                 .ok()
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_lowercase().contains(&query))
+                .map(|bytes| super::content_search_matches(&bytes, &query))
                 .unwrap_or(false)
         })
         .take(limit)
