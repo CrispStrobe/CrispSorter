@@ -12,6 +12,9 @@ belong to the provider of record.
 - **Audited:** 2026-08-01, against the source tree, not from memory. **Re-audited
   the same day** after the first pass missed the AIToolkit panels entirely — see
   §5. Two capabilities this document had recorded as *absent* were fully wired.
+  **Re-audited 2026-08-02** — four gaps, all of them places where the code fell
+  short of what *this document* asserted rather than of a contested reading. See
+  §6.
 - **Timing:** Article 50 (transparency) and the Annex III high-risk regime apply
   from **2 August 2026**. Prohibitions (Art 5) and AI literacy (Art 4) have
   applied since 2 February 2025; the GPAI chapter since 2 August 2025.
@@ -187,7 +190,10 @@ ones already known, because the risk is a surface nobody audited:
 | Surface | Output | Marked? |
 |---|---|---|
 | Chat answers | synthetic text | ✅ panel-level badge |
-| Machine translation | synthetic text (+ a written `.docx`) | ✅ badge on the output banner; ❌ not in the file |
+| Machine translation — `Translate` panel | synthetic text (+ a written `.docx`) | ✅ badge on the output banner; ✅ stamped in the file |
+| Machine translation — `IndexSearch` doc-tools strip | synthetic text | ✅ badge (added 2026-08-02; §6) |
+| Settings: connection test + provider benchmark | synthetic text (free-form prompt in the benchmark) | ✅ badge + gate (added 2026-08-02; §6) |
+| `crispsorter chat transcribe --translate-to` | synthetic text written to a file | ✅ `ai_generated` in the JSON envelope; txt/SRT/VTT warn that they carry no marking (§6) |
 | Batch metadata suggestions — `suggested_title` / `_author` / `_year`, and the `target_path` derived from them | machine-inferred text that renames and moves the user's files | ✅ section-level badge (added 2026-08-01; previously the largest unmarked surface) |
 | TTS speech | synthetic audio | ✅ watermarked in the signal by CrispASR, test-enforced |
 | ASR transcription | rendering of real audio, not generated content | n/a — Art 50(2) does not reach transcription |
@@ -261,6 +267,8 @@ satisfy the gate so nobody meets a raw error string:
 | `crispsorter chat query` | Rust (`cli/mod.rs`) | CLI flag / env var |
 | `crispsorter chat tts` | Rust (`cli/mod.rs`) | CLI flag / env var |
 | `crispsorter chat transcribe --translate-to` | Rust (`cli/mod.rs`) | CLI flag / env var |
+| `crispsorter batch process` | Rust (`cli/mod.rs`) — **added 2026-08-02**, §6 | CLI flag / env var |
+| `crispsorter batch apply` | Rust (`cli/mod.rs`) — **added 2026-08-02**, §6 | CLI flag / env var |
 | AIToolkit generative panels | **frontend only** (remote backend) | `AIToolkit*` (blocking overlay) |
 
 All four Tauri sites go through one `ensure_intended_purpose(&state, op)` helper
@@ -273,6 +281,14 @@ from disk instead of from `AppState`.
 a completion to stdout with nothing on record, while this table asserted the gate
 covered every output path. `--accept-intended-purpose` existed but only *wrote* an
 acknowledgement — nothing ever *required* one outside the GUI.
+
+**And the fix for that miss was itself incomplete** (2026-08-02): it gated
+`ChatCmd` and stopped there. `batch process` — which calls an LLM to infer
+title/author/year — and `batch apply` — which moves the user's files on the
+result — stayed open for another day, while this table again asserted full
+coverage. The lesson is narrower than "audit the CLI": when a class of surface
+is found unguarded, the fix has to enumerate the class, not patch the instance
+that was noticed.
 
 **Chat is the exception, by necessity.** Its completions never reach Rust —
 `deep-chat` calls the provider directly, and `Chat.svelte` invokes only
@@ -442,6 +458,72 @@ argument for auditing across the integration boundary rather than per-repo.
 disclosure duty falls on the *deployer*. The backend ships the wording in
 `disclosure` precisely so clients neither invent nor omit one; CrispSorter was
 discarding that field too, and now renders it beneath the image.
+
+### 6. The 2026-08-02 re-audit — the guards were looking at the wrong client
+
+Four gaps, found by re-deriving the surface list from the call graph instead of
+from this document. None needed a contested legal reading; each was a place
+where the code did less than the text above claimed.
+
+**6.1 `batch process` / `batch apply` were ungated.** See § 2d. Fixed.
+
+**6.2 The search panel showed machine translation with no badge.**
+`IndexSearch.svelte` carried `IntendedPurposeGate` but never imported
+`AiGeneratedBadge`, and rendered `translated_text` unmarked. § 2b claimed
+translation was badged — true of `Translate.svelte`, false of the
+higher-traffic surface. Fixed.
+
+**6.3 The disclosure guard could not see the local LLM at all.** This is the
+finding that explains 6.2 and 6.4, and it is § 5's lesson recurring one layer
+in. `GENERATIVE_CLIENT_CALLS` listed five `AIToolkitClient` methods. But the
+app's primary generative call is `llmClient.query()`
+(`src/lib/llm/client.ts` → `POST /chat/completions`), and **`Chat.svelte`
+matched none of the five needles** — the flagship generative surface was
+reviewed by nothing. Its badge and gate were correct, by hand; deleting either
+would have passed CI.
+
+The first version of the guard was scoped to the wrong *tree* (Rust, not
+Svelte). This one was scoped to the wrong *client* (remote, not local). Both
+times the guard passed, and both times its passing was read as a property of
+the app. **A green guard is evidence about what it looks at, and nothing else.**
+
+Fixed, and the non-vacuity test now names `Chat.svelte` specifically rather
+than settling for "at least one view matched" — the weak floor that let this
+survive. `no_unreviewed_module_generates_text` additionally pins the `.ts`
+callers, since a module has no badge to carry and the view-level guard cannot
+express the invariant for it.
+
+**6.4 `Settings.svelte` was an unmarked, ungated generative surface.** The
+provider benchmark runs a **user-authored free-form prompt** and displays the
+model's answer; the connection test displays a response too. Low traffic, but
+the rule this document sets is that there is no exemption list. Fixed — and it
+was 6.3 that let it sit there, since neither call matched a needle.
+
+**Also hardened, none of them live defects:**
+
+* The watermark guard scanned `src-tauri/src` only, silently assuming synthesis
+  could never live in one of the workspace's other eight members. Now scans the
+  workspace.
+* The face-identification guard read a hardcoded `["ci.yml", "release.yml"]`.
+  Now enumerates `.github/workflows/*`, and fails if it finds none.
+* **A new limb, not previously guarded:** `crisplens_protocol::Face` carries
+  `estimated_age` / `estimated_gender`, and those arrive with the *parent*
+  `images-crisplens` feature — which is legitimately allowed to ship, since the
+  rest of that surface identifies nobody. Inferring age or gender from a face is
+  Annex III(1)(b) biometric **categorisation**, a different limb from the
+  identification one § 1 covers. CrispSorter reads neither field today;
+  `no_inferred_biometric_attribute_is_ever_read` keeps it that way.
+* The badge tooltip claimed summaries are AI-generated. `index/summary.rs` is
+  extractive sentence-slicing and the command is called from no view. Corrected
+  in en + de — overstating the badge is its own kind of inaccurate disclosure.
+
+**Still open after this pass.** Synthetic *text* has no in-band marking except
+`translate_docx`. Chat answers copied out of the app carry nothing, and
+`chat transcribe --translate-to` marks the JSON envelope
+(`translation.ai_generated`) but cannot mark txt/SRT/VTT — prepending a banner
+to a subtitle file is not a marking, it is a broken subtitle, so those formats
+warn on stderr instead. That is a floor, not a solution; a real one needs a text
+provenance convention this project does not get to invent alone.
 
 ## Not covered by this audit
 

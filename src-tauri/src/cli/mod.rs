@@ -9246,6 +9246,12 @@ fn cmd_chat_transcribe(
             (
                 translated,
                 Some(serde_json::json!({
+                    // Art 50(2): an explicit machine-readable marking, using the
+                    // same field names the AIToolkit backend ships, so a consumer
+                    // does not have to infer "translated ⟹ generated" from the
+                    // presence of this block.
+                    "ai_generated": true,
+                    "digital_source_type": "trainedAlgorithmicMedia",
                     "from": src,
                     "to": tgt,
                     "backend": translate_backend,
@@ -9282,6 +9288,7 @@ fn cmd_chat_transcribe(
                 "--stream + srt/vtt was supposed to error before this point"
             ),
         };
+        warn_if_synthetic_text_is_unmarked(translation_meta.is_some(), effective_fmt);
         write_chat_output(&output, &payload)?;
         return Ok(());
     }
@@ -9342,6 +9349,9 @@ fn cmd_chat_transcribe(
         (
             translated,
             Some(serde_json::json!({
+                // Art 50(2) — see the streaming path above.
+                "ai_generated": true,
+                "digital_source_type": "trainedAlgorithmicMedia",
                 "from": src,
                 "to": tgt,
                 "backend": translate_backend,
@@ -9401,6 +9411,7 @@ fn cmd_chat_transcribe(
             format_segments_vtt(&result.segments)
         }
     };
+    warn_if_synthetic_text_is_unmarked(translation_meta.is_some(), effective_fmt);
     write_chat_output(&output, &payload)?;
     Ok(())
 }
@@ -9684,6 +9695,29 @@ fn cmd_chat_tts(
 /// not text via this helper).  Adds a single trailing newline to
 /// match the convention of every other CLI subcommand (so output is
 /// safe to pipe into `read`, `xargs -I`, etc.).
+/// Art 50(2): say so when synthetic text leaves in a container that cannot
+/// carry a marking.
+///
+/// A machine-translated transcript is generated content. The JSON envelope
+/// marks it explicitly (`translation.ai_generated`); txt, SRT and VTT have
+/// nowhere to put that without corrupting the file for the players and
+/// pipelines that read them — prepending a banner to an SRT is not a marking,
+/// it is a broken subtitle. So the honest floor is to tell the operator, which
+/// is the same position the GUI takes when the backend reports it could not
+/// mark a file (`aiDisclosure.unmarkedArtifact`). Added 2026-08-02.
+fn warn_if_synthetic_text_is_unmarked(translated: bool, fmt: TranscriptFormat) {
+    if !translated || matches!(fmt, TranscriptFormat::Json) {
+        return;
+    }
+    eprintln!(
+        "note: this transcript is machine-translated, and {:?} output carries no \
+         embedded AI marking. Use --transcript-format json for an envelope with an \
+         explicit `ai_generated` field, and label the text as AI-generated if you \
+         pass it on.",
+        fmt
+    );
+}
+
 fn write_chat_output(output: &str, payload: &str) -> Result<(), String> {
     if output == "-" {
         println!("{payload}");
@@ -9912,6 +9946,10 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
         }
 
         BatchCmd::Process { job_id, limit, llm_url, llm_model, api_key, export_path, path_template, out_plan, dry_run } => {
+            // Calls an LLM to infer title/author/year — the CLI twin of the
+            // gated `execute_batch`. Missed by the 2026-08-01 pass, which
+            // gated `ChatCmd` and stopped there; found in the 2026-08-02 audit.
+            ensure_intended_purpose_cli("batch process")?;
             let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
                 .map_err(|e| e.to_string())?;
 
@@ -10046,6 +10084,11 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
         }
 
         BatchCmd::Apply { plan, mode, dry_run } => {
+            // Acts on AI-inferred metadata by moving the user's files, which is
+            // the operation `execute_batch` is gated for. A plan can also be
+            // hand-written, but gating on the applying end is what makes the
+            // pipeline covered end to end however the plan was produced.
+            ensure_intended_purpose_cli("batch apply")?;
             let json = if plan == "-" {
                 use std::io::Read;
                 let mut s = String::new();

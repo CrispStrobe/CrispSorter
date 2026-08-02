@@ -12,7 +12,7 @@ export const translations = {
         },
         aiDisclosure: {
             badge: 'AI-generated',
-            tooltip: 'Produced by a local AI model. Machine translation, summaries and chat answers can be wrong or incomplete — check anything that matters.',
+            tooltip: 'Produced by an AI model. Machine translation, metadata suggestions and chat answers can be wrong or incomplete — check anything that matters.',
             speechMarked: 'Synthesised speech carries a machine-readable watermark.',
             watermarkedArtifact:
                 'This audio carries a watermark in the signal itself plus C2PA credentials, so it stays identifiable as AI-generated even after re-encoding or conversion.',
@@ -1168,7 +1168,7 @@ export const translations = {
         },
         aiDisclosure: {
             badge: 'KI-generiert',
-            tooltip: 'Von einem lokalen KI-Modell erzeugt. Maschinelle Übersetzungen, Zusammenfassungen und Chat-Antworten können falsch oder unvollständig sein — Wichtiges bitte prüfen.',
+            tooltip: 'Von einem KI-Modell erzeugt. Maschinelle Übersetzungen, Metadaten-Vorschläge und Chat-Antworten können falsch oder unvollständig sein — Wichtiges bitte prüfen.',
             speechMarked: 'Synthetische Sprache enthält ein maschinenlesbares Wasserzeichen.',
             watermarkedArtifact:
                 'Dieses Audio enthält ein Wasserzeichen im Signal selbst sowie C2PA-Credentials und bleibt daher auch nach Umkodierung oder Konvertierung als KI-generiert erkennbar.',
