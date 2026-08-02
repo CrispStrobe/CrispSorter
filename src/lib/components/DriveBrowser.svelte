@@ -399,7 +399,7 @@
     {#if error}<div class="browser-error">{error}</div>{/if}
     {#if driveSearchQuery.trim() && !driveSearchBusy}
         <div class="drive-search-results">
-            <strong>Filename matches ({driveSearchResults.length})</strong>
+            <strong>{driveSearchContent ? 'Filename/content matches' : 'Filename matches'} ({driveSearchResults.length})</strong>
             {#if driveSearchResults.length === 0}
                 <span class="muted">No provider-visible matches.</span>
             {:else}
