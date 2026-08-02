@@ -1138,10 +1138,10 @@
         if (!parts) return;
         promoteBusy = result.location_uri;
         try {
-            const capabilities = await invoke<{ streaming?: boolean }>('drive_capabilities', {
+            const capabilities = await invoke<{ read?: boolean }>('drive_capabilities', {
                 driveId: parts.driveId,
             });
-            if (capabilities.streaming !== true) {
+            if (capabilities.read !== true) {
                 throw new Error('This provider does not support remote promotion.');
             }
             await invoke('index_promote_drive_archive', {
