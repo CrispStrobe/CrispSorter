@@ -4,6 +4,7 @@ import { queryWebLLM, getWebLLMLoadedModel } from './webllm';
 import { queryORT, getORTLoadedModel } from './ort';
 import { flog } from '../log';
 import { resolveSecret } from '../secrets';
+import { ensureThirdPartyConsent } from './thirdPartyConsent';
 
 export interface LLMProvider {
     id: string;
@@ -278,6 +279,16 @@ export class LLMClient {
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
+
+        // PLAN P36.13 / App Review 5.1.2(i) — nothing built from the user's
+        // documents leaves the device until they have said it may, per
+        // provider. Placed here rather than at the call sites on purpose:
+        // this is the single point every remote request passes through, and
+        // the local paths (webllm / ort / mistralrs) have already returned
+        // above, so they never see the gate. Throws
+        // `ThirdPartyAiConsentRequired`, which the UI turns into a disclosure
+        // dialog and then retries.
+        await ensureThirdPartyConsent(providerId, baseUrl);
 
         const isLocal = ['ollama', 'llamacpp', 'mlx'].includes(providerId);
         const maxRetries = isLocal ? 1 : 3;

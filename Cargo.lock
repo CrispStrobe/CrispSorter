@@ -2329,6 +2329,7 @@ dependencies = [
  "fuser",
  "futures",
  "getrandom 0.2.17",
+ "glint-audio",
  "hex",
  "hf-hub",
  "hound",
@@ -2339,6 +2340,7 @@ dependencies = [
  "keyring",
  "lance",
  "lancedb",
+ "libc",
  "log",
  "lopdf",
  "md-5 0.10.6",
@@ -5278,6 +5280,24 @@ checksum = "063ce2eb6a8d0ea93d2bf8ba1957e78dbab6be1c2220dd3daca57d5a9d869898"
 dependencies = [
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "glint-audio"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df09912ed6bd5062c86fd42b646de28c5727f4fb8e2c2adbd58e9465dff8cc12"
+dependencies = [
+ "glint-audio-sys",
+]
+
+[[package]]
+name = "glint-audio-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c79457db4164f6fe521359cb4aba0f25e32c5094d8d0214a98a2242dda4ac6"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -10445,6 +10465,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",

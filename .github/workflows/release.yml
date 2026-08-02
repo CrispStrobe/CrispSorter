@@ -70,7 +70,7 @@ jobs:
             # family (ttf-parser, rsa, p256, zune-jpeg) to a cross-compile
             # that only started working today is a risk worth taking
             # separately, not as a side effect of this flip.
-            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
+            tauri_args: '--target aarch64-apple-darwin --features desktop,sidecars,audio-glint,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
@@ -98,7 +98,7 @@ jobs:
             # resources/bin/ which the loader can't find), so we
             # delete it from the release in the same post-step. Users
             # download the portable .zip, unzip, run.
-            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
+            tauri_args: '--features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
             pdfium_asset: pdfium-win-x64.tgz
@@ -110,7 +110,7 @@ jobs:
             # Same translate features as macOS — see the comment there
             # for what these enable. The crispembed + crispasr libs are
             # already pulled in by the vulkan variants.
-            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
+            tauri_args: '--bundles deb --features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
             pdfium_asset: pdfium-linux-x64.tgz
@@ -1244,8 +1244,13 @@ jobs:
       - name: Patch to cloud-only sandbox variant
         run: |
           set -euo pipefail
-          # (1) capabilities: drop shell:default + process:default (subprocess
-          #     spawners — not compiled without `desktop`, forbidden by App Sandbox)
+          # (1) capabilities: drop shell:default + process:default. Under
+          #     `desktop-mas` (P36.1) the two plugins are not dependencies at
+          #     all, so these are unresolvable permission strings rather than
+          #     merely unused grants — the build fails without this patch.
+          #     Feature-gating the *compile* and patching the *grants* are two
+          #     different mechanisms; Tauri capability JSON has no `cfg`, which
+          #     is why both are needed. See PLAN.md P36.12.
           python3 - <<'PY'
           import json, pathlib
           p = pathlib.Path('src-tauri/capabilities/default.json'); d = json.loads(p.read_text())
@@ -1305,14 +1310,27 @@ jobs:
       - name: Build cloud-only .app
         run: |
           set -euo pipefail
-          # Build WITH the `desktop` feature: the no-feature path has 14 compile
-          # errors in cli/mod.rs's untested `#[cfg(not(feature="desktop"))]`
-          # branches. `desktop` compiles the tested branch, supplies reqwest
-          # native-tls, and lets shell:default resolve. The capabilities patch
-          # above still drops the shell/process *grants*, so the plugins are
-          # compiled but ungranted (App-Sandbox-clean); no llama-server is
-          # bundled (bin/* dropped) so nothing spawns.
-          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop,pdf-zpdf,drive-filen-native,drive-internxt-native 2>&1 | tail -50
+          # `desktop-mas`, NOT `desktop` — PLAN P36.1.
+          #
+          # This used to build `--features desktop` and rely on the capability
+          # patch above to drop the shell/process *grants*, leaving the plugins
+          # compiled but ungranted. That passed review, but "compiled but
+          # ungranted" is a property nothing could check: any new
+          # `Command::new` would have shipped in this artifact and nothing
+          # would have said so.
+          #
+          # `desktop-mas` is the same surface minus the ability to spawn: the
+          # two plugins are not dependencies at all, and every spawn site in
+          # the tree is behind `feature = "sidecars"` (enforced by
+          # `no_process_spawn_outside_the_sidecars_feature` in compliance.rs).
+          # It also forces `drive-filen-native` + `drive-internxt-native` on,
+          # because the Python-CLI drives are exactly what a sandboxed build
+          # cannot run — so they are deliberately not named here.
+          #
+          # The capability patch above is still required, not redundant: the
+          # plugins being absent means `shell:default` / `process:default`
+          # would be *unresolvable* permission strings, not merely unused.
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf 2>&1 | tail -50
           # `find` over a non-existent path (src-tauri/target) exits non-zero and
           # would trip `set -e` AFTER the .app was already built — tolerate it.
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)

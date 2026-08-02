@@ -705,6 +705,11 @@ mod tests {
 
     /// P13.7 Stage F — `drain_cb_outbox` happy path: enqueue two
     /// rows, drain against a mockito server, both rows marked done.
+    // PLAN P36.16 — these exercise the cloud-backup client, so they need
+    // the feature that lets it be constructed. CI enables it on the test
+    // line; a default `cargo test` compiles them out rather than failing
+    // on a client that correctly refused to exist.
+    #[cfg(feature = "cloud-backup")]
     #[tokio::test]
     async fn drain_cb_outbox_clears_entries_on_success() {
         use mockito::Server;
@@ -741,6 +746,11 @@ mod tests {
 
     /// `drain_cb_outbox` failure path: server returns 500, both
     /// entries marked errored (retries bump) but not done.
+    // PLAN P36.16 — these exercise the cloud-backup client, so they need
+    // the feature that lets it be constructed. CI enables it on the test
+    // line; a default `cargo test` compiles them out rather than failing
+    // on a client that correctly refused to exist.
+    #[cfg(feature = "cloud-backup")]
     #[tokio::test]
     async fn drain_cb_outbox_marks_error_on_server_failure() {
         use mockito::Server;
@@ -773,6 +783,11 @@ mod tests {
     /// `drain_cb_outbox` skips entries with non-cb_manifest_push op
     /// (so the legacy crisp-index-server `ingest` op isn't drained
     /// through the wrong route).
+    // PLAN P36.16 — these exercise the cloud-backup client, so they need
+    // the feature that lets it be constructed. CI enables it on the test
+    // line; a default `cargo test` compiles them out rather than failing
+    // on a client that correctly refused to exist.
+    #[cfg(feature = "cloud-backup")]
     #[tokio::test]
     async fn drain_cb_outbox_ignores_other_ops() {
         let (_tmp, mgr) = fresh();

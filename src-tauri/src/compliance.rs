@@ -200,6 +200,343 @@ mod tests {
         );
     }
 
+    // ── Sandbox invariants (PLAN P36.6) ────────────────────────────────
+    //
+    // Not AI Act obligations, but the same class of regression and so the
+    // same treatment: a property an audit established once, that a later
+    // change reverses silently because the code still works. Somebody adds
+    // a `Command::new` months from now and nothing says the Mac App Store
+    // build just stopped being submittable — it builds, it runs, it is
+    // simply no longer shippable, and the first sign is a review rejection.
+
+    /// Spawning a process must live behind `feature = "sidecars"`.
+    ///
+    /// App Sandbox denies fork/exec of anything outside the app bundle, so
+    /// every `Command::new` in the tree is a thing the `desktop-mas` and
+    /// iOS builds cannot do. The flag is what makes that checkable: gated
+    /// code is code the sandboxed artifact does not contain.
+    ///
+    /// The check is deliberately crude — a file either has the feature
+    /// somewhere in it or it does not. Proving that a *particular* spawn
+    /// sits inside a particular `cfg` needs a parser, and the realistic
+    /// mistake is not a subtly mis-scoped attribute; it is a new spawn in a
+    /// file that never thought about the sandbox at all.
+    ///
+    /// If you are here because this test failed: the fix is a
+    /// `#[cfg(feature = "sidecars")]` on the spawning path plus an
+    /// in-process fallback (or an honest error) for builds without it. See
+    /// PLAN.md P36.2 for the resolution chosen for each existing site.
+    #[test]
+    fn no_process_spawn_outside_the_sidecars_feature() {
+        // Files whose spawns are already gated, with what a sandboxed build
+        // reaches instead. Listed rather than inferred so that adding a file
+        // here is a deliberate act with a stated substitute.
+        let gated: [(&str, &str); 8] = [
+            ("lib.rs", "mod no_sidecars — HTTP client without the launcher"),
+            ("tts/mod.rs", "CrispASR synthesis, watermarked, played by the webview"),
+            ("extractors/ocr.rs", "CrispEmbed / PaddleOCR / ocrs tiers"),
+            ("audio/ffmpeg_fallback.rs", "the glint decode tier"),
+            ("volume/mod.rs", "getattrlist(2) / getfsstat(2) on macOS"),
+            ("platform_share.rs", "NSWorkspace via Launch Services"),
+            ("drives/filen.rs", "crates/crisp-filen-native"),
+            ("drives/internxt.rs", "crates/crisp-internxt-native"),
+        ];
+
+        let mut offenders = Vec::new();
+        let mut seen_gated = Vec::new();
+        for path in rust_sources_except_self() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            if !text.contains("Command::new") {
+                continue;
+            }
+            // `#[cfg(test)]` code never ships, so a spawn in a test module
+            // is not a sandbox problem. Only whole test files are exempt —
+            // a file that mixes both still has to gate the real path.
+            let display = path.display().to_string();
+            let is_gated = text.contains("feature = \"sidecars\"");
+            if is_gated {
+                if let Some((name, _)) = gated.iter().find(|(n, _)| display.ends_with(n)) {
+                    seen_gated.push(*name);
+                }
+                continue;
+            }
+            offenders.push(display);
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a process spawn is reachable from a sandboxed build. Gate it \
+             behind `feature = \"sidecars\"` and give the sandboxed path an \
+             in-process substitute — see PLAN.md P36.2:\n  {}",
+            offenders.join("\n  ")
+        );
+
+        // And the guard must still be looking at the files it was written
+        // for. A rename or a move would otherwise leave it passing over an
+        // empty set, which is the failure mode every guard in this file is
+        // written to avoid.
+        for (name, substitute) in gated {
+            assert!(
+                seen_gated.contains(&name),
+                "{name} no longer contains a `sidecars`-gated spawn. Either \
+                 the spawn is gone (delete this row) or the file moved and \
+                 the guard is no longer watching it. Sandboxed builds were \
+                 relying on: {substitute}"
+            );
+        }
+    }
+
+    /// `dev-tools` must not reach a shipped artifact.
+    ///
+    /// It gates `index_promote_cb_archive`, which runs an interpreter named
+    /// by an environment variable against a script path chosen by the
+    /// caller. That is arbitrary code execution wearing a Tauri command's
+    /// clothes; it is a developer convenience and nothing else.
+    ///
+    /// Same shape as `no_build_recipe_enables_face_identification`, and for
+    /// the same reason: the realistic mistake is somebody appending the
+    /// feature to a `--features` line while chasing a build error.
+    #[test]
+    fn no_build_recipe_enables_dev_tools() {
+        let repo = repo_root();
+        let mut offenders = Vec::new();
+
+        let mut workflows: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(repo.join(".github/workflows")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str());
+                if matches!(ext, Some("yml") | Some("yaml")) {
+                    workflows.push(path);
+                }
+            }
+        }
+        assert!(
+            !workflows.is_empty(),
+            "no workflows found — this guard would pass by scanning nothing"
+        );
+
+        for path in &workflows {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            for (n, line) in text.lines().enumerate() {
+                let enables = line.contains("--features") || line.contains("tauri_args");
+                if enables && line.contains("dev-tools") {
+                    offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+
+        let manifest = std::fs::read_to_string(repo.join("src-tauri/Cargo.toml"))
+            .expect("read src-tauri/Cargo.toml");
+        for line in manifest.lines() {
+            let l = line.trim();
+            // `dev-tools = []` is the declaration; `default = [...]` or any
+            // other feature listing it is what would turn it on.
+            if l.starts_with("dev-tools =") {
+                continue;
+            }
+            if l.contains("\"dev-tools\"") && !l.starts_with('#') {
+                offenders.push(format!("Cargo.toml: {l}"));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a build recipe enables `dev-tools`, which carries a route that \
+             executes a caller-chosen script. See PLAN.md P36.4:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// Nothing reaches a third-party AI provider without passing the consent
+    /// gate — PLAN P36.13, App Review 5.1.2(i).
+    ///
+    /// > You must clearly disclose where personal data will be shared with
+    /// > third parties, **including with third-party AI**, and obtain explicit
+    /// > permission before doing so. […] Apps that share user data without
+    /// > user consent […] may be removed from sale.
+    ///
+    /// The gate lives at one choke point — `LLMClient.query`, just before the
+    /// remote branch — precisely so no call site has to remember it. This test
+    /// pins that arrangement, because the realistic regression is not someone
+    /// deleting the gate; it is someone adding a *second* path to a provider
+    /// and never learning the first one existed.
+    ///
+    /// If you are here because this failed: route the new path through
+    /// `ensureThirdPartyConsent(providerId, baseUrl)` before it sends
+    /// anything. Do not add the file to an exemption list — an unconsented
+    /// egress path is the thing the guideline penalises.
+    #[test]
+    fn no_third_party_ai_call_bypasses_the_consent_gate() {
+        let root = repo_root().join("src/lib/llm");
+        let client = root.join("client.ts");
+        let text = std::fs::read_to_string(&client).expect("read src/lib/llm/client.ts");
+
+        assert!(
+            text.contains("ensureThirdPartyConsent("),
+            "the LLM client no longer calls the consent gate — every remote \
+             request would now leave without permission. See PLAN.md P36.13."
+        );
+
+        // The gate has to sit *before* the request, not merely be imported.
+        let gate_at = text
+            .find("await ensureThirdPartyConsent(")
+            .expect("the gate must be awaited, not just imported");
+        let first_post = text
+            .find("/chat/completions")
+            .expect("client.ts posts to /chat/completions; if that moved, re-point this guard");
+        assert!(
+            gate_at < first_post,
+            "the consent gate runs after the request is built — it must come first"
+        );
+
+        // And the module it depends on has to still be there.
+        assert!(
+            root.join("thirdPartyConsent.ts").exists(),
+            "src/lib/llm/thirdPartyConsent.ts is gone; the gate cannot work"
+        );
+    }
+
+    /// The private-backend surfaces stay out of shipped builds.
+    ///
+    /// PLAN P36.16. `aitoolkit` and `cloud-backup` are HTTP clients for
+    /// backends that live in private repos, so for every user who is not on
+    /// the dev team they are tabs that connect to nothing — Guideline 2.1,
+    /// the same failure as the dead OCR tab.
+    ///
+    /// `aitoolkit` carries more than dead weight, which is why it is pinned
+    /// rather than left to judgement: it is the app's only
+    /// image-generation surface and its only *unwatermarked* audio surface
+    /// (`/api/tts/synthesize`, classified as such in
+    /// `the_aitoolkit_client_exposes_no_unclassified_endpoint` above).
+    /// Shipping it re-opens the third-party-AI consent and age-rating
+    /// questions (P36.13, P36.14) for a feature nobody outside this team
+    /// can reach.
+    ///
+    /// If you are here because this test failed: enabling one of these for
+    /// a release means answering Apple's AI questionnaire differently. That
+    /// is a decision, not a build fix.
+    #[test]
+    fn no_build_recipe_enables_a_private_backend_surface() {
+        let repo = repo_root();
+        let mut offenders = Vec::new();
+        let gated = ["aitoolkit", "cloud-backup"];
+
+        let mut workflows: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(repo.join(".github/workflows")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str());
+                if matches!(ext, Some("yml") | Some("yaml")) {
+                    workflows.push(path);
+                }
+            }
+        }
+        assert!(
+            !workflows.is_empty(),
+            "no workflows found — this guard would pass by scanning nothing"
+        );
+
+        for path in &workflows {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            for (n, line) in text.lines().enumerate() {
+                let enables = line.contains("--features") || line.contains("tauri_args");
+                if !enables {
+                    continue;
+                }
+                // `cargo test` may enable these, and should. The requirement
+                // is "not shipped", not "never compiled" — unlike
+                // `dev-tools`, this is code we want kept working, and a
+                // 2,820-line client that CI never type-checks rots. What
+                // must stay clean is anything that produces an artifact:
+                // `tauri_args` (bundling) and `cargo build`.
+                if line.contains("cargo test") {
+                    continue;
+                }
+                for feature in gated {
+                    // Match the feature as a list element, not as a
+                    // substring: `cloud-backup` must not be found inside a
+                    // hypothetical `cloud-backup-tests`, and `aitoolkit`
+                    // must not match a longer name either.
+                    let named = line
+                        .split(|c: char| c == ',' || c == ' ' || c == '\'' || c == '"')
+                        .any(|token| token == feature);
+                    if named {
+                        offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+
+        let manifest = std::fs::read_to_string(repo.join("src-tauri/Cargo.toml"))
+            .expect("read src-tauri/Cargo.toml");
+        for line in manifest.lines() {
+            let l = line.trim();
+            if l.starts_with('#') {
+                continue;
+            }
+            for feature in gated {
+                // The declaration itself (`aitoolkit = []`) is fine; another
+                // feature listing it in its array is what turns it on.
+                if l.starts_with(&format!("{feature} =")) {
+                    continue;
+                }
+                if l.contains(&format!("\"{feature}\"")) {
+                    offenders.push(format!("Cargo.toml: {l}"));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a build recipe enables a private-backend surface. Both reach \
+             backends no user outside this team can run — see PLAN.md \
+             P36.16:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// The Mac App Store SKU differs from the `.dmg` by one feature.
+    ///
+    /// Pinned because the split is easy to undo by accident: someone adds a
+    /// dependency to `desktop-mas` to fix a build, and the two SKUs quietly
+    /// stop being the same product. `desktop-mas` must be `desktop` plus the
+    /// native drives — never `sidecars`, which is the whole point, and never
+    /// a third thing the `.dmg` does not also have.
+    #[test]
+    fn the_mac_app_store_sku_is_desktop_minus_spawning() {
+        let manifest = std::fs::read_to_string(repo_root().join("src-tauri/Cargo.toml"))
+            .expect("read src-tauri/Cargo.toml");
+        let line = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("desktop-mas"))
+            .expect("`desktop-mas` is the Mac App Store feature; it must exist");
+
+        assert!(
+            !line.contains("sidecars"),
+            "`desktop-mas` enables `sidecars`, so the sandboxed build now \
+             spawns processes and is not submittable: {line}"
+        );
+        for required in ["desktop", "drive-filen-native", "drive-internxt-native"] {
+            assert!(
+                line.contains(required),
+                "`desktop-mas` must include `{required}` — the Python-CLI \
+                 drives are exactly what a sandboxed build cannot run: {line}"
+            );
+        }
+
+        // And `sidecars` must not have crept into `default`, which would put
+        // the spawn paths into every build including mobile.
+        for l in manifest.lines() {
+            let l = l.trim();
+            if l.starts_with("default") && l.contains("sidecars") {
+                panic!("`sidecars` is a default feature: {l}");
+            }
+        }
+    }
+
     /// Every `.svelte` file under the frontend `src/`.
     fn svelte_sources() -> Vec<PathBuf> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -14,8 +14,10 @@
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
     import { CORE_TABS, AITOOLKIT_TABS, MOBILE_TABS, visibleTabs } from '$lib/tabs';
     import { aitoolkitCaps } from '$lib/aitoolkit';
+    import { caps, buildFlags, loadCapabilities } from '$lib/capabilities';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
+    import ThirdPartyAiConsent from '$lib/components/ThirdPartyAiConsent.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
@@ -118,9 +120,20 @@
         else         _stopQueuePoll?.();
     });
 
+    // P36.5 — one capability set for every `requires:` gate: `build:*`
+    // keys from what this binary compiled in, `service:*` keys from a
+    // connected AIToolkit backend. Merged here rather than in `tabs.ts` so
+    // the registry stays a plain data file with no store imports.
+    let allCaps = $derived(new Set([...$buildFlags, ...$aitoolkitCaps]));
+
     onMount(() => {
         let cleanup = () => {};
         (async () => {
+            // Probe the build before anything renders conditionally. Its
+            // own failure path leaves every gated surface hidden, so this
+            // deliberately does not guard the rest of startup.
+            await loadCapabilities();
+
             // Load saved language
             const savedLang = await getSetting('language', 'en') as Language;
             i18n.setLanguage(savedLang);
@@ -365,7 +378,7 @@
                 {#if !navCollapsed}<span class="logo-text">CrispSorter</span>{/if}
             </div>
             
-            {#each visibleTabs([...CORE_TABS, ...AITOOLKIT_TABS], $aitoolkitCaps) as tab (tab.id)}
+            {#each visibleTabs([...CORE_TABS, ...AITOOLKIT_TABS], allCaps) as tab (tab.id)}
                 {#if tab.separatorBefore}<div class="nav-separator"></div>{/if}
                 {@const Icon = tab.icon}
                 <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}>
@@ -497,9 +510,16 @@
                 <OcrWorkbench />
             {:else if activeTab === 'pdf'}
                 <PdfWorkspace />
-            {:else if activeTab === 'aitoolkit'}
+            <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that
+                 asked for them. The nav already hides these tabs, so this
+                 second check is for the state the nav cannot reach: an
+                 `activeTab` that was set before the probe resolved, or by a
+                 future deep link. Gating the *mount* rather than trusting the
+                 nav means the client never connects to a backend this build
+                 was not supposed to talk to. -->
+            {:else if activeTab === 'aitoolkit' && $caps.aitoolkit}
                 <AIToolkitView />
-            {:else if activeTab.startsWith('ai:')}
+            {:else if activeTab.startsWith('ai:') && $caps.aitoolkit}
                 <AIToolkitCapability capability={activeTab.slice(3)} />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
@@ -515,9 +535,15 @@
 
     <TransferDrawer />
 
+    <!-- PLAN P36.13 / App Review 5.1.2(i). Mounted once at the shell level:
+         it registers itself as the prompter for the LLM egress gate, so
+         every path that could send document text to a third party is
+         covered without any call site knowing it exists. -->
+    <ThirdPartyAiConsent />
+
     <!-- Mobile bottom tab bar — visible only on small screens -->
     <nav class="mobile-nav">
-        {#each MOBILE_TABS as tab (tab.id)}
+        {#each visibleTabs(MOBILE_TABS, allCaps) as tab (tab.id)}
             {@const Icon = tab.icon}
             <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
                 <Icon size={20} /><span>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</span>

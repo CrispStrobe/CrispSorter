@@ -3279,6 +3279,23 @@ pub async fn index_l1_only_scan(
 /// `owner_id`         — owner UUID (nil = single-user install)
 ///
 /// Returns the IngestStats from the full L3 pipeline on success.
+///
+/// ## Developer-only (PLAN P36.4)
+///
+/// The transport here disqualifies the route from any shipped artifact: it
+/// runs an interpreter chosen by `CRISPSORTER_PYTHON` against a script path
+/// chosen by the *caller*, which is arbitrary code execution wearing a
+/// Tauri command's clothes, and a spawn besides. So it is gated the same
+/// way `images-crisplens-identify` is — off by default, named in no release
+/// recipe, guarded by a test (`no_build_recipe_enables_dev_tools` in
+/// `compliance.rs`) — plus a runtime opt-in, because a cargo feature alone
+/// is one careless `--features` line away from shipping.
+///
+/// The functionality is wanted; the transport is what is wrong with it.
+/// Porting it to speak to cb-api directly (as `sync::cloud_backup` already
+/// does) is the real fix and is tracked in PLAN.md. Gating first is
+/// deliberate: it unblocks the store submissions now, and a port done under
+/// submission pressure is a port done badly.
 #[tauri::command]
 pub async fn index_promote_cb_archive(
     state: State<'_, AppState>,
@@ -3289,6 +3306,20 @@ pub async fn index_promote_cb_archive(
     output_dir: Option<String>,
     owner_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    ensure_dev_tools_enabled("index_promote_cb_archive")?;
+
+    #[cfg(not(all(feature = "dev-tools", feature = "sidecars")))]
+    {
+        let _ = (state, handle, doc_id, original_path, retrieve_py_path, output_dir, owner_id);
+        // Unreachable in practice — `ensure_dev_tools_enabled` already
+        // returned above on any build without the feature. Present so the
+        // spawn below genuinely does not exist in the artifact, rather than
+        // existing behind a runtime `if`.
+        Err(DEV_TOOLS_DISABLED.to_string())
+    }
+
+    #[cfg(all(feature = "dev-tools", feature = "sidecars"))]
+    {
     use tauri::Manager;
 
     let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
@@ -3349,6 +3380,34 @@ pub async fn index_promote_cb_archive(
     }
 
     promote_path(state, doc_id, restored_path, owner, original_path).await
+    }
+}
+
+/// Refused message for every dev-only route, so the frontend can match on
+/// one string and the wording cannot drift between call sites.
+const DEV_TOOLS_DISABLED: &str = "this route is a developer tool and is not \
+    available in this build (cargo feature `dev-tools` plus \
+    CRISPSORTER_DEV_TOOLS=1)";
+
+/// Two locks, deliberately.
+///
+/// The cargo feature keeps the code out of the artifact; the environment
+/// variable keeps it off even in a developer build that happened to enable
+/// the feature. Either alone has a realistic failure mode — a `--features`
+/// line copied while chasing a build error, or a shipped binary whose only
+/// protection is a flag nobody set — and the point of a dev-only route is
+/// that reaching it should take intent.
+fn ensure_dev_tools_enabled(route: &str) -> Result<(), String> {
+    if !cfg!(feature = "dev-tools") {
+        return Err(DEV_TOOLS_DISABLED.to_string());
+    }
+    match std::env::var("CRISPSORTER_DEV_TOOLS").as_deref() {
+        Ok("1") | Ok("true") => Ok(()),
+        _ => Err(format!(
+            "{route} needs CRISPSORTER_DEV_TOOLS=1 in the environment — \
+             {DEV_TOOLS_DISABLED}"
+        )),
+    }
 }
 
 async fn promote_path(

@@ -55,6 +55,37 @@ pub fn write_wav_mono(path: &Path, pcm: &[f32], sample_rate: u32) -> Result<()> 
     Ok(())
 }
 
+/// Same WAV as [`write_wav_mono`], returned as bytes instead of written
+/// to a file.
+///
+/// P36.2 — the sandboxed TTS path hands synthesised speech to the webview
+/// to play, so the audio must never touch the filesystem: a container has
+/// nowhere obvious to put it and no reason to. `hound` writes into any
+/// `Write + Seek`, and `Cursor<Vec<u8>>` is both.
+pub fn wav_mono_bytes(pcm: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: SampleFormat::Float,
+    };
+
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer =
+            WavWriter::new(&mut buffer, spec).context("creating in-memory WAV writer")?;
+        for &sample in pcm {
+            writer.write_sample(sample).context("writing sample to WAV buffer")?;
+        }
+        // Explicit rather than on drop: `finalize` is what backfills the
+        // RIFF/data chunk lengths, and a drop-finalised writer swallows the
+        // error if that seek fails, yielding a header that lies about its
+        // own payload size.
+        writer.finalize().context("finalising in-memory WAV")?;
+    }
+    Ok(buffer.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +149,32 @@ mod tests {
 
         assert!(path.exists(), "output file not created");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn in_memory_wav_matches_the_file_writer_byte_for_byte() {
+        // The sandboxed TTS path depends on these two producing the same
+        // container — if the in-memory variant ever drifts (a missing
+        // finalize, a different chunk order), the webview gets a WAV that
+        // decodes differently from the one `chat tts` writes, and nothing
+        // else in the tree would notice.
+        let pcm: Vec<f32> = (0..2_400).map(|i| (i as f32 / 97.0).sin() * 0.4).collect();
+
+        let path = tmp_path("_bytes.wav");
+        write_wav_mono(&path, &pcm, 24_000).expect("write file");
+        let from_file = std::fs::read(&path).expect("read back");
+        let _ = std::fs::remove_file(&path);
+
+        let from_memory = wav_mono_bytes(&pcm, 24_000).expect("write memory");
+        assert_eq!(from_file, from_memory);
+
+        // And it must be a WAV a decoder will accept, not just an equal
+        // pile of bytes.
+        let mut reader =
+            hound::WavReader::new(std::io::Cursor::new(from_memory)).expect("hound::new");
+        assert_eq!(reader.spec().sample_rate, 24_000);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.samples::<f32>().count(), pcm.len());
     }
 
     #[test]

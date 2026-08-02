@@ -41,8 +41,22 @@
 //!   later); for per-page metadata we'd need PDF rendering + per-page
 //!   OCR + re-aggregation, which is too much for this phase.
 
-use anyhow::{anyhow, Context, Result};
+//! ## Why this whole tier is `sidecars`-gated (P36.2)
+//!
+//! Shelling out is the entire implementation, so a build that may not spawn
+//! has no Tesseract tier at all — [`ocr_via_tesseract`] errors and
+//! [`is_tesseract_installed`] is `false`, which drops the ladder in
+//! `extractors/mod.rs` back to CrispEmbed (tier 4), PaddleOCR (tier 3) and
+//! ocrs (tier 2), every one of which is linked in rather than spawned. The
+//! signatures stay identical on both sides of the flag precisely so the
+//! ladder needs no `cfg` of its own.
+
+use anyhow::Result;
 use std::path::Path;
+
+#[cfg(feature = "sidecars")]
+use anyhow::{anyhow, Context};
+#[cfg(feature = "sidecars")]
 use std::process::{Command, Stdio};
 
 use super::ExtractedDocument;
@@ -56,6 +70,7 @@ use super::ExtractedDocument;
 /// surprisingly good at multi-language documents when given the right
 /// hint; CrispSorter's primary use case (German + English academic
 /// PDFs) lines up exactly.
+#[cfg(feature = "sidecars")]
 pub fn ocr_via_tesseract(path: &Path) -> Result<ExtractedDocument> {
     // `tesseract <input> - -l eng+deu` writes plain text to stdout.
     // The `-` output target is the magic stdout sentinel.
@@ -100,9 +115,21 @@ pub fn ocr_via_tesseract(path: &Path) -> Result<ExtractedDocument> {
     })
 }
 
+/// The Tesseract tier is unreachable without the ability to spawn it.
+#[cfg(not(feature = "sidecars"))]
+pub fn ocr_via_tesseract(path: &Path) -> Result<ExtractedDocument> {
+    anyhow::bail!(
+        "the Tesseract OCR tier is a shell-out and this build cannot spawn \
+         processes — {} needs one of the in-process tiers (CrispEmbed, \
+         PaddleOCR, ocrs)",
+        path.display()
+    )
+}
+
 /// Cheap availability check — does `tesseract --version` exit 0?
 /// Cached lookup is overkill for the call frequency we have; just
 /// invoke it on demand.
+#[cfg(feature = "sidecars")]
 pub fn is_tesseract_installed() -> bool {
     Command::new("tesseract")
         .arg("--version")
@@ -111,6 +138,14 @@ pub fn is_tesseract_installed() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Always false without `sidecars` — the binary may well be on PATH, but
+/// this build could not run it, and `doctor` reporting "installed" for a
+/// tier that always errors is worse than reporting nothing.
+#[cfg(not(feature = "sidecars"))]
+pub fn is_tesseract_installed() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -126,5 +161,23 @@ mod tests {
         // Just make sure the call doesn't panic. The bool result is
         // environment-dependent.
         let _ = is_tesseract_installed();
+    }
+
+    /// P36.2 — a build that cannot spawn must not claim a spawn-only tier.
+    /// Asserted rather than assumed, because `is_tesseract_installed`
+    /// feeds `doctor` and the OCR ladder's tier selection: a stray `true`
+    /// here sends every image down a path that can only fail.
+    #[test]
+    fn the_tesseract_tier_is_absent_without_the_sidecars_feature() {
+        if cfg!(feature = "sidecars") {
+            return;
+        }
+        assert!(!is_tesseract_installed());
+        let err = ocr_via_tesseract(Path::new("/nonexistent/scan.png"))
+            .expect_err("must refuse without a way to spawn");
+        assert!(
+            err.to_string().contains("spawn"),
+            "the message should say why, got: {err}"
+        );
     }
 }

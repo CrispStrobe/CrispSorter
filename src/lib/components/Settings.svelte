@@ -8,7 +8,8 @@
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
-    import { isDesktop } from '../platform';
+    import { caps, currentCaps } from '../capabilities';
+    import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
     import {
         resolveSecret,
         bulkSetSecrets,
@@ -146,8 +147,26 @@
 
     // MLX is Apple Silicon only — hide on Windows/Linux
     const isMacOS = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
-    // Sidecar controls (Start/Stop Ollama, llama.cpp, MLX) only shown on desktop
-    const showSidecarControls = isDesktop();
+    // Start/Stop buttons for Ollama, llama.cpp and MLX. Gated on whether
+    // this build can *launch* a server, not on whether it is desktop:
+    // the Mac App Store build is desktop and may not spawn, while every
+    // build can still talk to a server the user started (PLAN P36.2).
+    // `$caps` rather than a one-shot read so the controls appear when the
+    // probe resolves.
+    const showSidecarControls = $derived($caps.launch_local_servers);
+
+    // PLAN P36.13 / App Review 5.1.2(i). The guideline is about *ongoing*
+    // permission, not a one-off click, so the providers a user has allowed
+    // have to be visible and withdrawable — otherwise the only way to change
+    // your mind is to not use the feature.
+    let consentedProviders = $state<string[]>([]);
+    async function refreshConsentedProviders() {
+        consentedProviders = await listConsented();
+    }
+    async function revokeProviderConsent(providerId: string) {
+        await revokeConsent(providerId);
+        await refreshConsentedProviders();
+    }
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
     let selectedProviderId = $state('global');
@@ -1185,6 +1204,7 @@
     onMount(() => {
         let cleanup = () => {};
         (async () => {
+        await refreshConsentedProviders();
         const savedProviders = await getSetting('providers');
         if (savedProviders) {
             const merged = DEFAULT_PROVIDERS.map(def => {
@@ -2166,7 +2186,10 @@
     let backupEditMsg = $state('');
 
     async function refreshBackupJobs() {
-        if (!isDesktop) return;
+        // Was `if (!isDesktop)` — testing the imported *function object*,
+        // which is always truthy, so the guard never fired and mobile ran
+        // the desktop-only backup queries anyway. PLAN P36.5.
+        if (!currentCaps().desktop) return;
         backupJobsBusy = true;
         try {
             backupJobs = await invoke<any[]>('backup_job_list');
@@ -4197,11 +4220,44 @@
                 </p>
             </div>
 
+            <!-- PLAN P36.13 / App Review 5.1.2(i): "You must clearly disclose
+                 where personal data will be shared with third parties,
+                 including with third-party AI, and obtain explicit permission
+                 before doing so." The dialog obtains it; this is where it can
+                 be reviewed and taken back. -->
+            <div class="section-card">
+                <label><Server size={16} /> {i18n.t.consent?.third_party_ai_settings ?? 'Third-party AI providers you have allowed'}</label>
+                <p class="hint">{i18n.t.consent?.third_party_ai_settings_hint ?? ''}</p>
+                {#if consentedProviders.length === 0}
+                    <p class="hint">{i18n.t.consent?.third_party_ai_none ?? 'None yet.'}</p>
+                {:else}
+                    <ul class="consented-list">
+                        {#each consentedProviders as providerId (providerId)}
+                            <li>
+                                <span>{providerDisplayName(providerId)}</span>
+                                <button onclick={() => revokeProviderConsent(providerId)}>
+                                    {i18n.t.consent?.third_party_ai_revoke ?? 'Revoke'}
+                                </button>
+                            </li>
+                        {/each}
+                    </ul>
+                {/if}
+            </div>
+
             <!-- P13.7 Step 5 — cloud-backup HTTP sync.  Talks to a
                  FastAPI module on a VPS that owns the same
                  catalog DB vps_worker.py manages.  URL +
                  toggles live in IndexConfig (JSON-safe); API key
                  goes to the OS keychain via sync_cb_set_token. -->
+            <!-- PLAN P36.16 — the whole cloud-backup surface. cb-api lives in
+                 a private repo on one host, so for anyone outside the dev team
+                 this panel configures a sync target that cannot be reached.
+                 The routes refuse at the network seam regardless
+                 (`CloudBackupClient::new`), but a settings panel whose every
+                 button errors is worse than no panel: it reads as broken
+                 rather than absent. Enable the `cloud-backup` cargo feature
+                 to get it back. -->
+            {#if $caps.cloud_backup}
             <div class="section-card">
                 <label><Server size={16} /> {i18n.t.settings.index.cloud_backup_section ?? 'Cloud-backup sync'}</label>
                 <p class="hint">{i18n.t.settings.index.cloud_backup_section_hint ?? ''}</p>
@@ -4636,6 +4692,7 @@
                     {/if}
                 </details>
             </div>
+            {/if}
 
             <!-- Compute device — options depend on the selected engine.
                  ONNX (FastEmbed) supports Auto/CPU/Metal/CUDA via ORT
@@ -5636,6 +5693,37 @@
 {/if}
 
 <style>
+    /* P36.13 — allowed third-party AI providers. */
+    .consented-list {
+        list-style: none;
+        margin: 8px 0 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .consented-list li {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        background: #11111b;
+        border: 1px solid #313244;
+        border-radius: 8px;
+        padding: 7px 11px;
+        font-size: 0.86rem;
+    }
+    .consented-list button {
+        border: 1px solid #45475a;
+        background: #313244;
+        color: #cdd6f4;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 0.78rem;
+        cursor: pointer;
+    }
+    .consented-list button:hover { background: #45475a; }
+
     .settings-container { display: flex; height: 100%; background: #09090b; color: #fafafa; font-family: 'Inter', sans-serif; overflow: hidden; }
     .sidebar { width: 200px; background: #18181b; border-right: 1px solid #27272a; padding: 0; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar-scrollable { flex: 1; overflow-y: auto; padding: 20px 0; }

@@ -38,8 +38,9 @@ use super::{resampler, DecodeTier, DecodedAudio, ASR_SAMPLE_RATE};
 /// - no audio track in the file;
 /// - the codec isn't shipped with symphonia (e.g. AC-3, EAC-3).
 ///
-/// All of these route to [`super::ffmpeg_fallback`] under the
-/// default [`super::FallbackPolicy::AllowFfmpeg`] policy.
+/// All of these fall through to [`super::glint_fallback`], and then to
+/// [`super::ffmpeg_fallback`] under the default
+/// [`super::FallbackPolicy::AllowFfmpeg`] policy.
 pub fn decode_with_symphonia(path: &Path) -> Result<DecodedAudio> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("cannot open {}", path.display()))?;

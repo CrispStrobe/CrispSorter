@@ -1,7 +1,7 @@
 //! Cross-platform audio + video decoding to 16 kHz mono Float32 PCM —
 //! the canonical input format for CrispASR.
 //!
-//! ## Two decode tiers
+//! ## Three decode tiers
 //!
 //! 1. **Pure-Rust via [symphonia](https://github.com/pdeljanov/Symphonia)
 //!    + [rubato](https://github.com/HEnquist/rubato):**
@@ -10,13 +10,26 @@
 //!      video frames skipped)
 //!    No system deps — ships everywhere CrispSorter does.
 //!
-//! 2. **ffmpeg shell-out fallback** (`ffmpeg_fallback`) for the long
-//!    tail of containers symphonia doesn't read: AVI DivX, WMV, FLV,
-//!    TS, AMR, RA.  Only fires when symphonia rejects the file AND
-//!    `ffmpeg` is on PATH; otherwise emits a clear "install ffmpeg
-//!    for .<ext>" message rather than silent failure.  Cross-platform:
-//!    `which ffmpeg` works on macOS / Linux, `where.exe ffmpeg` on
-//!    Windows.
+//! 2. **glint** (`glint_fallback`, `feature = "audio-glint"`) — a
+//!    clean-room MIT C++17 codec suite linked into the binary. Decodes
+//!    MP3, AAC-LC, Ogg-Opus, Ogg-Vorbis and FLAC from their own headers,
+//!    so it covers *elementary streams and bare codec files* symphonia
+//!    rejects (a raw ADTS `.aac`, an `.mp3` with a damaged first frame,
+//!    an Opus stream symphonia's demuxer won't take). It is a codec
+//!    suite, not a demuxer: it cannot open AVI, WMV, FLV or MPEG-TS,
+//!    and does not pretend to.
+//!
+//! 3. **ffmpeg shell-out** (`ffmpeg_fallback`, `feature = "sidecars"`)
+//!    for the container long tail glint cannot reach: AVI DivX, WMV,
+//!    FLV, TS, AMR, RA. Only fires when both tiers above reject the file
+//!    AND `ffmpeg` is on PATH; otherwise emits a clear "install ffmpeg
+//!    for .<ext>" message rather than silent failure.
+//!
+//! Tier 3 is the one that disappears under App Sandbox (PLAN P36.3), and
+//! tier 2 exists so that losing it costs codecs rather than the whole
+//! fallback. What is genuinely lost on `desktop-mas` is the *container*
+//! long tail — recorded in `ExtensionSupport::Ffmpeg` and reported
+//! honestly by `supported_extension`.
 //!
 //! ## Shape of returned data
 //!
@@ -30,8 +43,10 @@ use std::path::Path;
 #[cfg(feature = "crispasr")]
 pub mod decoder;
 pub mod probe;
-#[cfg(feature = "crispasr")]
+#[cfg(all(feature = "crispasr", feature = "sidecars"))]
 pub mod ffmpeg_fallback;
+#[cfg(all(feature = "crispasr", feature = "audio-glint"))]
+pub mod glint_fallback;
 #[cfg(feature = "crispasr")]
 pub mod resampler;
 // `writer` is always-compile: the WAV write path is useful outside
@@ -65,9 +80,9 @@ pub struct DecodedAudio {
     /// Duration in seconds.  Equivalent to `pcm.len() as f64 /
     /// ASR_SAMPLE_RATE as f64`, exposed here for convenience.
     pub duration_seconds: f64,
-    /// Which tier handled the decode — `"symphonia"` or `"ffmpeg"`.
-    /// Lets callers tag log lines / emit warnings about shell-out
-    /// usage on shipping installs.
+    /// Which tier handled the decode — `"symphonia"`, `"glint"` or
+    /// `"ffmpeg"`.  Lets callers tag log lines / emit warnings about
+    /// shell-out usage on shipping installs.
     pub tier: DecodeTier,
 }
 
@@ -76,6 +91,8 @@ pub struct DecodedAudio {
 pub enum DecodeTier {
     /// Pure-Rust path (symphonia + rubato).
     Symphonia,
+    /// In-process codec suite (glint), linked in — no process, no PATH.
+    Glint,
     /// ffmpeg shell-out fallback.
     Ffmpeg,
 }
@@ -84,62 +101,100 @@ impl DecodeTier {
     pub fn as_str(self) -> &'static str {
         match self {
             DecodeTier::Symphonia => "symphonia",
+            DecodeTier::Glint => "glint",
             DecodeTier::Ffmpeg => "ffmpeg",
         }
     }
+
+    /// Whether reaching this tier required running another program.
+    /// The distinction the sandbox cares about, and the one worth
+    /// logging: an in-process tier is available everywhere the binary is.
+    pub fn spawns_a_process(self) -> bool {
+        matches!(self, DecodeTier::Ffmpeg)
+    }
 }
 
-/// Whether to allow the ffmpeg shell-out fallback when symphonia
-/// can't read a file.  Default: [`FallbackPolicy::AllowFfmpeg`].
+/// Whether to allow the ffmpeg shell-out fallback when the in-process
+/// tiers can't read a file.  Default: [`FallbackPolicy::AllowFfmpeg`].
+///
+/// The policy only governs tier 3. glint is in-process, so it runs under
+/// both policies — `PureRust` means "nothing gets spawned", not "symphonia
+/// only", and a file glint can decode is decodable purely in-process by
+/// definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FallbackPolicy {
-    /// Try symphonia first; on failure, try `ffmpeg` if it's on PATH.
-    /// Errors with a clear "install ffmpeg for .<ext>" message when
-    /// symphonia fails AND ffmpeg isn't found.
+    /// Try symphonia, then glint; on failure, try `ffmpeg` if it's on
+    /// PATH.  Errors with a clear "install ffmpeg for .<ext>" message
+    /// when every in-process tier fails AND ffmpeg isn't found.
     #[default]
     AllowFfmpeg,
-    /// Only use symphonia.  Errors if the file isn't decodable
-    /// purely in-process.  Useful for environments where shell-out
-    /// is forbidden (sandboxes, embedded use).
+    /// In-process tiers only.  Errors if the file isn't decodable
+    /// without spawning.  Useful for environments where shell-out
+    /// is forbidden (sandboxes, embedded use) — and the only behaviour
+    /// available at all on builds without the `sidecars` feature, which
+    /// carry no ffmpeg tier to permit.
     PureRust,
 }
 
-/// Decode `path` to 16 kHz mono Float32 PCM.  Tries symphonia first,
-/// then optionally falls back to ffmpeg per `policy`.
+/// Decode `path` to 16 kHz mono Float32 PCM.  Tries symphonia, then
+/// glint, then optionally ffmpeg per `policy`.
 ///
-/// **Errors** when:
-/// - the file doesn't exist or isn't readable;
-/// - symphonia rejects the container AND `policy ==
-///   PureRust`;
-/// - symphonia rejects the container AND `ffmpeg` isn't on PATH
-///   (under `AllowFfmpeg`);
-/// - the audio stream is silent (zero samples).
+/// **Errors** when every compiled-in tier rejects the file, or the audio
+/// stream is silent (zero samples).  The error names each tier that was
+/// tried and why it failed, because "audio decode failed" on its own
+/// tells the user nothing about whether to install ffmpeg, re-encode, or
+/// give up.
 #[cfg(feature = "crispasr")]
 pub fn decode_to_16khz_mono(path: &Path, policy: FallbackPolicy) -> Result<DecodedAudio> {
     // Tier 1: symphonia.
-    match decoder::decode_with_symphonia(path) {
-        Ok(d) => Ok(d),
-        Err(symphonia_err) => match policy {
-            FallbackPolicy::PureRust => Err(anyhow::anyhow!(
-                "symphonia decode failed for {} (PureRust policy — \
-                 ffmpeg fallback not allowed): {symphonia_err}",
-                path.display()
-            )),
-            FallbackPolicy::AllowFfmpeg => {
-                // Tier 2: ffmpeg.  Propagates "ffmpeg not found"
-                // with the original symphonia error attached so the
-                // caller can see both failure modes.
-                ffmpeg_fallback::decode_with_ffmpeg(path).map_err(|ffmpeg_err| {
-                    anyhow::anyhow!(
-                        "audio decode failed for {}\n  \
-                         tier-1 symphonia: {symphonia_err}\n  \
-                         tier-2 ffmpeg: {ffmpeg_err}",
-                        path.display()
-                    )
-                })
-            }
-        },
+    let symphonia_err = match decoder::decode_with_symphonia(path) {
+        Ok(d) => return Ok(d),
+        Err(e) => e,
+    };
+
+    // Tier 2: glint — in-process, so no policy check. Runs before ffmpeg
+    // even when ffmpeg is allowed: an in-process decode is faster, has no
+    // PATH dependency, and cannot be affected by whatever ffmpeg build the
+    // host happens to have.
+    #[cfg(feature = "audio-glint")]
+    let glint_err = match glint_fallback::decode_with_glint(path) {
+        Ok(d) => return Ok(d),
+        Err(e) => e.to_string(),
+    };
+    #[cfg(not(feature = "audio-glint"))]
+    let glint_err = String::from("not compiled in (feature `audio-glint`)");
+
+    // Tier 3: ffmpeg.
+    #[cfg(feature = "sidecars")]
+    {
+        if policy == FallbackPolicy::AllowFfmpeg {
+            return ffmpeg_fallback::decode_with_ffmpeg(path).map_err(|ffmpeg_err| {
+                anyhow::anyhow!(
+                    "audio decode failed for {}\n  \
+                     tier-1 symphonia: {symphonia_err}\n  \
+                     tier-2 glint: {glint_err}\n  \
+                     tier-3 ffmpeg: {ffmpeg_err}",
+                    path.display()
+                )
+            });
+        }
     }
+
+    // Either the caller forbade it or this build has no tier 3 at all.
+    // Say which — "ffmpeg fallback not allowed" would be misleading on a
+    // sandboxed build, where there was never an ffmpeg tier to allow.
+    let why_no_ffmpeg = if cfg!(feature = "sidecars") {
+        "PureRust policy — ffmpeg fallback not allowed"
+    } else {
+        "this build cannot spawn ffmpeg (feature `sidecars` is off)"
+    };
+    let _ = policy;
+    Err(anyhow::anyhow!(
+        "audio decode failed for {} ({why_no_ffmpeg})\n  \
+         tier-1 symphonia: {symphonia_err}\n  \
+         tier-2 glint: {glint_err}",
+        path.display()
+    ))
 }
 
 /// Stub for builds without the `crispasr` feature.  Errors with a
@@ -155,6 +210,16 @@ pub fn decode_to_16khz_mono(_path: &Path, _policy: FallbackPolicy) -> Result<Dec
 /// Best-effort container family lookup for a path.  Used by `doctor`
 /// to report what's supported on this build without trying a decode.
 /// Always-compile — independent of the `crispasr` feature.
+///
+/// **glint does not appear in this map, on purpose.** It adds no new
+/// extension: every codec it decodes (MP3, AAC, Opus, Vorbis, FLAC, WAV)
+/// is one symphonia already claims. What it adds is a second attempt at
+/// files symphonia claims and then fails on — a damaged first frame, a
+/// bare ADTS stream, an Opus file its demuxer rejects — which is a
+/// per-*file* property this per-*extension* lookup cannot express. The
+/// tier-3 row below is therefore the real answer to "what does a
+/// sandboxed build lose": AVI, WMV, FLV, MPEG-TS, AMR and RealAudio,
+/// which need a demuxer neither in-process tier has.
 pub fn supported_extension(ext: &str) -> ExtensionSupport {
     let ext = ext.trim_start_matches('.').to_ascii_lowercase();
     match ext.as_str() {
@@ -177,7 +242,9 @@ pub fn supported_extension(ext: &str) -> ExtensionSupport {
 pub enum ExtensionSupport {
     /// Pure-Rust symphonia tier handles it.
     Symphonia,
-    /// Tier-2 ffmpeg shell-out required.
+    /// Needs the tier-3 ffmpeg shell-out: a container no in-process
+    /// demuxer in the tree can open.  Absent from builds without the
+    /// `sidecars` feature — these extensions simply do not decode there.
     Ffmpeg,
     /// Neither tier expected to succeed — likely not audio/video.
     Unknown,

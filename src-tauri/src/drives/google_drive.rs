@@ -670,17 +670,32 @@ mod tests {
 
     #[test]
     fn restore_deleted_clears_google_trash_and_can_add_parent() {
+        // Two *different* lookups happen here, and the point of the test is
+        // that the second one is resolved rather than passed through: Drive's
+        // `addParents` takes file IDs, so sending the folder's *name* would
+        // silently fail against the real API.
+        //
+        // A single catch-all GET mock cannot express that — it returns the
+        // same id for both calls, so a passed-through name and a resolved id
+        // become indistinguishable. Matching each lookup on the name inside
+        // its `q=` parameter keeps them apart.
         let mut server = Server::new();
-        let resolve = server
+        let resolve_file = server
             .mock("GET", "/drive/v3/files")
-            .match_query(mockito::Matcher::Any)
-            .expect(2)
+            .match_query(mockito::Matcher::Regex("report".into()))
             .with_status(200)
             .with_body(r#"{"files":[{"id":"file-1","name":"report.pdf"}]}"#)
             .create();
+        let resolve_parent = server
+            .mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::Regex("archive".into()))
+            .with_status(200)
+            .with_body(r#"{"files":[{"id":"folder-9","name":"archive"}]}"#)
+            .create();
         let restore = server
             .mock("PATCH", "/drive/v3/files/file-1")
-            .match_query(mockito::Matcher::UrlEncoded("addParents".into(), "archive".into()))
+            // `folder-9`, not `archive` — the resolved id.
+            .match_query(mockito::Matcher::UrlEncoded("addParents".into(), "folder-9".into()))
             .match_body(mockito::Matcher::JsonString(r#"{"trashed":false}"#.into()))
             .with_status(200)
             .create();
@@ -695,7 +710,8 @@ mod tests {
         drive
             .restore_deleted(Path::new("report.pdf"), Some(Path::new("archive")))
             .unwrap();
-        resolve.assert();
+        resolve_file.assert();
+        resolve_parent.assert();
         restore.assert();
     }
 

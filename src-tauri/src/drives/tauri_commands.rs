@@ -205,9 +205,15 @@ pub async fn drive_unmount(drive_id: String) -> Result<(), String> {
         let mount_point = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?
             .get(&drive_id).cloned().ok_or("drive is not mounted")?;
         let path = mount_point.to_string_lossy().into_owned();
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        // Unmounting is `fusermount3` / `umount` and nothing else — there is
+        // no in-process equivalent. That is fine: FUSE cannot work inside an
+        // App Sandbox regardless (it needs a kernel extension and a mount
+        // the container cannot see), so a build without `sidecars` has no
+        // mounts to unmount either. PLAN P36.2 records this as dropped
+        // rather than ported.
+        #[cfg(not(all(feature = "sidecars", any(target_os = "linux", target_os = "macos"))))]
         return Err("FUSE unmount is unsupported on this platform".into());
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(all(feature = "sidecars", any(target_os = "linux", target_os = "macos")))]
         {
             #[cfg(target_os = "linux")]
             let output = std::process::Command::new("fusermount3")

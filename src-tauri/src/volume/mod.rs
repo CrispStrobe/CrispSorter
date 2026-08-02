@@ -20,25 +20,35 @@
 //! follow-up phase will add an `available_volume_ids` filter at search
 //! time so unmounted-volume rows can be hidden until the drive is back.
 //!
-//! ## Why shell-out instead of FFI?
+//! ## How each platform answers
 //!
-//! Each platform has a perfectly good CLI for this and they ship by
-//! default:
-//!
-//! * macOS — `diskutil info <mount>` (always present)
+//! * **macOS — FFI.** `getattrlist(2)` for `ATTR_VOL_UUID` and
+//!   `getfsstat(2)` for the mount table. No process, no PATH, nothing to
+//!   install.
 //! * Linux — `findmnt -no UUID --target <path>` (util-linux, in every
 //!   distro since systemd days)
 //! * Windows — `wmic logicaldisk get VolumeSerialNumber` (deprecated
 //!   but still ships through Win11; PowerShell `Get-Volume` is a
 //!   fallback if `wmic` is removed in a future release)
 //!
-//! FFI alternatives (`libblkid`, IOKit, `GetVolumeInformationW`)
-//! buy us microseconds we'll never notice and a dependency
-//! footprint we definitely will. Volume detection happens at most
-//! once per ingest (so once per file) and the user doesn't notice
-//! a 20 ms shell-out hidden behind a 200 ms PDF extract.
+//! The two shell-out platforms are behind `feature = "sidecars"` and
+//! degrade to "we don't know which volume" without it, which is a state
+//! every caller already handles. macOS does not need the flag at all,
+//! which is the point: it is the platform with a sandboxed SKU.
+//!
+//! **This used to be shell-out everywhere**, on the reasoning that a 20 ms
+//! `diskutil` call hidden behind a 200 ms PDF extract costs nothing and
+//! saves a dependency. Two things changed it (PLAN P36.2): App Sandbox
+//! forbids the spawn outright, so on macOS the "cheap" option became the
+//! impossible one; and the FFI turned out to be ~40 lines against `libc`,
+//! which was already in the tree transitively. The migration is
+//! id-compatible — `ATTR_VOL_UUID` returns byte-for-byte what `diskutil
+//! info` printed, verified against APFS system, Data and external
+//! volumes — so ids persisted in `metadata_json` by older builds still
+//! resolve.
 
 use std::path::Path;
+#[cfg(all(feature = "sidecars", any(target_os = "linux", target_os = "windows")))]
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
@@ -70,15 +80,18 @@ pub fn volume_id_for_path(path: &Path) -> Option<String> {
     {
         return macos::volume_id_for_path(path);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "sidecars", target_os = "linux"))]
     {
         return linux::volume_id_for_path(path);
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "sidecars", target_os = "windows"))]
     {
         return windows::volume_id_for_path(path);
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        all(feature = "sidecars", any(target_os = "linux", target_os = "windows"))
+    )))]
     {
         let _ = path;
         None
@@ -92,15 +105,18 @@ pub fn list_mounted_volumes() -> Vec<MountedVolume> {
     {
         return macos::list_mounted_volumes();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "sidecars", target_os = "linux"))]
     {
         return linux::list_mounted_volumes();
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "sidecars", target_os = "windows"))]
     {
         return windows::list_mounted_volumes();
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        all(feature = "sidecars", any(target_os = "linux", target_os = "windows"))
+    )))]
     {
         Vec::new()
     }
@@ -108,6 +124,7 @@ pub fn list_mounted_volumes() -> Vec<MountedVolume> {
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
+#[cfg(all(feature = "sidecars", any(target_os = "linux", target_os = "windows")))]
 #[allow(dead_code)] // used per-platform behind cfg
 fn run_capturing(cmd: &mut Command) -> Option<String> {
     let out = cmd.output().ok()?;
@@ -121,104 +138,187 @@ fn run_capturing(cmd: &mut Command) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{run_capturing, MountedVolume};
+    use super::MountedVolume;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
-    use std::process::Command;
+
+    /// The `attrlist` request shape and the packed reply buffer, both from
+    /// `getattrlist(2)`.
+    ///
+    /// Requesting `ATTR_VOL_INFO | ATTR_VOL_UUID` and nothing else keeps the
+    /// reply fixed-size: a `u32` total length followed by the 16 raw UUID
+    /// bytes. Adding `ATTR_VOL_NAME` would make it variable-length (names
+    /// come back as an `attrreference_t` offset+length pair pointing into
+    /// the tail of the same buffer), and the name is already available for
+    /// free from the mount point's last component — which is exactly what
+    /// the `diskutil` implementation this replaced used.
+    const UUID_REPLY_LEN: usize = 4 + 16;
+
+    /// Ask the filesystem for the UUID of the volume containing `path`.
+    ///
+    /// `path` need not be a mount point: volume attributes are answered for
+    /// the volume the path lives on, which is precisely the `df -P` step
+    /// the previous implementation needed a second process for.
+    fn volume_uuid(path: &Path) -> Option<String> {
+        let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+
+        let mut request = libc::attrlist {
+            bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+            reserved: 0,
+            commonattr: 0,
+            volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_UUID,
+            dirattr: 0,
+            fileattr: 0,
+            forkattr: 0,
+        };
+        let mut reply = [0u8; UUID_REPLY_LEN];
+
+        // SAFETY: `c_path` is a NUL-terminated path we own for the duration
+        // of the call; `request` and `reply` are live, correctly-sized
+        // stack objects, and `reply.len()` is what we tell the kernel it
+        // is. `getattrlist` writes at most that many bytes.
+        let rc = unsafe {
+            libc::getattrlist(
+                c_path.as_ptr(),
+                &mut request as *mut _ as *mut libc::c_void,
+                reply.as_mut_ptr() as *mut libc::c_void,
+                reply.len(),
+                0,
+            )
+        };
+        if rc != 0 {
+            // Every failure here is a legitimate "we don't know": a volume
+            // whose filesystem has no UUID (tmpfs, some network mounts), a
+            // path that vanished between the caller's check and this call,
+            // or a sandbox denial on a path we were not granted.
+            return None;
+        }
+
+        // The leading u32 is how much the kernel actually wrote. A short
+        // reply means the volume answered ATTR_VOL_INFO but not the UUID,
+        // and the remaining bytes are whatever was on the stack — reading
+        // them would invent an id.
+        let written = u32::from_ne_bytes(reply[..4].try_into().ok()?) as usize;
+        if written < UUID_REPLY_LEN {
+            return None;
+        }
+        let uuid: [u8; 16] = reply[4..UUID_REPLY_LEN].try_into().ok()?;
+        // An all-zero UUID is the filesystem saying "none", not an id.
+        if uuid.iter().all(|&b| b == 0) {
+            return None;
+        }
+        Some(format_uuid(&uuid))
+    }
+
+    /// Render 16 raw bytes as macOS spells a volume UUID: uppercase,
+    /// hyphenated 8-4-4-4-12.
+    ///
+    /// The exact format matters. Volume ids are persisted in each
+    /// document's `metadata_json`, so this has to reproduce byte-for-byte
+    /// what `diskutil info` printed before P36.2 — otherwise every row
+    /// written by an older build stops matching. Verified equal on APFS
+    /// system, Data and external volumes.
+    pub(super) fn format_uuid(bytes: &[u8; 16]) -> String {
+        let hex = |slice: &[u8]| -> String {
+            slice.iter().map(|b| format!("{b:02X}")).collect()
+        };
+        format!(
+            "{}-{}-{}-{}-{}",
+            hex(&bytes[0..4]),
+            hex(&bytes[4..6]),
+            hex(&bytes[6..8]),
+            hex(&bytes[8..10]),
+            hex(&bytes[10..16])
+        )
+    }
 
     pub fn volume_id_for_path(path: &Path) -> Option<String> {
-        let mount = mount_point_for(path)?;
-        diskutil_volume_uuid(&mount)
+        volume_uuid(path)
     }
 
     pub fn list_mounted_volumes() -> Vec<MountedVolume> {
-        // `mount` lines look like:
-        //   /dev/disk3s5 on / (apfs, local, ...)
-        //   /dev/disk5s1 on /Volumes/Archive (apfs, local, ...)
-        let raw = match run_capturing(&mut Command::new("mount")) {
-            Some(s) => s,
-            None => return Vec::new(),
-        };
         let mut out = Vec::new();
-        for line in raw.lines() {
-            if let Some(mount) = parse_mount_line(line) {
-                if let Some(uuid) = diskutil_volume_uuid(&mount) {
-                    let name = std::path::Path::new(&mount)
-                        .file_name()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    out.push(MountedVolume {
-                        id: uuid,
-                        mount_point: mount,
-                        name,
-                    });
-                }
-            }
+        for mount_point in mount_points() {
+            let Some(id) = volume_uuid(Path::new(&mount_point)) else {
+                // No UUID → nothing stable to filter on. Skipping matches
+                // what the `mount` + `diskutil` pair did.
+                continue;
+            };
+            let name = Path::new(&mount_point)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            out.push(MountedVolume { id, mount_point, name });
         }
         out
     }
 
-    /// Resolve the mount point a given path lives on via `df -P`.
-    /// Output line we care about (POSIX format guaranteed by `-P`):
-    ///   /dev/disk3s5  500000000  100000000  ...  /Volumes/Archive
-    fn mount_point_for(path: &Path) -> Option<String> {
-        let raw = run_capturing(Command::new("df").arg("-P").arg(path))?;
-        let last = raw.lines().last()?;
-        // The mount point is the LAST whitespace-separated token. Mount
-        // points can contain spaces on macOS (`Macintosh HD`), so we
-        // can't just `split_whitespace` and take `[5]` — the path then
-        // gets cut off mid-name. Find the start of the last column by
-        // skipping the first 5 columns (Filesystem, 1024-blocks, Used,
-        // Available, Capacity).
-        let mut chars = last.char_indices();
-        let mut col_starts = vec![0];
-        let mut in_ws = last.starts_with(char::is_whitespace);
-        for (i, c) in chars.by_ref() {
-            if c.is_whitespace() {
-                in_ws = true;
-            } else if in_ws {
-                col_starts.push(i);
-                in_ws = false;
-            }
+    /// Every currently-mounted filesystem's mount point, via `getfsstat(2)`.
+    ///
+    /// `getfsstat` rather than the more obvious `getmntinfo(3)`: the latter
+    /// returns a pointer into a static buffer it reallocates, so two
+    /// threads enumerating volumes at once race on it. `getfsstat` writes
+    /// into a buffer we own. Called with a null buffer first, it returns
+    /// only the count, which is how we size that buffer.
+    fn mount_points() -> Vec<String> {
+        // SAFETY: passing a null buffer with size 0 is the documented way
+        // to ask for the count without writing anything.
+        let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+        if count <= 0 {
+            return Vec::new();
         }
-        if col_starts.len() < 6 {
+
+        // Mounts can appear between the counting call and the filling one.
+        // Over-allocate a little so the common case does not silently
+        // truncate; the kernel caps what it writes at the size we pass and
+        // returns how many entries it actually filled.
+        let capacity = count as usize + 8;
+        let mut buffer: Vec<libc::statfs> = Vec::with_capacity(capacity);
+        let bufsize = std::mem::size_of::<libc::statfs>() * capacity;
+
+        // SAFETY: `buffer` has room for `capacity` entries and we declare
+        // exactly that many bytes. `filled` is the number the kernel
+        // initialised, so only that many are read below.
+        let filled = unsafe {
+            libc::getfsstat(
+                buffer.as_mut_ptr(),
+                bufsize as libc::c_int,
+                libc::MNT_NOWAIT,
+            )
+        };
+        if filled <= 0 {
+            return Vec::new();
+        }
+        let filled = (filled as usize).min(capacity);
+        // SAFETY: the kernel initialised `filled` entries.
+        unsafe { buffer.set_len(filled) };
+
+        buffer
+            .iter()
+            .filter_map(|fs| c_str_field(&fs.f_mntonname))
+            .collect()
+    }
+
+    /// Read a NUL-terminated, fixed-size `c_char` array as a `String`.
+    /// Returns `None` for an empty field or non-UTF-8 bytes — a mount
+    /// point we cannot name is one we cannot hand to the frontend anyway.
+    fn c_str_field(field: &[libc::c_char]) -> Option<String> {
+        let bytes: Vec<u8> = field
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
+        if bytes.is_empty() {
             return None;
         }
-        Some(last[col_starts[5]..].trim().to_owned())
-    }
-
-    fn parse_mount_line(line: &str) -> Option<String> {
-        // `<device> on <mount-point> (<opts>)`
-        // mount points may contain spaces ("/Volumes/My Drive") so we
-        // search for the trailing " (" rather than splitting on
-        // whitespace and taking [2].
-        let on_idx = line.find(" on ")?;
-        let after = &line[on_idx + 4..];
-        let opts_idx = after.rfind(" (")?;
-        Some(after[..opts_idx].to_owned())
-    }
-
-    fn diskutil_volume_uuid(mount: &str) -> Option<String> {
-        let raw = run_capturing(Command::new("diskutil").arg("info").arg(mount))?;
-        parse_diskutil_uuid(&raw)
-    }
-
-    pub(super) fn parse_diskutil_uuid(raw: &str) -> Option<String> {
-        for line in raw.lines() {
-            let trimmed = line.trim_start();
-            if let Some(rest) = trimmed.strip_prefix("Volume UUID:") {
-                let value = rest.trim();
-                if !value.is_empty() {
-                    return Some(value.to_owned());
-                }
-            }
-        }
-        None
+        String::from_utf8(bytes).ok()
     }
 }
 
 // ── Linux ───────────────────────────────────────────────────────────────────
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "sidecars", target_os = "linux"))]
 mod linux {
     use super::{run_capturing, MountedVolume};
     use std::path::Path;
@@ -324,7 +424,7 @@ mod linux {
 
 // ── Windows ─────────────────────────────────────────────────────────────────
 
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "sidecars", target_os = "windows"))]
 mod windows {
     use super::{run_capturing, MountedVolume};
     use std::path::Path;
@@ -434,30 +534,61 @@ mod windows {
 mod tests {
     use super::*;
 
+    /// The id format is a compatibility contract, not a detail.
+    ///
+    /// Volume ids are persisted in each document's `metadata_json`, so
+    /// P36.2's move from `diskutil info` to `getattrlist(2)` is only safe
+    /// while the FFI path renders the same string `diskutil` printed:
+    /// uppercase, hyphenated 8-4-4-4-12. The sample below is the exact
+    /// shape the old parser used to return.
     #[cfg(target_os = "macos")]
     #[test]
-    fn parses_diskutil_uuid_line() {
-        let sample = r#"
-   Device Identifier:        disk5s1
-   Volume Name:              Archive
-   Mounted:                  Yes
-   Volume UUID:              12345678-1234-1234-1234-123456789ABC
-   Disk Size:                1.0 TB
-"#;
+    fn uuid_bytes_render_the_way_diskutil_printed_them() {
+        let bytes: [u8; 16] = [
+            0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78,
+            0x9A, 0xBC,
+        ];
         assert_eq!(
-            macos::parse_diskutil_uuid(sample),
-            Some("12345678-1234-1234-1234-123456789ABC".to_owned())
+            macos::format_uuid(&bytes),
+            "12345678-1234-1234-1234-123456789ABC"
+        );
+        // Zero-padding, not width-trimming: a leading zero byte must stay
+        // two hex digits or every subsequent group shifts.
+        assert_eq!(
+            macos::format_uuid(&[0u8; 16]),
+            "00000000-0000-0000-0000-000000000000"
         );
     }
 
+    /// The FFI path has to actually answer on the machine running the
+    /// tests — a `None` for every path would make `volume_id_for_path`
+    /// silently useless, and the "best-effort, None is fine" contract
+    /// means nothing else would ever complain.
     #[cfg(target_os = "macos")]
     #[test]
-    fn diskutil_uuid_missing_returns_none() {
-        let sample = "Device Identifier: disk0\nMounted: Yes\n";
-        assert_eq!(macos::parse_diskutil_uuid(sample), None);
+    fn the_ffi_path_resolves_a_real_volume() {
+        let id = volume_id_for_path(std::path::Path::new("/"))
+            .expect("the root volume must have a UUID");
+        assert_eq!(id.len(), 36, "expected a hyphenated UUID, got {id:?}");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+            "got {id:?}"
+        );
+        // A path deep inside a volume must resolve to that volume, not
+        // fail — this is what replaced the `df -P` mount-point lookup.
+        let nested = volume_id_for_path(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("a nested path must resolve to its containing volume");
+        assert_eq!(nested.len(), 36);
+
+        // And enumeration must find at least the root volume.
+        let mounted = list_mounted_volumes();
+        assert!(
+            mounted.iter().any(|v| v.mount_point == "/"),
+            "getfsstat did not report the root mount: {mounted:?}"
+        );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "sidecars", target_os = "linux"))]
     #[test]
     fn parses_findmnt_pairs() {
         let sample = r#"UUID="abc-1" TARGET="/" LABEL="root"
@@ -470,7 +601,7 @@ UUID="def-2" TARGET="/mnt/data" LABEL="Archive"
         assert_eq!(v[1].name, "Archive");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "sidecars", target_os = "linux"))]
     #[test]
     fn skips_findmnt_rows_without_uuid() {
         // tmpfs has no UUID → findmnt prints empty UUID="".
@@ -482,7 +613,7 @@ UUID="real" TARGET="/mnt" LABEL=""
         assert_eq!(v[0].id, "real");
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "sidecars", target_os = "windows"))]
     #[test]
     fn parses_wmic_value_records() {
         let sample = "DeviceID=C:\r\nVolumeName=System\r\nVolumeSerialNumber=ABCD1234\r\n\r\nDeviceID=D:\r\nVolumeName=Archive\r\nVolumeSerialNumber=DEAD\r\n";

@@ -15,6 +15,17 @@
 //!
 //! Configuration: the absolute path to `cli.py` is stored on
 //! `DriveConfig.path`.
+//!
+//! ## Gated on `sidecars` (PLAN P36.2)
+//!
+//! Spawning is this drive's entire transport, so it is absent from any
+//! build that cannot spawn — mobile, and the sandboxed `desktop-mas`
+//! SKU. `desktop-mas` forces `drive-internxt-native` on instead, so
+//! Internxt still works there; it just goes through
+//! `crates/crisp-internxt-native`.
+//!
+//! Stated twice on purpose — see the matching note in `filen.rs`.
+#![cfg(feature = "sidecars")]
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;

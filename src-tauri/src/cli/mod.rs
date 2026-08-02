@@ -2567,10 +2567,18 @@ fn yn(b: bool) -> &'static str { if b { "✓" } else { "✗" } }
 /// mount anything.  This keeps `doctor` useful in packaged builds where the
 /// optional Rust feature may be present but macFUSE/fuse3 is not installed.
 fn fuse_runtime_available() -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "sidecars", target_os = "linux"))]
     {
         return std::path::Path::new("/dev/fuse").exists()
             && std::process::Command::new("fusermount3").arg("--version").output().is_ok();
+    }
+    // Without `sidecars` the answer is false even where /dev/fuse exists:
+    // mounting needs `fusermount3`, and a build that cannot run it cannot
+    // mount. Reporting "available" would send `doctor` readers down a path
+    // that always fails at the last step.
+    #[cfg(all(not(feature = "sidecars"), target_os = "linux"))]
+    {
+        return false;
     }
     #[cfg(target_os = "macos")]
     {
@@ -10503,6 +10511,9 @@ mod tests {
         }
     }
 
+    // PLAN P36.16 — drives a real `CloudBackupClient` against a mock
+    // server, so it needs the feature that lets one be constructed.
+    #[cfg(feature = "cloud-backup")]
     #[tokio::test]
     async fn delta_cli_uploads_only_changed_block() {
         use crate::sync::cloud_backup::CloudBackupClient;
