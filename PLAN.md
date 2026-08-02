@@ -3041,12 +3041,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Registered-drive L1 rows can now be promoted through the existing
     bounded remote-fetch and full-indexing pipeline; capability checks keep
     unsupported providers read-only. ✅ 2026-08-02
-  - [x] Cloud-backup archive hits now offer L3 promotion through the existing
-    configured `retrieve.py` path; first use prompts for that script and
-    refreshes the search after restoration/indexing. ✅ 2026-08-02
-  - [x] Duplicate groups now expose capability-gated move/trash controls for
-    `crisp+drive://` items, preserving local-only groups and updating the
-    contextual group after a successful mutation. ✅ 2026-08-02
+  - [x] Provider-aware duplicate handling now keeps `crisp+drive://`
+    candidates in the registered-drive browser and exposes capability-gated
+    move/trash controls with explicit confirmation. ✅ 2026-08-02
+  - [ ] Provider-aware duplicate mutation undo/audit integration remains open.
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
