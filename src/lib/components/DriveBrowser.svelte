@@ -397,8 +397,8 @@
         <button class="icon-button" onclick={refresh} title="Refresh" disabled={loading}><RefreshCw size={16} /></button>
         <input class="drive-search" bind:value={driveSearchQuery} placeholder="Search names…"
             onkeydown={(event) => event.key === 'Enter' && void searchDrive()} />
-        <label class="drive-search-content" title={capabilities.read ? 'Inspect readable files up to 256 KiB' : 'Provider does not advertise file reads'}>
-            <input type="checkbox" bind:checked={driveSearchContent} disabled={!capabilities.read} /> Content ≤256 KiB
+        <label class="drive-search-content" title={capabilities.read ? 'Searches listings recursively to depth 8, returns at most 100 results, and inspects readable files up to 256 KiB.' : 'Provider does not advertise file reads'}>
+            <input type="checkbox" bind:checked={driveSearchContent} disabled={!capabilities.read} aria-label="Enable bounded content search" /> Content ≤256 KiB
         </label>
         <button onclick={searchDrive} disabled={driveSearchBusy || !driveSearchQuery.trim()}>
             {#if driveSearchBusy}<Loader2 size={14} class="spin" />{:else}<Search size={14} />{/if} Search
@@ -423,7 +423,7 @@
     {#if error}<div class="browser-error">{error}</div>{/if}
     {#if driveSearchQuery.trim() && !driveSearchBusy}
         <div class="drive-search-results">
-            <strong>{driveSearchContent ? 'Filename/content matches' : 'Filename matches'} ({driveSearchResults.length})</strong>
+            <strong>{driveSearchContent ? 'Filename + bounded content matches' : 'Filename matches'} ({driveSearchResults.length})</strong>
             {#if driveSearchResults.length === 0}
                 <span class="muted">No provider-visible matches.</span>
             {:else}
