@@ -60,4 +60,12 @@ describe('duplicate decision audit persistence', () => {
             { groupId: 'bad', driveId: 'd', operation: 'unknown', from: '/a', to: '/b', at: 1 },
         ]))).toEqual([]);
     });
+
+    it('preserves restore mutation records for durable history', () => {
+        const decoded = decodeDuplicateMutationAudit(JSON.stringify([{
+            groupId: 'g', driveId: 'd', operation: 'restore', from: '/a', to: null, at: 123,
+        }]));
+        expect(decoded).toHaveLength(1);
+        expect(decoded[0].operation).toBe('restore');
+    });
 });

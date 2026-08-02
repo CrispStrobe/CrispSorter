@@ -297,7 +297,12 @@
             const current = panel.items.map((item) => item.path === `crisp+drive://${last.driveId}${last.to}`
                 ? { ...item, path: `crisp+drive://${last.driveId}${last.from}` } : item);
             rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
-            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            duplicateMutationAudit = [...duplicateMutationAudit, {
+                ...last,
+                operation: 'restore' as const,
+                to: null,
+                at: Date.now(),
+            }].slice(-200);
             saveDuplicateMutationAudit(duplicateMutationAudit);
         } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
@@ -476,7 +481,7 @@
                             <div class="audit-list">
                                 {#each cloudMutations.slice().reverse() as entry}
                                     <div class="audit-entry">
-                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : `${entry.from} → provider trash`}</span>
+                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : entry.operation === 'delete' ? `${entry.from} → provider trash` : `${entry.from} ← provider trash`}</span>
                                         <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
                                     </div>
                                 {/each}
