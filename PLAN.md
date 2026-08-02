@@ -3442,8 +3442,10 @@ a transfer without leaving the search/catalog workflow.
     virtual search-result folders in the contextual browser. ✅ 2026-08-02
   - [x] Local text/code previews now provide bounded edit/save/cancel controls;
     truncated previews and non-local URIs remain read-only. ✅ 2026-08-02
-  - [ ] Richer provider full-text search and configurable file associations
-    remain open.
+  - [x] Configurable extension-to-viewer-kind associations are persisted,
+    validated, and applied by the universal viewer; malformed entries are
+    ignored and unsupported kinds cannot be selected. ✅ 2026-08-02
+  - [ ] Richer provider full-text search remains open.
 - [ ] Add FUSE write support only after the mutation API and queue are stable;
   retain read-only FUSE for indexing during the transition.
 - [ ] Add local REST API, plugin hooks, cron/webhook automation, and system
