@@ -29,6 +29,7 @@ pub mod pdf_redact;
 pub mod pdf_session;
 pub mod pdf_text_edit;
 pub mod pdf_text_region;
+pub mod plugins;
 pub mod platform_share;
 pub mod secrets;
 pub mod sync;

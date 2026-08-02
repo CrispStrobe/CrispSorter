@@ -2763,7 +2763,7 @@ resource endpoints. The work is generalising one provider into *any* provider.
 
 #### Items
 
-- [ ] **P35.1 — Generic remote-provider plugin surface.** A manifest (`id`,
+- [>] **P35.1 — Generic remote-provider plugin surface.** A manifest (`id`,
   display name, base-URL setting, auth kind, advertised capabilities,
   contributed `TabDef`s, entry component) plus a small generic Rust surface —
   configure, login, probe, request — replacing the current provider-specific
