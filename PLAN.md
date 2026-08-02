@@ -3865,29 +3865,59 @@ Apply to iOS and MAS equally; independent of Phases 1–3.
   *use*, this one about data *egress*, and conflating them would satisfy
   neither. Copy the shape of `index::license_consent`: one-time, per provider,
   recorded, before the first cloud call.
-- [ ] **P36.14 — age rating + AI content.** Unrestricted third-party chat plus
-  AIToolkit image generation. Answer Apple's AI questionnaire honestly; expect
-  17+ absent filtering, and check whether Guideline 1.2 wants reporting/blocking
-  on the chat surface.
+- [x] **P36.14 — age rating + AI content.** **Done 2026-08-02: 4+ → 13+**,
+  set via the ASC API against peer evidence rather than guesswork.
 
-  ⚠️ **This is already answered in App Store Connect, and the answer needs
-  re-examining rather than confirming.** Per `../appstore.md`, the live record
-  says *"Age rating — All NONE/false (no objectionable content)"*, set
-  2026-07-10. Two of the three inputs have since changed:
+  **The plan's premise was stale in both directions.** "Expect 17+" no longer
+  means anything — Apple retired 12+ and 17+ in 2025 and replaced them with
+  13+/16+/18+, and the new questionnaire was mandatory for every app by
+  2026-01-31. Meanwhile the live record said **4+, all NONE/false**, set
+  2026-07-10 — a declaration describing an app with no AI in it at all.
 
-  * **Image generation is gone from shipped builds** (P36.16), which removes
-    the strongest argument for a higher rating. Good.
-  * **Unrestricted third-party chat remains.** `llm/client.ts` will still send
-    a prompt to Groq / OpenRouter / Mistral / OpenAI / Nebius / Scaleway /
-    Anthropic / Google and render whatever comes back, with no filtering on
-    our side. "No objectionable content" is a claim about *our* content; a
-    passthrough to an arbitrary model is not obviously covered by it.
+  **What the peer group actually does**, checked on the store rather than
+  assumed:
 
-  So the open question is narrower than the plan assumed but not closed:
-  does an unfiltered BYO-key chat surface, with no image generation, still
-  answer NONE across the board? That is a judgement for the account holder,
-  not a code change — but it should be made deliberately rather than left at
-  a value set before the chat surface existed in this form.
+  | App | Rating | What explains it |
+  |---|---|---|
+  | ChatGPT | **13+** | Infrequent across most categories, + Messaging and Chat |
+  | Microsoft Copilot | **13+** | same shape |
+  | Claude | 18+ | Anthropic's own terms require 18+ |
+  | Perplexity | 18+ | user-generated content + its own terms |
+
+  The 13+/18+ split is *not* about the chat. Per Apple's own definitions page,
+  in-app controls are **permissive** — they never escalate a tier — and
+  `INFREQUENT_OR_MILD` is explicitly allowed at 13+/16+ but **not** at 18+.
+  The two 18+ apps are there by *manual override*, which Apple provides for
+  developers whose own policy sets a higher minimum age. CrispSorter has no
+  such policy, so the questionnaire-honest answer is the ChatGPT/Copilot one.
+
+  **What was declared** (`PATCH /v1/ageRatingDeclarations/94755b6c-…`):
+  `messagingAndChat: true`, `healthOrWellnessTopics: true`, and
+  `INFREQUENT_OR_MILD` for profanity, mature/suggestive themes, medical
+  information, alcohol/drug references, sexual content, cartoon violence,
+  realistic violence, horror themes and weapons — the honest position for a
+  surface that renders whatever a user-chosen model returns.
+
+  Deliberately left `NONE`: the *graphic* tiers
+  (`sexualContentGraphicAndNudity`,
+  `violenceRealisticProlongedGraphicOrSadistic`), which would force 18+, plus
+  gambling and contests. `unrestrictedWebAccess: false` matters — declaring it
+  would force 16+, and CrispSorter is not a browser. `userGeneratedContent`
+  and `socialMedia` stay false: nothing is shared between users.
+
+  The API reports the legacy V1 enum `TWELVE_PLUS`; since Apple retired 12+,
+  that is **13+** on the modern storefront (Brazil's V2 corroborates:
+  `SELF_RATED_FOURTEEN`).
+
+  Note this got *easier* because of P36.16 — image generation left shipped
+  builds with AIToolkit, so the strongest argument for a higher tier went with
+  it. If a future build ever re-enables `aitoolkit`, this declaration has to be
+  revisited, not inherited.
+
+  **Still open (not a rating question):** whether Guideline 1.2 wants
+  reporting/blocking affordances on the chat surface. 1.2 is aimed at
+  user-generated *social* content; a BYO-key model passthrough is a weaker fit,
+  but it has not been checked properly.
 
 - [x] **P36.15 — privacy nutrition label.** **Done** — the plan had this
   wrong. `../appstore.md` records *"App Privacy — Data Not Collected ✅ (set
