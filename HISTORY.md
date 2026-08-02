@@ -7,6 +7,33 @@ of the codebase look the way they do.
 For active development plans, see [PLAN.md](PLAN.md).
 For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
+## Cloud provider integration pass (2026-08-02)
+
+The registered-drive/file-manager pass shipped bounded provider search,
+contextual duplicate actions, recoverable-trash restoration, sync-pair
+comparison, and queue-backed transfer paths.  The important boundaries are
+recorded in [LEARNINGS.md](LEARNINGS.md); the remaining work is deliberately
+split in [PLAN.md](PLAN.md) rather than hidden behind a broad "provider
+parity" checkbox.
+
+Highlights from this pass:
+
+- GUI, CLI, backup/restore, sync-pair, and offline-replay transfers now share
+  owned-drive transfer adapters over the bounded `TransferQueue`.
+- Internxt and Filen native trash/restore, plus Google Drive trash restore,
+  are capability-gated. Duplicate deletion is blocked when a provider cannot
+  recover the item, and restore actions remain in the mutation audit.
+- Registered-drive search is intentionally bounded: recursive depth 8 by
+  default (32 maximum), at most 1000 results, a scan budget of 100 entries per
+  requested result, and content inspection only for readable files up to
+  256 KiB.
+- Sync-pair local-wins/remote-wins application is guarded and confirmed;
+  newest-wins local push now skips remote-newer files. Keep-both and manual
+  per-file resolution remain open.
+- Certificate pin data is validated, but root-SPKI handshake enforcement is
+  not falsely claimed: the current native-tls/reqwest boundary does not
+  expose the verified root chain needed by the policy.
+
 ---
 
 ## P28 — Performance optimization pass (2026-07-04)
