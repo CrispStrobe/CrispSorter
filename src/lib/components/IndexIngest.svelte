@@ -1056,6 +1056,17 @@
         try {
             await invoke('drive_oauth_revoke', { driveId: driveEditId });
             await loadDriveCredentialStatus(driveEditId);
+            if (driveCreateKind === 'onedrive') {
+                // Microsoft has no token-revocation API. Clear the local
+                // keychain first, then ask the system browser to terminate
+                // the Microsoft identity session as well. No token or
+                // client secret is included in this URL.
+                try {
+                    await openUrl('https://login.microsoftonline.com/common/oauth2/v2.0/logout');
+                } catch (error) {
+                    logWarn(`Microsoft browser logout could not be opened: ${String(error)}`);
+                }
+            }
             logInfo('OAuth-Zugang getrennt.');
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
