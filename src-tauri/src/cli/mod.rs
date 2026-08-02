@@ -9288,8 +9288,8 @@ fn cmd_chat_transcribe(
                 "--stream + srt/vtt was supposed to error before this point"
             ),
         };
-        warn_if_synthetic_text_is_unmarked(translation_meta.is_some(), effective_fmt);
         write_chat_output(&output, &payload)?;
+        mark_synthetic_text_output(&output, effective_fmt, &translation_meta);
         return Ok(());
     }
 
@@ -9408,11 +9408,12 @@ fn cmd_chat_transcribe(
                         .to_string(),
                 );
             }
-            format_segments_vtt(&result.segments)
+            // Art 50(2): WebVTT can hold the marking in-band, so it does.
+            mark_vtt(format_segments_vtt(&result.segments), &translation_meta)
         }
     };
-    warn_if_synthetic_text_is_unmarked(translation_meta.is_some(), effective_fmt);
     write_chat_output(&output, &payload)?;
+    mark_synthetic_text_output(&output, effective_fmt, &translation_meta);
     Ok(())
 }
 
@@ -9695,27 +9696,91 @@ fn cmd_chat_tts(
 /// not text via this helper).  Adds a single trailing newline to
 /// match the convention of every other CLI subcommand (so output is
 /// safe to pipe into `read`, `xargs -I`, etc.).
-/// Art 50(2): say so when synthetic text leaves in a container that cannot
-/// carry a marking.
+/// The provenance detail for a marking, minus the bulk.
 ///
-/// A machine-translated transcript is generated content. The JSON envelope
-/// marks it explicitly (`translation.ai_generated`); txt, SRT and VTT have
-/// nowhere to put that without corrupting the file for the players and
-/// pipelines that read them — prepending a banner to an SRT is not a marking,
-/// it is a broken subtitle. So the honest floor is to tell the operator, which
-/// is the same position the GUI takes when the backend reports it could not
-/// mark a file (`aiDisclosure.unmarkedArtifact`). Added 2026-08-02.
-fn warn_if_synthetic_text_is_unmarked(translated: bool, fmt: TranscriptFormat) {
-    if !translated || matches!(fmt, TranscriptFormat::Json) {
-        return;
+/// `translation_meta` carries `original_text` so the JSON envelope can show the
+/// pre-translation source. That is right for the envelope and wrong everywhere
+/// else: a whole transcript inside a one-line WebVTT `NOTE` is unreadable, and
+/// duplicating it into a sidecar doubles the bytes for nothing.
+fn provenance_detail(meta: &serde_json::Value) -> serde_json::Value {
+    let mut out = meta.clone();
+    if let Some(map) = out.as_object_mut() {
+        map.remove("original_text");
     }
-    eprintln!(
-        "note: this transcript is machine-translated, and {:?} output carries no \
-         embedded AI marking. Use --transcript-format json for an envelope with an \
-         explicit `ai_generated` field, and label the text as AI-generated if you \
-         pass it on.",
-        fmt
-    );
+    out
+}
+
+/// Insert the Art 50(2) marking into a WebVTT payload, after the header.
+///
+/// `NOTE` is in the WebVTT spec, so this is a real in-file marking rather than
+/// a sidecar — the strongest carrier this format allows. Leaves the payload
+/// alone if it does not start with the header it is supposed to, because
+/// guessing at a malformed file risks producing a subtitle that says
+/// "AI-generated" on screen.
+fn mark_vtt(vtt: String, meta: &Option<serde_json::Value>) -> String {
+    let Some(meta) = meta else { return vtt };
+    match vtt.strip_prefix("WEBVTT\n\n") {
+        Some(rest) => format!(
+            "WEBVTT\n\n{}{rest}",
+            crate::ai_provenance::vtt_note(provenance_detail(meta))
+        ),
+        None => vtt,
+    }
+}
+
+/// Art 50(2) for a transcript that leaves as a file: mark it, in the strongest
+/// carrier the format allows, and say which one that was.
+///
+/// JSON and WebVTT are already marked in-band by the time this runs. Plain text
+/// and SRT have nowhere to put a marking that a reader would not mistake for
+/// content — a banner line in a `.txt` is indistinguishable from the transcript,
+/// and in an `.srt` it renders as a subtitle — so those get a `.ai.json`
+/// sidecar and the operator is told it exists, since a sidecar nobody knows
+/// about is one that gets left behind on the next copy.
+///
+/// Writing to stdout can carry nothing at all; that case is stated rather than
+/// silently skipped. Added 2026-08-02.
+fn mark_synthetic_text_output(
+    output: &str,
+    fmt: TranscriptFormat,
+    meta: &Option<serde_json::Value>,
+) {
+    let Some(meta) = meta else { return };
+    match fmt {
+        // Marked in-band already: the envelope's `translation.ai_generated`,
+        // and the NOTE block `mark_vtt` inserted.
+        TranscriptFormat::Json | TranscriptFormat::Vtt => {}
+        TranscriptFormat::Txt | TranscriptFormat::Srt => {
+            if output == "-" {
+                eprintln!(
+                    "note: this transcript is machine-translated (AI-generated). \
+                     stdout cannot carry a marking — write to a file, or use \
+                     --transcript-format json, if you need one that travels."
+                );
+                return;
+            }
+            match crate::ai_provenance::write_sidecar(
+                std::path::Path::new(output),
+                provenance_detail(meta),
+            ) {
+                Ok(side) => eprintln!(
+                    "note: this transcript is machine-translated (AI-generated). \
+                     {:?} cannot carry an embedded marking, so one was written to \
+                     {} — keep it alongside the transcript.",
+                    fmt,
+                    side.display()
+                ),
+                // Never fail the run over the sidecar: the transcript the user
+                // waited for must not be discarded. But be loud, because a
+                // quietly unmarked artifact is the outcome to avoid.
+                Err(e) => eprintln!(
+                    "warning: could not write the AI marking sidecar ({e}). This \
+                     transcript is machine-translated and now carries no marking \
+                     at all — label it yourself if you pass it on."
+                ),
+            }
+        }
+    }
 }
 
 fn write_chat_output(output: &str, payload: &str) -> Result<(), String> {
