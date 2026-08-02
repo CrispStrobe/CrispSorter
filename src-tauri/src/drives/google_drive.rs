@@ -920,6 +920,9 @@ mod tests {
             anyhow::ensure!(drive.read_file(&path)? == content);
             let versions = drive.list_versions(&path)?;
             anyhow::ensure!(!versions.is_empty(), "Google Drive returned no versions");
+            drive.delete(&path)?;
+            drive.restore_deleted(&path, None)?;
+            anyhow::ensure!(drive.read_file(&path)? == content);
             Ok(())
         })();
         let _ = drive.delete(&path);

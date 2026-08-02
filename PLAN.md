@@ -3407,6 +3407,11 @@ a transfer without leaving the search/catalog workflow.
     - [ ] Gated live auth/read/write tests remain opt-in and require explicit
       test credentials; no automatic credential discovery is permitted.
 
+- [x] Google Drive trash restoration now has hermetic `trashed=false` HTTP
+  coverage and an opt-in live delete/restore/read round trip. OneDrive restore
+  remains gated because Microsoft documents the recycle-bin restore endpoint
+  for OneDrive Personal only and it requires an opaque deleted-item ID.
+
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
   boundary exists.
