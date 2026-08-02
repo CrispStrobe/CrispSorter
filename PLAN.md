@@ -2778,6 +2778,8 @@ resource endpoints. The work is generalising one provider into *any* provider.
   through the transport; credentials retrievable only by the plugin id that
   stored them; explicit install-time consent naming host and capabilities. A
   plugin surface that can reach `127.0.0.1` freely is a local-service scanner.
+  Implementation notes and the provider/security handover are consolidated in
+  [`docs/cloud-provider-parity.md`](docs/cloud-provider-parity.md).
 
 - [ ] **P35.2 — The image-service client as the first plugin, in a private
   repo.** Manifest + UI + client, targeting P35.1. Private because the service
