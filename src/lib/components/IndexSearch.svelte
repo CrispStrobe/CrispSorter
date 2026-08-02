@@ -1666,18 +1666,21 @@
                                 <button class="open-btn"
                                     disabled={mutationBusy === r.location_uri}
                                     onclick={(e) => { e.stopPropagation(); void mutateDriveResult(r.location_uri, 'move'); }}
+                                    aria-label="Move cloud file"
                                     title="Move cloud file">
                                     ↗
                                 </button>
                                 <button class="open-btn"
                                     disabled={mutationBusy === r.location_uri}
                                     onclick={(e) => { e.stopPropagation(); void mutateDriveResult(r.location_uri, 'rename'); }}
+                                    aria-label="Rename cloud file"
                                     title="Rename cloud file">
                                     ✎
                                 </button>
                                 <button class="open-btn danger-btn"
                                     disabled={mutationBusy === r.location_uri}
                                     onclick={(e) => { e.stopPropagation(); void mutateDriveResult(r.location_uri, 'delete'); }}
+                                    aria-label="Move cloud file to trash"
                                     title="Move cloud file to trash">
                                     <Trash2 size={13} />
                                 </button>
@@ -2459,6 +2462,7 @@
 
     .open-btn { background: none; border: none; color: #52525b; cursor: pointer; padding: 4px; border-radius: 4px; }
     .open-btn:hover { color: #3b82f6; background: #3b82f622; }
+    .open-btn.danger-btn:hover { color: #ef4444; background: #ef444422; }
 
     .chunk-preview {
         padding: 8px 14px 12px 52px;
