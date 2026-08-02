@@ -608,7 +608,7 @@ pub async fn drive_search(
             if drive_search_path_matches(&entry.path, &query) {
                 return true;
             }
-            if !content || entry.is_dir || entry.size.unwrap_or(u64::MAX) > 256 * 1024 {
+            if !content || entry.is_dir || entry.size.unwrap_or(u64::MAX) > super::MAX_CONTENT_SEARCH_BYTES {
                 return false;
             }
             drive.read_file(&entry.path)

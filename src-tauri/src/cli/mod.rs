@@ -11734,7 +11734,7 @@ fn cmd_drives(
             ).into_iter().filter(|entry| entry.path.file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
-                || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= 256 * 1024
+                || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= crate::drives::MAX_CONTENT_SEARCH_BYTES
                     && drive.read_file(&entry.path).ok().map(|bytes|
                         crate::drives::content_search_matches(&bytes, &query)).unwrap_or(false)))
                 .take(limit).collect();

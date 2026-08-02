@@ -354,6 +354,9 @@ pub struct WalkEntry {
     pub mtime_unix: Option<i64>,
 }
 
+/// Maximum provider file size inspected by opt-in bounded content search.
+pub const MAX_CONTENT_SEARCH_BYTES: u64 = 256 * 1024;
+
 /// Recursively walk a drive starting at `root`, returning one entry per
 /// file (folders are descended into but not emitted, by default).
 /// Stops at `max_depth` (counting from `root`), `None` = unbounded.
