@@ -1438,12 +1438,24 @@ jobs:
             --version "$BV" \
             --notes "macOS build ${SV} (${BV}) from CI."
 
+      # `always()` — keep the artifact even when a later step fails.
+      #
+      # This runs after TestFlight distribution, so without it a *distribution*
+      # failure throws away a perfectly good signed .pkg: run 30786723797 built,
+      # signed and uploaded build 132 to App Store Connect, then failed on the
+      # Beta Test agreement and left nothing to download. The artifact is the
+      # evidence (entitlements, signature, sandbox) and the fallback, and
+      # neither should depend on ASC being in the mood.
       - name: Upload .pkg artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: crispsorter-macos-pkg
           path: CrispSorter_*.pkg
           retention-days: 14
+          # A failure before the .pkg exists should report as that failure, not
+          # as a confusing "no files found" on top of it.
+          if-no-files-found: ignore
 
   # Publish the draft once the 3 required platforms finish (success OR failure).
   # Mobile jobs (Android/iOS) also don't block — they may need extra setup.
