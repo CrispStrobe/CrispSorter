@@ -1241,6 +1241,29 @@ jobs:
           s = re.sub(r'path\s*=\s*"\.\./\.\./crisp-docx/crates/([\w-]+)"', r'path = "../_sibling/crisp-docx/crates/\1"', s)
           p.write_text(s)
           PY
+      # libpdfium for `pdf-render` — scanned-PDF page rasterisation, which is
+      # what makes CrispEmbed OCR useful on PDFs rather than images only.
+      # Staged into src-tauri/bin/ and shipped as a bundle resource, exactly
+      # as the .dmg job does. Must run BEFORE the sandbox patch below, which
+      # decides whether `bundle.resources` can survive by looking at whether
+      # bin/ has anything in it.
+      #
+      # Note what does NOT land here: the desktop job also stages a
+      # `llama-server` sidecar binary into bin/. This job never runs those
+      # steps, so bin/ holds libpdfium and nothing else — no executable is
+      # bundled, which is the property App Sandbox cares about.
+      - name: Download libpdfium (macOS arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz"
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o pdfium.tgz
+          mkdir -p _pdfium src-tauri/bin
+          tar -xzf pdfium.tgz -C _pdfium
+          cp _pdfium/lib/libpdfium.dylib src-tauri/bin/
+          ls -la src-tauri/bin/
+
       - name: Patch to cloud-only sandbox variant
         run: |
           set -euo pipefail
@@ -1268,17 +1291,26 @@ jobs:
           # v0.13.0 (the ^0.4 skew is only in newer local crisp-docx checkouts).
           # Deleting the translate-align feature makes its #[cfg] blocks an
           # unexpected-cfg (E0433) — leave the feature defined but unbuilt.
-          # (3) drop the `bin/*` bundle resource — the cloud-only variant stages
-          #     nothing into bin/ (those are the desktop native libs), and tauri's
-          #     build.rs fails the glob ("bin/* path not found") on an empty dir.
+          # (3) drop the `bin/*` bundle resource ONLY when bin/ is empty —
+          #     tauri's build.rs fails the glob ("bin/* path not found") on an
+          #     empty dir. This used to be unconditional, from when the
+          #     cloud-only variant staged nothing there; libpdfium now lands in
+          #     bin/ for `pdf-render`, and deleting the resource would silently
+          #     leave the dylib out of the bundle so every page render fails at
+          #     runtime. Condition on the actual directory rather than on what
+          #     the job used to do.
           python3 - <<'PY'
           import json, pathlib
           p = pathlib.Path('src-tauri/tauri.conf.json'); c = json.loads(p.read_text())
           b = c.get('bundle', {})
-          if 'resources' in b:
+          binned = sorted(x.name for x in pathlib.Path('src-tauri/bin').glob('*')) \
+                   if pathlib.Path('src-tauri/bin').is_dir() else []
+          if binned:
+              print('tauri.conf: keeping bin/* resources ->', binned)
+          elif 'resources' in b:
               del b['resources']
+              print('tauri.conf: dropped bin/* resources (bin/ is empty)')
           p.write_text(json.dumps(c, indent=2))
-          print('tauri.conf: dropped bin/* resources')
           PY
           echo "sandbox variant patched"
       - name: Import signing certs (Apple Distribution + Installer)
@@ -1363,7 +1395,7 @@ jobs:
           # The capability patch above is still required, not redundant: the
           # plugins being absent means `shell:default` / `process:default`
           # would be *unresolvable* permission strings, not merely unused.
-          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf,crispembed-metal,crispasr-metal 2>&1 | tail -50
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf,pdf-render,crispembed-metal,crispasr-metal 2>&1 | tail -50
           # `find` over a non-existent path (src-tauri/target) exits non-zero and
           # would trip `set -e` AFTER the .app was already built — tolerate it.
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)
@@ -1456,7 +1488,7 @@ jobs:
       # app's *primary* locale, per-build notes, and a Beta App Review
       # submission; the script does all four and is idempotent, so a re-run
       # on the same build reuses the group and PATCHes the localizations.
-      - name: Distribute to TestFlight (macOS, external)
+      - name: Distribute to TestFlight (macOS, internal)
         if: env.UPLOADED == 'true'
         env:
           ASC_KEY_ID: ${{ env.APPLE_API_KEY_ID }}
