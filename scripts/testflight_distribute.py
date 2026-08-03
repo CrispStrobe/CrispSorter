@@ -526,8 +526,15 @@ def main():
         log("4. testers")
         add_testers(asc, gid, emails)
 
+    # "What to Test" applies to both modes. It used to live inside the
+    # external branch below, so internal builds shipped with an empty
+    # `whatsNew` — testers saw a build with no indication of what changed or
+    # what to exercise, which is most of the point of a TestFlight round.
+    log("5. what to test")
+    ensure_whats_new(asc, build_id, primary_locale(asc, app_id), notes)
+
     if args.mode == "external":
-        log("5. external prerequisites")
+        log("6. external prerequisites")
         loc = primary_locale(asc, app_id)
         feedback = REVIEW_CONTACT["contactEmail"]
         # Primary locale first — that is the one review checks — then en-US
@@ -537,11 +544,10 @@ def main():
         if loc != "en-US":
             ensure_beta_app_localization(asc, app_id, "en-US", BETA_DESCRIPTION, feedback)
         ensure_review_details(asc, app_id)
-        ensure_whats_new(asc, build_id, loc, notes)
-        log("6. beta app review")
+        log("7. beta app review")
         submit_for_beta_review(asc, build_id)
         if args.public_link:
-            log("7. public link")
+            log("8. public link")
             enable_public_link(asc, gid, args.public_link_limit)
         log("\nExternal testing is pending Apple's Beta App Review "
             "(usually well under a day). The public link starts working once "
