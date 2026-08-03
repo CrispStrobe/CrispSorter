@@ -3831,6 +3831,41 @@ session. Persisting access across launches needs **security-scoped bookmarks**.
   Phase 2 is sunk**, because it is the one thing here that could invalidate the
   approach rather than merely cost time.
 
+  **Static analysis of build 133, 2026-08-03 — the risk is real, the test is
+  still owed.** Taking the shipped `.app` apart settles what *can* be settled
+  without running it:
+
+  * The binary links `Metal.framework` and references
+    `newLibraryWithSource:options:error:` and `MTLCompileOptions`. So shaders
+    genuinely are compiled from source at runtime — this item is not
+    hypothetical and cannot be closed by inspection.
+  * It requests **no** JIT or `allow-unsigned-executable-memory` entitlement.
+    Nothing is papering over the question.
+  * No precompiled `.metallib` ships in the bundle, so there is no
+    build-time-compilation escape hatch already in place.
+  * Apple's validation accepted it (`VALID` in ASC) — which is *not* evidence
+    it runs. Validation never executes the app.
+
+  **Why this cannot be finished from a terminal.** Three blocks, each
+  independent:
+
+  1. The App Store-signed binary is **SIGKILLed on direct launch** (`rc=137`)
+     — no App Store receipt. That is by design and is exactly why the item
+     says "test with a signed build" rather than "run the binary".
+  2. mistral.rs is reachable **only** through the `run_mistralrs_query` Tauri
+     command. There is no CLI path, so there is no headless way to ask for an
+     inference.
+  3. No chat-capable GGUF is on this machine — the local cache holds only
+     embedding, TTS and image models.
+
+  **The test, for whoever runs it:** install build 133 from TestFlight, point
+  the mistral.rs provider at any chat GGUF, ask for one completion.
+  *Pass* = a reply. *Fail* = a crash or a Metal library-creation error, which
+  would mean adding `com.apple.security.cs.allow-unsigned-executable-memory`
+  to `entitlements.plist` — and note that entitlement is **incompatible with
+  the App Sandbox** on the Mac App Store, so a failure here does not cost
+  time, it invalidates the MAS approach. That is the decision this gates.
+
 #### Phase 3 — MAS packaging
 
 > **This phase was already done, and the plan did not know it.** Checking
