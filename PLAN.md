@@ -3876,6 +3876,29 @@ session. Persisting access across launches needs **security-scoped bookmarks**.
   hits an opaque permission error. A `tauri.mas.conf.json` pointing at a
   second capability set would make it genuinely one flag; not done.
 
+  **Verified in the signed artifact, 2026-08-03** — not inferred from the
+  feature graph. Build 133's `.pkg` (run 30794746505) unpacked and inspected:
+
+  | Property | Result |
+  |---|---|
+  | `com.apple.security.app-sandbox` | ✅ `true` |
+  | Hardened runtime | ✅ `flags=0x10000(runtime)` |
+  | Signature | ✅ `Apple Distribution: Christian Ströbele (N9XSJ4M3GT)` |
+  | `Contents/MacOS/` | only `crispsorter` — no helper binaries |
+  | `Contents/Resources/bin/` | absent — no llama-server bundled |
+  | `tauri[-_]plugin[-_]{shell,process}` in the binary | **0 occurrences** |
+  | `shell:default` / `process:default` | **0 occurrences** |
+
+  That last row is the difference the whole milestone turns on: the old
+  pipeline shipped those plugins *compiled but ungranted*, which no test could
+  check. They are now absent from the artifact.
+
+  Two things the same inspection confirms about later phases:
+  `com.apple.security.files.bookmarks.app-scope` is **not** present (P36.7 is
+  genuinely still open), and the bundle carries hardened runtime **without**
+  `allow-unsigned-executable-memory` — which is precisely the configuration
+  P36.10 needs to test.
+
 #### Phase 4 — review items that are not about sandboxing
 
 Apply to iOS and MAS equally; independent of Phases 1–3.
