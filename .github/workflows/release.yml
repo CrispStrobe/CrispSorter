@@ -1416,13 +1416,26 @@ jobs:
           # the crypto inventory and the published-source basis.
           ASC_USES_NON_EXEMPT_ENCRYPTION: "false"
         run: |
-          # External testers join via the group's public TestFlight URL, not
-          # per-email invitations. The link only starts working once Beta App
-          # Review passes; before that Apple returns it as null and testers
-          # get a 404, which is expected rather than a failure.
+          # `--version "$BV"` — the BUILD number, not the marketing semver.
+          #
+          # `$SV` is not unique: every build of 0.11.0 shares it, so
+          # `latest_build` would happily match a *previous* upload and stop
+          # waiting. That is not hypothetical — run 30786723797 queried ASC
+          # 1m46s before Apple finished recording build 132, matched build 131
+          # on the shared semver, and distributed the older binary while
+          # reporting success. The build number is assigned per upload and
+          # cannot collide.
+          #
+          # `--mode internal`, matching the iOS step above. External
+          # distribution needs Beta App Review, which needs the account's Beta
+          # Test agreement accepted in a browser — a human step this workflow
+          # cannot do, and until it happens the job fails at the last hurdle
+          # with "Beta contract is missing" *after* a perfectly good upload.
+          # Internal testing needs no review at all. Switch back to
+          # `--mode external --public-link` once that agreement is signed.
           python3 scripts/testflight_distribute.py \
-            --platform MAC_OS --mode external --public-link \
-            --version "$SV" \
+            --platform MAC_OS --mode internal \
+            --version "$BV" \
             --notes "macOS build ${SV} (${BV}) from CI."
 
       - name: Upload .pkg artifact

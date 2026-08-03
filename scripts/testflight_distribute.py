@@ -177,10 +177,18 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
     `version` matches either identifier, because the two are easy to confuse
     and the failure is expensive: a build's own `attributes.version` is the
     **build number** ("131"), while the marketing semver ("0.11.0") lives on
-    the related `preReleaseVersion`. `release.yml` passes the semver, so an
-    earlier revision that compared only `attributes.version` could never match
-    — it spun for the full 25 minutes and then reported "the upload never
+    the related `preReleaseVersion`. An earlier revision compared only
+    `attributes.version`, so a caller passing the semver could never match —
+    it spun for the full 25 minutes and then reported "the upload never
     arrived" about a build sitting right there in the list.
+
+    ⚠️ **Pass the build number, not the semver.** Matching either is a
+    convenience, not a licence to use the semver: every build of 0.11.0 shares
+    it, so a semver match can bind to a *previous* upload and stop waiting for
+    the one the caller actually just made. That happened in run 30786723797 —
+    the query ran 1m46s before Apple recorded build 132, matched build 131,
+    and distributed the older binary while reporting success. Build numbers
+    are unique per upload; semvers are not.
     """
     q = urllib.parse.urlencode({
         "filter[app]": app_id,
