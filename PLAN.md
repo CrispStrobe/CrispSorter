@@ -3565,16 +3565,35 @@ AI", and the plan below is sized accordingly.
 > Sandbox forbids linking CrispEmbed or CrispASR — they are FFI, not
 > processes, which is the finding this whole section rests on.
 >
-> **What restoring parity costs.** Adding `crispembed-metal,crispasr-metal,
-> pdf-render` reintroduces bundled third-party dylibs, and hardened runtime
-> enforces **library validation**: every loaded dylib must share the main
-> binary's Team ID. Observed directly — an ad-hoc re-sign of the `.dmg` bundle
-> (no Team ID) dies at launch with `Library not loaded: @rpath/
-> libcrispembed.0.dylib … different Team IDs`. A properly signed MAS build
-> should pass, since CI signs the whole bundle with one Apple Distribution
-> identity, but the signing step has never had a `Frameworks/` directory to
-> walk and that is untested. Decide deliberately; do not let the thin recipe
-> persist by default.
+> **Resolved the same day — parity restored, build 135.** The MAS recipe is
+> now `desktop-mas,audio-glint,pdf-zpdf,pdf-render,crispembed-metal,
+> crispasr-metal`, so the App Store build carries the whole local-AI stack and
+> the P36.2 watermarked TTS path is live rather than dead code.
+>
+> Three pieces, all of which already existed for the `.dmg` job: fetch the
+> prebuilt `macos-arm64` lib bundles, name the features, and run
+> `scripts/bundle_macos_native_libs.sh` between the build and the signing.
+> That last one is not optional — without it the binary references
+> `@rpath/libcrispembed.0.dylib` and dies at launch with a DYLD "Library
+> missing" abort.
+>
+> **The library-validation worry was real but already handled.** Hardened
+> runtime refuses any dylib whose Team ID differs from the loader's, and an
+> ad-hoc signature has no Team ID — which is why an ad-hoc re-sign of the
+> `.dmg` bundle crashed on launch while testing. The MAS signing step already
+> walked `Contents` inside-out signing every dylib with the same Apple
+> Distribution identity, so it needed no change. Verified in build 135's
+> artifact: 8 dylibs, all `TeamIdentifier=N9XSJ4M3GT`, all hardened-runtime,
+> `codesign --verify --deep --strict` clean, sandbox intact.
+>
+> One trap worth keeping: the sandbox patch used to delete
+> `bundle.resources` unconditionally, because `bin/` was empty and Tauri's
+> `build.rs` fails the `bin/*` glob on an empty directory. With `libpdfium`
+> staged there that becomes actively harmful — built against, excluded from
+> the bundle, every page render failing at runtime with nothing in the build
+> log. It now conditions on what `src-tauri/bin` actually contains. A rule
+> that encodes a past state of the world rather than a present fact is the
+> kind that outlives its reason; this section has now produced two.
 
 #### Why other Mac App Store apps ship with Ollama, and so can we
 
