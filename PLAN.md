@@ -3539,10 +3539,42 @@ App Sandbox would kill local inference was false:
 | CrispASR | FFI — `crispasr-sys` | ✅ |
 | WebLLM / ORT | in the webview | ✅ |
 
-So the sandboxed build keeps local LLM inference, OCR, ASR and TTS. What it
-loses is three of nine *providers* and a set of conveniences layered on top —
-not the capability. That is a much smaller cut than "no local AI", and the
-plan below is sized accordingly.
+So the sandboxed build *can* keep local LLM inference, OCR, ASR and TTS. What
+it loses to the sandbox is three of nine *providers* and a set of conveniences
+layered on top — not the capability. That is a much smaller cut than "no local
+AI", and the plan below is sized accordingly.
+
+> ⚠️ **Corrected 2026-08-03 — "can keep" is not "does keep".** The above is a
+> statement about what App Sandbox permits. It said "keeps", which was read as
+> a description of the shipped artifact, and that turned out to be false.
+>
+> The MAS build's actual recipe is `--features desktop-mas,audio-glint,
+> pdf-zpdf`. Compare the `.dmg`: `desktop,sidecars,audio-glint,crispasr-metal,
+> crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf,
+> drive-filen-native,drive-internxt-native`.
+>
+> So the App Store build ships **mistral.rs and nothing else** of the local AI
+> stack: no CrispEmbed OCR, no CrispASR (so no ASR *and* no in-process TTS —
+> the P36.2 watermarked path is dead code there), no pdfium page rendering.
+> Verified against build 133's binary: `pdfium` string count 0, no bundled
+> dylibs at all, `Contents/Frameworks/` absent entirely.
+>
+> **The sandbox is not the reason.** That thin recipe is inherited from the
+> pre-P36 "cloud-only sandbox variant" job, and P36.12 carried it forward
+> unexamined when it switched that line to `desktop-mas`. Nothing about App
+> Sandbox forbids linking CrispEmbed or CrispASR — they are FFI, not
+> processes, which is the finding this whole section rests on.
+>
+> **What restoring parity costs.** Adding `crispembed-metal,crispasr-metal,
+> pdf-render` reintroduces bundled third-party dylibs, and hardened runtime
+> enforces **library validation**: every loaded dylib must share the main
+> binary's Team ID. Observed directly — an ad-hoc re-sign of the `.dmg` bundle
+> (no Team ID) dies at launch with `Library not loaded: @rpath/
+> libcrispembed.0.dylib … different Team IDs`. A properly signed MAS build
+> should pass, since CI signs the whole bundle with one Apple Distribution
+> identity, but the signing step has never had a `Frameworks/` directory to
+> walk and that is untested. Decide deliberately; do not let the thin recipe
+> persist by default.
 
 #### Why other Mac App Store apps ship with Ollama, and so can we
 
