@@ -1305,6 +1305,39 @@ jobs:
           set -euo pipefail
           echo "$MAC_PROFILE_BASE64" | base64 -d > "$RUNNER_TEMP/cs.provisionprofile"
           echo "PROFILE=$RUNNER_TEMP/cs.provisionprofile" >> "$GITHUB_ENV"
+      # ── Native libs for the sandboxed build (P36.16 follow-up) ────────
+      #
+      # The MAS job checked out CrispEmbed/CrispASR *source* (the Rust path
+      # deps need it) but never fetched the built dylibs, so the recipe could
+      # not name `crispembed-metal` / `crispasr-metal` — and quietly did not.
+      # That is why the App Store build shipped mistral.rs and nothing else of
+      # the local AI stack while PLAN.md claimed it kept OCR, ASR and TTS.
+      #
+      # Both are FFI, not subprocesses, so the sandbox has no objection —
+      # which is the finding the whole P36 milestone rests on.
+      - name: Download libcrispembed bundle (macOS arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
+          find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" | head
+
+      - name: Download libcrispasr bundle (macOS arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-macos-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispASR/build-flutter-bundle
+          tar -xzf crispasr-libs.tar.gz \
+            -C _sibling/CrispASR/build-flutter-bundle --strip-components=1
+          find _sibling/CrispASR/build-flutter-bundle -maxdepth 4 -name "lib*.dylib" | head
+
       - name: Install protoc (lance-encoding build script needs it)
         run: brew install protobuf
       - name: Build cloud-only .app
@@ -1330,13 +1363,33 @@ jobs:
           # The capability patch above is still required, not redundant: the
           # plugins being absent means `shell:default` / `process:default`
           # would be *unresolvable* permission strings, not merely unused.
-          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf 2>&1 | tail -50
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf,crispembed-metal,crispasr-metal 2>&1 | tail -50
           # `find` over a non-existent path (src-tauri/target) exits non-zero and
           # would trip `set -e` AFTER the .app was already built — tolerate it.
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)
           [ -n "$APP" ] || { echo "::error::no .app produced"; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
           echo "built $APP"
+      # Without this the .app references @rpath/libcrispembed.0.dylib and
+      # dies at launch with a DYLD "Library missing" abort — observed
+      # directly while testing 2026-08-03. The signing step below then
+      # re-signs every dylib with the SAME Apple Distribution identity
+      # (it already walks Contents inside-out), which is what makes them
+      # pass hardened runtime's library validation: mismatched Team IDs
+      # are refused, and an ad-hoc signature has no Team ID at all.
+      #
+      # REPACK_DMG=0 — there is no .dmg in this job to repack.
+      - name: Bundle native libs into the .app
+        env:
+          CRISPASR_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispASR/build-flutter-bundle
+          CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
+          REPACK_DMG: "0"
+        run: |
+          set -euo pipefail
+          ./scripts/bundle_macos_native_libs.sh "$APP"
+          echo "bundled:"
+          ls "$APP/Contents/Frameworks" | head -20
+
       - name: Sign .app (App Sandbox) + build signed .pkg
         run: |
           set -euo pipefail
