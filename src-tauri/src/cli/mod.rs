@@ -3275,6 +3275,111 @@ fn parse_embedder_model(
     })
 }
 
+/// Walk `paths` into the list of files to ingest, applying the cheap filters.
+///
+/// Returns `(files, skipped)`. Split out of the ingest handler so it can run
+/// *before* the embedder is constructed: loading that downloads the model on
+/// first use, and none of the reasons this can refuse need a single vector.
+///
+/// The two refusals are deliberate. A path that does not exist is an error,
+/// not a no-op — printing "skip (not found)" and exiting 0 is how a
+/// disconnected network share reads as a successful index of nothing. And an
+/// empty result after filtering is an error too, since it otherwise hides a
+/// mistyped `--ext` or a `--max-file-size` that excluded the whole corpus.
+/// Filtered-out files are *skips*, though: counting them as errors would make
+/// a run that did exactly what was asked look broken.
+fn collect_ingest_files(
+    paths: &[PathBuf],
+    ext_filter: &[String],
+    max_bytes: Option<u64>,
+) -> Result<(Vec<PathBuf>, usize), String> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut missing: Vec<&PathBuf> = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            for entry in jwalk::WalkDir::new(path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                files.push(entry.path().to_path_buf());
+            }
+        } else if path.exists() {
+            files.push(path.clone());
+        } else {
+            eprintln!("skip (not found): {}", path.display());
+            missing.push(path);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "not found: {} — nothing was indexed. \
+             If this is a network share, check it is still connected.",
+            missing
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let mut skipped = 0usize;
+    files.retain(|p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Office lock files (`~$foo.docx`) are 162-byte owner stubs, not
+        // documents. They sit next to any file open in Word.
+        if name.starts_with("~$") {
+            skipped += 1;
+            return false;
+        }
+        if !ext_filter.is_empty() {
+            let e = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            if !ext_filter.contains(&e) {
+                skipped += 1;
+                return false;
+            }
+        }
+        if let Some(max) = max_bytes {
+            if let Ok(m) = p.metadata() {
+                if m.len() > max {
+                    eprintln!(
+                        "skip (larger than --max-file-size): {} ({} bytes)",
+                        p.display(),
+                        m.len()
+                    );
+                    skipped += 1;
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    if skipped > 0 {
+        eprintln!("{skipped} file(s) skipped by filters");
+    }
+
+    if files.is_empty() {
+        return Err(format!(
+            "no files to ingest under {} — {}",
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            if skipped > 0 {
+                format!("all {skipped} candidate(s) were excluded by --ext / --max-file-size")
+            } else {
+                "the path holds no files".to_string()
+            }
+        ));
+    }
+    Ok((files, skipped))
+}
+
 /// Resolve `--backend` + `--quant` onto an [`EmbedderConfig`].
 ///
 /// `--quant` only means anything on the GGUF backend (the ONNX weights are
@@ -3848,6 +3953,22 @@ async fn cmd_index_async(
             let m = parse_embedder_model(&model)?;
             let d = parse_embedder_device(&device);
 
+            // Resolve the work-list *before* touching the embedder. Loading it
+            // downloads the model on first use — 2.3 GB for the bge-m3 default
+            // — and every reason this command can refuse (a path that is not
+            // there, a filter that excluded everything) is knowable without a
+            // single vector. Ordering it the other way meant `ingest
+            // /typo/path` spent the download first and only then reported that
+            // the path does not exist.
+            // The count is reported inside the helper; the handler only needs
+            // the work-list.
+            let (files, _skipped) = collect_ingest_files(&paths, &ext_filter, max_bytes)?;
+            eprintln!(
+                "ingesting {} file(s)… (ocr: {})",
+                files.len(),
+                if ocr { "on" } else { "off" }
+            );
+
             let cache_dir = data_dir.join("models");
             std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
             let embedder_config =
@@ -3889,106 +4010,6 @@ async fn cmd_index_async(
                 IngestConfig::default(),
             )
             .with_ner(ner);
-
-            // Collect all files.
-            let mut files: Vec<std::path::PathBuf> = Vec::new();
-            let mut missing: Vec<&std::path::PathBuf> = Vec::new();
-            for path in &paths {
-                if path.is_dir() {
-                    for entry in jwalk::WalkDir::new(path)
-                        .into_iter().filter_map(|e| e.ok())
-                        .filter(|e| e.file_type().is_file())
-                    {
-                        files.push(entry.path().to_path_buf());
-                    }
-                } else if path.exists() {
-                    files.push(path.clone());
-                } else {
-                    eprintln!("skip (not found): {}", path.display());
-                    missing.push(path);
-                }
-            }
-            // An input that isn't there is a failure, not a no-op. Without
-            // this the command printed "skip (not found)" and still exited 0
-            // — which is exactly how a disconnected network share reads as a
-            // successful index of nothing. Same reasoning as the all-failed
-            // check further down; that one only covered files that were found
-            // and then failed, not paths that were never there at all.
-            if !missing.is_empty() {
-                return Err(format!(
-                    "not found: {} — nothing was indexed. \
-                     If this is a network share, check it is still connected.",
-                    missing
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-
-            // Pre-filter before the expensive part. These are skips, not
-            // failures: counting them as errors would make a run that did
-            // exactly what was asked look broken, and (with the all-failed
-            // check below) could fail a run where every file was filtered.
-            let mut skipped = 0usize;
-            files.retain(|p| {
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Office lock files (`~$foo.docx`) are 162-byte owner stubs,
-                // not documents. They sit next to any file open in Word.
-                if name.starts_with("~$") {
-                    skipped += 1;
-                    return false;
-                }
-                if !ext_filter.is_empty() {
-                    let e = p.extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_ascii_lowercase())
-                        .unwrap_or_default();
-                    if !ext_filter.contains(&e) {
-                        skipped += 1;
-                        return false;
-                    }
-                }
-                if let Some(max) = max_bytes {
-                    if let Ok(m) = p.metadata() {
-                        if m.len() > max {
-                            eprintln!(
-                                "skip (larger than --max-file-size): {} ({} bytes)",
-                                p.display(), m.len()
-                            );
-                            skipped += 1;
-                            return false;
-                        }
-                    }
-                }
-                true
-            });
-            if skipped > 0 {
-                eprintln!("{skipped} file(s) skipped by filters");
-            }
-            eprintln!(
-                "ingesting {} file(s)… (ocr: {})",
-                files.len(),
-                if ocr { "on" } else { "off" }
-            );
-            // Every input existed, yet nothing survived the walk/filters.
-            // Silently succeeding here hides a mistyped --ext or a
-            // --max-file-size that excluded the whole corpus.
-            if files.is_empty() {
-                return Err(format!(
-                    "no files to ingest under {} — {}",
-                    paths
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    if skipped > 0 {
-                        format!("all {skipped} candidate(s) were excluded by --ext / --max-file-size")
-                    } else {
-                        "the path holds no files".to_string()
-                    }
-                ));
-            }
 
             let mut ok = 0usize;
             let mut errs = 0usize;
@@ -11849,6 +11870,62 @@ mod tests {
             }
             other => panic!("expected Index Ingest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn collect_ingest_files_refuses_a_missing_path() {
+        // The whole point of running this before the embedder is built: a bad
+        // path must cost nothing. It used to be discovered only after the
+        // model download.
+        let missing = std::env::temp_dir().join("crispsorter-does-not-exist-xyzzy");
+        let err = super::collect_ingest_files(&[missing.clone()], &[], None)
+            .expect_err("a path that does not exist must be an error");
+        assert!(err.contains("not found"), "error should say so: {err}");
+        assert!(
+            err.contains("network share"),
+            "error should hint at the common cause: {err}"
+        );
+    }
+
+    #[test]
+    fn collect_ingest_files_applies_filters_and_refuses_an_empty_result() {
+        let dir = std::env::temp_dir().join(format!(
+            "crispsorter-collect-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("a.pdf"), b"x").unwrap();
+        std::fs::write(dir.join("b.docx"), b"x").unwrap();
+        // Word's lock file: a 162-byte owner stub sitting next to any open doc.
+        std::fs::write(dir.join("~$b.docx"), b"x").unwrap();
+
+        // No filter: both real files, lock file dropped.
+        let (files, skipped) = super::collect_ingest_files(&[dir.clone()], &[], None).unwrap();
+        assert_eq!(files.len(), 2, "got {files:?}");
+        assert_eq!(skipped, 1, "the ~$ lock file should be skipped");
+        assert!(
+            !files.iter().any(|p| p.file_name().unwrap().to_string_lossy().starts_with("~$")),
+            "lock file leaked into the work-list"
+        );
+
+        // Extension filter narrows it.
+        let (files, _) =
+            super::collect_ingest_files(&[dir.clone()], &["pdf".to_string()], None).unwrap();
+        assert_eq!(files.len(), 1);
+
+        // A filter that excludes everything is an error, not a silent success
+        // — otherwise a typo'd --ext looks like an empty corpus.
+        let err = super::collect_ingest_files(&[dir.clone()], &["xyz".to_string()], None)
+            .expect_err("excluding everything must error");
+        assert!(err.contains("excluded"), "error should explain why: {err}");
+
+        // Same for a size cap that excludes everything.
+        let err = super::collect_ingest_files(&[dir.clone()], &[], Some(0))
+            .expect_err("a 0-byte cap excludes everything");
+        assert!(err.contains("no files to ingest"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
