@@ -339,6 +339,172 @@ jobs:
           path: repos/CrispSorter/target/debug/crispsorter
           retention-days: 7
 
+  # The same lib + CLI, on Windows.
+  #
+  # Why this exists: every job above runs the CrispSorter code on Linux only.
+  # `crisp-cloud-rs` has a windows-2025 leg, but that checks out a *different*
+  # repository, so nothing in this one had ever been compiled or run on
+  # Windows by CI. Five defects lived in that gap, all of which pass on Linux
+  # by construction:
+  #
+  #   * every CLI verb died with "thread 'main' has overflowed its stack" —
+  #     building the clap tree costs more than MSVC's 1 MiB main thread, where
+  #     Linux hands out 8 MiB. `version`, `doctor`, `index stats`, `--help`:
+  #     all of them, so the binary was unusable on Windows.
+  #   * `crispsorter --version` launched the GUI, because the argv sniff that
+  #     picks CLI-vs-GUI listed `--help` but not `--version`.
+  #   * the App-Sandbox spawn guard matched its file list with
+  #     `ends_with("tts/mod.rs")` against a `\`-separated `Path::display()`,
+  #     so seven of its eight entries could never match.
+  #   * WebDAV built nested paths with `PathBuf::push` and percent-encoded the
+  #     `\` into the URL: `MKCOL /dav/one%5Ctwo` → 501.
+  #   * `location.rs` decoded every POSIX `location_uri` into a relative
+  #     Windows path, so a .cidx or manifest written elsewhere pointed nowhere.
+  #
+  # Deliberately narrower than the Linux `rust` job: no `crispembed` /
+  # `crispasr` / `translate-*`, so no native libraries have to be staged and
+  # this stays a fast structural check rather than a second full build. The
+  # feature-gated native paths are already covered on Linux; what is *not*
+  # covered anywhere else is "does this run on Windows at all".
+  windows:
+    name: Windows lib tests + CLI smoke
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      # The clap tree overflows libtest's default worker stack (the same
+      # reason the Linux job sets this). The shipped binary no longer depends
+      # on it — `cli::run()` sizes its own thread — but the tests still do.
+      RUST_MIN_STACK: 16777216
+    steps:
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      # All three siblings are needed even though this job enables none of
+      # their features: `crisp-docx-{core,llm}` are unconditional path deps,
+      # and cargo resolves optional path deps too, so the directories have to
+      # exist for `cargo metadata` to succeed.
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISP_DOCX_REPO }}
+          ref: ${{ env.CRISP_DOCX_REF }}
+          path: repos/crisp-docx
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `lance-encoding` shells out to protoc from its own build script, so a
+      # PROTOC set inside ours does not reach it — it has to be on PATH before
+      # cargo starts. The Linux job gets this from apt.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+          key: windows
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+
+      - name: Build the frontend
+        # tauri-build reads `frontendDist: ../build`; the directory has to
+        # exist even though nothing here bundles it.
+        working-directory: repos/CrispSorter
+        run: |
+          npm ci
+          npm run build
+
+      - name: Create bin placeholder for the resources glob
+        working-directory: repos/CrispSorter
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/bin | Out-Null
+          New-Item -ItemType File -Force -Path src-tauri/bin/.gitkeep | Out-Null
+
+      - name: Library tests
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Build the CLI binary
+        working-directory: repos/CrispSorter
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: CLI smoke test
+        working-directory: repos/CrispSorter
+        shell: pwsh
+        # Every assertion here is a bug that shipped. The timeout is the point
+        # of the exercise as much as the exit code: the `--version` failure
+        # mode was *launching the GUI*, which on a headless runner does not
+        # exit at all. A plain `run:` would have hung until the job timeout
+        # rather than failing in seconds.
+        run: |
+          $exe = "target\debug\crispsorter.exe"
+          if (-not (Test-Path $exe)) { throw "CLI binary was not produced" }
+
+          function Invoke-Cli {
+            param([string[]]$CliArgs, [int]$TimeoutSec = 120)
+            $out = New-TemporaryFile; $err = New-TemporaryFile
+            $p = Start-Process -FilePath $exe -ArgumentList $CliArgs -PassThru `
+                   -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+              $p.Kill()
+              throw "TIMEOUT: 'crispsorter $($CliArgs -join ' ')' did not exit in ${TimeoutSec}s. A verb missing from cli::SUBCOMMANDS launches the GUI instead of running."
+            }
+            $stdout = Get-Content $out -Raw -EA SilentlyContinue
+            $stderr = Get-Content $err -Raw -EA SilentlyContinue
+            Remove-Item $out,$err -Force -EA SilentlyContinue
+            if ($p.ExitCode -ne 0) {
+              throw "FAILED (exit $($p.ExitCode)): 'crispsorter $($CliArgs -join ' ')'`n$stderr"
+            }
+            Write-Host "  ok: crispsorter $($CliArgs -join ' ')"
+            return $stdout
+          }
+
+          # Clap answers these itself and exits. Both stack-overflowed; the
+          # first also opened the GUI.
+          $v = Invoke-Cli @('--version')
+          if ($v -notmatch 'crispsorter') { throw "--version printed nothing useful: $v" }
+          Invoke-Cli @('--help')      | Out-Null
+          Invoke-Cli @('version')     | Out-Null
+          Invoke-Cli @('doctor')      | Out-Null
+
+          # Opening LanceDB + Tantivy under a Windows path. `index init` is
+          # deliberately not run: it downloads an embedder.
+          $data = Join-Path $env:RUNNER_TEMP 'crispdata'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $stats = Invoke-Cli @('--format','json','index','--data-dir',$data,'stats') -TimeoutSec 300
+          if ($stats -notmatch '"docs"') { throw "index stats returned no doc count: $stats" }
+
+          # A path that does not exist must fail, not report a successful
+          # index of nothing — that is how a disconnected share read as OK.
+          $missing = Join-Path $env:RUNNER_TEMP 'does-not-exist-at-all'
+          $p = Start-Process -FilePath $exe -PassThru -NoNewWindow -Wait `
+                 -ArgumentList @('index','--data-dir',$data,'ingest',$missing)
+          if ($p.ExitCode -eq 0) { throw "ingest of a missing path exited 0" }
+          Write-Host "  ok: ingest of a missing path fails loudly (exit $($p.ExitCode))"
+
   cloud-backends:
     name: Native cloud crates
     runs-on: ubuntu-24.04
