@@ -46,7 +46,7 @@ fn get_encoder() -> Result<std::sync::MutexGuard<'static, crispembed::CrispEmbed
     let encoder = OMNI_ENCODER.get_or_init(|| {
         let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_OMNI_MODEL, Some(true))
             .unwrap_or_else(|_| DEFAULT_OMNI_MODEL.to_string());
-        let model = crispembed::CrispEmbed::new(&resolved, 0)
+        let model = crispembed::CrispEmbed::new(&resolved, super::embedder::crispembed_threads())
             .expect("BidirLM-Omni model init failed");
         Mutex::new(model)
     });

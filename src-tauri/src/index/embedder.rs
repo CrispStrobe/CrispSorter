@@ -518,10 +518,15 @@ impl EmbedderModel {
     ///
     /// We pick the quant that matches the user's *intent* baked into the
     /// `EmbedderModel` variant — see `gguf_quant_suffix_str()`.
+    /// `quant` overrides the quantisation baked into the variant; `None`
+    /// keeps the variant's own choice. See [`EmbedderConfig::gguf_quant`].
     #[cfg(feature = "crispembed")]
-    pub(crate) fn to_gguf_spec(self) -> Option<GgufSpec> {
+    pub(crate) fn to_gguf_spec_with_quant(self, quant: Option<GgufQuant>) -> Option<GgufSpec> {
         let name = self.gguf_registry_name()?;
-        let suffix = self.gguf_quant_suffix_str();
+        let suffix = match quant {
+            Some(q) => q.suffix(),
+            None => self.gguf_quant_suffix_str(),
+        };
         Some(GgufSpec {
             repo: format!("cstr/{name}-GGUF"),
             file: format!("{name}{suffix}.gguf"),
@@ -1480,6 +1485,61 @@ pub struct EmbedderConfig {
     /// Has no effect on the ONNX/OrtPath backends.
     #[serde(default)]
     pub model_name_override: Option<String>,
+
+    /// Quantisation to pick out of the `cstr/<name>-GGUF` repo, overriding
+    /// the one baked into the [`EmbedderModel`] variant.
+    ///
+    /// Without this the quant is a property of the *variant*, so a model is
+    /// only reachable at whatever quant someone happened to encode — e.g.
+    /// `MultilingualE5Small` resolves to the 455 MiB F32 file and there was
+    /// no way to ask for the 126 MiB `-q8_0` sitting in the same repo. The
+    /// alternative to this field is a variant per model × quant, which for
+    /// the current registry is ~14 × 3.
+    ///
+    /// `None` keeps the variant's own choice, so existing callers and the
+    /// persisted config are unaffected.
+    #[serde(default)]
+    pub gguf_quant: Option<GgufQuant>,
+}
+
+/// A quantisation available in the `cstr/*-GGUF` repos.
+///
+/// The suffix is part of the filename convention those repos follow:
+/// `<name>.gguf` (F32), `<name>-q8_0.gguf`, `<name>-q4_k.gguf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GgufQuant {
+    /// Full-precision reference. Largest, and — per the conversion
+    /// measurements — not worth its size next to Q8_0.
+    F32,
+    /// 8-bit. Cosine similarity to F32 is ≥0.9995 for every model in the
+    /// registry, so this is the default worth reaching for.
+    Q8_0,
+    /// 4-bit K-quant. Fidelity is model-dependent (0.965–0.99); worth it
+    /// only when memory-bound.
+    Q4K,
+}
+
+impl GgufQuant {
+    /// Filename suffix, matching the repo naming convention.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            GgufQuant::F32 => "",
+            GgufQuant::Q8_0 => "-q8_0",
+            GgufQuant::Q4K => "-q4_k",
+        }
+    }
+
+    /// Parse a user-supplied spelling. Accepts the forms that appear in the
+    /// repos and the ones people actually type.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace(['-', '.'], "_").as_str() {
+            "f32" | "fp32" | "full" | "none" => Some(GgufQuant::F32),
+            "q8_0" | "q8" | "int8" => Some(GgufQuant::Q8_0),
+            "q4_k" | "q4k" | "q4" | "int4" => Some(GgufQuant::Q4K),
+            _ => None,
+        }
+    }
 }
 
 impl EmbedderConfig {
@@ -1492,7 +1552,15 @@ impl EmbedderConfig {
             backend: EmbedderBackend::Onnx,
             matryoshka_dim: None,
             model_name_override: None,
+            gguf_quant: None,
         }
+    }
+
+    /// Pick a specific quantisation out of the model's GGUF repo.
+    /// `None` leaves the variant's own choice in place.
+    pub fn with_gguf_quant(mut self, quant: Option<GgufQuant>) -> Self {
+        self.gguf_quant = quant;
+        self
     }
 
     pub fn with_model_name_override(mut self, name: Option<String>) -> Self {
@@ -1926,11 +1994,12 @@ impl CrispEmbedBackend {
     /// directly — keeps the feature-gated upstream import confined to
     /// this module.
     pub(crate) fn load(gguf_path: &Path) -> Result<Self> {
-        let p = gguf_path
+        let long_path_safe = long_path_safe(gguf_path);
+        let p = long_path_safe
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("non-UTF8 GGUF path: {:?}", gguf_path))?;
         println!("[embedder] Loading GGUF via CrispEmbed: {}", p);
-        let model = crispembed::CrispEmbed::new(p, 0)
+        let model = crispembed::CrispEmbed::new(p, crispembed_threads())
             .map_err(|e| anyhow::anyhow!("crispembed load failed: {e}"))?;
         Ok(Self { model })
     }
@@ -1939,7 +2008,7 @@ impl CrispEmbedBackend {
     /// library resolves the name to a cached path and downloads if needed.
     pub(crate) fn load_by_name(name: &str) -> Result<Self> {
         println!("[embedder] Loading GGUF by name via CrispEmbed: {name}");
-        let model = crispembed::CrispEmbed::new(name, 0)
+        let model = crispembed::CrispEmbed::new(name, crispembed_threads())
             .map_err(|e| anyhow::anyhow!("crispembed load failed for '{name}': {e}"))?;
         Ok(Self { model })
     }
@@ -2057,6 +2126,63 @@ impl CrispEmbedBackend {
 
 /// Pre-converted GGUF hosted by cstr/ on HuggingFace. Mirrors the registry
 /// in `CrispEmbed/examples/cli/model_mgr.cpp`.
+/// Threads to hand CrispEmbed for CPU inference.
+///
+/// `crispembed_init` reads its argument as `n_threads > 0 ? n_threads : 1`, so
+/// the `0` every call site used to pass meant **one thread** — not "pick a
+/// sensible default". On a 14-core machine that left GGUF embedding running
+/// single-threaded while the ONNX backend used the whole box, which is both a
+/// large throughput loss and enough to make any comparison between the two
+/// meaningless.
+///
+/// Capped rather than "all logical CPUs": these are small encoder graphs where
+/// the gain flattens quickly, and on hybrid P/E-core parts (Alder Lake and
+/// later) oversubscribing schedules work onto efficiency cores and can lose
+/// time outright. `CRISPEMBED_N_THREADS` overrides for tuning.
+#[cfg(feature = "crispembed")]
+pub(crate) fn crispembed_threads() -> i32 {
+    if let Ok(v) = std::env::var("CRISPEMBED_N_THREADS") {
+        if let Ok(n) = v.trim().parse::<i32>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    let logical = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    logical.clamp(1, 8) as i32
+}
+
+/// Make `p` openable by a narrow-API C consumer on Windows.
+///
+/// CrispEmbed loads the GGUF through a C `fopen`, which is subject to the
+/// 260-character `MAX_PATH` limit. Rust's std uses the wide API and happily
+/// *writes* longer paths, so the download succeeds and the load then fails
+/// with `No such file or directory` for a file that is plainly there. The
+/// hf-hub cache layout makes this easy to hit — `<cache>/models--<org>--<repo>
+/// /snapshots/<40-char sha>/<file>.gguf` spends ~120 characters before the
+/// user's own directory is counted.
+///
+/// `\\?\` opts into the extended-length form (~32,767). It also disables path
+/// normalisation, so the path must be absolute with no `.`/`..` and only
+/// backslashes — hence the canonicalise first. `std::fs::canonicalize`
+/// already returns a `\\?\` path on Windows, which is exactly what we want;
+/// if it fails (file missing, permissions) we hand back the original so the
+/// caller still reports the real error rather than one about canonicalising.
+///
+/// No-op on every other platform.
+#[cfg(feature = "crispembed")]
+fn long_path_safe(p: &Path) -> std::borrow::Cow<'_, Path> {
+    #[cfg(windows)]
+    {
+        if let Ok(c) = std::fs::canonicalize(p) {
+            return std::borrow::Cow::Owned(c);
+        }
+    }
+    std::borrow::Cow::Borrowed(p)
+}
+
 #[cfg(feature = "crispembed")]
 #[derive(Debug, Clone)]
 pub struct GgufSpec {
@@ -2164,7 +2290,7 @@ impl Embedder {
                 break 'gguf (Some(DenseBackend::CrispEmbed(backend)), Some(actual_dim));
             }
 
-            let Some(spec) = config.model.to_gguf_spec() else {
+            let Some(spec) = config.model.to_gguf_spec_with_quant(config.gguf_quant) else {
                 eprintln!(
                     "[embedder] GGUF requested for {:?} but no GGUF spec available — falling back to ONNX",
                     config.model
@@ -3035,9 +3161,39 @@ mod tests {
     #[test]
     fn crispembed_to_gguf_spec_returns_for_known_models() {
         // BGE-small-EN-v1.5 has a known GGUF in cstr/bge-small-en-v1.5-GGUF.
-        let spec = EmbedderModel::BgeSmallEnV15.to_gguf_spec();
+        let spec = EmbedderModel::BgeSmallEnV15.to_gguf_spec_with_quant(None);
         assert!(spec.is_some(),
             "BgeSmallEnV15 should have a GGUF spec under feature crispembed");
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    fn gguf_quant_override_selects_the_requested_file() {
+        // The reason the override exists: multilingual-e5-small's variant
+        // carries no quant suffix, so it could only ever resolve to the
+        // 455 MiB F32 — the 126 MiB Q8_0 sits in the same repo with no way
+        // to ask for it. These filenames must match the repo exactly; a
+        // wrong one is a 404 at download time, not a compile error.
+        let m = EmbedderModel::MultilingualE5Small;
+        let default = m.to_gguf_spec_with_quant(None).expect("has a GGUF spec");
+        assert_eq!(default.repo, "cstr/multilingual-e5-small-GGUF");
+        assert_eq!(default.file, "multilingual-e5-small.gguf");
+
+        let q8 = m
+            .to_gguf_spec_with_quant(Some(GgufQuant::Q8_0))
+            .expect("has a GGUF spec");
+        assert_eq!(q8.file, "multilingual-e5-small-q8_0.gguf");
+
+        let q4 = m
+            .to_gguf_spec_with_quant(Some(GgufQuant::Q4K))
+            .expect("has a GGUF spec");
+        assert_eq!(q4.file, "multilingual-e5-small-q4_k.gguf");
+
+        // F32 is the unsuffixed file, i.e. the same as the default here.
+        let f32_spec = m
+            .to_gguf_spec_with_quant(Some(GgufQuant::F32))
+            .expect("has a GGUF spec");
+        assert_eq!(f32_spec.file, default.file);
     }
 
     #[test]
