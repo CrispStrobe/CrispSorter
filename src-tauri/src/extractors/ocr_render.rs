@@ -214,6 +214,12 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> 
                     w: r.w,
                     h: r.h,
                     confidence: r.confidence,
+                    // Added to `OcrResult` upstream after v0.16.1. These
+                    // regions come from our own detector, which does not
+                    // rotate anything, so the honest value is `false` — the
+                    // renderer only reads it to decide whether a box's
+                    // coordinates were already de-skewed.
+                    orientation_corrected: false,
                 })
                 .collect()
         })
