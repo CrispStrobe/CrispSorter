@@ -153,7 +153,14 @@ impl WebDavDrive {
     /// Build the full URL for a path relative to the drive root.
     /// Strips leading `/` and percent-encodes each segment.
     fn url_for(&self, path: &Path) -> String {
-        let s = path.to_string_lossy();
+        // A WebDAV URL is always forward-slash separated, whatever the local
+        // platform uses. `ensure_collection` builds each ancestor with
+        // `PathBuf::push`, which joins with `\` on Windows — so without this
+        // the separator survived into the URL and got percent-encoded,
+        // turning `one/two` into `one%5Ctwo` and every nested MKCOL into a
+        // 501. Normalise before splitting, not after, so the backslash is
+        // treated as a separator rather than as data inside a segment.
+        let s = path.to_string_lossy().replace('\\', "/");
         let trimmed = s.trim_start_matches('/');
         // Encode each segment, leaving the slashes intact.
         let encoded: Vec<String> = trimmed.split('/').map(percent_encode_segment).collect();
@@ -1189,6 +1196,12 @@ mod tests {
             "https://h/dav/a/b%20c/d.pdf"
         );
         assert_eq!(d.url_for(Path::new("a&b")), "https://h/dav/a%26b");
+        // A backslash is a separator, not data. `ensure_collection` produces
+        // these on Windows, and encoding one as %5C made every nested MKCOL
+        // fail with 501. Asserted unconditionally so the normalisation cannot
+        // be dropped on the platform that does not need it.
+        assert_eq!(d.url_for(Path::new(r"a\b.txt")), "https://h/dav/a/b.txt");
+        assert_eq!(d.url_for(Path::new(r"one\two\three")), "https://h/dav/one/two/three");
     }
 
     #[test]

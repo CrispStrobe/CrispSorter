@@ -349,7 +349,19 @@ fn decode_path(s: &str) -> PathBuf {
     {
         // URI: /C:/Users/… → Windows path: C:\Users\…
         let stripped = s.strip_prefix('/').unwrap_or(s);
-        PathBuf::from(stripped.replace('/', "\\"))
+        // …but only when it *is* a Windows path. A `location_uri` written on
+        // Linux or macOS carries a POSIX path, and those travel: a .cidx
+        // archive or a cloud-backup manifest built there gets opened here.
+        // Rewriting `/home/stc/docs/x.pdf` to `home\stc\docs\x.pdf` turned an
+        // absolute path into a relative one pointing nowhere, silently.
+        // A leading drive letter is what distinguishes the two.
+        let b = stripped.as_bytes();
+        let has_drive_letter = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+        if has_drive_letter {
+            PathBuf::from(stripped.replace('/', "\\"))
+        } else {
+            PathBuf::from(format!("/{stripped}"))
+        }
     }
     #[cfg(not(windows))]
     {
@@ -381,6 +393,28 @@ mod tests {
         assert!(uri.starts_with("crisp+local://"));
         let parsed = FileLocation::from_uri(&uri).unwrap();
         assert_eq!(loc, parsed);
+    }
+
+    #[test]
+    fn local_roundtrip_windows_drive_path() {
+        // The other half of the pair: a drive-letter path must still come
+        // back as a Windows path on Windows. Asserted on every platform via
+        // the URI text, so the encode side cannot drift either.
+        let loc = FileLocation::Local {
+            user_id: uid(),
+            machine_id: mid(),
+            path: PathBuf::from(if cfg!(windows) {
+                r"C:\Users\stc\docs\rahner.pdf"
+            } else {
+                "/C:/Users/stc/docs/rahner.pdf"
+            }),
+        };
+        let uri = loc.to_uri();
+        assert!(
+            uri.ends_with("/C:/Users/stc/docs/rahner.pdf"),
+            "drive path should encode with forward slashes: {uri}"
+        );
+        assert_eq!(loc, FileLocation::from_uri(&uri).unwrap());
     }
 
     #[test]

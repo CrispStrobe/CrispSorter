@@ -252,7 +252,12 @@ mod tests {
             // `#[cfg(test)]` code never ships, so a spawn in a test module
             // is not a sandbox problem. Only whole test files are exempt —
             // a file that mixes both still has to gate the real path.
-            let display = path.display().to_string();
+            // Compare on forward slashes. `Path::display()` uses the
+            // platform separator, so on Windows every multi-segment entry in
+            // `gated` (seven of the eight) could never match and the
+            // "guard is still watching its files" assertion below failed
+            // unconditionally — the guard was effectively Linux-only.
+            let display = path.display().to_string().replace('\\', "/");
             let is_gated = text.contains("feature = \"sidecars\"");
             if is_gated {
                 if let Some((name, _)) = gated.iter().find(|(n, _)| display.ends_with(n)) {
