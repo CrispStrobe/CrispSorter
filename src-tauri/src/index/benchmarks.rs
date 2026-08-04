@@ -25,6 +25,49 @@ fn l2_norm(v: &[f32]) -> f32 {
     v.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
+/// Where the app keeps downloaded model weights, per OS.
+///
+/// These benchmarks point at the real cache so they reuse whatever the GUI or
+/// CLI already downloaded instead of re-fetching gigabytes. They used to build
+/// it as `$HOME/Library/Application Support/…` with an `unwrap()` — a macOS
+/// path, from a variable Windows does not define. On a GitHub Windows runner
+/// that is a panic (`VarError::NotPresent`), not a skip; it survived locally
+/// only because Git for Windows happens to set `HOME`.
+///
+/// Falls back to a temp dir rather than panicking: the worst case is that the
+/// benchmark re-downloads, and every caller already treats a failure to load
+/// as "skip this model".
+fn shared_models_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home)
+                .join("Library/Application Support/com.crispstrobe.crispsorter/models");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return std::path::PathBuf::from(appdata)
+                .join("com.crispstrobe.crispsorter")
+                .join("models");
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        if let Some(base) = std::env::var_os("XDG_DATA_HOME")
+            .or_else(|| std::env::var_os("HOME").map(|h| {
+                std::path::PathBuf::from(h).join(".local/share").into_os_string()
+            }))
+        {
+            return std::path::PathBuf::from(base)
+                .join("com.crispstrobe.crispsorter")
+                .join("models");
+        }
+    }
+    std::env::temp_dir().join("crispsorter-benchmark-models")
+}
+
 #[tokio::test]
 async fn benchmark_models() {
     let models = vec![
@@ -59,8 +102,7 @@ async fn benchmark_models() {
 
 async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
     // Use the actual app data dir path to share the model cache.
-    let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-        .join("Library/Application Support/com.crispstrobe.crispsorter/models");
+    let models_dir = shared_models_dir();
     let data_dir = TempDir::new()?;
 
     // 1. Initialisation
@@ -282,8 +324,7 @@ async fn embedding_quality_metrics() {
         (4, 5, 6), // integration vs theology vs cooking
     ];
 
-    let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-        .join("Library/Application Support/com.crispstrobe.crispsorter/models");
+    let models_dir = shared_models_dir();
 
     // All Octen variants now support dynamic batch (INT4 batch=1 causal-mask was
     // fixed by patching dim_value=1 → dim_param='batch' in the ONNX value_info proto).
