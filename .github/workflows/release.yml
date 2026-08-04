@@ -20,7 +20,7 @@ on:
 # all jobs at once — no more 3-place edits.
 env:
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.1   # keep equal to ci.yml's CRISPEMBED_REF
+  CRISPEMBED_REF: v0.17.2   # keep equal to ci.yml's CRISPEMBED_REF
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.24  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
