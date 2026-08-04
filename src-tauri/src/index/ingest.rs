@@ -618,7 +618,12 @@ impl IngestPipeline {
             "level": 2,
             "extraction_failure": {
                 "reason": failure_reason.as_tag(),
-                "msg": &failure_msg[..failure_msg.len().min(512)],
+                // Byte-sliced, so the 512 cap has to land on a character
+                // boundary or this panics — and the message routinely carries
+                // a file path, which is exactly where non-ASCII shows up.
+                // Recording *why* extraction failed must not itself crash the
+                // ingest that was already handling a failure.
+                "msg": truncate_on_char_boundary(failure_msg, 512),
                 "at": now_ms
             }
         });
@@ -736,6 +741,22 @@ pub fn doc_id_for(raw: &RawDocument) -> String {
 /// P19 — merge NER entity tags into a document's existing tags, deduping
 /// case-insensitively while preserving order (existing tags first, then new
 /// entity tags in score order). Keeps the first-seen casing.
+/// Truncate `s` to at most `max_bytes`, never splitting a character.
+///
+/// `&s[..n]` panics when `n` lands inside a multi-byte character, which is
+/// routine for any text that is not pure ASCII. Every cap-a-string-at-N site
+/// needs this; doing it by hand is how a German umlaut took down an ingest.
+pub(crate) fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
+}
+
 pub(crate) fn merge_tags(tags: &mut Vec<String>, new_tags: Vec<String>) {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = tags.iter().map(|t| t.to_lowercase()).collect();
@@ -911,6 +932,25 @@ fn build_metadata_json(
 mod tests {
     use super::*;
     use crate::index::embedder::TextChunk;
+
+    #[test]
+    fn truncate_on_char_boundary_never_splits_a_character() {
+        // 'ü' is two bytes, so a cap of 1 lands inside it.
+        assert_eq!(truncate_on_char_boundary("üü", 1), "");
+        assert_eq!(truncate_on_char_boundary("üü", 2), "ü");
+        assert_eq!(truncate_on_char_boundary("üü", 3), "ü");
+        assert_eq!(truncate_on_char_boundary("üü", 4), "üü");
+        // Shorter than the cap is returned whole.
+        assert_eq!(truncate_on_char_boundary("abc", 99), "abc");
+        // Sweep every cap over mixed-width text; the contract is simply that
+        // it does not panic and the result stays a prefix.
+        let s = "Grundstück-Gebührenordnung-Fördermittel-Prüfung";
+        for n in 0..=s.len() + 2 {
+            let got = truncate_on_char_boundary(s, n);
+            assert!(s.starts_with(got), "n={n} produced a non-prefix: {got:?}");
+            assert!(got.len() <= n.max(0) || got.len() == s.len());
+        }
+    }
 
     fn sample_raw() -> RawDocument {
         RawDocument {

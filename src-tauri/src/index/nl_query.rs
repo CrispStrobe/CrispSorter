@@ -209,12 +209,22 @@ fn extract_year_after_prefix(text: &str, prefix: &str) -> Option<i32> {
     let lower = text.to_lowercase();
     let pos = lower.find(prefix)?;
     let start = pos + prefix.len();
-    let rest = &text[start..];
-    if rest.len() < 4 {
+    // `pos` came from the lowercased copy. `to_lowercase` is not always
+    // length-preserving, so this offset is only trustworthy while everything
+    // up to it is ASCII — and slicing `text` at an untrusted byte offset
+    // panics the moment it lands inside a character.
+    if !text.is_char_boundary(start) {
         return None;
     }
-    let candidate = &rest[..4];
-    let year: i32 = candidate.parse().ok()?;
+    let rest = &text[start..];
+    // Require four ASCII digits *before* slicing. That both rejects
+    // non-years early and guarantees byte 4 is a character boundary, so a
+    // query like "nach Prüfung" can no longer panic here.
+    let bytes = rest.as_bytes();
+    if bytes.len() < 4 || !bytes[..4].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let year: i32 = rest[..4].parse().ok()?;
     if (1900..=2100).contains(&year) {
         Some(year)
     } else {
@@ -233,14 +243,38 @@ fn extract_year_range(text: &str) -> Option<(i32, i32)> {
         if chunk.len() < 9 {
             continue;
         }
-        // Try "YYYY-YYYY"
-        if let (Ok(y1), Ok(y2)) = (chunk[..4].parse::<i32>(), chunk[5..9].parse::<i32>()) {
-            let sep = chunk.as_bytes()[4];
-            if (sep == b'-' || chunk[4..5].starts_with('\u{2013}'))
-                && (1900..=2100).contains(&y1)
-                && (1900..=2100).contains(&y2)
-                && y1 <= y2
-            {
+        // Match on bytes first. The old code sliced `chunk[..4]`,
+        // `chunk[5..9]` and `chunk[4..5]` directly, none of which is
+        // guaranteed to be a character boundary — an en-dash is three bytes,
+        // so "2019–2020" (the very shape this is looking for) put the cut
+        // inside it and panicked. Digits and '-' are ASCII, so verifying the
+        // shape byte-wise makes every slice below boundary-safe.
+        let b = chunk.as_bytes();
+        if !b[..4].iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        // Separator: ASCII '-' (1 byte) or en-dash U+2013 (3 bytes). The
+        // width decides where the second group starts, so it has to be
+        // resolved *before* looking for the second four digits — checking a
+        // fixed `b[5..9]` silently rejected every en-dash range.
+        let sep_len = if b[4] == b'-' {
+            1usize
+        } else if chunk[4..].starts_with('\u{2013}') {
+            3usize
+        } else {
+            continue;
+        };
+        let second_start = 4 + sep_len;
+        if b.len() < second_start + 4
+            || !b[second_start..second_start + 4].iter().all(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        if let (Ok(y1), Ok(y2)) = (
+            chunk[..4].parse::<i32>(),
+            chunk[second_start..second_start + 4].parse::<i32>(),
+        ) {
+            if (1900..=2100).contains(&y1) && (1900..=2100).contains(&y2) && y1 <= y2 {
                 return Some((y1, y2));
             }
         }
@@ -277,6 +311,50 @@ fn remove_fragment_ci(text: &str, fragment: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_ascii_queries_do_not_panic() {
+        // Both year helpers sliced at fixed byte offsets. Any query with an
+        // umlaut could put that cut inside a character and panic the search.
+        // These are the shapes a German user actually types.
+        for q in [
+            "Gebührenordnung from Prüfung",
+            "Grundstück nach Fördermittel",
+            "Zuwendungsbescheid 2019–2020",
+            "Prüfbericht 2019-2020 Liegenschaft",
+            "über",
+            "ü",
+            "from ü",
+            "from üäöß",
+            "Satzung from 20ü9",
+        ] {
+            let _ = parse_nl_query(q);
+        }
+    }
+
+    #[test]
+    fn year_range_accepts_both_dash_forms() {
+        // The en-dash is what word processors autocorrect "2019-2020" into,
+        // so it is the common case in pasted German text — and it is three
+        // bytes, which is what made the old fixed offsets wrong.
+        assert_eq!(extract_year_range("Bericht 2019-2020"), Some((2019, 2020)));
+        assert_eq!(extract_year_range("Bericht 2019\u{2013}2020"), Some((2019, 2020)));
+        // Non-ranges stay rejected.
+        assert_eq!(extract_year_range("Bericht 2019"), None);
+        assert_eq!(extract_year_range("Prüfung ohne Jahre"), None);
+        // Reversed / out-of-band ranges are not ranges.
+        assert_eq!(extract_year_range("2020-2019"), None);
+        assert_eq!(extract_year_range("1200-1300"), None);
+    }
+
+    #[test]
+    fn year_after_prefix_rejects_non_digits_instead_of_panicking() {
+        assert_eq!(extract_year_after_prefix("from 2023", "from "), Some(2023));
+        // Four bytes of umlauts where a year was expected: two characters,
+        // not four digits. Must decline, not slice into one.
+        assert_eq!(extract_year_after_prefix("from üäöü", "from "), None);
+        assert_eq!(extract_year_after_prefix("from ab", "from "), None);
+    }
 
     #[test]
     fn extracts_year_min() {

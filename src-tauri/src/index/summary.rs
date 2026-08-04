@@ -38,9 +38,21 @@ pub fn extractive_summary(text: &str, max_chars: usize) -> Option<String> {
     }
 
     // Truncate to max_chars on a word boundary if needed.
+    //
+    // `String::len()` and slicing are both in *bytes*, so cutting at
+    // `max_chars` lands mid-character whenever the text is not pure ASCII —
+    // and German administrative prose is full of ä/ö/ü/ß, each two bytes in
+    // UTF-8. That panicked the whole ingest with
+    //   "byte index 300 is not a char boundary; it is inside 'ü'".
+    // Walk back to the nearest boundary before slicing. (`rfind(' ')` is safe
+    // either way: a space is ASCII, so its index is always a boundary.)
     if result.len() > max_chars {
-        let truncated = &result[..max_chars];
-        let last_space = truncated.rfind(' ').unwrap_or(max_chars);
+        let mut cut = max_chars;
+        while cut > 0 && !result.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let truncated = &result[..cut];
+        let last_space = truncated.rfind(' ').unwrap_or(cut);
         return Some(format!("{}…", &result[..last_space]));
     }
 
@@ -65,6 +77,42 @@ mod tests {
         assert!(summary.contains("second sentence"));
         assert!(summary.contains("third sentence"));
         assert!(!summary.contains("fourth sentence"));
+    }
+
+    #[test]
+    fn truncating_mid_umlaut_does_not_panic() {
+        // Regression: `&result[..max_chars]` sliced by *bytes*, so a cap that
+        // landed inside a two-byte character panicked the whole ingest with
+        // "byte index N is not a char boundary; it is inside 'ü'". Every
+        // German document is a candidate, so this crashed on real corpora.
+        //
+        // Sweep a range of caps so the cut lands inside a multi-byte
+        // character for some of them regardless of the exact prefix length.
+        let text = "Grundstück Gebührenordnung Fördermittel Niederschrift Beschluss \
+                    Stellungnahme Liegenschaft Jahresabschluss Wirtschaftsplan \
+                    Rechnungsprüfung Zuwendung Bescheid Satzung Personalrat."
+            .repeat(4);
+        for max_chars in 30..320 {
+            let got = extractive_summary(&text, max_chars);
+            if let Some(s) = got {
+                // Whatever comes back must be valid UTF-8 the caller can slice
+                // again — trivially true for String, but assert the cut did
+                // not drop us below the caller's floor.
+                assert!(!s.is_empty(), "max_chars={max_chars} produced an empty summary");
+            }
+        }
+    }
+
+    #[test]
+    fn truncation_stays_within_the_cap_for_non_ascii() {
+        let text = "Die Gebührenordnung für Grundstücke regelt Zuwendungen. ".repeat(20);
+        let s = extractive_summary(&text, 100).expect("long text should summarise");
+        // The ellipsis is added after the cut, so allow its 3 bytes.
+        assert!(
+            s.len() <= 100 + '…'.len_utf8(),
+            "summary overshot the cap: {} bytes",
+            s.len()
+        );
     }
 
     #[test]
