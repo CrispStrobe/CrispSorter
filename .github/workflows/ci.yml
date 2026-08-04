@@ -439,9 +439,19 @@ jobs:
 
       - name: Create bin placeholder for the resources glob
         working-directory: repos/CrispSorter
+        shell: pwsh
+        # `tauri.windows.conf.json` *overrides* the base bundle resources with
+        # `bin/*.dll`, so unlike the Linux job a `.gitkeep` is not enough — the
+        # glob matches nothing and tauri-build fails the whole compile with
+        # "glob pattern bin/*.dll path not found or didn't match any files."
+        # Nothing loads this file; the build script only checks the glob
+        # resolves, so an empty one does the job.
         run: |
           New-Item -ItemType Directory -Force -Path src-tauri/bin | Out-Null
-          New-Item -ItemType File -Force -Path src-tauri/bin/.gitkeep | Out-Null
+          foreach ($f in @('src-tauri/bin/.gitkeep', 'src-tauri/bin/placeholder.dll')) {
+            if (-not (Test-Path $f)) { New-Item -ItemType File -Path $f | Out-Null }
+          }
+          Get-ChildItem src-tauri/bin | Select-Object -ExpandProperty Name
 
       - name: Library tests
         working-directory: repos/CrispSorter
