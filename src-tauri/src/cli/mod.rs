@@ -50,10 +50,18 @@ use std::process::ExitCode;
 /// `cli_mode_detection_tests` derives the real set from the clap tree and
 /// fails on any name that is in one and not the other, so the list cannot
 /// drift again.
+/// Note the trailing flags: clap answers `--help` and `--version` itself and
+/// exits, so they never reach a subcommand and the sniff below has to
+/// recognise them on their own. `--version` / `-V` were missing here while
+/// `--help` / `-h` were present, so `crispsorter --version` opened the GUI —
+/// the same failure as the missing verbs, just via a flag instead of a verb.
+/// `clap_self_handled_flags_are_detected_as_cli_mode` now derives that set
+/// from the clap tree so it cannot drift again.
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
     "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx",
     "search", "watch", "drives", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
+    "--version", "-V",
 ];
 
 #[derive(Parser, Debug)]
@@ -1989,7 +1997,53 @@ enum CatalogCmd {
 /// Run the CLI to completion. Caller (main.rs) returns this exit code
 /// directly. Stdout is reserved for the structured payload; progress
 /// and diagnostics go to stderr.
+/// Stack the CLI actually runs on.
+///
+/// Constructing this clap tree costs more stack than a Windows main thread
+/// has. MSVC links a 1 MiB stack by default; Linux gives 8 MiB. The tree is
+/// deep enough to blow the former, so on Windows **every** verb — `version`,
+/// `doctor`, `index stats`, even `--help` — died with
+///
+///     thread 'main' has overflowed its stack
+///
+/// before parsing a single argument. The binary was unusable there.
+///
+/// The project already knew this structure is stack-hungry and had worked
+/// around it twice without fixing it at the source: `ci.yml` sets
+/// `RUST_MIN_STACK: 16777216` for the Rust job, and the parser tests spawn
+/// their threads with `.stack_size(16 * 1024 * 1024)`. Both protect *tests*.
+/// Neither protects the shipped binary, and CI only ever exercises the CLI on
+/// Ubuntu, where the default stack is generous enough to hide it.
+///
+/// So: give the CLI a stack we control instead of inheriting whatever the
+/// platform hands `main`. 32 MiB is double what the tests found sufficient,
+/// costs nothing (thread stacks are lazily committed), and makes the debug
+/// build — which is what the verification harnesses run — behave the same on
+/// every platform.
+const CLI_STACK_SIZE: usize = 32 * 1024 * 1024;
+
 pub fn run() -> ExitCode {
+    // Everything, including the clap parse, happens on the sized thread.
+    match std::thread::Builder::new()
+        .name("crispsorter-cli".into())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run_on_current_stack)
+    {
+        Ok(handle) => handle.join().unwrap_or_else(|_| {
+            // The panic itself has already been reported by the default hook.
+            // 101 is what a panicking Rust binary exits with.
+            ExitCode::from(101)
+        }),
+        // If the thread cannot be spawned we are no worse off running here:
+        // on Linux/macOS the inherited stack is ample anyway.
+        Err(e) => {
+            eprintln!("[cli] could not spawn the CLI thread ({e}); running on main");
+            run_on_current_stack()
+        }
+    }
+}
+
+fn run_on_current_stack() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
@@ -2883,6 +2937,37 @@ enum IndexCmd {
         /// other.
         #[arg(long, value_name = "IMAGE")]
         image: Option<PathBuf>,
+        /// Ranking mode.
+        ///
+        /// `keyword` (default) is BM25 over Tantivy and loads no model.
+        /// `semantic` embeds the query and ANN-searches the vectors that
+        /// ingest already wrote. `hybrid` runs both and merges them with
+        /// RRF — the same ranking the GUI uses, and the one to reach for
+        /// when a query's wording won't match the document's.
+        ///
+        /// The two model-backed modes load the embedder, so they need
+        /// `--model` to match whatever `index ingest` used.
+        #[arg(long, default_value = "keyword", value_parser = ["keyword", "semantic", "hybrid"])]
+        mode: String,
+        /// Embedder model for `--mode semantic|hybrid`. Must match the
+        /// model the index was ingested with — a different one produces
+        /// vectors in a different space (and, if it is a different width,
+        /// is rejected outright).
+        #[arg(long, default_value = "bge-m3")]
+        model: String,
+        /// Device for `--mode semantic|hybrid` inference.
+        #[arg(long, default_value = "cpu")]
+        device: String,
+        /// Embedder backend for `--mode semantic|hybrid`. Must match how the
+        /// index was ingested.
+        #[arg(long, default_value = "auto")]
+        backend: String,
+        /// GGUF quantisation for `--mode semantic|hybrid`. Implies
+        /// `--backend gguf`. Should match the ingest run: querying a Q8_0
+        /// index with F32 vectors still works, but the two are not the same
+        /// point in space, so recall suffers.
+        #[arg(long, value_name = "QUANT")]
+        quant: Option<String>,
     },
     /// Download the embedder model weights to the local cache.
     /// Run this once on a fresh install before the first `index ingest`.
@@ -2893,6 +2978,15 @@ enum IndexCmd {
         /// Device hint: cpu (default), cuda, mps, coreml.
         #[arg(long, default_value = "cpu")]
         device: String,
+        /// Embedder backend: `onnx` (fastembed), `gguf` (CrispEmbed), or
+        /// `auto` — which means gguf when `--quant` is given, else onnx.
+        #[arg(long, default_value = "auto")]
+        backend: String,
+        /// GGUF quantisation to fetch: `q8_0` (recommended), `q4_k`, `f32`.
+        /// Implies `--backend gguf`. Pre-fetching the same quant you will
+        /// ingest with is the point of this verb.
+        #[arg(long, value_name = "QUANT")]
+        quant: Option<String>,
     },
     /// Ingest files/folders into the local index — full extraction + embedding pipeline.
     /// Run `index init` first to download the embedder model.
@@ -2909,6 +3003,38 @@ enum IndexCmd {
         /// Device for inference. Default: cpu.
         #[arg(long, default_value = "cpu")]
         device: String,
+        /// OCR pages whose text layer is empty or near-empty, and image
+        /// files. Off by default because OCR is CPU-heavy — but without it
+        /// a folder of scanned PDFs ingests as empty documents that no
+        /// query can ever match.
+        #[arg(long)]
+        ocr: bool,
+        /// With `--ocr`: a PDF with fewer than this many extracted
+        /// characters is treated as a scan and sent to OCR.
+        #[arg(long, default_value_t = 50, value_name = "N")]
+        ocr_min_chars: usize,
+        /// Skip files larger than this (human-readable, e.g. "200MB").
+        /// Whole-file reads happen before extraction, so one huge file
+        /// can otherwise stall a folder walk. Default: no limit.
+        #[arg(long, value_name = "SIZE")]
+        max_file_size: Option<String>,
+        /// Ingest only these extensions (comma-separated, leading dots
+        /// optional). Default: every file the walk finds.
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Per-file extraction timeout in seconds. Matches the background
+        /// ingest worker's default. 0 disables it. Without a bound, one
+        /// pathological PDF stalls the whole folder walk indefinitely.
+        #[arg(long, default_value_t = 300, value_name = "SECS")]
+        timeout: u64,
+        /// Embedder backend: `onnx` (fastembed), `gguf` (CrispEmbed), or
+        /// `auto` — which means gguf when `--quant` is given, else onnx.
+        #[arg(long, default_value = "auto")]
+        backend: String,
+        /// GGUF quantisation: `q8_0` (recommended), `q4_k`, or `f32`.
+        /// Implies `--backend gguf`.
+        #[arg(long, value_name = "QUANT")]
+        quant: Option<String>,
     },
     /// Delete a document by doc_id.
     Delete {
@@ -3104,6 +3230,115 @@ enum IndexCmd {
     },
 }
 
+impl IndexCmd {
+    /// Whether this verb is allowed to bring the data dir into existence.
+    ///
+    /// `init` downloads the embedder into `<data_dir>/models`, and the two
+    /// ingest verbs build the LanceDB table and the Tantivy index. All three
+    /// are documented as the first thing a CLI-only install runs, so none of
+    /// them can require the directory to already be there.
+    fn creates_data_dir(&self) -> bool {
+        matches!(
+            self,
+            IndexCmd::Init { .. } | IndexCmd::Ingest { .. } | IndexCmd::IngestCbManifest { .. }
+        )
+    }
+}
+
+/// Resolve an `--model` string to an [`EmbedderModel`].
+///
+/// Strict on purpose. `index ingest` used to fall back to BGE-M3 on an
+/// unrecognised name, which meant a typo built a 1024-wide index that
+/// silently disagreed with the model the user believed they had asked for
+/// — and the mismatch only surfaced much later as bad search results.
+fn parse_embedder_model(
+    model: &str,
+) -> Result<crate::index::embedder::EmbedderModel, String> {
+    use crate::index::embedder::EmbedderModel;
+    Ok(match model.to_ascii_lowercase().replace('-', "_").as_str() {
+        "bge_m3" | "bgem3" => EmbedderModel::BgeM3,
+        "multilingual_e5_small" => EmbedderModel::MultilingualE5Small,
+        "multilingual_e5_base" => EmbedderModel::MultilingualE5Base,
+        "multilingual_e5_large" => EmbedderModel::MultilingualE5Large,
+        "bge_small_en_v1.5" | "bge_small_en" => EmbedderModel::BgeSmallEnV15,
+        "bge_base_en_v1.5" | "bge_base_en" => EmbedderModel::BgeBaseEnV15,
+        "bge_large_en_v1.5" | "bge_large_en" => EmbedderModel::BgeLargeEnV15,
+        "nomic_embed_text_v1.5" | "nomic" => EmbedderModel::NomicEmbedTextV15,
+        "all_minilm_l6_v2" | "minilm" => EmbedderModel::AllMiniLmL6V2,
+        _ => {
+            return Err(format!(
+                "unknown model '{model}'. Try: bge-m3, multilingual-e5-small, \
+                 multilingual-e5-base, multilingual-e5-large, bge-small-en-v1.5, \
+                 bge-base-en-v1.5, bge-large-en-v1.5, nomic, minilm"
+            ))
+        }
+    })
+}
+
+/// Resolve `--backend` + `--quant` onto an [`EmbedderConfig`].
+///
+/// `--quant` only means anything on the GGUF backend (the ONNX weights are
+/// not quantised), so asking for one implies `--backend gguf` rather than
+/// being silently ignored — a silently-ignored quant is how you end up
+/// believing you embedded with a 126 MiB Q8_0 when you actually pulled the
+/// 455 MiB F32.
+fn apply_embedder_backend(
+    cfg: crate::index::embedder::EmbedderConfig,
+    backend: &str,
+    quant: Option<&str>,
+) -> Result<crate::index::embedder::EmbedderConfig, String> {
+    use crate::index::embedder::{EmbedderBackend, GgufQuant};
+
+    let quant = match quant {
+        Some(q) => Some(GgufQuant::parse(q).ok_or_else(|| {
+            format!("unknown --quant '{q}'. Try: f32, q8_0, q4_k")
+        })?),
+        None => None,
+    };
+    let backend = match backend.trim().to_ascii_lowercase().as_str() {
+        "onnx" | "fastembed" => EmbedderBackend::Onnx,
+        "gguf" | "crispembed" => EmbedderBackend::Gguf,
+        "auto" => {
+            if quant.is_some() {
+                EmbedderBackend::Gguf
+            } else {
+                EmbedderBackend::Onnx
+            }
+        }
+        other => return Err(format!("unknown --backend '{other}'. Try: auto, onnx, gguf")),
+    };
+    if quant.is_some() && backend != EmbedderBackend::Gguf {
+        return Err(
+            "--quant applies to the GGUF backend only; drop it or pass --backend gguf".into(),
+        );
+    }
+    if backend == EmbedderBackend::Gguf && !cfg!(feature = "crispembed") {
+        return Err(
+            "--backend gguf needs this binary built with `--features crispembed`; \
+             this one was not, so it can only use the ONNX weights"
+                .into(),
+        );
+    }
+    let mut cfg = cfg.with_gguf_quant(quant);
+    cfg.backend = backend;
+    Ok(cfg)
+}
+
+/// Resolve a `--device` string to an [`EmbedderDevice`].
+///
+/// Unlike the model, an unrecognised device falls back to CPU: every device
+/// produces the same vectors, so the worst case is "slower than asked for",
+/// not "wrong data".
+fn parse_embedder_device(device: &str) -> crate::index::embedder::EmbedderDevice {
+    use crate::index::embedder::EmbedderDevice;
+    match device.to_ascii_lowercase().as_str() {
+        "cuda" => EmbedderDevice::Cuda,
+        "metal" | "mps" => EmbedderDevice::Metal,
+        "auto" => EmbedderDevice::Auto,
+        _ => EmbedderDevice::Cpu,
+    }
+}
+
 /// Return the OS-default app data dir for CrispSorter, or the override.
 fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(p) = override_ {
@@ -3142,10 +3377,24 @@ fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
 fn cmd_index(out: OutFormat, data_dir: Option<PathBuf>, cmd: IndexCmd) -> Result<(), String> {
     let data_dir = resolve_data_dir(data_dir)?;
     if !data_dir.exists() {
-        return Err(format!(
-            "data dir not found: {} — run the GUI once to initialise the index",
-            data_dir.display()
-        ));
+        // The verbs that *create* index state have to be able to run on a
+        // machine where the GUI has never started — that is the whole point
+        // of `index init` ("Run this once on a fresh install"), and it was
+        // unreachable: this guard rejected it before it could create
+        // anything, so the documented CLI-only bootstrap could not be
+        // followed. Read-only verbs keep the friendly error, since for them
+        // a missing data dir really does mean "there is nothing to read".
+        if cmd.creates_data_dir() {
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                format!("could not create data dir {}: {e}", data_dir.display())
+            })?;
+        } else {
+            return Err(format!(
+                "data dir not found: {} — run `crispsorter index init` (or the GUI) \
+                 once to initialise the index",
+                data_dir.display()
+            ));
+        }
     }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3254,6 +3503,11 @@ async fn cmd_index_async(
             tag,
             colbert,
             image,
+            mode,
+            model,
+            device,
+            backend,
+            quant,
         } => {
             let fts_dir = data_dir.join("fts");
             if !fts_dir.exists() {
@@ -3386,36 +3640,84 @@ async fn cmd_index_async(
                         .into(),
                 );
             }
-            let hits = fts
-                .search(q_trimmed, &filters, limit.saturating_mul(4))
-                .map_err(|e| e.to_string())?;
-            // Resolve doc metadata from LanceDB.  The Lance side
-            // applies the SearchFilters scalar-SQL clauses; the
-            // post-hoc filters (size + date) run in Rust against
-            // each row's `metadata_json` blob.
-            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
-                .await
-                .map_err(|e| e.to_string())?;
+            // ── Model-backed modes ─────────────────────────────────────
+            // `semantic` / `hybrid` go through SearchEngine, which owns
+            // the embedder and (for hybrid) the RRF merge. The vectors
+            // they read were written by `index ingest`; before this the
+            // CLI computed them at ingest time and then had no way to
+            // query them.
+            let mut rows: Vec<crate::index::SearchResult> = if mode != "keyword" {
+                let cache_dir = data_dir.join("models");
+                let embedder_config = apply_embedder_backend(
+                    crate::index::embedder::EmbedderConfig::new(
+                        parse_embedder_model(&model)?,
+                        parse_embedder_device(&device),
+                        cache_dir,
+                    ),
+                    &backend,
+                    quant.as_deref(),
+                )?;
+                eprintln!("loading embedder model ({model}, backend={:?})…", embedder_config.backend);
+                let embedder = crate::index::embedder::Embedder::new(embedder_config)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let dims = embedder.dims();
+                let local = crate::index::LocalIndex::open_or_create(&data_dir, dims)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // A narrower/wider model cannot search this table: the ANN
+                // would compare vectors of different lengths. Say so here
+                // rather than let Arrow fail somewhere further in.
+                if local.dims != dims {
+                    return Err(format!(
+                        "this index stores {}-dim embeddings but --model {model} produces \
+                         {dims}. Search it with the model it was ingested with.",
+                        local.dims
+                    ));
+                }
+                let engine = crate::index::SearchEngine::new(
+                    std::sync::Arc::new(fts),
+                    std::sync::Arc::new(local),
+                    Some(std::sync::Arc::new(tokio::sync::Mutex::new(embedder))),
+                );
+                let res = if mode == "hybrid" {
+                    engine.search_hybrid(q_trimmed, &filters, limit).await
+                } else {
+                    engine.search_vector(q_trimmed, &filters, limit).await
+                };
+                res.map_err(|e| e.to_string())?
+            } else {
+                let hits = fts
+                    .search(q_trimmed, &filters, limit.saturating_mul(4))
+                    .map_err(|e| e.to_string())?;
+                // Resolve doc metadata from LanceDB.  The Lance side
+                // applies the SearchFilters scalar-SQL clauses; the
+                // post-hoc filters (size + date) run in Rust against
+                // each row's `metadata_json` blob.
+                let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-            // Fetch metadata for each hit + apply the SearchFilters
-            // scalar SQL (ext, hash prefix, folder prefix, audio
-            // duration range, image camera, source language, year
-            // range, prefer-translated-lang) as a LanceDB-side
-            // predicate.  Rows that don't pass the SQL are dropped
-            // here, preserving the BM25 ranking on what remains.
-            let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
-            let extra_sql = filters.to_lance_sql();
-            let meta_map: std::collections::HashMap<String, crate::index::SearchResult> = local
-                .fetch_search_results_by_ids_filtered(&doc_ids, extra_sql.as_deref())
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.doc_id.clone(), r))
-                .collect();
-            let mut rows: Vec<crate::index::SearchResult> = hits
-                .iter()
-                .filter_map(|h| meta_map.get(&h.doc_id).cloned())
-                .collect();
+                // Fetch metadata for each hit + apply the SearchFilters
+                // scalar SQL (ext, hash prefix, folder prefix, audio
+                // duration range, image camera, source language, year
+                // range, prefer-translated-lang) as a LanceDB-side
+                // predicate.  Rows that don't pass the SQL are dropped
+                // here, preserving the BM25 ranking on what remains.
+                let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+                let extra_sql = filters.to_lance_sql();
+                let meta_map: std::collections::HashMap<String, crate::index::SearchResult> =
+                    local
+                        .fetch_search_results_by_ids_filtered(&doc_ids, extra_sql.as_deref())
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|r| (r.doc_id.clone(), r))
+                        .collect();
+                hits.iter()
+                    .filter_map(|h| meta_map.get(&h.doc_id).cloned())
+                    .collect()
+            };
 
             // Post-hoc filter: size + date.  metadata_json shape:
             // `{"fs_size": int, "fs_mtime": unix_seconds, ...}`.
@@ -3511,37 +3813,50 @@ async fn cmd_index_async(
             eprintln!("{} result(s)", rows.len());
         }
 
-        IndexCmd::Ingest { paths, owner_id, model, device } => {
-            use crate::index::embedder::{EmbedderConfig, EmbedderDevice, EmbedderModel};
+        IndexCmd::Ingest {
+            paths,
+            owner_id,
+            model,
+            device,
+            ocr,
+            ocr_min_chars,
+            max_file_size,
+            ext: ext_filter,
+            timeout,
+            backend,
+            quant,
+        } => {
+            use crate::index::embedder::EmbedderConfig;
             use crate::index::ingest::{IngestConfig, IngestPipeline, RawDocument};
             use sha2::{Digest, Sha256};
+
+            let max_bytes = match max_file_size.as_deref() {
+                Some(s) => Some(parse_size_str(s)?),
+                None => None,
+            };
+            // Normalise once: lowercase, leading dot stripped, so
+            // `--ext .PDF,docx` matches what `Path::extension` yields.
+            let ext_filter: Vec<String> = ext_filter
+                .iter()
+                .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|e| !e.is_empty())
+                .collect();
 
             let owner = owner_id.clone().unwrap_or_else(|| uuid::Uuid::nil().to_string());
 
             // Parse model + device (same logic as Init).
-            let m = match model.to_ascii_lowercase().replace('-', "_").as_str() {
-                "bge_m3" | "bgem3"          => EmbedderModel::BgeM3,
-                "multilingual_e5_small"     => EmbedderModel::MultilingualE5Small,
-                "multilingual_e5_base"      => EmbedderModel::MultilingualE5Base,
-                "multilingual_e5_large"     => EmbedderModel::MultilingualE5Large,
-                "bge_small_en_v1.5" | "bge_small_en" => EmbedderModel::BgeSmallEnV15,
-                "bge_base_en_v1.5"  | "bge_base_en"  => EmbedderModel::BgeBaseEnV15,
-                "bge_large_en_v1.5" | "bge_large_en" => EmbedderModel::BgeLargeEnV15,
-                "nomic_embed_text_v1.5" | "nomic"     => EmbedderModel::NomicEmbedTextV15,
-                "all_minilm_l6_v2"  | "minilm"        => EmbedderModel::AllMiniLmL6V2,
-                _ => EmbedderModel::BgeM3,
-            };
-            let d = match device.to_ascii_lowercase().as_str() {
-                "cuda"          => EmbedderDevice::Cuda,
-                "metal" | "mps" => EmbedderDevice::Metal,
-                "auto"          => EmbedderDevice::Auto,
-                _               => EmbedderDevice::Cpu,
-            };
+            let m = parse_embedder_model(&model)?;
+            let d = parse_embedder_device(&device);
 
             let cache_dir = data_dir.join("models");
             std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-            let embedder_config = EmbedderConfig::new(m, d, cache_dir);
-            eprintln!("loading embedder model ({})…", model);
+            let embedder_config =
+                apply_embedder_backend(EmbedderConfig::new(m, d, cache_dir), &backend, quant.as_deref())?;
+            eprintln!(
+                "loading embedder model ({model}, backend={:?}, quant={})…",
+                embedder_config.backend,
+                quant.as_deref().unwrap_or("<model default>")
+            );
             let embedder = crate::index::embedder::Embedder::new(embedder_config)
                 .await.map_err(|e| e.to_string())?;
             // The table has to be as wide as the model that fills it. This was
@@ -3577,6 +3892,7 @@ async fn cmd_index_async(
 
             // Collect all files.
             let mut files: Vec<std::path::PathBuf> = Vec::new();
+            let mut missing: Vec<&std::path::PathBuf> = Vec::new();
             for path in &paths {
                 if path.is_dir() {
                     for entry in jwalk::WalkDir::new(path)
@@ -3589,25 +3905,135 @@ async fn cmd_index_async(
                     files.push(path.clone());
                 } else {
                     eprintln!("skip (not found): {}", path.display());
+                    missing.push(path);
                 }
             }
-            eprintln!("ingesting {} file(s)…", files.len());
+            // An input that isn't there is a failure, not a no-op. Without
+            // this the command printed "skip (not found)" and still exited 0
+            // — which is exactly how a disconnected network share reads as a
+            // successful index of nothing. Same reasoning as the all-failed
+            // check further down; that one only covered files that were found
+            // and then failed, not paths that were never there at all.
+            if !missing.is_empty() {
+                return Err(format!(
+                    "not found: {} — nothing was indexed. \
+                     If this is a network share, check it is still connected.",
+                    missing
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+
+            // Pre-filter before the expensive part. These are skips, not
+            // failures: counting them as errors would make a run that did
+            // exactly what was asked look broken, and (with the all-failed
+            // check below) could fail a run where every file was filtered.
+            let mut skipped = 0usize;
+            files.retain(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // Office lock files (`~$foo.docx`) are 162-byte owner stubs,
+                // not documents. They sit next to any file open in Word.
+                if name.starts_with("~$") {
+                    skipped += 1;
+                    return false;
+                }
+                if !ext_filter.is_empty() {
+                    let e = p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if !ext_filter.contains(&e) {
+                        skipped += 1;
+                        return false;
+                    }
+                }
+                if let Some(max) = max_bytes {
+                    if let Ok(m) = p.metadata() {
+                        if m.len() > max {
+                            eprintln!(
+                                "skip (larger than --max-file-size): {} ({} bytes)",
+                                p.display(), m.len()
+                            );
+                            skipped += 1;
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+            if skipped > 0 {
+                eprintln!("{skipped} file(s) skipped by filters");
+            }
+            eprintln!(
+                "ingesting {} file(s)… (ocr: {})",
+                files.len(),
+                if ocr { "on" } else { "off" }
+            );
+            // Every input existed, yet nothing survived the walk/filters.
+            // Silently succeeding here hides a mistyped --ext or a
+            // --max-file-size that excluded the whole corpus.
+            if files.is_empty() {
+                return Err(format!(
+                    "no files to ingest under {} — {}",
+                    paths
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if skipped > 0 {
+                        format!("all {skipped} candidate(s) were excluded by --ext / --max-file-size")
+                    } else {
+                        "the path holds no files".to_string()
+                    }
+                ));
+            }
 
             let mut ok = 0usize;
             let mut errs = 0usize;
+            let mut empty_docs: Vec<std::path::PathBuf> = Vec::new();
             for p in &files {
                 let bytes = match std::fs::read(p) {
                     Ok(b) => b, Err(e) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
                 };
                 let mut h = Sha256::new(); h.update(&bytes);
                 let source_hash = hex::encode(h.finalize());
-                let extracted = match tokio::task::spawn_blocking({
+                let extract_fut = tokio::task::spawn_blocking({
                     let pp = p.clone();
-                    move || crate::extractors::extract_text_from_path(&pp)
-                }).await {
+                    move || {
+                        if ocr {
+                            crate::extractors::extract_text_from_path_with_opts(
+                                &pp,
+                                crate::extractors::ExtractOptions {
+                                    try_ocr: true,
+                                    ocr_pdf_min_chars: ocr_min_chars,
+                                    ..Default::default()
+                                },
+                            )
+                        } else {
+                            crate::extractors::extract_text_from_path(&pp)
+                        }
+                    }
+                });
+                // `timeout` abandons the *await*, not the blocking thread —
+                // same as bg_ingest. The point is that the walk keeps going,
+                // not that the work stops.
+                let joined = if timeout == 0 {
+                    extract_fut.await.map_err(|e| e.to_string())
+                } else {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(timeout),
+                        extract_fut,
+                    ).await {
+                        Ok(j) => j.map_err(|e| e.to_string()),
+                        Err(_) => Err(format!("extraction timed out after {timeout}s")),
+                    }
+                };
+                let extracted = match joined {
                     Ok(Ok(e)) => e,
                     Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
-                    Err(e)    => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                    Err(e)     => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
                 };
                 let loc = crate::index::location::FileLocation::Local {
                     user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
@@ -3649,18 +4075,63 @@ async fn cmd_index_async(
                 };
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {
+                        // Zero chunks means nothing searchable was written:
+                        // the row lands in the FTS index but never in
+                        // LanceDB, so the document is absent from
+                        // `index list` and matchable by no query. A scanned
+                        // PDF does this every time. Reporting it as a plain
+                        // "✓ … (0 chunks)" is how a folder of scans indexes
+                        // as an empty corpus without anyone noticing.
+                        let empty = stats.chunk_count == 0;
+                        if empty {
+                            empty_docs.push(p.clone());
+                        }
                         match out {
                             OutFormat::Json => println!("{}", serde_json::json!({
-                                "path": p.display().to_string(), "chunks": stats.chunk_count
+                                "path": p.display().to_string(),
+                                "chunks": stats.chunk_count,
+                                "empty": empty,
                             })),
-                            OutFormat::Text => println!("✓ {} ({} chunks)", p.display(), stats.chunk_count),
+                            OutFormat::Text => {
+                                if empty {
+                                    println!("∅ {} (no text extracted)", p.display());
+                                } else {
+                                    println!("✓ {} ({} chunks)", p.display(), stats.chunk_count);
+                                }
+                            }
                         }
                         ok += 1;
                     }
                     Err(e) => { eprintln!("error {}: {e}", p.display()); errs += 1; }
                 }
             }
-            eprintln!("{ok} ingested, {errs} errors");
+            eprintln!(
+                "{ok} ingested ({} searchable, {} with no text), {errs} errors",
+                ok - empty_docs.len(),
+                empty_docs.len()
+            );
+            // Name them, and say what to do about it. Without this the only
+            // symptom is a document count that quietly disagrees with the
+            // file count — `index stats` reports the FTS total, which counts
+            // these, while `index list` reads LanceDB, which does not.
+            if !empty_docs.is_empty() {
+                eprintln!(
+                    "\n{} file(s) yielded no text and are therefore in no search result:",
+                    empty_docs.len()
+                );
+                for p in empty_docs.iter().take(20) {
+                    eprintln!("  ∅ {}", p.display());
+                }
+                if empty_docs.len() > 20 {
+                    eprintln!("  … and {} more", empty_docs.len() - 20);
+                }
+                if !ocr {
+                    eprintln!(
+                        "These are typically scans with no text layer. \
+                         Re-run with --ocr to read them."
+                    );
+                }
+            }
             // Exit status has to reflect the outcome: this printed
             // "0 ingested, 4 errors" and returned success, so a script (and
             // this project's own live harness) read a total failure as a pass.
@@ -3674,38 +4145,25 @@ async fn cmd_index_async(
             }
         }
 
-        IndexCmd::Init { model, device } => {
-            use crate::index::embedder::{EmbedderConfig, EmbedderDevice, EmbedderModel};
+        IndexCmd::Init { model, device, backend, quant } => {
+            use crate::index::embedder::EmbedderConfig;
 
-            // Parse model name (common aliases).
-            let m = match model.to_ascii_lowercase().replace('-', "_").as_str() {
-                "bge_m3" | "bgem3"          => EmbedderModel::BgeM3,
-                "multilingual_e5_small"     => EmbedderModel::MultilingualE5Small,
-                "multilingual_e5_base"      => EmbedderModel::MultilingualE5Base,
-                "multilingual_e5_large"     => EmbedderModel::MultilingualE5Large,
-                "bge_small_en_v1.5" | "bge_small_en" => EmbedderModel::BgeSmallEnV15,
-                "bge_base_en_v1.5"  | "bge_base_en"  => EmbedderModel::BgeBaseEnV15,
-                "bge_large_en_v1.5" | "bge_large_en" => EmbedderModel::BgeLargeEnV15,
-                "nomic_embed_text_v1.5" | "nomic"     => EmbedderModel::NomicEmbedTextV15,
-                "all_minilm_l6_v2" | "minilm"         => EmbedderModel::AllMiniLmL6V2,
-                _ => return Err(format!(
-                    "unknown model '{model}'. Try: bge-m3, multilingual-e5-base, bge-small-en-v1.5, …"
-                )),
-            };
-
-            // Parse device.
-            let d = match device.to_ascii_lowercase().as_str() {
-                "cuda"           => EmbedderDevice::Cuda,
-                "metal" | "mps"  => EmbedderDevice::Metal,
-                "auto"           => EmbedderDevice::Auto,
-                _                => EmbedderDevice::Cpu,
-            };
+            let m = parse_embedder_model(&model)?;
+            let d = parse_embedder_device(&device);
 
             let cache = data_dir.join("models");
             std::fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-            eprintln!("downloading {} (device={:?}) → {}", model, d, cache.display());
-
-            let config = EmbedderConfig::new(m, d, cache.clone());
+            let config = apply_embedder_backend(
+                EmbedderConfig::new(m, d, cache.clone()),
+                &backend,
+                quant.as_deref(),
+            )?;
+            eprintln!(
+                "downloading {model} (device={d:?}, backend={:?}, quant={}) → {}",
+                config.backend,
+                quant.as_deref().unwrap_or("<model default>"),
+                cache.display()
+            );
             // Embedder::new is async and downloads the model on first call.
             let _embedder = crate::index::embedder::Embedder::new(config)
                 .await
@@ -11212,6 +11670,215 @@ mod tests {
             .expect("chat transcribe parser test thread should not panic");
     }
 
+    // ── index ingest / search: the CLI-only indexing path ─────────────
+
+    #[test]
+    fn index_ingest_defaults_are_the_safe_ones() {
+        // Nothing in this list may drift silently: `ocr` off keeps the
+        // default run cheap, and the 300 s timeout is what stops one
+        // pathological file from stalling a folder walk. The timeout
+        // deliberately matches bg_ingest's EXTRACTION_TIMEOUT_SECS.
+        let cli = Cli::try_parse_from(["crispsorter", "index", "ingest", "/tmp/docs"])
+            .expect("bare ingest with one path should parse");
+        match cli.command {
+            Command::Index {
+                cmd: IndexCmd::Ingest {
+                    paths, ocr, ocr_min_chars, timeout, max_file_size, ext, model, ..
+                },
+                ..
+            } => {
+                assert_eq!(paths, vec![std::path::PathBuf::from("/tmp/docs")]);
+                assert!(!ocr, "OCR must stay opt-in");
+                assert_eq!(ocr_min_chars, 50);
+                assert_eq!(timeout, 300);
+                assert_eq!(max_file_size, None);
+                assert!(ext.is_empty());
+                assert_eq!(model, "bge-m3");
+            }
+            other => panic!("expected Index Ingest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_ingest_accepts_ocr_and_filter_flags() {
+        let cli = Cli::try_parse_from([
+            "crispsorter", "index", "ingest", "/tmp/docs",
+            "--ocr", "--ocr-min-chars", "10",
+            "--max-file-size", "200MB",
+            "--ext", ".PDF,docx",
+            "--timeout", "0",
+        ])
+        .expect("ingest with the new flags should parse");
+        match cli.command {
+            Command::Index {
+                cmd: IndexCmd::Ingest {
+                    ocr, ocr_min_chars, max_file_size, ext, timeout, ..
+                },
+                ..
+            } => {
+                assert!(ocr);
+                assert_eq!(ocr_min_chars, 10);
+                assert_eq!(max_file_size.as_deref(), Some("200MB"));
+                // Case + leading dots are normalised at use, not at parse.
+                assert_eq!(ext, vec![".PDF".to_string(), "docx".to_string()]);
+                assert_eq!(timeout, 0, "0 must be accepted as 'no timeout'");
+            }
+            other => panic!("expected Index Ingest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_search_defaults_to_keyword_mode() {
+        // Keyword is the only mode that loads no model. It has to stay
+        // the default or every `index search` pays a model load.
+        let cli = Cli::try_parse_from(["crispsorter", "index", "search", "haushalt"])
+            .expect("bare search should parse");
+        match cli.command {
+            Command::Index { cmd: IndexCmd::Search { mode, model, query, .. }, .. } => {
+                assert_eq!(mode, "keyword");
+                assert_eq!(model, "bge-m3");
+                assert_eq!(query, "haushalt");
+            }
+            other => panic!("expected Index Search, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_search_accepts_semantic_and_hybrid_modes() {
+        for want in ["semantic", "hybrid", "keyword"] {
+            let cli = Cli::try_parse_from([
+                "crispsorter", "index", "search", "q", "--mode", want,
+            ])
+            .unwrap_or_else(|e| panic!("--mode {want} should parse: {e}"));
+            match cli.command {
+                Command::Index { cmd: IndexCmd::Search { mode, .. }, .. } => {
+                    assert_eq!(mode, want);
+                }
+                other => panic!("expected Index Search, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn index_search_rejects_unknown_mode() {
+        // A typo'd mode must not silently fall back to keyword — that
+        // would answer a semantic question with a BM25 result set and
+        // give no hint the requested ranking never ran.
+        let err = Cli::try_parse_from([
+            "crispsorter", "index", "search", "q", "--mode", "vector",
+        ])
+        .expect_err("an unknown --mode must be rejected");
+        assert!(
+            err.to_string().contains("vector"),
+            "error should name the bad value, got: {err}"
+        );
+    }
+
+    #[test]
+    fn gguf_quant_parses_the_spellings_people_type() {
+        use crate::index::embedder::GgufQuant;
+        for (input, want) in [
+            ("q8_0", GgufQuant::Q8_0),
+            ("Q8_0", GgufQuant::Q8_0),
+            ("q8", GgufQuant::Q8_0),
+            ("q4_k", GgufQuant::Q4K),
+            ("q4k", GgufQuant::Q4K),
+            ("f32", GgufQuant::F32),
+        ] {
+            assert_eq!(GgufQuant::parse(input), Some(want), "input {input:?}");
+        }
+        assert_eq!(GgufQuant::parse("q6_k"), None, "unknown quant must not parse");
+    }
+
+    #[test]
+    fn gguf_quant_suffixes_match_the_repo_naming_convention() {
+        use crate::index::embedder::GgufQuant;
+        // These strings are the filenames in cstr/<name>-GGUF; getting them
+        // wrong is a 404 at download time, not a compile error.
+        assert_eq!(GgufQuant::F32.suffix(), "");
+        assert_eq!(GgufQuant::Q8_0.suffix(), "-q8_0");
+        assert_eq!(GgufQuant::Q4K.suffix(), "-q4_k");
+    }
+
+    #[test]
+    fn quant_implies_the_gguf_backend() {
+        use crate::index::embedder::{EmbedderBackend, EmbedderConfig, EmbedderDevice, GgufQuant};
+        let base = || {
+            EmbedderConfig::new(
+                crate::index::embedder::EmbedderModel::MultilingualE5Small,
+                EmbedderDevice::Cpu,
+                std::path::PathBuf::from("/tmp/cache"),
+            )
+        };
+        // Without crispembed linked in, asking for GGUF must fail loudly
+        // rather than quietly handing back ONNX weights.
+        let got = super::apply_embedder_backend(base(), "auto", Some("q8_0"));
+        if cfg!(feature = "crispembed") {
+            let cfg = got.expect("auto + --quant should select gguf");
+            assert_eq!(cfg.backend, EmbedderBackend::Gguf);
+            assert_eq!(cfg.gguf_quant, Some(GgufQuant::Q8_0));
+        } else {
+            let err = got.expect_err("gguf without the feature must error");
+            assert!(err.contains("crispembed"), "error should name the feature: {err}");
+        }
+
+        // No quant → ONNX, unchanged behaviour for every existing caller.
+        let cfg = super::apply_embedder_backend(base(), "auto", None)
+            .expect("auto without quant should stay on onnx");
+        assert_eq!(cfg.backend, EmbedderBackend::Onnx);
+        assert_eq!(cfg.gguf_quant, None);
+
+        // A typo'd quant is rejected, not silently ignored.
+        let err = super::apply_embedder_backend(base(), "auto", Some("q6_k"))
+            .expect_err("unknown quant must error");
+        assert!(err.contains("q6_k"), "error should quote the input: {err}");
+
+        // Explicitly asking for onnx *and* a quant is contradictory.
+        let err = super::apply_embedder_backend(base(), "onnx", Some("q8_0"))
+            .expect_err("onnx + quant is contradictory");
+        assert!(err.contains("--quant"), "error should name the flag: {err}");
+    }
+
+    #[test]
+    fn index_ingest_defaults_to_the_onnx_backend() {
+        let cli = Cli::try_parse_from(["crispsorter", "index", "ingest", "/tmp/d"]).unwrap();
+        match cli.command {
+            Command::Index { cmd: IndexCmd::Ingest { backend, quant, .. }, .. } => {
+                assert_eq!(backend, "auto");
+                assert_eq!(quant, None, "no quant unless asked — ONNX stays the default path");
+            }
+            other => panic!("expected Index Ingest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_embedder_model_is_strict_about_unknown_names() {
+        // The whole point of the shared helper: `index ingest --model
+        // typo` used to build a 1024-wide BGE-M3 index without a word
+        // of complaint.
+        assert!(super::parse_embedder_model("bge-m3").is_ok());
+        assert!(super::parse_embedder_model("BGE_M3").is_ok());
+        assert!(super::parse_embedder_model("minilm").is_ok());
+        let err = super::parse_embedder_model("bge-m4").expect_err("typo must error");
+        assert!(err.contains("bge-m4"), "error should quote the input: {err}");
+    }
+
+    #[test]
+    fn index_verbs_that_create_state_may_create_the_data_dir() {
+        // `index init` is documented as the first command a CLI-only
+        // install runs, so it cannot require the dir to exist already.
+        // Read-only verbs must keep the friendly "nothing to read" error.
+        let creating = IndexCmd::Init {
+            model: "bge-m3".into(),
+            device: "cpu".into(),
+            backend: "auto".into(),
+            quant: None,
+        };
+        assert!(creating.creates_data_dir());
+        let reading = IndexCmd::Stats;
+        assert!(!reading.creates_data_dir());
+    }
+
     #[test]
     fn chat_tts_requires_output_path() {
         // `--output` is the only mandatory flag beyond the text
@@ -11651,17 +12318,111 @@ mod cli_mode_detection_tests {
         );
     }
 
+    /// The flags clap answers *itself* and then exits on — `--help` and
+    /// `--version`. They never reach a subcommand, so `real_names()` (which
+    /// only walks `get_subcommands()`) cannot see them, which is exactly why
+    /// `--version` went missing from `SUBCOMMANDS` while `--help` was there.
+    /// Derived from the clap tree rather than hardcoded, so enabling a short
+    /// alias or renaming one keeps this honest.
+    fn clap_self_handled_flags() -> Vec<String> {
+        std::thread::Builder::new()
+            .name("cli-self-flags".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                // `build()` is what materialises clap's auto-generated
+                // `help` / `version` args. Before it, `get_arguments()`
+                // yields only the ones we declared, so this probe silently
+                // found nothing and the assertion below was vacuous.
+                let mut cmd = super::Cli::command();
+                cmd.build();
+                let mut out = Vec::new();
+                for arg in cmd.get_arguments() {
+                    // Only the two clap generates and acts on by itself.
+                    // Ordinary global flags (`--format`, …) must NOT be here:
+                    // they precede a verb rather than replacing one.
+                    if !matches!(arg.get_id().as_str(), "help" | "version") {
+                        continue;
+                    }
+                    if let Some(l) = arg.get_long() {
+                        out.push(format!("--{l}"));
+                    }
+                    if let Some(s) = arg.get_short() {
+                        out.push(format!("-{s}"));
+                    }
+                }
+                out
+            })
+            .expect("spawn CLI self-flag test thread")
+            .join()
+            .expect("CLI self-flag test thread should not panic")
+    }
+
+    #[test]
+    fn the_cli_stack_is_big_enough_to_build_the_command_tree() {
+        // Two-sided. First: the constant must not drift below what the rest
+        // of the project already established is needed (CI's RUST_MIN_STACK
+        // and the 16 MiB test threads both sit at 16 MiB).
+        assert!(
+            super::CLI_STACK_SIZE >= 16 * 1024 * 1024,
+            "CLI_STACK_SIZE fell below the 16 MiB the parser tests need"
+        );
+
+        // Second, and the part that actually matters: building *and parsing*
+        // on a thread of exactly that size must not overflow. A plain
+        // `Cli::command()` on the test runner's thread would not catch a
+        // regression here, because libtest's stack is not the CLI's.
+        std::thread::Builder::new()
+            .name("cli-stack-probe".into())
+            .stack_size(super::CLI_STACK_SIZE)
+            .spawn(|| {
+                use clap::Parser as _;
+                let cli = super::Cli::try_parse_from(["crispsorter", "index", "stats"])
+                    .expect("`index stats` should parse");
+                assert!(matches!(
+                    cli.command,
+                    super::Command::Index { cmd: super::IndexCmd::Stats, .. }
+                ));
+            })
+            .expect("spawn cli-stack-probe thread")
+            .join()
+            .expect(
+                "building the clap tree overflowed CLI_STACK_SIZE — raise it, or \
+                 `crispsorter <anything>` will die on platforms with small stacks",
+            );
+    }
+
+    #[test]
+    fn clap_self_handled_flags_are_detected_as_cli_mode() {
+        let flags = clap_self_handled_flags();
+        assert!(
+            flags.iter().any(|f| f == "--version"),
+            "clap should expose --version; got {flags:?}"
+        );
+        let missing: Vec<&String> = flags
+            .iter()
+            .filter(|f| !super::SUBCOMMANDS.contains(&f.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "clap answers these flags itself and exits, but they are NOT in \
+             cli::SUBCOMMANDS, so `crispsorter <flag>` silently opens the GUI \
+             instead of printing and exiting — add them to the list:\n  {missing:?}"
+        );
+    }
+
     #[test]
     fn the_detection_list_has_no_stale_entries() {
         // The inverse direction: a name left behind after a rename would
         // claim CLI mode for a verb clap then rejects, turning a GUI launch
-        // into a usage error. `help`/`-h` are clap's own and have no
-        // subcommand of their own to match.
+        // into a usage error. clap's own flags have no subcommand to match,
+        // so they are excluded here and covered by the test above instead.
         let real = real_names();
+        let self_flags = clap_self_handled_flags();
         let stale: Vec<&str> = super::SUBCOMMANDS
             .iter()
             .copied()
-            .filter(|n| !matches!(*n, "help" | "--help" | "-h"))
+            .filter(|n| !matches!(*n, "help"))
+            .filter(|n| !self_flags.iter().any(|f| f == n))
             .filter(|n| !real.iter().any(|r| r == n))
             .collect();
         assert!(

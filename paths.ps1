@@ -96,6 +96,74 @@ if (Test-Path $ProtocCachedExe) {
     $env:PROTOC = $ProtocCachedExe
 }
 
+# 6. Ensure a *Windows* `perl` is available before cargo runs.
+#
+# `openssl = { features = ["vendored"] }` in src-tauri/Cargo.toml builds
+# OpenSSL from source, and OpenSSL's `Configure` is a Perl program. The
+# GitHub `windows-*` runners ship Strawberry Perl preinstalled, which is
+# why CI is green on a machine that has no Perl of its own.
+#
+# The trap is that a dev box usually *does* have a `perl` on PATH -- Git
+# for Windows installs an MSYS one at `C:\Program Files\Git\usr\bin\perl.exe`
+# -- and it is not usable here. It lacks `Locale::Maketext::Simple`, so
+# `Configure` dies with:
+#
+#     Can't locate Locale/Maketext/Simple.pm in @INC
+#     ... 'perl' reported failure with exit code: 2
+#
+# after cargo has already spent an hour compiling the ~2,800 crates that
+# come before openssl-sys. So "is perl on PATH" is the wrong question;
+# what matters is whether the perl on PATH can load the modules OpenSSL
+# needs. We probe for that, and only bootstrap when the probe fails.
+$PerlRoot      = Join-Path $ProjectRoot "gh_temp\strawberry"
+$PerlCachedExe = Join-Path $PerlRoot "perl\bin\perl.exe"
+
+function Test-OpenSslPerl($exe) {
+    if (-not $exe) { return $false }
+    try {
+        & $exe -e "use Locale::Maketext::Simple; use IPC::Cmd; exit 0" 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
+$PerlOnPath = (Get-Command perl -ErrorAction SilentlyContinue).Source
+if (-not (Test-OpenSslPerl $PerlOnPath)) {
+    if (-not (Test-OpenSslPerl $PerlCachedExe)) {
+        Write-Host "Bootstrapping Strawberry Perl into gh_temp\strawberry (one-time, ~290 MB) ..." -ForegroundColor Yellow
+        if ($PerlOnPath) {
+            Write-Host "  (the perl already on PATH -- $PerlOnPath -- cannot configure OpenSSL)" -ForegroundColor DarkYellow
+        }
+        try {
+            # Resolve the newest 64-bit portable build rather than pinning a
+            # version that will 404 the next time upstream cleans up releases.
+            $Rel = Invoke-RestMethod `
+                -Uri "https://api.github.com/repos/StrawberryPerl/Perl-Dist-Strawberry/releases/latest" `
+                -Headers @{ "User-Agent" = "crispsorter-paths-ps1" }
+            $Asset = $Rel.assets | Where-Object { $_.name -like "*64bit-portable*.zip" } | Select-Object -First 1
+            if (-not $Asset) { throw "no 64bit-portable asset in release $($Rel.tag_name)" }
+            if (Test-Path $PerlRoot) { Remove-Item -Recurse -Force $PerlRoot }
+            New-Item -ItemType Directory -Force -Path $PerlRoot | Out-Null
+            $PerlZip = Join-Path $ProjectRoot "gh_temp\$($Asset.name)"
+            $OldProgress = $ProgressPreference
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $PerlZip -UseBasicParsing
+            $ProgressPreference = $OldProgress
+            Expand-Archive -Path $PerlZip -DestinationPath $PerlRoot -Force
+            Remove-Item -Force $PerlZip
+            Write-Host "Installed $($Rel.tag_name) at $PerlRoot" -ForegroundColor Green
+        } catch {
+            Write-Host "WARNING: failed to bootstrap Strawberry Perl -- the vendored OpenSSL build will fail." -ForegroundColor Red
+            Write-Host "Error: $_" -ForegroundColor Red
+        }
+    }
+    if (Test-OpenSslPerl $PerlCachedExe) {
+        # Prepend, so this wins over Git's MSYS perl.
+        $env:PATH = (Split-Path $PerlCachedExe) + ";" + $env:PATH
+    }
+}
+$ActivePerl = (Get-Command perl -ErrorAction SilentlyContinue).Source
+if ($ActivePerl) { Write-Host "Active Perl: $ActivePerl" -ForegroundColor Green }
+
 # Final Verification
 $CargoPath = (Get-Command cargo -ErrorAction SilentlyContinue).Source
 Write-Host "Active Cargo: $CargoPath" -ForegroundColor Yellow
