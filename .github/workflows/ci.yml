@@ -36,7 +36,7 @@ env:
   # `OcrPipelineResult.markdown` / `.reading_order` exist on main and not on
   # v0.13.0, so code using them passes CI and breaks the release build.
   # Keep these two values equal; bump them together.
-  CRISPEMBED_REF: v0.17.2
+  CRISPEMBED_REF: v0.17.4
   CRISPASR_REPO: CrispStrobe/CrispASR
   # Pinned to the same tag release.yml uses, for the reason spelled out above
   # CRISPEMBED_REF. This one had drifted 18 patch versions: CI tracked `main`
