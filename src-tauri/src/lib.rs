@@ -12,6 +12,7 @@ pub mod cli;
 pub mod ai_provenance;
 mod compliance;
 pub mod intended_purpose;
+pub mod convert_tools;
 pub mod docx_tools;
 pub mod drives;
 pub mod extractors;
@@ -3530,6 +3531,8 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            convert_tools::convert_capabilities,
+            convert_tools::convert_document,
             docx_tools::docx_check,
             docx_tools::docx_analyze,
             docx_tools::docx_infer_headings,
@@ -3913,6 +3916,8 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            convert_tools::convert_capabilities,
+            convert_tools::convert_document,
             docx_tools::docx_check,
             docx_tools::docx_analyze,
             docx_tools::docx_infer_headings,

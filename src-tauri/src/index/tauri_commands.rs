@@ -1848,6 +1848,9 @@ pub async fn index_image_promote_l3(
         // Manual re-OCR uses the legacy ladder; the smart pipeline applies in
         // bg_ingest where the persisted config is available.
         ocr_pipeline: crate::extractors::OcrPipelineConfig::default(),
+        // This is the image re-OCR path; anydoc handles no image format,
+        // so the mode is irrelevant here. Default keeps it uniform.
+        anydoc: crate::extractors::AnydocMode::default(),
     };
     let extracted = {
         let p = path.clone();

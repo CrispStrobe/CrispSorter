@@ -9,25 +9,21 @@
 //!     SMB-mounted shares (`/Volumes/…` on macOS, `\\server\share` on Windows).
 //!
 //! Future implementations:
-//!   * `FilenDrive`    — subprocess to `filen-cli`
-//!   * `InternxtDrive` — subprocess to `internxt-cli`
 //!   * `SftpDrive`     — direct SSH via `russh` or OS SFTP mount
 //!
 //! `DriveRegistry` holds the user-configured drives.  Each drive has a
 //! stable `id` (UUID), a human label, and a type tag.  The registry is
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
-// The Python-CLI drives: spawning is their entire transport, so they are
-// absent from builds that cannot spawn (PLAN P36.2). `desktop-mas` forces
-// the native clients on instead, so nothing is lost there.
-#[cfg(feature = "sidecars")]
-pub mod filen;
+// The Python-CLI drives (`filen.rs` / `internxt.rs`) are gone: every release
+// recipe already enabled the native clients, which meant the subprocess
+// drives they replace were dead code in every shipped artifact. `desktop`
+// now implies both native features, so there is no configuration left in
+// which a Filen or Internxt transfer wants a Python interpreter.
 #[cfg(feature = "drive-filen-native")]
 pub mod filen_native_drive;
 pub mod fuse_mount;
 pub mod google_drive;
-#[cfg(feature = "sidecars")]
-pub mod internxt;
 #[cfg(feature = "drive-internxt-native")]
 pub mod internxt_native;
 #[cfg(feature = "drive-internxt-native")]
@@ -43,43 +39,6 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-// ── Platform support for the subprocess-backed drives ──────────────────────
-
-/// Guard for the drives that work by spawning a Python CLI (Filen, Internxt).
-///
-/// iOS and Android cannot run them **at all**: the sandbox denies `fork`/`exec`,
-/// so the `posix_spawn` behind `std::process::Command` fails with EPERM, and
-/// neither platform ships a Python interpreter we are allowed to execute —
-/// App Review 2.5.2 also bars shipping one to run third-party code. Before this
-/// guard existed the drive picker offered both kinds on iOS and they failed at
-/// use time with a raw spawn error.
-///
-/// The modules stay compiled wherever spawning is possible at all (they build
-/// fine; it is the *runtime* that refuses), so the registry dispatch and its
-/// tests are platform-independent. `capabilities()` (PLAN P36.5) hides the
-/// matching UI options, exactly as it does for the Ollama / llama.cpp / MLX
-/// sidecars; this is the backstop for anything that gets past the UI.
-///
-/// The Mac App Store build is the same story for a different reason: exec'ing
-/// a user-chosen interpreter outside the container is denied without a
-/// temporary-exception entitlement. That build resolves it rather than
-/// refusing — `desktop-mas` forces `drive-filen-native` and
-/// `drive-internxt-native` on (PLAN P36.1), so Filen and Internxt route
-/// through the Rust clients in `crates/crisp-{filen,internxt}-native` and
-/// never reach this guard.
-///
-/// Unused when every subprocess drive has been compiled out — which is
-/// exactly the `desktop-mas` case, where both native clients are forced on
-/// and `filen.rs` / `internxt.rs` do not exist. Kept rather than gated: it
-/// is the guard the remaining configurations rely on, and its wording is
-/// asserted by a test on every target.
-#[cfg_attr(not(feature = "sidecars"), allow(dead_code))]
-pub(crate) fn ensure_subprocess_drives_supported(kind: &str) -> Result<()> {
-    if !cfg!(feature = "sidecars") || cfg!(any(target_os = "ios", target_os = "android")) {
-        return Err(anyhow!(unsupported_drive_message(kind)));
-    }
-    Ok(())
-}
 
 /// Split out from the `cfg!` above so the wording is assertable on every
 /// target. Left inline, only the *polarity* of the guard would be covered —
@@ -804,14 +763,7 @@ impl DriveRegistry {
                         ),
                     ))
                 }
-                #[cfg(all(not(feature = "drive-filen-native"), feature = "sidecars"))]
-                {
-                    Ok(Box::new(filen::FilenDrive::new(
-                        config.label.clone(),
-                        PathBuf::from(&config.path),
-                    )))
-                }
-                #[cfg(all(not(feature = "drive-filen-native"), not(feature = "sidecars")))]
+                #[cfg(not(feature = "drive-filen-native"))]
                 {
                     Err(anyhow!(unsupported_drive_message("Filen")))
                 }
@@ -827,14 +779,7 @@ impl DriveRegistry {
                         ),
                     ))
                 }
-                #[cfg(all(not(feature = "drive-internxt-native"), feature = "sidecars"))]
-                {
-                    Ok(Box::new(internxt::InternxtDrive::new(
-                        config.label.clone(),
-                        PathBuf::from(&config.path),
-                    )))
-                }
-                #[cfg(all(not(feature = "drive-internxt-native"), not(feature = "sidecars")))]
+                #[cfg(not(feature = "drive-internxt-native"))]
                 {
                     Err(anyhow!(unsupported_drive_message("Internxt")))
                 }
@@ -1420,24 +1365,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn subprocess_drives_are_refused_on_mobile_and_allowed_on_desktop() {
-        // Only one arm can run per target, so this covers the polarity and
-        // nothing else. On desktop the guard must be transparent (the drives
-        // are a working direct-download feature); on mobile it must refuse
-        // before any spawn is attempted. That the refusal *would* otherwise be
-        // an EPERM from the sandbox is platform behaviour our tests cannot
-        // reach — it is why the guard exists rather than something it proves.
-        let got = ensure_subprocess_drives_supported("Filen");
-        if cfg!(any(target_os = "ios", target_os = "android")) || !cfg!(feature = "sidecars") {
-            assert!(
-                got.is_err(),
-                "a build that cannot spawn must refuse the subprocess drives"
-            );
-        } else {
-            assert!(got.is_ok(), "desktop must keep working: {got:?}");
-        }
-    }
 
     #[test]
     fn registry_instantiate_routes_each_kind_correctly() {

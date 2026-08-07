@@ -32,9 +32,11 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+pub mod anydoc_conv;
 pub mod audio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod clipboard;
+pub mod convert;
 pub mod eml;
 #[cfg(feature = "desktop")]
 pub mod export;
@@ -50,6 +52,7 @@ pub mod ocr_paddle;
 pub mod ocr_render;
 pub mod page_source;
 pub mod pdf;
+pub mod pptx;
 pub mod text;
 pub mod text_lid;
 
@@ -140,8 +143,15 @@ pub const OCR_IMAGE_EXTS: &[&str] = &[
 /// Extension classes the registry knows how to handle. Used as the
 /// dispatch key so the match arms read top-down by category.
 pub fn supported(ext: &str) -> bool {
+    let lower = ext.to_ascii_lowercase();
+    // Office / e-book formats only count as supported when the converter
+    // behind them was actually compiled in — otherwise a scan would queue
+    // files that every extractor then refuses.
+    if anydoc_conv::is_available() && anydoc_conv::ANYDOC_ONLY_EXTS.contains(&lower.as_str()) {
+        return true;
+    }
     matches!(
-        ext.to_ascii_lowercase().as_str(),
+        lower.as_str(),
         "pdf"
             // Plain text + light markup
             | "txt" | "md" | "markdown" | "rst" | "log"
@@ -152,6 +162,8 @@ pub fn supported(ext: &str) -> bool {
             | "html" | "htm"
             // Word documents (crisp-docx-core)
             | "docx"
+            // PowerPoint — native reader, no feature needed.
+            | "pptx"
             // Email formats
             | "eml" | "mbox"
             // Source code (UTF-8 read)
@@ -553,6 +565,51 @@ fn source_type_id(name: &str) -> i32 {
     }
 }
 
+/// How far the anydoc converter reaches into the dispatch table.
+///
+/// The default only lets it serve formats nothing else can read, so
+/// turning the feature on cannot change the output for any file that
+/// already extracted. `Prefer` is the opt-in that puts it ahead of the
+/// native PDF / DOCX / CSV extractors — useful when you want Markdown
+/// structure (tables, lists) rather than the flat text those produce,
+/// and willing to give up the OCR ladder and heading inference for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AnydocMode {
+    /// anydoc handles only what no native extractor covers: PowerPoint,
+    /// spreadsheets, OpenDocument, RTF, EPUB, legacy `.doc`.
+    #[default]
+    Auto,
+    /// anydoc gets first refusal on every format it supports, `pdf` /
+    /// `docx` / `csv` included. The native extractor stays as the
+    /// fallback whenever the conversion fails or comes back empty.
+    Prefer,
+    /// Never call anydoc, even for formats that would otherwise be
+    /// unreadable. Restores exactly the pre-anydoc dispatch table.
+    Never,
+}
+
+impl AnydocMode {
+    /// Parse the canonical kebab-case name (CLI flags, persisted config).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "prefer" => Some(Self::Prefer),
+            "never" | "off" | "none" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    /// Canonical name — inverse of [`Self::from_name`].
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Prefer => "prefer",
+            Self::Never => "never",
+        }
+    }
+}
+
 /// PLAN P7.8 + P13.5 Phase 7 options for the extractor dispatcher.
 ///
 /// `Copy` was dropped when [`Self::text_lid_model`] (a `PathBuf`)
@@ -632,6 +689,11 @@ pub struct ExtractOptions {
     /// EXIF + OCR.  Plumbed as a String matching the audio enum
     /// pattern (canonical kebab-case `"l1"` / `"l2"` / `"l3"`).
     pub ingest_image_level: String,
+    /// How far the anydoc converter reaches — see [`AnydocMode`].
+    /// Default `Auto` is additive-only: it can rescue formats that had
+    /// no extractor at all, and cannot change the result for any file
+    /// that already extracted.
+    pub anydoc: AnydocMode,
 }
 
 impl Default for ExtractOptions {
@@ -657,6 +719,9 @@ impl Default for ExtractOptions {
             ingest_image_level: "l3".to_string(),
             // OCR pipeline orchestrator off by default → legacy ladder.
             ocr_pipeline: OcrPipelineConfig::default(),
+            // Additive-only: office/e-book formats that had no
+            // extractor, nothing else.
+            anydoc: AnydocMode::Auto,
         }
     }
 }
@@ -739,6 +804,7 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             image_extraction_enabled: true,
             ingest_image_level: "l3".to_string(),
             ocr_pipeline: OcrPipelineConfig::default(),
+            anydoc: AnydocMode::Auto,
         },
     )
 }
@@ -979,7 +1045,20 @@ pub fn extract_text_from_path_with_opts(
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    // `AnydocMode::Prefer` puts the converter ahead of the native
+    // extractor for the formats both can read (pdf / docx / csv).
+    // Evaluated once, here, so the arm below is a cheap `is_some()` test
+    // rather than a second full conversion. `try_preferred` returns
+    // `None` — "run the native extractor" — under any other mode, and
+    // also when the conversion fails or yields near-empty text, which is
+    // what keeps scanned PDFs on the OCR ladder instead of indexing a
+    // blank document.
+    let mut preferred = anydoc_conv::try_preferred(path, &ext, opts.anydoc);
+
     let result: Result<ExtractedDocument> = match ext.as_str() {
+        _ if preferred.is_some() => Ok(preferred
+            .take()
+            .expect("guarded by is_some() on the line above")),
         "pdf" => {
             let mut doc = pdf::extract(path)?;
             doc.ext = ext.clone();
@@ -1036,6 +1115,34 @@ pub fn extract_text_from_path_with_opts(
         "eml" => eml::extract(path),
         "mbox" => eml::extract_mbox(path),
         "docx" => extract_docx(path, &ext),
+        // `.pptx` has its own reader rather than going through anydoc: it
+        // recovers reading order from shape geometry, reads comments, and
+        // gives every slide its own heading. anydoc keeps the legacy binary
+        // `.ppt` path below. On a malformed package, fall back rather than
+        // fail the file outright — anydoc's parser is more forgiving, and a
+        // partial extraction beats none.
+        "pptx" => pptx::extract(path).or_else(|e| {
+            if opts.anydoc == AnydocMode::Never {
+                return Err(e);
+            }
+            eprintln!("[pptx] native reader failed ({e:#}); trying anydoc");
+            anydoc_conv::extract(path, &ext)
+        }),
+        // PowerPoint / spreadsheets / OpenDocument / RTF / EPUB / legacy
+        // `.doc`. Nothing native reads these, so this arm is purely
+        // additive — before it, they fell to the `no extractor` arm and
+        // were indexed as filesystem metadata only.
+        e if anydoc_conv::ANYDOC_ONLY_EXTS.contains(&e) => {
+            if opts.anydoc == AnydocMode::Never {
+                Err(anyhow::anyhow!(
+                    "`.{ext}` extraction is disabled (anydoc mode = never); \
+                     skipped {}",
+                    path.display()
+                ))
+            } else {
+                anydoc_conv::extract(path, &ext)
+            }
+        }
         e if OCR_IMAGE_EXTS.contains(&e) => {
             // PLAN P7.8 — tiered OCR for images.
             // P13.7 Step 1+3 — image-side L1/L2/L3 + master-switch
@@ -1555,6 +1662,14 @@ mod tests {
         assert!(supported("HTML")); // case-insensitive
         assert!(supported("docx")); // P30.2: now handled via crisp-docx-core
         assert!(!supported("zip"));
+        // Office / e-book formats track the `anydoc` feature: claiming
+        // them on a build that cannot read them would queue files that
+        // every extractor then refuses.
+        assert_eq!(supported("EPUB"), anydoc_conv::is_available());
+        assert_eq!(supported("xlsx"), anydoc_conv::is_available());
+        // `.pptx` has a native reader, so it does NOT track the feature.
+        assert!(supported("pptx"));
+        assert!(supported("PPTX"));
         assert!(!supported(""));
     }
 
@@ -1566,6 +1681,93 @@ mod tests {
         let doc = extract_text_from_path(&p).unwrap();
         assert_eq!(doc.full_text, "hello world");
         assert_eq!(doc.ext, "txt");
+    }
+
+    #[test]
+    fn anydoc_only_formats_reach_the_converter_arm() {
+        // The point of the arm is that these no longer fall to the
+        // `no extractor for .ext` error. On a build without the feature
+        // they still fail — but with the actionable message, not the
+        // dead-end one.
+        // `.odp` rather than `.pptx`: pptx now has its own native reader,
+        // so it would no longer exercise this arm.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("deck.odp");
+        std::fs::write(&p, b"not really an odp").unwrap();
+        // `{:#}` — the dispatcher wraps every error with an
+        // `extracting <path>` context, and plain `to_string()` shows
+        // only that outermost layer. Asserting against it would pass no
+        // matter which arm ran.
+        let err = format!("{:#}", extract_text_from_path(&p).unwrap_err());
+        assert!(
+            !err.contains("no extractor for"),
+            "odp should route to the converter, got: {err}"
+        );
+        if !anydoc_conv::is_available() {
+            assert!(err.contains("--features anydoc"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn anydoc_never_pins_the_pre_anydoc_dispatch_table() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("book.epub");
+        std::fs::write(&p, b"stub").unwrap();
+        let opts = ExtractOptions {
+            anydoc: AnydocMode::Never,
+            ..Default::default()
+        };
+        let err = format!(
+            "{:#}",
+            extract_text_from_path_with_opts(&p, opts).unwrap_err()
+        );
+        assert!(err.contains("anydoc mode = never"), "got: {err}");
+    }
+
+    #[test]
+    fn anydoc_auto_leaves_natively_covered_formats_alone() {
+        // Auto is additive-only: a .txt still goes through text::extract
+        // even though the converter is compiled in.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("notes.txt");
+        std::fs::write(&p, b"plain body").unwrap();
+        let opts = ExtractOptions {
+            anydoc: AnydocMode::Auto,
+            ..Default::default()
+        };
+        let doc = extract_text_from_path_with_opts(&p, opts).unwrap();
+        assert_eq!(doc.full_text, "plain body");
+    }
+
+    #[test]
+    fn anydoc_prefer_still_falls_back_to_the_native_extractor() {
+        // A .csv anydoc cannot make sense of must not become an empty
+        // document — `try_preferred` declines and text::extract runs.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("rows.csv");
+        std::fs::write(&p, b"a,b\n1,2\n").unwrap();
+        let opts = ExtractOptions {
+            anydoc: AnydocMode::Prefer,
+            ..Default::default()
+        };
+        let doc = extract_text_from_path_with_opts(&p, opts).unwrap();
+        assert!(
+            doc.full_text.contains('1') && doc.full_text.contains('2'),
+            "cell values must survive either path, got: {:?}",
+            doc.full_text
+        );
+    }
+
+    #[test]
+    fn anydoc_mode_names_round_trip() {
+        for m in [AnydocMode::Auto, AnydocMode::Prefer, AnydocMode::Never] {
+            assert_eq!(AnydocMode::from_name(m.as_name()), Some(m));
+        }
+        assert_eq!(AnydocMode::from_name("off"), Some(AnydocMode::Never));
+        assert_eq!(AnydocMode::from_name(" PREFER "), Some(AnydocMode::Prefer));
+        assert_eq!(AnydocMode::from_name("sometimes"), None);
+        // The persisted-config default must stay the additive one.
+        assert_eq!(AnydocMode::default(), AnydocMode::Auto);
     }
 
     #[test]

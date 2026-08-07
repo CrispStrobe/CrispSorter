@@ -52,6 +52,15 @@ crisp-docx-llm   = { path = "../../crisp-docx/crates/crisp-docx-llm", default-fe
 crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features = ["crispembed"], optional = true }
 # (crispembed itself is declared as `[dependencies.crispembed]` lower
 # down — already optional, shared with the legacy embedder feature.)
+# Office / e-book → Markdown conversion (PowerPoint, Excel, OpenDocument,
+# RTF, EPUB, legacy .doc). Pure Rust, no models, no subprocess — so it is
+# safe for the sandboxed MAS SKU, unlike shelling out to LibreOffice.
+#
+# Pinned to an EXACT version on purpose: the crate was first published
+# 2026-07-30 and shipped nine releases in its first week. Bump it
+# deliberately, after re-running the extractor tests — not via `cargo
+# update`. Off by default; see the `anydoc` feature.
+anydoc           = { version = "=0.1.7", optional = true }
 futures          = "0.3"
 
 tauri = { version = "2", features = [] }
@@ -267,7 +276,12 @@ default = []
 # crates behind it depend on subprocess spawning, inotify, and other
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
-desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
+# The native Filen / Internxt clients are no longer opt-in: every release
+# recipe already enabled them, which meant the Python-CLI drives they replace
+# were dead code in every shipped artifact. Kept on ONE line — the compliance
+# guards parse this file line-by-line, and a wrapped feature list is invisible
+# to them.
+desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs", "drive-filen-native", "drive-internxt-native"]
 # P36.1 — the right to spawn a helper process, split out of `desktop`.
 #
 # App Sandbox (Mac App Store, iOS) forbids fork/exec of anything outside the
@@ -286,7 +300,7 @@ sidecars = ["desktop", "dep:tauri-plugin-shell", "dep:tauri-plugin-process"]
 #
 # Forces the native drive clients on, because the Python-CLI drives are
 # exactly what a sandboxed build cannot run.
-desktop-mas = ["desktop", "drive-filen-native", "drive-internxt-native"]
+desktop-mas = ["desktop"]
 # P36.16 — the AIToolkit panels.
 #
 # An HTTP client for a backend that lives in a **private** repo and runs on
@@ -301,6 +315,18 @@ desktop-mas = ["desktop", "drive-filen-native", "drive-internxt-native"]
 # this feature carries no Rust at all. It exists to be reported by
 # `capabilities()`, which is what actually hides the tabs. Enable it and the
 # panels come back exactly as they were.
+# Office / e-book conversion via the `anydoc` crate — PowerPoint,
+# spreadsheets, OpenDocument, RTF, EPUB and legacy `.doc`, none of which
+# had a native extractor before. Also backs the `crispsorter convert`
+# command and the opt-in `--anydoc prefer` path over pdf/docx/csv.
+#
+# Pure Rust and sandbox-safe, so there is no SKU reason to keep it off.
+# It is off anyway, and out of `desktop`, because the upstream crate is
+# weeks old and still landing correctness fixes in exactly these formats
+# (slide boundaries, spreadsheet number formats, legacy `.doc` open
+# errors). Promote it into `desktop` once it has been run over a real
+# corpus and the extractor tests still pass.
+anydoc = ["dep:anydoc"]
 aitoolkit = []
 # P36.16 — the cloud-backup (cb-api) sync surface.
 #

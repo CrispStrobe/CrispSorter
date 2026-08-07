@@ -20,7 +20,21 @@ pub fn export_to_docx(
 ) -> Result<ExportResult, String> {
     use docx_rs::*;
 
-    let mut docx = Docx::new();
+    // `Docx::new()` ships a styles part containing only `Normal`, so
+    // referencing `Heading1` without defining it is a dangling reference:
+    // Word silently falls back to body text and the title never reaches the
+    // navigation pane or a generated table of contents. The run below is
+    // bold either way, which is why this went unnoticed — it *looked* right.
+    let mut docx = Docx::new().add_style(
+        Style::new("Heading1", StyleType::Paragraph)
+            .name("heading 1")
+            .based_on("Normal")
+            .next("Normal")
+            .bold()
+            .size(32)
+            .outline_lvl(0)
+            .q_format(true),
+    );
 
     // Add title
     if !title.is_empty() {
@@ -191,5 +205,39 @@ mod tests {
         let out = dir.path().join("unicode.docx");
         let result = export_to_docx("日本語タイトル", "こんにちは世界\n\n第二段落", &out).unwrap();
         assert!(result.bytes > 0);
+    }
+
+    /// The title paragraph asks for `Heading1`, so the package has to define
+    /// it. It did not: `Docx::new()` ships a styles part containing only
+    /// `Normal`, and a `pStyle` pointing at a style that does not exist is
+    /// silently ignored by Word — the title rendered as body text and never
+    /// reached the navigation pane or a generated table of contents. The
+    /// bold run made it *look* right, which is why it survived so long.
+    #[test]
+    fn export_docx_defines_every_style_it_references() {
+        use std::io::Read;
+
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("styled.docx");
+        export_to_docx("Ein Titel", "Der Fliesstext.", &out).unwrap();
+
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+        let read = |zip: &mut zip::ZipArchive<std::fs::File>, name: &str| {
+            let mut s = String::new();
+            zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
+            s
+        };
+        let document = read(&mut zip, "word/document.xml");
+        let styles = read(&mut zip, "word/styles.xml");
+
+        assert!(
+            document.contains(r#"w:val="Heading1""#),
+            "the title should still be a heading: {document}"
+        );
+        assert!(
+            styles.contains(r#"w:styleId="Heading1""#),
+            "document.xml references Heading1 but styles.xml does not define it — \
+             Word will render the title as body text:\n{styles}"
+        );
     }
 }

@@ -11,9 +11,10 @@
     import PdfEditor from './PdfEditor.svelte';
     import PdfTools from './PdfTools.svelte';
     import DocxTools from './DocxTools.svelte';
-    import { LayoutGrid, Wrench, FileType2 } from 'lucide-svelte';
+    import ConvertTools from './ConvertTools.svelte';
+    import { LayoutGrid, Wrench, FileType2, FileOutput } from 'lucide-svelte';
 
-    let mode = $state<'edit' | 'tools' | 'docx'>('edit');
+    let mode = $state<'edit' | 'tools' | 'docx' | 'convert'>('edit');
 </script>
 
 <div class="pw">
@@ -27,9 +28,13 @@
         <button class="pw-mode" class:active={mode === 'docx'} onclick={() => mode = 'docx'}>
             <FileType2 size={13} /> {i18n.t.docxtools.mode_docx}
         </button>
+        <button class="pw-mode" class:active={mode === 'convert'} onclick={() => mode = 'convert'}>
+            <FileOutput size={13} /> {i18n.t.converttools?.mode_convert ?? 'Convert'}
+        </button>
     </div>
-    <!-- All three stay mounted: switching modes must not discard an open
-         edit session, a half-filled tool panel, or a loaded DOCX report. -->
+    <!-- All four stay mounted: switching modes must not discard an open
+         edit session, a half-filled tool panel, a loaded DOCX report, or a
+         conversion preview. -->
     <div class="pw-pane" style:display={mode === 'edit' ? 'flex' : 'none'}>
         <PdfEditor />
     </div>
@@ -38,6 +43,9 @@
     </div>
     <div class="pw-pane" style:display={mode === 'docx' ? 'flex' : 'none'}>
         <DocxTools />
+    </div>
+    <div class="pw-pane" style:display={mode === 'convert' ? 'flex' : 'none'}>
+        <ConvertTools />
     </div>
 </div>
 

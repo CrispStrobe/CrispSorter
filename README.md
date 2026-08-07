@@ -25,6 +25,8 @@ Successor to BiblioForge and ZotBiblioForge — no Python, no cloud required.
 | DOCX / Word | mammoth.js |
 | EPUB | @lingo-reader/epub-parser (DRM detection via META-INF/encryption.xml) |
 | TXT / Markdown | direct UTF-8 |
+| PowerPoint `.pptx` | native OOXML reader — visual-order text, speaker notes, comments |
+| Excel / OpenDocument / RTF / EPUB / legacy `.doc` + `.ppt` | [anydoc](https://github.com/firecrawl/anydoc) → Markdown (`--features anydoc`) |
 
 ---
 
@@ -464,8 +466,92 @@ The full-text component of every search mode supports the following syntax:
 | TXT | direct | — |
 | MD / Markdown | direct | `#`/`##`/`###` headings parsed |
 | EPUB | epub-parser text | — |
+| PPTX | native reader → GFM | one heading per slide (title or number) |
+| XLSX / ODT / ODS / ODP / RTF / DOC | anydoc → GFM | `#` headings parsed from the conversion |
 
 Headings extracted from DOCX/MD/PDF are stored in the index and boost search relevance.
+
+#### Office and e-book conversion (`--features anydoc`)
+
+Formats that had no native extractor — PowerPoint, spreadsheets, OpenDocument,
+RTF, EPUB and legacy `.doc` — go through [anydoc](https://github.com/firecrawl/anydoc),
+a pure-Rust converter. No model, no subprocess, no network, so it works in the
+sandboxed App Store build too.
+
+```bash
+crispsorter convert budget.xlsx --out budget.md    # → file (GFM tables)
+crispsorter convert report.odt --emit headings     # → outline only
+crispsorter index ingest ./papers --anydoc auto    # default: additive only
+```
+
+#### PowerPoint (`.pptx`) — native reader, no feature required
+
+`.pptx` does **not** go through anydoc. It has its own OOXML reader
+(`extractors/pptx.rs`, built on `zip` + `quick-xml`) because three things a
+deck needs are exactly what a generic converter drops:
+
+- **Reading order from geometry.** Shapes are sorted by their `<a:off>`
+  offset — top-to-bottom, then left-to-right — not by XML document order.
+  Dragging a box up the slide does not rewrite the XML, so the two routinely
+  disagree. Shapes that inherit position from the layout keep XML order and
+  sort last.
+- **Comments**, from both the classic (`p:cm`) and modern (`p188:cm`) parts,
+  with author names resolved from `commentAuthors.xml` / `authors.xml`.
+- **Slide boundaries.** Every slide gets its own numbered heading, titled or
+  not, so per-slide provenance survives.
+
+Slide order comes from the presentation's `sldIdLst`, not from `slideN.xml`
+filenames — reordering a deck in PowerPoint rewrites the former and leaves
+the latter alone.
+
+```bash
+crispsorter convert deck.pptx                          # → Markdown, slides as ## sections
+crispsorter convert deck.pptx --emit docx --out d.docx # → Word, slide titles as real Heading 1
+crispsorter convert deck.pptx --emit rtf  --out d.rtf  # → Rich Text
+crispsorter convert deck.pptx --emit headings          # → slide outline
+crispsorter convert deck.pptx --no-comments --no-notes # → body text only
+crispsorter convert deck.pptx --wrap-text 80           # → wrap paragraphs
+crispsorter convert deck.pptx --xml-order              # → authoring order instead
+crispsorter convert deck.pptx --engine anydoc          # → generic converter instead
+```
+
+The default is overridable in both directions. `--engine anydoc` sends a
+`.pptx` through the generic converter — useful to compare the two, or when a
+deck trips the native reader; `--engine native` forces the dedicated reader
+and fails if the format has none. The PPTX-only flags have no effect under
+`--engine anydoc` (it models neither comments nor geometry) and the command
+says so rather than silently ignoring them.
+
+The same override exists on the ingest side: `index ingest --anydoc prefer`
+routes `.pptx` (and PDF, DOCX, CSV) to anydoc instead of the native
+extractor, falling back automatically if the conversion fails or comes back
+empty.
+
+All of the above is also available in the GUI: the document tab has a
+**Convert** panel next to the PDF and DOCX ones. It asks the backend what the
+chosen file and this build can actually do, then disables what is unreachable
+(Word/RTF off the native path, every non-`.pptx` format on a build without the
+converter) rather than offering it and failing. Preview renders in place;
+"Convert and save" writes a file.
+
+Images and charts are not extracted — a picture on a slide needs
+`crispsorter ocr`, not conversion. Legacy binary `.ppt` is handled by anydoc
+instead, and so needs `--features anydoc`.
+
+`--anydoc` picks how far the converter reaches:
+
+| Mode | Behaviour |
+|---|---|
+| `auto` (default) | Only formats nothing else reads. Cannot change how an already-supported file extracts. |
+| `prefer` | Also takes PDF, DOCX and CSV ahead of the native extractors — Markdown structure instead of flat text, at the cost of the OCR ladder (PDF) and heading inference (DOCX). Falls back to the native path whenever conversion fails or returns near-empty text. |
+| `never` | Pins the pre-anydoc behaviour. |
+
+The feature is **off by default and not part of the `desktop` set**: the
+upstream crate is new and still landing correctness fixes in exactly these
+formats. It is pinned to an exact version — bump it deliberately, with the
+extractor tests re-run, rather than via `cargo update`.
+
+Scanned pages still need OCR, not conversion — use `crispsorter ocr`.
 
 ---
 

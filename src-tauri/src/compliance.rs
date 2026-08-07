@@ -231,15 +231,19 @@ mod tests {
         // Files whose spawns are already gated, with what a sandboxed build
         // reaches instead. Listed rather than inferred so that adding a file
         // here is a deliberate act with a stated substitute.
-        let gated: [(&str, &str); 8] = [
+        // `drives/filen.rs` and `drives/internxt.rs` used to be rows here.
+        // They are gone: `desktop` now implies `drive-filen-native` and
+        // `drive-internxt-native`, so the Python-CLI drives they gated were
+        // dead code in every shipped artifact and were deleted rather than
+        // kept as an unreachable fallback. There is no longer a spawn to
+        // gate, which is a stronger guarantee than gating one.
+        let gated: [(&str, &str); 6] = [
             ("lib.rs", "mod no_sidecars — HTTP client without the launcher"),
             ("tts/mod.rs", "CrispASR synthesis, watermarked, played by the webview"),
             ("extractors/ocr.rs", "CrispEmbed / PaddleOCR / ocrs tiers"),
             ("audio/ffmpeg_fallback.rs", "the glint decode tier"),
             ("volume/mod.rs", "getattrlist(2) / getfsstat(2) on macOS"),
             ("platform_share.rs", "NSWorkspace via Launch Services"),
-            ("drives/filen.rs", "crates/crisp-filen-native"),
-            ("drives/internxt.rs", "crates/crisp-internxt-native"),
         ];
 
         let mut offenders = Vec::new();
@@ -524,11 +528,27 @@ mod tests {
             "`desktop-mas` enables `sidecars`, so the sandboxed build now \
              spawns processes and is not submittable: {line}"
         );
-        for required in ["desktop", "drive-filen-native", "drive-internxt-native"] {
+        assert!(
+            line.contains("desktop"),
+            "`desktop-mas` must build on `desktop`: {line}"
+        );
+
+        // The native drive clients must be *reachable* from `desktop-mas`,
+        // not necessarily named on its line. They moved into `desktop`
+        // itself when the Python-CLI drives were retired, so requiring them
+        // literally here would fail on a topology that satisfies the
+        // invariant more strongly than before: there is no longer a
+        // subprocess drive for a sandboxed build to avoid.
+        let desktop_line = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("desktop ="))
+            .expect("`desktop` feature must exist");
+        for required in ["drive-filen-native", "drive-internxt-native"] {
             assert!(
-                line.contains(required),
-                "`desktop-mas` must include `{required}` — the Python-CLI \
-                 drives are exactly what a sandboxed build cannot run: {line}"
+                line.contains(required) || desktop_line.contains(required),
+                "`{required}` is reachable from neither `desktop-mas` nor \
+                 `desktop`, so the sandboxed build has no Filen/Internxt \
+                 transport at all:\n  desktop-mas = {line}\n  desktop = {desktop_line}"
             );
         }
 

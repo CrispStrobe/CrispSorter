@@ -3700,40 +3700,33 @@
                                 <option value="webdav">WebDAV (Nextcloud / ownCloud / mailbox.org / Synology)</option>
                                 <option value="google_drive">Google Drive (Browser-Anmeldung)</option>
                                 <option value="onedrive">OneDrive / SharePoint (Browser-Anmeldung)</option>
-                                <!-- Offer each kind when it can actually work here.
-                                     The subprocess fallback shells out to a Python
-                                     CLI, which iOS/Android forbid and App Sandbox
-                                     denies (offering it there produced a spawn error
-                                     at use time). The native client has no such
-                                     limit — so gate on native support first and on
-                                     `drive_subprocess` for the fallback, which is
-                                     the build's own answer rather than a guess from
-                                     the user agent (PLAN P36.5). WebDAV remains the
-                                     route to the same storage when neither applies. -->
-                                {#if nativeDriveSupport.filen || $caps.drive_subprocess}
-                                    <option value="filen">
-                                        {nativeDriveSupport.filen ? 'Filen (native)' : 'Filen (Python cli.py)'}
-                                    </option>
+                                <!-- The Python-CLI fallback is gone: both kinds now
+                                     have only the native Rust client, which `desktop`
+                                     always compiles in. So this is no longer a
+                                     "native or cli.py?" question — the kind either
+                                     works here or has no transport at all, which is
+                                     the mobile case. WebDAV remains the route to the
+                                     same storage when it does not. -->
+                                {#if nativeDriveSupport.filen}
+                                    <option value="filen">Filen</option>
                                 {/if}
-                                {#if nativeDriveSupport.internxt || $caps.drive_subprocess}
-                                    <option value="internxt">
-                                        {nativeDriveSupport.internxt ? 'Internxt (native)' : 'Internxt (Python cli.py)'}
-                                    </option>
+                                {#if nativeDriveSupport.internxt}
+                                    <option value="internxt">Internxt</option>
                                 {/if}
                                 <option value="local">Lokal / OS-Mount (SMB / NFS / SFTP via FUSE)</option>
                                 <option value="sftp">SFTP (über OS-Mount)</option>
                             </select>
                         </label>
-                        {#if !$caps.drive_subprocess && !nativeDriveSupport.filen && !nativeDriveSupport.internxt}
+                        {#if !nativeDriveSupport.filen && !nativeDriveSupport.internxt}
                             <p class="drive-dialog-hint">
-                                In dieser Version funktionieren die Python-CLI-Laufwerke nicht.
-                                Für Filen oder Internxt bitte einen extern erreichbaren WebDAV-Endpunkt verwenden.
+                                Filen und Internxt sind in dieser Version nicht verfügbar.
+                                Bitte einen extern erreichbaren WebDAV-Endpunkt verwenden.
                             </p>
                         {/if}
                         <label class="drive-dialog-row">
                             <span class="drive-dialog-label">
                                 {driveCreateKind === 'webdav' ? 'URL' :
-                                 driveCreateKind === 'filen' || driveCreateKind === 'internxt' ? 'cli.py' :
+                                 driveCreateKind === 'filen' || driveCreateKind === 'internxt' ? 'Remote-Wurzel' :
                                  'Pfad'}
                             </span>
                             <input type="text" bind:value={driveCreatePath}
@@ -3741,7 +3734,7 @@
                                    placeholder={driveCreateKind === 'webdav'
                                        ? 'https://host/remote.php/dav/files/<user>/'
                                        : driveCreateKind === 'filen' || driveCreateKind === 'internxt'
-                                           ? '/Users/.../code/filen-python/cli.py'
+                                           ? '/ (Anmeldung über den Schlüsselbund)'
                                            : driveCreateKind === 'google_drive' || driveCreateKind === 'onedrive'
                                                ? '/ (remote root)'
                                                : '/Volumes/...'} />

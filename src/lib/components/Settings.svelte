@@ -668,6 +668,10 @@
      *  action (Step 2). */
     let indexImageExtractionEnabled = $state<boolean>(true);
     let indexIngestImageLevel = $state<string>('l3');
+    // How far the anydoc office/e-book converter reaches. 'auto' is
+    // additive-only and cannot change how an already-supported file
+    // extracts; see extractors::AnydocMode.
+    let indexAnydocMode = $state<string>('auto');
     /** P13.7 Step 4 — when on, each indexed image is also pushed
      *  to the configured CrispLens server (POST /api/ingest/upload-local).
      *  Default off because pushing every image upstream is a
@@ -1349,6 +1353,7 @@
         indexIngestAudioLevel = await getSetting('indexIngestAudioLevel', 'l3') as string;
         indexImageExtractionEnabled = await getSetting('indexImageExtractionEnabled', true) as boolean;
         indexIngestImageLevel = await getSetting('indexIngestImageLevel', 'l3') as string;
+        indexAnydocMode = await getSetting('indexAnydocMode', 'auto') as string;
         indexCrispLensImageEnrichment = await getSetting('indexCrispLensImageEnrichment', false) as boolean;
         // P13.7 Step 5 — cloud-backup sync settings.
         indexCloudBackupUrl            = await getSetting('indexCloudBackupUrl', '');
@@ -1719,6 +1724,7 @@
         await saveSetting('indexIngestAudioLevel',       indexIngestAudioLevel);
         await saveSetting('indexImageExtractionEnabled', indexImageExtractionEnabled);
         await saveSetting('indexIngestImageLevel',       indexIngestImageLevel);
+        await saveSetting('indexAnydocMode',             indexAnydocMode);
         await saveSetting('indexCrispLensImageEnrichment', indexCrispLensImageEnrichment);
         // P13.7 Step 5 — cloud-backup sync settings (URL + 3 toggles).
         // The API key is NEVER persisted here — it goes straight to
@@ -1892,6 +1898,7 @@
                     ingest_audio_level:       indexIngestAudioLevel || 'l3',
                     image_extraction_enabled: indexImageExtractionEnabled,
                     ingest_image_level:       indexIngestImageLevel || 'l3',
+                    anydoc_mode:              indexAnydocMode || 'auto',
                     crisplens_image_enrichment_enabled: indexCrispLensImageEnrichment,
                     // P13.7 Step 5 — cloud-backup sync.
                     cloud_backup_url:                        indexCloudBackupUrl.trim() || null,
@@ -4205,6 +4212,23 @@
                 <p class="hint">
                     {i18n.t.settings.index.ingest_image_level_hint ??
                      'How deeply bg_ingest processes images.  L1 is fastest; L2 adds the kamadak-exif probe (camera make / model / lens / ISO / taken_at_unix); L3 (default) runs OCR too.  Promote L1/L2 rows to L3 via the "Re-OCR" action in search results.'}
+                </p>
+
+                <!-- Office / e-book conversion reach.  Default 'auto' is
+                     additive-only: it can pull in formats that had no
+                     extractor at all, but cannot change how any file that
+                     already indexed is read. -->
+                <label for="index-anydoc-mode" style="margin-top:14px;">
+                    {i18n.t.settings.index.anydoc_mode ?? 'Office & e-book conversion'}
+                </label>
+                <select id="index-anydoc-mode" bind:value={indexAnydocMode} class="styled-select">
+                    <option value="auto">{i18n.t.settings.index.anydoc_mode_auto ?? 'Auto — only formats nothing else reads (default)'}</option>
+                    <option value="prefer">{i18n.t.settings.index.anydoc_mode_prefer ?? 'Prefer — also use it for PDF, DOCX, PPTX and CSV'}</option>
+                    <option value="never">{i18n.t.settings.index.anydoc_mode_never ?? 'Never — skip office and e-book files'}</option>
+                </select>
+                <p class="hint">
+                    {i18n.t.settings.index.anydoc_mode_hint ??
+                     'Spreadsheets, OpenDocument, RTF, EPUB and legacy .doc/.ppt are read by a converter that has no native equivalent here. "Auto" only ever adds documents — it cannot change how a file that already indexed is read. "Prefer" also puts it ahead of the built-in PDF, Word, PowerPoint and CSV readers, trading their OCR and structure for plain Markdown; it falls back automatically when a conversion fails. PowerPoint (.pptx) has its own reader and is unaffected by "Auto".'}
                 </p>
 
                 <!-- P13.7 Step 4 — CrispLens image push.  Default off

@@ -298,7 +298,13 @@ jobs:
         # features. Those sub-features only select the ggml backend inside the
         # sibling crates, so the CrispSorter code compiled is identical and CI
         # needs no Vulkan SDK; backend-specific breakage stays release-only.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
+        #
+        # `anydoc` is here for that same reason and is the newest instance of
+        # it: the feature ships in no release recipe (the upstream crate is
+        # still young), so without this line the converter arm, the `convert`
+        # command and the `--anydoc prefer` path would compile in no job at
+        # all — the exact drift this list exists to prevent.
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter

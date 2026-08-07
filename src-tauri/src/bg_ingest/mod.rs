@@ -363,7 +363,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let thin = !g.config.local_extraction_enabled;
         (push, thin, g.config.local_skeleton_only)
     };
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -399,13 +399,17 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             crate::index::IngestImageLevel::L2 => "l2".to_string(),
             crate::index::IngestImageLevel::L3 => "l3".to_string(),
         };
+        // How far the anydoc office/e-book converter reaches. `Auto`
+        // (default) only rescues formats with no native extractor, so
+        // this cannot change how an already-indexable file extracts.
+        let anydoc_mode = g.config.anydoc_mode;
         drop(g);
         let bg = app_state.bg_ingest.lock().await;
         let ocr_enabled = bg.ocr_enabled;
         let ocr_tier_str = bg.ocr_tier.clone();
         let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
         let ocr_pipeline_cfg = bg.ocr_pipeline.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg)
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
@@ -684,6 +688,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         image_extraction_enabled,
         ingest_image_level: ingest_image_level.clone(),
         ocr_pipeline: ocr_pipeline_cfg.clone(),
+        anydoc: anydoc_mode,
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();

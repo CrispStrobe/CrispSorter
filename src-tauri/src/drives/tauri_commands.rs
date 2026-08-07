@@ -1348,11 +1348,14 @@ pub async fn drive_native_refresh(
 ///
 /// The UI needs this *before* a drive exists, so it cannot use
 /// `drive_capabilities`, which resolves a registered `drive_id`. The picker
-/// uses it for two decisions: whether to label a kind as native or as
-/// "Python cli.py", and whether to offer it on mobile at all — the
-/// subprocess drives cannot run on iOS/Android
-/// (`drives::ensure_subprocess_drives_supported`), but the native clients can,
-/// which is the whole point of P33.
+/// uses it to decide whether to offer the kind at all.
+///
+/// Since the Python-CLI drives were retired there is no longer a
+/// "native or `cli.py`?" question to answer: `desktop` implies both native
+/// features, so on desktop these are always `true`, and a build without them
+/// has no Filen/Internxt transport whatsoever rather than a slower one. The
+/// command stays because mobile builds still answer `false` and the picker
+/// must not offer a kind it cannot instantiate.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct NativeDriveSupport {
     pub filen: bool,

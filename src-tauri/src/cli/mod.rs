@@ -59,7 +59,7 @@ use std::process::ExitCode;
 /// from the clap tree so it cannot drift again.
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx",
+    "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx", "convert",
     "search", "watch", "drives", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
     "--version", "-V",
 ];
@@ -431,6 +431,59 @@ enum Command {
     Docx {
         #[command(subcommand)]
         cmd: DocxCmd,
+    },
+    /// Convert an office or e-book document to Markdown.
+    ///
+    /// Covers Word (.doc/.docx/.docm), PowerPoint (.ppt/.pptx/…), Excel
+    /// (.xls/.xlsx/…), OpenDocument (.odt/.ods/.odp), .rtf, .epub, .csv and
+    /// text-layer PDFs. Pure local conversion — no model, no network.
+    ///
+    /// Requires the `anydoc` feature; without it this command explains how to
+    /// rebuild rather than failing silently. Scanned documents need OCR
+    /// instead: use `crispsorter ocr`.
+    Convert {
+        /// Document to convert.
+        file: PathBuf,
+        /// Write to this file instead of stdout.
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// What to emit. `md` is the converted Markdown; `text` strips the
+        /// ATX heading markers; `headings` lists only the document outline;
+        /// `docx` and `rtf` write Word / Rich Text (both require `--out`).
+        ///
+        /// Named `--emit`, not `--format`: `--format` is a *global* flag
+        /// (json/text) and a subcommand field of the same name panics at
+        /// runtime when clap resolves it. `ocr --render` dodges the same
+        /// collision the same way.
+        #[arg(long, default_value = "md",
+              value_parser = ["md", "text", "headings", "docx", "rtf"])]
+        emit: String,
+        /// Wrap body paragraphs at this width. 0 (default) leaves them
+        /// as authored.
+        #[arg(long, default_value_t = 0, value_name = "WIDTH")]
+        wrap_text: usize,
+        /// PPTX only: leave slide comments out of the output.
+        #[arg(long)]
+        no_comments: bool,
+        /// PPTX only: leave speaker notes out of the output.
+        #[arg(long)]
+        no_notes: bool,
+        /// PPTX only: emit shapes in raw XML order instead of sorting them
+        /// by position on the slide. Use when a deck's geometry is
+        /// misleading and the authoring order was the intended one.
+        #[arg(long)]
+        xml_order: bool,
+        /// Which converter to use. `auto` (default) picks the native reader
+        /// for `.pptx` and anydoc for everything else. `anydoc` forces the
+        /// generic converter — useful to compare the two, or when the
+        /// native reader trips on an unusual deck. `native` forces the
+        /// dedicated reader and fails if the format has none.
+        ///
+        /// The PPTX-only flags above (`--no-comments`, `--xml-order`, …)
+        /// have no effect under `--engine anydoc`; it does not model any
+        /// of them.
+        #[arg(long, default_value = "auto", value_parser = ["auto", "native", "anydoc"])]
+        engine: String,
     },
     /// Watch a folder for new files and print detected paths to stdout.
     /// Headless equivalent of the GUI folder-watcher. Runs until interrupted
@@ -2101,6 +2154,22 @@ fn run_on_current_stack() -> ExitCode {
         Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
         Command::Pdf { cmd } => cmd_pdf(cli.format, cmd),
         Command::Docx { cmd } => cmd_docx(cli.format, cmd),
+        Command::Convert {
+            file,
+            out,
+            emit,
+            wrap_text,
+            no_comments,
+            no_notes,
+            xml_order,
+            engine,
+        } => cmd_convert(
+            cli.format,
+            file,
+            out,
+            emit,
+            ConvertTuning { wrap_text, no_comments, no_notes, xml_order, engine },
+        ),
         Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
         Command::IntendedPurpose { cmd } => cmd_intended_purpose(cli.format, cmd),
         Command::Drives { data_dir, cmd } => cmd_drives(cli.format, data_dir, cmd),
@@ -3013,6 +3082,15 @@ enum IndexCmd {
         /// characters is treated as a scan and sent to OCR.
         #[arg(long, default_value_t = 50, value_name = "N")]
         ocr_min_chars: usize,
+        /// How far the office/e-book converter reaches. `auto` (default)
+        /// gives it only the formats no other extractor covers —
+        /// PowerPoint, spreadsheets, OpenDocument, RTF, EPUB, legacy
+        /// `.doc`. `prefer` also puts it ahead of the native PDF, DOCX and
+        /// CSV extractors, trading their OCR ladder and heading inference
+        /// for Markdown structure. `never` pins the pre-anydoc behaviour.
+        /// Requires the `anydoc` feature; inert without it.
+        #[arg(long, default_value = "auto", value_parser = ["auto", "prefer", "never"])]
+        anydoc: String,
         /// Skip files larger than this (human-readable, e.g. "200MB").
         /// Whole-file reads happen before extraction, so one huge file
         /// can otherwise stall a folder walk. Default: no limit.
@@ -3925,6 +4003,7 @@ async fn cmd_index_async(
             device,
             ocr,
             ocr_min_chars,
+            anydoc,
             max_file_size,
             ext: ext_filter,
             timeout,
@@ -3948,6 +4027,21 @@ async fn cmd_index_async(
                 .collect();
 
             let owner = owner_id.clone().unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+            // clap's value_parser already rejects anything else, so the
+            // fallback is unreachable — spelled out rather than unwrapped
+            // so a future value_parser edit degrades to the safe default.
+            let anydoc_mode = crate::extractors::AnydocMode::from_name(&anydoc)
+                .unwrap_or_default();
+            if anydoc_mode != crate::extractors::AnydocMode::Never
+                && !crate::extractors::anydoc_conv::is_available()
+            {
+                eprintln!(
+                    "[ingest] --anydoc {anydoc} ignored: this build lacks the \
+                     `anydoc` feature, so office and e-book files will be \
+                     skipped (rebuild with `--features anydoc`)"
+                );
+            }
 
             // Parse model + device (same logic as Init).
             let m = parse_embedder_model(&model)?;
@@ -4023,18 +4117,19 @@ async fn cmd_index_async(
                 let extract_fut = tokio::task::spawn_blocking({
                     let pp = p.clone();
                     move || {
-                        if ocr {
-                            crate::extractors::extract_text_from_path_with_opts(
-                                &pp,
-                                crate::extractors::ExtractOptions {
-                                    try_ocr: true,
-                                    ocr_pdf_min_chars: ocr_min_chars,
-                                    ..Default::default()
-                                },
-                            )
-                        } else {
-                            crate::extractors::extract_text_from_path(&pp)
-                        }
+                        // One options path now — `--anydoc` applies with or
+                        // without `--ocr`, so the old bare
+                        // `extract_text_from_path` shortcut would have
+                        // silently dropped the flag.
+                        crate::extractors::extract_text_from_path_with_opts(
+                            &pp,
+                            crate::extractors::ExtractOptions {
+                                try_ocr: ocr,
+                                ocr_pdf_min_chars: if ocr { ocr_min_chars } else { 0 },
+                                anydoc: anydoc_mode,
+                                ..Default::default()
+                            },
+                        )
                     }
                 });
                 // `timeout` abandons the *await*, not the blocking thread —
@@ -5094,6 +5189,90 @@ fn parse_size_str(s: &str) -> Result<u64, String> {
     };
     Ok(base * multiplier)
 }
+
+// ── convert — office / e-book → Markdown ─────────────────────────────────
+
+/// `crispsorter convert <FILE> [--out F] [--format md|text|headings]`.
+///
+/// The user-facing half of the anydoc integration: the ingest path converts
+/// to feed the index, this converts to hand you the file. Same converter,
+/// same output, so what you read here is what the index sees.
+/// The PPTX-specific knobs, bundled so `cmd_convert` keeps a sane arity.
+struct ConvertTuning {
+    wrap_text: usize,
+    no_comments: bool,
+    no_notes: bool,
+    xml_order: bool,
+    /// `auto` | `native` | `anydoc` — see the `--engine` flag.
+    engine: String,
+}
+
+fn cmd_convert(
+    global_fmt: OutFormat,
+    file: PathBuf,
+    out: Option<PathBuf>,
+    emit: String,
+    tuning: ConvertTuning,
+) -> Result<(), String> {
+    use crate::extractors::convert::{self, ConvertOptions, Emit, Engine};
+
+    let emit_kind = Emit::from_name(&emit).ok_or_else(|| format!("unknown --emit {emit}"))?;
+    let engine = Engine::from_name(&tuning.engine)
+        .ok_or_else(|| format!("unknown --engine {}", tuning.engine))?;
+
+    // The slide knobs describe a model only the native reader has. Saying so
+    // beats silently dropping them.
+    if engine == Engine::Anydoc
+        && (tuning.no_comments || tuning.no_notes || tuning.xml_order)
+    {
+        eprintln!(
+            "[convert] --engine anydoc ignores --no-comments/--no-notes/--xml-order: \
+             the generic converter models neither comments nor shape geometry"
+        );
+    }
+
+    let opts = ConvertOptions {
+        emit: emit_kind,
+        engine,
+        wrap_width: tuning.wrap_text,
+        include_notes: !tuning.no_notes,
+        include_comments: !tuning.no_comments,
+        visual_order: !tuning.xml_order,
+    };
+
+    let result = convert::convert(&file, &opts, out.as_deref()).map_err(|e| format!("{e:#}"))?;
+
+    if let Some(p) = &result.written_path {
+        eprintln!(
+            "[convert] wrote {p}{}",
+            match result.slides {
+                Some(n) => format!(" ({n} slides)"),
+                None => String::new(),
+            }
+        );
+        return Ok(());
+    }
+
+    let body = result.body.unwrap_or_default();
+    match global_fmt {
+        OutFormat::Json => {
+            let payload = serde_json::json!({
+                "file": file.display().to_string(),
+                "ext": result.ext,
+                "emit": emit,
+                "engine": result.engine_used,
+                "slides": result.slides,
+                "headings": result.headings,
+                "chars": body.chars().count(),
+                "content": body,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        }
+        _ => println!("{body}"),
+    }
+    Ok(())
+}
+
 
 // ── watch (CLI↔GUI parity) ────────────────────────────────────────────────
 
@@ -10959,6 +11138,131 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
 mod tests {
     use super::*;
     use mockito::{Matcher, Server};
+
+    // ── `convert` verb ───────────────────────────────────────────────
+
+    fn plain_tuning() -> ConvertTuning {
+        ConvertTuning {
+            wrap_text: 0,
+            no_comments: false,
+            no_notes: false,
+            xml_order: false,
+            engine: "auto".to_string(),
+        }
+    }
+
+    /// Drives `cmd_convert` itself rather than the library call beneath
+    /// it, so the argument plumbing, the `--emit` shapes and the
+    /// file-writing branch are all covered.
+    #[cfg(feature = "anydoc")]
+    #[test]
+    fn convert_writes_the_conversion_to_the_out_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("kapitel.rtf");
+        std::fs::write(
+            &src,
+            br"{\rtf1\ansi\deff0 {\b Kapitel Eins}\par Der Fliesstext.\par}",
+        )
+        .unwrap();
+
+        let out = tmp.path().join("kapitel.md");
+        cmd_convert(OutFormat::Json, src.clone(), Some(out.clone()), "md".into(), plain_tuning())
+            .expect("convert should succeed");
+        let md = std::fs::read_to_string(&out).unwrap();
+        assert!(md.contains("Kapitel Eins"), "got: {md}");
+        assert!(md.contains("Der Fliesstext."), "got: {md}");
+
+        // `text` drops the ATX markers; the words must survive.
+        let plain = tmp.path().join("kapitel.txt");
+        cmd_convert(OutFormat::Json, src, Some(plain.clone()), "text".into(), plain_tuning())
+            .unwrap();
+        let txt = std::fs::read_to_string(&plain).unwrap();
+        assert!(txt.contains("Der Fliesstext."), "got: {txt}");
+        assert!(!txt.lines().any(|l| l.starts_with('#')), "got: {txt}");
+    }
+
+    #[test]
+    fn convert_rejects_a_file_it_cannot_convert() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("notes.txt");
+        std::fs::write(&p, b"already plain text").unwrap();
+        let err = cmd_convert(OutFormat::Json, p, None, "md".into(), plain_tuning()).unwrap_err();
+        // Two legitimate reasons, each with its own fix.
+        assert!(
+            err.contains("not a convertible document format")
+                || err.contains("--features anydoc"),
+            "got: {err}"
+        );
+    }
+
+    /// `--engine` must actually reroute, not just be accepted. Both engines
+    /// are run over the same deck and their output compared: the native
+    /// reader adds a slide heading and a Notes section that anydoc has no
+    /// concept of, so identical output would mean the flag did nothing.
+    #[cfg(feature = "anydoc")]
+    #[test]
+    fn convert_engine_flag_reroutes_pptx_to_anydoc() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let deck = crate::extractors::pptx::tests_support::write_sample_deck(tmp.path());
+
+        let native_out = tmp.path().join("native.md");
+        cmd_convert(
+            OutFormat::Json,
+            deck.clone(),
+            Some(native_out.clone()),
+            "md".into(),
+            ConvertTuning { engine: "native".into(), ..plain_tuning() },
+        )
+        .expect("native engine should convert");
+        let native = std::fs::read_to_string(&native_out).unwrap();
+
+        let anydoc_out = tmp.path().join("anydoc.md");
+        cmd_convert(
+            OutFormat::Json,
+            deck,
+            Some(anydoc_out.clone()),
+            "md".into(),
+            ConvertTuning { engine: "anydoc".into(), ..plain_tuning() },
+        )
+        .expect("anydoc engine should convert the same deck");
+        let generic = std::fs::read_to_string(&anydoc_out).unwrap();
+
+        assert_ne!(native, generic, "--engine did not change the converter");
+        assert!(native.contains("## Slide 1:"), "native: {native}");
+        assert!(!generic.contains("## Slide 1:"), "anydoc: {generic}");
+        // Both must still find the actual words on the slide.
+        assert!(native.contains("Erste Folie"), "native: {native}");
+        assert!(generic.contains("Erste Folie"), "anydoc: {generic}");
+    }
+
+    #[test]
+    fn convert_engine_native_is_rejected_for_formats_without_one() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("book.epub");
+        std::fs::write(&p, b"stub").unwrap();
+        let err = cmd_convert(
+            OutFormat::Json,
+            p,
+            None,
+            "md".into(),
+            ConvertTuning { engine: "native".into(), ..plain_tuning() },
+        )
+        .unwrap_err();
+        assert!(err.contains("no dedicated reader"), "got: {err}");
+    }
+
+    #[test]
+    fn convert_rejects_a_missing_file() {
+        let err = cmd_convert(
+            OutFormat::Json,
+            PathBuf::from("/nonexistent/deck.pptx"),
+            None,
+            "md".into(),
+            plain_tuning(),
+        )
+        .unwrap_err();
+        assert!(err.contains("not a file"), "got: {err}");
+    }
 
     // ── Unified `search` verb — FederatedHit mapping ─────────────────
 

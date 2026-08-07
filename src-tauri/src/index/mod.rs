@@ -352,6 +352,16 @@ pub struct IndexConfig {
     /// shape to `ingest_audio_level`.
     #[serde(default)]
     pub ingest_image_level: IngestImageLevel,
+    /// How far the anydoc office/e-book converter reaches. `auto`
+    /// (default) lets it serve only the formats no native extractor
+    /// covers — PowerPoint, spreadsheets, OpenDocument, RTF, EPUB,
+    /// legacy `.doc` — so it can add documents to the index but never
+    /// change how an already-supported file extracts. `prefer` puts it
+    /// ahead of the native pdf/docx/csv extractors; `never` pins the
+    /// pre-anydoc behaviour. Inert unless the `anydoc` feature is
+    /// compiled in.
+    #[serde(default)]
+    pub anydoc_mode: crate::extractors::AnydocMode,
     /// P13.7 Step 4 — when enabled, the bg_ingest image path
     /// also pushes each indexed image to the configured CrispLens
     /// server (POST /api/ingest/upload-local) so the server's
@@ -612,6 +622,7 @@ impl Default for IndexConfig {
             audio_extraction_enabled: default_audio_extraction_enabled(),
             audio_asr_backend: default_audio_asr_backend(),
             audio_lid_method: default_audio_lid_method(),
+            anydoc_mode: crate::extractors::AnydocMode::default(),
             image_extraction_enabled: default_image_extraction_enabled(),
             image_indexing_enabled: false,
             ingest_audio_level: IngestAudioLevel::default(),

@@ -1388,9 +1388,10 @@ jobs:
           # two plugins are not dependencies at all, and every spawn site in
           # the tree is behind `feature = "sidecars"` (enforced by
           # `no_process_spawn_outside_the_sidecars_feature` in compliance.rs).
-          # It also forces `drive-filen-native` + `drive-internxt-native` on,
-          # because the Python-CLI drives are exactly what a sandboxed build
-          # cannot run — so they are deliberately not named here.
+          # The native Filen / Internxt clients come in via `desktop` itself
+          # now, so `desktop-mas` no longer names them: the Python-CLI drives
+          # a sandboxed build could not run have been deleted outright, which
+          # is why there is nothing left here to force on.
           #
           # The capability patch above is still required, not redundant: the
           # plugins being absent means `shell:default` / `process:default`
