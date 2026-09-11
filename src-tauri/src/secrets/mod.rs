@@ -1,7 +1,7 @@
-//! OS-keychain credential storage for LLM provider API keys.
+//! Credential storage for LLM provider API keys.
 //!
-//! Sister module to `images::crisplens::secret` — same pattern (keyring
-//! crate, per-account entries) but generalised for any caller, not just
+//! Sister module to `images::crisplens::secret` — same pattern (vault
+//! entries, keyed per account) but generalised for any caller, not just
 //! CrispLens sessions. Used by the LLM provider settings flow so that
 //! API keys never land in `settings.json` (where they'd otherwise leak
 //! through cloud-sync, backups, or bug-report tarballs).
@@ -10,9 +10,10 @@
 //!   `llm-provider:<provider-id>`   e.g.  `llm-provider:openai`
 //!                                         `llm-provider:groq`
 //!
-//! On macOS this becomes the visible row name in Keychain Access — the
-//! user can audit and manually revoke any key. The SERVICE field is
-//! `CrispSorter.LLM` so the rows group together visually.
+//! Where those entries physically live is the user's choice, not a
+//! constant — see [`vault`]. On the default (the OS credential store)
+//! this becomes the visible row name in Keychain Access; the SERVICE
+//! field is `CrispSorter.LLM` so the rows group together visually.
 //!
 //! See [`tauri_commands`] for the Tauri surface; the storage primitives
 //! live here and are sync (the keychain APIs are blocking on every
@@ -20,18 +21,22 @@
 //! async).
 
 pub mod tauri_commands;
+pub mod vault;
+pub mod vault_commands;
 
-use keyring::Entry;
+use vault::Entry;
 
-/// The OS-keychain service identifier under which all LLM-provider
-/// keys live. Visible to the user in Keychain Access / Credential
-/// Manager / Seahorse.
+/// The service identifier under which all LLM-provider keys live. On
+/// the OS-credential-store vault it is visible to the user in Keychain
+/// Access / Credential Manager / Seahorse.
 pub const SERVICE: &str = "CrispSorter.LLM";
 
 /// Errors flowing out of the secret-store layer. Does not wrap
-/// `keyring::Error` because its platform-specific detail is noisy at
+/// [`vault::Error`] because its platform-specific detail is noisy at
 /// the Tauri command boundary; we surface a short reason and log the
-/// full underlying error.
+/// full underlying error. [`SecretError::Denied`] is the exception —
+/// the UI has to tell those apart to offer the "pick another store"
+/// escape hatch.
 #[derive(Debug)]
 pub enum SecretError {
     /// OS keychain unreachable (locked vault, dbus down, no backend).
@@ -40,6 +45,10 @@ pub enum SecretError {
     NotFound,
     /// Read/write failure that isn't "not found".
     Other(String),
+    /// The credential store asked the user and the answer was no.
+    /// Distinct from [`SecretError::Other`] because it is the one
+    /// failure a different vault would fix.
+    Denied(String),
 }
 
 impl std::fmt::Display for SecretError {
@@ -48,45 +57,56 @@ impl std::fmt::Display for SecretError {
             SecretError::Backend(s) => write!(f, "keychain backend unavailable: {s}"),
             SecretError::NotFound => write!(f, "no stored secret for this account"),
             SecretError::Other(s) => write!(f, "keychain error: {s}"),
+            SecretError::Denied(s) => write!(f, "{s}"),
         }
     }
 }
 
 impl std::error::Error for SecretError {}
 
-/// Build a fresh Entry for the given account. Cheap on real OS
-/// keychains; production code constructs one per call.
+/// Build a fresh Entry for the given account. Cheap — an `Entry` is
+/// just a (service, account) pair that resolves the active vault on
+/// use, so production code constructs one per call.
 pub fn entry_for(account: &str) -> Result<Entry, SecretError> {
-    Entry::new(SERVICE, account).map_err(|e| SecretError::Backend(e.to_string()))
+    Entry::new(SERVICE, account).map_err(from_vault)
 }
 
-// ── Entry-taking primitives (testable with keyring::mock) ────────────
+/// Carry [`vault::Error::Denied`] across as [`SecretError::Denied`] so
+/// the UI can distinguish "your store said no" from "your store broke".
+fn from_vault(e: vault::Error) -> SecretError {
+    match e {
+        vault::Error::NoEntry => SecretError::NotFound,
+        vault::Error::Denied(_) | vault::Error::Locked(_) => SecretError::Denied(e.to_string()),
+        vault::Error::Backend(_) => SecretError::Backend(e.to_string()),
+        vault::Error::Other(_) => SecretError::Other(e.to_string()),
+    }
+}
+
+// ── Entry-taking primitives ─────────────────────────────────────────
 //
-// The functions below take a `&Entry`. They're what the mock-based
-// unit tests exercise — `keyring::mock` is per-Entry, so set/get/
-// delete only round-trip when they share the same Entry instance.
-// The high-level wrappers further down construct a fresh Entry each
-// call (the normal production path).
+// The functions below take a `&Entry`. They predate the vault layer,
+// when `keyring::mock` forced tests to share one `Entry` instance
+// across set/get/delete. That constraint is gone — an `Entry` binds
+// nothing — but the signatures stayed, because the high-level wrappers
+// below are what production calls anyway.
 
 pub(crate) fn set_secret_at(entry: &Entry, value: &str) -> Result<(), SecretError> {
-    entry
-        .set_password(value)
-        .map_err(|e| SecretError::Other(e.to_string()))
+    entry.set_password(value).map_err(from_vault)
 }
 
 pub(crate) fn get_secret_at(entry: &Entry) -> Result<Option<String>, SecretError> {
     match entry.get_password() {
         Ok(v) => Ok(Some(v)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(SecretError::Other(e.to_string())),
+        Err(vault::Error::NoEntry) => Ok(None),
+        Err(e) => Err(from_vault(e)),
     }
 }
 
 pub(crate) fn delete_secret_at(entry: &Entry) -> Result<(), SecretError> {
     match entry.delete_credential() {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(SecretError::Other(e.to_string())),
+        Err(vault::Error::NoEntry) => Ok(()),
+        Err(e) => Err(from_vault(e)),
     }
 }
 
@@ -133,26 +153,27 @@ pub fn make_sentinel(account: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyring::mock::default_credential_builder;
-    use std::sync::Once;
+    use vault::memory::MemoryVault;
+    use vault::Vault;
 
-    /// Switch keyring's global credential builder to the in-memory
-    /// mock. Same idempotent install pattern as
-    /// `src/images/crisplens/secret.rs` — `keyring` uses an internal
-    /// OnceLock, so we guard our own with a `Once`.
-    fn install_mock_keyring() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            keyring::set_default_credential_builder(default_credential_builder());
-        });
+    /// The vault these tests run against. An in-memory vault needs no
+    /// global installation and no `Once` guard — unlike `keyring::mock`,
+    /// which was per-`Entry` and forced every case to thread one
+    /// instance through set/get/delete.
+    fn mock_entry(_account: &str) -> MemoryVault {
+        MemoryVault::new()
     }
 
-    /// `keyring::mock` is per-Entry — two independent `Entry::new`
-    /// calls don't share state. Tests hold one Entry across all
-    /// operations in a case.
-    fn mock_entry(account: &str) -> Entry {
-        install_mock_keyring();
-        Entry::new(SERVICE, account).unwrap()
+    fn set_secret_at(v: &MemoryVault, value: &str) -> Result<(), SecretError> {
+        v.set(SERVICE, "test", value).map_err(from_vault)
+    }
+
+    fn get_secret_at(v: &MemoryVault) -> Result<Option<String>, SecretError> {
+        v.get(SERVICE, "test").map_err(from_vault)
+    }
+
+    fn delete_secret_at(v: &MemoryVault) -> Result<(), SecretError> {
+        v.delete(SERVICE, "test").map_err(from_vault)
     }
 
     #[test]

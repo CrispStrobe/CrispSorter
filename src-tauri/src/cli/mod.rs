@@ -60,7 +60,7 @@ use std::process::ExitCode;
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
     "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx", "convert",
-    "search", "watch", "drives", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
+    "search", "watch", "drives", "secrets", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
     "--version", "-V",
 ];
 
@@ -573,6 +573,80 @@ enum Command {
         data_dir: Option<PathBuf>,
         #[command(subcommand)]
         cmd: DrivesCmd,
+    },
+    /// Choose where API keys, tokens and session cookies are stored.
+    ///
+    /// The default is the OS credential store, which on macOS means the
+    /// login keychain — and that keychain asks for a password CrispSorter
+    /// cannot supply, once per secret, whenever the app is rebuilt or
+    /// re-signed. These commands move the secrets somewhere that does not.
+    Secrets {
+        /// Override the data directory holding the vault + its config.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: SecretsCmd,
+    },
+}
+
+/// Which store to keep secrets in.
+#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+enum SecretStoreKind {
+    /// The platform default: macOS login keychain, Windows Credential
+    /// Manager, Linux Secret Service. What CrispSorter has always used.
+    Os,
+    /// A named macOS keychain — one CrispSorter creates, or one you
+    /// already own and know the password of. macOS only.
+    Keychain,
+    /// An AES-256-GCM file under the data dir, unlocked by a key file.
+    /// Never prompts.
+    File,
+    /// The same file, unlocked by a passphrase you type. Nothing on disk
+    /// opens it.
+    FilePassphrase,
+    /// Memory only — secrets last as long as the process.
+    Session,
+}
+
+#[derive(Subcommand, Debug)]
+enum SecretsCmd {
+    /// Show which store is in use, and whether it is usable.
+    Status,
+    /// List the macOS keychains this account has. Empty elsewhere.
+    Keychains,
+    /// Switch stores. Takes effect for every later run.
+    Use {
+        #[arg(value_enum)]
+        store: SecretStoreKind,
+        /// For `keychain`: which one. Defaults to CrispSorter's own.
+        #[arg(long)]
+        keychain: Option<PathBuf>,
+        /// For `keychain`: let macOS ask for the password instead of
+        /// CrispSorter holding it. Use this for a keychain of your own.
+        #[arg(long, default_value_t = false)]
+        prompt: bool,
+    },
+    /// Create a keychain for CrispSorter and print its password once.
+    CreateKeychain {
+        /// Where to put it. Defaults to
+        /// `~/Library/Keychains/CrispSorter.keychain-db`.
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Set the password yourself instead of having one generated.
+        /// Read from `CRISPSORTER_NEW_KEYCHAIN_PASSWORD` if set, so it
+        /// never lands in shell history.
+        #[arg(long, default_value_t = false)]
+        password_from_env: bool,
+    },
+    /// Copy secrets out of another store into the current one.
+    Migrate {
+        /// The store to copy *from*.
+        #[arg(long, value_enum, default_value = "os")]
+        from: SecretStoreKind,
+        /// `service=account` pairs to copy. Repeatable. Without any, the
+        /// known LLM provider accounts are tried.
+        #[arg(long = "account")]
+        accounts: Vec<String>,
     },
 }
 
@@ -2173,6 +2247,7 @@ fn run_on_current_stack() -> ExitCode {
         Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
         Command::IntendedPurpose { cmd } => cmd_intended_purpose(cli.format, cmd),
         Command::Drives { data_dir, cmd } => cmd_drives(cli.format, data_dir, cmd),
+        Command::Secrets { data_dir, cmd } => cmd_secrets(cli.format, data_dir, cmd),
         Command::Search {
             query, data_dir, limit, local_only, cloud_only, ext, lang,
             folder_prefix, author, year_min, year_max, url_domain, tag,
@@ -3523,8 +3598,18 @@ fn parse_embedder_device(device: &str) -> crate::index::embedder::EmbedderDevice
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
+///
+/// `crate::secrets::vault::default_app_data_dir` computes the same path
+/// for the vault, which has to resolve it without an `AppHandle`. Kept
+/// as two functions only because this one carries the `--data-dir`
+/// override and a `Result`; the per-OS rules below are the same.
 fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(p) = override_ {
+        // Bind the secret vault to the same profile. First call wins, and
+        // every command resolves its data dir before touching a secret, so
+        // `--data-dir` reaches the vault without threading it through each
+        // command signature.
+        crate::secrets::vault::set_data_dir(p.clone());
         return Ok(p);
     }
     // Mirror what tauri::path::app_data_dir() returns per OS.
@@ -12880,6 +12965,221 @@ fn cli_instantiate_drive(
         &cli_proxy_config(&index_config)?,
     )
     .map_err(|e| e.to_string())
+}
+
+// ── `crispsorter secrets` ───────────────────────────────────────────────────
+
+fn secret_store_choice(
+    kind: SecretStoreKind,
+    keychain: Option<PathBuf>,
+    prompt: bool,
+) -> Result<crate::secrets::vault::BackendChoice, String> {
+    use crate::secrets::vault::{BackendChoice, FileKeySource, MacUnlock};
+    Ok(match kind {
+        SecretStoreKind::Os => BackendChoice::OsDefault,
+        SecretStoreKind::Session => BackendChoice::Session,
+        SecretStoreKind::File => BackendChoice::File {
+            key: FileKeySource::Device,
+        },
+        SecretStoreKind::FilePassphrase => BackendChoice::File {
+            key: FileKeySource::Passphrase,
+        },
+        SecretStoreKind::Keychain => BackendChoice::MacKeychain {
+            path: keychain
+                .or_else(crate::secrets::vault::suggested_keychain_path)
+                .ok_or_else(|| {
+                    "named keychains are macOS-only; pass --keychain <path> if you know better"
+                        .to_string()
+                })?,
+            unlock: if prompt {
+                MacUnlock::Prompt
+            } else {
+                MacUnlock::AppManaged
+            },
+        },
+    })
+}
+
+fn cmd_secrets(out: OutFormat, data_dir: Option<PathBuf>, cmd: SecretsCmd) -> Result<(), String> {
+    use crate::secrets::vault;
+    let dir = resolve_data_dir(data_dir)?;
+    vault::init(dir.clone());
+
+    match cmd {
+        SecretsCmd::Status => {
+            let st = vault::status();
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "dataDir": dir,
+                        "status": st,
+                    })
+                ),
+                OutFormat::Text => {
+                    println!("store:     {}", st.choice.kind());
+                    println!("chosen:    {}", if st.chosen { "yes" } else { "no (still on the default)" });
+                    println!("unlocked:  {}", st.unlocked);
+                    if st.from_env {
+                        println!("note:      overridden by ${}", vault::ENV_BACKEND);
+                    }
+                    if st.denied {
+                        println!("note:      the store refused this session; reads are paused");
+                    }
+                    if let Some(e) = &st.error {
+                        println!("error:     {e}");
+                    }
+                }
+            }
+        }
+        SecretsCmd::Keychains => {
+            let list = vault::list_keychains();
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({ "keychains": list })),
+                OutFormat::Text => {
+                    if list.is_empty() {
+                        println!("(no keychains — this is a macOS-only concept)");
+                    }
+                    for k in &list {
+                        let tag = if k.is_login {
+                            "  [login — the one that prompts]"
+                        } else if k.is_ours {
+                            "  [CrispSorter's own]"
+                        } else {
+                            ""
+                        };
+                        println!("{:<24} {}{}", k.name, k.path.display(), tag);
+                    }
+                }
+            }
+        }
+        SecretsCmd::Use {
+            store,
+            keychain,
+            prompt,
+        } => {
+            let choice = secret_store_choice(store, keychain, prompt)?;
+            vault::select(choice).map_err(|e| e.to_string())?;
+            let st = vault::status();
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({ "ok": true, "status": st })),
+                OutFormat::Text => {
+                    println!("secrets are now kept in: {}", st.choice.kind());
+                    if !st.unlocked {
+                        println!(
+                            "locked — set ${} before the next run, or unlock it in Settings",
+                            vault::ENV_PASSPHRASE
+                        );
+                    }
+                    println!("existing secrets stay where they were; `secrets migrate` copies them across");
+                }
+            }
+        }
+        SecretsCmd::CreateKeychain {
+            path,
+            password_from_env,
+        } => {
+            let _ = (&path, password_from_env);
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err("named keychains exist only on macOS".to_string());
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let path = path
+                    .or_else(vault::suggested_keychain_path)
+                    .ok_or_else(|| "could not work out where to put the keychain".to_string())?;
+                // Never as an argument: a keychain password on the command
+                // line lands in shell history and in every `ps` listing.
+                let supplied = if password_from_env {
+                    std::env::var("CRISPSORTER_NEW_KEYCHAIN_PASSWORD").ok()
+                } else {
+                    None
+                };
+                if password_from_env && supplied.is_none() {
+                    return Err(
+                        "--password-from-env was given but CRISPSORTER_NEW_KEYCHAIN_PASSWORD is unset"
+                            .to_string(),
+                    );
+                }
+                let pw = vault::mac_keychain::create_keychain(&path, &dir, supplied.as_deref())
+                    .map_err(|e| e.to_string())?;
+                match out {
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "path": path,
+                            "password": pw,
+                            "generated": supplied.is_none(),
+                        })
+                    ),
+                    OutFormat::Text => {
+                        println!("created {}", path.display());
+                        println!("password: {pw}");
+                        println!(
+                            "Write that down. macOS may ask for it later — an item's access list\n\
+                             is per-binary, so a rebuilt or re-signed CrispSorter has to prove\n\
+                             itself again, and a password nobody knows is a keychain nobody can\n\
+                             answer for. It is also saved under {}.",
+                            vault::mac_keychain::password_file(&dir, &path).display()
+                        );
+                        println!("\nNow run:  crispsorter secrets use keychain --keychain {}", path.display());
+                    }
+                }
+            }
+        }
+        SecretsCmd::Migrate { from, accounts } => {
+            let source = secret_store_choice(from, None, false)?;
+            let pairs: Vec<(String, String)> = if accounts.is_empty() {
+                default_migration_candidates()
+            } else {
+                accounts
+                    .iter()
+                    .map(|a| {
+                        a.split_once('=')
+                            .map(|(s, acct)| (s.to_string(), acct.to_string()))
+                            .ok_or_else(|| format!("--account expects service=account, got {a:?}"))
+                    })
+                    .collect::<Result<_, _>>()?
+            };
+            let (copied, skipped, failures) =
+                vault::migrate(&source, &pairs).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "copied": copied,
+                        "skipped": skipped,
+                        "failures": failures,
+                    })
+                ),
+                OutFormat::Text => {
+                    println!("copied {copied}, not present {skipped}, failed {}", failures.len());
+                    for (service, account, why) in &failures {
+                        println!("  {service} / {account}: {why}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Accounts worth trying when `secrets migrate` is given no `--account`.
+///
+/// There is no "enumerate everything under this service" that is safe to
+/// call: on macOS each row would raise its own dialog. So the default is
+/// a guess — the LLM providers the app ships with — and anything else
+/// gets named explicitly.
+fn default_migration_candidates() -> Vec<(String, String)> {
+    const PROVIDERS: &[&str] = &[
+        "openai", "anthropic", "groq", "mistral", "openrouter", "together",
+        "deepseek", "gemini", "cohere", "perplexity", "xai", "ollama",
+    ];
+    PROVIDERS
+        .iter()
+        .map(|p| ("CrispSorter.LLM".to_string(), format!("llm-provider:{p}")))
+        .collect()
 }
 
 fn cmd_drives(

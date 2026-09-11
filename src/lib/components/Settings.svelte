@@ -17,6 +17,20 @@
         sentinelAccount,
         llmProviderAccount,
     } from '../secrets';
+    import {
+        getBackendOptions,
+        selectBackend,
+        unlockBackend,
+        retryBackend,
+        migrateSecrets,
+        createKeychain,
+        describeStore,
+        migrationCandidates,
+        type BackendOptions,
+        type StoreChoice,
+        type MigrationReport,
+        type CreatedKeychain,
+    } from '../secretBackend';
 
     /**
      * Walk a providers list, find any plain-text `apiKey` values (i.e.
@@ -80,7 +94,7 @@
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
         Rocket, FileText, Brain, Square, ChevronUp, ChevronDown, Info,
         RotateCcw, Search, CheckCircle2, AlertCircle, Beaker, Play, Check,
-        Server, Clock
+        Server, Clock, Lock, ShieldCheck
     } from 'lucide-svelte';
     import { open as openDialog, save, ask } from '@tauri-apps/plugin-dialog';
     import * as opener from '@tauri-apps/plugin-opener';
@@ -2910,6 +2924,103 @@
             isInstalled: installed.includes(tag)
         }));
     });
+
+    // ── Where secrets are stored ─────────────────────────────────────
+    //
+    // The default store is the OS credential vault, which on macOS is
+    // the login keychain — and that one asks for a password CrispSorter
+    // cannot supply whenever the app is rebuilt or re-signed, once per
+    // secret. This panel is the way out: pick a different store, move
+    // the existing secrets across, and stop being asked.
+
+    let secretBackend: BackendOptions | null = $state(null);
+    let secretBackendBusy = $state(false);
+    let secretBackendMsg = $state('');
+    let secretBackendError = $state('');
+    let vaultPassphrase = $state('');
+    let newKeychain: CreatedKeychain | null = $state(null);
+    let migrationReport: MigrationReport | null = $state(null);
+
+    async function loadSecretBackend() {
+        try {
+            secretBackend = await getBackendOptions();
+            secretBackendError = secretBackend.status.error ?? '';
+        } catch (e) {
+            secretBackendError = String(e);
+        }
+    }
+
+    /** Run `fn`, keeping the panel's busy/message/error state honest. */
+    async function withSecretBackend(fn: () => Promise<string>) {
+        secretBackendBusy = true;
+        secretBackendError = '';
+        secretBackendMsg = '';
+        try {
+            secretBackendMsg = await fn();
+        } catch (e) {
+            secretBackendError = String(e);
+        } finally {
+            secretBackendBusy = false;
+            await loadSecretBackend();
+        }
+    }
+
+    async function chooseStore(choice: StoreChoice) {
+        await withSecretBackend(async () => {
+            const st = await selectBackend(choice);
+            return st.unlocked
+                ? `Secrets are now kept in: ${describeStore(st.choice)}`
+                : 'Store selected — enter its passphrase below to unlock it.';
+        });
+    }
+
+    async function unlockVault() {
+        const pass = vaultPassphrase;
+        await withSecretBackend(async () => {
+            await unlockBackend(pass);
+            vaultPassphrase = '';
+            return 'Unlocked for this session.';
+        });
+    }
+
+    async function makeKeychain() {
+        await withSecretBackend(async () => {
+            newKeychain = await createKeychain();
+            // Selecting it right away is the point of the button; leaving
+            // the user on the old store after creating a new keychain
+            // would just be a second thing to click.
+            await selectBackend({
+                kind: 'mac-keychain',
+                path: newKeychain.path,
+                unlock: 'app-managed'
+            });
+            return `Created ${newKeychain.path} and switched to it.`;
+        });
+    }
+
+    /**
+     * Copy the provider keys out of the OS store and into the current
+     * one. The candidate list is built from the providers the UI knows
+     * about because no credential store offers a safe enumeration — on
+     * macOS, listing would raise one dialog per row.
+     */
+    async function migrateFromOsStore() {
+        await withSecretBackend(async () => {
+            migrationReport = await migrateSecrets(
+                { kind: 'os-default' },
+                migrationCandidates(providers.map((p) => p.id))
+            );
+            const r = migrationReport;
+            return `Copied ${r.copied} secret(s); ${r.skipped} were not there; ${r.failures.length} failed.`;
+        });
+    }
+
+    async function allowAnotherPrompt() {
+        await withSecretBackend(async () => {
+            await retryBackend();
+            return 'The next read may raise a system dialog again.';
+        });
+    }
 </script>
 
 <div class="settings-container">
@@ -2938,6 +3049,10 @@
             </button>
             <button class="provider-btn" class:active={selectedProviderId === 'diagnostics'} onclick={() => selectedProviderId = 'diagnostics'}>
                 <span class="prov-label"><CheckCircle2 size={16} /> {i18n.t.settings.diagnostics_title ?? 'Diagnostics'}</span>
+            </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'security'} onclick={() => { selectedProviderId = 'security'; loadSecretBackend(); }}>
+                <span class="prov-label"><ShieldCheck size={16} /> Secret storage</span>
+                {#if secretBackend?.status.denied}<AlertCircle size={12} style="color:#ef4444;" />{/if}
             </button>
             <button class="provider-btn" class:active={selectedProviderId === 'audit'} onclick={() => selectedProviderId = 'audit'}>
                 <span class="prov-label"><FileText size={16} /> Audit Log</span>
@@ -5157,6 +5272,215 @@
                 {/if}
             </div>
 
+        {:else if selectedProviderId === 'security'}
+            <div class="header"><h1>Secret storage</h1></div>
+            <div class="provider-panel">
+                <p class="section-desc">
+                    API keys, access tokens and session cookies never go into
+                    <code>settings.json</code>. This is where they go instead.
+                </p>
+
+                {#if !secretBackend}
+                    <button class="action-btn" onclick={loadSecretBackend}>Load</button>
+                {:else}
+                    <div class="section-card">
+                        <label><Lock size={16} /> In use now</label>
+                        <p class="section-desc" style="margin-top:4px;">
+                            {describeStore(secretBackend.status.choice)}
+                        </p>
+                        {#if !secretBackend.status.chosen}
+                            <p class="section-desc" style="color:#eab308;">
+                                You have not chosen yet — this is the default.
+                            </p>
+                        {/if}
+                        {#if secretBackend.status.fromEnv}
+                            <p class="section-desc" style="color:#eab308;">
+                                Overridden by <code>CRISPSORTER_SECRET_BACKEND</code>; the
+                                choice below will not take effect while that is set.
+                            </p>
+                        {/if}
+                        {#if !secretBackend.status.unlocked}
+                            <div style="margin-top:8px;">
+                                <p class="section-desc">This store is locked.</p>
+                                <input
+                                    type="password"
+                                    bind:value={vaultPassphrase}
+                                    placeholder="Vault passphrase"
+                                    autocomplete="off" />
+                                <button
+                                    class="action-btn"
+                                    style="margin-top:6px;"
+                                    disabled={secretBackendBusy || !vaultPassphrase}
+                                    onclick={unlockVault}>Unlock</button>
+                            </div>
+                        {/if}
+                        {#if secretBackend.status.denied}
+                            <!-- The latch: after one refusal CrispSorter stops
+                                 calling the OS, so a dismissed dialog is not
+                                 re-raised once per secret for the rest of the
+                                 session. -->
+                            <p class="section-desc" style="color:#ef4444;">
+                                The system store refused access, so further reads are
+                                paused for this session. Switch stores below, or
+                                <button class="link-btn" onclick={allowAnotherPrompt}>try again</button>.
+                            </p>
+                        {/if}
+                        {#if secretBackendError}
+                            <p class="section-desc" style="color:#ef4444;">{secretBackendError}</p>
+                        {/if}
+                        {#if secretBackendMsg}
+                            <p class="section-desc" style="color:#22c55e;">{secretBackendMsg}</p>
+                        {/if}
+                    </div>
+
+                    <div class="section-card">
+                        <label><ShieldCheck size={16} /> Choose a store</label>
+
+                        <div class="store-option">
+                            <div>
+                                <strong>System credential store</strong>
+                                <p class="section-desc">
+                                    macOS login keychain, Windows Credential Manager, Linux
+                                    Secret Service. The original behaviour. On macOS it asks
+                                    for your login-keychain password whenever CrispSorter has
+                                    been rebuilt or re-signed — a keychain item records which
+                                    binary made it, and adding a new one to that list needs
+                                    that password.
+                                </p>
+                            </div>
+                            <button
+                                class="action-btn secondary"
+                                disabled={secretBackendBusy}
+                                onclick={() => chooseStore({ kind: 'os-default' })}>Use this</button>
+                        </div>
+
+                        <div class="store-option">
+                            <div>
+                                <strong>Encrypted file — key file</strong>
+                                <p class="section-desc">
+                                    AES-256-GCM under the app data directory, unlocked by a
+                                    key file beside it. Never prompts for anything. Keeps the
+                                    secrets out of backups, cloud sync, settings exports and
+                                    support tarballs; it does not hide them from another
+                                    program running as you, which can read the key file too.
+                                </p>
+                            </div>
+                            <button
+                                class="action-btn"
+                                disabled={secretBackendBusy}
+                                onclick={() => chooseStore({ kind: 'file', key: 'device' })}>Use this</button>
+                        </div>
+
+                        <div class="store-option">
+                            <div>
+                                <strong>Encrypted file — passphrase</strong>
+                                <p class="section-desc">
+                                    The same file, with the key derived from a passphrase you
+                                    type once per run. Nothing on disk opens it, so a copy of
+                                    the directory is worthless without you.
+                                </p>
+                            </div>
+                            <button
+                                class="action-btn secondary"
+                                disabled={secretBackendBusy}
+                                onclick={() => chooseStore({ kind: 'file', key: 'passphrase' })}>Use this</button>
+                        </div>
+
+                        <div class="store-option">
+                            <div>
+                                <strong>This session only</strong>
+                                <p class="section-desc">
+                                    Nothing is written anywhere. Keys last until you quit.
+                                </p>
+                            </div>
+                            <button
+                                class="action-btn secondary"
+                                disabled={secretBackendBusy}
+                                onclick={() => chooseStore({ kind: 'session' })}>Use this</button>
+                        </div>
+                    </div>
+
+                    {#if secretBackend.supportsNamedKeychains}
+                        <div class="section-card">
+                            <label><Key size={16} /> Or a different keychain</label>
+                            <p class="section-desc">
+                                Any keychain but <code>login</code> works, as long as its
+                                password is one you can actually give macOS when it asks.
+                                A keychain CrispSorter creates comes with one it shows you;
+                                a keychain of your own comes with one you already know.
+                            </p>
+
+                            <button
+                                class="action-btn"
+                                disabled={secretBackendBusy}
+                                onclick={makeKeychain}>Create one for CrispSorter and use it</button>
+
+                            {#if newKeychain}
+                                <div class="section-card" style="margin-top:8px; border-color:#eab308;">
+                                    <p class="section-desc">
+                                        Password for <code>{newKeychain.path}</code> — write it
+                                        down, it is shown once:
+                                    </p>
+                                    <code style="user-select:all;">{newKeychain.password}</code>
+                                </div>
+                            {/if}
+
+                            <div class="settings-table-wrap" style="margin-top:10px;">
+                                <table class="settings-table">
+                                    <thead><tr><th>Keychain</th><th>Path</th><th></th></tr></thead>
+                                    <tbody>
+                                        {#each secretBackend.keychains as k (k.path)}
+                                            <tr>
+                                                <td>
+                                                    {k.name}
+                                                    {#if k.isLogin}<span style="color:#eab308;"> (prompts)</span>{/if}
+                                                    {#if k.isOurs}<span style="color:#22c55e;"> (ours)</span>{/if}
+                                                </td>
+                                                <td title={k.path}>{k.path}</td>
+                                                <td>
+                                                    <button
+                                                        class="action-btn secondary"
+                                                        disabled={secretBackendBusy || k.isLogin}
+                                                        onclick={() => chooseStore({
+                                                            kind: 'mac-keychain',
+                                                            path: k.path,
+                                                            unlock: k.isOurs ? 'app-managed' : 'prompt'
+                                                        })}>Use</button>
+                                                </td>
+                                            </tr>
+                                        {/each}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    {/if}
+
+                    <div class="section-card">
+                        <label><Download size={16} /> Bring existing keys across</label>
+                        <p class="section-desc">
+                            Switching stores leaves what you already saved where it was.
+                            This copies your provider keys out of the system credential
+                            store and into the one selected above. On macOS it may raise
+                            the very dialog you are trying to escape — once, not once per
+                            key — and it stops at the first refusal.
+                        </p>
+                        <button
+                            class="action-btn"
+                            disabled={secretBackendBusy || secretBackend.status.choice.kind === 'os-default'}
+                            onclick={migrateFromOsStore}>Copy from the system store</button>
+                        {#if migrationReport}
+                            <p class="section-desc">
+                                Copied {migrationReport.copied}; {migrationReport.skipped} were
+                                not there; {migrationReport.failures.length} failed.
+                            </p>
+                            {#each migrationReport.failures as f (f[0] + f[1])}
+                                <p class="section-desc" style="color:#ef4444;">{f[1]}: {f[2]}</p>
+                            {/each}
+                        {/if}
+                    </div>
+                {/if}
+            </div>
+
         {:else if selectedProviderId === 'audit'}
             <div class="header"><h1>Audit Log</h1></div>
             <div class="provider-panel">
@@ -5772,6 +6096,14 @@
 
     .save-btn { background: #3b82f6; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.875rem; }
     .section-card { background: #18181b; border: 1px solid #27272a; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    /* Secret-storage picker: one row per store, description on the left
+       and its "Use this" on the right, so the trade-offs are readable
+       side by side rather than as a list of radio labels. */
+    .store-option { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 10px 0; border-top: 1px solid #27272a; }
+    .store-option:first-of-type { border-top: none; }
+    .store-option > div { flex: 1; }
+    .store-option button { flex: 0 0 auto; }
+    .link-btn { background: none; border: none; padding: 0; color: #60a5fa; text-decoration: underline; cursor: pointer; font: inherit; }
     .form-group { margin-bottom: 20px; max-width: 600px; }
     .checkbox-group { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
     label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; margin-bottom: 10px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.02em; }

@@ -2899,6 +2899,16 @@ pub fn run() {
 
             // Initialise job queue + store data_dir now that it is known.
             if let Ok(data_dir) = app.path().app_data_dir() {
+                // Before anything can read a secret: pin the vault to the
+                // real data dir, so the user's chosen store is in force from
+                // the first read rather than from whenever Settings is
+                // first opened.
+                secrets::vault::init(data_dir.clone());
+                app_log!(
+                    "info",
+                    "secret store: {}",
+                    secrets::vault::status().choice.kind()
+                );
                 let state: tauri::State<'_, AppState> = app.state();
                 // Store data_dir for drive_* commands and similar.
                 // Use try_lock so we don't block the sync setup hook.
@@ -3546,6 +3556,14 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            secrets::vault_commands::secret_backend_options,
+            secrets::vault_commands::secret_backend_status,
+            secrets::vault_commands::secret_backend_select,
+            secrets::vault_commands::secret_backend_unlock,
+            secrets::vault_commands::secret_backend_retry,
+            secrets::vault_commands::secret_backend_migrate,
+            secrets::vault_commands::secret_backend_create_keychain,
+            secrets::vault_commands::secret_backend_keychain_password,
             pdf_ops::tauri_commands::pdf_info,
             pdf_ops::tauri_commands::pdf_reorder_pages,
             pdf_ops::tauri_commands::pdf_extract_pages,
@@ -3931,6 +3949,14 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            secrets::vault_commands::secret_backend_options,
+            secrets::vault_commands::secret_backend_status,
+            secrets::vault_commands::secret_backend_select,
+            secrets::vault_commands::secret_backend_unlock,
+            secrets::vault_commands::secret_backend_retry,
+            secrets::vault_commands::secret_backend_migrate,
+            secrets::vault_commands::secret_backend_create_keychain,
+            secrets::vault_commands::secret_backend_keychain_password,
             pdf_ops::tauri_commands::pdf_info,
             pdf_ops::tauri_commands::pdf_reorder_pages,
             pdf_ops::tauri_commands::pdf_extract_pages,

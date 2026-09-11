@@ -1,7 +1,7 @@
 //! OS-keychain storage for the optional network proxy password.
 
 #[cfg(not(test))]
-use keyring::Entry;
+use crate::secrets::vault::{Entry, Error as VaultError};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
@@ -36,7 +36,7 @@ pub fn get() -> anyhow::Result<Option<String>> {
     {
         match Entry::new(SERVICE, ACCOUNT)?.get_password() {
             Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(VaultError::NoEntry) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -51,7 +51,7 @@ pub fn clear() -> anyhow::Result<()> {
     #[cfg(not(test))]
     {
         match Entry::new(SERVICE, ACCOUNT)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(VaultError::NoEntry) => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
@@ -60,13 +60,8 @@ pub fn clear() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyring::mock::default_credential_builder;
-    use std::sync::Once;
-
     #[test]
     fn password_round_trip_and_clear() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| keyring::set_default_credential_builder(default_credential_builder()));
         clear().unwrap();
         assert_eq!(get().unwrap(), None);
         set("secret").unwrap();

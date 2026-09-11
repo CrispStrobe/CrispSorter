@@ -1,11 +1,14 @@
-//! OS-keychain storage for native cloud-drive sessions.
+//! Vault storage for native cloud-drive sessions.
 //!
 //! A native Internxt session contains more than a bearer token: the mnemonic,
 //! bucket id, and bridge credentials are required to decrypt and transfer
 //! files. None of that belongs in `drives.json` or a synced settings file.
+//!
+//! Which vault — OS credential store, a named macOS keychain, or an
+//! encrypted file — is the user's choice; see `crate::secrets::vault`.
 
 use anyhow::{Context, Result};
-use keyring::Entry;
+use crate::secrets::vault::{Entry, Error as VaultError};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::HashMap;
@@ -14,7 +17,8 @@ use std::sync::{Mutex, OnceLock};
 
 const SERVICE: &str = "CrispSorter.CloudDrive";
 const CREDENTIALS_SERVICE: &str = "CrispSorter.CloudDrive.Auth";
-// Unit tests use an isolated memory store; production always uses the OS keychain.
+// Unit tests use an isolated memory store; production uses whichever
+// vault the user has selected.
 
 fn entry(drive_id: &str) -> Result<Entry> {
     Entry::new(SERVICE, drive_id).context("creating cloud-drive keychain entry")
@@ -81,7 +85,7 @@ pub fn get_credentials(drive_id: &str) -> Result<Option<DriveCredentials>> {
         Ok(value) => serde_json::from_str(&value)
             .context("parsing cloud-drive credentials from keychain")
             .map(Some),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(VaultError::NoEntry) => Ok(None),
         Err(error) => Err(error).context("reading cloud-drive credentials from keychain"),
     }
 }
@@ -97,7 +101,7 @@ pub fn delete_credentials(drive_id: &str) -> Result<()> {
     }
     #[cfg(not(test))]
     match credentials_entry(drive_id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(VaultError::NoEntry) => Ok(()),
         Err(error) => Err(error).context("deleting cloud-drive credentials from keychain"),
     }
 }
@@ -127,7 +131,7 @@ pub fn get_session(drive_id: &str) -> Result<Option<String>> {
     #[cfg(not(test))]
     match entry(drive_id)?.get_password() {
         Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(VaultError::NoEntry) => Ok(None),
         Err(error) => Err(error).context("reading cloud-drive session from keychain"),
     }
 }
@@ -143,7 +147,7 @@ pub fn delete_session(drive_id: &str) -> Result<()> {
     }
     #[cfg(not(test))]
     match entry(drive_id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(VaultError::NoEntry) => Ok(()),
         Err(error) => Err(error).context("deleting cloud-drive session from keychain"),
     }
 }
@@ -156,94 +160,26 @@ pub(crate) fn install_mock_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::sync::{Once, OnceLock};
+    use crate::secrets::vault::memory::MemoryVault;
+    use std::sync::{Arc, Once};
 
+    /// Point the process vault at one in-memory store.
+    ///
+    /// This replaces ~90 lines of bespoke `keyring::CredentialBuilder`
+    /// that existed for a single reason: `keyring::mock` keeps the
+    /// secret *inside* the `Credential`, so `Entry::new(service, id)`
+    /// called twice for the same id yielded two unrelated stores — and
+    /// every public function here builds its own `Entry`. A round-trip
+    /// through the public API therefore always read back `None`, no
+    /// matter how correct the code was, and
+    /// `public_credential_and_session_api_round_trips_and_deletes`
+    /// asserted exactly that round-trip. A vault has no such split:
+    /// an `Entry` binds nothing and resolves the active store per call.
     pub(crate) fn install_mock_for_tests() {
         static ONCE: Once = Once::new();
-        ONCE.call_once(|| keyring::set_default_credential_builder(shared_store_builder()));
-    }
-
-    // ── A test keychain that survives across `Entry` values ──────────────────
-    //
-    // `keyring::mock` keeps the secret *inside* the `Credential` object, so two
-    // `Entry::new(service, id)` calls for the same id get two unrelated stores.
-    // Every public function here builds its own `Entry` — `set_credentials`
-    // stores through one, `get_credentials` reads through another — so against
-    // the stock mock a round-trip through the public API always reads back
-    // `None`, no matter how correct the code is.
-    //
-    // `public_credential_and_session_api_round_trips_and_deletes` asserted
-    // exactly that round-trip and had therefore never passed; it went unnoticed
-    // because the lib test target did not compile (see docs/ai-act.md § 5).
-    // Marking it `#[ignore]` would have made the suite green while deleting the
-    // only coverage of the API the app actually calls, so instead the store is
-    // keyed by (target, service, user) and shared between credentials — which is
-    // how a real keychain behaves, and is what the assertions were written for.
-    #[derive(Debug)]
-    struct SharedStoreCredential {
-        key: (String, String, String),
-    }
-
-    fn store() -> &'static std::sync::Mutex<HashMap<(String, String, String), Vec<u8>>> {
-        static STORE: OnceLock<std::sync::Mutex<HashMap<(String, String, String), Vec<u8>>>> =
-            OnceLock::new();
-        STORE.get_or_init(Default::default)
-    }
-
-    impl keyring::credential::CredentialApi for SharedStoreCredential {
-        fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
-            store().lock().unwrap().insert(self.key.clone(), secret.to_vec());
-            Ok(())
-        }
-
-        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
-            store()
-                .lock()
-                .unwrap()
-                .get(&self.key)
-                .cloned()
-                .ok_or(keyring::Error::NoEntry)
-        }
-
-        fn delete_credential(&self) -> keyring::Result<()> {
-            match store().lock().unwrap().remove(&self.key) {
-                Some(_) => Ok(()),
-                None => Err(keyring::Error::NoEntry),
-            }
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    #[derive(Debug)]
-    struct SharedStoreBuilder;
-
-    impl keyring::credential::CredentialBuilderApi for SharedStoreBuilder {
-        fn build(
-            &self,
-            target: Option<&str>,
-            service: &str,
-            user: &str,
-        ) -> keyring::Result<Box<keyring::credential::Credential>> {
-            Ok(Box::new(SharedStoreCredential {
-                key: (
-                    target.unwrap_or_default().to_owned(),
-                    service.to_owned(),
-                    user.to_owned(),
-                ),
-            }))
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    fn shared_store_builder() -> Box<keyring::credential::CredentialBuilder> {
-        Box::new(SharedStoreBuilder)
+        ONCE.call_once(|| {
+            crate::secrets::vault::install_for_tests(Arc::new(MemoryVault::new()));
+        });
     }
 
     #[test]
@@ -256,10 +192,7 @@ mod tests {
             "{\"token\":\"test\"}"
         );
         session.delete_credential().unwrap();
-        assert!(matches!(
-            session.get_password(),
-            Err(keyring::Error::NoEntry)
-        ));
+        assert!(matches!(session.get_password(), Err(VaultError::NoEntry)));
     }
 
     #[test]
@@ -274,10 +207,7 @@ mod tests {
             client_id: Some("public-client".into()),
         };
         // Goes through one entry on purpose: this test is about the exact
-        // serialized payload on the wire to the keychain, not about persistence.
-        // (The round-trip across separate entries is covered by
-        // `public_credential_and_session_api_round_trips_and_deletes`, which the
-        // shared-store test backend above finally makes possible.)
+        // serialized payload on the wire to the vault, not about persistence.
         let serialized = serde_json::to_string(&credentials).unwrap();
         let stored = credentials_entry(id).unwrap();
         stored.set_password(&serialized).unwrap();
@@ -285,7 +215,7 @@ mod tests {
             serde_json::from_str(&stored.get_password().unwrap()).unwrap();
         assert_eq!(loaded, credentials);
         stored.delete_credential().unwrap();
-        assert!(matches!(stored.get_password(), Err(keyring::Error::NoEntry)));
+        assert!(matches!(stored.get_password(), Err(VaultError::NoEntry)));
     }
 
     #[test]
@@ -293,8 +223,10 @@ mod tests {
         install_mock_for_tests();
         let id = "test-public-secret-api";
         let credentials = DriveCredentials {
-            username: Some("user".into()), password: Some("secret".into()),
-            access_token: Some("access".into()), refresh_token: Some("refresh".into()),
+            username: Some("user".into()),
+            password: Some("secret".into()),
+            access_token: Some("access".into()),
+            refresh_token: Some("refresh".into()),
             client_id: Some("public".into()),
         };
         set_credentials(id, &credentials).unwrap();
