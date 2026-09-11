@@ -11595,6 +11595,76 @@ mod tests {
     }
 
     #[test]
+    fn secrets_use_parses_every_store() {
+        for (argv, want) in [
+            (vec!["crispsorter", "secrets", "use", "os"], SecretStoreKind::Os),
+            (vec!["crispsorter", "secrets", "use", "file"], SecretStoreKind::File),
+            (
+                vec!["crispsorter", "secrets", "use", "file-passphrase"],
+                SecretStoreKind::FilePassphrase,
+            ),
+            (vec!["crispsorter", "secrets", "use", "session"], SecretStoreKind::Session),
+        ] {
+            let cli = Cli::try_parse_from(argv.clone())
+                .unwrap_or_else(|e| panic!("{argv:?} did not parse: {e}"));
+            match cli.command {
+                Command::Secrets {
+                    cmd: SecretsCmd::Use { store, .. },
+                    ..
+                } => assert_eq!(store, want, "for {argv:?}"),
+                other => panic!("{argv:?} routed to {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn secrets_use_keychain_takes_a_path_and_a_prompt_flag() {
+        // The two ways off the login keychain that still use *a* keychain:
+        // one CrispSorter owns the password of, and one the user does.
+        let cli = Cli::try_parse_from([
+            "crispsorter",
+            "secrets",
+            "use",
+            "keychain",
+            "--keychain",
+            "/tmp/x.keychain-db",
+            "--prompt",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Secrets {
+                cmd:
+                    SecretsCmd::Use {
+                        store,
+                        keychain,
+                        prompt,
+                    },
+                ..
+            } => {
+                assert_eq!(store, SecretStoreKind::Keychain);
+                assert_eq!(keychain.as_deref(), Some(std::path::Path::new("/tmp/x.keychain-db")));
+                assert!(prompt);
+            }
+            other => panic!("routed to {other:?}"),
+        }
+    }
+
+    #[test]
+    fn secrets_data_dir_is_global_across_the_subtree() {
+        // `--data-dir` after the verb has to reach the vault, or a
+        // non-default profile silently configures the default one.
+        let cli =
+            Cli::try_parse_from(["crispsorter", "secrets", "status", "--data-dir", "/tmp/prof"])
+                .unwrap();
+        match cli.command {
+            Command::Secrets { data_dir, .. } => {
+                assert_eq!(data_dir.as_deref(), Some(std::path::Path::new("/tmp/prof")));
+            }
+            other => panic!("routed to {other:?}"),
+        }
+    }
+
+    #[test]
     fn drives_search_parses_bounded_content_options() {
         let cli = Cli::try_parse_from([
             "crispsorter", "drives", "search", "--drive", "drive-1", "invoice",
