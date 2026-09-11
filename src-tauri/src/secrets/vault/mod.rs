@@ -561,6 +561,12 @@ pub fn migrate(
     pairs: &[(String, String)],
 ) -> Result<(usize, usize, Vec<(String, String, String)>), Error> {
     let dir = data_dir();
+    // An explicit "copy my keys across" is the user asking to be prompted,
+    // so lower the latch first — otherwise a refusal earlier in the session
+    // would make every row fail without the store ever being consulted. At
+    // most one dialog follows: the first denial re-latches and breaks the
+    // loop below.
+    clear_denied();
     let source = build(from, &dir)?;
     let target = active();
     let (mut copied, mut skipped) = (0usize, 0usize);

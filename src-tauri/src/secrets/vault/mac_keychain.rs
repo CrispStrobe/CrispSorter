@@ -133,6 +133,18 @@ pub fn stored_password(data_dir: &Path, keychain: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Hand-written rather than derived, because the struct holds a keychain
+/// password: a derived `Debug` would print it into any log line, panic
+/// message or `unwrap_err()` that ever formats this vault.
+impl std::fmt::Debug for MacKeychainVault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MacKeychainVault")
+            .field("path", &self.path)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 impl MacKeychainVault {
     pub fn open(path: &Path, unlock: MacUnlock, data_dir: &Path) -> Result<Self, Error> {
         if !path.exists() {
@@ -263,6 +275,17 @@ mod tests {
             create_keychain(&path, dir.path(), None),
             Err(Error::Backend(_))
         ));
+    }
+
+    #[test]
+    fn debug_output_never_carries_the_keychain_password() {
+        let v = MacKeychainVault {
+            path: PathBuf::from("/tmp/x.keychain-db"),
+            password: Some("hunter2".into()),
+        };
+        let shown = format!("{v:?}");
+        assert!(!shown.contains("hunter2"), "password leaked into Debug: {shown}");
+        assert!(shown.contains("redacted"));
     }
 
     #[test]
