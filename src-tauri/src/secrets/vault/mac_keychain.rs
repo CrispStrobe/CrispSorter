@@ -204,10 +204,10 @@ impl Vault for MacKeychainVault {
         let kc = self.keychain()?;
         match kc.find_generic_password(service, account) {
             Ok((_password, item)) => {
-                // `SecKeychainItem::delete` consumes the item; discard the
-                // result so this compiles whether it yields `()` or a
-                // `Result`, and stay idempotent either way.
-                let _ = item.delete();
+                // `SecKeychainItem::delete` consumes the item and returns
+                // nothing — a missing row is reported by the `find` above,
+                // which keeps this idempotent.
+                item.delete();
                 Ok(())
             }
             Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),

@@ -40,7 +40,8 @@
 //! the service and account namespaces.
 
 use super::{write_private, Error, FileKeySource, Vault};
-use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
