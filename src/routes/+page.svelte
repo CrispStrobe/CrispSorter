@@ -26,8 +26,23 @@
     import TransferDrawer from '$lib/components/TransferDrawer.svelte';
     import DriveBrowser from '$lib/components/DriveBrowser.svelte';
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
+    import { getBackendStatus, type BackendStatus } from '$lib/secretBackend';
 
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
+
+    /**
+     * Set when the credential store has refused to hand over a secret, or
+     * could not be opened at all.
+     *
+     * This is the one case where the choice of store has to be put in front
+     * of the user rather than waiting in Settings: on macOS a refusal means
+     * the login keychain is asking for a password the user may not have,
+     * and every provider key is unreachable until they pick somewhere else.
+     * Deliberately NOT shown merely because the user has never chosen —
+     * that would nag everyone whose keychain works fine.
+     */
+    let secretStoreAlert: BackendStatus | null = $state(null);
+    let secretStoreAlertDismissed = $state(false);
     let navCollapsed = $state(false);
     let showLogs = $state(false);
 
@@ -133,6 +148,23 @@
             // own failure path leaves every gated surface hidden, so this
             // deliberately does not guard the rest of startup.
             await loadCapabilities();
+
+            // Polled, not read once: the store refuses on the first *read*
+            // of a secret, which happens long after mount — when a provider
+            // key is resolved for a query. The call itself only reads state
+            // the vault layer already holds; it never touches the keychain,
+            // which is the whole point.
+            const checkSecretStore = async () => {
+                if (secretStoreAlertDismissed) return;
+                try {
+                    const st = await getBackendStatus();
+                    secretStoreAlert = st.denied || st.error ? st : null;
+                } catch (e) {
+                    flog('warn', `secret store status unavailable: ${e}`);
+                }
+            };
+            await checkSecretStore();
+            const secretStoreTimer = setInterval(checkSecretStore, 15_000);
 
             // Load saved language
             const savedLang = await getSetting('language', 'en') as Language;
@@ -356,6 +388,7 @@
 
             cleanup = () => {
                 clearInterval(dbStatsTimer);
+                clearInterval(secretStoreTimer);
                 stopQueuePoll();
                 unlistenWatch();
                 unlistenSyncPair();
@@ -493,6 +526,25 @@
     </nav>
 
     <main class="main-content" class:with-logs={showLogs}>
+        {#if secretStoreAlert && !secretStoreAlertDismissed}
+            <div class="secret-store-banner" role="alert">
+                <span>
+                    {#if secretStoreAlert.denied}
+                        Your system credential store refused to release CrispSorter's
+                        saved keys. On macOS this is the login keychain asking for a
+                        password — CrispSorter cannot supply it, and will stop asking
+                        for the rest of this session.
+                    {:else}
+                        CrispSorter could not open the store your secrets are kept in:
+                        {secretStoreAlert.error}
+                    {/if}
+                </span>
+                <button class="secret-store-banner-action" onclick={() => { activeTab = 'settings'; secretStoreAlertDismissed = true; }}>
+                    Choose where secrets are stored
+                </button>
+                <button class="secret-store-banner-close" aria-label="Dismiss" onclick={() => secretStoreAlertDismissed = true}>×</button>
+            </div>
+        {/if}
         <div class="content-area">
             {#if activeTab === 'settings'}
                 <Settings />
@@ -665,6 +717,43 @@
         overflow: hidden;
         position: relative;
         min-height: 0;
+    }
+
+    /* Shown only when the credential store has actually refused or failed
+       to open — at that point every saved API key is unreachable, so the
+       choice of store stops being a Settings detail. */
+    .secret-store-banner {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        background: #45222233;
+        border-bottom: 1px solid #7f1d1d;
+        color: #fecaca;
+        font-size: 0.85rem;
+        flex: 0 0 auto;
+    }
+    .secret-store-banner span { flex: 1; }
+    .secret-store-banner-action {
+        flex: 0 0 auto;
+        background: #7f1d1d;
+        color: #fee2e2;
+        border: none;
+        border-radius: 6px;
+        padding: 6px 12px;
+        cursor: pointer;
+        font: inherit;
+    }
+    .secret-store-banner-action:hover { background: #991b1b; }
+    .secret-store-banner-close {
+        flex: 0 0 auto;
+        background: none;
+        border: none;
+        color: #fecaca;
+        cursor: pointer;
+        font-size: 1.2rem;
+        line-height: 1;
+        padding: 0 4px;
     }
 
     .log-drawer {
