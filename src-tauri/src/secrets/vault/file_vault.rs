@@ -143,9 +143,18 @@ impl FileVault {
             FileKeySource::Passphrase => {
                 // Locked until `unlock`. `CRISPSORTER_VAULT_PASSPHRASE`
                 // is how a headless CLI run gets in without a TTY.
+                //
+                // A wrong one leaves the vault locked rather than failing
+                // the open: an unopenable vault is a vault the user can
+                // still unlock from the UI, whereas an error here would
+                // make the whole store unbuildable and send the app to its
+                // fallback — away from the secrets that are sitting right
+                // there on disk.
                 if let Ok(p) = std::env::var(super::ENV_PASSPHRASE) {
                     if !p.is_empty() {
-                        v.unlock(&p)?;
+                        if let Err(e) = v.unlock(&p) {
+                            eprintln!("secrets: ${} did not open the vault: {e}", super::ENV_PASSPHRASE);
+                        }
                     }
                 }
             }

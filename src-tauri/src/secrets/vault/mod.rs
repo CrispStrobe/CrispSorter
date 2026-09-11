@@ -275,8 +275,11 @@ pub struct Status {
     /// `true` once a vault read was denied and the latch is up.
     pub denied: bool,
     /// Why the requested vault could not be built, if it could not be.
-    /// The app falls back to [`BackendChoice::OsDefault`] in that case
-    /// rather than losing access to secrets entirely.
+    /// [`Status::choice`] still reports what the user asked for; the
+    /// store actually serving reads until it is fixed is an empty
+    /// in-memory one. Never the OS default — answering "your store did
+    /// not open" by quietly using the store the user rejected is how the
+    /// macOS dialogs would come back.
     pub error: Option<String>,
 }
 
@@ -448,9 +451,12 @@ fn slot() -> &'static RwLock<Slot> {
             let choice = env.or(stored).unwrap_or_default();
 
             // A vault we cannot build must not take the app's secrets with
-            // it. Fall back to the platform default and report why — the
-            // user may be one dialog away from their keys either way, but
-            // "your passphrase vault is locked" beats a dead settings pane.
+            // it — but the fallback is memory, NOT the platform default.
+            // Falling back to the OS store would answer "your chosen store
+            // did not open" with "so we used the one you rejected", which
+            // on macOS means the login-keychain dialogs are back. Memory
+            // loses nothing: the unopened vault's contents stay on disk,
+            // and `status().error` tells the UI what to say.
             match build(&choice, &dir) {
                 Ok(vault) => RwLock::new(Slot {
                     choice,
@@ -460,11 +466,11 @@ fn slot() -> &'static RwLock<Slot> {
                     vault,
                 }),
                 Err(e) => RwLock::new(Slot {
-                    choice: BackendChoice::OsDefault,
+                    choice,
                     chosen,
                     from_env,
                     error: Some(e.to_string()),
-                    vault: Arc::new(os_keyring::OsKeyring),
+                    vault: Arc::new(memory::MemoryVault::default()),
                 }),
             }
         }
