@@ -662,7 +662,7 @@ export class BatchManager {
                         }
                         let extraction;
                         try {
-                            extraction = await extractText(
+                            const extractCall = extractText(
                                 {
                                     name: item.originalName,
                                     arrayBuffer: fileData.buffer,
@@ -681,6 +681,40 @@ export class BatchManager {
                                     }
                                 }
                             );
+                            // The watchdog and the file timeout above only
+                            // *signal* `itemAbort`, and aborting is
+                            // cooperative: an extractor that never yields never
+                            // observes the signal. `@lingo-reader/epub-parser`
+                            // on a zero-byte buffer is exactly that — it
+                            // neither resolves nor rejects. This `await` then
+                            // never settles, so `extractWorker` never returns,
+                            // so the `Promise.all` over the workers never
+                            // resolves, and the whole run stops dead with no
+                            // error: one such file held a 1017-item batch at
+                            // item 200 for eight hours, both timers having
+                            // "fired" and logged.
+                            //
+                            // So race the call, exactly as the Rust branch
+                            // above already does. The signal stays — a
+                            // cooperative extractor should still get the
+                            // chance to unwind cleanly — but it is no longer
+                            // the only thing standing between one bad file and
+                            // a wedged queue.
+                            extraction = FILE_TIMEOUT_MS > 0
+                                ? await Promise.race([
+                                    extractCall,
+                                    new Promise<never>((_, reject) =>
+                                        setTimeout(
+                                            () => reject(new Error('EXTRACT_FILE_TIMEOUT')),
+                                            // Grace period so a cooperative
+                                            // extractor's own abort wins the
+                                            // race and reports the better
+                                            // error; this is the backstop.
+                                            FILE_TIMEOUT_MS + 5_000
+                                        )
+                                    )
+                                ])
+                                : await extractCall;
                         } finally {
                             if (watchdogId) clearTimeout(watchdogId);
                             if (fileTimeoutId) clearTimeout(fileTimeoutId);
@@ -1244,6 +1278,11 @@ export class BatchManager {
             let successCount = 0;
             let notFound = 0;
             let notWritable = 0;
+            // Separate from notWritable on purpose: "the OS refused" and "the
+            // folder's permissions refused" send the user to different places,
+            // and conflating them had people checking mode bits that were
+            // never the problem.
+            let notPermitted = 0;
             let errorCount = 0;
             let copiedFallback = 0;
             let locked = 0;
@@ -1289,6 +1328,7 @@ export class BatchManager {
                         item.status = 'error';
                         item.errorMessage = res.error;
                         if (res.error === 'SOURCE_NOT_FOUND') notFound++;
+                        else if (res.error?.startsWith('NOT_PERMITTED')) notPermitted++;
                         else if (res.error?.startsWith('NOT_WRITABLE')) notWritable++;
                         else if (res.error === 'LOCKED') locked++;
                         else errorCount++;
@@ -1298,7 +1338,7 @@ export class BatchManager {
             }
 
             if (changedItems.length > 0) await upsertItemsBulk(changedItems);
-            return { success: successCount, notFound, notWritable, error: errorCount, copiedFallback, locked, mode };
+            return { success: successCount, notFound, notWritable, notPermitted, error: errorCount, copiedFallback, locked, mode };
         } finally {
             this.isExecuting = false;
         }
