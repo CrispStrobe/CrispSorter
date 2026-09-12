@@ -20,7 +20,7 @@
 //! IS the proof-of-identity at this layer; CrispLens's `/auth/me`
 //! resolves cookie → user when the session is loaded.
 
-use keyring::Entry;
+use crate::secrets::vault::{self, Entry};
 
 /// The service identifier we register with the OS keychain.  All
 /// CrispLens cookies live under this service; the per-instance
@@ -69,12 +69,22 @@ pub fn entry_for(url: &str) -> Result<Entry, SecretError> {
     Entry::new(SERVICE, url).map_err(|e| SecretError::Backend(e.to_string()))
 }
 
+/// Preserve "the store refused" across the boundary: it is the one
+/// failure the user fixes by choosing a different vault, not by
+/// re-authenticating to CrispLens.
+fn from_vault(e: vault::Error) -> SecretError {
+    match e {
+        vault::Error::NoEntry => SecretError::NotFound,
+        vault::Error::Denied(_) | vault::Error::Locked(_) => SecretError::Backend(e.to_string()),
+        vault::Error::Backend(_) => SecretError::Backend(e.to_string()),
+        vault::Error::Other(_) => SecretError::Other(e.to_string()),
+    }
+}
+
 /// Store the CrispLens session cookie.  Overwrites any existing
 /// entry — there's only ever one active session per URL.
 pub fn set_session(entry: &Entry, cookie_value: &str) -> Result<(), SecretError> {
-    entry
-        .set_password(cookie_value)
-        .map_err(|e| SecretError::Other(e.to_string()))
+    entry.set_password(cookie_value).map_err(from_vault)
 }
 
 /// Read the stored cookie.  Returns `Ok(None)` for not-found (the
@@ -83,8 +93,8 @@ pub fn set_session(entry: &Entry, cookie_value: &str) -> Result<(), SecretError>
 pub fn get_session(entry: &Entry) -> Result<Option<String>, SecretError> {
     match entry.get_password() {
         Ok(v) => Ok(Some(v)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(SecretError::Other(e.to_string())),
+        Err(vault::Error::NoEntry) => Ok(None),
+        Err(e) => Err(from_vault(e)),
     }
 }
 
@@ -93,8 +103,8 @@ pub fn get_session(entry: &Entry) -> Result<Option<String>, SecretError> {
 pub fn clear_session(entry: &Entry) -> Result<(), SecretError> {
     match entry.delete_credential() {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(SecretError::Other(e.to_string())),
+        Err(vault::Error::NoEntry) => Ok(()),
+        Err(e) => Err(from_vault(e)),
     }
 }
 
@@ -124,32 +134,17 @@ pub fn clear_session_for_url(url: &str) -> Result<(), SecretError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyring::mock::default_credential_builder;
-    use std::sync::Once;
-
-    /// Switch keyring's global credential builder to the in-memory
-    /// mock once per process.  The library uses a static
-    /// `OnceLock<dyn CredentialBuilder>` so calling this more than
-    /// once is safe but only the first call wins — that's why a
-    /// `Once` guards it.
-    fn install_mock_keyring() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            keyring::set_default_credential_builder(default_credential_builder());
-        });
-    }
-
-    /// `keyring::mock` is per-Entry — two independent `Entry::new`
-    /// calls don't share state.  To round-trip set→get we hold one
-    /// Entry across both calls.
-    fn mock_entry() -> keyring::Entry {
-        install_mock_keyring();
-        keyring::Entry::new(SERVICE, "test-fixture").unwrap()
+    /// Under `cargo test` the process vault is a single in-memory
+    /// store shared by every test, and libtest runs them in parallel —
+    /// so each case needs its own account or they overwrite each
+    /// other's fixture.
+    fn mock_entry(case: &str) -> Entry {
+        Entry::new(SERVICE, &format!("test-fixture/{case}")).unwrap()
     }
 
     #[test]
     fn set_then_get_round_trips_the_cookie() {
-        let e = mock_entry();
+        let e = mock_entry("set_then_get_round_trips_the_cookie");
         set_session(&e, "session=abc123").unwrap();
         let stored = get_session(&e).unwrap();
         assert_eq!(stored.as_deref(), Some("session=abc123"));
@@ -157,14 +152,14 @@ mod tests {
 
     #[test]
     fn get_returns_none_when_no_entry_exists() {
-        let e = mock_entry();
+        let e = mock_entry("get_returns_none_when_no_entry_exists");
         let stored = get_session(&e).unwrap();
         assert!(stored.is_none(), "fresh mock entry should be NoEntry-shaped");
     }
 
     #[test]
     fn set_overwrites_existing_entry() {
-        let e = mock_entry();
+        let e = mock_entry("set_overwrites_existing_entry");
         set_session(&e, "session=first").unwrap();
         set_session(&e, "session=second").unwrap();
         let stored = get_session(&e).unwrap();
@@ -173,7 +168,7 @@ mod tests {
 
     #[test]
     fn clear_removes_the_entry() {
-        let e = mock_entry();
+        let e = mock_entry("clear_removes_the_entry");
         set_session(&e, "session=xyz").unwrap();
         clear_session(&e).unwrap();
         let stored = get_session(&e).unwrap();
@@ -183,7 +178,7 @@ mod tests {
     #[test]
     fn clear_on_nonexistent_entry_is_noop() {
         // Idempotency invariant: logout twice in a row must succeed.
-        let e = mock_entry();
+        let e = mock_entry("clear_on_nonexistent_entry_is_noop");
         clear_session(&e).unwrap();
         clear_session(&e).unwrap();
     }

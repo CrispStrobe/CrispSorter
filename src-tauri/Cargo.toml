@@ -245,6 +245,13 @@ image_hasher = "3"
 # DPAPI / Windows Credential Vault on Windows.  Sync API — fine to
 # call from blocking pool; never holds an open OS handle past return.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# The encrypted-file secret vault (`secrets::vault::file_vault`) — the
+# option for users who want the app off the OS keychain entirely. All
+# four already resolve in the tree via `keyring`'s own dependencies, so
+# declaring them adds no crate to the graph, only a direct name.
+aes-gcm = "0.10"
+argon2 = "0.5"
+zeroize = "1"
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6"
 clap_mangen = "0.2"
@@ -450,6 +457,11 @@ mistralrs = { version = "0.7.0", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for macOS
+# `secrets::vault::mac_keychain` — opening, creating and reading a *named*
+# keychain instead of the login one. `keyring` only ever talks to the
+# platform default, so the legacy `SecKeychain` API has to be called
+# directly. Already in the tree via keyring's `apple-native`.
+security-framework = "3"
 mistralrs = { version = "0.7.0", features = ["metal"], optional = true }
 # P36.2 — `getattrlist(2)` / `getfsstat(2)` for volume ids, replacing the
 # `mount` + `df` + `diskutil` shell-outs that App Sandbox forbids. Already in

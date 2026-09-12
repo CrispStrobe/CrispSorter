@@ -11,7 +11,7 @@
 //! entries, and an OS-managed delete on one doesn't accidentally
 //! wipe the other.
 
-use keyring::Entry;
+use crate::secrets::vault::{self, Entry};
 
 /// Service identifier for cloud-backup tokens.  Distinct from the
 /// `CrispSorter.CrispLens` service so the OS keychain row labels
@@ -41,25 +41,35 @@ pub fn entry_for(url: &str) -> Result<Entry, SecretError> {
     Entry::new(SERVICE, url).map_err(|e| SecretError::Backend(e.to_string()))
 }
 
+/// Keep a refusal distinguishable from a breakage — the first is fixed
+/// by choosing another vault, the second is not.
+fn from_vault(e: vault::Error) -> SecretError {
+    match e {
+        vault::Error::NoEntry => SecretError::NotFound,
+        vault::Error::Denied(_) | vault::Error::Locked(_) | vault::Error::Backend(_) => {
+            SecretError::Backend(e.to_string())
+        }
+        vault::Error::Other(_) => SecretError::Other(e.to_string()),
+    }
+}
+
 pub fn set_token(entry: &Entry, raw_token: &str) -> Result<(), SecretError> {
-    entry
-        .set_password(raw_token)
-        .map_err(|e| SecretError::Other(e.to_string()))
+    entry.set_password(raw_token).map_err(from_vault)
 }
 
 pub fn get_token(entry: &Entry) -> Result<Option<String>, SecretError> {
     match entry.get_password() {
         Ok(v) => Ok(Some(v)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(SecretError::Other(e.to_string())),
+        Err(vault::Error::NoEntry) => Ok(None),
+        Err(e) => Err(from_vault(e)),
     }
 }
 
 pub fn clear_token(entry: &Entry) -> Result<(), SecretError> {
     match entry.delete_credential() {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(SecretError::Other(e.to_string())),
+        Err(vault::Error::NoEntry) => Ok(()),
+        Err(e) => Err(from_vault(e)),
     }
 }
 
@@ -81,31 +91,22 @@ pub fn clear_token_for_url(url: &str) -> Result<(), SecretError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyring::mock::default_credential_builder;
-    use std::sync::Once;
-
-    fn install_mock_keyring() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            keyring::set_default_credential_builder(default_credential_builder());
-        });
-    }
-
-    fn mock_entry() -> keyring::Entry {
-        install_mock_keyring();
-        keyring::Entry::new(SERVICE, "test-fixture").unwrap()
+    /// One in-memory vault serves the whole test binary, so each case
+    /// gets its own account rather than racing on a shared one.
+    fn mock_entry(case: &str) -> Entry {
+        Entry::new(SERVICE, &format!("test-fixture/{case}")).unwrap()
     }
 
     #[test]
     fn set_then_get_round_trips_the_token() {
-        let e = mock_entry();
+        let e = mock_entry("round-trip");
         set_token(&e, "cbk_abc").unwrap();
         assert_eq!(get_token(&e).unwrap().as_deref(), Some("cbk_abc"));
     }
 
     #[test]
     fn clear_is_idempotent_when_nothing_stored() {
-        let e = mock_entry();
+        let e = mock_entry("idempotent-clear");
         clear_token(&e).unwrap();
         // Second call also OK.
         clear_token(&e).unwrap();

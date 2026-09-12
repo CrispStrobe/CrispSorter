@@ -10,7 +10,7 @@
 //! await invoke('secret_delete', { account: 'llm-provider:openai' });
 //! ```
 
-use super::{delete_secret, get_secret, set_secret};
+use super::{delete_secret, get_secret, set_secret, SecretError};
 
 /// Store a secret under the given account name. Overwrites any
 /// existing value. Returns `Ok(())` on success.
@@ -51,6 +51,12 @@ pub async fn secrets_bulk_set(items: Vec<(String, String)>) -> Result<Vec<String
         }
         match set_secret(&account, &value) {
             Ok(()) => stored.push(account),
+            // Same reasoning as `secrets_list_known`: a store that has
+            // refused once will refuse the rest, one dialog at a time.
+            Err(e @ SecretError::Denied(_)) => {
+                eprintln!("secrets_bulk_set: store refused, stopping: {e}");
+                break;
+            }
             Err(e) => {
                 eprintln!("secrets_bulk_set: failed for account={account}: {e}");
             }
@@ -78,6 +84,13 @@ pub async fn secrets_bulk_set(items: Vec<(String, String)>) -> Result<Vec<String
 ///
 /// Returns accounts in the same order they were given (callers can
 /// rely on this to match against their candidate list).
+///
+/// Stops at the first [`SecretError::Denied`]. This loop was the single
+/// worst source of the macOS keychain nag: one "CrispSorter wants to
+/// use your confidential information" dialog **per provider**, raised
+/// every time the Settings pane opened. Once the store has refused, the
+/// remaining reads would each raise the same dialog the user just
+/// dismissed, so there is nothing to gain by asking again.
 #[tauri::command]
 pub async fn secrets_list_known(accounts: Vec<String>) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
@@ -85,6 +98,10 @@ pub async fn secrets_list_known(accounts: Vec<String>) -> Result<Vec<String>, St
         match super::get_secret(&account) {
             Ok(Some(v)) if !v.is_empty() => found.push(account),
             Ok(_) => {}
+            Err(e @ SecretError::Denied(_)) => {
+                eprintln!("secrets_list_known: store refused, stopping: {e}");
+                break;
+            }
             Err(e) => {
                 eprintln!("secrets_list_known: failed for account={account}: {e}");
             }

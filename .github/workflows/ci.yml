@@ -521,6 +521,121 @@ jobs:
           if ($p.ExitCode -eq 0) { throw "ingest of a missing path exited 0" }
           Write-Host "  ok: ingest of a missing path fails loudly (exit $($p.ExitCode))"
 
+  macos:
+    name: macOS lib tests + secret-store smoke
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      # The clap tree overflows libtest's default worker stack, same as the
+      # Linux and Windows jobs.
+      RUST_MIN_STACK: 16777216
+    steps:
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      # All three siblings are path deps that `cargo metadata` resolves even
+      # when their features are off, so the directories have to exist.
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISP_DOCX_REPO }}
+          ref: ${{ env.CRISP_DOCX_REF }}
+          path: repos/crisp-docx
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `lance-encoding` shells out to protoc from its own build script, so it
+      # has to be on PATH before cargo starts.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+          key: macos
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+
+      - name: Build the frontend
+        # tauri-build reads `frontendDist: ../build`; the directory has to
+        # exist even though nothing here bundles it.
+        working-directory: repos/CrispSorter
+        run: |
+          npm ci
+          npm run build
+
+      - name: Create bin placeholder for the resources glob
+        working-directory: repos/CrispSorter
+        run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
+
+      - name: Library tests
+        working-directory: repos/CrispSorter
+        # This job exists because `secrets::vault::mac_keychain` — the
+        # named-keychain secret store, and the only caller of the legacy
+        # `SecKeychain` API in the tree — compiled in no job at all. Every
+        # other macOS-gated module (`volume::macos`, `platform_share`, the
+        # `NSWorkspace` opener) was in the same position: verified by a
+        # release build, i.e. after the tag.
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Build the CLI binary
+        working-directory: repos/CrispSorter
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Secret-store smoke test
+        working-directory: repos/CrispSorter
+        shell: bash
+        # The point of the whole feature is that a user can get off the login
+        # keychain, so the check is that the CLI can move to a store that
+        # touches no keychain at all and say so afterwards. Nothing here reads
+        # or writes the runner's login keychain: that is exactly the dialog
+        # this feature exists to avoid, and on a headless runner it would hang
+        # rather than fail.
+        run: |
+          set -euo pipefail
+          EXE=target/debug/crispsorter
+          DATA="$RUNNER_TEMP/crispdata"
+          mkdir -p "$DATA"
+
+          "$EXE" --format text secrets --data-dir "$DATA" status
+          "$EXE" --format text secrets --data-dir "$DATA" keychains
+
+          "$EXE" --format json secrets --data-dir "$DATA" use file | tee /tmp/use.json
+          grep -q '"file"' /tmp/use.json
+
+          # The choice has to survive the process, or it is not a setting.
+          "$EXE" --format json secrets --data-dir "$DATA" status | tee /tmp/status.json
+          grep -q '"file"' /tmp/status.json
+          test -f "$DATA/secret_backend.json"
+
+          # And the env override has to win over it.
+          CRISPSORTER_SECRET_BACKEND=session \
+            "$EXE" --format json secrets --data-dir "$DATA" status | grep -q '"session"'
+
   cloud-backends:
     name: Native cloud crates
     runs-on: ubuntu-24.04
