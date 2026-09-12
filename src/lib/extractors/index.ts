@@ -117,6 +117,26 @@ export async function extractText(
         };
     }
 
+    // An empty file is rejected here, once, rather than by each
+    // extractor in its own way — or, in one case, not at all.
+    //
+    // pdfjs raises "The PDF file is empty, i.e. its size is zero bytes",
+    // but `@lingo-reader/epub-parser` handed a zero-byte buffer neither
+    // returns nor rejects: it hangs. Because the batch runner awaits this
+    // call, one such file wedged an entire 1017-item run at item 200 for
+    // eight hours. The per-item AbortController could not help — aborting
+    // is cooperative, and a parser that never yields never sees the
+    // signal.
+    //
+    // Zero-byte files are not hypothetical here: a partial download, an
+    // interrupted copy, or a cloud-storage placeholder that was never
+    // materialised all produce them, and a document library accumulates
+    // them silently.
+    if (arrayBuffer.byteLength === 0) {
+        logWarn(`Skipping ${name}: the file is empty (0 bytes)`);
+        throw new Error(`File is empty (0 bytes): ${name}`);
+    }
+
     let text = '';
     let markdownText: string | undefined;
     let headings: string[] | undefined;

@@ -2202,6 +2202,42 @@ fn parse_pdf_date_year(s: &str) -> Option<i32> {
 }
 
 #[cfg(test)]
+mod dest_failure_tests {
+    use super::describe_dest_failure;
+    use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn eperm_is_reported_as_a_sandbox_refusal_not_a_permissions_problem() {
+        // The distinction this whole helper exists for: a 545-item sort
+        // reported 512 rows of "not writable at target", which sent the user
+        // to check mode bits that were never involved.
+        let e = std::io::Error::from_raw_os_error(1); // EPERM
+        let msg = describe_dest_failure(Path::new("/Users/x/Documents/Sorted"), &e);
+        assert!(msg.starts_with("NOT_PERMITTED:"), "got {msg}");
+        assert!(msg.contains("/Users/x/Documents/Sorted"), "must name the folder: {msg}");
+        assert!(msg.contains("picked"), "must say what to do: {msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn eacces_stays_a_permissions_problem() {
+        let e = std::io::Error::from_raw_os_error(13); // EACCES
+        let msg = describe_dest_failure(Path::new("/ro/dir"), &e);
+        assert!(msg.starts_with("NOT_WRITABLE:"), "got {msg}");
+    }
+
+    #[test]
+    fn every_message_names_the_directory_that_failed() {
+        // The old format carried only the errno, so the report could not say
+        // which of several destination roots was refused.
+        let e = std::io::Error::new(std::io::ErrorKind::Other, "disk on fire");
+        let msg = describe_dest_failure(Path::new("/some/where"), &e);
+        assert!(msg.contains("/some/where"), "got {msg}");
+    }
+}
+
+#[cfg(test)]
 mod pdf_metadata_tests {
     use super::*;
 
@@ -2448,6 +2484,34 @@ struct BatchExecutionResult {
     error: Option<String>,
 }
 
+/// Explain why a destination directory could not be created, in terms the
+/// user can act on.
+///
+/// The distinction that matters on macOS is `EPERM` vs `EACCES`. Permission
+/// *bits* yield `EACCES` (13); `EPERM` (1) means something stronger refused —
+/// and for a sandboxed build that is almost always the sandbox itself. The
+/// shipped App Store SKU holds only `files.user-selected.read-write`, so it
+/// can write where the user has *picked* a folder and nowhere else. Sorting
+/// into a destination root the user never selected therefore fails with
+/// `EPERM`, no matter what the directory's mode bits say — which is why the
+/// old "not writable at target" wording sent people to check permissions that
+/// were never the problem.
+fn describe_dest_failure(parent: &Path, e: &std::io::Error) -> String {
+    #[cfg(unix)]
+    const EPERM: i32 = 1;
+    #[cfg(unix)]
+    if e.raw_os_error() == Some(EPERM) {
+        return format!(
+            "NOT_PERMITTED: {} — the operating system refused, not the folder's \
+             permissions. This build is sandboxed and may only write to folders \
+             you have picked yourself; choose this destination through the folder \
+             picker, or sort into one you already selected.",
+            parent.display()
+        );
+    }
+    format!("NOT_WRITABLE: {} — {}", parent.display(), e)
+}
+
 #[tauri::command]
 async fn execute_batch(
     state: tauri::State<'_, AppState>,
@@ -2469,6 +2533,16 @@ async fn execute_batch(
     ensure_intended_purpose(&state, "execute_batch").await?;
 
     let mut results = std::collections::HashMap::new();
+    // Destination parents, diagnosed once each rather than once per item.
+    // `None` = created (or already there); `Some(err)` = why not.
+    //
+    // Without the memo, a destination root the app cannot create produced one
+    // failure *per item*: a 545-item sort reported 512 identical
+    // "NOT_WRITABLE: Operation not permitted (os error 1)" rows, which says
+    // neither which directory was refused nor what to do about it. It also
+    // meant 545 doomed `mkdir` syscalls.
+    let mut parent_status: std::collections::HashMap<std::path::PathBuf, Option<String>> =
+        std::collections::HashMap::new();
     let is_script_mode = payload.mode.starts_with("script_");
     let mut script_content = String::new();
 
@@ -2529,12 +2603,18 @@ async fn execute_batch(
         }
 
         if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            let status = parent_status
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| match fs::create_dir_all(parent) {
+                    Ok(()) => None,
+                    Err(e) => Some(describe_dest_failure(parent, &e)),
+                });
+            if let Some(reason) = status.clone() {
                 results.insert(
                     item.id.clone(),
                     BatchExecutionResult {
                         success: false,
-                        error: Some(format!("NOT_WRITABLE: {}", e)),
+                        error: Some(reason),
                     },
                 );
                 continue;

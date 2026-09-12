@@ -1681,11 +1681,16 @@
                     {#if (lastExecutionStats.notWritable ?? 0) > 0}
                         <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_not_writable.replace('{count}', lastExecutionStats.notWritable)}</div>
                     {/if}
+
+                    {#if (lastExecutionStats.notPermitted ?? 0) > 0}
+                        <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_not_permitted.replace('{count}', lastExecutionStats.notPermitted)}</div>
+                    {/if}
                 </div>
 
                 {#if lastExecutionStats}
                     {@const problemCount = (lastExecutionStats.notFound ?? 0)
                                            + (lastExecutionStats.notWritable ?? 0)
+                                           + (lastExecutionStats.notPermitted ?? 0)
                                            + (lastExecutionStats.locked ?? 0)
                                            + (lastExecutionStats.copiedFallback ?? 0)}
                     {@const allSucceeded = problemCount === 0 && lastExecutionStats.success > 0}
