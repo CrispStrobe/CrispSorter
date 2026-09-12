@@ -36,13 +36,13 @@ env:
   # `OcrPipelineResult.markdown` / `.reading_order` exist on main and not on
   # v0.13.0, so code using them passes CI and breaks the release build.
   # Keep these two values equal; bump them together.
-  CRISPEMBED_REF: v0.17.4
+  CRISPEMBED_REF: v0.17.11
   CRISPASR_REPO: CrispStrobe/CrispASR
   # Pinned to the same tag release.yml uses, for the reason spelled out above
   # CRISPEMBED_REF. This one had drifted 18 patch versions: CI tracked `main`
   # while release pinned v0.8.6. All six prebuilt assets both workflows
   # download were verified present at v0.16.1 / v0.8.24 before bumping.
-  CRISPASR_REF: v0.8.24
+  CRISPASR_REF: v0.8.32
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
   # Pinned to the SAME commit release.yml uses, for the reason spelled out
   # above CRISPEMBED_REF — and this one had the drift in its worst form: CI
@@ -644,52 +644,35 @@ jobs:
         # named-keychain secret store, and the only caller of the legacy
         # `SecKeychain` API in the tree — compiled in no job at all. Every
         # other macOS-gated module (`volume::macos`, `platform_share`, the
-        # `NSWorkspace` opener) was in the same position: verified by a
-        # release build, i.e. after the tag.
+        # `NSWorkspace` opener, `folder_access::bookmarks`) was in the same
+        # position: verified by a release build, i.e. after the tag.
         #
-        # Deliberately WITHOUT crispembed / crispasr — see the compile-only
-        # step below for why those cannot be *run* here. This is the step
-        # that executes assertions, so it carries everything that can.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
-
-      - name: Library tests compile with the native features
-        working-directory: repos/CrispSorter
-        # Compile-and-link only, no run.
+        # The feature list matches the Linux job's rather than the Windows
+        # one's, deliberately: macOS is a platform CrispSorter ships (.dmg +
+        # Mac App Store), so the OCR / ASR / LID / translate paths get
+        # checked on merge instead of first at tag time.
         #
-        # macOS is a platform CrispSorter ships (.dmg + Mac App Store), so
-        # the OCR / ASR / LID / translate glue should be checked on merge
-        # rather than first discovered at tag time — but the published
-        # `crispembed-macos-arm64` bundle cannot be *loaded* on this runner:
-        #
-        #   dyld: Symbol not found: _OBJC_CLASS_$_MTLResidencySetDescriptor
-        #     Referenced from: CrispEmbed/build/libggml-metal.0.dylib
-        #     (built for macOS 26.0 which is newer than running OS)
-        #
-        # That dylib is built against the builder's SDK with no deployment
-        # target pinned, so it demands macOS 26 at dyld time. Linking
-        # succeeds; the test binary then SIGABRTs before the first
-        # assertion. Raising this runner to macOS 26 would bury that — the
-        # app supports far older macOS, so an older runner is the *correct*
-        # environment and the dylib is what needs fixing upstream
-        # (`-DCMAKE_OSX_DEPLOYMENT_TARGET`). Until it is, `--no-run` keeps
-        # the compile coverage, which is what the feature-gated code needs,
-        # without asserting anything about a library that cannot load.
+        # This was briefly two steps — a run without the native features and
+        # a `--no-run` compile with them — because every dylib in the
+        # published crispembed macOS bundle recorded `minos 26.0` and aborted
+        # in dyld before the first assertion. CrispEmbed v0.17.11 pins a
+        # deployment target, so they are `minos 12.0` and the macOS 26-only
+        # MTLResidencySetDescriptor is now a *weak* reference that binds nil
+        # and takes ggml's fallback path. One step again, and it runs.
         #
         # Same deliberate difference from release as on Linux: release
         # selects `crispembed-metal` / `crispasr-*`, CI the plain features.
         # Those sub-features only pick the ggml backend inside the sibling
         # crates, so the CrispSorter code compiled is identical.
-        run: cargo test -p crispsorter --lib --no-run --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
-        # Without the native features on purpose: the smoke test below *runs*
-        # this binary, and one linked against the prebuilt
-        # `libggml-metal.0.dylib` aborts in dyld before `main` on any macOS
-        # older than 26 (see the compile-only step above). Link coverage for
-        # those features comes from that step, which builds the test binary
-        # and never executes it.
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        # With the native features, matching the Linux job — and runnable
+        # again now that the crispembed dylibs load below macOS 26. The smoke
+        # test below executes this binary, which is exactly why it had to
+        # drop them while they aborted in dyld.
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Secret-store smoke test
         working-directory: repos/CrispSorter

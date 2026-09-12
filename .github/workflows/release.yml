@@ -20,9 +20,9 @@ on:
 # all jobs at once — no more 3-place edits.
 env:
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.4   # keep equal to ci.yml's CRISPEMBED_REF
+  CRISPEMBED_REF: v0.17.11   # keep equal to ci.yml's CRISPEMBED_REF
   CRISPASR_REPO: CrispStrobe/CrispASR
-  CRISPASR_REF: v0.8.24  # keep equal to ci.yml's CRISPASR_REF
+  CRISPASR_REF: v0.8.32  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
   CRISPDOCX_REF: ddf7830d8d92e6b59b10874d144a59f163a256e1  # keep equal to ci.yml's CRISPDOCX_REF
   # App Store Connect API key (public identifiers — not secrets).
