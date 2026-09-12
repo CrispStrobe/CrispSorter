@@ -647,20 +647,49 @@ jobs:
         # `NSWorkspace` opener) was in the same position: verified by a
         # release build, i.e. after the tag.
         #
-        # The feature list matches the Linux job's rather than the Windows
-        # one's, deliberately: macOS is a platform CrispSorter ships (.dmg +
-        # Mac App Store), so the OCR / ASR / LID / translate paths should be
-        # checked here on merge and not first discovered at tag time. Same
-        # deliberate difference from release as on Linux — release selects
-        # `crispembed-metal` / `crispasr-*`, CI the plain features. Those
-        # sub-features only pick the ggml backend inside the sibling crates,
-        # and with a prebuilt lib present the build scripts skip cmake
-        # entirely, so the CrispSorter code compiled is identical.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
+        # Deliberately WITHOUT crispembed / crispasr — see the compile-only
+        # step below for why those cannot be *run* here. This is the step
+        # that executes assertions, so it carries everything that can.
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Library tests compile with the native features
+        working-directory: repos/CrispSorter
+        # Compile-and-link only, no run.
+        #
+        # macOS is a platform CrispSorter ships (.dmg + Mac App Store), so
+        # the OCR / ASR / LID / translate glue should be checked on merge
+        # rather than first discovered at tag time — but the published
+        # `crispembed-macos-arm64` bundle cannot be *loaded* on this runner:
+        #
+        #   dyld: Symbol not found: _OBJC_CLASS_$_MTLResidencySetDescriptor
+        #     Referenced from: CrispEmbed/build/libggml-metal.0.dylib
+        #     (built for macOS 26.0 which is newer than running OS)
+        #
+        # That dylib is built against the builder's SDK with no deployment
+        # target pinned, so it demands macOS 26 at dyld time. Linking
+        # succeeds; the test binary then SIGABRTs before the first
+        # assertion. Raising this runner to macOS 26 would bury that — the
+        # app supports far older macOS, so an older runner is the *correct*
+        # environment and the dylib is what needs fixing upstream
+        # (`-DCMAKE_OSX_DEPLOYMENT_TARGET`). Until it is, `--no-run` keeps
+        # the compile coverage, which is what the feature-gated code needs,
+        # without asserting anything about a library that cannot load.
+        #
+        # Same deliberate difference from release as on Linux: release
+        # selects `crispembed-metal` / `crispasr-*`, CI the plain features.
+        # Those sub-features only pick the ggml backend inside the sibling
+        # crates, so the CrispSorter code compiled is identical.
+        run: cargo test -p crispsorter --lib --no-run --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
+        # Without the native features on purpose: the smoke test below *runs*
+        # this binary, and one linked against the prebuilt
+        # `libggml-metal.0.dylib` aborts in dyld before `main` on any macOS
+        # older than 26 (see the compile-only step above). Link coverage for
+        # those features comes from that step, which builds the test binary
+        # and never executes it.
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
 
       - name: Secret-store smoke test
         working-directory: repos/CrispSorter
