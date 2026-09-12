@@ -1,4 +1,10 @@
 <script lang="ts">
+    import {
+        probeFolder,
+        requestFolderAccess,
+        declineFolder,
+        pathContains,
+    } from '../folderAccess';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
@@ -590,6 +596,96 @@
         }
     }
 
+    /**
+     * Make sure every destination folder can actually be written to,
+     * asking the user to grant access where macOS has not.
+     *
+     * Returns `false` only when a needed folder was left ungranted *and*
+     * nothing can be sorted without it — never for a folder the user
+     * declined, since "stop asking" has to mean the sort still runs and
+     * reports what it could not do.
+     *
+     * Distinct roots only: one grant covers a whole subtree, so a
+     * thousand items under one destination is one question.
+     */
+    async function ensureDestinationsWritable(items: BatchItem[]): Promise<boolean> {
+        const parents = new Set<string>();
+        for (const it of items) {
+            if (!it.targetPath) continue;
+            const p = it.targetPath.replace(/[/\\][^/\\]*$/, '');
+            if (p) parents.add(p);
+        }
+        if (parents.size === 0) return true;
+
+        // Probe the shallowest paths first: granting a parent often makes
+        // the deeper probes moot, so this asks the fewest questions.
+        const ordered = [...parents].sort((a, b) => a.length - b.length);
+        const granted: string[] = [];
+        let blocked = 0;
+
+        for (const dir of ordered) {
+            if (granted.some(g => pathContains(g, dir))) continue;
+            let status;
+            try {
+                status = await probeFolder(dir);
+            } catch (e) {
+                logWarn(`Could not probe ${dir}: ${e}`);
+                continue;
+            }
+            if (status.writability.state === 'writable') continue;
+
+            if (!status.canRequest) {
+                // A real filesystem problem — picking the folder cannot
+                // fix a read-only volume, so do not pretend otherwise.
+                logWarn(`${dir} is not writable: ${'reason' in status.writability ? status.writability.reason : ''}`);
+                blocked++;
+                continue;
+            }
+            if (!status.shouldAsk) {
+                logInfo(`Not asking about ${dir} (already answered).`);
+                blocked++;
+                continue;
+            }
+
+            const wants = await ask(
+                i18n.t.batch.grant_folder_prompt.replace('{folder}', dir),
+                { title: 'CrispSorter', kind: 'warning' }
+            ).catch(() => false);
+
+            if (!wants) {
+                // "No" here means this run; it does not silently become
+                // "never ask again" — that has to be chosen explicitly.
+                const never = await ask(
+                    i18n.t.batch.grant_folder_never_ask.replace('{folder}', dir),
+                    { title: 'CrispSorter', kind: 'info' }
+                ).catch(() => false);
+                if (never) await declineFolder(dir).catch(e => logWarn(`decline failed: ${e}`));
+                blocked++;
+                continue;
+            }
+
+            const outcome = await requestFolderAccess(dir);
+            if (outcome.ok) {
+                granted.push(outcome.granted);
+                logInfo(`Folder access granted and saved: ${outcome.granted}`);
+            } else {
+                logWarn(`Folder access not granted for ${dir}: ${outcome.reason} ${outcome.message ?? ''}`);
+                if (outcome.reason === 'wrong-folder' && outcome.message) {
+                    showToast(outcome.message);
+                }
+                blocked++;
+            }
+        }
+
+        // Proceed as long as something can still be written. A partial
+        // sort that reports the rest beats refusing to do any of it.
+        if (blocked > 0 && granted.length === 0 && blocked === ordered.length) {
+            showToast(i18n.t.batch.grant_folder_none);
+            return false;
+        }
+        return true;
+    }
+
     async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
         // Visible at the default `info` log verbosity so the user can
         // see in the Logs panel that the click made it into the
@@ -668,6 +764,19 @@
         if (missingTarget.length > 0) {
             logInfo(`Recovering targetPath for ${missingTarget.length} accepted item(s) before executeBatch.`);
             for (const i of missingTarget) await batchManager.recalculateTargetPath(i.id);
+        }
+
+        // Ask for folder permission BEFORE writing anything.
+        //
+        // Previously the sandbox refusal was discovered per item, so a
+        // destination root the user had never picked produced one failure
+        // for every file — 512 of them in the run that prompted this. The
+        // destinations are known here, so the one question worth asking
+        // can be asked once, up front, and the sort either proceeds or
+        // doesn't.
+        if (!(await ensureDestinationsWritable(accepted))) {
+            logWarn('Sortieren aborted: destination folder permission not granted.');
+            return;
         }
 
         logInfo(`Sortieren confirmed -- handing ${accepted.length} accepted item(s) to executeBatch(${mode})`);
