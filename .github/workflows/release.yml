@@ -24,7 +24,7 @@ env:
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.24  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
-  CRISPDOCX_REF: b1de892c6092bdf3306e442138475a7f94c19637
+  CRISPDOCX_REF: ddf7830d8d92e6b59b10874d144a59f163a256e1  # keep equal to ci.yml's CRISPDOCX_REF
   # App Store Connect API key (public identifiers — not secrets).
   # The .p8 private key itself is in APPLE_API_KEY_P8 repo secret (base64).
   APPLE_API_KEY_ID: 9RMU3C7422
