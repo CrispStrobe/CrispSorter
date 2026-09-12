@@ -43,8 +43,20 @@ env:
   # while release pinned v0.8.6. All six prebuilt assets both workflows
   # download were verified present at v0.16.1 / v0.8.24 before bumping.
   CRISPASR_REF: v0.8.24
-  CRISP_DOCX_REPO: CrispStrobe/crisp-docx
-  CRISP_DOCX_REF: main
+  CRISPDOCX_REPO: CrispStrobe/crisp-docx
+  # Pinned to the SAME commit release.yml uses, for the reason spelled out
+  # above CRISPEMBED_REF — and this one had the drift in its worst form: CI
+  # tracked the moving branch `main` while release pinned a commit, so the
+  # two could disagree the moment anything landed upstream. The spelling was
+  # half the reason it went unnoticed — the two files named this variable
+  # differently, so grepping for one never showed the other. Same name in
+  # both files now.
+  #
+  # `ddf7830d` is current `main`; release.yml previously sat one commit
+  # behind it. The difference is the AGPLv3 §7 app-marketplace additional
+  # permission — a licence term the shipped build wants, since CrispSorter
+  # distributes crisp-docx code through the App Store.
+  CRISPDOCX_REF: ddf7830d8d92e6b59b10874d144a59f163a256e1
   # Cargo network resilience. The license scan runs `cargo metadata` (via
   # cargo-license) which intermittently hits crates.io-index TLS flakes
   # ("SSL_read: SSL_ERROR_SYSCALL" — the known cargo HTTP/2 multiplexing bug):
@@ -87,8 +99,8 @@ jobs:
         # already checked out above. No additional symlink needed.
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISP_DOCX_REPO }}
-          ref: ${{ env.CRISP_DOCX_REF }}
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
       - uses: actions/setup-node@v4
@@ -196,8 +208,8 @@ jobs:
       - name: Check out sibling crisp-docx (cargo path dep)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISP_DOCX_REPO }}
-          ref: ${{ env.CRISP_DOCX_REF }}
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
       - name: Install system deps
@@ -409,8 +421,8 @@ jobs:
       - name: Check out sibling crisp-docx (cargo path dep)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISP_DOCX_REPO }}
-          ref: ${{ env.CRISP_DOCX_REF }}
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
@@ -555,8 +567,8 @@ jobs:
       - name: Check out sibling crisp-docx (cargo path dep)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISP_DOCX_REPO }}
-          ref: ${{ env.CRISP_DOCX_REF }}
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
@@ -567,6 +579,40 @@ jobs:
         with:
           version: "29.0"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Prebuilt native libs, so this job can compile the same features
+      #    release ships on the platform CrispSorter actually ships on.
+      #    Asset names and extraction shapes are release.yml's macOS matrix
+      #    entries verbatim (`crispembed-macos-arm64.tar.gz`,
+      #    `libcrispasr-macos-arm64.tar.gz`); only the sibling path differs
+      #    (`repos/` here vs `_sibling/` there).
+      - name: Download libcrispembed bundle
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          # Flat tarball; crispembed-sys's `has_prebuilt` looks for
+          # libcrispembed.* directly under <sibling>/build/.
+          mkdir -p ../CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C ../CrispEmbed/build
+          find ../CrispEmbed/build -maxdepth 2 -name "lib*" | head
+
+      - name: Download libcrispasr bundle
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-macos-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          # Tarball top-level dir is `libcrispasr-<platform>/`; strip it so the
+          # contents land where crispasr-sys's `try_existing_build` looks first.
+          mkdir -p ../CrispASR/build-flutter-bundle
+          tar -xzf crispasr-libs.tar.gz -C ../CrispASR/build-flutter-bundle --strip-components=1
+          find ../CrispASR/build-flutter-bundle -maxdepth 4 -name "lib*" | head
 
       - name: Rust dependency cache
         uses: Swatinem/rust-cache@v2
@@ -600,11 +646,21 @@ jobs:
         # other macOS-gated module (`volume::macos`, `platform_share`, the
         # `NSWorkspace` opener) was in the same position: verified by a
         # release build, i.e. after the tag.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        #
+        # The feature list matches the Linux job's rather than the Windows
+        # one's, deliberately: macOS is a platform CrispSorter ships (.dmg +
+        # Mac App Store), so the OCR / ASR / LID / translate paths should be
+        # checked here on merge and not first discovered at tag time. Same
+        # deliberate difference from release as on Linux — release selects
+        # `crispembed-metal` / `crispasr-*`, CI the plain features. Those
+        # sub-features only pick the ggml backend inside the sibling crates,
+        # and with a prebuilt lib present the build scripts skip cmake
+        # entirely, so the CrispSorter code compiled is identical.
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Secret-store smoke test
         working-directory: repos/CrispSorter
@@ -663,8 +719,8 @@ jobs:
       - name: Check out sibling crisp-docx (cargo path dep)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISP_DOCX_REPO }}
-          ref: ${{ env.CRISP_DOCX_REF }}
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
@@ -782,8 +838,8 @@ jobs:
       - name: Check out sibling crisp-docx (cargo path dep)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISP_DOCX_REPO }}
-          ref: ${{ env.CRISP_DOCX_REF }}
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
