@@ -16,6 +16,7 @@ pub mod convert_tools;
 pub mod docx_tools;
 pub mod drives;
 pub mod extractors;
+pub mod folder_access;
 pub mod index;
 pub mod jobs;
 pub mod kindle_clippings;
@@ -2984,6 +2985,14 @@ pub fn run() {
                 // the first read rather than from whenever Settings is
                 // first opened.
                 secrets::vault::init(data_dir.clone());
+                // Reopen the folder permissions the user granted earlier.
+                // Must happen before anything writes: a sandboxed build
+                // has no access to a previously-picked folder until its
+                // bookmark is resolved and started.
+                folder_access::set_data_dir(data_dir.clone());
+                for (path, why) in folder_access::restore_all() {
+                    app_log!("warn", "folder permission not restored for {}: {}", path.display(), why);
+                }
                 app_log!(
                     "info",
                     "secret store: {}",
@@ -3636,6 +3645,12 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            folder_access::tauri_commands::folder_access_probe,
+            folder_access::tauri_commands::folder_access_should_ask,
+            folder_access::tauri_commands::folder_access_grant,
+            folder_access::tauri_commands::folder_access_decline,
+            folder_access::tauri_commands::folder_access_forget,
+            folder_access::tauri_commands::folder_access_list,
             secrets::vault_commands::secret_backend_options,
             secrets::vault_commands::secret_backend_status,
             secrets::vault_commands::secret_backend_select,
@@ -4029,6 +4044,12 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            folder_access::tauri_commands::folder_access_probe,
+            folder_access::tauri_commands::folder_access_should_ask,
+            folder_access::tauri_commands::folder_access_grant,
+            folder_access::tauri_commands::folder_access_decline,
+            folder_access::tauri_commands::folder_access_forget,
+            folder_access::tauri_commands::folder_access_list,
             secrets::vault_commands::secret_backend_options,
             secrets::vault_commands::secret_backend_status,
             secrets::vault_commands::secret_backend_select,

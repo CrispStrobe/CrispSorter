@@ -22,6 +22,15 @@
     <key>com.apple.security.files.downloads.read-write</key>
     <true/>
 
+    <!-- Persist a folder the user picked, so sorting into it survives a
+         restart. Without this, `files.user-selected.read-write` grants
+         access only until the process exits, and every sort into the same
+         destination needs a fresh pick. Note the failure mode it removes:
+         `bookmarkDataWithOptions:` refuses at *creation* time when this key
+         is absent, which reads as though the folder were at fault. -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+
     <!-- App Store / TestFlight identity: must match the embedded provisioning
          profile's app id, or altool warns (90886) "not TestFlight-eligible". -->
     <key>com.apple.application-identifier</key>

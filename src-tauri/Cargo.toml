@@ -472,7 +472,13 @@ libc = "0.2"
 # tree via tauri; declared here so we can call AppKit directly. Bindings
 # only, so no new licence surface (objc2 crates are MIT/Apache-2.0).
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSGeometry"] }
+# `NSData` + `NSError` are for `folder_access::bookmarks`
+# (`bookmarkDataWithOptions:` returns NSData and yields NSError). They are
+# named here rather than left to cargo's feature unification: tauri pulls
+# objc2-foundation with a broader set, so the bookmark code compiled without
+# them — right up until tauri narrows its features, at which point the
+# breakage appears in our file and points nowhere near the cause.
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSGeometry", "NSData", "NSError"] }
 # `NSWorkspace` is P36.2: opening and revealing files through Launch
 # Services instead of spawning `open(1)`, which App Sandbox forbids.
 objc2-app-kit = { version = "0.3", features = ["NSSharingService", "NSView", "NSWindow", "NSResponder", "NSGraphics", "NSWorkspace", "NSRunningApplication"] }
