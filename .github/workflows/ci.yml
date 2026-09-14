@@ -476,11 +476,18 @@ jobs:
 
       - name: Library tests
         working-directory: repos/CrispSorter
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        # `audio-glint` is here because release builds it on Windows and this
+        # job did not, so the only thing that ever compiled the crates.io
+        # `glint-audio-sys` vendored C++ for MSVC was a release build — i.e.
+        # after the tag. It broke exactly there: `M_PI` undeclared under the
+        # newer toolchain on the floating `windows-latest` image, while this
+        # job stayed green on its pinned one. Same class as the feature list
+        # on the Linux job, and the same fix: compile here what release ships.
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
 
       - name: CLI smoke test
         working-directory: repos/CrispSorter
