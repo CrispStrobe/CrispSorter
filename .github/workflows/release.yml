@@ -254,7 +254,7 @@ jobs:
           python -c "
           import re, pathlib
           p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text()
+          s = p.read_text(encoding='utf-8')
           # Handle both '../../CrispEmbed/<sub>' and '../../CrispASR/<sub>'.
           # The capture group lets us cover crispasr, crispasr-sys, crispembed,
           # crispembed-sys, etc. without per-sub regex churn.
@@ -276,7 +276,7 @@ jobs:
               r'path = \"../_sibling/crisp-docx/crates/\1\"',
               s,
           )
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
           print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
           for marker in ('crisp-docx-core', 'crisp-docx-llm', 'crisp-docx-align'):
@@ -695,11 +695,11 @@ jobs:
           python3 -c "
           import re, pathlib
           p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text()
+          s = p.read_text(encoding='utf-8')
           s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
           s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
           s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           "
 
       - name: Install system deps
@@ -850,11 +850,11 @@ jobs:
           python3 -c "
           import re, pathlib
           p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text()
+          s = p.read_text(encoding='utf-8')
           s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
           s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
           s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           "
 
       - name: Install protoc
@@ -991,7 +991,7 @@ jobs:
           # app target, no Pods, so scoping to our-bundle-id blocks is enough). ---
           python3 - "$PBX" <<'PY'
           import sys, re, pathlib
-          p = pathlib.Path(sys.argv[1]); s = p.read_text()
+          p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding='utf-8')
           want = {
             "CODE_SIGN_STYLE": "Manual",
             "DEVELOPMENT_TEAM": "N9XSJ4M3GT",
@@ -1013,7 +1013,7 @@ jobs:
             if "com.crispstrobe.crispsorter" in blk and "crispsorter.RunnerTests" not in blk:
               blk = patch(blk); n += 1
             out.append(blk); i = m.end()
-          out.append(s[i:]); p.write_text("".join(out))
+          out.append(s[i:]); p.write_text("".join(out), encoding='utf-8')
           print(f"patched {n} buildSettings block(s) for unsigned archive")
           PY
 
@@ -1235,11 +1235,11 @@ jobs:
         run: |
           python3 - <<'PY'
           import re, pathlib
-          p = pathlib.Path('src-tauri/Cargo.toml'); s = p.read_text()
+          p = pathlib.Path('src-tauri/Cargo.toml'); s = p.read_text(encoding='utf-8')
           s = re.sub(r'path\s*=\s*"\.\./\.\./CrispEmbed/([\w-]+)"', r'path = "../_sibling/CrispEmbed/\1"', s)
           s = re.sub(r'path\s*=\s*"\.\./\.\./CrispASR/([\w-]+)"', r'path = "../_sibling/CrispASR/\1"', s)
           s = re.sub(r'path\s*=\s*"\.\./\.\./crisp-docx/crates/([\w-]+)"', r'path = "../_sibling/crisp-docx/crates/\1"', s)
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           PY
       # libpdfium for `pdf-render` — scanned-PDF page rasterisation, which is
       # what makes CrispEmbed OCR useful on PDFs rather than images only.
@@ -1276,9 +1276,9 @@ jobs:
           #     is why both are needed. See PLAN.md P36.12.
           python3 - <<'PY'
           import json, pathlib
-          p = pathlib.Path('src-tauri/capabilities/default.json'); d = json.loads(p.read_text())
+          p = pathlib.Path('src-tauri/capabilities/default.json'); d = json.loads(p.read_text(encoding='utf-8'))
           d['permissions'] = [x for x in d['permissions'] if x not in ('shell:default', 'process:default')]
-          p.write_text(json.dumps(d, indent=2))
+          p.write_text(json.dumps(d, indent=2), encoding='utf-8')
           print('capabilities: dropped shell/process')
           PY
           # (2) reqwest needs a TLS backend without the `desktop` feature (macOS
@@ -1301,7 +1301,7 @@ jobs:
           #     the job used to do.
           python3 - <<'PY'
           import json, pathlib
-          p = pathlib.Path('src-tauri/tauri.conf.json'); c = json.loads(p.read_text())
+          p = pathlib.Path('src-tauri/tauri.conf.json'); c = json.loads(p.read_text(encoding='utf-8'))
           b = c.get('bundle', {})
           binned = sorted(x.name for x in pathlib.Path('src-tauri/bin').glob('*')) \
                    if pathlib.Path('src-tauri/bin').is_dir() else []
@@ -1310,7 +1310,7 @@ jobs:
           elif 'resources' in b:
               del b['resources']
               print('tauri.conf: dropped bin/* resources (bin/ is empty)')
-          p.write_text(json.dumps(c, indent=2))
+          p.write_text(json.dumps(c, indent=2), encoding='utf-8')
           PY
           echo "sandbox variant patched"
       - name: Import signing certs (Apple Distribution + Installer)
