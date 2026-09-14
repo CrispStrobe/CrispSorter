@@ -91,8 +91,27 @@ jobs:
             # shared lib inside the tarball.
             pdfium_asset: pdfium-mac-arm64.tgz
             pdfium_lib_glob: 'lib/libpdfium.dylib'
-          - platform: windows-latest
+          # Pinned, not `windows-latest`. The floating label moved to a
+          # Visual Studio 18 image (MSVC 14.51), and the vendored C++ in the
+          # crates.io `glint-audio-sys` stopped compiling on it:
+          #   vorbis_decoder.cpp(304): error C2065: 'M_PI': undeclared identifier
+          # `M_PI` is not standard C++ — MSVC defines it only when
+          # _USE_MATH_DEFINES is set before <cmath>, and the newer toolchain
+          # is stricter about it. CI already pins windows-2025; release
+          # floating meant CI could never predict it.
+          - platform: windows-2025
             rust_target: x86_64-pc-windows-msvc
+            # MSVC-only, so it lives on this matrix entry rather than in the
+            # workflow env: clang and gcc read a leading `/` as a path, so a
+            # workflow-level CXXFLAGS would break the Linux and macOS legs
+            # that currently build fine.
+            #
+            # `M_PI` is not standard C++ — MSVC defines it only when
+            # _USE_MATH_DEFINES is set before <cmath> — and the vendored C++
+            # in the crates.io `glint-audio-sys` uses it. Harmless on the
+            # pinned image, and it keeps the build working when the runner
+            # image next moves to a stricter toolchain.
+            cxxflags: '/D_USE_MATH_DEFINES'
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
             sidecar_name: llama-server-x86_64-pc-windows-msvc.exe
             # v0.2.0 enables the same translate-align + translate-nmt
@@ -125,6 +144,9 @@ jobs:
             pdfium_lib_glob: 'lib/libpdfium.so'
 
     runs-on: ${{ matrix.platform }}
+    env:
+      # Empty on every non-MSVC leg, which cc-rs treats as no extra flags.
+      CXXFLAGS: ${{ matrix.cxxflags }}
 
     env:
       APPIMAGE_EXTRACT_AND_RUN: '1'
