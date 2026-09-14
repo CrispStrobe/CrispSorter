@@ -1035,29 +1035,49 @@ jobs:
           fi
 
           # Build frontend + Rust + archive (UNSIGNED) via Tauri. Tauri runs the
-          # build server the Rust "Build Phase" needs; its own app-store export
-          # can't sign an unsigned archive and is expected to no-op/fail here — we
-          # glob for the .xcarchive and do our own manual -exportArchive below.
+          # build server the Rust "Build Phase" needs; the pbxproj above sets
+          # CODE_SIGNING_ALLOWED=NO, so anything Tauri exports is unsigned and
+          # carries no provisioning profile. We want the .xcarchive only, and
+          # sign it ourselves with -exportArchive below.
           echo "=== tauri ios build (unsigned archive) ==="
           npx tauri ios build --export-method app-store-connect 2>&1 | tail -60 || true
 
-          IPA=$(find src-tauri/gen/apple build -name "*.ipa" -type f 2>/dev/null | head -1)
-          if [ -z "$IPA" ]; then
-            echo "=== tauri produced no IPA — exporting archive manually ==="
-            ARCHIVE=$(find src-tauri/gen/apple build -name "*.xcarchive" -type d 2>/dev/null | head -1)
-            [ -n "$ARCHIVE" ] || { echo "::error::no .xcarchive found after tauri ios build"; exit 1; }
-            echo "archive: $ARCHIVE"
-            # Manual export — NO -allowProvisioningUpdates / auth flags.
-            PATH="/usr/bin:$PATH" xcodebuild -exportArchive \
-              -archivePath "$ARCHIVE" \
-              -exportPath build/ios/export \
-              -exportOptionsPlist src-tauri/ExportOptions.plist 2>&1 | tail -40
-            IPA=$(find build/ios/export -name "*.ipa" -type f 2>/dev/null | head -1)
-          fi
+          # Discard whatever Tauri exported. This used to be `if [ -z "$IPA" ]`
+          # — export manually *only* when Tauri produced nothing — on the
+          # assumption, stated in the comment above, that its app-store export
+          # "can't sign an unsigned archive and is expected to no-op/fail".
+          # Tauri CLI 2.10 does produce an .ipa, so that branch never ran, and
+          # the unsigned one went to App Store Connect:
+          #
+          #   ERROR: Validation failed (409) Missing Provisioning Profile —
+          #   Apps must contain a provisioning profile in a file named
+          #   embedded.mobileprovision
+          #
+          # after a 45-minute build. Always export ourselves.
+          find src-tauri/gen/apple build -name "*.ipa" -type f -delete 2>/dev/null || true
+
+          ARCHIVE=$(find src-tauri/gen/apple build -name "*.xcarchive" -type d 2>/dev/null | head -1)
+          [ -n "$ARCHIVE" ] || { echo "::error::no .xcarchive found after tauri ios build"; exit 1; }
+          echo "archive: $ARCHIVE"
+          # Manual export — NO -allowProvisioningUpdates / auth flags.
+          PATH="/usr/bin:$PATH" xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE" \
+            -exportPath build/ios/export \
+            -exportOptionsPlist src-tauri/ExportOptions.plist 2>&1 | tail -40
+          IPA=$(find build/ios/export -name "*.ipa" -type f 2>/dev/null | head -1)
+
           [ -n "$IPA" ] || { echo "::error::App Store IPA was not produced"; exit 1; }
           echo "IPA=$IPA" >> "$GITHUB_ENV"
           echo "=== signed IPA: $IPA ==="
           WORK=$(mktemp -d); unzip -q "$IPA" -d "$WORK"
+          # Assert the profile is embedded, here, rather than learning it from
+          # altool 20 minutes later. `codesign --verify` is not enough: it
+          # passed on the profile-less IPA ("satisfies its Designated
+          # Requirement"), because a valid signature says nothing about
+          # whether a provisioning profile came with it.
+          ls "$WORK"/Payload/*.app/embedded.mobileprovision >/dev/null 2>&1 \
+            || { echo "::error::exported IPA has no embedded.mobileprovision — App Store Connect will reject it (409)"; exit 1; }
+          echo "embedded profile: $(security cms -D -i "$WORK"/Payload/*.app/embedded.mobileprovision | /usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin 2>/dev/null)"
           codesign --verify --deep --strict --verbose=2 "$WORK"/Payload/*.app 2>&1 | tail -3
 
       - name: Build iOS app (unsigned fallback)
