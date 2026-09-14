@@ -19,6 +19,14 @@ on:
 # Bumping CRISPEMBED_REF / CRISPASR_REF / CRISPDOCX_REF here updates
 # all jobs at once — no more 3-place edits.
 env:
+  # Python's stdout on a Windows runner is the console code page (cp1252),
+  # so any inline `python -c` that prints file content dies on the first
+  # non-ASCII character. The rewrite step prints slices of Cargo.toml,
+  # which contains "→" in two comments:
+  #   UnicodeEncodeError: 'charmap' codec can't encode character '\u2192'
+  # Set for the whole workflow rather than that one step — the next
+  # arrow in a comment should not be able to break a release build.
+  PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
   CRISPEMBED_REF: v0.17.11   # keep equal to ci.yml's CRISPEMBED_REF
   CRISPASR_REPO: CrispStrobe/CrispASR
@@ -717,6 +725,12 @@ jobs:
         with:
           api-level: 34
           ndk-version: 26.3.11579264
+          # The action's default package list is "tools platform-tools", and
+          # `tools` is obsolete — Google removed it from the SDK repository,
+          # so sdkmanager now exits 1 with "Failed to find package 'tools'"
+          # and takes the whole job with it. Nothing here uses it; the NDK and
+          # platform-tools are what the Android build needs.
+          packages: 'platform-tools'
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -1077,7 +1091,11 @@ jobs:
           # whether a provisioning profile came with it.
           ls "$WORK"/Payload/*.app/embedded.mobileprovision >/dev/null 2>&1 \
             || { echo "::error::exported IPA has no embedded.mobileprovision — App Store Connect will reject it (409)"; exit 1; }
-          echo "embedded profile: $(security cms -D -i "$WORK"/Payload/*.app/embedded.mobileprovision | /usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin 2>/dev/null)"
+          # Here-string, not a pipe: PlistBuddy cannot read /dev/stdin from a
+          # pipe and answers "Error Reading File: /dev/stdin". Same shape the
+          # profile-install step above already uses for :UUID.
+          PROFILE_PLIST="$(security cms -D -i "$WORK"/Payload/*.app/embedded.mobileprovision)"
+          echo "embedded profile: $(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<<"$PROFILE_PLIST" 2>/dev/null)"
           codesign --verify --deep --strict --verbose=2 "$WORK"/Payload/*.app 2>&1 | tail -3
 
       - name: Build iOS app (unsigned fallback)

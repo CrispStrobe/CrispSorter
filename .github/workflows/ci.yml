@@ -29,6 +29,9 @@ env:
   #   ../../crisp-docx/crates/crisp-docx-{core,llm,align}  (new — docx surgery + LLM clients)
   # Checked out into repos/{name} so that, from repos/CrispSorter/src-tauri,
   # the relative path resolves correctly without any Cargo.toml rewrite.
+  # See release.yml: Windows stdout is cp1252, so printing file content
+  # from an inline `python -c` fails on any non-ASCII character.
+  PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
   # Pinned to the SAME tag release.yml uses. Previously CI tracked `main`
   # while release pinned v0.13.0, so CI never once built what shipped —
