@@ -1091,7 +1091,11 @@ jobs:
           # whether a provisioning profile came with it.
           ls "$WORK"/Payload/*.app/embedded.mobileprovision >/dev/null 2>&1 \
             || { echo "::error::exported IPA has no embedded.mobileprovision — App Store Connect will reject it (409)"; exit 1; }
-          echo "embedded profile: $(security cms -D -i "$WORK"/Payload/*.app/embedded.mobileprovision | /usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin 2>/dev/null)"
+          # Here-string, not a pipe: PlistBuddy cannot read /dev/stdin from a
+          # pipe and answers "Error Reading File: /dev/stdin". Same shape the
+          # profile-install step above already uses for :UUID.
+          PROFILE_PLIST="$(security cms -D -i "$WORK"/Payload/*.app/embedded.mobileprovision)"
+          echo "embedded profile: $(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<<"$PROFILE_PLIST" 2>/dev/null)"
           codesign --verify --deep --strict --verbose=2 "$WORK"/Payload/*.app 2>&1 | tail -3
 
       - name: Build iOS app (unsigned fallback)
