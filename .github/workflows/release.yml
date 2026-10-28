@@ -869,7 +869,7 @@ jobs:
           # Create draft release if it doesn't exist yet (Android may
           # finish before the desktop tauri-action jobs).
           gh release view "${TAG}" &>/dev/null || \
-            gh release create "${TAG}" --draft --title "${TAG}" --notes "Automated release"
+            gh release create "${TAG}" --target "$GITHUB_SHA" --draft --title "${TAG}" --notes "Automated release"
           APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
           if [ -n "$APK" ]; then
             DEST="CrispSorter_${VERSION}_android-aarch64.apk"
@@ -1305,7 +1305,7 @@ jobs:
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
           gh release view "${TAG}" &>/dev/null || \
-            gh release create "${TAG}" --draft --title "${TAG}" --notes "Automated release"
+            gh release create "${TAG}" --target "$GITHUB_SHA" --draft --title "${TAG}" --notes "Automated release"
 
           # Prefer signed IPA from export, fall back to unsigned .app
           IPA=$(find build/ios/export -name "*.ipa" -type f 2>/dev/null | head -1)
