@@ -35,7 +35,12 @@
                 docId: id, fieldId: field.id, normalizedValue: drafts[field.id],
                 reviewStatus: status, expectedRevision: field.revision,
             });
-            if (id === docId) loaded(result);
+            if (id === docId) {
+                const previousDrafts = drafts;
+                fields = result;
+                drafts = Object.fromEntries(result.map(value => [value.id,
+                    value.id === field.id ? value.normalized_value : previousDrafts[value.id] ?? value.normalized_value]));
+            }
         } catch (e) { if (id === docId) error = String(e); }
         finally { busy = false; }
     }
