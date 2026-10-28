@@ -29,6 +29,11 @@ a cl100k estimate for models with another tokenizer. A question without retrieve
 evidence returns an explicit message without calling the answer model. Citations
 let you inspect support; they do not establish that every model claim is correct.
 
+The reserved answer budget is also passed to generation. OpenAI Chat Completions
+uses [`max_completion_tokens`](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+which includes reasoning tokens; other compatible servers and local engines use
+their corresponding output-token limit.
+
 ## OCR recovery
 
 Open a supported file's OCR action, or open it in the OCR workbench. Task presets

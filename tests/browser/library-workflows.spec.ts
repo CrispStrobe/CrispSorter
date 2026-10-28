@@ -142,6 +142,7 @@ test('library chat retains real passages and opens the cited source', async ({ p
     await expect(page.locator('.evidence-viewer .tv-text')).toContainText('November 2031');
     const prompts = await page.evaluate(() => (window as any).__fixturePrompts);
     expect(JSON.stringify(prompts)).toContain('The cobalt warranty expires in November 2031.');
+    expect(prompts[0].max_tokens).toBe(1024);
     await page.screenshot({ path: 'test-results/cited-library-chat.png', fullPage: true });
 });
 

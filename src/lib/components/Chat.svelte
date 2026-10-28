@@ -231,7 +231,7 @@
             }
 
             const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
-            const responseText = await llmClient.query(activeProviderId, effectiveModel, prompt, activeProv.apiKey, llmTemperature);
+            const responseText = await llmClient.query(activeProviderId, effectiveModel, prompt, activeProv.apiKey, llmTemperature, undefined, evidence?.responseTokens);
             if (evidence) {
                 const ids = new Set(evidence.sources.map(s => s.id));
                 const unknown = [...responseText.matchAll(/\[(S\d+)\]/g)].map(m => m[1]).filter(id => !ids.has(id));

@@ -79,6 +79,7 @@ export interface EvidenceContext {
 export function buildEvidenceContext(
     question: string, instruction: string, candidates: EvidenceSource[], contextWindow: number,
 ): EvidenceContext {
+    if (!Number.isFinite(contextWindow)) throw new Error('Choose a finite model context window.');
     const window = Math.max(0, Math.floor(contextWindow));
     // cl100k is an estimate for other model families. Reserve framing and a
     // further 20% margin, rather than reporting this as their exact tokenizer.
