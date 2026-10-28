@@ -19,14 +19,14 @@ missing. Branch: `feat/library-workflows-20261028`.
   corpus relevance/latency/storage comparison before default selection.
 - [x] Structured decisions: optional SystemOne suggestions, bounded schemas,
   independent labeled evaluation; preserve human review and open-ended extraction.
-- [ ] Metadata evidence: original and normalized values, source anchors, model and
+- [x] Metadata evidence: original and normalized values, source anchors, model and
   review status; inspect/edit/filter/export/use in sorting.
 - [x] Workflow UX: Inbox / Review / Library, document-context tools, processing
   presets and actionable incomplete-work indicators, preserved advanced controls.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (23:07 UTC): all eight implementation areas are on the branch.
+Checkpoint (23:54 UTC): all eight implementation areas are on the branch.
 Frontend qualification is complete: 75 unit tests, zero Svelte errors
 (53 existing warnings), production build and all ten browser scenarios passed.
 The browser suite includes document context, cited evidence, OCR recovery,
@@ -42,10 +42,18 @@ Its separate real OCR run caught an invalid historical model alias before any
 inference. The presets now use the pinned registry's actual `qwen2vl-3b` name;
 saved configurations using the old alias migrate at resolution. The initial
 failure is preserved in tests/quality/results/2026-10-28/native-run-v3.json.
-Released-model inference and final-source native qualification remain pending.
-Native run 4 is active with the current OCR/backend source and the narrower
-`crispembed,pdf-zpdf` feature set; the final release matrix still runs each
-complete shipped desktop feature combination.
+The narrower native run then passed 1,394 tests, including refreshed source
+anchors and metadata stale-write protection, but two drive tests incorrectly
+assumed optional native providers were compiled. Those test-only assumptions
+are corrected; native run 5 is active. Production code is unchanged from the
+queued binary source `0eb1a37`.
+
+A source-bound OCR probe now compiles the exact production configuration,
+pipeline/cache functions, task presets and live test without unrelated index/UI
+dependencies. It passed four model-free tests after a 25-second admitted local
+compile; inference runs separately on a hosted CPU worker. Fragment hashes and
+a source-equivalence gate bind it to the queued binary source. This probe is
+not a full app build; the native suite and packaged-app checks remain separate.
 
 Actual CPU model evaluation is complete: MoEdern 27M matched the dense baseline
 on the frozen 12-query panel; 1.5M and 115M missed the predeclared quality gate.
@@ -55,7 +63,7 @@ engines remain deferred based on runtime compatibility and real-scan evidence.
 
 Linux cold-loader packaging has a passing independent ELF/Debian regression
 for SONAME aliases, modes, ownership and gzip/xz controls. Final platform binaries
-remain unqualified. Local compilation is stopped and its exclusive target cache
+remain unqualified; draft-only release run 40784963290 is queued. Local compilation is stopped and its exclusive target cache
 was removed because the VPS lacks safe headroom. Public and App Store uploads
 remain disabled. Do not close this programme based on queued or prepared checks.
 
