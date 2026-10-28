@@ -880,13 +880,15 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "lightonocr" => "lightonocr",
         "qwen3vl" => "qwen3vl-2b",
         "unlimited_ocr" => "unlimited-ocr",
-        _ => "qwen2vl-ocr",
+        _ => "qwen2vl-3b",
     }
 }
 
 /// Resolve a model registry name to a cached/downloaded GGUF path (best-effort).
 #[cfg(feature = "crispembed")]
 fn resolve(name: &str) -> String {
+    // Migrate the historical UI alias, which is absent from v0.17.12.
+    let name = if name == "qwen2vl-ocr" { "qwen2vl-3b" } else { name };
     crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
@@ -954,11 +956,12 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcr
     }
 
     // Advanced mode: explicit per-stage chains.
-    let nafnet = crispembed::CrispEmbed::resolve_model(
-        cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
-        Some(true),
-    )
-    .ok();
+    let nafnet = if cfg.denoise {
+        crispembed::CrispEmbed::resolve_model(
+            cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
+            Some(true),
+        ).ok()
+    } else { None };
     let specs: Vec<crispembed::OcrStageSpec> = cfg
         .stages
         .iter()
@@ -1201,7 +1204,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap())), reference["sha256"].as_str().unwrap());
         let mut models = Vec::new();
-        for name in ["dbnet-det", "trocr-printed", "qwen2vl-ocr"] {
+        for name in ["dbnet-det", "trocr-printed", "qwen2vl-3b"] {
             use std::io::Read;
             let path = crispembed::CrispEmbed::resolve_model(name, Some(true)).expect("released OCR model must resolve");
             let mut file = std::fs::File::open(&path).unwrap();

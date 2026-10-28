@@ -1,0 +1,24 @@
+{
+  "schema": "crispsorter-native-qualification-v1",
+  "app_source": "e33c323ba9736f2436e69a5122c7864f6673c5f2",
+  "completed": false,
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "features": "desktop,crispembed,pdf-zpdf",
+  "error": {
+    "type": "RuntimeError",
+    "message": "cargo exited 101; see native.log"
+  },
+  "native_regressions": {
+    "passed": 1470,
+    "failed": 0,
+    "ignored": 36,
+    "elapsed_seconds": 261.0
+  },
+  "live_ocr": {
+    "passed": false,
+    "failure": "Pinned registry has no qwen2vl-ocr alias; failure occurred before inference",
+    "replacement_registry_name": "qwen2vl-3b",
+    "registry_source": "https://github.com/CrispStrobe/CrispEmbed/blob/78493a31fc3043f3af4ab6fd2f197a32da6f07f0/examples/cli/model_mgr.cpp"
+  },
+  "native_log_sha256": "f8372739a5a37532835bf904cca98f811b92fd04d0ce453b0b2db0d31fb16c3d"
+}

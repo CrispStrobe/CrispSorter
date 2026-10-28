@@ -53,7 +53,9 @@ result; Undo OCR restores earlier page results, including edits. Changes to a ta
 or advanced configuration rebuild the native pipeline and release its previous
 weights before loading the replacement.
 
-These presets use the pinned 0.17.12 runtime. Newer published OCR model files do
+The VLM presets resolve the released registry name `qwen2vl-3b`; historical
+`qwen2vl-ocr` configurations migrate to that name. These presets use the pinned
+0.17.12 runtime. Newer published OCR model files do
 not imply that this runtime supports or qualifies their engines. OvisOCR2,
 UnlimitedOCR2 and MiniCPM-OCR remain outside the shipped engine selector pending
 runtime, quality and interactive-performance qualification.

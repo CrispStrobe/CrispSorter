@@ -23,19 +23,19 @@ pub fn apply(base: &OcrPipelineConfig, preset: &str) -> Result<OcrPipelineConfig
         "multilingual" => {
             // Qwen is a complete VLM, not a TrOCR line recognizer.
             stage.engine = "qwen2vl".into();
-            stage.det_model = Some("qwen2vl-ocr".into());
+            stage.det_model = Some("qwen2vl-3b".into());
             stage.vlm_max_tokens = 4096;
             cfg.drop_headers_footers = true;
         }
         "tables" => {
             stage.engine = "qwen2vl".into();
-            stage.det_model = Some("qwen2vl-ocr".into());
+            stage.det_model = Some("qwen2vl-3b".into());
             stage.vlm_max_tokens = 4096;
             stage.vlm_prompt = "Transcribe this page faithfully. Preserve all table rows and columns as Markdown tables. Do not summarize or invent missing values.".into();
         }
         "difficult" => {
             stage.engine = "qwen2vl".into();
-            stage.det_model = Some("qwen2vl-ocr".into());
+            stage.det_model = Some("qwen2vl-3b".into());
             stage.vlm_max_tokens = 4096;
             stage.cleanup.enabled = true;
             stage.cleanup.deskew = true;
