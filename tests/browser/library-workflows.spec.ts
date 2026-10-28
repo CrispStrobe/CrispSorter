@@ -256,7 +256,12 @@ test('switching previews during sorting keeps the approved document identity', a
     await page.getByTitle('Vorschau (Preview)', { exact: true }).nth(1).click();
     await expect(page.locator('.preview-title')).toContainText('Other.txt');
     await page.evaluate(() => (window as any).__fixtureSortResolve());
-    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.some((c: any) => c.command === 'batch_session_upsert_item' && c.args.item.originalPath === '/fixtures/new-warranty.txt' && c.args.item.originalName === 'Warranty.txt')))).toBe(true);
+    await expect.poll(() => page.evaluate(() =>
+        (window as any).__fixtureCalls.some((c: any) =>
+            c.command === 'batch_session_upsert_item' &&
+            c.args.item.originalPath === '/fixtures/new-warranty.txt' &&
+            c.args.item.originalName === 'Warranty.txt')
+    )).toBe(true);
     await expect(fields).not.toContainText('Approved fields saved for sorting');
     await page.getByRole('button', { name: 'Inbox', exact: true }).first().click();
     await expect(page.locator('.batch-container').getByText('Warranty.txt', { exact: true }).first()).toBeVisible();

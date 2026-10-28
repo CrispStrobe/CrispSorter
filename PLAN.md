@@ -26,10 +26,11 @@ missing. Branch: `feat/library-workflows-20261028`.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (22:45 UTC): all eight implementation areas are on the branch.
+Checkpoint (22:38 UTC): all eight implementation areas are on the branch.
 The previous frontend checkpoint passed 75 unit tests, zero Svelte errors
-(53 existing warnings) and eight browser scenarios. Ten browser scenarios and
-the latest frontend are now running on a source-pinned hosted worker. Browser
+(53 existing warnings) and eight browser scenarios. The hosted frontend build and 75 unit tests passed, but a syntax error in
+the new race regression prevented browser discovery/typechecking. That test
+has been corrected; all ten browser scenarios will be rerun on the worker. Browser
 checks use explicit IPC/provider fixtures and do not claim native inference.
 
 The full CPU native regression run passed 1,470 tests (36 intentionally ignored),
