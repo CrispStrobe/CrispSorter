@@ -68,7 +68,9 @@ original quotation, normalized editable value, model score, review status and
 source anchor. An exact first-match anchor is labeled as such; absent anchors and
 page numbers remain unavailable.
 
-Approve a value, correct it or reject it. **Find matching documents** uses the
+Approve a value, correct it or reject it. Draft edits require approval before
+sorting; exports retain the saved values and their recorded review status.
+**Find matching documents** uses the
 exact field tag, including a corrected normalized value that differs from the
 original text. Export JSON for the full evidence or CSV for a spreadsheet.
 

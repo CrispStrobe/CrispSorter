@@ -29,5 +29,15 @@
     "run": "native-2",
     "error": "lance-encoding could not find google/protobuf/empty.proto",
     "cause": "The worker omits recommended apt packages. Explicit libprotobuf-dev and PROTOC_INCLUDE are required; native run 3 checks the include before compiling."
+  },
+  {
+    "run": "native-3",
+    "cause": "All 1470 native regressions passed, then live OCR failed before inference: qwen2vl-ocr is absent from the pinned registry. Corrected presets and legacy alias migration use qwen2vl-3b.",
+    "report": "native-run-v3.json"
+  },
+  {
+    "run": "frontend-2",
+    "cause": "Production build and 75 unit tests passed. An extra parenthesis in the new sorting race browser test blocked typechecking and browser discovery. Corrected and all ten tests now parse.",
+    "app_source": "854f5f742a4cffe86a5e45427d01b96f8fcbe00b"
   }
 ]
