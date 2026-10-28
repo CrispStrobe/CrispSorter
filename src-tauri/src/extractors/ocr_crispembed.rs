@@ -873,7 +873,7 @@ fn vlm_default_model(engine: &str) -> &'static str {
     match engine {
         "glm" => "glm-ocr",
         "got" => "got-ocr2",
-        "internvl2" => "internvl2-ocr",
+        "internvl2" => "internvl2-2b",
         "deepseek_ocr2" => "deepseek-ocr2",
         "pix2struct" => "pix2struct-base",
         "granite_vision" => "granite-vision",
@@ -888,7 +888,11 @@ fn vlm_default_model(engine: &str) -> &'static str {
 #[cfg(feature = "crispembed")]
 fn resolve(name: &str) -> String {
     // Migrate the historical UI alias, which is absent from v0.17.12.
-    let name = if name == "qwen2vl-ocr" { "qwen2vl-3b" } else { name };
+    let name = match name {
+        "qwen2vl-ocr" => "qwen2vl-3b",
+        "internvl2-ocr" => "internvl2-2b",
+        _ => name,
+    };
     crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
