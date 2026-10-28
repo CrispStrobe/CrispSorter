@@ -32,7 +32,7 @@
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
     import { getBackendStatus, type BackendStatus } from '$lib/secretBackend';
 
-    $effect(() => { if ($documentToolRequest) activeTab = $documentToolRequest.tool; });
+    $effect(() => { if ($documentToolRequest && ($documentToolRequest.tool !== 'ocr' || $caps.ocr)) activeTab = $documentToolRequest.tool; });
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
 
     /**
@@ -570,7 +570,7 @@
                 <IndexIngest />
             {:else if activeTab === 'translate'}
                 <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
-            {:else if activeTab === 'ocr'}
+            {:else if activeTab === 'ocr' && $caps.ocr}
                 <OcrWorkbench initialLocationUri={$documentToolRequest?.tool === 'ocr' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             {:else if activeTab === 'pdf'}
                 <PdfWorkspace initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />

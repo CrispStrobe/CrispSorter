@@ -132,7 +132,7 @@ fn decision_request(text: &str, task: &DecisionTask, choices: &[String]) -> Resu
             json!({"type":"choice", "instructions": match task { DecisionTask::Category => "Choose the document type best supported by this evidence.", _ => "Choose the collection best supported by this evidence." }, "criteria":criteria})
         }
     };
-    Ok(json!({"state": text, "questions":{"suggestion":question}}))
+    Ok(json!({"model":"mayflowergmbh/Josev-2B", "state": text, "questions":{"suggestion":question}}))
 }
 
 #[tauri::command]
@@ -192,6 +192,7 @@ mod tests {
     fn bounded_decisions_preserve_options_and_reject_duplicates() {
         let request = decision_request("Invoice from Acme", &DecisionTask::Category, &["Invoice".into(), "Other".into()]).unwrap();
         assert_eq!(request["questions"]["suggestion"]["criteria"]["c00"], "Invoice");
+        assert_eq!(request["model"], "mayflowergmbh/Josev-2B");
         assert!(decision_request("text", &DecisionTask::Category, &["same".into(), "same".into()]).is_err());
     }
 }

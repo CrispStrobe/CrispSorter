@@ -13,4 +13,7 @@ it('preserves advanced settings and only offers tools compatible with a document
     expect(availableDocumentTools('report.pdf')).toEqual(['ocr', 'pdf']);
     expect(availableDocumentTools('book.docx')).toEqual(['translate']);
     expect(availableDocumentTools('audio.mp3')).toEqual([]);
+    expect(availableDocumentTools('report.pdf', { ocr: false, pdf_render: false })).toEqual(['pdf']);
+    expect(availableDocumentTools('scan.png', { ocr: false, pdf_render: false })).toEqual([]);
+    expect(availableDocumentTools('report.pdf', { ocr: true, pdf_render: false })).toEqual(['pdf']);
 });

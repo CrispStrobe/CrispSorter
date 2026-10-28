@@ -10,6 +10,7 @@ import sys
 import urllib.request
 
 APP_SOURCE = '@APP_SOURCE@'
+MODEL_SCOPE = '@MODEL_SCOPE@'
 root = Path('/kaggle/working/crispsorter-evaluation-inputs')
 root.mkdir(parents=True, exist_ok=True)
 try:
@@ -23,6 +24,7 @@ try:
     (root / 'app-source.txt').write_text(APP_SOURCE + '\n')
     subprocess.run([sys.executable, str(root / 'run_library_models.py'),
                     '--corpus', str(root / 'library-corpus.json'), '--lock', str(root / 'model-lock.json'),
+                    '--app-source', APP_SOURCE, '--models', MODEL_SCOPE,
                     '--output', '/kaggle/working/qualification'], check=True)
 except Exception as error:
     Path('/kaggle/working/entrypoint-error.json').write_text(json.dumps({

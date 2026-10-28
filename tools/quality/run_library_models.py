@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 
 
 def sha(path):
@@ -54,8 +55,11 @@ def download(url, path, digest=None, size=None):
 def request(base, route, value=None, timeout=120):
     data = None if value is None else json.dumps(value, ensure_ascii=False).encode()
     req = urllib.request.Request(base + route, data=data, headers={'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        payload = response.read(4 * 1024 * 1024 + 1)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            payload = response.read(4 * 1024 * 1024 + 1)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f'{route} returned HTTP {error.code}: {error.read(4000).decode(errors="replace")}') from error
     if len(payload) > 4 * 1024 * 1024:
         raise ValueError('Server response exceeds consumer bound')
     return json.loads(payload)
@@ -199,7 +203,7 @@ def evaluate_systemone(base, corpus):
         if doc['id'] not in corpus['decision_ids']:
             continue
         started = time.perf_counter()
-        response = request(base, '/systemone', {'state': doc['text'][:1600], 'questions': {'suggestion': {
+        response = request(base, '/systemone', {'model': 'mayflowergmbh/Josev-2B', 'state': doc['text'][:1600], 'questions': {'suggestion': {
             'type': 'choice', 'instructions': 'Choose the document type best supported by this evidence.', 'criteria': criteria}}})
         answer = response['answers']['suggestion']
         if answer['type'] != 'choice' or answer['choice'] not in criteria:
@@ -218,10 +222,13 @@ def main():
     parser.add_argument('--corpus', type=Path, required=True)
     parser.add_argument('--lock', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--models', choices=['all', 'systemone'], default='all')
+    parser.add_argument('--app-source', default='unrecorded')
     args = parser.parse_args()
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
-    report = {'schema': 'crispsorter-library-model-evaluation-v1', 'completed': False, 'default_promotion': False}
+    report = {'schema': 'crispsorter-library-model-evaluation-v1', 'completed': False, 'default_promotion': False,
+              'app_source': args.app_source, 'model_scope': args.models}
     write(output / 'report.json', report)
     try:
         lock = json.loads(args.lock.read_text())
@@ -259,11 +266,14 @@ def main():
         binary = build / 'crispembed-server'
         report['runtime_binary_sha256'] = sha(binary)
         write(output / 'report.json', report)
-        baseline_result, baseline_rankings = baseline(corpus, lock)
-        report['baseline'] = baseline_result
+        if args.models == 'all':
+            baseline_result, baseline_rankings = baseline(corpus, lock)
+            report['baseline'] = baseline_result
         write(output / 'report.json', report)
         report['moedern'] = {}
         for model in lock['models']:
+            if args.models == 'systemone' and model['id'] != 'systemone':
+                continue
             path = download(model['url'], scratch / 'models' / (model['id'] + '.gguf'), model['sha256'], model['bytes'])
             flag = '--systemone-model' if model['id'] == 'systemone' else '--moedern-model'
             with server(binary, flag, path, output / (model['id'] + '.log')) as (base, capabilities):

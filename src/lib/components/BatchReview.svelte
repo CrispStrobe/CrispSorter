@@ -1,5 +1,6 @@
 <script lang="ts">
     import { inWorkflow, processingOverrides, availableDocumentTools, documentToolRequest, type WorkflowStage, type ProcessingPreset } from '$lib/workflow';
+    import { caps } from '$lib/capabilities';
     let { workflow = 'inbox' }: { workflow?: WorkflowStage } = $props();
     let processingPreset = $state<ProcessingPreset>('balanced');
     $effect(() => {
@@ -1102,7 +1103,7 @@
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
         </select>
         {#if selectedItem}
-            {#each availableDocumentTools(selectedItem.originalName) as tool}
+            {#each availableDocumentTools(selectedItem.originalName, $caps) as tool}
                 <button onclick={() => documentToolRequest.set({ tool, locationUri: selectedItem.originalPath, filename: selectedItem.originalName })}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR selected document' : 'Translate selected document'}</button>
             {/each}
         {/if}

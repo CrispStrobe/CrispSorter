@@ -2192,7 +2192,7 @@
             </header>
             {#if localPathFromSearchUri(previewing.location_uri)}
                 <div class="document-actions">
-                    {#each availableDocumentTools(previewing.filename || previewing.location_uri) as tool}
+                    {#each availableDocumentTools(previewing.filename || previewing.location_uri, $caps) as tool}
                         <button onclick={() => { if (previewing) documentToolRequest.set({ tool, locationUri: previewing.location_uri, filename: previewing.filename || '' }); }}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR this document' : 'Translate this document'}</button>
                     {/each}
                 </div>
