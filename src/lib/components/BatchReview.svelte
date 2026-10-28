@@ -1092,10 +1092,10 @@
 
     <div class="workflow-actions">
         <strong>{workflow === 'inbox' ? 'Inbox' : 'Review'}</strong>
-        <label>Processing <select bind:value={processingPreset} disabled={batchManager.isProcessing}>
+        <label for="batch-processing-preset">Processing</label> <select id="batch-processing-preset" aria-label="Processing preset" bind:value={processingPreset} disabled={batchManager.isProcessing}>
             <option value="fast">Fast</option><option value="balanced">Balanced</option>
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
-        </select></label>
+        </select>
         {#if selectedItem}
             {#each availableDocumentTools(selectedItem.originalName) as tool}
                 <button onclick={() => documentToolRequest.set({ tool, locationUri: selectedItem.originalPath, filename: selectedItem.originalName })}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR selected document' : 'Translate selected document'}</button>

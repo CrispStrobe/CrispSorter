@@ -1,0 +1,38 @@
+{
+  "vendor_source": "9651c55a7561a08391db8dbaa24a3b75cfc53b99",
+  "ggml_source": "a06fc0bb46b73cc10011fc90ae4054aee8438aeb",
+  "harness_source": "5e318f0c7ec93a1c7cf5851de4625f0fd74bd7c0",
+  "baseline": {
+    "id": "BAAI/bge-m3",
+    "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+    "pooling": "normalized CLS from original Transformers model",
+    "device": "CPU"
+  },
+  "models": [
+    {
+      "id": "moedern-1p5m",
+      "url": "https://huggingface.co/cstr/SauerkrautLM-MoEdernColBERT-1.5M-CrispEmbed-GGUF/resolve/6f3b35143b3afdeeded7f77216b1ec072028fd5f/moedern-1.5m-text-f32.gguf",
+      "sha256": "0e2b8773abd8c78a5825280f9a73cb808b88d56f0675a8e4bb7f0509f5b6cc51",
+      "bytes": 7037952
+    },
+    {
+      "id": "moedern-27m",
+      "url": "https://huggingface.co/cstr/SauerkrautLM-MoEdernColBERT-27M-CrispEmbed-GGUF/resolve/351adfad4a52edf9e66baceb244e46d12856ca69/moedern-27m-text-f32.gguf",
+      "sha256": "e836acbb507ebf9d26ad6a3f5e5712487f1b90f1430b1174acb07de07e85ce18",
+      "bytes": 109596000
+    },
+    {
+      "id": "moedern-115m",
+      "url": "https://huggingface.co/cstr/SauerkrautLM-MoEdernColBERT-115M-CrispEmbed-GGUF/resolve/9c5bcf770287026b8e2a0b5e0f5187282b60711b/moedern-115m-text-f32.gguf",
+      "sha256": "4150412f66caaa058c90ad0ed6cc4e318a0ea146f4ce9e59de62f83975903766",
+      "bytes": 459890432
+    },
+    {
+      "id": "systemone",
+      "url": "https://huggingface.co/cstr/Josev-2B-SystemOne-GGUF/resolve/bffe62522f826b4c33f2e731d5b870ced5150a17/josev2b-systemone-f32.gguf",
+      "sha256": "72684e39d0eed526b40c5150c78b2d881d324c39e16af48060b3d741f526ccf2",
+      "bytes": 7659180448
+    }
+  ],
+  "corpus_sha256": "d76037dad154f8df7d0d08bf428cdf4f6009f1dbd2e207361bc2853fae048733"
+}

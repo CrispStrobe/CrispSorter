@@ -655,7 +655,7 @@
                     <details open={round === evidenceRounds[evidenceRounds.length - 1]}>
                         <summary>{round.question} · {round.sources.length} passages</summary>
                         {#each round.sources as source}
-                            <button onclick={() => viewedSource = source}>
+                            <button onclick={() => { viewedSource = source; sidebarCollapsed = true; }}>
                                 [{source.id}] {source.title}{source.page ? ` · page ${source.page}` : ` · passage ${(source.chunkIndex ?? 0) + 1}`}
                             </button>
                         {/each}

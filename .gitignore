@@ -59,3 +59,10 @@ samples/
 # Tracked references in PLAN.md / HISTORY.md cite the local path
 # (handover-prompts/...) but the content lives outside git.
 handover-prompts/
+
+# Python validation helpers
+__pycache__/
+*.pyc
+# Browser qualification outputs
+playwright-report/
+test-results/
