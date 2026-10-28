@@ -206,7 +206,7 @@ enum Command {
         #[arg(long)]
         det_model: Option<String>,
         /// Recognition model registry name (dbnet_trocr / surya / tesseract).
-        /// Default per engine (`qwen2vl-ocr`, or `tesseract-eng` for tesseract).
+        /// Default per engine (`trocr-printed`, or `tesseract-eng` for tesseract).
         #[arg(long)]
         rec_model: Option<String>,
         /// Pre-processor: classical scan cleanup (deskew / crop / whiten).

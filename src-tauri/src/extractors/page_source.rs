@@ -120,8 +120,9 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
     // resource → `resources/bin/`, alongside the llama-server sidecar), so the
     // candidate dirs cover every platform's bundle layout relative to the exe:
     //   - the exe dir itself (Windows portable .zip lays DLLs next to the .exe)
-    //   - `resources/bin` under the exe (Linux .deb / generic)
-    //   - `../Resources/resources/bin` + `../Frameworks` (macOS .app)
+    //   - `bin` / `resources/bin` under the exe (portable layouts)
+    //   - `../Resources/bin` + `../Frameworks` (macOS .app)
+    //   - `../lib/CrispSorter/bin` (the installed Linux .deb)
     //   - `../lib` (FHS-style installs)
     let bindings = std::env::current_exe()
         .ok()
@@ -129,7 +130,10 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
         .and_then(|dir| {
             let candidates = [
                 dir.clone(),
+                dir.join("bin"),
                 dir.join("resources").join("bin"),
+                dir.join("..").join("Resources").join("bin"),
+                dir.join("..").join("lib").join("CrispSorter").join("bin"),
                 dir.join("..").join("Resources").join("resources").join("bin"),
                 dir.join("..").join("Frameworks"),
                 dir.join("..").join("Resources"),

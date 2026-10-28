@@ -92,6 +92,17 @@ def inspect_package(platform, artifact, destination):
         result = subprocess.run([*launcher, *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=90, check=True)
         payload = json.loads(result.stdout)
         checks.append({'arguments': arguments, 'result': payload, 'stderr': result.stderr[-4000:]})
+    # Use the real executable for the OCR probe: invoking ld.so explicitly
+    # changes current_exe(), which would invalidate resource-dir discovery.
+    fixture = Path(__file__).resolve().parents[1] / 'tests/quality/ocr-task.pdf'
+    arguments = ['ocr', str(fixture), '--engine', 'dbnet_trocr', '--cleanup', 'false', '--render', 'hocr', '--min-confidence', '0', '--min-chars', '0']
+    result = subprocess.run([str(executable), *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=600, check=True)
+    text = result.stdout.lower()
+    if 'ocr_page' not in text or not all(word in text for word in ['cobalt', 'warranty', '2031']):
+        raise ValueError('Packaged scanned-PDF OCR missed its known evidence: ' + result.stdout[-4000:] + result.stderr[-4000:])
+    checks.append({'arguments': arguments, 'result': 'image-only PDF rasterized and expected text retained',
+                   'fixture_sha256': sha(fixture), 'stdout_sha256': hashlib.sha256(result.stdout.encode()).hexdigest(),
+                   'stderr': result.stderr[-4000:]})
     return {'inspection': 'packaged executable starts with build-tree libraries hidden', 'checks': checks}
 
 
