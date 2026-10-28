@@ -7,17 +7,17 @@ working binaries for Linux, Windows, macOS, iOS and Android. Do not declare this
 programme complete while any implementation, evaluation or platform artifact is
 missing. Branch: `feat/library-workflows-20261028`.
 
-- [ ] Retrieval: full matching passages for reranking, retained candidate windows,
+- [x] Retrieval: full matching passages for reranking, retained candidate windows,
   result-limit-aware cache, consistent fallback ranks; meaningful regressions.
-- [ ] Cited chat: selected-document and library retrieval, token-budgeted evidence,
+- [x] Cited chat: selected-document and library retrieval, token-budgeted evidence,
   clickable source navigation, honest missing-evidence behavior.
 - [ ] Runtime: qualify immutable CrispEmbed 0.17.12 bindings/assets; report actual
   runtime identity and keep unsupported experimental engines unavailable.
 - [ ] OCR: task presets, selective weak-page/region reprocessing, engine comparison
   on a frozen representative corpus; retain published and experimental distinctions.
-- [ ] MoEdern: independent query/document role integration, original masks/scoring,
+- [x] MoEdern: independent query/document role integration, original masks/scoring,
   corpus relevance/latency/storage comparison before default selection.
-- [ ] Structured decisions: optional SystemOne suggestions, bounded schemas,
+- [x] Structured decisions: optional SystemOne suggestions, bounded schemas,
   independent labeled evaluation; preserve human review and open-ended extraction.
 - [ ] Metadata evidence: original and normalized values, source anchors, model and
   review status; inspect/edit/filter/export/use in sorting.
@@ -26,11 +26,13 @@ missing. Branch: `feat/library-workflows-20261028`.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (22:38 UTC): all eight implementation areas are on the branch.
+Checkpoint (22:44 UTC): all eight implementation areas are on the branch.
 The previous frontend checkpoint passed 75 unit tests, zero Svelte errors
 (53 existing warnings) and eight browser scenarios. The hosted frontend build and 75 unit tests passed, but a syntax error in
 the new race regression prevented browser discovery/typechecking. That test
-has been corrected; all ten browser scenarios will be rerun on the worker. Browser
+has been corrected. The updated ten-scenario suite also checks that unsaved
+field edits are excluded from sorting and exports. Its worker is waiting for
+a CPU slot. Full frontend suites and compilers remain off the loaded VPS. Browser
 checks use explicit IPC/provider fixtures and do not claim native inference.
 
 The full CPU native regression run passed 1,470 tests (36 intentionally ignored),
@@ -40,6 +42,9 @@ inference. The presets now use the pinned registry's actual `qwen2vl-3b` name;
 saved configurations using the old alias migrate at resolution. The initial
 failure is preserved in tests/quality/results/2026-10-28/native-run-v3.json.
 Released-model inference and final-source native qualification remain pending.
+Native run 4 is active with the current OCR/backend source and the narrower
+`crispembed,pdf-zpdf` feature set; the final release matrix still runs each
+complete shipped desktop feature combination.
 
 Actual CPU model evaluation is complete: MoEdern 27M matched the dense baseline
 on the frozen 12-query panel; 1.5M and 115M missed the predeclared quality gate.
