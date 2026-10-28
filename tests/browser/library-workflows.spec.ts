@@ -17,6 +17,10 @@ async function fixtures(page: Page) {
         root.__fixtureCalls = [];
         root.__fixturePrompts = [];
         root.__fixtureItems = items;
+        root.__fixtureEmptyEvidence = false;
+        root.__fixtureRegionEmpty = false;
+        const result = { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8, source_hash: 'a'.repeat(64), snippet: 'Cobalt warranty' };
+        let fields = [{ id: 'vendor-1', label: 'vendor', original_value: 'Acme Incorporated', normalized_value: 'Acme Incorporated', model: 'fixture-ner', confidence: 0.85, start_char: 12, end_char: 29, page: null, anchor_method: 'first_exact_match', review_status: 'suggested', revision: 0 }];
         let rid = 1;
         const callbacks = new Map<number, Function>();
         const requests = new Map<number, any>();
@@ -42,6 +46,18 @@ async function fixtures(page: Page) {
                 if (command === 'plugin:store|load') return 1;
                 if (command === 'plugin:store|get') return [settings[args.key], args.key in settings];
                 if (command === 'plugin:store|set') { settings[args.key] = args.value; return; }
+                if (command === 'plugin:dialog|open') return '/fixtures/scan.pdf';
+                if (command === 'plugin:dialog|save') return '/fixtures/document-fields.csv';
+                if (command === 'index_search') return [result];
+                if (command === 'index_query_documents') return { rows: [result], next_cursor: null };
+                if (command === 'index_get_fields') return fields;
+                if (command === 'index_review_field') {
+                    if (args.expectedRevision !== fields[0].revision) throw new Error('Stale revision');
+                    fields = [{ ...fields[0], normalized_value: args.normalizedValue, review_status: args.reviewStatus, revision: fields[0].revision + 1 }];
+                    return fields;
+                }
+                if (command === 'verify_sort_field_source') return;
+                if (command === 'plugin:fs|write_text_file') return;
                 if (command === 'plugin:event|listen') return rid++;
                 if (command === 'plugin:path|join') return args.paths.join('/');
                 if (command === 'plugin:path|resolve_directory') return '/fixtures';
@@ -58,9 +74,9 @@ async function fixtures(page: Page) {
                 if (command === 'index_stats') return { doc_count: 2, chunk_count: 4, total_rows: 4 };
                 if (command === 'index_get_config') return { enabled: true, mode: 'Hybrid', backend_type: 'Local', use_vector: true };
                 if (command === 'sync_status') return { pending_count: 0, last_push_ts: null, remote_online: false };
-                if (command === 'index_retrieve_passages') return [{ document: { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8 }, passage: { text: 'The cobalt warranty expires in November 2031.', start_char: 4000, end_char: 4045, offset_unit: 'utf8_bytes' } }];
+                if (command === 'index_retrieve_passages') return root.__fixtureEmptyEvidence ? [] : [{ document: { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8 }, passage: { text: 'The cobalt warranty expires in November 2031.', start_char: 4000, end_char: 4045, offset_unit: 'utf8_bytes' } }];
                 if (command === 'ocr_doc_open') return { count: 2, pages: ['/fixtures/page1.png', '/fixtures/page2.png'] };
-                if (command === 'ocr_page_regions') return { width: 500, height: 700, regions: [{ text: 'Warranty expires in November 2031.', x: 10, y: 20, w: 350, h: 40, confidence: 0.2, char_conf: [] }] };
+                if (command === 'ocr_page_regions') return { width: 500, height: 700, regions: args.region && root.__fixtureRegionEmpty ? [] : [{ text: args.region ? 'Corrected crop text.' : 'Warranty expires in November 2031.', x: 10, y: 20, w: 350, h: 40, confidence: args.pagePath.endsWith('page2.png') ? 0.9 : 0.2, char_conf: [] }] };
                 if (command === 'plugin:http|fetch') {
                     const id = rid++;
                     const config = args.clientConfig;
@@ -127,4 +143,78 @@ test('library chat retains real passages and opens the cited source', async ({ p
     const prompts = await page.evaluate(() => (window as any).__fixturePrompts);
     expect(JSON.stringify(prompts)).toContain('The cobalt warranty expires in November 2031.');
     await page.screenshot({ path: 'test-results/cited-library-chat.png', fullPage: true });
+});
+
+async function ask(page: Page, question: string) {
+    await expect.poll(() => page.locator('deep-chat').evaluate((el: any) => typeof el.connect?.handler)).toBe('function');
+    const input = page.locator('deep-chat').locator('[contenteditable="true"]');
+    await input.fill(question); await input.press('Enter');
+}
+
+test('selected chat retrieves a middle passage from persisted text', async ({ page }) => {
+    await page.getByRole('button', { name: 'Chat', exact: true }).first().click();
+    await page.locator('.context-list .context-item').filter({ hasText: 'Warranty.txt' }).click();
+    await ask(page, 'When does the cobalt warranty expire?');
+    await expect(page.locator('deep-chat')).toContainText('November 2031');
+    const prompts = await page.evaluate(() => (window as any).__fixturePrompts);
+    expect(JSON.stringify(prompts)).toContain('The cobalt warranty expires in November 2031.');
+    await expect(page.getByRole('button', { name: /\[S1\].*Warranty/ })).toBeVisible();
+});
+
+test('empty library evidence answers explicitly without calling a model', async ({ page }) => {
+    await page.evaluate(() => { (window as any).__fixtureEmptyEvidence = true; });
+    await page.getByRole('button', { name: 'Chat', exact: true }).first().click();
+    await page.locator('#evidence-scope').selectOption('library');
+    await ask(page, 'Explain the missing nebula contract.');
+    await expect(page.locator('deep-chat')).toContainText('could not find supporting passages');
+    expect(await page.evaluate(() => (window as any).__fixturePrompts.length)).toBe(0);
+});
+
+test('OCR retries only weak pages and preserves edits through crop failure and undo', async ({ page }) => {
+    await page.getByRole('button', { name: 'OCR', exact: true }).first().click();
+    const workbench = page.locator('.ocrwb');
+    await workbench.getByRole('button', { name: 'Open document…', exact: true }).click();
+    await workbench.getByLabel('OCR task preset').selectOption('multilingual');
+    await workbench.getByRole('button', { name: 'Run OCR (all pages)', exact: true }).click();
+    await expect(workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true })).toBeEnabled();
+    await page.evaluate(() => { (window as any).__fixtureCalls = []; });
+    await workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'ocr_page_regions').length)).toBe(1);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.find((c: any) => c.command === 'ocr_page_regions').args)).toMatchObject({ pagePath: '/fixtures/page1.png', preset: 'multilingual' });
+    const text = workbench.locator('textarea').first();
+    await text.fill('My proofread warranty text.');
+    await page.evaluate(() => { (window as any).__fixtureRegionEmpty = true; });
+    await workbench.getByRole('button', { name: 'Retry selected region', exact: true }).click();
+    await expect(workbench).toContainText('previous text was retained');
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await page.evaluate(() => { (window as any).__fixtureRegionEmpty = false; });
+    await workbench.getByRole('button', { name: 'Retry selected region', exact: true }).click();
+    await expect(text).toHaveValue('Corrected crop text.');
+    await workbench.getByRole('button', { name: 'Undo OCR', exact: true }).click();
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await workbench.getByLabel('Proofread', { exact: true }).check();
+    await expect(workbench.getByRole('button', { name: 'Retry weak pages (0)', exact: true })).toBeDisabled();
+});
+
+test('field review preserves evidence, finds exact values, exports and stages sorting without moves', async ({ page }) => {
+    await page.getByRole('button', { name: 'Library', exact: true }).first().click();
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.locator('.query-input').fill('warranty');
+    await page.locator('.search-btn').click();
+    await page.getByTitle('Vorschau (Preview)', { exact: true }).click();
+    await page.locator('.fields-panel summary').click();
+    const fields = page.locator('.fields-panel');
+    await fields.getByLabel('Normalized value').fill('ACME');
+    await fields.getByRole('button', { name: 'Approve value', exact: true }).click();
+    await expect(fields).toContainText('corrected');
+    await expect(fields.locator('blockquote')).toHaveText('Acme Incorporated');
+    await fields.getByRole('button', { name: 'Find matching documents', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'index_query_documents' && c.args.filter.tags?.includes('field:vendor:ACME')).length)).toBe(1);
+    await fields.getByRole('button', { name: 'Export CSV', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'plugin:fs|write_text_file').length)).toBe(1);
+    await fields.getByRole('button', { name: 'Use approved fields for sorting', exact: true }).click();
+    await expect(fields).toContainText('Approved fields saved for sorting');
+    const calls = await page.evaluate(() => (window as any).__fixtureCalls);
+    expect(calls.some((c: any) => c.command === 'verify_sort_field_source')).toBe(true);
+    expect(calls.some((c: any) => /^(move_file|rename_file|apply_moves)$/.test(c.command))).toBe(false);
 });

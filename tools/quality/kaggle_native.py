@@ -63,7 +63,7 @@ try:
     archive = root / 'crispembed-linux-x86_64.tar.gz'
     with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.12/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
         shutil.copyfileobj(response, stream)
-    run(['python', 'scripts/verify_crispembed_bundle.py', str(archive), '--source', str(root / 'CrispEmbed')], cwd=app, env=env)
+    run(['python', 'scripts/verify_crispembed_bundle.py', str(archive), '--asset', archive.name, '--source', str(root / 'CrispEmbed')], cwd=app, env=env)
     libs = root / 'CrispEmbed/build'
     libs.mkdir()
     run(['tar', '-xzf', str(archive), '-C', str(libs)], env=env)
@@ -75,7 +75,10 @@ try:
     config = app / 'src-tauri/tauri.conf.json'
     value = json.loads(config.read_text())
     value['bundle']['externalBin'] = []
+    value['bundle']['resources'] = []
     config.write_text(json.dumps(value))
+    (app / 'build').mkdir(exist_ok=True)
+    (app / 'build/index.html').write_text('<!doctype html><title>Native test fixture</title>')
     features = 'desktop,crispembed,pdf-zpdf'
     report['features'] = features
     save()

@@ -23,6 +23,10 @@ describe('document evidence', () => {
         expect(context.inputTokens).toBe(tokenCount(context.prompt));
         expect(context.inputTokens + context.responseTokens + 128).toBeLessThanOrEqual(Math.floor(2048 * 0.8));
         expect(context.prompt).toContain('[S1]');
+        for (const source of context.sources) {
+            expect(source.text).not.toContain('\uFFFD');
+            expect(sources.some(original => original.text.startsWith(source.text))).toBe(true);
+        }
     });
     it('rejects a question too long to leave context for an answer', () => {
         expect(() => buildEvidenceContext('question '.repeat(2000), '', [], 1024)).toThrow(/exceed/);

@@ -154,12 +154,15 @@ pub async fn crispembed_classify_document(
     let answer = &result["answers"]["suggestion"];
     let (value, confidence) = match task {
         DecisionTask::NeedsReview => {
+            if answer["type"] != "noul" { return Err("SystemOne returned the wrong decision type".into()); }
             let probability = answer["noul"].as_f64().filter(|v| v.is_finite() && (0.0..=1.0).contains(v)).ok_or("Invalid SystemOne boolean score")?;
             (if probability >= 0.5 { "needs_review" } else { "no_review_suggested" }.into(), probability)
         }
         _ => {
+            if answer["type"] != "choice" { return Err("SystemOne returned the wrong decision type".into()); }
             let id = answer["choice"].as_str().ok_or("Missing SystemOne choice")?;
             let index = id.strip_prefix('c').and_then(|i| i.parse::<usize>().ok()).filter(|&i| i < choices.len()).ok_or("SystemOne chose an unknown option")?;
+            if id != format!("c{index:02}") { return Err("SystemOne chose an unknown option".into()); }
             let confidence = answer["confidence"].as_f64().filter(|v| v.is_finite() && (0.0..=1.0).contains(v)).ok_or("Invalid SystemOne model score")?;
             (choices[index].clone(), confidence)
         }

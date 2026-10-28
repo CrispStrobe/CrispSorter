@@ -2,6 +2,11 @@
     import { inWorkflow, processingOverrides, availableDocumentTools, documentToolRequest, type WorkflowStage, type ProcessingPreset } from '$lib/workflow';
     let { workflow = 'inbox' }: { workflow?: WorkflowStage } = $props();
     let processingPreset = $state<ProcessingPreset>('balanced');
+    $effect(() => {
+        if (batchManager.filterStatus !== 'all' && !inWorkflow({ status: batchManager.filterStatus as BatchStatus }, workflow)) {
+            batchManager.filterStatus = 'all';
+        }
+    });
     const workflowItems = $derived(batchManager.filteredItems.filter(item => inWorkflow(item, workflow)));
     import {
         probeFolder,
