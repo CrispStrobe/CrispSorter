@@ -419,6 +419,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
+          releaseCommitish: ${{ github.sha }}
           releaseName: 'CrispSorter v__VERSION__'
           releaseBody: 'Automated release from GitHub Actions.'
           releaseDraft: true
@@ -695,6 +696,23 @@ jobs:
               gh release upload "$TAG" "$asset" --clobber --repo "${{ github.repository }}"
             fi
           done
+
+      - name: Released-model OCR smoke through app bindings (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
+          CRISPSORTER_OCR_RECEIPT: ${{ github.workspace }}/CrispSorter_linux-x86_64.ocr.json
+          QWEN2VL_OCR_FORCE_CPU: '1'
+          MATH_OCR_FORCE_CPU: '1'
+          RUST_MIN_STACK: '16777216'
+        run: |
+          set -euo pipefail
+          FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
+          cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
+          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          gh release upload "v$VERSION" CrispSorter_linux-x86_64.ocr.json --clobber
 
       - name: Verify final packages and attach source/checksum receipts
         shell: bash

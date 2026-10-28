@@ -1,0 +1,28 @@
+[
+  {
+    "run": 1,
+    "report_sha256": "11652a152ab0da36de56386c1ccd051c8dfd87d6f3fdc43b4e374a1aeb75a48f",
+    "error": {
+      "type": "RuntimeError",
+      "message": "Native server exited during startup; see /kaggle/working/qualification/moedern-1p5m.log"
+    },
+    "completed": false
+  },
+  {
+    "run": 2,
+    "report_sha256": "38dd9301f1d09875fa98a27c71e92714d310052f2b47914c6146052fa834e26a",
+    "error": {
+      "type": "HTTPError",
+      "message": "HTTP Error 400: Bad Request"
+    },
+    "completed": false
+  },
+  {
+    "run": "native-1",
+    "error": {
+      "type": "RuntimeError",
+      "message": "python exited 2; see native.log"
+    },
+    "cause": "Launcher omitted the required --asset verifier argument; fixed before native run 2."
+  }
+]

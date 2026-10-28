@@ -20,10 +20,10 @@ use std::sync::Mutex;
 
 use super::ExtractedDocument;
 
-/// Default detection model (Surya-OCR-2, EfficientViT, 91 languages).
+/// Default lightweight text detector.
 #[cfg(feature = "crispembed")]
 const DEFAULT_DET_MODEL: &str = "dbnet-det";
-/// Default recognition model (Qwen2.5-VL, German support).
+/// Default printed-text line recognizer, paired with DBNet.
 #[cfg(feature = "crispembed")]
 const DEFAULT_REC_MODEL: &str = "trocr-printed";
 
@@ -1152,7 +1152,7 @@ mod tests {
         let img = image::RgbImage::new(200, 200);
         img.save(&img_path).unwrap();
         // Use the default models explicitly.
-        let result = ocr_via_crispembed_custom(&img_path, "surya-det", "qwen2vl-ocr");
+        let result = ocr_via_crispembed_custom(&img_path, DEFAULT_DET_MODEL, DEFAULT_REC_MODEL);
         let doc = result.expect("custom pipeline should not crash");
         println!("OCR text length: {}", doc.full_text.len());
     }
@@ -1187,6 +1187,35 @@ mod tests {
         let doc = ocr_via_pipeline(&img_path, &cfg)
             .expect("orchestrator pipeline should run end-to-end without crashing");
         println!("pipeline full_text len: {}", doc.full_text.len());
+    }
+
+    /// Actual released-model inference through the application's production
+    /// workbench path. Kept separate from model-free regressions because it
+    /// downloads weights and exercises four model configurations on a CPU.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore = "downloads OCR weights; run on an admitted inference worker"]
+    fn ocr_task_presets_live() {
+        let image = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
+        let reference: serde_json::Value = serde_json::from_slice(&std::fs::read(image.with_extension("json")).unwrap()).unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap())), reference["sha256"].as_str().unwrap());
+        let mut cases = Vec::new();
+        for preset in ["quick", "multilingual", "tables", "difficult"] {
+            let config = super::super::ocr_presets::apply(&Default::default(), preset).unwrap();
+            let started = std::time::Instant::now();
+            let regions = ocr_regions_detailed(&image, &config).expect("released OCR task should run through the app binding");
+            let text = regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+            let normalized = text.to_lowercase();
+            let matched = ["cobalt", "warranty", "2031"].iter().all(|word| normalized.contains(word));
+            cases.push(serde_json::json!({"preset":preset,"text":text,"matched":matched,"elapsed_seconds":started.elapsed().as_secs_f64(),"config":config}));
+        }
+        let receipt = serde_json::json!({"scope":"Synthetic native app wiring smoke, not a corpus accuracy claim", "cases":cases});
+        println!("{receipt}");
+        if let Ok(path) = std::env::var("CRISPSORTER_OCR_RECEIPT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        }
+        assert!(cases.iter().all(|case| case["matched"] == true), "OCR task failed to retain the known fixture evidence: {receipt}");
     }
 
     /// Live E2E for the per-stage builder (`from_stages`) with a Tesseract
