@@ -103,6 +103,9 @@ def main():
                'version': json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version'],
                'runtime_lock': json.loads((root / 'scripts/crispembed-runtime-lock.json').read_text()),
                'native_crispembed_included': args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64'], 'artifacts': []}
+    receipt['toolchains'] = {tool: subprocess.check_output([tool, '--version'], text=True).strip() for tool in ['rustc', 'cargo', 'node']}
+    receipt['dependency_sources'] = {name: subprocess.check_output(['git', '-C', str(root / '_sibling' / name), 'rev-parse', 'HEAD'], text=True).strip()
+                                     for name in ['CrispEmbed', 'CrispASR', 'crisp-docx'] if (root / '_sibling' / name).is_dir()}
     with hide_build_libraries(root):
         for artifact in artifacts:
             entry = {'filename': artifact.name, 'bytes': artifact.stat().st_size, 'sha256': sha(artifact)}

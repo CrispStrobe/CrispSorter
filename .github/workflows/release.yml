@@ -136,6 +136,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Check out sibling CrispEmbed
         uses: actions/checkout@v4
@@ -740,6 +743,9 @@ jobs:
       PROTOC: /usr/bin/protoc
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Check out sibling CrispEmbed
         uses: actions/checkout@v4
         with:
@@ -874,6 +880,9 @@ jobs:
       HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Check out sibling CrispEmbed
         uses: actions/checkout@v4
         with:
