@@ -136,10 +136,11 @@ impl SearchEngine {
         self
     }
 
-    fn fetch_limit(&self, requested: usize) -> usize {
+    fn fetch_limit(&self, requested: usize, colbert: bool) -> usize {
         if self.reranker.is_some()
             || self.reranker_multilingual.is_some()
             || self.use_embedder_as_reranker
+            || colbert
         {
             self.rerank_top_n.max(requested)
         } else {
@@ -203,9 +204,23 @@ impl SearchEngine {
         // not the entire result set. If `fetch_limit` already bounded this,
         // the truncation is a no-op.
         let n = results.len().min(self.rerank_top_n);
-        results.truncate(n);
+        let tail = results.split_off(n);
 
-        let docs: Vec<&str> = results.iter().map(|r| r.snippet.as_str()).collect();
+        // Display snippets are clipped to 400 characters. Score the actual
+        // matched chunks, including evidence beyond that preview window.
+        let passages = match self.vector.fetch_passages(&results).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[search] passage hydration failed; preserving input order: {e:#}");
+                results.extend(tail);
+                results.truncate(limit);
+                return results;
+            }
+        };
+        let docs: Vec<&str> = results.iter().map(|r| {
+            passages.get(&super::ingest::chunk_row_id(&r.doc_id, r.chunk_index))
+                .map(|p| p.text.as_str()).unwrap_or("")
+        }).collect();
         let scores: Vec<f32> = match path {
             RerankPath::Dedicated(handle) => handle.score_batch(query, &docs).await,
             RerankPath::EmbedderBiEncoder => {
@@ -244,15 +259,17 @@ impl SearchEngine {
             RerankPath::None => unreachable!(),
         };
 
+        let scores: Vec<f32> = (0..results.len()).map(|i| {
+            if docs[i].is_empty() { f32::NAN }
+            else { scores.get(i).copied().filter(|s| s.is_finite()).unwrap_or(f32::NAN) }
+        }).collect();
         // Annotate each result with its reranker score; preserve the RRF
         // score for the NaN fallback path so we keep stable ordering.
-        let mut paired: Vec<(SearchResult, f32, f32)> = results
+        let mut paired: Vec<(SearchResult, f32, usize)> = results
             .into_iter()
             .zip(scores.into_iter())
-            .map(|(r, rr)| {
-                let rrf = r.score;
-                (r, rr, rrf)
-            })
+            .enumerate()
+            .map(|(position, (r, rr))| (r, rr, position))
             .collect();
 
         paired.sort_by(|a, b| {
@@ -260,7 +277,7 @@ impl SearchEngine {
             // and tie-break by original RRF score.
             match (a.1.is_nan(), b.1.is_nan()) {
                 (false, false) => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
-                (true, true) => b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal),
+                (true, true) => a.2.cmp(&b.2),
                 (false, true) => std::cmp::Ordering::Less,
                 (true, false) => std::cmp::Ordering::Greater,
             }
@@ -268,13 +285,14 @@ impl SearchEngine {
 
         let mut out: Vec<SearchResult> = paired
             .into_iter()
-            .map(|(mut r, rr, rrf)| {
+            .map(|(mut r, rr, _)| {
                 // Replace .score with reranker score when available; the
                 // RRF score is no longer meaningful once we've reranked.
-                r.score = if rr.is_nan() { rrf } else { rr };
+                if rr.is_finite() { r.score = rr; }
                 r
             })
             .collect();
+        out.extend(tail);
         out.truncate(limit);
         out
     }
@@ -376,7 +394,7 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`.
-        let inner_limit = self.fetch_limit(limit);
+        let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
         let mut effective_query = if filters.synonyms {
             super::synonyms::synonym_expand_query(query)
         } else {
@@ -417,7 +435,7 @@ impl SearchEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
-        let results = self.maybe_colbert_rerank(query, results, filters, limit).await;
+        let results = self.maybe_colbert_rerank(query, results, filters, inner_limit).await;
         Ok(self.maybe_rerank(query, results, limit).await)
     }
 
@@ -431,7 +449,7 @@ impl SearchEngine {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_query(query_text).await?;
-        let inner_limit = self.fetch_limit(limit);
+        let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
         let mut results = self
             .vector
             .search_vector(&embedding, filters, inner_limit)
@@ -457,7 +475,7 @@ impl SearchEngine {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // P23 — check result cache before doing any work.
-        let filters_hash = super::result_cache::hash_filters(filters);
+        let filters_hash = super::result_cache::hash_request(filters, limit);
         {
             let mut c = self.cache.lock().await;
             if let Some(cached) = c.get(query_text, "hybrid", filters_hash) {
@@ -471,7 +489,7 @@ impl SearchEngine {
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`. The internal
         // *2 multiplier still applies on top so RRF has slack on each side.
-        let inner_limit = self.fetch_limit(limit);
+        let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
 
         let fts_clone = self.fts.clone();
         let vec_clone = self.vector.clone();
@@ -629,7 +647,7 @@ impl SearchEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
-        let results = self.maybe_colbert_rerank(query_text, results, filters, limit).await;
+        let results = self.maybe_colbert_rerank(query_text, results, filters, inner_limit).await;
         let out = self.maybe_rerank(query_text, results, limit).await;
 
         // P23 — populate cache.
@@ -704,7 +722,7 @@ impl SearchEngine {
             ));
         }
 
-        let inner_limit = self.fetch_limit(limit);
+        let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
 
         // ViT channel — image-to-image similarity.
         let vit_hits = if let Some(ref emb) = vit_emb {

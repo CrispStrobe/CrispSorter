@@ -11,7 +11,7 @@
     // Ensure worker is configured (idempotent — same value as pdfExtractor.ts)
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
 
-    let { path = '' }: { path: string } = $props();
+    let { path = '', initialPage = undefined }: { path: string; initialPage?: number } = $props();
 
     let pdfDoc = $state<any>(null);
     let currentPage = $state(1);
@@ -30,6 +30,7 @@
     // Load PDF when path changes
     $effect(() => {
         const p = path;
+        const requestedPage = initialPage;
         if (!p) return;
 
         loading = true;
@@ -56,6 +57,7 @@
                 if (cancelled) { doc.destroy(); return; }
                 pdfDoc = doc;
                 totalPages = doc.numPages;
+                currentPage = Math.max(1, Math.min(doc.numPages, requestedPage ?? 1));
                 loading = false;
             } catch (e: any) {
                 if (!cancelled) {

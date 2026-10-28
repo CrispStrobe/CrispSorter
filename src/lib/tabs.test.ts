@@ -63,7 +63,7 @@ describe('tab registry', () => {
 
 	it('MOBILE_TABS is the core mobile subset', () => {
 		const ids = MOBILE_TABS.map((t) => t.id);
-		expect(ids).toEqual(['batch', 'chat', 'catalog', 'translate', 'ocr']);
+		expect(ids).toEqual(['batch', 'review', 'catalog', 'chat', 'translate', 'ocr']);
 		expect(ids).not.toContain('history');
 	});
 

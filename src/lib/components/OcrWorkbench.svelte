@@ -5,6 +5,10 @@
     import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { open } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
+    import { weakPages, cropRegion } from '$lib/ocrTasks';
+
+    let { initialLocationUri = '' }: { initialLocationUri?: string } = $props();
+    $effect(() => { const path = initialLocationUri; if (path) loadDocument(path); });
 
     interface Region { text: string; x: number; y: number; w: number; h: number; confidence: number; char_conf: number[]; orig: string; }
     interface PageOcr { width: number; height: number; regions: Region[]; ocred: boolean; proofread: boolean; cleanedPath?: string | null; }
@@ -20,6 +24,9 @@
     let busy = $state<string | null>(null);        // 'open' | 'ocr' | 'ocr-all' | 'clean' | 'save'
     let status = $state('');
     let error = $state('');
+    let preset = $state('custom');
+    let undoPages = $state<{ index: number; page: PageOcr }[]>([]);
+    const weakPageIndices = $derived(weakPages(ocr, threshold));
     // Save options
     let exportFormat = $state('pdf');              // pdf | hocr | alto | text
     let exportPdfa = $state(false);
@@ -47,6 +54,10 @@
             filters: [{ name: 'Documents', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp'] }],
         });
         if (!picked || typeof picked !== 'string') return;
+        await loadDocument(picked);
+    }
+
+    async function loadDocument(picked: string) {
         busy = 'open'; status = i18n.t.ocrwb.opening;
         try {
             const res = await invoke<{ count: number; pages: string[] }>('ocr_doc_open', { locationUri: picked });
@@ -54,6 +65,7 @@
             pages = res.pages;
             pageIdx = 0;
             ocr = new Map();
+            undoPages = [];
             selected = null;
             zoom = 1;
             status = `${res.count} ${i18n.t.ocrwb.pages}`;
@@ -69,7 +81,8 @@
         if (!pagePath) return;
         busy = 'ocr'; status = i18n.t.ocrwb.running; error = '';
         try {
-            const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath });
+            const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath, preset });
+            rememberPage(idx);
             const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
             setPageOcr(idx, { width: res.width, height: res.height, regions, ocred: true });
             selected = null;
@@ -81,12 +94,13 @@
         }
     }
 
-    async function runOcrAll() {
+    async function runOcrAll(indices = pages.map((_, i) => i)) {
         busy = 'ocr-all'; error = '';
         try {
-            for (let i = 0; i < pages.length; i++) {
+            for (const i of indices) {
                 status = `${i18n.t.ocrwb.running} ${i + 1}/${pages.length}`;
-                const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath: pages[i] });
+                const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath: pages[i], preset });
+                rememberPage(i);
                 const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
                 setPageOcr(i, { width: res.width, height: res.height, regions, ocred: true });
             }
@@ -96,6 +110,37 @@
         } finally {
             busy = null;
         }
+    }
+
+    function rememberPage(index: number) {
+        const page = ocr.get(index);
+        if (page) undoPages = [...undoPages, { index, page: { ...page, regions: page.regions.map(r => ({ ...r })) } }].slice(-20);
+    }
+
+    function undoOcr() {
+        const last = undoPages[undoPages.length - 1];
+        if (!last) return;
+        setPageOcr(last.index, last.page);
+        pageIdx = last.index;
+        undoPages = undoPages.slice(0, -1);
+        selected = null;
+    }
+
+    async function rerunRegion() {
+        if (!cur || selected == null) return;
+        const index = selected;
+        const pageIndex = pageIdx;
+        const page = cur;
+        busy = 'ocr-region'; error = '';
+        try {
+            const region = cropRegion(page.regions[index], page.width, page.height);
+            const res = await invoke<{ regions: Region[] }>('ocr_page_regions', { pagePath: pages[pageIndex], preset, region });
+            if (!res.regions.length) throw new Error('No text found in this region; the previous text was retained.');
+            rememberPage(pageIndex);
+            const replacements = res.regions.map(r => ({ ...r, orig: r.text, char_conf: r.char_conf ?? [] }));
+            setPageOcr(pageIndex, { regions: [...page.regions.slice(0, index), ...replacements, ...page.regions.slice(index + 1)], proofread: false });
+            selected = null;
+        } catch (e) { error = String(e); } finally { busy = null; }
     }
 
     async function loadCleaned() {
@@ -248,8 +293,18 @@
     <div class="toolbar">
         <button class="btn" onclick={openDoc} disabled={busy !== null}>{i18n.t.ocrwb.open}</button>
         <span class="sep"></span>
+        <select bind:value={preset} disabled={busy !== null} aria-label="OCR task preset">
+            <option value="custom">Advanced settings</option>
+            <option value="quick">Quick scan</option>
+            <option value="multilingual">Multilingual book</option>
+            <option value="tables">Tables and receipts</option>
+            <option value="difficult">Difficult page</option>
+        </select>
         <button class="btn" onclick={() => runOcr(pageIdx)} disabled={busy !== null || !pages.length}>{i18n.t.ocrwb.run_page}</button>
-        <button class="btn" onclick={runOcrAll} disabled={busy !== null || pages.length < 2}>{i18n.t.ocrwb.run_all}</button>
+        <button class="btn" onclick={() => runOcrAll()} disabled={busy !== null || pages.length < 2}>{i18n.t.ocrwb.run_all}</button>
+        <button class="btn" onclick={() => runOcrAll(weakPageIndices)} disabled={busy !== null || !weakPageIndices.length}>Retry weak pages ({weakPageIndices.length})</button>
+        <button class="btn" onclick={rerunRegion} disabled={busy !== null || selected == null}>Retry selected region</button>
+        <button class="btn" onclick={undoOcr} disabled={busy !== null || !undoPages.length}>Undo OCR</button>
         <span class="sep"></span>
         <button class="btn" class:active={showCleaned} onclick={loadCleaned} disabled={busy !== null || !pages.length}>{i18n.t.ocrwb.cleaned}</button>
         <button class="btn" onclick={() => zoom = Math.min(zoom + 0.25, 6)} disabled={!pages.length}>＋</button>

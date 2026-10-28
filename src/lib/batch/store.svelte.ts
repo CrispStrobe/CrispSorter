@@ -17,8 +17,11 @@ import type { BatchItem, Metadata } from '../types';
 import type { BatchSession } from '../types';
 import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
+import { applyFieldTemplate } from '../metadataFields';
 
 export interface ProcessOverrides {
+    extractionWorkers?: number;
+    llmWorkers?: number;
     providerId?: string;
     modelId?: string;
     maxChars?: number;
@@ -487,8 +490,8 @@ export class BatchManager {
         // panels), clamped to [1, 16]. Default is 1 + 1, matching the
         // pre-this-commit producer/consumer pipeline; users with fast
         // CPUs / large round-robin pools can scale up.
-        const extractionN = Math.max(1, Math.min(16, (await getSetting('extractionWorkers', 1)) as number));
-        const llmN = Math.max(1, Math.min(16, (await getSetting('llmWorkers', 1)) as number));
+        const extractionN = Math.max(1, Math.min(16, overrides?.extractionWorkers ?? (await getSetting('extractionWorkers', 1)) as number));
+        const llmN = Math.max(1, Math.min(16, overrides?.llmWorkers ?? (await getSetting('llmWorkers', 1)) as number));
         this.extractionTargetWorkers = extractionN;
         this.llmTargetWorkers = llmN;
 
@@ -1147,7 +1150,11 @@ export class BatchManager {
         const filename = item.originalName;
 
         const hasExtToken = /\{Ext\}/i.test(pathTemplate);
-        let relative = pathTemplate
+        const reviewedFields = await getSetting('reviewedSortFields', {}) as Record<string, Record<string, string>>;
+        if (/\{Field:/i.test(pathTemplate)) {
+            await invoke('verify_sort_field_source', { path: item.originalPath, expectedHash: reviewedFields[item.originalPath]?.__source_hash || '' });
+        }
+        let relative = applyFieldTemplate(pathTemplate, reviewedFields[item.originalPath] ?? {})
             .replace(/\{Author\}/gi,   author)
             .replace(/\{Year\}/gi,     year)
             .replace(/\{Title\}/gi,    title)

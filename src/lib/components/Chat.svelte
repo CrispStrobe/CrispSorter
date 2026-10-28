@@ -1,6 +1,9 @@
 <script lang="ts">
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+    import DocumentViewer from './viewer/DocumentViewer.svelte';
+    import { buildEvidenceContext, retrieveSelected, type EvidenceSource } from '../chat/evidence';
+    import { getExtractedText } from '../batchStore';
     import { batchManager } from '../batch/store.svelte';
     import { DEFAULT_PROVIDERS, llmClient, type LLMProvider } from '../llm/client';
     import { getSetting } from '../store';
@@ -42,6 +45,10 @@
     let chatElement = $state<any>();
     let chatHistorySize = $state(0);
     let fileSearchTerm = $state('');
+    let evidenceScope = $state<'selected' | 'library' | 'conversation'>('selected');
+    let evidenceRounds = $state<{ question: string; sources: EvidenceSource[]; tokens: number }[]>([]);
+    let viewedSource = $state<EvidenceSource | null>(null);
+    let citationWarning = $state('');
 
     // Derived Context Info
     const filteredContextItems = $derived.by(() => {
@@ -193,34 +200,50 @@
                 return signals.onResponse({ error: noModelMsg });
             }
 
-            let contextPrompt = systemInstruction + "\n\n";
-            const selectedItems = batchManager.items.filter(i => selectedIds.includes(i.id));
-            if (selectedItems.length > 0) {
-                contextPrompt += "Use the document contexts below to answer correctly.\n\n";
-                // Evenly distribute context window across selected items
-                const perDocLimit = Math.floor(llmContextLimit / selectedItems.length);
-                const halfLimit = Math.floor(perDocLimit / 2);
-
-                selectedItems.forEach(item => {
-                    if (item.extractedText) {
-                        let text = item.extractedText;
-                        if (text.length > perDocLimit) {
-                            text = text.substring(0, halfLimit) + "\n... [TRUNCATED] ...\n" + text.substring(text.length - halfLimit);
-                        }
-                        contextPrompt += `--- DOC: ${item.originalName} ---\n${text}\n\n`;
-                    }
-                });
-                contextPrompt += "User Question: ";
+            let prompt = systemInstruction + '\n\n' + userMsg;
+            let evidence: ReturnType<typeof buildEvidenceContext> | null = null;
+            citationWarning = '';
+            if (evidenceScope !== 'conversation') {
+                let candidates: EvidenceSource[];
+                if (evidenceScope === 'library') {
+                    const hits = await invoke<{
+                        document: { doc_id: string; filename?: string; title?: string; location_uri: string; chunk_index: number; score: number };
+                        passage: { text: string; start_char?: number; end_char?: number; offset_unit: 'utf8_bytes' };
+                    }[]>('index_retrieve_passages', { query: userMsg, limit: 24 });
+                    candidates = hits.map(({ document: d, passage: p }) => ({
+                        id: '', documentId: d.doc_id, title: d.title || d.filename || d.doc_id,
+                        locationUri: d.location_uri, text: p.text, chunkIndex: d.chunk_index,
+                        startChar: p.start_char, endChar: p.end_char, offsetUnit: p.offset_unit, score: d.score,
+                    }));
+                } else {
+                    const items = batchManager.items.filter(i => selectedIds.includes(i.id));
+                    if (!items.length) return signals.onResponse({ text: 'Select documents to ask about, or choose Library or Conversation.' });
+                    const documents = await Promise.all(items.map(async item => ({
+                        ...item, extractedText: item.extractedText || await getExtractedText(item.id) || '',
+                    })));
+                    candidates = retrieveSelected(userMsg, documents);
+                }
+                evidence = buildEvidenceContext(userMsg, systemInstruction, candidates, llmContextLimit);
+                if (!evidence.sources.length) {
+                    return signals.onResponse({ text: 'I could not find supporting passages for this question. Try a more specific question, process the selected files, or search another collection.' });
+                }
+                prompt = evidence.prompt;
             }
 
             const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
-            const responseText = await llmClient.query(activeProviderId, effectiveModel, contextPrompt + userMsg, activeProv.apiKey, llmTemperature);
+            const responseText = await llmClient.query(activeProviderId, effectiveModel, prompt, activeProv.apiKey, llmTemperature);
+            if (evidence) {
+                const ids = new Set(evidence.sources.map(s => s.id));
+                const unknown = [...responseText.matchAll(/\[(S\d+)\]/g)].map(m => m[1]).filter(id => !ids.has(id));
+                if (unknown.length) citationWarning = `The answer includes unavailable citations: ${[...new Set(unknown)].join(', ')}. Check the supplied sources.`;
+                evidenceRounds = [...evidenceRounds, { question: userMsg, sources: evidence.sources, tokens: evidence.inputTokens }].slice(-30);
+            }
             
             // Normalize math for Remarkable (Deep Chat)
             let fixedText = responseText
                 .replace(/\\\[([\s\S]*?)\\\]/g, (m, f) => `\n$$\n${f.trim()}\n$$\n`)
                 .replace(/\\\(([\s\S]*?)\\\)/g, (m, f) => `$${f.trim()}$`)
-                .replace(/(^|\n)\[([\s\S]*?)\]($|\n)/g, (m, pre, f, post) => `${pre}\n$$\n${f.trim()}\n$$\n${post}`);
+                .replace(/(^|\n)\[([\s\S]*?)\]($|\n)/g, (m, pre, f, post) => /^S\d+$/.test(f.trim()) ? m : `${pre}\n$$\n${f.trim()}\n$$\n${post}`);
 
             signals.onResponse({ text: fixedText });
         } catch (error: any) {
@@ -234,6 +257,9 @@
     }
 
     function clearChat() {
+        evidenceRounds = [];
+        viewedSource = null;
+        citationWarning = '';
         if (chatElement) chatElement.clearMessages();
         chatHistorySize = 0;
     }
@@ -612,6 +638,32 @@
             <div class="asr-error" role="alert">{asrError}</div>
         {/if}
 
+        <div class="evidence-toolbar">
+            <label for="evidence-scope">Ask</label>
+            <select id="evidence-scope" bind:value={evidenceScope}>
+                <option value="selected">Selected documents</option>
+                <option value="library">My library</option>
+                <option value="conversation">Conversation</option>
+            </select>
+            {#if evidenceScope !== 'conversation'}<span>Answers use retrieved passages with source references.</span>{/if}
+        </div>
+        {#if citationWarning}<p class="asr-error" role="alert">{citationWarning}</p>{/if}
+        {#if evidenceRounds.length}
+            <details class="evidence-panel" open>
+                <summary>Sources by question</summary>
+                {#each evidenceRounds as round}
+                    <details open={round === evidenceRounds[evidenceRounds.length - 1]}>
+                        <summary>{round.question} · {round.sources.length} passages</summary>
+                        {#each round.sources as source}
+                            <button onclick={() => viewedSource = source}>
+                                [{source.id}] {source.title}{source.page ? ` · page ${source.page}` : ` · passage ${(source.chunkIndex ?? 0) + 1}`}
+                            </button>
+                        {/each}
+                    </details>
+                {/each}
+            </details>
+        {/if}
+
         <div class="chat-content">
             <deep-chat 
                 bind:this={chatElement} 
@@ -619,9 +671,28 @@
             ></deep-chat>
         </div>
     </div>
+    {#if viewedSource}
+        <aside class="evidence-viewer" aria-label="Source evidence">
+            <header><strong>[{viewedSource.id}] {viewedSource.title}</strong><button onclick={() => viewedSource = null}>Close</button></header>
+            <p>{viewedSource.page ? `Page ${viewedSource.page}` : 'Page number unavailable'}{viewedSource.startChar != null ? ` · ${viewedSource.offsetUnit === 'utf8_bytes' ? 'UTF-8 bytes' : 'characters'} ${viewedSource.startChar}–${viewedSource.endChar}` : ''}</p>
+            <blockquote>{viewedSource.text}</blockquote>
+            <DocumentViewer locationUri={viewedSource.locationUri} filename={viewedSource.title} initialPage={viewedSource.page} />
+        </aside>
+    {/if}
 </div>
 
 <style>
+    .evidence-toolbar { display: flex; gap: 10px; align-items: center; padding: 8px 16px; flex-wrap: wrap; font-size: 0.8rem; }
+    .evidence-toolbar select, .evidence-panel button, .evidence-viewer button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 6px; padding: 6px 10px; }
+    .evidence-toolbar span { color: #a1a1aa; }
+    .evidence-panel { padding: 8px 16px; max-height: 180px; overflow: auto; font-size: 0.8rem; border-bottom: 1px solid #3f3f46; }
+    .evidence-panel details { margin-top: 8px; }
+    .evidence-panel button { margin: 6px 6px 0 0; text-align: left; cursor: pointer; }
+    .evidence-viewer { width: min(50vw, 650px); min-width: 280px; display: flex; flex-direction: column; border-left: 1px solid #52525b; background: #18181b; }
+    .evidence-viewer header { display: flex; gap: 8px; justify-content: space-between; padding: 12px; }
+    .evidence-viewer p { padding: 0 12px; font-size: 0.8rem; color: #a1a1aa; }
+    .evidence-viewer blockquote { margin: 8px 12px; padding: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 0.85rem; border-left: 3px solid #60a5fa; }
+    @media (max-width: 700px) { .evidence-viewer { position: absolute; inset: 0; width: 100%; z-index: 20; } }
     .chat-container { display: flex; height: 100%; width: 100%; background: #09090b; position: relative; overflow: hidden; }
     .chat-sidebar { width: 260px; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; transition: width 0.3s ease; position: relative; flex-shrink: 0; }
     .chat-sidebar.collapsed { width: 0; border-right: none; }

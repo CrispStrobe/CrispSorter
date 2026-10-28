@@ -9,6 +9,12 @@
     import { getSetting, saveSetting } from '$lib/store';
     import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
+    import FieldEvidencePanel from './FieldEvidencePanel.svelte';
+    import DocumentDecisionPanel from './DocumentDecisionPanel.svelte';
+    import { experimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
+    import { batchManager } from '$lib/batch/store.svelte';
+    import { stat } from '@tauri-apps/plugin-fs';
+    import { availableDocumentTools, documentToolRequest } from '$lib/workflow';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
     import {
         Search, X, ChevronDown, ChevronRight,
@@ -42,6 +48,7 @@
         language?:       string;
         location_uri:    string;
         snippet:         string;   // backend sends "snippet", not "full_text"
+        source_hash?:    string;
         // PLAN P6 4c / P7.1: when set, this hit came from the catalog
         // table (a substring filename match across active .caf-derived
         // catalogs) rather than the documents table. The path here is
@@ -564,6 +571,27 @@
         previewing = null;
     }
 
+    async function useReviewedFields(values: Record<string, string>) {
+        if (!previewing) return;
+        const path = localPathFromSearchUri(previewing.location_uri);
+        if (!path) throw new Error('Download this document locally before adding it to the sorting inbox.');
+        const sourceHash = previewing.source_hash || '';
+        await invoke('verify_sort_field_source', { path, expectedHash: sourceHash });
+        const fields = await getSetting('reviewedSortFields', {}) as Record<string, Record<string, string>>;
+        await saveSetting('reviewedSortFields', { ...fields, [path]: { ...fields[path], ...values, __source_hash: sourceHash } });
+        let item = batchManager.items.find(item => item.originalPath === path);
+        if (!item) {
+            const info = await stat(path);
+            batchManager.addItem(path, previewing.filename || pathBaseName(path), info.size);
+            item = batchManager.items.find(item => item.originalPath === path);
+        }
+        if (item) {
+            await batchManager.recalculateTargetPath(item.id);
+            await batchManager.setAcceptedItems([item.id], false);
+        }
+    }
+
+
     // ── Saved searches (PLAN P7.5) ────────────────────────────────────────────
     // Persist (name, query, mode, limit) tuples in tauri-plugin-store under
     // `savedSearches`. Click → load into the query bar + run. Lightweight
@@ -763,13 +791,26 @@
             results = await invoke<SearchResult[]>('index_search', {
                 query: searchQuery,
                 mode,
-                limit,
+                limit: $experimentalCrispEmbed.moedern ? Math.max(limit, 50) : limit,
                 ownerId: null,
                 includeUnmounted,
                 fuzzy: filterFuzzy || null,
                 synonyms: filterSynonyms || null,
                 docIdScope: refinementScope.length > 0 ? refinementScope : null,
+                tag: filterTag || null,
             });
+            if ($experimentalCrispEmbed.moedern && $experimentalCrispEmbed.endpoint && results.length) {
+                const original = results;
+                try {
+                    const report = await invoke<{ results: SearchResult[] }>('crispembed_rerank_passages', {
+                        endpoint: $experimentalCrispEmbed.endpoint, query: searchQuery, candidates: results.slice(0, 100), limit,
+                    });
+                    results = report.results;
+                } catch (e) {
+                    results = original.slice(0, limit);
+                    error = `Experimental reranking unavailable; showing the original search order. ${String(e)}`;
+                }
+            }
             // After a refinement search, clear the scope so the next
             // plain search isn't scoped.
             if (refinementScope.length > 0) refinementScope = [];
@@ -2135,7 +2176,18 @@
                     <X size={14} />
                 </button>
             </header>
+            {#if localPathFromSearchUri(previewing.location_uri)}
+                <div class="document-actions">
+                    {#each availableDocumentTools(previewing.filename || previewing.location_uri) as tool}
+                        <button onclick={() => { if (previewing) documentToolRequest.set({ tool, locationUri: previewing.location_uri, filename: previewing.filename || '' }); }}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR this document' : 'Translate this document'}</button>
+                    {/each}
+                </div>
+            {/if}
             <div class="preview-body">
+                <DocumentDecisionPanel document={previewing} onUse={useReviewedFields} />
+                <FieldEvidencePanel docId={previewing.doc_id}
+                    onFilter={(tag, value) => { filterTag = tag; query = value; runSearch(); }}
+                    onSort={useReviewedFields} />
                 <DocumentViewer
                     locationUri={previewing.location_uri}
                     filename={previewing.title || previewing.filename || ''}
@@ -2341,6 +2393,9 @@
 </div>
 
 <style>
+    .document-actions { display: flex; gap: 6px; padding: 8px; flex-wrap: wrap; }
+    .document-actions button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 4px; padding: 5px; }
+
     .remote-results { padding: 12px 16px; border-top: 1px solid var(--color-border, #444); }
     .remote-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
     .remote-meta { color: var(--color-text-muted, #aaa); font-size: 0.85em; }

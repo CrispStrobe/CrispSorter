@@ -82,6 +82,8 @@ Write-Host "CrispEmbed source: $SiblingRoot" -ForegroundColor Green
 #   2. CRISPEMBED_SYS_LIB_DIR already set in env
 #   3. -SkipDownload + existing src-tauri\crispembed-prebuilt\crispembed.lib
 #   4. Fresh download from CrispEmbed GitHub release
+$RuntimeLock = Get-Content (Join-Path $ProjectRoot 'scripts/crispembed-runtime-lock.json') -Raw | ConvertFrom-Json
+$RuntimeTag = 'v' + $RuntimeLock.version
 $PrebuiltDir = Join-Path $ProjectRoot 'src-tauri\crispembed-prebuilt'
 
 if ($LibDir) {
@@ -108,7 +110,7 @@ if ($LibDir) {
                  elseif ($IsLinux) { 'crispembed-linux-x86_64.tar.gz' }
                  else { 'crispembed-windows-x86_64.zip' }
 
-    Write-Host "Downloading $AssetName from CrispEmbed latest release ..." -ForegroundColor Yellow
+    Write-Host "Downloading $AssetName from CrispEmbed $RuntimeTag ..." -ForegroundColor Yellow
 
     # Find gh.exe (release.ps1 has the same fallback list -- keep these in sync).
     $GH_EXE = 'gh'
@@ -124,7 +126,7 @@ if ($LibDir) {
 
     Push-Location $SiblingRoot
     try {
-        & $GH_EXE release download --pattern $AssetName --dir $PrebuiltDir --clobber
+        & $GH_EXE release download $RuntimeTag --pattern $AssetName --dir $PrebuiltDir --clobber
         if ($LASTEXITCODE -ne 0) {
             throw "Could not download $AssetName from CrispEmbed releases. Make sure 'gh auth login' has been run."
         }
@@ -133,6 +135,8 @@ if ($LibDir) {
     }
 
     $ArchivePath = Join-Path $PrebuiltDir $AssetName
+    & python (Join-Path $ProjectRoot 'scripts/verify_crispembed_bundle.py') $ArchivePath --asset $AssetName --source $SiblingRoot
+    if ($LASTEXITCODE -ne 0) { throw 'CrispEmbed runtime verification failed' }
     Write-Host "Extracting $AssetName ..." -ForegroundColor Yellow
     if ($AssetName.EndsWith('.zip')) {
         Expand-Archive -Path $ArchivePath -DestinationPath $PrebuiltDir -Force

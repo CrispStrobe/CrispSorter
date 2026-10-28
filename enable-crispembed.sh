@@ -10,6 +10,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_TAG="v$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PROJECT_ROOT/scripts/crispembed-runtime-lock.json")"
 MODE="dev"
 BACKEND=""
 SKIP_DOWNLOAD=0
@@ -42,7 +43,7 @@ echo "=== Enable CrispEmbed (GGUF) -- backend: $BACKEND ==="
 SIBLING="$PROJECT_ROOT/../CrispEmbed"
 if [[ ! -f "$SIBLING/crispembed/Cargo.toml" ]]; then
     echo "CrispEmbed sibling repo not found at $SIBLING -- cloning..."
-    (cd "$PROJECT_ROOT/.." && git clone https://github.com/CrispStrobe/CrispEmbed.git)
+    (cd "$PROJECT_ROOT/.." && git clone --branch "$RUNTIME_TAG" --single-branch https://github.com/CrispStrobe/CrispEmbed.git)
 fi
 echo "CrispEmbed source: $SIBLING"
 
@@ -59,8 +60,9 @@ else
     else
         ASSET="crispembed-linux-x86_64.tar.gz"
     fi
-    echo "Downloading $ASSET from CrispEmbed latest release..."
-    (cd "$SIBLING" && gh release download --pattern "$ASSET" --dir "$PREBUILT_DIR" --clobber)
+    echo "Downloading $ASSET from CrispEmbed $RUNTIME_TAG..."
+    (cd "$SIBLING" && gh release download "$RUNTIME_TAG" --pattern "$ASSET" --dir "$PREBUILT_DIR" --clobber)
+    python3 "$PROJECT_ROOT/scripts/verify_crispembed_bundle.py" "$PREBUILT_DIR/$ASSET" --asset "$ASSET" --source "$SIBLING"
     tar -xzf "$PREBUILT_DIR/$ASSET" -C "$PREBUILT_DIR"
     rm -f "$PREBUILT_DIR/$ASSET"
 fi

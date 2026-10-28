@@ -303,6 +303,8 @@ impl NerHandle {
         self.model
     }
 
+    pub(crate) fn entity_limit(&self) -> usize { self.max_entities }
+
     /// Run NER over `text` and return ready-to-merge `label:text` tags.
     /// Truncates to `max_chars` on a char boundary first. Returns an empty
     /// `Vec` on empty input, load failure, or a build without `crispembed`.

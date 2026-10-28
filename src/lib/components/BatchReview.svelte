@@ -1,4 +1,8 @@
 <script lang="ts">
+    import { inWorkflow, processingOverrides, availableDocumentTools, documentToolRequest, type WorkflowStage, type ProcessingPreset } from '$lib/workflow';
+    let { workflow = 'inbox' }: { workflow?: WorkflowStage } = $props();
+    let processingPreset = $state<ProcessingPreset>('balanced');
+    const workflowItems = $derived(batchManager.filteredItems.filter(item => inWorkflow(item, workflow)));
     import {
         probeFolder,
         requestFolderAccess,
@@ -228,7 +232,7 @@
     }
 
     let sortedItems = $derived.by(() => {
-        const items = [...batchManager.filteredItems];
+        const items = [...workflowItems];
         return items.sort((a, b) => {
             let valA: any = '';
             let valB: any = '';
@@ -565,11 +569,11 @@
     }
 
     async function startProcessing() {
-        await batchManager.processAll();
+        await batchManager.processAll(processingOverrides(processingPreset));
     }
 
     function toggleSelectionAccepted(val: boolean) {
-        const targetIds = batchManager.filteredItems.map(i => i.id);
+        const targetIds = workflowItems.map(i => i.id);
         batchManager.setAcceptedItems(targetIds, val);
     }
 
@@ -1086,6 +1090,18 @@
          from overlaying the Start/Stop / Force-reset bar — see the
          `{#if selectedIds.length > 0}` block AFTER the next `</div>`. -->
 
+    <div class="workflow-actions">
+        <strong>{workflow === 'inbox' ? 'Inbox' : 'Review'}</strong>
+        <label>Processing <select bind:value={processingPreset} disabled={batchManager.isProcessing}>
+            <option value="fast">Fast</option><option value="balanced">Balanced</option>
+            <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
+        </select></label>
+        {#if selectedItem}
+            {#each availableDocumentTools(selectedItem.originalName) as tool}
+                <button onclick={() => documentToolRequest.set({ tool, locationUri: selectedItem.originalPath, filename: selectedItem.originalName })}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR selected document' : 'Translate selected document'}</button>
+            {/each}
+        {/if}
+    </div>
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
@@ -1874,6 +1890,9 @@
 {/if}
 
 <style>
+    .workflow-actions { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #3f3f46; }
+    .workflow-actions select, .workflow-actions button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 5px; padding: 5px; }
+
     .batch-container { display: flex; flex-direction: column; height: 100%; background: #09090b; overflow: hidden; }
     /* Responsive top toolbar.  Reported: "if width is not very large,
        Sortieren button has not enough room."  Pre-fix, the toolbar was

@@ -28,7 +28,7 @@ env:
   # arrow in a comment should not be able to break a release build.
   PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.11   # keep equal to ci.yml's CRISPEMBED_REF
+  CRISPEMBED_REF: v0.17.12   # keep equal to ci.yml's CRISPEMBED_REF
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.32  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
@@ -91,7 +91,7 @@ jobs:
             # shared lib inside the tarball.
             pdfium_asset: pdfium-mac-arm64.tgz
             pdfium_lib_glob: 'lib/libpdfium.dylib'
-          - platform: windows-latest
+          - platform: windows-2025
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
             sidecar_name: llama-server-x86_64-pc-windows-msvc.exe
@@ -127,6 +127,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     env:
+      CXXFLAGS: ${{ matrix.platform == 'windows-2025' && '/D_USE_MATH_DEFINES' || '' }}
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -205,6 +206,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source _sibling/CrispEmbed
           mkdir -p _sibling/CrispEmbed/build
           tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
           echo "Extracted libs:"
@@ -217,6 +219,7 @@ jobs:
           $url = "https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
           Write-Host "Downloading $url"
           Invoke-WebRequest -Uri $url -OutFile crispembed-libs.zip
+          python scripts/verify_crispembed_bundle.py crispembed-libs.zip --asset ($url.Split('/')[-1]) --source _sibling/CrispEmbed
           New-Item -ItemType Directory -Force -Path _sibling/CrispEmbed/build | Out-Null
           # CrispEmbed Windows zip is FLAT (crispembed.dll, ggml*.dll,
           # *.lib + include/) — no top-level dir to strip.
@@ -386,6 +389,27 @@ jobs:
           }
           Write-Host "Contents of src-tauri/bin:"
           Get-ChildItem src-tauri/bin
+
+      - name: Frontend regression checks
+        shell: bash
+        run: |
+          npm run check
+          npm test -- --maxWorkers=1 --minWorkers=1
+          python scripts/test_runtime_lock.py
+
+      - name: Native regression tests for shipped features
+        shell: bash
+        env:
+          TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
+          CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
+          CRISPASR_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispASR/build-flutter-bundle
+          RUST_MIN_STACK: '16777216'
+        run: |
+          set -euo pipefail
+          FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
+          TARGET_ARGS=()
+          if [ "$RUNNER_OS" = "macOS" ]; then TARGET_ARGS=(--target "${{ matrix.rust_target }}"); fi
+          cargo test -p crispsorter --release --lib "${TARGET_ARGS[@]}" --features "$FEATURES" -- --test-threads=2
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -1132,7 +1156,7 @@ jobs:
           fi
 
       - name: Validate + upload IPA to App Store Connect
-        if: ${{ env.HAS_SIGNING_KEY }}
+        if: ${{ env.HAS_SIGNING_KEY && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
         run: |
           set -euo pipefail
           IPA="${IPA:-}"
@@ -1392,6 +1416,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source _sibling/CrispEmbed
           mkdir -p _sibling/CrispEmbed/build
           tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
           find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" | head
@@ -1594,7 +1619,7 @@ jobs:
     # release-required.result check skips publish unless every core platform
     # built. Mobile (Android/iOS) stays non-blocking by design. On a manual
     # workflow_dispatch, publish ONLY when the operator set publish=true.
-    if: ${{ always() && needs.release-required.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+    if: ${{ always() && needs.release-required.result == 'success' && needs.release-android.result == 'success' && needs.release-ios.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

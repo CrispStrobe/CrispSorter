@@ -6,6 +6,7 @@
     // shown to a person is generated text, and the rule this project set itself
     // is that there is no exemption list. Found unmarked in the 2026-08-02 audit.
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+    import CrispEmbedServiceSettings from './CrispEmbedServiceSettings.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { caps, currentCaps } from '../capabilities';
@@ -3926,6 +3927,7 @@
             </div>
 
             <p style="color:#a1a1aa; font-size:0.85rem; margin-bottom:16px;">{i18n.t.settings.index.hint}</p>
+            <CrispEmbedServiceSettings />
 
             <SyncPairPanel />
 

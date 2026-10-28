@@ -1,4 +1,7 @@
 pub mod embedder;
+pub mod evidence;
+pub mod fields;
+pub mod experimental;
 pub mod fts_index;
 pub mod fts_query;
 pub mod synonyms;

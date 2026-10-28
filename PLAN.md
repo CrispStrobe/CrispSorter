@@ -1,5 +1,43 @@
 # CrispSorter — Development Plan
 
+## Library workflow improvement programme — 28 October 2026
+
+User-authorized scope: complete all eight review recommendations and deliver
+working binaries for Linux, Windows, macOS, iOS and Android. Do not declare this
+programme complete while any implementation, evaluation or platform artifact is
+missing. Branch: `feat/library-workflows-20261028`.
+
+- [ ] Retrieval: full matching passages for reranking, retained candidate windows,
+  result-limit-aware cache, consistent fallback ranks; meaningful regressions.
+- [ ] Cited chat: selected-document and library retrieval, token-budgeted evidence,
+  clickable source navigation, honest missing-evidence behavior.
+- [ ] Runtime: qualify immutable CrispEmbed 0.17.12 bindings/assets; report actual
+  runtime identity and keep unsupported experimental engines unavailable.
+- [ ] OCR: task presets, selective weak-page/region reprocessing, engine comparison
+  on a frozen representative corpus; retain published and experimental distinctions.
+- [ ] MoEdern: independent query/document role integration, original masks/scoring,
+  corpus relevance/latency/storage comparison before default selection.
+- [ ] Structured decisions: optional SystemOne suggestions, bounded schemas,
+  independent labeled evaluation; preserve human review and open-ended extraction.
+- [ ] Metadata evidence: original and normalized values, source anchors, model and
+  review status; inspect/edit/filter/export/use in sorting.
+- [ ] Workflow UX: Inbox / Review / Library, document-context tools, processing
+  presets and actionable incomplete-work indicators, preserved advanced controls.
+- [ ] Integrated validation and binaries: source-pinned checks, real packaged
+  startup/integration checks and downloadable checksummed platform artifacts.
+
+Checkpoint: all eight implementation areas have initial changes on the branch;
+75 frontend unit tests pass and Svelte reports zero errors (53 existing warnings).
+Native regression, real browser/model evaluations and platform binaries remain
+unqualified. The first native CI run is intentionally Linux-only; cloud live
+mutations and public/App Store publishing are disabled for qualification.
+
+Execution constraints: inspect average load, available memory and disk before
+heavy jobs on the shared VPS. Use the operator's Kaggle guide for model work when
+local capacity is insufficient; avoid the slow GitHub queue except where needed
+(notably native Apple/Windows/mobile packaging). Never substitute a prepared test
+or queued job for a successful result. Record initial failures and actual evidence.
+
 > **Full specs for completed phases** → [HISTORY.md](HISTORY.md)
 > **Technical patterns / pitfalls** → [LEARNINGS.md](LEARNINGS.md)
 > **In-flight integration designs** → [docs/](docs/)

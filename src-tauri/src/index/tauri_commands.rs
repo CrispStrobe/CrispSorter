@@ -43,6 +43,7 @@ pub async fn index_search(
     include_unmounted: Option<bool>,
     fuzzy: Option<bool>,
     doc_id_scope: Option<Vec<String>>,
+    tag: Option<String>,
 ) -> Result<Vec<SearchResult>, String> {
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
@@ -55,6 +56,7 @@ pub async fn index_search(
         owner_id,
         fuzzy: fuzzy.unwrap_or(false),
         doc_id_scope: doc_id_scope.unwrap_or_default(),
+        tag,
         ..Default::default()
     };
 
@@ -135,7 +137,7 @@ pub async fn index_search(
     // returned that many — net result is at most `limit` rows from each
     // channel, presented in two visually distinct groups (the frontend
     // uses `catalog_source` to badge them).
-    if let Ok(data_dir) = app.path().app_data_dir() {
+    if let (true, Ok(data_dir)) = (filters.tag.is_none() && filters.doc_id_scope.is_empty(), app.path().app_data_dir()) {
         let remaining = limit.saturating_sub(results.len()).max(limit / 2);
         if let Ok(hits) =
             crate::catalog::lance::search(&data_dir, &query, Some(remaining)).await
@@ -4551,22 +4553,39 @@ pub struct OcrPageResult {
 
 /// OCR a single page image into regions (box + text + confidence) using the
 /// persisted Smart-OCR-pipeline config. Coordinates are in image pixels.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OcrCrop { pub x: u32, pub y: u32, pub w: u32, pub h: u32 }
+
 #[tauri::command]
 pub async fn ocr_page_regions(
     state: State<'_, AppState>,
     page_path: String,
+    preset: Option<String>,
+    region: Option<OcrCrop>,
 ) -> Result<OcrPageResult, String> {
     let path = std::path::PathBuf::from(&page_path);
     if !path.exists() {
         return Err(format!("page image not found: {page_path}"));
     }
-    let mut cfg = state.bg_ingest.lock().await.ocr_pipeline.clone();
-    cfg.enabled = true;
+    let base = state.bg_ingest.lock().await.ocr_pipeline.clone();
+    let cfg = crate::extractors::ocr_presets::apply(&base, preset.as_deref().unwrap_or("custom"))?;
 
     tokio::task::spawn_blocking(move || -> Result<OcrPageResult, String> {
-        let regions = crate::extractors::ocr_crispembed::ocr_regions_detailed(&path, &cfg)
+        let (w, h) = image::image_dimensions(&path).map_err(|e| e.to_string())?;
+        if u64::from(w) * u64::from(h) > 100_000_000 { return Err("Page exceeds the 100 megapixel processing limit".into()); }
+        let (cropped, offset) = if let Some(rect) = region {
+            if rect.w == 0 || rect.h == 0 || rect.x.checked_add(rect.w).is_none_or(|right| right > w)
+                || rect.y.checked_add(rect.h).is_none_or(|bottom| bottom > h) {
+                return Err("Selected region is outside the page".into());
+            }
+            let file = tempfile::Builder::new().suffix(".png").tempfile().map_err(|e| e.to_string())?;
+            image::open(&path).map_err(|e| e.to_string())?.crop_imm(rect.x, rect.y, rect.w, rect.h)
+                .save(file.path()).map_err(|e| e.to_string())?;
+            (Some(file), (rect.x as i32, rect.y as i32))
+        } else { (None, (0, 0)) };
+        let input = cropped.as_ref().map(|f| f.path()).unwrap_or(&path);
+        let regions = crate::extractors::ocr_crispembed::ocr_regions_detailed(input, &cfg)
             .map_err(|e| format!("OCR failed: {e:#}"))?;
-        let (w, h) = image::image_dimensions(&path).unwrap_or((0, 0));
         Ok(OcrPageResult {
             width: w as i32,
             height: h as i32,
@@ -4574,8 +4593,8 @@ pub async fn ocr_page_regions(
                 .into_iter()
                 .map(|r| OcrRegionDto {
                     text: r.text,
-                    x: r.x,
-                    y: r.y,
+                    x: r.x + offset.0 as f32,
+                    y: r.y + offset.1 as f32,
                     w: r.w,
                     h: r.h,
                     confidence: r.confidence,

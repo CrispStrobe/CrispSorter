@@ -1,6 +1,6 @@
 {
   "name": "tauri-app",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "CrispSorter — local-first AI document organizer",
   "type": "module",
   "scripts": {
@@ -28,6 +28,7 @@
     "@tauri-apps/plugin-store": "^2.4.2",
     "ai": "^6.0.116",
     "deep-chat": "^2.4.2",
+    "js-tiktoken": "1.0.21",
     "katex": "^0.16.38",
     "lucide-svelte": "^0.577.0",
     "mammoth": "^1.12.0",
@@ -36,6 +37,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",

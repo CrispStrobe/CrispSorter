@@ -1,4 +1,8 @@
 <script lang="ts">
+    import { loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
+    import { documentToolRequest } from '$lib/workflow';
+    import { uriToPath } from '$lib/components/viewer/types';
+    import WorkflowSummary from '$lib/components/WorkflowSummary.svelte';
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
@@ -28,6 +32,7 @@
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
     import { getBackendStatus, type BackendStatus } from '$lib/secretBackend';
 
+    $effect(() => { if ($documentToolRequest) activeTab = $documentToolRequest.tool; });
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
 
     /**
@@ -44,6 +49,7 @@
     let secretStoreAlert: BackendStatus | null = $state(null);
     let secretStoreAlertDismissed = $state(false);
     let navCollapsed = $state(false);
+    let showMobileTools = $state(false);
     let showLogs = $state(false);
 
     $effect(() => subscribeBrowserContext(() => { activeTab = 'drives'; }));
@@ -148,6 +154,7 @@
             // own failure path leaves every gated surface hidden, so this
             // deliberately does not guard the rest of startup.
             await loadCapabilities();
+            await loadExperimentalCrispEmbed();
 
             // Polled, not read once: the store refuses on the first *read*
             // of a secret, which happens long after mount — when a provider
@@ -545,11 +552,16 @@
                 <button class="secret-store-banner-close" aria-label="Dismiss" onclick={() => secretStoreAlertDismissed = true}>×</button>
             </div>
         {/if}
+        {#if ['batch', 'review', 'catalog'].includes(activeTab)}
+            <WorkflowSummary navigate={(tab) => activeTab = tab} />
+        {/if}
         <div class="content-area">
             {#if activeTab === 'settings'}
                 <Settings />
             {:else if activeTab === 'batch'}
-                <BatchReview />
+                <BatchReview workflow="inbox" />
+            {:else if activeTab === 'review'}
+                <BatchReview workflow="review" />
             {:else if activeTab === 'drives'}
                 <DriveBrowser />
             {:else if activeTab === 'history'}
@@ -557,11 +569,11 @@
             {:else if activeTab === 'catalog'}
                 <IndexIngest />
             {:else if activeTab === 'translate'}
-                <Translate />
+                <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             {:else if activeTab === 'ocr'}
-                <OcrWorkbench />
+                <OcrWorkbench initialLocationUri={$documentToolRequest?.tool === 'ocr' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             {:else if activeTab === 'pdf'}
-                <PdfWorkspace />
+                <PdfWorkspace initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that
                  asked for them. The nav already hides these tabs, so this
                  second check is for the state the nav cannot reach: an
@@ -595,12 +607,25 @@
 
     <!-- Mobile bottom tab bar — visible only on small screens -->
     <nav class="mobile-nav">
-        {#each visibleTabs(MOBILE_TABS, allCaps) as tab (tab.id)}
+        {#each visibleTabs(MOBILE_TABS, allCaps).slice(0, 4) as tab (tab.id)}
             {@const Icon = tab.icon}
             <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
                 <Icon size={20} /><span>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</span>
             </button>
         {/each}
+        <button class="mobile-tab" aria-expanded={showMobileTools} aria-controls="mobile-tools-menu" onclick={() => showMobileTools = !showMobileTools}>
+            <span aria-hidden="true">⋯</span><span>Tools</span>
+        </button>
+        {#if showMobileTools}
+            <div id="mobile-tools-menu" class="mobile-tools-menu">
+                {#each visibleTabs(MOBILE_TABS, allCaps).slice(4) as tab}
+                    <button onclick={() => { activeTab = tab.id; showMobileTools = false; }}>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</button>
+                {/each}
+                <button onclick={() => { activeTab = 'pdf'; showMobileTools = false; }}>PDF tools</button>
+                <button onclick={() => { activeTab = 'drives'; showMobileTools = false; }}>Drives</button>
+                <button onclick={() => { activeTab = 'history'; showMobileTools = false; }}>History</button>
+            </div>
+        {/if}
         <button class="mobile-tab" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
             <SettingsIcon size={20} /><span>{i18n.t.nav.settings}</span>
         </button>
@@ -608,6 +633,9 @@
 </div>
 
 <style>
+    .mobile-tools-menu { position: fixed; bottom: 75px; right: 12px; background: #18181b; border: 1px solid #52525b; border-radius: 8px; padding: 8px; z-index: 100; display: flex; flex-direction: column; }
+    .mobile-tools-menu button { background: transparent; border: 0; color: #eee; padding: 10px 20px; text-align: left; cursor: pointer; }
+
     .app-shell {
         display: flex;
         width: 100vw;

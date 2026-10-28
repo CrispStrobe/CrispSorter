@@ -56,6 +56,16 @@ pub struct ConflictRow {
     pub title: Option<String>,
 }
 
+/// Source text and character anchors for one indexed chunk. Page numbers are
+/// optional: old extractors do not retain enough information to infer them.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Passage {
+    pub text: String,
+    pub start_char: Option<i32>,
+    pub end_char: Option<i32>,
+    pub offset_unit: String,
+}
+
 /// Columns consumed by `batches_to_search_results_with_scores` and
 /// `record_batches_to_search_results`.  Used by `.select(Select::Columns(…))`
 /// to avoid reading embedding vectors and other large blobs.
@@ -86,6 +96,80 @@ pub struct LocalIndex {
 // ── Constructor ────────────────────────────────────────────────────────────
 
 impl LocalIndex {
+    pub async fn filename_only_count(&self) -> Result<usize> {
+        Ok(self.table.count_rows(Some("chunk_index <= 0 AND (full_text IS NULL OR full_text = '')".to_owned())).await?)
+    }
+    pub async fn document_metadata(&self, doc_id: &str) -> Result<serde_json::Value> {
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(format!("doc_id = '{}'", doc_id.replace('\'', "''")))
+            .select(lancedb::query::Select::Columns(vec!["metadata_json".into()]))
+            .limit(1).execute().await?.try_collect().await?;
+        for batch in batches {
+            if batch.num_rows() == 0 { continue; }
+            if let Some(metadata) = str_col_opt(&batch, "metadata_json") {
+                if !metadata.is_null(0) { return Ok(serde_json::from_str(metadata.value(0))?); }
+            }
+            return Ok(serde_json::json!({}));
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    pub async fn update_field_evidence(&self, doc_id: &str, previous: &serde_json::Value, updated: &serde_json::Value) -> Result<()> {
+        // A whole-document metadata edit must not replace newer ingest output.
+        // Metadata is serialized in a canonical key order by serde_json.
+        let current = self.document_metadata(doc_id).await?;
+        anyhow::ensure!(&current == previous, "Document changed; reload before editing fields");
+        let encoded = updated.to_string();
+        let old_tags: Vec<String> = super::fields::read(previous).iter()
+            .map(|f| format!("'{}'", super::fields::tag(f).replace('\'', "''"))).chain(std::iter::once("''".into())).collect();
+        let new_tags: Vec<String> = super::fields::read(updated).iter().filter(|f| f.review_status != "rejected")
+            .map(|f| format!("'{}'", super::fields::tag(f).replace('\'', "''"))).chain(std::iter::once("''".into())).collect();
+        let tags_expression = format!("array_remove(array_concat(array_except(coalesce(tags, make_array('')), make_array({})), make_array({})), '')", old_tags.join(","), new_tags.join(","));
+        self.table.update()
+            .only_if(format!("doc_id = '{}' AND metadata_json = '{}'", doc_id.replace('\'', "''"), previous.to_string().replace('\'', "''")))
+            .column("metadata_json", format!("'{}'", encoded.replace('\'', "''")))
+            .column("tags", format!("array_distinct({tags_expression})"))
+            .execute().await?;
+        anyhow::ensure!(self.document_metadata(doc_id).await? == *updated, "Document changed during review; reload before editing fields");
+        Ok(())
+    }
+
+    /// Hydrate only the requested chunk IDs, without embedding columns.
+    pub async fn fetch_passages(
+        &self,
+        candidates: &[SearchResult],
+    ) -> Result<std::collections::HashMap<String, Passage>> {
+        let mut passages = std::collections::HashMap::new();
+        if candidates.is_empty() { return Ok(passages); }
+        let ids: Vec<String> = candidates.iter().map(|r| {
+            format!("'{}'", chunk_row_id(&r.doc_id, r.chunk_index).replace('\'', "''"))
+        }).collect();
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(format!("id IN ({})", ids.join(",")))
+            .select(lancedb::query::Select::Columns(vec![
+                "id".into(), "full_text".into(),
+                "chunk_start_char".into(), "chunk_end_char".into(),
+            ]))
+            .limit(candidates.len()).execute().await?.try_collect().await?;
+        for batch in batches {
+            let id = str_col(&batch, "id")?;
+            let text = str_col(&batch, "full_text")?;
+            let start = batch.column_by_name("chunk_start_char")
+                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
+            let end = batch.column_by_name("chunk_end_char")
+                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
+            for i in 0..batch.num_rows() {
+                if text.is_null(i) || text.value(i).trim().is_empty() { continue; }
+                passages.insert(id.value(i).to_owned(), Passage {
+                    text: text.value(i).to_owned(),
+                    start_char: start.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
+                    end_char: end.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
+                    offset_unit: "utf8_bytes".into(),
+                });
+            }
+        }
+        Ok(passages)
+    }
     /// Borrow the underlying LanceDB table handle.  Exposed so the
     /// migration framework (`crate::migrations` / `index::migrations`)
     /// can call `add_columns` etc. against the same handle this
@@ -361,7 +445,7 @@ impl LocalIndex {
                     continue;
                 }
                 let score = maxsim(query_multivec, &doc_vecs);
-                score_by_id.insert(id_col.value(i).to_owned(), score);
+                if score.is_finite() { score_by_id.insert(id_col.value(i).to_owned(), score); }
             }
         }
 
@@ -375,7 +459,18 @@ impl LocalIndex {
                 r
             })
             .collect();
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        // MaxSim and the incoming RRF/BM25 scores have different units.
+        // Rank scored rows together, followed by unscored rows in input order.
+        out.sort_by(|a, b| {
+            let a_scored = score_by_id.get(&chunk_row_id(&a.doc_id, a.chunk_index)).filter(|v| v.is_finite());
+            let b_scored = score_by_id.get(&chunk_row_id(&b.doc_id, b.chunk_index)).filter(|v| v.is_finite());
+            match (a_scored, b_scored) {
+                (Some(a), Some(b)) => b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
         out.truncate(limit);
         Ok(out)
     }
@@ -428,12 +523,14 @@ impl LocalIndex {
             return Ok(all);
         }
 
-        // For each doc_id keep the chunk with the highest query-term hit count.
+        let passages = self.fetch_passages(&all).await?;
+        // Select on complete passages, including matches after the preview.
         let mut best: std::collections::HashMap<String, (SearchResult, usize)> =
             std::collections::HashMap::new();
 
         for result in all {
-            let text_lower = result.snippet.to_lowercase();
+            let text_lower = passages.get(&chunk_row_id(&result.doc_id, result.chunk_index))
+                .map(|p| p.text.as_str()).unwrap_or(&result.snippet).to_lowercase();
             let hits = query_terms
                 .iter()
                 .filter(|&&t| text_lower.contains(t))
@@ -4280,6 +4377,53 @@ mod push_candidate_tests {
             text_translated: None, text_translated_lang: None,
             url: None, tags: vec![], summary: None, doc_status: None,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn field_review_preserves_unrelated_metadata_and_rejects_stale_writes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        let mut chunk = mk("invoice", 0, 100, Some("Vendor Acme"), Some(vec![0.5; 4]), Some("m"));
+        let fields = crate::index::fields::from_extraction("invoice", "Vendor Acme", "test", vec![("vendor".into(), "Acme".into(), 0.9)]);
+        chunk.metadata_json = Some(serde_json::json!({"fs_size":123}).to_string());
+        crate::index::fields::attach(&mut chunk.metadata_json, &fields);
+        chunk.tags = vec!["manual-tag".into(), crate::index::fields::tag(&fields[0])];
+        local.ingest_batch(&[chunk]).await.unwrap();
+        let previous = local.document_metadata("invoice").await.unwrap();
+        let mut updated = previous.clone();
+        updated["field_evidence"][0]["normalized_value"] = serde_json::json!("Acme Ltd");
+        updated["field_evidence"][0]["review_status"] = serde_json::json!("corrected");
+        updated["field_evidence"][0]["revision"] = serde_json::json!(1);
+        local.update_field_evidence("invoice", &previous, &updated).await.unwrap();
+        let actual = local.document_metadata("invoice").await.unwrap();
+        assert_eq!(actual["fs_size"], 123);
+        assert_eq!(actual["field_evidence"][0]["original_value"], "Acme");
+        assert_eq!(actual["field_evidence"][0]["normalized_value"], "Acme Ltd");
+        assert!(local.update_field_evidence("invoice", &previous, &updated).await.is_err());
+        let filter = SearchFilters { tag: Some("field:vendor:Acme Ltd".into()), ..Default::default() };
+        let hits = local.search_vector(&[0.5;4], &filter, 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].tags.contains(&"manual-tag".into()));
+        assert!(!hits[0].tags.contains(&"field:vendor:Acme".into()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn passages_retain_text_beyond_preview_and_exact_chunk_identity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        let body = format!("{}The warranty expires in November 2031.", "Unrelated intro. ".repeat(80));
+        let mut chunk = mk("long-doc", 2, 100, Some(&body), Some(vec![0.5; 4]), Some("m"));
+        chunk.chunk_start_char = Some(125);
+        chunk.chunk_end_char = Some(125 + body.len() as i32);
+        local.ingest_batch(&[chunk]).await.unwrap();
+        let result = SearchResult { chunk_index: 2, snippet: "clipped preview".into(), ..mk_result("long-doc", None, None) };
+        let passages = local.fetch_passages(&[result]).await.unwrap();
+        let passage = passages.get(&crate::index::ingest::chunk_row_id("long-doc", 2)).unwrap();
+        assert!(passage.text.contains("November 2031"));
+        assert!(passage.text.len() > 400);
+        assert_eq!(passage.start_char, Some(125));
+        assert_eq!(passage.offset_unit, "utf8_bytes");
+        assert!(!passages.contains_key(&crate::index::ingest::chunk_row_id("long-doc", 0)));
     }
 
     /// Stage AE coverage — a candidate whose row has NULL multivec data

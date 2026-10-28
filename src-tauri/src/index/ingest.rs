@@ -382,12 +382,27 @@ impl IngestPipeline {
         // the resulting entity tags into raw.tags BEFORE chunk rows are built,
         // so every chunk of a doc carries the same entity tags (chunk_index
         // convention).  No-op when NER is disabled or the feature is off.
+        let mut field_evidence = std::collections::HashMap::new();
         if let Some(ner) = &self.ner {
             for raw in raws.iter_mut() {
-                let entity_tags = ner.extract_tags(&raw.full_text).await;
-                if !entity_tags.is_empty() {
-                    merge_tags(&mut raw.tags, entity_tags);
+                let mut extracted = ner.extract_fields(&raw.full_text).await;
+                if ner.entity_limit() > 0 { extracted.truncate(ner.entity_limit()); }
+                let entities = extracted.iter().map(|(label, value, score)| super::ner::ScoredEntity {
+                    label: label.clone(), text: value.clone(), score: *score,
+                }).collect();
+                let entity_tags = super::ner::build_entity_tags(entities, 0.0, ner.entity_limit());
+                merge_tags(&mut raw.tags, entity_tags);
+                let doc_id = doc_id_for(raw);
+                let mut fields = super::fields::from_extraction(&doc_id, &raw.full_text, ner.model().display_name(), extracted);
+                // Preserve reviewed values when the same source is reindexed.
+                let previous = self.vector.document_metadata(&doc_id).await?;
+                let reviewed = super::fields::read(&previous);
+                for field in &mut fields {
+                    if let Some(prior) = reviewed.iter().find(|p| p.id == field.id && p.review_status != "suggested") {
+                        *field = prior.clone();
+                    }
                 }
+                field_evidence.insert(doc_id, fields);
             }
         }
 
@@ -475,6 +490,12 @@ impl IngestPipeline {
         }
         let embed_time_ms = embed_start.elapsed().as_millis() as u64;
 
+        for chunk in &mut all_chunks {
+            if let Some(fields) = field_evidence.get(&chunk.doc_id) {
+                super::fields::attach(&mut chunk.metadata_json, fields);
+                merge_tags(&mut chunk.tags, fields.iter().filter(|f| f.review_status != "rejected").map(super::fields::tag).collect());
+            }
+        }
         // ── Write phase: submit to background writer task ───────────────
         self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms)
             .await
