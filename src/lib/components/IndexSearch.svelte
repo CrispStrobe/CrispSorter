@@ -571,6 +571,20 @@
         previewing = null;
     }
 
+    async function findByField(tag: string, value: string) {
+        loading = true; error = ''; searched = true;
+        filterTag = tag; query = value; clearTranslations();
+        try {
+            const page = await invoke<{ rows: SearchResult[] }>('index_query_documents', {
+                filter: { ext: [], tags: [tag] },
+                sort: { column: 'filename', direction: 'asc' },
+                page: { limit, cursor: null },
+            });
+            results = page.rows;
+        } catch (e) { error = String(e); }
+        finally { loading = false; }
+    }
+
     async function useReviewedFields(values: Record<string, string>) {
         if (!previewing) return;
         const path = localPathFromSearchUri(previewing.location_uri);
@@ -2186,7 +2200,7 @@
             <div class="preview-body">
                 <DocumentDecisionPanel document={previewing} onUse={useReviewedFields} />
                 <FieldEvidencePanel docId={previewing.doc_id}
-                    onFilter={(tag, value) => { filterTag = tag; query = value; runSearch(); }}
+                    onFilter={findByField}
                     onSort={useReviewedFields} />
                 <DocumentViewer
                     locationUri={previewing.location_uri}

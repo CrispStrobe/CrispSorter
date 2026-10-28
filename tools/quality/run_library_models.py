@@ -64,7 +64,7 @@ def request(base, route, value=None, timeout=120):
 @contextlib.contextmanager
 def server(binary, flag, model, output):
     env = os.environ.copy()
-    gates = ['MOEDERN_TEXT_FRONTEND', 'MOEDERN_TEXT_COMPOSED', 'MOEDERN_COLBERT', 'MOEDERN_PACKED', 'MOEDERN_FAMILY',
+    gates = ['MOEDERN_PUBLIC_TEXT', 'MOEDERN_TEXT_FRONTEND', 'MOEDERN_TEXT_COMPOSED', 'MOEDERN_COLBERT', 'MOEDERN_PACKED', 'MOEDERN_FAMILY',
              'JOSEV_PACKED', 'JOSEV_COMPOSED', 'JOSEV_BACKBONE', 'QWEN35_OCR', 'JOSEV_HEAD',
              'JOSEV_TEXT_FRONTEND', 'JOSEV_ANSWER_SERIALIZER']
     for gate in gates:

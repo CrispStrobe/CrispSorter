@@ -95,11 +95,19 @@ export function buildEvidenceContext(
         let body = candidate.text;
         const complete = () => prefix + evidence + label + body + '\n\n' + suffix;
         if (tokenCount(complete()) > inputBudget) {
-            const encoded = tokenizer.encode(body, [], []);
             const available = inputBudget - tokenCount(prefix + evidence + label + '\n\n' + suffix) - 8;
             if (available < 64) continue;
-            body = tokenizer.decode(encoded.slice(0, available));
-            while (body && tokenCount(complete()) > inputBudget) body = body.slice(0, -8);
+            // A token may contain only part of a UTF-8 character. Truncate the
+            // original code points so a citation always quotes actual text.
+            const characters = Array.from(body);
+            let low = 0, high = characters.length;
+            while (low < high) {
+                const middle = Math.ceil((low + high) / 2);
+                body = characters.slice(0, middle).join('');
+                if (tokenCount(complete()) <= inputBudget) low = middle;
+                else high = middle - 1;
+            }
+            body = characters.slice(0, low).join('');
         }
         if (!body.trim()) continue;
         const length = candidate.offsetUnit === 'utf8_bytes' ? new TextEncoder().encode(body).length : Array.from(body).length;

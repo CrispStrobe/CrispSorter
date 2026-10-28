@@ -2299,14 +2299,14 @@ dependencies = [
 
 [[package]]
 name = "crispasr"
-version = "0.8.25"
+version = "0.8.32"
 dependencies = [
  "crispasr-sys",
 ]
 
 [[package]]
 name = "crispasr-sys"
-version = "0.8.25"
+version = "0.8.32"
 
 [[package]]
 name = "crispcat"
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed"
-version = "0.17.6"
+version = "0.17.12"
 dependencies = [
  "crispembed-sys",
  "libc",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed-sys"
-version = "0.17.6"
+version = "0.17.12"
 
 [[package]]
 name = "crisplens-protocol"
@@ -2362,11 +2362,13 @@ dependencies = [
 
 [[package]]
 name = "crispsorter"
-version = "0.11.0"
+version = "0.13.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anydoc",
  "anyhow",
  "arboard",
+ "argon2",
  "arrow",
  "arrow-array",
  "arrow-schema",
@@ -2428,6 +2430,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rten",
  "rusqlite",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sha1 0.10.6",
@@ -2453,6 +2456,7 @@ dependencies = [
  "usls",
  "uuid 1.23.3",
  "walkdir",
+ "zeroize",
  "zip 7.2.0",
  "zpdf",
  "zpdf-writer",
