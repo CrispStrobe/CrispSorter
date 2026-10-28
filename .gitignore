@@ -66,3 +66,6 @@ __pycache__/
 # Browser qualification outputs
 playwright-report/
 test-results/
+
+# Generated source-bound OCR qualification crate (never a release artifact).
+/ocr-qualification/

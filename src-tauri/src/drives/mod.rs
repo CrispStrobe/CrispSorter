@@ -1201,7 +1201,14 @@ mod tests {
                 client_id: None,
                 client_secret: None,
             };
-            let caps = DriveRegistry::instantiate(&config).capabilities();
+            let result = DriveRegistry::instantiate_with_proxy(&config, &Default::default());
+            let unavailable = (matches!(kind, DriveType::Filen) && !cfg!(feature = "drive-filen-native"))
+                || (matches!(kind, DriveType::Internxt) && !cfg!(feature = "drive-internxt-native"));
+            if unavailable {
+                assert!(result.is_err(), "{kind:?} must report its missing native provider");
+                continue;
+            }
+            let caps = result.expect("compiled provider must instantiate").capabilities();
             assert_eq!(caps.create_dir, create_dir, "{kind:?} create_dir");
             assert_eq!(caps.rename, rename, "{kind:?} rename");
             assert_eq!(caps.move_path, move_path, "{kind:?} move_path");
@@ -1401,7 +1408,14 @@ mod tests {
                 client_id: None,
                 client_secret: None,
             };
-            let drive = DriveRegistry::instantiate(&cfg);
+            let result = DriveRegistry::instantiate_with_proxy(&cfg, &Default::default());
+            let unavailable = (matches!(kind, DriveType::Filen) && !cfg!(feature = "drive-filen-native"))
+                || (matches!(kind, DriveType::Internxt) && !cfg!(feature = "drive-internxt-native"));
+            if unavailable {
+                assert!(result.is_err(), "{kind:?} must report its missing native provider");
+                continue;
+            }
+            let drive = result.expect("compiled provider must instantiate");
             assert_eq!(
                 drive.drive_type(),
                 expected,
