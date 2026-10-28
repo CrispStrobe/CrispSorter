@@ -49,6 +49,7 @@ jobs:
       matrix:
         include:
           - platform: macos-14
+            qualification_platform: macos-arm64
             rust_target: aarch64-apple-darwin
             llama_asset: llama-b8340-bin-macos-arm64.tar.gz
             sidecar_name: llama-server-aarch64-apple-darwin
@@ -92,6 +93,7 @@ jobs:
             pdfium_asset: pdfium-mac-arm64.tgz
             pdfium_lib_glob: 'lib/libpdfium.dylib'
           - platform: windows-2025
+            qualification_platform: windows-x86_64
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
             sidecar_name: llama-server-x86_64-pc-windows-msvc.exe
@@ -112,6 +114,7 @@ jobs:
             pdfium_asset: pdfium-win-x64.tgz
             pdfium_lib_glob: 'bin/pdfium.dll'
           - platform: ubuntu-24.04
+            qualification_platform: linux-x86_64
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
             sidecar_name: llama-server-x86_64-unknown-linux-gnu
@@ -621,6 +624,12 @@ jobs:
             New-Item -ItemType Directory -Force -Path "$stage/resources/bin" | Out-Null
             Copy-Item -Path "$resBin/*" -Destination "$stage/resources/bin/" -Force -Recurse
           }
+          # resource_dir() on a portable Windows install is the exe directory.
+          # Preserve the source resource tree there, including PDFium and llama.
+          New-Item -ItemType Directory -Force -Path "$stage/bin", "$stage/resources/bin" | Out-Null
+          Copy-Item -Path "src-tauri/bin/*" -Destination "$stage/bin/" -Force -Recurse
+          Copy-Item -Path "src-tauri/bin/*" -Destination "$stage/resources/bin/" -Force -Recurse
+          if (Test-Path "src-tauri/bin/pdfium.dll") { Copy-Item "src-tauri/bin/pdfium.dll" "$stage/pdfium.dll" -Force }
 
           Write-Host "Portable contents:"
           Get-ChildItem -Recurse $stage | Select-Object FullName | Format-Table -HideTableHeaders
@@ -686,6 +695,16 @@ jobs:
               gh release upload "$TAG" "$asset" --clobber --repo "${{ github.repository }}"
             fi
           done
+
+      - name: Verify final packages and attach source/checksum receipts
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_artifacts.py --platform '${{ matrix.qualification_platform }}'
+          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
 
   # macOS-Intel (x86_64) build removed: GitHub-hosted macos-13 runners are
   # chronically queue-starved (hung releases for hours) AND CrispEmbed ships
@@ -806,8 +825,17 @@ jobs:
             gh release upload "${TAG}" "$DEST" --clobber
             echo "✓ Uploaded $DEST"
           else
-            echo "⚠ No APK found"
+            echo "::error::No APK found"; exit 1
           fi
+
+      - name: Inspect Android artifact and attach checksum receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_artifacts.py --platform android-arm64
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_android-arm64.receipt.json" "CrispSorter_${VERSION}_android-arm64.sha256" --clobber
 
   # ── iOS aarch64 IPA ──────────────────────────────────────────────────────
   # Builds the Tauri iOS app on a macOS runner with Xcode.
@@ -1233,9 +1261,18 @@ jobs:
               gh release upload "${TAG}" "$DEST" --clobber
               echo "✓ Uploaded $DEST (sideload via AltStore/Xcode)"
             else
-              echo "⚠ No IPA or .app found"
+              echo "::error::No IPA or .app found"; exit 1
             fi
           fi
+
+      - name: Inspect iOS artifact and attach checksum receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_release_artifacts.py --platform ios-arm64
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_ios-arm64.receipt.json" "CrispSorter_${VERSION}_ios-arm64.sha256" --clobber
 
   # ── macOS App Store (.pkg) — cloud-only sandbox variant ─────────────────────
   # Manually dispatched (mac_appstore=true). Builds the no-desktop sandbox build

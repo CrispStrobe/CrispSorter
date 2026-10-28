@@ -4,11 +4,13 @@ Render @APP_SOURCE@ to the immutable commit before dispatch. Only reports and
 logs are retained; dependencies and compiler outputs stay in worker scratch.
 """
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 
@@ -60,6 +62,18 @@ try:
         run(['git', 'clone', '--filter=blob:none', '--no-checkout', f'https://github.com/CrispStrobe/{name}.git', str(destination)], env=env)
         run(['git', 'checkout', '--detach', revision], cwd=destination, env=env)
     app = root / 'CrispSorter'
+    # Use the shared harness for build admission and heartbeat. CPU-only Rust
+    # links the verified prebuilt C++ bundle; CUDA configuration is inapplicable.
+    harness_path = root / 'kaggle_harness.py'
+    with urllib.request.urlopen('https://raw.githubusercontent.com/CrispStrobe/CrispASR/5e318f0c7ec93a1c7cf5851de4625f0fd74bd7c0/tools/kaggle/kaggle_harness.py', timeout=60) as response:
+        harness_path.write_bytes(response.read())
+    spec = importlib.util.spec_from_file_location('kaggle_harness', harness_path)
+    kh = importlib.util.module_from_spec(spec)
+    sys.modules['kaggle_harness'] = kh
+    spec.loader.exec_module(kh)
+    kh.install_build_toolchain()
+    admitted = kh.safe_build_jobs(gpu=False)
+    env['CARGO_BUILD_JOBS'] = str(min(2, os.cpu_count() or 2)) if admitted == '$(nproc)' else str(min(2, int(admitted)))
     archive = root / 'crispembed-linux-x86_64.tar.gz'
     with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.12/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
         shutil.copyfileobj(response, stream)
@@ -82,7 +96,8 @@ try:
     features = 'desktop,crispembed,pdf-zpdf'
     report['features'] = features
     save()
-    run(['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--features', features, '--', '--test-threads=2'], cwd=app, env=env)
+    with kh.build_heartbeat('CrispSorter native regression'):
+        run(['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--features', features, '--', '--test-threads=2'], cwd=app, env=env)
     report['completed'] = True
 except Exception as error:
     report['error'] = {'type': type(error).__name__, 'message': str(error)}

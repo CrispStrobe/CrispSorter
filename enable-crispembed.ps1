@@ -45,6 +45,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = $PSScriptRoot
 if (-not $ProjectRoot) { $ProjectRoot = Get-Location }
+$RuntimeLock = Get-Content (Join-Path $ProjectRoot 'scripts/crispembed-runtime-lock.json') -Raw | ConvertFrom-Json
+$RuntimeTag = 'v' + $RuntimeLock.version
 
 # 1. Pick a default backend per OS if not specified.
 if (-not $Backend) {
@@ -66,7 +68,7 @@ if (-not $SiblingRoot -or -not (Test-Path (Join-Path $SiblingRoot 'crispembed\Ca
     Write-Host "Cloning into $clonePath\CrispEmbed ..." -ForegroundColor Yellow
     Push-Location $clonePath
     try {
-        & git clone https://github.com/CrispStrobe/CrispEmbed.git
+        & git clone --branch $RuntimeTag --single-branch https://github.com/CrispStrobe/CrispEmbed.git
         if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
     } finally {
         Pop-Location
@@ -82,8 +84,6 @@ Write-Host "CrispEmbed source: $SiblingRoot" -ForegroundColor Green
 #   2. CRISPEMBED_SYS_LIB_DIR already set in env
 #   3. -SkipDownload + existing src-tauri\crispembed-prebuilt\crispembed.lib
 #   4. Fresh download from CrispEmbed GitHub release
-$RuntimeLock = Get-Content (Join-Path $ProjectRoot 'scripts/crispembed-runtime-lock.json') -Raw | ConvertFrom-Json
-$RuntimeTag = 'v' + $RuntimeLock.version
 $PrebuiltDir = Join-Path $ProjectRoot 'src-tauri\crispembed-prebuilt'
 
 if ($LibDir) {
