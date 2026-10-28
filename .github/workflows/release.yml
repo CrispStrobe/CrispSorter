@@ -343,7 +343,8 @@ jobs:
       - name: Rust dependency cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '. -> target'
+          cache-on-failure: 'true'
           key: ${{ matrix.rust_target }}
 
       - name: Install frontend dependencies
@@ -824,6 +825,12 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: android-arm64
+          cache-on-failure: 'true'
+
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -926,6 +933,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: ios-arm64
+          cache-on-failure: 'true'
 
       - uses: actions/setup-node@v4
         with:
