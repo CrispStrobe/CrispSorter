@@ -403,10 +403,26 @@ jobs:
           npm run check
           npm test -- --maxWorkers=1 --minWorkers=1
           python scripts/test_runtime_lock.py
+          # Release-mode Rust tests embed the UI before tauri-action runs.
+          npm run build
 
       - name: Cold-loader Debian packaging regression
         if: runner.os == 'Linux'
         run: python scripts/test_linux_bundle.py
+
+      - name: Stage native DLLs for Windows test executables
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Match the portable package's DLL order. Tests live under deps/;
+          # the app executable lives one level above it.
+          $destinations = @("target/release", "target/release/deps")
+          foreach ($destination in $destinations) {
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            foreach ($source in @("_sibling/CrispEmbed/build", "_sibling/CrispASR/build-flutter-bundle")) {
+              Get-ChildItem -Path $source -Recurse -Filter "*.dll" -File | Copy-Item -Destination $destination -Force
+            }
+          }
 
       - name: Native regression tests for shipped features
         shell: bash
