@@ -37,6 +37,7 @@ pub mod audio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod clipboard;
 pub mod convert;
+pub mod context_cache;
 pub mod eml;
 #[cfg(feature = "desktop")]
 pub mod export;
@@ -238,10 +239,10 @@ pub struct OcrPipelineConfig {
     /// Accept-gate: minimum mean region confidence (0 = ignore).
     #[serde(default = "default_ocr_min_confidence")]
     pub min_confidence: f32,
-    /// Detection model registry name (`None` → `surya-det`).
+    /// Detection model registry name (`None` → `dbnet-det`).
     #[serde(default)]
     pub det_model: Option<String>,
-    /// Recognition model registry name (`None` → `qwen2vl-ocr`).
+    /// TrOCR recognition model registry name (`None` → `trocr-printed`).
     #[serde(default)]
     pub rec_model: Option<String>,
     /// NAFNet denoise GGUF registry name (`None` → `nafnet-denoise`).

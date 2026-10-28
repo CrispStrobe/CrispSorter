@@ -1,13 +1,13 @@
 //! P17.2 — CrispEmbed GGUF OCR (Tier 4).
 //!
-//! Wraps `crispembed::OcrPipeline` (DBNet text detection + TrOCR/Surya/
-//! Qwen2.5-VL recognition) as the highest-priority OCR tier.  All models
+//! Wraps `crispembed::OcrPipeline` (DBNet text detection + TrOCR line
+//! recognition) as the highest-priority OCR tier.  All models
 //! are GGUF — no ORT or Tesseract dependency.
 //!
 //! The pipeline auto-downloads models from HuggingFace on first use via
 //! `CrispEmbed::resolve_model`.  Detection and recognition models are
-//! specified by registry name; the default pairing is `surya-det` (91
-//! languages) + `qwen2vl-ocr` (German support).
+//! specified by registry name; the default pairing is `dbnet-det` +
+//! `trocr-printed`. Complete VLMs use their own orchestrator stages.
 //!
 //! Gated behind `--features crispembed`.
 
@@ -25,13 +25,13 @@ use super::ExtractedDocument;
 const DEFAULT_DET_MODEL: &str = "dbnet-det";
 /// Default recognition model (Qwen2.5-VL, German support).
 #[cfg(feature = "crispembed")]
-const DEFAULT_REC_MODEL: &str = "qwen2vl-ocr";
+const DEFAULT_REC_MODEL: &str = "trocr-printed";
 
 /// Process-global lazy-loaded OCR pipeline.  The CrispEmbed OcrPipeline
 /// is not `Sync` so we wrap it in a `Mutex`.  This trades concurrency for
 /// zero-overhead repeated calls (model stays loaded across documents).
 #[cfg(feature = "crispembed")]
-static OCR_PIPELINE: std::sync::OnceLock<Mutex<crispembed::OcrPipeline>> =
+static OCR_PIPELINE: std::sync::OnceLock<Mutex<Option<super::context_cache::CachedContext<crispembed::OcrPipeline>>>> =
     std::sync::OnceLock::new();
 
 /// Check if CrispEmbed OCR is available at runtime.
@@ -488,19 +488,13 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let pipeline = OCR_PIPELINE.get_or_init(|| {
-        let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_DET_MODEL.to_string());
-        let rec = crispembed::CrispEmbed::resolve_model(DEFAULT_REC_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_REC_MODEL.to_string());
-        let p = crispembed::OcrPipeline::new(&det, &rec, 0)
-            .expect("CrispEmbed OCR pipeline init failed");
-        Mutex::new(p)
-    });
-
-    let mut guard = pipeline
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let key = format!("{DEFAULT_DET_MODEL}:{DEFAULT_REC_MODEL}");
+    let mut cache = super::context_cache::acquire(&OCR_PIPELINE, key, || {
+        let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))?;
+        let rec = crispembed::CrispEmbed::resolve_model(DEFAULT_REC_MODEL, Some(true))?;
+        crispembed::OcrPipeline::new(&det, &rec, 0)
+    }).map_err(|e| anyhow::anyhow!("CrispEmbed OCR initialization failed: {e}"))?;
+    let guard = &mut cache.as_mut().unwrap().context;
 
     let results = guard.run(path_str);
 
@@ -632,12 +626,19 @@ const NAFNET_MODEL: &str = "nafnet-denoise";
 
 /// Process-global lazy-loaded OCR pipeline orchestrator (cleanup + routing +
 /// accept-gate). Like [`OCR_PIPELINE`], cached behind a `Mutex` (not `Sync`)
-/// so the models stay loaded across documents. The first call's config wins
-/// for the process; changing OCR-pipeline settings takes effect on index
-/// re-init (same lazy-once contract as the embedder/reranker).
+/// so the models stay loaded across documents. The full serialized configuration
+/// identifies the context; switching tasks/settings releases the previous model
+/// before building the new one.
 #[cfg(feature = "crispembed")]
-static OCR_ORCH: std::sync::OnceLock<Mutex<crispembed::CrispOcrPipeline>> =
+static OCR_ORCH: std::sync::OnceLock<Mutex<Option<super::context_cache::CachedContext<crispembed::CrispOcrPipeline>>>> =
     std::sync::OnceLock::new();
+
+#[cfg(feature = "crispembed")]
+fn cached_pipeline(cfg: &super::OcrPipelineConfig) -> Result<std::sync::MutexGuard<'static, Option<super::context_cache::CachedContext<crispembed::CrispOcrPipeline>>>> {
+    let key = serde_json::to_string(cfg)?;
+    super::context_cache::acquire(&OCR_ORCH, key, || build_pipeline(cfg).map_err(|e| e.to_string()))
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR configuration failed: {e}"))
+}
 
 /// Run the C++ OCR pipeline orchestrator (source-type routing + per-stage
 /// cleanup + NAFNet denoise + accept-gate escalation) on an image.
@@ -648,11 +649,8 @@ pub fn ocr_via_pipeline(
 ) -> Result<ExtractedDocument> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
-
-    let mut guard = orch
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let mut cache = cached_pipeline(cfg)?;
+    let guard = &mut cache.as_mut().unwrap().context;
     let res = guard
         .run(path_str)
         .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
@@ -708,10 +706,8 @@ pub fn ocr_regions_via_pipeline(
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<super::ocr_render::OcrRegion>> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
-    let mut guard = orch
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let mut cache = cached_pipeline(cfg)?;
+    let guard = &mut cache.as_mut().unwrap().context;
     let res = guard
         .run(path_str)
         .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
@@ -826,10 +822,8 @@ pub fn ocr_regions_detailed(
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<RegionConf>> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
-    let mut guard = orch
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let mut cache = cached_pipeline(cfg)?;
+    let guard = &mut cache.as_mut().unwrap().context;
     let res = guard
         .run(path_str)
         .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
@@ -899,7 +893,7 @@ fn resolve(name: &str) -> String {
 /// Build the orchestrator: the explicit per-stage builder when `cfg.stages` is
 /// non-empty (full tweakability), else the flat simple-mode pipeline.
 #[cfg(feature = "crispembed")]
-fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipeline {
+fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcrPipeline> {
     use super::{engine_id, source_type_id};
     // Optional post-OCR punctuation/spacing restorer (resolved once).
     let punct: Option<String> = cfg
@@ -956,7 +950,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             tess_dir,
             0,
         )
-        .expect("CrispEmbed OCR pipeline init failed");
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline init failed: {e}"));
     }
 
     // Advanced mode: explicit per-stage chains.
@@ -1037,7 +1031,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
         &specs,
         0,
     )
-    .expect("CrispEmbed OCR per-stage pipeline init failed")
+    .map_err(|e| anyhow::anyhow!("CrispEmbed OCR per-stage pipeline init failed: {e}"))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -1421,7 +1415,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut pipe = super::build_pipeline(&cfg);
+        let mut pipe = super::build_pipeline(&cfg).expect("pipeline init");
         let res = pipe.run(p.to_str().unwrap()).expect("pipeline run");
         res.regions
             .into_iter()

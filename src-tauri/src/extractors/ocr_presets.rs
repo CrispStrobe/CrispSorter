@@ -21,9 +21,10 @@ pub fn apply(base: &OcrPipelineConfig, preset: &str) -> Result<OcrPipelineConfig
             stage.rec_model = Some("trocr-printed".into());
         }
         "multilingual" => {
-            stage.engine = "surya".into();
-            stage.det_model = Some("surya-det".into());
-            stage.rec_model = Some("qwen2vl-ocr".into());
+            // Qwen is a complete VLM, not a TrOCR line recognizer.
+            stage.engine = "qwen2vl".into();
+            stage.det_model = Some("qwen2vl-ocr".into());
+            stage.vlm_max_tokens = 4096;
             cfg.drop_headers_footers = true;
         }
         "tables" => {
@@ -36,9 +37,12 @@ pub fn apply(base: &OcrPipelineConfig, preset: &str) -> Result<OcrPipelineConfig
             stage.engine = "qwen2vl".into();
             stage.det_model = Some("qwen2vl-ocr".into());
             stage.vlm_max_tokens = 4096;
-            cfg.dewarp = true;
-            cfg.restore = true;
-            cfg.sr = true;
+            stage.cleanup.enabled = true;
+            stage.cleanup.deskew = true;
+            stage.cleanup.crop_borders = true;
+            stage.cleanup.whiten_background = true;
+            stage.cleanup.binarize = true;
+            stage.cleanup.binarize_method = 1; // Sauvola for uneven backgrounds.
         }
         _ => return Err(format!("Unknown OCR preset: {preset}")),
     }
@@ -63,5 +67,11 @@ mod tests {
         assert!(!cfg.layout); // Existing layout pass skips table regions.
         assert!(cfg.stages[0].vlm_prompt.contains("all table rows"));
         assert!(apply(&cfg, "unqualified-model").is_err());
+    }
+    #[test]
+    fn multilingual_vlm_is_not_loaded_as_a_trocr_line_model() {
+        let cfg = apply(&Default::default(), "multilingual").unwrap();
+        assert_eq!(cfg.stages[0].engine, "qwen2vl");
+        assert!(cfg.stages[0].rec_model.is_none());
     }
 }
