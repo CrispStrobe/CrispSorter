@@ -39,5 +39,16 @@
     "run": "frontend-2",
     "cause": "Production build and 75 unit tests passed. An extra parenthesis in the new sorting race browser test blocked typechecking and browser discovery. Corrected and all ten tests now parse.",
     "app_source": "854f5f742a4cffe86a5e45427d01b96f8fcbe00b"
+  },
+  {
+    "run": "frontend-3",
+    "app_source": "c13822422e3c5593c60eed3f04330c2666213af8",
+    "passed": [
+      "svelte",
+      "unit (75)",
+      "production build",
+      "8 browser scenarios"
+    ],
+    "cause": "Two new assertions used the wrong IPC shape or selector: CSV writes carry UTF-8 bytes, and the implicit select label was not located by exact getByLabel. Corrected byte decoding and accessible combobox role; all ten browser scenarios passed in frontend-4."
   }
 ]

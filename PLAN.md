@@ -21,19 +21,20 @@ missing. Branch: `feat/library-workflows-20261028`.
   independent labeled evaluation; preserve human review and open-ended extraction.
 - [ ] Metadata evidence: original and normalized values, source anchors, model and
   review status; inspect/edit/filter/export/use in sorting.
-- [ ] Workflow UX: Inbox / Review / Library, document-context tools, processing
+- [x] Workflow UX: Inbox / Review / Library, document-context tools, processing
   presets and actionable incomplete-work indicators, preserved advanced controls.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (22:44 UTC): all eight implementation areas are on the branch.
-The previous frontend checkpoint passed 75 unit tests, zero Svelte errors
-(53 existing warnings) and eight browser scenarios. The hosted frontend build and 75 unit tests passed, but a syntax error in
-the new race regression prevented browser discovery/typechecking. That test
-has been corrected. The updated ten-scenario suite also checks that unsaved
-field edits are excluded from sorting and exports. Its worker is waiting for
-a CPU slot. Full frontend suites and compilers remain off the loaded VPS. Browser
-checks use explicit IPC/provider fixtures and do not claim native inference.
+Checkpoint (23:07 UTC): all eight implementation areas are on the branch.
+Frontend qualification is complete: 75 unit tests, zero Svelte errors
+(53 existing warnings), production build and all ten browser scenarios passed.
+The browser suite includes document context, cited evidence, OCR recovery,
+reviewed-field filtering/export, unapproved draft exclusion, source identity
+across preview switches and clearing stale classification choices. It uses
+explicit IPC/provider fixtures and does not claim native inference. The build
+and browser runs share the identical frontend source tree; their source/log
+hashes and initial failures are retained in tests/quality/results/2026-10-28.
 
 The full CPU native regression run passed 1,470 tests (36 intentionally ignored),
 including search, evidence, metadata CAS/filtering and the experimental adapters.

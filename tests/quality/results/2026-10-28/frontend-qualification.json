@@ -1,0 +1,31 @@
+{
+  "scope": "Frontend UI with explicit mocked Tauri/provider IPC; no claim of native inference",
+  "completed": true,
+  "frontend_source": "c13822422e3c5593c60eed3f04330c2666213af8",
+  "browser_source": "cd405687fe64036b474f75636272816c570acc2f",
+  "frontend_tree": "6bcbeeaf4b5961b29cb01602e6f0c01a7d64d6a1",
+  "checks": {
+    "svelte": {
+      "errors": 0,
+      "warnings": 53
+    },
+    "unit": {
+      "passed": 75,
+      "files": 15
+    },
+    "production_build": {
+      "exit_code": 0
+    },
+    "browser": {
+      "passed": 10,
+      "failed": 0
+    }
+  },
+  "logs_sha256": {
+    "svelte": "1418e502a15cfd8297678c3b1a0f2cb1bbb6b518f936bb4cc1425b1594e16b40",
+    "unit": "bb45acc2d32a8bf1e67cf07d80ecb6f7e83010b3967adb9f0fb792bf51f37a98",
+    "build": "ac8cbf8326a3c1ff2318d770c61a1971a24ded3d9dad75afb2577b8a31c2a44c",
+    "browser": "e4269078f0c13fc94ef0e9ba6c931bd07a61378cba0b14b3ceb52947bb88f4c7"
+  },
+  "initial_failures": "initial-failures.json"
+}
