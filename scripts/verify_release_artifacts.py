@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tarfile
@@ -76,8 +77,19 @@ def inspect_package(platform, artifact, destination):
     for key in ['LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH']:
         env.pop(key, None)
     checks = []
+    launcher = [str(executable)]
+    if platform == 'linux-x86_64':
+        headers = subprocess.check_output(['readelf', '-l', str(executable)], text=True)
+        interpreter = re.search(r'Requesting program interpreter:\s*([^\]]+)', headers)
+        if not interpreter:
+            raise ValueError('Packaged ELF lacks its interpreter')
+        # A global ggml in ld.so.cache can conceal a broken package, as the
+        # development host preflight demonstrated. Use only packaged rpaths
+        # and standard distribution library directories for the smoke.
+        launcher = [interpreter.group(1).strip(), '--inhibit-cache', '--library-path',
+                    '/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib64:/usr/lib64', str(executable)]
     for arguments in [['--format', 'json', 'version'], ['--format', 'json', 'doctor']]:
-        result = subprocess.run([str(executable), *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=90, check=True)
+        result = subprocess.run([*launcher, *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=90, check=True)
         payload = json.loads(result.stdout)
         checks.append({'arguments': arguments, 'result': payload, 'stderr': result.stderr[-4000:]})
     return {'inspection': 'packaged executable starts with build-tree libraries hidden', 'checks': checks}

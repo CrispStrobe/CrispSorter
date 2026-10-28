@@ -24,5 +24,10 @@
       "message": "python exited 2; see native.log"
     },
     "cause": "Launcher omitted the required --asset verifier argument; fixed before native run 2."
+  },
+  {
+    "run": "native-2",
+    "error": "lance-encoding could not find google/protobuf/empty.proto",
+    "cause": "The worker omits recommended apt packages. Explicit libprotobuf-dev and PROTOC_INCLUDE are required; native run 3 checks the include before compiling."
   }
 ]

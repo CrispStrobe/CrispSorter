@@ -319,6 +319,7 @@ jobs:
             patchelf \
             libssl-dev \
             protobuf-compiler \
+            libprotobuf-dev \
             build-essential \
             curl \
             wget \
@@ -402,6 +403,10 @@ jobs:
           npm run check
           npm test -- --maxWorkers=1 --minWorkers=1
           python scripts/test_runtime_lock.py
+
+      - name: Cold-loader Debian packaging regression
+        if: runner.os == 'Linux'
+        run: python scripts/test_linux_bundle.py
 
       - name: Native regression tests for shipped features
         shell: bash
@@ -780,7 +785,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq protobuf-compiler libssl-dev
+          sudo apt-get install -y -qq protobuf-compiler libprotobuf-dev libssl-dev
 
       - uses: actions/setup-java@v4
         with:

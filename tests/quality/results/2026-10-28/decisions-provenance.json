@@ -1,0 +1,9 @@
+{
+  "original_report_sha256": "d94c65d33c2d06ce02405d561ba60fb09c7d28837cdbe62474141cc59b3f8eb1",
+  "dispatch": {
+    "app_source": "933317ab46d5eb0849645f73c5b9643e5f3ab329",
+    "models": "systemone",
+    "code_sha256": "fb67c28ab43ae5eaa647b299b9bf6cbd1a4ad524e3f364334b6bfb498a1ca168"
+  },
+  "scope": "SystemOne-only rerun after correcting the consumer schema; the frozen corpus and labels were unchanged."
+}

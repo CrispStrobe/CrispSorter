@@ -44,10 +44,11 @@ try:
     env = os.environ.copy()
     env.update(CARGO_BUILD_JOBS='2', CARGO_INCREMENTAL='0', CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
                CARGO_TARGET_DIR=str(root / 'target'), CARGO_HOME=str(root / 'cargo'),
-               CARGO_HTTP_MULTIPLEXING='false', CARGO_NET_RETRY='5', DEBIAN_FRONTEND='noninteractive')
+               CARGO_HTTP_MULTIPLEXING='false', CARGO_NET_RETRY='5', DEBIAN_FRONTEND='noninteractive',
+               PROTOC='/usr/bin/protoc', PROTOC_INCLUDE='/usr/include')
     run(['apt-get', 'update', '-qq'], env=env)
     run(['apt-get', 'install', '-y', '-qq', 'libwebkit2gtk-4.1-dev', 'libgtk-3-dev',
-         'libayatana-appindicator3-dev', 'librsvg2-dev', 'protobuf-compiler', 'libssl-dev',
+         'libayatana-appindicator3-dev', 'librsvg2-dev', 'protobuf-compiler', 'libprotobuf-dev', 'libssl-dev',
          'libopenblas0', 'clang', 'lld', 'cmake', 'pkg-config', 'curl', 'git'], env=env)
     rustup = root / 'rustup-init.sh'
     with urllib.request.urlopen('https://sh.rustup.rs', timeout=60) as response:
@@ -96,8 +97,14 @@ try:
     features = 'desktop,crispembed,pdf-zpdf'
     report['features'] = features
     save()
+    if not Path('/usr/include/google/protobuf/empty.proto').is_file():
+        raise RuntimeError('Protobuf standard includes are missing; refusing a doomed native build')
     with kh.build_heartbeat('CrispSorter native regression'):
         run(['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--features', features, '--', '--test-threads=2'], cwd=app, env=env)
+    env.update(CRISPSORTER_OCR_RECEIPT=str(output / 'ocr.json'), QWEN2VL_OCR_FORCE_CPU='1', MATH_OCR_FORCE_CPU='1')
+    with kh.build_heartbeat('CrispSorter released-model OCR smoke'):
+        run(['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--features', features,
+             'ocr_task_presets_live', '--', '--ignored', '--nocapture', '--test-threads=1'], cwd=app, env=env)
     report['completed'] = True
 except Exception as error:
     report['error'] = {'type': type(error).__name__, 'message': str(error)}

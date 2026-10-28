@@ -43,6 +43,24 @@ consumer omitted a required `model` schema field. All retrieval arms completed
 before that failure. The adapter and evaluator now include the publisher's
 required model identifier; decision inference is evaluated separately.
 
+## Structured decisions
+
+The corrected SystemOne-only run completed on the same frozen input and labels:
+9 of 12 document types were correct (75%), below the predeclared 90% threshold.
+Median inference time was 25.52 seconds on the CPU worker. Incorrect answers
+included a conference letter classified as Other, a retrieval article classified
+as Other, and a storage article classified as Book. Their model scores were
+0.8535, 0.6502 and 0.8689 respectively, demonstrating why these scores must not
+be treated as calibrated correctness probabilities.
+
+**Adoption decision:** retain the optional, explicitly experimental suggestion
+panel. Do not enable SystemOne by default, replace open-ended metadata
+extraction, approve suggestions automatically or apply file moves from its
+decisions. Keep the submitted excerpt visible and require human review.
+The full responses and source/model hashes are in `decisions-run.json` and its
+provenance receipt. This panel evaluates document-type choices; it does not
+establish accuracy for arbitrary collection choices or review judgments.
+
 ## Newer OCR engines
 
 The bundled app runtime is the immutable
