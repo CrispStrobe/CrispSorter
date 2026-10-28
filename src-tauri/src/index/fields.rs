@@ -45,6 +45,18 @@ pub fn read(metadata: &serde_json::Value) -> Vec<FieldEvidence> {
     metadata.get("field_evidence").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
 }
 
+/// Keep human decisions when the same source is extracted again, while using
+/// the current extraction's anchors, model identity and model score.
+pub fn preserve_reviews(current: &mut [FieldEvidence], previous: &[FieldEvidence]) {
+    for field in current {
+        if let Some(prior) = previous.iter().find(|p| p.id == field.id && p.review_status != "suggested") {
+            field.normalized_value = prior.normalized_value.clone();
+            field.review_status = prior.review_status.clone();
+            field.revision = prior.revision;
+        }
+    }
+}
+
 pub fn tag(field: &FieldEvidence) -> String {
     format!("field:{}:{}", field.label, field.normalized_value)
 }
@@ -128,5 +140,23 @@ mod tests {
         assert_eq!(fields[0].page, None);
         assert_eq!(fields[0].start_char, None);
         assert_eq!(fields[0].anchor_method, "unavailable");
+    }
+    #[test]
+    fn reindex_preserves_review_without_restoring_stale_source_anchors() {
+        let mut previous = from_extraction("same-file", "Vendor: Acme", "model-v1", vec![("vendor".into(), "Acme".into(), 0.7)]);
+        previous[0].normalized_value = "ACME GmbH".into();
+        previous[0].review_status = "corrected".into();
+        previous[0].revision = 3;
+        let mut current = from_extraction("same-file", "Introduction\u{c}Vendor: Acme", "model-v2", vec![("vendor".into(), "Acme".into(), 0.9)]);
+        let current_anchor = current[0].start_char;
+        assert_ne!(current_anchor, previous[0].start_char);
+        preserve_reviews(&mut current, &previous);
+        assert_eq!(current[0].normalized_value, "ACME GmbH");
+        assert_eq!(current[0].review_status, "corrected");
+        assert_eq!(current[0].revision, 3);
+        assert_eq!(current[0].start_char, current_anchor);
+        assert_eq!(current[0].page, Some(2));
+        assert_eq!(current[0].model, "model-v2");
+        assert_eq!(current[0].confidence, Some(0.9));
     }
 }

@@ -397,11 +397,7 @@ impl IngestPipeline {
                 // Preserve reviewed values when the same source is reindexed.
                 let previous = self.vector.document_metadata(&doc_id).await?;
                 let reviewed = super::fields::read(&previous);
-                for field in &mut fields {
-                    if let Some(prior) = reviewed.iter().find(|p| p.id == field.id && p.review_status != "suggested") {
-                        *field = prior.clone();
-                    }
-                }
+                super::fields::preserve_reviews(&mut fields, &reviewed);
                 field_evidence.insert(doc_id, fields);
             }
         }
