@@ -26,11 +26,26 @@ missing. Branch: `feat/library-workflows-20261028`.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint: all eight implementation areas have initial changes on the branch;
-75 frontend unit tests pass and Svelte reports zero errors (53 existing warnings).
-Native regression, real browser/model evaluations and platform binaries remain
-unqualified. The first native CI run is intentionally Linux-only; cloud live
-mutations and public/App Store publishing are disabled for qualification.
+Checkpoint (21:15 UTC): all eight implementation areas are implemented on the
+branch. The current frontend has 75 passing unit tests, zero Svelte errors
+(53 existing warnings), and eight passing browser scenarios, including actual
+widget submission, cited-source viewing, empty evidence, OCR retries/undo,
+reviewed-field sorting handoff and a selected-document tool action. Browser
+tests use explicit IPC/provider fixtures and do not claim native inference.
+
+Actual CPU model evaluation is complete: MoEdern 27M matched the dense baseline
+on the frozen 12-query panel; 1.5M and 115M missed the predeclared quality gate.
+SystemOne scored 9/12 (75%), below its 90% gate. Both integrations remain opt-in;
+results and initial failures are in tests/quality/results/2026-10-28. Newer OCR
+engines remain deferred based on runtime compatibility and real-scan evidence.
+
+Linux cold-loader packaging now has a passing independent ELF/Debian regression
+for SONAME aliases, modes, ownership and gzip/xz controls. Full native regressions,
+released-model app OCR smoke and final platform binaries are still unqualified.
+Kaggle native run 3 fixes the worker's missing Protobuf standard includes. A
+resource-guarded local type check also runs when VPS headroom permits. The active
+five-platform draft-only release run is 40769732938; public and App Store uploads
+are disabled. Do not close this programme based on queued or prepared checks.
 
 Execution constraints: inspect average load, available memory and disk before
 heavy jobs on the shared VPS. Use the operator's Kaggle guide for model work when

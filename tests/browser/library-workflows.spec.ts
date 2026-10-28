@@ -128,6 +128,13 @@ test('mobile keeps the three workflow destinations and capability-gated tools', 
     await page.screenshot({ path: 'test-results/mobile-workflow.png', fullPage: true });
 });
 
+test('document OCR action carries the selected Inbox file into the workbench', async ({ page }) => {
+    await page.locator('.batch-container').getByText('Pending scan.png', { exact: true }).first().click();
+    await page.getByRole('button', { name: 'OCR selected document', exact: true }).click();
+    await expect(page.locator('.ocrwb')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'ocr_doc_open' && call.args.locationUri === '/fixtures/scan.png').length)).toBe(1);
+});
+
 test('library chat retains real passages and opens the cited source', async ({ page }) => {
     await page.getByRole('button', { name: 'Chat', exact: true }).first().click();
     await page.locator('#evidence-scope').selectOption('library');
