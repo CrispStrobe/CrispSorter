@@ -226,9 +226,9 @@ test('field review preserves evidence, finds exact values, exports and stages so
     await expect(fields.getByRole('button', { name: 'Use approved fields for sorting', exact: true })).toBeDisabled();
     await fields.getByRole('button', { name: 'Export CSV', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'plugin:fs|write_text_file').length)).toBe(1);
-    const savedExport = await page.evaluate(() => (window as any).__fixtureCalls.find((c: any) => c.command === 'plugin:fs|write_text_file'));
-    expect(JSON.stringify(savedExport.args)).toContain('ACME');
-    expect(JSON.stringify(savedExport.args)).not.toContain('UNREVIEWED');
+    const savedExport = await page.evaluate(() => new TextDecoder().decode((window as any).__fixtureCalls.find((c: any) => c.command === 'plugin:fs|write_text_file').args));
+    expect(savedExport).toContain('ACME');
+    expect(savedExport).not.toContain('UNREVIEWED');
     await fields.getByLabel('Normalized value').fill('ACME');
     await expect(fields.locator('blockquote')).toHaveText('Acme Incorporated');
     await fields.getByRole('button', { name: 'Find matching documents', exact: true }).click();
@@ -286,7 +286,7 @@ test('restored optional decisions clear when their question or choices change', 
     await panel.locator('summary').click();
     await panel.getByRole('button', { name: 'Suggest from document excerpt', exact: true }).click();
     await expect(panel.locator('p strong')).toHaveText('Invoice');
-    await panel.getByLabel('Question', { exact: true }).selectOption('collection');
+    await panel.getByRole('combobox', { name: 'Question', exact: true }).selectOption('collection');
     await expect(panel.locator('p strong')).toHaveCount(0);
     await panel.getByLabel('Choices, separated by commas', { exact: true }).fill('Books, Other');
     await panel.getByRole('button', { name: 'Suggest from document excerpt', exact: true }).click();
