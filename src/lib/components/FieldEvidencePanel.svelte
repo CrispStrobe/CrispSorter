@@ -35,17 +35,20 @@
         finally { busy = false; }
     }
     async function exportFields(format: 'json' | 'csv') {
+        const id = docId;
+        const content = format === 'json' ? JSON.stringify({ doc_id: id, fields }, null, 2) : fieldsCsv(fields);
         error = '';
         try {
             const path = await save({ defaultPath: `document-fields.${format}`, filters: [{ name: format.toUpperCase(), extensions: [format] }] });
-            if (path) await writeTextFile(path, format === 'json' ? JSON.stringify({ doc_id: docId, fields }, null, 2) : fieldsCsv(fields));
-        } catch (e) { error = String(e); }
+            if (path) await writeTextFile(path, content);
+        } catch (e) { if (id === docId) error = String(e); }
     }
     async function useForSorting() {
         if (!onSort) return;
+        const id = docId;
         busy = true; error = '';
-        try { await onSort(approved); notice = 'Approved fields saved for sorting. Review the file in Inbox before applying moves.'; }
-        catch (e) { error = String(e); }
+        try { await onSort(approved); if (id === docId) notice = 'Approved fields saved for sorting. Review and accept the file before applying moves.'; }
+        catch (e) { if (id === docId) error = String(e); }
         finally { busy = false; }
     }
 </script>

@@ -20,6 +20,8 @@ async function fixtures(page: Page) {
         root.__fixtureEmptyEvidence = false;
         root.__fixtureRegionEmpty = false;
         const result = { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8, source_hash: 'a'.repeat(64), snippet: 'Cobalt warranty' };
+        root.__fixtureResults = [result];
+        root.__fixtureSortGate = false;
         let fields = [{ id: 'vendor-1', label: 'vendor', original_value: 'Acme Incorporated', normalized_value: 'Acme Incorporated', model: 'fixture-ner', confidence: 0.85, start_char: 12, end_char: 29, page: null, anchor_method: 'first_exact_match', review_status: 'suggested', revision: 0 }];
         let rid = 1;
         const callbacks = new Map<number, Function>();
@@ -48,15 +50,18 @@ async function fixtures(page: Page) {
                 if (command === 'plugin:store|set') { settings[args.key] = args.value; return; }
                 if (command === 'plugin:dialog|open') return '/fixtures/scan.pdf';
                 if (command === 'plugin:dialog|save') return '/fixtures/document-fields.csv';
-                if (command === 'index_search') return [result];
+                if (command === 'index_search') return root.__fixtureResults;
                 if (command === 'index_query_documents') return { rows: [result], next_cursor: null };
-                if (command === 'index_get_fields') return fields;
+                if (command === 'index_get_fields') return args.docId === 'warranty' ? fields : [];
                 if (command === 'index_review_field') {
                     if (args.expectedRevision !== fields[0].revision) throw new Error('Stale revision');
                     fields = [{ ...fields[0], normalized_value: args.normalizedValue, review_status: args.reviewStatus, revision: fields[0].revision + 1 }];
                     return fields;
                 }
-                if (command === 'verify_sort_field_source') return;
+                if (command === 'verify_sort_field_source') {
+                    if (root.__fixtureSortGate) return new Promise(resolve => { root.__fixtureSortResolve = () => { root.__fixtureSortGate = false; resolve(null); }; });
+                    return;
+                }
                 if (command === 'plugin:fs|write_text_file') return;
                 if (command === 'plugin:event|listen') return rid++;
                 if (command === 'plugin:path|join') return args.paths.join('/');
@@ -225,4 +230,33 @@ test('field review preserves evidence, finds exact values, exports and stages so
     const calls = await page.evaluate(() => (window as any).__fixtureCalls);
     expect(calls.some((c: any) => c.command === 'verify_sort_field_source')).toBe(true);
     expect(calls.some((c: any) => /^(move_file|rename_file|apply_moves)$/.test(c.command))).toBe(false);
+});
+
+
+test('switching previews during sorting keeps the approved document identity', async ({ page }) => {
+    await page.evaluate(() => {
+        const root = window as any;
+        root.__fixtureResults[0].location_uri = '/fixtures/new-warranty.txt';
+        root.__fixtureResults.push({ ...root.__fixtureResults[0], doc_id: 'other', filename: 'Other.txt', location_uri: '/fixtures/other.txt', source_hash: 'b'.repeat(64) });
+    });
+    await page.getByRole('button', { name: 'Library', exact: true }).first().click();
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.locator('.query-input').fill('warranty');
+    await page.locator('.search-btn').click();
+    await page.getByTitle('Vorschau (Preview)', { exact: true }).first().click();
+    await page.locator('.fields-panel summary').click();
+    const fields = page.locator('.fields-panel');
+    await fields.getByRole('button', { name: 'Approve value', exact: true }).click();
+    await expect(fields).toContainText('accepted');
+    await page.evaluate(() => { (window as any).__fixtureSortGate = true; });
+    await fields.getByRole('button', { name: 'Use approved fields for sorting', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'verify_sort_field_source').length)).toBe(1);
+    await page.getByTitle('Vorschau (Preview)', { exact: true }).nth(1).click();
+    await expect(page.locator('.preview-title')).toContainText('Other.txt');
+    await page.evaluate(() => (window as any).__fixtureSortResolve());
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.some((c: any) => c.command === 'batch_session_upsert_item' && c.args.item.originalPath === '/fixtures/new-warranty.txt' && c.args.item.originalName === 'Warranty.txt')))).toBe(true);
+    await expect(fields).not.toContainText('Approved fields saved for sorting');
+    await page.getByRole('button', { name: 'Inbox', exact: true }).first().click();
+    await expect(page.locator('.batch-container').getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
+    await expect(page.locator('.batch-container').getByText('Other.txt', { exact: true })).toHaveCount(0);
 });

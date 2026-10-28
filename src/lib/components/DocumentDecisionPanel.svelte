@@ -24,8 +24,9 @@
     }
     async function useSuggestion() {
         if (!result || !onUse) return;
+        const source = document;
         try { await onUse({ [resultTask === 'category' ? 'doctype' : resultTask]: result.value }); }
-        catch (e) { error = String(e); }
+        catch (e) { if (source === document) error = String(e); }
     }
 </script>
 

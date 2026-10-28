@@ -586,17 +586,19 @@
     }
 
     async function useReviewedFields(values: Record<string, string>) {
-        if (!previewing) return;
-        const path = localPathFromSearchUri(previewing.location_uri);
+        const source = previewing;
+        if (!source) return;
+        const path = localPathFromSearchUri(source.location_uri);
         if (!path) throw new Error('Download this document locally before adding it to the sorting inbox.');
-        const sourceHash = previewing.source_hash || '';
+        const sourceHash = source.source_hash || '';
+        const filename = source.filename || pathBaseName(path);
         await invoke('verify_sort_field_source', { path, expectedHash: sourceHash });
         const fields = await getSetting('reviewedSortFields', {}) as Record<string, Record<string, string>>;
         await saveSetting('reviewedSortFields', { ...fields, [path]: { ...fields[path], ...values, __source_hash: sourceHash } });
         let item = batchManager.items.find(item => item.originalPath === path);
         if (!item) {
             const info = await stat(path);
-            batchManager.addItem(path, previewing.filename || pathBaseName(path), info.size);
+            batchManager.addItem(path, filename, info.size);
             item = batchManager.items.find(item => item.originalPath === path);
         }
         if (item) {
