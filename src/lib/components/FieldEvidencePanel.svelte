@@ -9,16 +9,21 @@
         onSort?: (values: Record<string, string>) => Promise<void>;
     } = $props();
     let fields = $state<MetadataField[]>([]);
+    let drafts = $state<Record<string, string>>({});
+    function loaded(result: MetadataField[]) {
+        fields = result;
+        drafts = Object.fromEntries(result.map(field => [field.id, field.normalized_value]));
+    }
     let error = $state('');
     let busy = $state(false);
     let notice = $state('');
-    const approved = $derived(approvedValues(fields));
+    const approved = $derived(approvedValues(fields.filter(field => drafts[field.id] === field.normalized_value)));
     $effect(() => {
         const id = docId;
         let cancelled = false;
-        fields = []; error = ''; notice = '';
+        loaded([]); error = ''; notice = '';
         invoke<MetadataField[]>('index_get_fields', { docId: id })
-            .then(result => { if (!cancelled) fields = result; })
+            .then(result => { if (!cancelled) loaded(result); })
             .catch(e => { if (!cancelled) error = String(e); });
         return () => { cancelled = true; };
     });
@@ -27,10 +32,10 @@
         busy = true; error = '';
         try {
             const result = await invoke<MetadataField[]>('index_review_field', {
-                docId: id, fieldId: field.id, normalizedValue: field.normalized_value,
+                docId: id, fieldId: field.id, normalizedValue: drafts[field.id],
                 reviewStatus: status, expectedRevision: field.revision,
             });
-            if (id === docId) fields = result;
+            if (id === docId) loaded(result);
         } catch (e) { if (id === docId) error = String(e); }
         finally { busy = false; }
     }
@@ -62,12 +67,13 @@
         <article>
             <strong>{field.label}</strong> <span>{field.review_status}</span>
             <blockquote>{field.original_value}</blockquote>
-            <label>Normalized value <input bind:value={field.normalized_value} disabled={busy} /></label>
+            <label>Normalized value <input bind:value={drafts[field.id]} disabled={busy} /></label>
+            {#if drafts[field.id] !== field.normalized_value}<small>Unsaved edit. Approve this value before using it for sorting. Exports retain the saved value.</small>{/if}
             <small>{field.model}{field.confidence == null ? '' : ` · model score ${field.confidence.toFixed(3)}`}
                 · {field.page == null ? 'page unavailable' : `page ${field.page}`}
                 {field.start_char == null ? '' : ` · characters ${field.start_char}–${field.end_char} (${field.anchor_method})`}</small>
             <div>
-                <button disabled={busy} onclick={() => review(field, field.normalized_value === field.original_value ? 'accepted' : 'corrected')}>Approve value</button>
+                <button disabled={busy} onclick={() => review(field, drafts[field.id] === field.original_value ? 'accepted' : 'corrected')}>Approve value</button>
                 <button disabled={busy} onclick={() => review(field, 'rejected')}>Reject</button>
                 {#if onFilter && field.review_status !== 'rejected'}<button onclick={() => onFilter?.(`field:${field.label}:${field.normalized_value}`, field.normalized_value)}>Find matching documents</button>{/if}
             </div>
