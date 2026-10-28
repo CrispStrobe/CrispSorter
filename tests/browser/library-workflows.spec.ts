@@ -13,6 +13,7 @@ async function fixtures(page: Page) {
         const settings: Record<string, any> = {
             language: 'en', providers: [{ id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: ['fixture-model'], selectedModel: 'fixture-model', isConfigured: true }],
             activeProviderId: 'ollama', localModels: ['fixture-model'], llmContextLimit: 4096,
+            experimentalCrispEmbed: { endpoint: 'http://127.0.0.1:18080', moedern: false, decisions: true },
         };
         root.__fixtureCalls = [];
         root.__fixturePrompts = [];
@@ -62,6 +63,7 @@ async function fixtures(page: Page) {
                     if (root.__fixtureSortGate) return new Promise(resolve => { root.__fixtureSortResolve = () => { root.__fixtureSortGate = false; resolve(null); }; });
                     return;
                 }
+                if (command === 'crispembed_classify_document') return { value: args.task === 'collection' ? 'Books' : 'Invoice', confidence: 0.6, model: 'fixture-systemone', input_excerpt: 'Library excerpt for classification.' };
                 if (command === 'plugin:fs|write_text_file') return;
                 if (command === 'plugin:event|listen') return rid++;
                 if (command === 'plugin:path|join') return args.paths.join('/');
@@ -259,4 +261,24 @@ test('switching previews during sorting keeps the approved document identity', a
     await page.getByRole('button', { name: 'Inbox', exact: true }).first().click();
     await expect(page.locator('.batch-container').getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
     await expect(page.locator('.batch-container').getByText('Other.txt', { exact: true })).toHaveCount(0);
+});
+
+test('restored optional decisions clear when their question or choices change', async ({ page }) => {
+    await page.getByRole('button', { name: 'Library', exact: true }).first().click();
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.locator('.query-input').fill('warranty');
+    await page.locator('.search-btn').click();
+    await page.getByTitle('Vorschau (Preview)', { exact: true }).first().click();
+    const panel = page.locator('.decision-panel');
+    await panel.locator('summary').click();
+    await panel.getByRole('button', { name: 'Suggest from document excerpt', exact: true }).click();
+    await expect(panel.locator('p strong')).toHaveText('Invoice');
+    await panel.getByLabel('Question', { exact: true }).selectOption('collection');
+    await expect(panel.locator('p strong')).toHaveCount(0);
+    await panel.getByLabel('Choices, separated by commas', { exact: true }).fill('Books, Other');
+    await panel.getByRole('button', { name: 'Suggest from document excerpt', exact: true }).click();
+    await expect(panel.locator('p strong')).toHaveText('Books');
+    await panel.getByLabel('Choices, separated by commas', { exact: true }).fill('Private, Work');
+    await expect(panel.locator('p strong')).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Approve as a sorting field', exact: true })).toHaveCount(0);
 });

@@ -11,7 +11,7 @@
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import FieldEvidencePanel from './FieldEvidencePanel.svelte';
     import DocumentDecisionPanel from './DocumentDecisionPanel.svelte';
-    import { experimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
+    import { experimentalCrispEmbed, loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
     import { batchManager } from '$lib/batch/store.svelte';
     import { stat } from '@tauri-apps/plugin-fs';
     import { availableDocumentTools, documentToolRequest } from '$lib/workflow';
@@ -664,6 +664,7 @@
     }
 
     onMount(async () => {
+        await loadExperimentalCrispEmbed().catch(e => console.warn('Could not restore experimental service settings', e));
         const stored = (await getSetting('savedSearches', null)) as SavedSearch[] | null;
         savedSearches = stored ?? [];
         const hist = (await getSetting('searchHistory', null)) as HistoryEntry[] | null;

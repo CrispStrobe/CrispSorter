@@ -9,7 +9,7 @@
     let error = $state('');
     let result = $state<{ value: string; confidence: number; model: string; input_excerpt: string } | null>(null);
     let resultTask = $state('');
-    $effect(() => { void document; result = null; error = ''; });
+    $effect(() => { void document; void task; void choicesInput; result = null; error = ''; });
     async function classify() {
         const source = document;
         busy = true; error = ''; result = null;
