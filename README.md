@@ -4,6 +4,11 @@
 
 Successor to BiblioForge and ZotBiblioForge — no Python, no cloud required.
 
+Version 0.13 adds Inbox / Review / Library navigation, cited document questions,
+OCR recovery presets and reviewable extracted fields. See the
+[workflow guide](docs/library-workflows.md) for usage and the optional newer
+CrispEmbed service integrations.
+
 ---
 
 ## How it works
@@ -80,7 +85,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 ## Features
 
 - **Four-tier OCR** (in quality order):
-  - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): Surya-OCR-2 text detection (91 languages) + Qwen2.5-VL recognition (German support) + DBNet/TrOCR lightweight alternative; all-GGUF, no ORT dependency
+  - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): DBNet/TrOCR printed-text recognition by default, with complete Qwen2.5-VL and other configurable OCR stages; all-GGUF, no ORT dependency
   - **Tier 3 — PaddleOCR** (`--features paddle-ocr`): multilingual incl. CJK, ONNXRuntime via the existing ort dep, ~60 MB models auto-download; CJK/Latin model selection per document
   - **Tier 2 — ocrs**: pure Rust, zero system install, Latin-script (EN/DE/FR/…)
   - **Tier 1 — Tesseract**: shell-out for users with the system install

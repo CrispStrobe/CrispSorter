@@ -1,5 +1,10 @@
 # OCR workflow
 
+For the 0.13 workbench task presets, weak-page and selected-region retries, and
+undo, see [Library workflows](library-workflows.md#ocr-recovery). The bundled
+runtime is pinned to CrispEmbed 0.17.12; engines introduced on newer development
+branches remain unavailable until qualified for the app.
+
 CrispSorter's OCR is a configurable **pipeline**, not a single model call. This
 doc explains how the stages fit together, how to drive it (GUI, CLI, ingest),
 and where the work happens (CrispSorter = thin Rust caller + settings surface;

@@ -173,7 +173,7 @@ test('empty library evidence answers explicitly without calling a model', async 
 test('OCR retries only weak pages and preserves edits through crop failure and undo', async ({ page }) => {
     await page.getByRole('button', { name: 'OCR', exact: true }).first().click();
     const workbench = page.locator('.ocrwb');
-    await workbench.getByRole('button', { name: 'Open document…', exact: true }).click();
+    await workbench.getByRole('button', { name: 'Open document…', exact: true }).first().click();
     await workbench.getByLabel('OCR task preset').selectOption('multilingual');
     await workbench.getByRole('button', { name: 'Run OCR (all pages)', exact: true }).click();
     await expect(workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true })).toBeEnabled();
