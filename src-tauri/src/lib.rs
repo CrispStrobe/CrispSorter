@@ -3,6 +3,7 @@ pub mod audio;
 pub mod audit;
 pub mod batch_session;
 mod batch_file_ops;
+mod batch_script;
 pub mod capabilities;
 pub mod bg_ingest;
 pub mod images;
@@ -2546,42 +2547,16 @@ async fn execute_batch(
     let mut parent_status: std::collections::HashMap<std::path::PathBuf, Option<String>> =
         std::collections::HashMap::new();
     let is_script_mode = payload.mode.starts_with("script_");
-    let mut script_content = String::new();
-
-    // Windows detection for script extension
     let is_windows = std::env::consts::OS == "windows";
-    let script_name = if is_windows {
-        "sort_files.bat"
-    } else {
-        "sort_files.sh"
-    };
-
-    if is_script_mode {
-        if is_windows {
-            script_content.push_str("@echo off\n");
-        } else {
-            script_content.push_str("#!/bin/bash\n");
-        }
-    }
+    let script_name = if is_windows { "sort_files.ps1" } else { "sort_files.sh" };
+    let mut script = batch_script::Script::new(is_windows);
 
     for item in &payload.items {
         let src = Path::new(&item.original_path);
         let dest = Path::new(&item.target_path);
 
         if is_script_mode {
-            // Script generation mode
-            let cmd = if payload.mode == "script_move" {
-                if is_windows {
-                    format!("move /-Y \"{}\" \"{}\"\n", item.original_path, item.target_path)
-                } else {
-                    format!("mv -n \"{}\" \"{}\"\n", item.original_path, item.target_path)
-                }
-            } else if is_windows {
-                format!("copy /-Y \"{}\" \"{}\"\n", item.original_path, item.target_path)
-            } else {
-                format!("cp -n \"{}\" \"{}\"\n", item.original_path, item.target_path)
-            };
-            script_content.push_str(&cmd);
+            script.add(&item.original_path, &item.target_path, payload.mode == "script_move")?;
             results.insert(
                 item.id.clone(),
                 BatchExecutionResult {
@@ -2661,7 +2636,7 @@ async fn execute_batch(
             if let Some(parent) = dest.parent() {
                 let script_path = parent.join(script_name);
                 if let Err(e) = fs::OpenOptions::new().write(true).create_new(true).open(&script_path)
-                    .and_then(|mut file| file.write_all(script_content.as_bytes())) {
+                    .and_then(|mut file| file.write_all(script.finish().as_bytes())) {
                     return Err(format!("Failed to save script to {:?}: {}", script_path, e));
                 }
             }
