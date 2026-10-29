@@ -15,9 +15,9 @@ on:
         type: boolean
         default: false
       platform:
-        description: 'Build all platforms, or retry only Windows without restarting other platform builds. Windows-only never publishes.'
+        description: 'Build all platforms, or retry one desktop platform without restarting the others. Single-platform retries never publish.'
         type: choice
-        options: [all, windows]
+        options: [all, windows, macos]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -46,14 +46,15 @@ env:
 jobs:
   release-required:
     # Skip the heavy desktop matrix on a macOS-App-Store-only dispatch.
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform != 'windows') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-14
+          - &macos_release
+            platform: macos-15
             qualification_platform: macos-arm64
             rust_target: aarch64-apple-darwin
             llama_asset: llama-b8340-bin-macos-arm64.tar.gz
@@ -779,8 +780,20 @@ jobs:
     env: *desktop_release_env
     steps: *desktop_release_steps
 
+  release-macos:
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'macos' }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - *macos_release
+    runs-on: ${{ matrix.platform }}
+    env: *desktop_release_env
+    steps: *desktop_release_steps
+
   release-android:
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform != 'windows') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -938,7 +951,7 @@ jobs:
   # are set, archives + exports a signed IPA suitable for App Store /
   # TestFlight upload. Otherwise falls back to an unsigned .app.
   release-ios:
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform != 'windows') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
     permissions:
       contents: write
     # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`

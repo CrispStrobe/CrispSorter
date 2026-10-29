@@ -25,5 +25,29 @@
   "signer_script_sha256": "5efee6a256d83eb854e7fba46050f8d19f6c66a135f634e8b730b452ae31b34b",
   "apksigner_package": "Ubuntu apksigner/libapksig-java 31.0.2-1ubuntu1",
   "unsigned_signature_negative_check": "apksigner rejects original unsigned APK",
-  "app_rebuilt": false
+  "app_rebuilt": false,
+  "binary_manifest": {
+    "manifest": {
+      "versionCode": 13000,
+      "versionName": "0.13.0",
+      "compileSdkVersion": 36,
+      "compileSdkVersionCodename": "16",
+      "package": "com.crispstrobe.crispsorter",
+      "platformBuildVersionCode": 36,
+      "platformBuildVersionName": 16
+    },
+    "uses-sdk": {
+      "minSdkVersion": 24,
+      "targetSdkVersion": 36
+    },
+    "application": {
+      "theme": 2131755636,
+      "label": 2131689500,
+      "icon": 2131558400,
+      "extractNativeLibs": false,
+      "usesCleartextTraffic": false,
+      "appComponentFactory": "androidx.core.app.CoreComponentFactory"
+    }
+  },
+  "github_digest_matches": true
 }

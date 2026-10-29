@@ -556,7 +556,7 @@ jobs:
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: macOS lib tests + secret-store smoke
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
@@ -802,7 +802,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2025]
+        os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
       - name: Check out crisp-cloud-rs
         uses: actions/checkout@v4

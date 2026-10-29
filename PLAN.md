@@ -26,7 +26,7 @@ missing. Branch: `feat/library-workflows-20261028`.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (01:24 UTC, 29 October): all eight implementation areas are on the branch.
+Checkpoint (01:16 UTC, 29 October): all eight implementation areas are on the branch.
 Frontend qualification is complete: 75 unit tests, zero Svelte errors
 (53 existing warnings), production build and all ten browser scenarios passed.
 The browser suite includes document context, cited evidence, OCR recovery,
