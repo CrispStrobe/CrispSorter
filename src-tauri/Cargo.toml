@@ -70,6 +70,7 @@ serde_json = "1"
 base64 = "0.22"
 tauri-plugin-http = "2.5.7"
 tauri-plugin-store = "2.0.0-rc.0"
+tauri-plugin-mobile-provider = { path = "../crates/tauri-plugin-mobile-provider" }
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-fs = "2.4.5"
 # default-features=false drops the native-tls (OpenSSL) backend.

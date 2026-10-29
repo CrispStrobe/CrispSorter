@@ -19,6 +19,7 @@ import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
+import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
 
 export interface ProcessOverrides {
     extractionWorkers?: number;
@@ -101,8 +102,8 @@ export class BatchManager {
     });
 
     addItem(path: string, name: string, size: number) {
-        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
-        if (this.items.some(i => norm(i.originalPath) === norm(path))) return; // skip duplicates (case-insensitive, cross-separator)
+        const norm = batchSourceKey;
+        if (this.items.some(i => norm(i.originalPath) === norm(path))) return;
         flog('info', 'Adding item: ' + name);
         const id = crypto.randomUUID();
         const extension = name.split('.').pop() || '';
@@ -122,7 +123,7 @@ export class BatchManager {
     }
 
     async addItemsBulk(entries: { path: string, name: string, size: number }[]) {
-        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+        const norm = batchSourceKey;
         const existingPaths = new Set(this.items.map(i => norm(i.originalPath)));
         const newItems: BatchItem[] = [];
         
@@ -491,7 +492,8 @@ export class BatchManager {
         // panels), clamped to [1, 16]. Default is 1 + 1, matching the
         // pre-this-commit producer/consumer pipeline; users with fast
         // CPUs / large round-robin pools can scale up.
-        const extractionN = Math.max(1, Math.min(16, overrides?.extractionWorkers ?? (await getSetting('extractionWorkers', 1)) as number));
+        const maxExtractionWorkers = this.items.some(item => isProviderUri(item.originalPath)) ? 1 : 16;
+        const extractionN = Math.max(1, Math.min(maxExtractionWorkers, overrides?.extractionWorkers ?? (await getSetting('extractionWorkers', 1)) as number));
         const llmN = Math.max(1, Math.min(16, overrides?.llmWorkers ?? (await getSetting('llmWorkers', 1)) as number));
         this.extractionTargetWorkers = extractionN;
         this.llmTargetWorkers = llmN;
@@ -545,7 +547,7 @@ export class BatchManager {
                 // before (same SHA-256) pre-fill the metadata from the last run
                 // and jump straight to 'review' — no extraction, no LLM call.
                 // The user can click "Re-process" to override (sets skipHistoryCheck).
-                if (!item.skipHistoryCheck) {
+                if (!item.skipHistoryCheck && !isProviderUri(item.originalPath)) {
                     if (!item.sha256) {
                         try {
                             item.sha256 = await invoke<string>('file_sha256', { path: item.originalPath });
@@ -610,7 +612,7 @@ export class BatchManager {
                 flog('info', `Starting extraction: ${item.originalName} via worker ${workerId}`);
 
                 try {
-                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
+                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR && !isProviderUri(item.originalPath)) {
                         flog('info', `Rust extraction: ${item.originalName}`);
                         const extractCall = invoke<string>('extract_pdf_native', { path: item.originalPath });
                         const text = FILE_TIMEOUT_MS > 0
@@ -657,15 +659,15 @@ export class BatchManager {
                             }, FILE_TIMEOUT_MS);
                         }
 
-                        const fileData = await readFile(item.originalPath);
-                        if (this.stopRequested) {
-                            if (watchdogId) clearTimeout(watchdogId);
-                            this.extractionAbort?.signal.removeEventListener('abort', onSharedAbort);
-                            item.status = 'queued';
-                            break;
-                        }
                         let extraction;
                         try {
+                            const fileData = isProviderUri(item.originalPath)
+                                ? await readProviderFile(item.originalPath)
+                                : await readFile(item.originalPath);
+                            if (this.stopRequested) {
+                                item.status = 'queued';
+                                break;
+                            }
                             const extractCall = extractText(
                                 {
                                     name: item.originalName,
@@ -749,7 +751,7 @@ export class BatchManager {
                     const hasMetadataConvention =
                         // file types where metadata-read makes sense
                         ['pdf', 'docx', 'epub', 'jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'].includes(ext);
-                    if (isPdf && (await getSetting('pdfMetadataPrefill', true))) {
+                    if (isPdf && !isProviderUri(item.originalPath) && (await getSetting('pdfMetadataPrefill', true))) {
                         try {
                             // 30 s wall-clock cap on the Rust-side lopdf call.
                             // `lopdf::Document::load` is fully synchronous and
@@ -848,7 +850,7 @@ export class BatchManager {
                     item.status = overrides?.extractionOnly ? 'review' : 'queued';
                     if (overrides?.extractionOnly) await this.calculateTargetPath(item);
                     const extractedBytes = item.extractedText?.length ?? 0;
-                    const tool = isPdf && pdfBackend === 'rust' && !forceOCR ? 'pdf-extract (Rust)'
+                    const tool = isPdf && pdfBackend === 'rust' && !forceOCR && !isProviderUri(item.originalPath) ? 'pdf-extract (Rust)'
                                 : forceOCR ? 'OCR (Tesseract)'
                                 : `JS extractor (.${ext})`;
                     const extractMs = Math.round(performance.now() - extractStartTs);
@@ -1140,6 +1142,12 @@ export class BatchManager {
     }
 
     private async calculateTargetPath(item: BatchItem) {
+        // SAF entries identify originals in a provider; path-based sorting
+        // cannot move them. Do not manufacture a local destination for one.
+        if (isProviderUri(item.originalPath)) {
+            item.targetPath = undefined;
+            return;
+        }
         const exportPath = await getSetting('exportPath', '');
         const pathTemplate = await getSetting('pathTemplate', '{Author}/{Year}/{Title}') as string;
 

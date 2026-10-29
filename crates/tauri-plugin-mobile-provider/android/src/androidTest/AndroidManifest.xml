@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="com.crispstrobe.mobileprovider.FakeDocumentsProvider"
+            android:authorities="com.crispstrobe.mobileprovider.testdocs"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

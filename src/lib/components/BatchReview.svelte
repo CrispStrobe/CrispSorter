@@ -19,6 +19,7 @@
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { createSortPlan, textSidecarPath, type SortMode, type SortPlan } from '../batch/sortPlan';
+    import { isProviderUri, pickProviderDocuments } from '../mobileProvider';
     import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
@@ -365,6 +366,10 @@
     });
 
     async function handleAddFiles() {
+        if ($caps.platform === 'android') {
+            await addProviderDocuments(false);
+            return;
+        }
         const selected = await open({
             multiple: true,
             // Same multimodal whitelist as the drag-drop path so picker
@@ -384,6 +389,10 @@
     }
 
     async function handleAddFolder() {
+        if ($caps.platform === 'android') {
+            await addProviderDocuments(true);
+            return;
+        }
         const selected = await open({ directory: true, multiple: false });
         if (typeof selected === 'string') {
             const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
@@ -392,6 +401,24 @@
                 extensions: [...MULTIMODAL_EXTENSIONS]
             });
             batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
+        }
+    }
+
+    async function addProviderDocuments(folder: boolean) {
+        try {
+            const result = await pickProviderDocuments(folder);
+            if (!result) return; // User cancelled the system picker.
+            await batchManager.addItemsBulk(result.accepted.map(file => ({
+                path: file.uri, name: file.name, size: Math.max(0, file.size),
+            })));
+            const skipped = result.unsupported + result.oversized;
+            showToast(i18n.lang === 'de'
+                ? `${result.accepted.length} Dokument(e) ausgewählt; ${skipped} nicht unterstützt oder über 16 MiB. Nur Lesen.`
+                : `${result.accepted.length} document(s) selected; ${skipped} unsupported or over 16 MiB. Read-only.`);
+        } catch (e: any) {
+            showToast(i18n.lang === 'de'
+                ? `Dateiauswahl fehlgeschlagen: ${e?.message ?? e}`
+                : `Could not access the selection: ${e?.message ?? e}`);
         }
     }
 
@@ -405,8 +432,12 @@
     async function keepOnlyInGroup(groupIdx: number, keepId: string, deleteFromDisk: boolean) {
         const group = duplicateGroups[groupIdx];
         const toRemove = group.items.filter(i => i.id !== keepId);
+        if (deleteFromDisk && toRemove.some(i => isProviderUri(i.originalPath))) {
+            showToast('Provider documents are read-only and cannot be deleted here.');
+            return;
+        }
         if (deleteFromDisk) {
-            const paths = toRemove.map(i => i.originalPath);
+            const paths = toRemove.map(i => i.originalPath).filter(path => !isProviderUri(path));
             await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
         }
         await batchManager.removeItems(toRemove.map(i => i.id));
@@ -421,8 +452,12 @@
 
     async function removeAllInGroup(groupIdx: number, deleteFromDisk: boolean) {
         const group = duplicateGroups[groupIdx];
+        if (deleteFromDisk && group.items.some(i => isProviderUri(i.originalPath))) {
+            showToast('Provider documents are read-only and cannot be deleted here.');
+            return;
+        }
         if (deleteFromDisk) {
-            const paths = group.items.map(i => i.originalPath);
+            const paths = group.items.map(i => i.originalPath).filter(path => !isProviderUri(path));
             await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
         }
         await batchManager.removeItems(group.items.map(i => i.id));
@@ -561,7 +596,7 @@
         };
         const inputs: IngestInput[] = [];
         for (const item of items) {
-            if (!item.extractedText || item.extractedText.length < 20) { fail++; continue; }
+            if (isProviderUri(item.originalPath) || !item.extractedText || item.extractedText.length < 20) { fail++; continue; }
             inputs.push({
                 fullText:    item.extractedText,
                 fullTextMd:  '',
@@ -606,15 +641,16 @@
     async function checkFileDetails(item: BatchItem) {
         try {
             console.log(`[BatchReview] checkFileDetails for ${item.originalName}`);
-            const exists = await stat(item.originalPath).then(() => true).catch(() => false);
-            const metadata = await stat(item.originalPath).catch(() => null);
+            const provider = isProviderUri(item.originalPath);
+            const exists = provider ? null : await stat(item.originalPath).then(() => true).catch(() => false);
+            const metadata = provider ? null : await stat(item.originalPath).catch(() => null);
             
             infoModalData = {
                 id: item.id,
                 exists,
                 originalPath: item.originalPath,
-                size: metadata ? formatSize(metadata.size) : '?',
-                targetPath: item.targetPath || i18n.t.batch.path_hint,
+                size: metadata ? formatSize(metadata.size) : provider && item.size > 0 ? formatSize(item.size) : '?',
+                targetPath: provider ? 'Read-only provider document' : item.targetPath || i18n.t.batch.path_hint,
                 status: item.status,
                 statusDetail: item.statusDetail,
                 error: item.errorMessage
@@ -717,6 +753,10 @@
     }
 
     async function executeSorting(mode: SortMode = 'move') {
+        if ($caps.platform === 'ios') {
+            showToast('Sorting iOS imports is unavailable until their original provider identity can be retained.');
+            return;
+        }
         if (batchManager.isExecuting || preparingSort || confirmingSort || sortPlan) {
             showToast(i18n.t.batch.executing);
             return;
@@ -930,9 +970,11 @@
     async function checkAndUpdateSources() {
         console.log('[BatchReview] checkAndUpdateSources called, total items:', batchManager.items.length);
         let missingCount = 0;
+        let providerCount = 0;
         let missingIds: string[] = [];
         const changedItems: BatchItem[] = [];
         for (const item of batchManager.items) {
+            if (isProviderUri(item.originalPath)) { providerCount++; continue; }
             console.log('[BatchReview] Checking:', item.originalName, '→', item.originalPath, '(status:', item.status, 'err:', item.errorMessage, ')');
             const exists = await stat(item.originalPath)
                 .then(() => true)
@@ -955,7 +997,9 @@
         }
         if (changedItems.length > 0) await upsertItemsBulk(changedItems);
         if (missingCount === 0) {
-            showToast(i18n.t.batch.update_sources_ok);
+            showToast(providerCount
+                ? `${i18n.t.batch.update_sources_ok} ${providerCount} provider document(s) were not checked.`
+                : i18n.t.batch.update_sources_ok);
         } else {
             const msg = i18n.t.batch.update_sources_missing.replace('{count}', missingCount.toString());
             if (missingIds.length > 0 && await ask(`${msg}\n\nRemove unprocessed missing files from the batch?`, { title: 'CrispSorter' })) {
@@ -1049,7 +1093,7 @@
             <option value="fast">Fast</option><option value="balanced">Balanced</option>
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
         </select>
-        {#if selectedItem}
+        {#if selectedItem && !isProviderUri(selectedItem.originalPath)}
             {#each availableDocumentTools(selectedItem.originalName, $caps) as tool}
                 <button onclick={() => documentToolRequest.set({ tool, locationUri: selectedItem.originalPath, filename: selectedItem.originalName })}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR selected document' : 'Translate selected document'}</button>
             {/each}
@@ -1058,10 +1102,10 @@
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
-                <button class="icon-btn-main primary" onclick={handleAddFiles} title={i18n.t.batch.add_files}>
+                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'ios'} title={$caps.platform === 'ios' ? 'iOS provider import is not yet available' : i18n.t.batch.add_files}>
                     <Plus size={18} />
                 </button>
-                <button class="icon-btn-main primary" onclick={handleAddFolder} title={i18n.t.batch.add_folder}>
+                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'ios'} title={$caps.platform === 'ios' ? 'iOS provider import is not yet available' : i18n.t.batch.add_folder}>
                     <FolderOpen size={18} />
                 </button>
                 <button class="icon-btn-main danger" onclick={() => batchManager.clear()} title={i18n.t.batch.clear_all}>
@@ -1240,6 +1284,15 @@
             </div>
         </div>
     </div>
+    {#if $caps.platform === 'android'}
+        <p class="provider-import-note">{i18n.lang === 'de'
+            ? 'Dateien aus Android-Anbietern werden nur gelesen (PDF, DOCX, EPUB, TXT, Markdown, HTML; maximal 16 MiB). Verschieben und Kopieren werden noch nicht unterstützt.'
+            : 'Android provider documents are read-only (PDF, DOCX, EPUB, TXT, Markdown, HTML; up to 16 MiB). Moving and copying are not yet supported.'}</p>
+    {:else if $caps.platform === 'ios'}
+        <p class="provider-import-note">{i18n.lang === 'de'
+            ? 'Der Import aus iOS-Dateianbietern ist noch nicht verfügbar.'
+            : 'Import from iOS file providers is not yet available.'}</p>
+    {/if}
 
     {#if selectedIds.length > 0}
         <!-- Bulk-selection toolbar — only appears when items are ticked
@@ -1400,10 +1453,10 @@
                                     <button class="action-btn small" onclick={() => keepNewestInGroup(gi, false)} title={i18n.t.batch.dupe_keep_newest_remove}>
                                         Newest
                                     </button>
-                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} title={i18n.t.batch.dupe_keep_newest_delete}>
+                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} disabled={group.items.some(item => isProviderUri(item.originalPath))} title={i18n.t.batch.dupe_keep_newest_delete}>
                                         Newest + 🗑
                                     </button>
-                                    <button class="action-btn small danger" onclick={() => { if (confirm(i18n.t.batch.dupe_confirm_delete_all)) removeAllInGroup(gi, true); }} title={i18n.t.batch.dupe_delete_all}>
+                                    <button class="action-btn small danger" onclick={() => { if (confirm(i18n.t.batch.dupe_confirm_delete_all)) removeAllInGroup(gi, true); }} disabled={group.items.some(item => isProviderUri(item.originalPath))} title={i18n.t.batch.dupe_delete_all}>
                                         All 🗑
                                     </button>
                                 </div>
@@ -1416,7 +1469,7 @@
                                     </div>
                                     <div class="dupe-item-actions">
                                         <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} title={i18n.t.batch.dupe_keep_only}>Keep</button>
-                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} title={i18n.t.batch.dupe_keep_only_delete}>Keep+🗑</button>
+                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} disabled={group.items.some(other => other.id !== item.id && isProviderUri(other.originalPath))} title={i18n.t.batch.dupe_keep_only_delete}>Keep+🗑</button>
                                         <button class="close-btn-minimal" onclick={() => batchManager.removeItems([item.id]).then(() => handleFindDuplicates())} title={i18n.t.settings.action_remove_from_list}>×</button>
                                     </div>
                                 </div>
@@ -1846,7 +1899,7 @@
             <div class="modal-body info-body">
                 <div class="info-grid">
                     <span class="info-label">{i18n.t.batch.item_info.exists}</span>
-                    <span class="info-val">{infoModalData.exists ? '✅' : '❌'}</span>
+                    <span class="info-val">{infoModalData.exists === null ? '—' : infoModalData.exists ? '✅' : '❌'}</span>
                     
                     <span class="info-label">{i18n.t.batch.item_info.abs_path}</span>
                     <span class="info-val mono-path">{infoModalData.originalPath}</span>
@@ -1879,6 +1932,7 @@
 {/if}
 
 <style>
+    .provider-import-note { margin: 0.5rem 0; color: #a1a1aa; font-size: 0.8rem; }
     .workflow-actions { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #3f3f46; }
     .workflow-actions select, .workflow-actions button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 5px; padding: 5px; }
 

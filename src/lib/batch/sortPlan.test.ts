@@ -39,4 +39,14 @@ describe('sort preview snapshot', () => {
         expect(textSidecarPath({ ...pdf, targetPath: '/out/.hidden' })).toBe('/out/.hidden.txt');
         expect(textSidecarPath({ ...pdf, extractedText: undefined })).toBeUndefined();
     });
+
+    it('never sorts a provider original, even if a stale or forged destination is present', () => {
+        const provider = item('provider', { originalPath: 'content://provider/document/A%3A123' });
+        for (const mode of ['move', 'copy', 'script_move', 'script_copy'] as const) {
+            const plan = createSortPlan([provider, item('local')], mode, false, false);
+            expect(plan.candidates.map(i => i.originalPath)).toContain(provider.originalPath);
+            expect(plan.items.map(i => i.originalPath)).toEqual(['/in/local.pdf']);
+            expect(sortPlanMatches(plan, [provider, item('local')], false)).toBe(true);
+        }
+    });
 });

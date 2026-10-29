@@ -1,0 +1,13 @@
+[package]
+name = "tauri-plugin-mobile-provider"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+links = "tauri-plugin-mobile-provider"
+
+[dependencies]
+tauri = { version = "2", default-features = false }
+serde_json = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

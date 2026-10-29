@@ -1,0 +1,75 @@
+name: Android provider checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['mobile-provider-check-*']
+  pull_request:
+    paths:
+      - 'crates/tauri-plugin-mobile-provider/**'
+      - 'tools/mobile-provider-check/**'
+      - '.github/workflows/mobile-provider-check.yml'
+
+jobs:
+  android-provider:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Install Android SDK and NDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+      - name: Fetch the exact Tauri Android library from Cargo.lock
+        shell: bash
+        run: |
+          read -r version checksum < <(python3 - <<'PY'
+          import tomllib
+          with open('Cargo.lock', 'rb') as f:
+              package = next(p for p in tomllib.load(f)['package'] if p['name'] == 'tauri')
+          print(package['version'], package['checksum'])
+          PY
+          )
+          curl --fail --location --retry 5 "https://static.crates.io/crates/tauri/tauri-${version}.crate" -o "$RUNNER_TEMP/tauri.crate"
+          echo "$checksum  $RUNNER_TEMP/tauri.crate" | sha256sum --check
+          tar -xf "$RUNNER_TEMP/tauri.crate" -C "$RUNNER_TEMP"
+          echo "TAURI_ANDROID_DIR=$RUNNER_TEMP/tauri-$version/mobile/android" >> "$GITHUB_ENV"
+      - name: Check the Rust plugin for Android
+        shell: bash
+        run: |
+          cp -a crates/tauri-plugin-mobile-provider "$RUNNER_TEMP/provider-crate"
+          cp Cargo.lock "$RUNNER_TEMP/provider-crate/Cargo.lock"
+          export NDK_BIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android24-clang"
+          cargo check --manifest-path "$RUNNER_TEMP/provider-crate/Cargo.toml" --target aarch64-linux-android
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Exercise ContentResolver against a test provider on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: gradle -p tools/mobile-provider-check :mobile-provider:connectedDebugAndroidTest --no-daemon --stacktrace
+      - name: Upload Android test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-provider-test-results
+          path: crates/tauri-plugin-mobile-provider/android/build/reports/androidTests/
+          if-no-files-found: warn

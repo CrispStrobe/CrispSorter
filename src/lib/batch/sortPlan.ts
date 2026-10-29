@@ -1,4 +1,5 @@
 import type { BatchItem } from '../types';
+import { isProviderUri } from '../mobileProvider';
 
 export type SortMode = 'move' | 'copy' | 'script_move' | 'script_copy';
 
@@ -24,7 +25,7 @@ export function createSortPlan(items: BatchItem[], mode: SortMode, skipNonPrimar
     const candidates = items.filter(item => item.isAccepted).map(candidate);
     return {
         mode, skipNonPrimaryDupes, saveTxt, candidates,
-        items: candidates.filter(item => item.targetPath && SORTABLE.has(item.status)
+        items: candidates.filter(item => !isProviderUri(item.originalPath) && item.targetPath && SORTABLE.has(item.status)
             && !(skipNonPrimaryDupes && item.isDuplicatePrimary === false)),
     };
 }
