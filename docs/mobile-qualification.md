@@ -40,12 +40,46 @@ fixture files and preserve the logs/screenshots, build identity, OS/device model
 and actual outcome. Do not interpret a simulator startup receipt as a full mobile
 parity or device-execution result.
 
-The repository also contains a historical `mobile_fs` module and a Kotlin SAF
-helper, but they are not registered with the application and their Android JNI
-and iOS security-scoped methods contain explicit stubs. Their presence does not
-establish persistent provider access. The active picker/filesystem integration
-must be checked on devices, including revoked permissions and app restart, before
-claiming persistent folder access or wiring file moves through those stubs.
+## Provider imports
+
+Android batch import now uses a registered Storage Access Framework plugin.
+The file picker uses `ACTION_OPEN_DOCUMENT`; the folder picker uses
+`ACTION_OPEN_DOCUMENT_TREE`, recursively enumerates the selected tree, and
+retains the original `content://` document URIs. It requests a persistent
+**read-only** grant and reports an error when the provider will not grant one.
+Batch extraction reads directly from the provider; it does not substitute a
+local copy for the original. PDF, DOCX, EPUB, TXT, Markdown and HTML are
+supported, with a 16 MiB per-document read limit. Unknown sizes are checked
+while streaming. Folder enumeration fails explicitly beyond 5,000 entries or
+32 levels, and the picker reports unsupported or oversized files it skips.
+
+Provider items remain available for extraction and review, but cannot be
+moved, copied, deleted, included in a sort script, or sent to the path-based
+index and document tools. This is a read-only slice, not folder-sort parity.
+The original URI and persisted grant are intended to survive restart; device
+verification of that behavior is still required, and revoked or unavailable
+provider access must produce a visible error. The iOS batch picker and sorting
+are disabled until original identities and security-scoped access can be
+preserved; other mobile picker entry points are not covered by this flow.
+
+`.github/workflows/mobile-provider-check.yml` builds the Android plugin and
+exercises its reader on an emulator against a test ContentResolver provider.
+The instrumentation covers nested folders, case-sensitive document IDs, reads,
+unavailable access, size limits and folder cycles. It does not exercise the
+system picker, a real provider's persistent grants, the complete APK, or an
+iOS app. The workflow has been added; its result and the device checks below
+must be recorded before qualifying this integration.
+
+For qualification, use a dedicated device or emulator and disposable local and
+cloud-provider fixtures. Record the APK build and OS/device, and verify picker
+cancellation, individual and nested folder selections, Unicode and case-sensitive
+names, unsupported and oversized files, extraction, app restart, and provider
+access after revocation. Confirm that provider items cannot enter any move,
+copy, delete or script operation and that selecting a new grant after revocation
+restores access. Inspect errors and confirm no local copy was presented as the
+original. The historical `mobile_fs` module and `android-src/SAFBridge.kt` are
+not registered and still contain stubs; they are not the implementation used by
+this flow.
 
 ## Remaining native integration blockers
 
@@ -72,13 +106,10 @@ not verify runtime provenance or prove that the app builds or runs: verify the
 native artifact and binding source against `scripts/crispembed-runtime-lock.json`
 separately, and qualify the resulting APK on a device.
 
-For document providers, the locked Tauri dialog plugin 2.7.1 explicitly returns
-`Folder picker is not implemented on mobile` for directory selection. Android's
-file picker uses `ACTION_GET_CONTENT`, not a persistent tree grant, and the active
-batch scan uses `std::fs` paths, not `content://` operations. A complete Android
-implementation needs a tree picker that retains the granted access, provider
-operations throughout scan/import/sort, and recovery when grants are revoked.
+The locked Tauri dialog plugin 2.7.1 still returns `Folder picker is not
+implemented on mobile`; Android batch import uses the dedicated SAF plugin above
+instead. Full Android sorting needs provider-aware destination selection and
+operations, with explicit handling for providers that do not support moves.
 iOS needs a directory picker, security-scoped bookmarks captured while access is
-valid and restored on launch, and coordinated file operations. These are not
-supplied by the unregistered `mobile_fs` module. Both implementations need
-restart, revocation, and provider-backed move tests on actual devices.
+valid and restored on launch, and coordinated file operations. Both platforms
+need restart, revocation and provider-backed move tests on actual devices.
