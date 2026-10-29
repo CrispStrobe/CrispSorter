@@ -211,7 +211,9 @@ test('sort report counts general failures', async ({ page }) => {
     const report = page.locator('.report-modal');
     await expect(report).toContainText('1 file(s) could not be sorted. See each item for details.');
     await report.getByRole('button', { name: 'Keep complete batch', exact: true }).click();
-    await expect(page.getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
+    // Failed items return to Inbox rather than remaining in Review.
+    await page.getByRole('button', { name: 'Inbox', exact: true }).first().click();
+    await expect(page.locator('.batch-container').getByRole('row').filter({ hasText: 'Warranty.txt' })).toBeVisible();
 });
 
 test('library chat retains real passages and opens the cited source', async ({ page }) => {
