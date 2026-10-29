@@ -1,0 +1,113 @@
+{
+  "schema": "crispsorter-ocr-cpu-confirmation-v1",
+  "upstream_source": "2acee0b1c920fa3d143f05c8d4022994d8b8c763",
+  "manifest_path": "docs/ocr-real-scans-v1.json",
+  "manifest_sha256": "0857bffc6f4a3616292db255d7f3f34c0b58a52a7286a2791cb00b77499c7700",
+  "scorer_path": "tools/kaggle/ocr-real-scans/score.py",
+  "scorer_sha256": "ac433da5ea391eeb1dd322b6e269f8efcda1ade3fb94d01f53bddbf0a0048c58",
+  "scope": "Remaining five frozen real pages and all their Qwen preset assignments under the native 262144-pixel budget. The prior English one-page result is retained separately; together they cover all nine Qwen cases on six original pages.",
+  "case_timeout_seconds": 1200,
+  "total_budget_seconds": 10800,
+  "vlm_token_budget": "Use the upstream per-page cap for comparable evaluation, rather than the UI default 4096; record every effective config.",
+  "decision_rule": "Report every timeout/failure, original quality metric, time and peak memory. Compare per page against the original Quick and newer-engine receipts, preserving the prior exploratory English result separately. No automatic default change; qualify an optional CPU resource profile only within its measured task limits.",
+  "cases": [
+    {
+      "id": "de-antiqua-kafka-schloss-211",
+      "image_sha256": "4758ee30dc4d6fa9766e05c81efbbc57a490f4ba0b11b8fa875ba67dfcbad593",
+      "ground_truth_sha256": "491294b7340812acdd0b8541f863adb2a436d14772b75535cd75b6e8733c2616",
+      "presets": [
+        "multilingual"
+      ],
+      "tags": [
+        "de",
+        "antiqua",
+        "umlauts",
+        "prose"
+      ],
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "de-fraktur-grimm-319",
+      "image_sha256": "83e1cabd6fd70576dc3351c1c5655d40a7056fd49ca6e0e3192dd14abc9d42b5",
+      "ground_truth_sha256": "acbc9daa6c7ed9bd70e75c2c4716d9b5310abb91d46978930d20d4a0ebfb9cb1",
+      "presets": [
+        "multilingual"
+      ],
+      "tags": [
+        "de",
+        "fraktur",
+        "umlauts",
+        "prose"
+      ],
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "en-table-climatic-26",
+      "image_sha256": "1e72426a797315540ad1b06f52eaac948fe109c80301738b5c69aa114bda3635",
+      "ground_truth_sha256": "693563fe382e7615649008c28b21580af4bd4aaa387d3e70a9f765b0754c9f26",
+      "presets": [
+        "multilingual",
+        "tables"
+      ],
+      "tags": [
+        "en",
+        "table"
+      ],
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "de-degraded-freiligrath-46",
+      "image_sha256": "1673be87eec8e4dac9d5d2f7a0341e88e6e0498b8044e10dd282220773603bfd",
+      "ground_truth_sha256": "9012215853af8989a2542e0afd9b97fa07992eec9c71d0c5c8ec0005b6cefeb5",
+      "presets": [
+        "multilingual",
+        "difficult"
+      ],
+      "tags": [
+        "de",
+        "fraktur",
+        "degraded",
+        "bleed-through",
+        "verse"
+      ],
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "receipt-cord-test-29",
+      "image_sha256": "1f065c268473d727282005e57441c55c3249afe0da54f3bc08823d0cbe730610",
+      "ground_truth_sha256": "c93f40e7e20a131c1d3e13f4632e557e16bc497d9d79a08e33a49af542ec8bf6",
+      "presets": [
+        "multilingual",
+        "tables"
+      ],
+      "tags": [
+        "receipt",
+        "photo",
+        "id-en-mixed"
+      ],
+      "primary_metric": "word_recall"
+    }
+  ],
+  "selection_rule": "All originally frozen Qwen cases except the already-measured English multilingual case. No page is selected or excluded based on an unseen budgeted result. Inputs, references, models, scorer, prompts and per-page output caps stay fixed.",
+  "models": [
+    {
+      "bytes": 12960448,
+      "registry_name": "dbnet-det",
+      "sha256": "163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2"
+    },
+    {
+      "bytes": 67508320,
+      "registry_name": "trocr-printed",
+      "sha256": "1aa4cdf3413539d7dbd53a565149abe4ca878f84a7ae2129e9a297f3a26b50d4"
+    },
+    {
+      "bytes": 2742343200,
+      "registry_name": "qwen2vl-3b",
+      "sha256": "4cc16e226005a2d7ecce7749d5a876704a499ca301428167f5ceb3b75b967312"
+    }
+  ],
+  "environment_overrides": {
+    "CRISPEMBED_MAX_PIXELS": "262144"
+  },
+  "frozen_before_confirmation_inference": true
+}
