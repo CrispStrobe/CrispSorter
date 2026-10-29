@@ -10,25 +10,40 @@ guide. Avoid unnecessary GitHub CI; real platform builds and simulator work need
 native workers. Do not report an item complete solely because code is prepared.
 
 - [ ] Mobile parity and actual Android/iOS device or simulator checks.
-- [ ] OCR resource controls, region retries and meaningful native verification.
+- [x] OCR resource controls, region retries and meaningful native verification.
 - [ ] Evaluate newer CrispEmbed OCR engines against the released ABI and evidence.
-- [ ] Multilingual/long-document retrieval and citation navigation/coverage.
-- [ ] Bulk evidence review, conflict handling, inspectable and safe sort moves.
+- [x] Multilingual/long-document retrieval and citation navigation/coverage.
+- [x] Bulk evidence review, conflict handling, inspectable and safe sort moves.
 - [ ] Production signing/notarization and automated mobile smoke coverage.
 - [ ] Integrated validation and updated platform artifacts; retain actual limitations.
 
-The Android production signing identity has been created separately from the
-development key, with private material outside Git and signing secrets configured.
-The canonical Apple Distribution certificate remains untouched. A read-only Apple
-certificate inventory is queued because the local API key is not readable to this
-account. The user reports no existing Windows Authenticode certificate; a trusted
-certificate requires external identity verification and may require a purchase.
+Version 0.14.0 has been assigned to the existing internal TestFlight group.
+The [draft release](https://github.com/CrispStrobe/CrispSorter/releases/tag/untagged-904dfadba8df7a234ec5)
+contains six verified artifacts for the five platform targets. All uploaded
+hashes match source-bound receipts for commit `6d99dc545bdb143fa6b30c78c185c6f20ab3d315`.
+Android uses the retained production release key; macOS and Windows direct
+packages are explicitly unsigned until the relevant production identities exist.
+The retained Apple App Store signing bundle does not contain a Developer ID
+Application private key. No Apple certificate was created or revoked. A Windows
+trusted Authenticode certificate is not yet available.
+
+The final frontend run passed 101 unit tests and 14 browser scenarios; the
+source-pinned Linux native run passed 1,483 tests, with 36 ignored, and five
+script tests. The release workflow completed on all five platforms. Focused
+native provider tests passed on Android (four emulator tests) and iOS (three
+simulator tests), but real picker grants, restarts, cloud providers, full-app
+mobile startup and physical devices require further qualification. The isolated
+CPU OCR worker passed sandbox and real-model smoke checks; its sample read
+“warrant” for “warranty,” recorded as a quality limit. Mobile native CrispEmbed
+inference remains unavailable: the released Android bundle lacks required ggml
+libraries, and iOS needs target-specific static linking. Newer development-only
+OCR engines are not represented as qualified released capabilities.
 
 ## Library workflow improvement programme — completed 29 October 2026
 
 All eight authorized improvements and binaries for the five supported platform
 targets are complete on `feat/library-workflows-20261028`. The release is an
-unpublished draft; no App Store or TestFlight upload was performed.
+unpublished draft; version 0.13.0 was subsequently delivered to internal TestFlight.
 
 - [x] Retrieval: full matching passages for reranking, retained candidate windows,
   result-limit-aware cache, consistent fallback ranks; meaningful regressions.
