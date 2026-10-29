@@ -46,6 +46,8 @@ env:
 jobs:
   testflight-existing:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'testflight' && !inputs.publish && !inputs.mac_appstore }}
+    permissions:
+      contents: write # Draft releases require write access; this job never publishes.
     runs-on: macos-15
     timeout-minutes: 60
     steps:
