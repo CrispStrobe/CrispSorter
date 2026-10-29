@@ -18,6 +18,7 @@ import urllib.request
 APP_SOURCE = '@APP_SOURCE@'
 BINARY_SOURCE = '@BINARY_SOURCE@'
 PANEL = False
+PANEL_PLAN = 'tests/quality/ocr-real-panel.json'
 root = Path('/kaggle/temp/crispsorter-ocr')
 output = Path('/kaggle/working/ocr-qualification')
 output.mkdir(parents=True, exist_ok=True)
@@ -125,7 +126,7 @@ try:
         run('panel-deps', [panel_python, '-m', 'pip', 'install', '--only-binary=:all:', '--no-cache-dir', 'numpy==2.2.6', 'pyarrow==17.0.0', 'rapidfuzz==3.9.7'], env=env)
         run('panel-build', ['cargo', 'build', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--bin', 'ocr-case'], cwd=app, env=env)
         with kh.build_heartbeat('CrispSorter frozen real OCR panel'):
-            run('real-panel', [panel_python, 'tools/quality/real_ocr_panel.py', '--app', str(app), '--executable', str(root / 'target/debug/ocr-case'), '--output', str(output / 'real-panel')], cwd=app, env=env, timeout=4*3600)
+            run('real-panel', [panel_python, 'tools/quality/real_ocr_panel.py', '--app', str(app), '--executable', str(root / 'target/debug/ocr-case'), '--output', str(output / 'real-panel'), '--plan', str(app / PANEL_PLAN)], cwd=app, env=env, timeout=4*3600)
         report['qualification_scope'] = 'Frozen real-scan OCR comparison; see real-panel/result.json for individual failures and scores'
     else:
         with kh.build_heartbeat('CrispSorter source-bound live OCR'):

@@ -1,0 +1,51 @@
+{
+  "schema": "crispsorter-ocr-cpu-followup-v1",
+  "upstream_source": "2acee0b1c920fa3d143f05c8d4022994d8b8c763",
+  "manifest_path": "docs/ocr-real-scans-v1.json",
+  "manifest_sha256": "0857bffc6f4a3616292db255d7f3f34c0b58a52a7286a2791cb00b77499c7700",
+  "scorer_path": "tools/kaggle/ocr-real-scans/score.py",
+  "scorer_sha256": "ac433da5ea391eeb1dd322b6e269f8efcda1ade3fb94d01f53bddbf0a0048c58",
+  "scope": "One-page resource/quality follow-up after the uncapped English Qwen case exceeded 1200 seconds and reached 15525 MB. Original panel continues unchanged; this is a separate arm, not a replacement result.",
+  "case_timeout_seconds": 1200,
+  "total_budget_seconds": 1500,
+  "vlm_token_budget": "Use the upstream per-page cap for comparable evaluation, rather than the UI default 4096; record every effective config.",
+  "decision_rule": "Report completion/failure, memory, time and all original quality metrics. No app/default change or general performance claim from this one-page follow-up.",
+  "cases": [
+    {
+      "id": "en-prose-constitution-13",
+      "image_sha256": "36c1b61692719239b011442ad4670655374d8c219b333b054fbcb05a46a38a86",
+      "ground_truth_sha256": "0f2941807f6d7cfd468f12f05418ecfbf9c0f7b5857612b8c8ea3ae3c479608e",
+      "presets": [
+        "multilingual"
+      ],
+      "tags": [
+        "en",
+        "prose",
+        "clean"
+      ],
+      "primary_metric": "cer_nospace"
+    }
+  ],
+  "selection_rule": "The first English page that hit its original Qwen time limit; selected before this budgeted inference. Same image, reference, model hashes, scorer and 816-token output cap.",
+  "models": [
+    {
+      "bytes": 12960448,
+      "registry_name": "dbnet-det",
+      "sha256": "163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2"
+    },
+    {
+      "bytes": 67508320,
+      "registry_name": "trocr-printed",
+      "sha256": "1aa4cdf3413539d7dbd53a565149abe4ca878f84a7ae2129e9a297f3a26b50d4"
+    },
+    {
+      "bytes": 2742343200,
+      "registry_name": "qwen2vl-3b",
+      "sha256": "4cc16e226005a2d7ecce7749d5a876704a499ca301428167f5ceb3b75b967312"
+    }
+  ],
+  "environment_overrides": {
+    "CRISPEMBED_MAX_PIXELS": "262144"
+  },
+  "frozen_before_followup_inference": true
+}

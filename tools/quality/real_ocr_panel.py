@@ -31,11 +31,11 @@ def fetch(url):
             time.sleep(2 ** attempt)
 
 
-def child(command, log, timeout):
+def child(command, log, timeout, env=None):
     started = time.monotonic()
     timed_out = False
     with log.open('w') as stream:
-        process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+        process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True, env=env)
         while True:
             pid, status, usage = os.wait4(process.pid, os.WNOHANG)
             if pid:
@@ -51,12 +51,19 @@ def child(command, log, timeout):
             'wall_seconds': time.monotonic() - started, 'peak_rss_mb': usage.ru_maxrss / 1024}
 
 
-def main(app, executable, output):
+def main(app, executable, output, plan_path=None):
     app, executable, output = app.resolve(), executable.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     scratch = app.parent / 'real-ocr-inputs'
     scratch.mkdir(exist_ok=True)
-    plan = json.loads((app / 'tests/quality/ocr-real-panel.json').read_text())
+    plan_path = plan_path or app / 'tests/quality/ocr-real-panel.json'
+    plan = json.loads(plan_path.read_text())
+    overrides = plan.get('environment_overrides', {})
+    if set(overrides) - {'CRISPEMBED_MAX_PIXELS'}:
+        raise ValueError('Only the explicit native pixel budget may vary in this follow-up')
+    if overrides and not 3136 <= int(overrides['CRISPEMBED_MAX_PIXELS']) <= 12845056:
+        raise ValueError('Pixel budget is outside the released Qwen preprocessing bounds')
+    case_env = {**os.environ, **overrides}
     base = 'https://raw.githubusercontent.com/CrispStrobe/CrispEmbed/' + plan['upstream_source'] + '/'
     manifest_bytes = fetch(base + plan['manifest_path'])
     scorer_bytes = fetch(base + plan['scorer_path'])
@@ -68,7 +75,8 @@ def main(app, executable, output):
     spec = importlib.util.spec_from_file_location('frozen_ocr_score', scorer)
     scoring = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scoring)
-    report = {'scope': plan['scope'], 'plan_sha256': sha((app / 'tests/quality/ocr-real-panel.json').read_bytes()),
+    report = {'scope': plan['scope'], 'plan_sha256': sha(plan_path.read_bytes()),
+              'environment_overrides': overrides,
               'upstream_source': plan['upstream_source'], 'manifest_sha256': sha(manifest_bytes),
               'scorer_sha256': sha(scorer_bytes), 'images': [], 'runs': [], 'completed': False,
               'protocol': 'Fresh process/context per case; initial model downloads excluded. Original preset recipe except the preregistered per-page VLM output cap. No model sees the reference text.',
@@ -133,7 +141,7 @@ def main(app, executable, output):
             payload_path = output / (name + '.json')
             print('PANEL start:', name, flush=True)
             measurement = child([str(executable), preset, str(inputs[case['id']]), str(page['max_tokens']), str(payload_path)],
-                                output / (name + '.log'), plan['case_timeout_seconds'])
+                                output / (name + '.log'), plan['case_timeout_seconds'], env=case_env)
             row = {'page':case['id'], 'preset':preset, 'max_tokens':page['max_tokens'], **measurement}
             if measurement['exit_code'] == 0:
                 payload = json.loads(payload_path.read_text())
@@ -153,5 +161,6 @@ if __name__ == '__main__':
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--plan', type=Path)
     args = parser.parse_args()
-    main(args.app, args.executable, args.output)
+    main(args.app, args.executable, args.output, args.plan)
