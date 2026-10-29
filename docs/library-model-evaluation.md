@@ -212,3 +212,10 @@ the follow-up. Plans, complete derived results, input/model hashes, license
 attribution and separate source receipts are in `tests/quality`; the combined
 `ocr-cpu-profile-summary.json` preserves each case's exploratory/confirmation
 phase. No model weights or inference ran on the development VPS.
+
+A separate hosted smoke of the isolated worker at source `43782fb99d21c7c1c12f72249602744497d39b39`
+returned `Cobalt warrant expires November 2031.` for the synthetic reference
+`Cobalt warranty expires November 2031.` The missing final letter is a real
+recognition error under this budget, even though the worker returned successfully.
+The original strict fixture assertion failed; the process smoke uses the stable
+identifiers and word stem while reporting the full synthetic output.
