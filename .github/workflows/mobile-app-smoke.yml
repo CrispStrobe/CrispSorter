@@ -1,0 +1,109 @@
+name: Mobile app simulator smoke
+
+on:
+  push:
+    branches: ['mobile-app-smoke-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools build-tools;36.0.0'
+      - name: Download existing release APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.14.0 --pattern 'CrispSorter_0.14.0_android-aarch64.apk' --dir "$RUNNER_TEMP"
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Launch the release APK if this image supports its ABI
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: google_apis_playstore
+          disable-animations: true
+          script: python3 scripts/mobile_simulator_smoke.py --platform android --target emulator-5554 --artifact "$RUNNER_TEMP/CrispSorter_0.14.0_android-aarch64.apk" --output "$RUNNER_TEMP/android-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-app-smoke
+          path: ${{ runner.temp }}/android-smoke/
+          if-no-files-found: warn
+
+  ios-simulator:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 6d99dc545bdb143fa6b30c78c185c6f20ab3d315
+          path: app
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: v0.17.12
+          path: app/_sibling/CrispEmbed
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispASR
+          ref: v0.8.32
+          path: app/_sibling/CrispASR
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-docx
+          ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
+          path: app/_sibling/crisp-docx
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Prepare and build a simulator app
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re
+          p = pathlib.Path('src-tauri/Cargo.toml')
+          s = p.read_text()
+          s = re.sub(r'path\s*=\s*"\.\./\.\./(CrispEmbed|CrispASR)/([\w-]+)"', r'path = "../_sibling/\1/\2"', s)
+          s = re.sub(r'path\s*=\s*"\.\./\.\./crisp-docx/crates/([\w-]+)"', r'path = "../_sibling/crisp-docx/crates/\1"', s)
+          p.write_text(s)
+          PY
+          npm ci
+          npm run build
+          npx tauri ios init
+          xcodebuild -project src-tauri/gen/apple/crispsorter.xcodeproj -scheme crispsorter_iOS -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM='' CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/ios-simulator-build" build
+      - name: Boot a simulator and check startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; print(next(d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in devices if d["name"].startswith("iPhone")))')
+          xcrun simctl boot "$simulator" || true
+          xcrun simctl bootstatus "$simulator" -b
+          app=$(find "$RUNNER_TEMP/ios-simulator-build" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$app"
+          python3 scripts/mobile_simulator_smoke.py --platform ios --target "$simulator" --artifact "$app" --output "$RUNNER_TEMP/ios-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-app-smoke
+          path: ${{ runner.temp }}/ios-smoke/
+          if-no-files-found: warn
