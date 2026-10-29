@@ -2,6 +2,7 @@ pub mod asr;
 pub mod audio;
 pub mod audit;
 pub mod batch_session;
+mod batch_file_ops;
 pub mod capabilities;
 pub mod bg_ingest;
 pub mod images;
@@ -2571,14 +2572,14 @@ async fn execute_batch(
             // Script generation mode
             let cmd = if payload.mode == "script_move" {
                 if is_windows {
-                    format!("move \"{}\" \"{}\"\n", item.original_path, item.target_path)
+                    format!("move /-Y \"{}\" \"{}\"\n", item.original_path, item.target_path)
                 } else {
-                    format!("mv \"{}\" \"{}\"\n", item.original_path, item.target_path)
+                    format!("mv -n \"{}\" \"{}\"\n", item.original_path, item.target_path)
                 }
             } else if is_windows {
-                format!("copy \"{}\" \"{}\"\n", item.original_path, item.target_path)
+                format!("copy /-Y \"{}\" \"{}\"\n", item.original_path, item.target_path)
             } else {
-                format!("cp \"{}\" \"{}\"\n", item.original_path, item.target_path)
+                format!("cp -n \"{}\" \"{}\"\n", item.original_path, item.target_path)
             };
             script_content.push_str(&cmd);
             results.insert(
@@ -2622,106 +2623,18 @@ async fn execute_batch(
             }
         }
 
-        // 1. Save TXT if requested.  Skip when the source is itself a
-        //    .txt file — `dest.with_extension("txt")` would resolve to
-        //    the same path as `dest`, so the sidecar-write would race
-        //    with the immediately-following rename and (best case) be
-        //    overwritten, (worst case) cause a partial-write of the
-        //    extracted text to clobber the original bytes via a
-        //    surviving handle.  For a .txt source, the original file
-        //    IS the txt sidecar; the move alone is correct.
-        if payload.save_txt {
-            if let Some(text) = &item.extracted_text {
-                let src_is_txt = src
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|s| s.eq_ignore_ascii_case("txt"))
-                    .unwrap_or(false);
-                if !src_is_txt {
-                    let txt_path = dest.with_extension("txt");
-                    if let Err(e) = fs::write(txt_path, text) {
-                        println!("Warning: Failed to save .txt for {}: {}", item.id, e);
-                    }
-                }
-            }
-        }
-
-        // 2. Perform file operation — with locked-file copy fallback for move
-        let exec_result = match payload.mode.as_str() {
-            "copy" => match fs::copy(src, dest) {
-                Ok(_) => BatchExecutionResult {
-                    success: true,
-                    error: None,
-                },
-                Err(e) => BatchExecutionResult {
-                    success: false,
-                    error: Some(e.to_string()),
-                },
-            },
-            _ => match fs::rename(src, dest) {
-                Ok(()) => BatchExecutionResult {
-                    success: true,
-                    error: None,
-                },
-                // Cross-volume move (EXDEV, errno 18 on macOS/Linux):
-                // src and dest are on different filesystems, so the
-                // kernel can't atomic-rename them.  Fall back to
-                // copy + delete-source.  This is the dominant cause
-                // of "every item errored" when the user pointed the
-                // sort target at a different drive (`/Volumes/...`)
-                // than the source.
-                //
-                // Windows file-lock (os error 32) keeps its existing
-                // copy-only fallback (orig stays in place) since the
-                // source delete would also fail with the lock.
-                Err(ref e) if e.raw_os_error() == Some(18) => {
-                    match fs::copy(src, dest) {
-                        Ok(_) => match fs::remove_file(src) {
-                            Ok(()) => BatchExecutionResult {
-                                success: true,
-                                error: None, // full move via copy+remove
-                            },
-                            Err(rm_err) => BatchExecutionResult {
-                                success: true,
-                                error: Some(format!(
-                                    "COPY_FALLBACK_NO_DELETE: source remove failed: {rm_err}"
-                                )),
-                            },
-                        },
-                        Err(cp_err) => BatchExecutionResult {
-                            success: false,
-                            error: Some(format!("CROSS_DEVICE_COPY_FAILED: {cp_err}")),
-                        },
-                    }
-                }
-                Err(ref e) if e.raw_os_error() == Some(32) => {
-                    // File locked by another process (os error 32) — try copy as fallback
-                    match fs::copy(src, dest) {
-                        Ok(_) => BatchExecutionResult {
-                            success: true,
-                            error: Some("COPY_FALLBACK".to_string()),
-                        },
-                        Err(_) => BatchExecutionResult {
-                            success: false,
-                            error: Some("LOCKED".to_string()),
-                        },
-                    }
-                }
-                Err(e) => {
-                    // Surface the underlying OS error message so the
-                    // FE can show something more diagnostic than just
-                    // "error" in the histogram.  Prefix with the errno
-                    // for grep-ability.
-                    let errno = e
-                        .raw_os_error()
-                        .map(|n| format!("errno={n} "))
-                        .unwrap_or_default();
-                    BatchExecutionResult {
-                        success: false,
-                        error: Some(format!("RENAME_FAILED: {errno}{e}")),
-                    }
-                }
-            },
+        // A sidecar is only useful if the file itself is not already text.
+        let src_is_txt = src.extension().and_then(|e| e.to_str())
+            .map(|s| s.eq_ignore_ascii_case("txt")).unwrap_or(false);
+        let sidecar_text = if payload.save_txt && !src_is_txt {
+            item.extracted_text.as_deref()
+        } else {
+            None
+        };
+        let outcome = batch_file_ops::execute(src, dest, sidecar_text, payload.mode == "copy");
+        let exec_result = BatchExecutionResult {
+            success: outcome.success,
+            error: outcome.error,
         };
         // P11: if the move succeeded and the document was indexed, update the location URI.
         if exec_result.success {
@@ -2747,7 +2660,8 @@ async fn execute_batch(
             let dest = Path::new(&first_item.target_path);
             if let Some(parent) = dest.parent() {
                 let script_path = parent.join(script_name);
-                if let Err(e) = fs::write(&script_path, script_content) {
+                if let Err(e) = fs::OpenOptions::new().write(true).create_new(true).open(&script_path)
+                    .and_then(|mut file| file.write_all(script_content.as_bytes())) {
                     return Err(format!("Failed to save script to {:?}: {}", script_path, e));
                 }
             }
