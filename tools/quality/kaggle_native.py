@@ -99,6 +99,8 @@ try:
     save()
     if not Path('/usr/include/google/protobuf/empty.proto').is_file():
         raise RuntimeError('Protobuf standard includes are missing; refusing a doomed native build')
+    run(['rustc', '--edition', '2021', '--test', 'src-tauri/tests/batch_script.rs', '-o', str(root / 'batch-script-tests')], cwd=app, env=env)
+    run([str(root / 'batch-script-tests')], cwd=app, env=env)
     with kh.build_heartbeat('CrispSorter native regression'):
         run(['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--features', features, '--', '--test-threads=2'], cwd=app, env=env)
     env.update(CRISPSORTER_OCR_RECEIPT=str(output / 'ocr.json'), QWEN2VL_OCR_FORCE_CPU='1', MATH_OCR_FORCE_CPU='1')

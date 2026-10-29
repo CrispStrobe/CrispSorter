@@ -333,6 +333,16 @@ jobs:
         # all — the exact drift this list exists to prevent.
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
+      - name: Batch sorting script tests
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
+
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
         # With `pdf-zpdf`, so the harness's decrypt-with-a-user-password and
@@ -498,6 +508,16 @@ jobs:
       - name: Library tests
         working-directory: repos/CrispSorter
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Batch sorting script tests
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
@@ -691,6 +711,16 @@ jobs:
         # Those sub-features only pick the ggml backend inside the sibling
         # crates, so the CrispSorter code compiled is identical.
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
+
+      - name: Batch sorting script tests
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter

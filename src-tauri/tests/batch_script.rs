@@ -116,6 +116,60 @@ mod tests {
         assert!(!dir.join("injected").exists());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_copies_literal_paths_and_refuses_collisions() {
+        use std::{
+            fs,
+            process::Command,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "crisp-ps-script-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("source ' $env `%!.pdf");
+        let destination = dir.join("dest ' $env `%!.pdf");
+        let other = dir.join("other.pdf");
+        let collision = dir.join("existing.pdf");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&other, b"other").unwrap();
+        fs::write(&collision, b"keep").unwrap();
+        let mut script = Script::new(true);
+        script
+            .add(
+                source.to_str().unwrap(),
+                destination.to_str().unwrap(),
+                false,
+            )
+            .unwrap();
+        script
+            .add(other.to_str().unwrap(), collision.to_str().unwrap(), true)
+            .unwrap();
+        let path = dir.join("run.ps1");
+        fs::write(&path, script.finish()).unwrap();
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("ERROR:"));
+        assert_eq!(fs::read(destination).unwrap(), b"original");
+        assert_eq!(fs::read(collision).unwrap(), b"keep");
+        assert_eq!(fs::read(other).unwrap(), b"other");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn production_generator_has_no_process_launcher() {
         let source = include_str!("../src/batch_script.rs");

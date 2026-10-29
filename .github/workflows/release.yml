@@ -593,6 +593,10 @@ jobs:
           TARGET_ARGS=()
           if [ "$RUNNER_OS" = "macOS" ]; then TARGET_ARGS=(--target "${{ matrix.rust_target }}"); fi
           cargo test -p crispsorter --release --lib "${TARGET_ARGS[@]}" --features "$FEATURES" -- --test-threads=2
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
 
       # Build only. The action must not upload pre-patch, unsigned assets;
       # the steps below upload the final packages to the preflighted draft.
