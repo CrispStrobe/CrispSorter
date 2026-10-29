@@ -111,14 +111,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release download v0.13.0 --repo "$GITHUB_REPOSITORY" --pattern 'CrispSorter_0.13.0_ios-arm64.ipa'
-          echo '39d272a61ad68d3c676fc47ef0ebfcb8786e876200211bdc5f8b9a3baf83f14b  CrispSorter_0.13.0_ios-arm64.ipa' | shasum -a 256 -c -
-          unzip -q CrispSorter_0.13.0_ios-arm64.ipa -d "$RUNNER_TEMP/ipa"
+          gh release download v0.14.0 --repo "$GITHUB_REPOSITORY" --pattern 'CrispSorter_0.14.0_ios-arm64.ipa'
+          echo 'c38e04bdefd02e75c677fd974c8117ba37fcb0d1ae72585c2b0d8547e6ae3aec  CrispSorter_0.14.0_ios-arm64.ipa' | shasum -a 256 -c -
+          unzip -q CrispSorter_0.14.0_ios-arm64.ipa -d "$RUNNER_TEMP/ipa"
           APP=$(find "$RUNNER_TEMP/ipa/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)
           test -n "$APP" && test -f "$APP/embedded.mobileprovision"
           codesign --verify --deep --strict "$APP"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")" = 'com.crispstrobe.crispsorter'
-          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")" = '0.13.0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")" = '0.14.0'
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")
           echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
       - name: Upload to App Store Connect
@@ -134,13 +134,13 @@ jobs:
           printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           echo "UPLOADED_AFTER=$(date -u -v-1M +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
-          xcrun altool --upload-package CrispSorter_0.13.0_ios-arm64.ipa --type ios \
+          xcrun altool --upload-package CrispSorter_0.14.0_ios-arm64.ipa --type ios \
             --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
-            --bundle-version "$BUILD_NUMBER" --bundle-short-version-string 0.13.0 \
+            --bundle-version "$BUILD_NUMBER" --bundle-short-version-string 0.14.0 \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
       - name: Resume the already accepted upload
         if: inputs.platform == 'testflight_resume'
-        run: echo 'UPLOADED_AFTER=2026-10-29T06:34:11Z' >> "$GITHUB_ENV"
+        run: echo '::error::Set the 0.14.0 upload timestamp before resuming.'; exit 1
       - name: Install TestFlight API dependency
         run: python -m pip install 'cryptography==44.0.3'
       - name: Assign the uploaded build to internal TestFlight
