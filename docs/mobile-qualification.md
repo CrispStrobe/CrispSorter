@@ -46,3 +46,39 @@ and iOS security-scoped methods contain explicit stubs. Their presence does not
 establish persistent provider access. The active picker/filesystem integration
 must be checked on devices, including revoked permissions and app restart, before
 claiming persistent folder access or wiring file moves through those stubs.
+
+## Remaining native integration blockers
+
+The release recipes currently build Android and iOS without the `crispembed`
+Cargo feature. The CrispEmbed `-sys` build script used by the pinned runtime
+searches host build directories and links a dynamic library; its fallback CMake
+invocation does not configure a mobile toolchain. In particular, the pinned iOS
+release supplies a static archive, which that build script does not recognize
+or link. Mobile support needs target-specific link configuration, packaging,
+model provisioning, and on-device inference tests before the capability is
+advertised. The isolated desktop CPU OCR profile also relies on a helper
+process; it needs a mobile-safe equivalent or an explicitly different profile.
+
+The locked v0.17.12 `crispembed-android-arm64-v8a.tar.gz` contains only
+`libcrispembed.so`. ELF inspection shows it needs `libggml.so`,
+`libggml-cpu.so`, and `libggml-base.so`, which that archive does not contain.
+It cannot be used alone in an APK. A replacement build or complete matching
+release payload must provide the dependency closure. To stage a matching flat
+native library directory, set `CRISPEMBED_BUILD_DIR` and run
+`scripts/bundle_android_native_libs.sh --abi arm64-v8a --require-crispembed`.
+The script checks the ELF architecture and transitive non-system dependencies,
+and refuses conflicting same-named files from another runtime. These checks do
+not verify runtime provenance or prove that the app builds or runs: verify the
+native artifact and binding source against `scripts/crispembed-runtime-lock.json`
+separately, and qualify the resulting APK on a device.
+
+For document providers, the locked Tauri dialog plugin 2.7.1 explicitly returns
+`Folder picker is not implemented on mobile` for directory selection. Android's
+file picker uses `ACTION_GET_CONTENT`, not a persistent tree grant, and the active
+batch scan uses `std::fs` paths, not `content://` operations. A complete Android
+implementation needs a tree picker that retains the granted access, provider
+operations throughout scan/import/sort, and recovery when grants are revoked.
+iOS needs a directory picker, security-scoped bookmarks captured while access is
+valid and restored on launch, and coordinated file operations. These are not
+supplied by the unregistered `mobile_fs` module. Both implementations need
+restart, revocation, and provider-backed move tests on actual devices.
