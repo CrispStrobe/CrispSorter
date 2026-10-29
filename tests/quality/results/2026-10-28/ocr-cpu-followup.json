@@ -1,0 +1,157 @@
+{
+  "scope": "One-page resource/quality follow-up after the uncapped English Qwen case exceeded 1200 seconds and reached 15525 MB. Original panel continues unchanged; this is a separate arm, not a replacement result.",
+  "plan_sha256": "0b2fe2fa1333c95cae8a7d65ef27c7c4ac4392c7ff770b88d6d3febbc5596024",
+  "environment_overrides": {
+    "CRISPEMBED_MAX_PIXELS": "262144"
+  },
+  "upstream_source": "2acee0b1c920fa3d143f05c8d4022994d8b8c763",
+  "manifest_sha256": "0857bffc6f4a3616292db255d7f3f34c0b58a52a7286a2791cb00b77499c7700",
+  "scorer_sha256": "ac433da5ea391eeb1dd322b6e269f8efcda1ade3fb94d01f53bddbf0a0048c58",
+  "images": [
+    {
+      "id": "en-prose-constitution-13",
+      "sha256": "36c1b61692719239b011442ad4670655374d8c219b333b054fbcb05a46a38a86",
+      "ground_truth_sha256": "0f2941807f6d7cfd468f12f05418ecfbf9c0f7b5857612b8c8ea3ae3c479608e",
+      "expected_sha256": "36c1b61692719239b011442ad4670655374d8c219b333b054fbcb05a46a38a86",
+      "sha256_ok": true,
+      "image_license": {
+        "license": "Public domain",
+        "usage_terms": "Public domain",
+        "copyrighted": false,
+        "attribution": "Bagehot, Walter, 1826-1877; scan: archive.org"
+      },
+      "ground_truth_license": "CC BY-SA 4.0 (Wikisource contributors; transcription of a public-domain work, see the page history at the revision URL)",
+      "ground_truth_provenance": {
+        "kind": "Wikisource proofread transcription, status Validated (quality 4)",
+        "wiki": "en.wikisource.org",
+        "page": "Page:The English Constitution (1894).djvu/13",
+        "revision_id": 11964236,
+        "revision_timestamp": "2021-12-22T09:13:09Z",
+        "revision_url": "https://en.wikisource.org/w/index.php?oldid=11964236",
+        "derivation": "rendered page HTML -> text (tables row-major, cells space-joined; quality banner, hidden padding and de.wikisource navigation headings/metadata header removed)",
+        "manual_edits": [],
+        "scope": "full page incl. running head/page number"
+      },
+      "tags": [
+        "en",
+        "prose",
+        "clean"
+      ],
+      "primary_metric": "cer_nospace"
+    }
+  ],
+  "runs": [
+    {
+      "page": "en-prose-constitution-13",
+      "preset": "multilingual",
+      "max_tokens": 816,
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 94.02591175500015,
+      "peak_rss_mb": 5266.3671875,
+      "cer": 0.0075,
+      "cer_nospace": 0.0092,
+      "wer": 0.0058,
+      "word_recall": 0.9942,
+      "len_ratio": 1.0,
+      "prediction_sha256": "0e3c9906664a762827123d68752ef5041fc585a3956fd51afbb61db94318b507",
+      "config": {
+        "cleanup_enabled": true,
+        "denoise": false,
+        "det_model": null,
+        "dewarp": false,
+        "dewarp_engine": "basic",
+        "drop_headers_footers": true,
+        "enabled": true,
+        "layout": false,
+        "layout_engine": "rtdetr",
+        "layout_model": null,
+        "layout_threshold": 0.25,
+        "lid_model": null,
+        "min_chars": 8,
+        "min_confidence": 0.5,
+        "nafnet_model": null,
+        "punct_model": null,
+        "rec_model": null,
+        "restore": false,
+        "restore_engine": "restormer",
+        "restore_model": null,
+        "restore_task": "denoise",
+        "router": false,
+        "sr": false,
+        "sr_engine": "pan",
+        "sr_max_short_side": 1200,
+        "sr_model": null,
+        "stages": [
+          {
+            "cleanup": {
+              "auto_crop": false,
+              "binarize": false,
+              "binarize_method": 0,
+              "blackfilter": false,
+              "border_threshold": 0.15000000596046448,
+              "crop_borders": true,
+              "denoise": false,
+              "deskew": true,
+              "deskew_max_angle": 15.0,
+              "despeckle": false,
+              "enabled": true,
+              "morph_kernel": 51,
+              "page_split": false,
+              "sauvola_k": 0.20000000298023224,
+              "sauvola_window": 25,
+              "whiten_background": true
+            },
+            "det_box_threshold": 0.5,
+            "det_model": "qwen2vl-3b",
+            "det_prob_threshold": 0.30000001192092896,
+            "det_target_short": 736,
+            "engine": "qwen2vl",
+            "min_chars": 8,
+            "min_confidence": 0.5,
+            "rec_model": null,
+            "source_type": "auto",
+            "vlm_max_tokens": 816,
+            "vlm_prompt": ""
+          }
+        ],
+        "tess_model_dir": null,
+        "truecase_model": null,
+        "vlm_ocr_engine": "qwen2vl",
+        "vlm_ocr_model": null
+      },
+      "generation_cap": "Pipeline binding does not expose the decoded token count; timeout and length ratio are recorded separately",
+      "confidence_count": 209
+    }
+  ],
+  "completed": true,
+  "protocol": "Fresh process/context per case; initial model downloads excluded. Original preset recipe except the preregistered per-page VLM output cap. No model sees the reference text.",
+  "decision_rule": "Report completion/failure, memory, time and all original quality metrics. No app/default change or general performance claim from this one-page follow-up.",
+  "cpu_count": 4,
+  "cpu_model": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+  "mem_total_gb": 31.346603393554688,
+  "models": [
+    {
+      "bytes": 12960448,
+      "registry_name": "dbnet-det",
+      "sha256": "163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2"
+    },
+    {
+      "bytes": 67508320,
+      "registry_name": "trocr-printed",
+      "sha256": "1aa4cdf3413539d7dbd53a565149abe4ca878f84a7ae2129e9a297f3a26b50d4"
+    },
+    {
+      "bytes": 2742343200,
+      "registry_name": "qwen2vl-3b",
+      "sha256": "4cc16e226005a2d7ecce7749d5a876704a499ca301428167f5ceb3b75b967312"
+    }
+  ],
+  "warmup": {
+    "exit_code": 0,
+    "timed_out": false,
+    "wall_seconds": 768.1770899620001,
+    "peak_rss_mb": 28.375
+  },
+  "all_cases_executed_successfully": true
+}

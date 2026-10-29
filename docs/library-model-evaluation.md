@@ -127,6 +127,53 @@ on the table and receipt, and difficult-page cleanup on degraded print. Only the
 per-page VLM token cap differs from the UI preset, using the shared manifest's
 budget for comparability. Each case uses a fresh process/context, excludes initial
 model downloads, and records failures instead of dropping them from the panel.
-This comparison is pending; the single-line wiring result above does not stand
-in for it. Images/transcripts remain on the worker; only derived metrics, hashes
-and source/license attribution will be retained in this repository.
+The original comparison completed all 15 planned cases: 11 returned text and
+four reached the 1,200-second limit. Every failure remains in
+[`ocr-real-original.json`](../tests/quality/results/2026-10-28/ocr-real-original.json),
+with source/model/input hashes and attribution. No accuracy score is assigned to
+a timeout. Full predictions/logs remain in the private worker output; this
+repository retains derived measurements and their hashes.
+
+| Page | Quick CER without spaces | Quick CPU seconds | Qwen multilingual CER without spaces | Qwen CPU seconds |
+| --- | ---: | ---: | ---: | ---: |
+| English prose | 0.9581 | 177 | Timeout | >1,200 |
+| German Antiqua | 0.9248 | 218 | Timeout | >1,200 |
+| German Fraktur | 0.9548 | 158 | 0.0302 | 1,106 |
+| English table | 0.9266 | 505 | Timeout | >1,200 |
+| Degraded German print | 0.9657 | 91 | 0.0466 | 518 |
+
+Quick produced almost entirely uppercase text on the English page, which is a
+real case-preservation failure and explains much of its high case-sensitive CER.
+Its case-insensitive word error on that page was still 0.1977. Its Fraktur and
+degraded-print word errors were 0.9128 and 0.9367 respectively; it is unsuitable
+for those pages. On the receipt's partial reference, the primary word recall was
+0.7193 for Quick, 0.5088 for multilingual Qwen and 0.6316 for the table prompt.
+The table prompt also timed out on the full table. Difficult-page cleanup gave
+the same 0.0466 CER without spaces as ordinary Qwen on the degraded page; this
+case shows no measured cleanup advantage.
+
+Quick took 52–505 seconds and 1,310–5,039 MiB peak RSS. Qwen used up to 15,525 MiB;
+the two clean prose timeouts used 15,525 and 14,542 MiB. Model file size is not
+runtime RAM use. These measurements support explicit task choices, region retries
+and review, rather than promoting a heavyweight full-page default. Character
+and word metrics do not establish correct table-cell structure. Comparisons to
+the retained newer-engine results share the frozen images/references/scorer;
+different workers and harnesses prevent a controlled latency comparison.
+
+## Separate native CPU pixel-budget profile
+
+The released runtime already supports `CRISPEMBED_MAX_PIXELS` before process
+startup. After the original English Qwen timeout, a separately frozen follow-up
+set it to 262,144 pixels while retaining the original image/reference/model
+hashes, prompt, scorer and 816-token output cap. It completed in 94.03 seconds
+at 5,266 MiB peak RSS, with CER 0.0075, CER without spaces 0.0092 and word recall
+0.9942. It uses the same production OCR code and released native archive; no
+application runtime or default changed.
+
+This first result is exploratory and limited to one English page. The separately
+preregistered remaining five-page confirmation is running, including every
+original Qwen preset assignment. It retains the first result separately rather
+than rerunning or replacing unfavorable original outcomes. Do not infer a
+universal memory bound or recognition guarantee from this one page. Plan,
+measurements and source provenance are in `ocr-cpu-followup.json`,
+`ocr-cpu-followup-provenance.json` and `tests/quality/ocr-cpu-confirmation.json`.

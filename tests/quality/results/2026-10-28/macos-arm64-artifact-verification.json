@@ -1,0 +1,26 @@
+{
+  "checked_at_utc": "2026-10-29T05:38:58.640715+00:00",
+  "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+  "github_job": 123155730263,
+  "native_regressions_passed": 1495,
+  "qualification": "Native worker executed final extracted package version/doctor and image-only PDF OCR with sibling libraries hidden. Local download byte hashes match CI receipt and GitHub digest; archive architecture inspected without running foreign binaries.",
+  "artifacts": [
+    {
+      "filename": "CrispSorter_0.13.0_aarch64.dmg",
+      "bytes": 157457974,
+      "sha256": "a71648a76b554fd2d2341f40be1348386d38cffbf88ba4cebd07744ee0364f2f",
+      "github_digest_matches": true
+    },
+    {
+      "filename": "CrispSorter_aarch64.app.tar.gz",
+      "bytes": 142333465,
+      "sha256": "e993e5ad0c5af707d3c5d5bb37e39fe492236438ab5ac6f96d0304ab23c41999",
+      "github_digest_matches": true,
+      "architecture": "arm64",
+      "version": "0.13.0",
+      "bundle_id": "com.crispstrobe.crispsorter",
+      "executable": "CrispSorter.app/Contents/MacOS/crispsorter"
+    }
+  ],
+  "job_log_sha256": "d955b4519456f4837cba9683da4ad9e1d309c2cfb7a823882c3120351254331b"
+}

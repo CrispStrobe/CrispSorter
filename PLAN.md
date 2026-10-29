@@ -11,7 +11,7 @@ missing. Branch: `feat/library-workflows-20261028`.
   result-limit-aware cache, consistent fallback ranks; meaningful regressions.
 - [x] Cited chat: selected-document and library retrieval, token-budgeted evidence,
   clickable source navigation, honest missing-evidence behavior.
-- [ ] Runtime: qualify immutable CrispEmbed 0.17.12 bindings/assets; report actual
+- [x] Runtime: qualify immutable CrispEmbed 0.17.12 bindings/assets; report actual
   runtime identity and keep unsupported experimental engines unavailable.
 - [ ] OCR: task presets, selective weak-page/region reprocessing, engine comparison
   on a frozen representative corpus; retain published and experimental distinctions.
@@ -25,6 +25,16 @@ missing. Branch: `feat/library-workflows-20261028`.
   presets and actionable incomplete-work indicators, preserved advanced controls.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
+
+Current gates (29 October): all five platform artifacts exist and their
+downloaded bytes match their final receipts. Native release suites passed
+1,490 Linux / 1,484 Windows / 1,495 macOS tests. Each desktop package executed
+version/doctor and scanned-PDF OCR with sibling libraries hidden. iOS signature
+and profile checks passed on Apple CI; a separate Android development-signed APK
+passes v2/v3 verification. Mobile device execution was not performed. The original
+15-case OCR panel is complete, including four declared timeouts; the separately
+frozen CPU pixel-budget confirmation and final combined release manifest remain
+open. Do not close the programme before these last items finish.
 
 Checkpoint (02:06 UTC, 29 October): all eight implementation areas are on the branch.
 Frontend qualification is complete: 75 unit tests, zero Svelte errors

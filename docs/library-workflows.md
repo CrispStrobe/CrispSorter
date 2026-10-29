@@ -53,6 +53,14 @@ for Quick and 88–90 seconds for the other tasks on a single-line synthetic
 image, excluding downloads. These are not full-page scan estimates; see the
 [qualification scope and model hashes](library-model-evaluation.md#released-ocr-task-wiring).
 
+The separate real-page comparison took 52–505 CPU seconds for Quick and up to
+1,200 seconds for Qwen, with four Qwen timeouts. Peak RAM reached about 5 GiB
+for Quick and 15 GiB for Qwen. Quick lost letter case and performed poorly on
+historical German print; the table prompt did not outperform Quick on the
+receipt's partial reference. Review recognized text and table structure. A
+separate pixel-budget profile is being confirmed; see the
+[complete measurements and limits](library-model-evaluation.md#preregistered-released-engine-real-scan-comparison).
+
 Retry weak pages skips proofread pages and manually corrected text. Focus a text
 region to retry its crop. A crop with no recognized text retains the previous
 result; Undo OCR restores earlier page results, including edits. Changes to a task
@@ -126,3 +134,8 @@ Public releases require `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
 `scripts/sign_android_apk.py` signs the existing aligned APK and emits a separate
 input/output hash and certificate receipt without rebuilding the app. See
 [Android's signing tool reference](https://developer.android.com/tools/apksigner).
+
+The qualified desktop packages include the pinned native CrispEmbed runtime.
+The Android and iOS packages are mobile client builds without that native
+runtime; native OCR presets require a binary reporting that capability. Their
+signature/archive checks are separate from physical-device execution.

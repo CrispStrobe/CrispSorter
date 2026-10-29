@@ -1,0 +1,154 @@
+{
+  "report": {
+    "scope": "Verbatim production OCR functions/configuration and native bindings, not a full application build",
+    "harness_source": "391fd0d844fa7659838f2cce0c74b4c4bb4f9d5d",
+    "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "completed": true,
+    "checks": [
+      {
+        "name": "apt-update",
+        "exit_code": 0,
+        "elapsed_seconds": 10.005357181000022
+      },
+      {
+        "name": "toolchain",
+        "exit_code": 0,
+        "elapsed_seconds": 40.002213762
+      },
+      {
+        "name": "rust",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001666333999992
+      },
+      {
+        "name": "clone-CrispSorter",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001368204000016
+      },
+      {
+        "name": "checkout-CrispSorter",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001140608000014
+      },
+      {
+        "name": "clone-CrispEmbed",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001202304000003
+      },
+      {
+        "name": "checkout-CrispEmbed",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001204464000011
+      },
+      {
+        "name": "clone-CrispASR",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001108316
+      },
+      {
+        "name": "checkout-CrispASR",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001362673000017
+      },
+      {
+        "name": "source-equivalence",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00127756500001
+      },
+      {
+        "name": "verify-runtime",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001154988999986
+      },
+      {
+        "name": "extract-runtime",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00142807100002
+      },
+      {
+        "name": "source-probe",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001493130000028
+      },
+      {
+        "name": "lock",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001314405000016
+      },
+      {
+        "name": "model-free",
+        "exit_code": 0,
+        "elapsed_seconds": 20.00214674199998
+      },
+      {
+        "name": "panel-uv",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00104386199996
+      },
+      {
+        "name": "panel-python",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001495497999997
+      },
+      {
+        "name": "panel-deps",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001890319999973
+      },
+      {
+        "name": "panel-build",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001766965000002
+      },
+      {
+        "name": "real-panel",
+        "exit_code": 0,
+        "elapsed_seconds": 870.064048574
+      }
+    ],
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "build_jobs": 2,
+    "probe_lock_sha256": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+    "qualification_scope": "Frozen real-scan OCR comparison; see real-panel/result.json for individual failures and scores"
+  },
+  "dispatch": {
+    "harness_source": "391fd0d844fa7659838f2cce0c74b4c4bb4f9d5d",
+    "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "code_sha256": "f35f821df9aed906ff2493584b0062e0f95bfa3d969ca339130a4835f54f3c67",
+    "plan_sha256": "0b2fe2fa1333c95cae8a7d65ef27c7c4ac4392c7ff770b88d6d3febbc5596024"
+  },
+  "raw_result_sha256": "27c46736980042cfdede023a4ec931e519c7bb1d308c63ee930a479a08e7ce30",
+  "source_fragments": {
+    "scope": "Exact production OCR functions, configuration and live test; excludes unrelated application modules",
+    "fragments_sha256": {
+      "configuration_types_and_defaults": "1b7d762f006b891fa4dad61941ee8c7dd009ca6e81ca88c7773ecd310386a57f",
+      "vlm_engine_id": "0bd74d9e3d4d93d2a3ce7189e03f1a0822ce489b245b0029b948b13d774d539e",
+      "vlm_default_model": "347a5d395ac9117233916c811d30d3fec230e336b056fcb20a60fd795c8af116",
+      "resolve": "b892c676e727071a9d034cdcf4edd705ff4d9c4e5e08e2cbc3bc92c3cf660d19",
+      "build_pipeline": "e8e4ffab630882805304bb235ca47ff2f850d321aa254662ace8b7fd7680ab64",
+      "cached_pipeline": "e2b58e86e901785ec418acb97fd60c3400ee4f49a2b9bfd837c91fbc7eaab4be",
+      "effective_confidence": "4dedf03c8711d4d0c9ba95432c432f9ccab3e7f503e339fc0f64422691dee0b0",
+      "ocr_regions_detailed": "340d84c34b8e2314343d943614369724d78d42d3e57badd1f94c859645b7820f",
+      "RegionConf": "5d485dbb6ba927694fcddd3c228914e81098727b9a6ecbfab864bfee5ea9a1c9",
+      "DEFAULT_DET_MODEL": "22406965e58fba1845522b2ba614ca86395545be6524b21bdb2433d93c307675",
+      "DEFAULT_REC_MODEL": "f3ae01a8499f3d7bee85aa3f3edfa22586dae6b47b52d320cb605ddd933aeea5",
+      "NAFNET_MODEL": "9827397eeab48f1ac055eeeace4bc648dbd89a1b07fc9eefe51f74627cf6cf06",
+      "OCR_ORCH": "3fd381c2684bdf5281f7349ef2e6d8eda8e98d8aaeebd6d5f935063de7edbbef",
+      "live_test": "0b4f79abf6f06af660cc892dc9c42f6f9da9531131b62055cc379ddaa5312eda",
+      "context_cache": "1cd23936e99e4d325f132112462c6703009eb442ecc1bad40a5a81799f2242ea",
+      "ocr_presets": "558e700f75972f73b91a6e114b03eb8231e395fb0bfc1e202496364722e0dcc2"
+    }
+  },
+  "raw_files_sha256": {
+    "source-fragments.json": "b199634e5bd03445416760387bb98e478d715298c3b591ec56f7e882aab472bd",
+    "probe.Cargo.lock": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+    "probe.log": "ec5a92092ec9cbe834290ee04ea9990a049ec0155a406073d69083125122f631",
+    "report.json": "c9beb3d2fafab4d608f846ebbf7ac7645697ce4ef540c0bdbaf309df03755aa4",
+    "real-panel/models.log": "52fcd3cb9b063680a00b54e24c3e84a80d5399e62f7ce6eb842c893fcbc63196",
+    "real-panel/models.json": "c81c732dca5b71450a0080701ffa96975eb999de423d98135aba5560b7bf9bce",
+    "real-panel/en-prose-constitution-13-multilingual.json": "34a7678897cafeb40c58f816e644d207cd876a2bdfffff0052617c4343b8e458",
+    "real-panel/result.json": "27c46736980042cfdede023a4ec931e519c7bb1d308c63ee930a479a08e7ce30",
+    "real-panel/en-prose-constitution-13-multilingual.log": "0da1ea27bc1f532bf154ff48c337d3b60db2159ad98a6fd771c7f8e7fc2be7c6"
+  },
+  "scope": "All frozen input/reference/model hashes checked before inference. Derived metrics and attribution retained; full predictions/logs stay in the private worker output. Model-free source probe, not a full app build; actual desktop package checks are separate."
+}
