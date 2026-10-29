@@ -83,6 +83,29 @@ def verify_mac_dmg(artifact):
             subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
 
 
+def check_ocr_worker(command, destination, env):
+    """Exercise the packaged worker entry point without initializing OCR models."""
+    worker_flag = '--crispsorter-ocr-worker'
+    missing = subprocess.run([*command, worker_flag], cwd=destination, env=env,
+                             stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=20)
+    if missing.returncode != 1 or 'OCR worker requires request and response paths' not in missing.stderr:
+        raise ValueError('Packaged OCR worker did not reject missing paths: '
+                         + missing.stderr[-4000:] + missing.stdout[-4000:])
+    with tempfile.TemporaryDirectory(prefix='ocr-worker-smoke-', dir=destination) as work:
+        request = Path(work) / 'invalid-request.json'
+        response = Path(work) / 'response.json'
+        request.write_text('not json', encoding='utf-8')
+        invalid = subprocess.run([*command, worker_flag, str(request), str(response)],
+                                 cwd=destination, env=env, stdin=subprocess.DEVNULL,
+                                 text=True, capture_output=True, timeout=20)
+        if invalid.returncode != 1 or 'parse OCR worker request' not in invalid.stderr or response.exists():
+            raise ValueError('Packaged OCR worker did not reject malformed input without a response: '
+                             + invalid.stderr[-4000:] + invalid.stdout[-4000:])
+    return {'arguments': [worker_flag],
+            'result': 'missing paths and malformed request rejected before model initialization',
+            'exit_codes': [missing.returncode, invalid.returncode]}
+
+
 def inspect_package(platform, artifact, destination):
     mac_cdhash = None
     if artifact.suffix == '.deb':
@@ -151,6 +174,9 @@ def inspect_package(platform, artifact, destination):
         result = subprocess.run([*launcher, *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=90, check=True)
         payload = json.loads(result.stdout)
         checks.append({'arguments': arguments, 'result': payload, 'stderr': result.stderr[-4000:]})
+    # The worker launches current_exe(), so test the packaged executable
+    # directly rather than the Linux interpreter wrapper used for CLI smokes.
+    checks.append(check_ocr_worker([str(executable)], destination, env))
     # Use the real executable for the OCR probe: invoking ld.so explicitly
     # changes current_exe(), which would invalidate resource-dir discovery.
     fixture = Path(__file__).resolve().parents[1] / 'tests/quality/ocr-task.pdf'
