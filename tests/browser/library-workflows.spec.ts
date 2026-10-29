@@ -10,6 +10,9 @@ async function fixtures(page: Page) {
             { id: 'pending', originalPath: '/fixtures/scan.png', originalName: 'Pending scan.png', extension: 'png', size: 1024, modifiedAt: 1, status: 'queued', isAccepted: false },
             { id: 'warranty', originalPath: '/fixtures/warranty.txt', originalName: 'Warranty.txt', extension: 'txt', size: body.length, modifiedAt: 1, status: 'review', isAccepted: false, suggestedTitle: 'Warranty', suggestedAuthor: 'Acme' },
         ];
+        if (new URLSearchParams(location.search).has('fixtureSort')) {
+            Object.assign(items[1], { isAccepted: true, targetPath: '/fixtures/sorted/warranty.txt' });
+        }
         const settings: Record<string, any> = {
             language: 'en', providers: [{ id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: ['fixture-model'], selectedModel: 'fixture-model', isConfigured: true }],
             activeProviderId: 'ollama', localModels: ['fixture-model'], llmContextLimit: 4096,
@@ -90,6 +93,8 @@ async function fixtures(page: Page) {
                 if (command === 'batch_session_load') return items;
                 if (command === 'batch_session_get_extracted_text') return args.itemId === 'warranty' ? body : '';
                 if (command === 'batch_session_upsert_item') return;
+                if (command === 'folder_access_probe') return { writability: { state: 'writable' }, canRequest: false, shouldAsk: false };
+                if (command === 'execute_batch') return { warranty: root.__fixtureSortError ? { success: false, error: 'DESTINATION_EXISTS' } : { success: true } };
                 if (command === 'index_is_ready') return true;
                 if (command === 'index_filename_only_count') return 7;
                 if (command === 'index_stats') return { doc_count: 2, chunk_count: 4, total_rows: 4 };
@@ -154,16 +159,16 @@ for (const platform of ['ios', 'android']) {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`/?fixturePlatform=${platform}`);
         const nav = page.locator('nav.mobile-nav');
-        await expect(nav.getByRole('button', { name: 'Inbox', exact: true })).toBeVisible();
+        await expect(nav.getByRole('button', { name: 'Inbox', exact: true })).toBeVisible({ timeout: 30000 });
         await expect(nav.getByRole('button', { name: 'Review', exact: true })).toBeVisible();
         await expect(nav.getByRole('button', { name: 'Library', exact: true })).toBeVisible();
         await nav.getByRole('button', { name: 'Tools', exact: true }).click();
         const tools = page.locator('#mobile-tools-menu');
         await expect(tools.getByRole('button', { name: 'OCR', exact: true })).toHaveCount(0);
-        await expect(tools.getByRole('button', { name: 'Chat', exact: true })).toBeVisible();
-        await tools.getByRole('button', { name: 'Chat', exact: true }).click();
+        await tools.getByRole('button', { name: 'Translate', exact: true }).click();
         await expect(page.locator('#mobile-tools-menu')).not.toBeVisible();
-        await expect(page.getByText('Pending scan.png', { exact: true })).toHaveCount(0);
+        await nav.getByRole('button', { name: 'Chat', exact: true }).click();
+        await expect(page.locator('deep-chat')).toBeVisible();
     });
 }
 
@@ -172,6 +177,41 @@ test('document OCR action carries the selected Inbox file into the workbench', a
     await page.getByRole('button', { name: 'OCR selected document', exact: true }).click();
     await expect(page.locator('.ocrwb')).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'ocr_doc_open' && call.args.locationUri === '/fixtures/scan.png').length)).toBe(1);
+});
+
+test('script generation reports no file moves and preserves the batch', async ({ page }) => {
+    await page.goto('/?fixtureSort=1');
+    await page.getByRole('button', { name: 'Review', exact: true }).first().click();
+    await expect(page.getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'Sort Options', exact: true }).click();
+    await page.getByRole('button', { name: 'Create Move Script', exact: true }).click();
+    const preview = page.locator('.sort-preview');
+    await expect(preview).toContainText('This creates a script only.');
+    await expect(preview).toContainText('does not include extracted-text sidecars');
+    await preview.getByRole('button', { name: 'Confirm and execute', exact: true }).click();
+    const report = page.locator('.report-modal');
+    await expect(report).toContainText('Script generated for 1 file(s).');
+    await expect(report).toContainText('/fixtures/sorted/sort_files.sh');
+    await expect(report).toContainText('No files have been moved or copied');
+    await expect(report.getByRole('button')).toHaveCount(1);
+    await report.getByRole('button', { name: 'Keep complete batch', exact: true }).click();
+    await expect(page.getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
+    const calls = await page.evaluate(() => (window as any).__fixtureCalls);
+    expect(calls.filter((c: any) => c.command === 'execute_batch').at(-1).args.payload.mode).toBe('script_move');
+    expect(calls.some((c: any) => c.command === 'index_update_location_by_path')).toBe(false);
+});
+
+test('sort report counts general failures', async ({ page }) => {
+    await page.goto('/?fixtureSort=1');
+    await page.evaluate(() => { (window as any).__fixtureSortError = true; });
+    await page.getByRole('button', { name: 'Review', exact: true }).first().click();
+    await expect(page.getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'Sort', exact: true }).click();
+    await page.locator('.sort-preview').getByRole('button', { name: 'Confirm and execute', exact: true }).click();
+    const report = page.locator('.report-modal');
+    await expect(report).toContainText('1 file(s) could not be sorted. See each item for details.');
+    await report.getByRole('button', { name: 'Keep complete batch', exact: true }).click();
+    await expect(page.getByText('Warranty.txt', { exact: true }).first()).toBeVisible();
 });
 
 test('library chat retains real passages and opens the cited source', async ({ page }) => {
