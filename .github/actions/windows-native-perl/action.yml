@@ -1,0 +1,18 @@
+name: Native Windows Perl
+description: Select a complete native Perl for vendored OpenSSL, including Git Bash steps.
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $perl = 'C:\Strawberry\perl\bin\perl.exe'
+        if (-not (Test-Path $perl)) {
+          choco install strawberryperl -y --no-progress
+          if ($LASTEXITCODE -notin @(0, 3010)) { throw 'Strawberry Perl installation failed' }
+        }
+        if (-not (Test-Path $perl)) { throw 'Native Strawberry Perl is missing' }
+        & $perl -MIPC::Cmd -MLocale::Maketext::Simple -e 'die "native Windows Perl required\n" unless $^O eq "MSWin32"; print "$^V\n";'
+        if ($LASTEXITCODE -ne 0) { throw 'Native Perl is missing required OpenSSL modules' }
+        "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        (Split-Path $perl) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

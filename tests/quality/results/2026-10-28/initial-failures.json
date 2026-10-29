@@ -50,5 +50,14 @@
       "8 browser scenarios"
     ],
     "cause": "Two new assertions used the wrong IPC shape or selector: CSV writes carry UTF-8 bytes, and the implicit select label was not located by exact getByLabel. Corrected byte decoding and accessible combobox role; all ten browser scenarios passed in frontend-4."
+  },
+  {
+    "run": "release-40784963290-windows",
+    "job": 123155730201,
+    "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "failure": "Vendored openssl-sys selected Git MSYS Perl, which lacked Locale::Maketext::Simple. Native regression executable was not reached.",
+    "log_sha256": "722377331179bf8936e59ea339613eee21ba9da5f182e89169d2064b82411dc8",
+    "fix": "Use native Strawberry Perl explicitly through OPENSSL_SRC_PERL; validate platform and required modules before Cargo. Retry only Windows using shared matrix metadata and steps.",
+    "workflow_validation": "actionlint 1.7.12 passed; native Windows result still pending"
   }
 ]

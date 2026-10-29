@@ -417,6 +417,9 @@ jobs:
         with:
           path: repos/CrispSorter
 
+      - name: Configure native Windows Perl for vendored OpenSSL
+        uses: ./repos/CrispSorter/.github/actions/windows-native-perl
+
       # All three siblings are needed even though this job enables none of
       # their features: `crisp-docx-{core,llm}` are unconditional path deps,
       # and cargo resolves optional path deps too, so the directories have to

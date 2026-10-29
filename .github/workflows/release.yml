@@ -14,6 +14,11 @@ on:
         description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
         default: false
+      platform:
+        description: 'Build all platforms, or retry only Windows without restarting other platform builds. Windows-only never publishes.'
+        type: choice
+        options: [all, windows]
+        default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
 # Bumping CRISPEMBED_REF / CRISPASR_REF / CRISPDOCX_REF here updates
@@ -41,7 +46,7 @@ env:
 jobs:
   release-required:
     # Skip the heavy desktop matrix on a macOS-App-Store-only dispatch.
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.mac_appstore }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform != 'windows') }}
     permissions:
       contents: write
     strategy:
@@ -92,7 +97,8 @@ jobs:
             # shared lib inside the tarball.
             pdfium_asset: pdfium-mac-arm64.tgz
             pdfium_lib_glob: 'lib/libpdfium.dylib'
-          - platform: windows-2025
+          - &windows_release
+            platform: windows-2025
             qualification_platform: windows-x86_64
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
@@ -129,12 +135,12 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
 
-    env:
+    env: &desktop_release_env
       CXXFLAGS: ${{ matrix.platform == 'windows-2025' && '/D_USE_MATH_DEFINES' || '' }}
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
-    steps:
+    steps: &desktop_release_steps
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -335,6 +341,10 @@ jobs:
         run: |
           choco install protoc -y
 
+      - name: Configure native Windows Perl for vendored OpenSSL
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/windows-native-perl
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -345,6 +355,7 @@ jobs:
         with:
           workspaces: '. -> target'
           cache-on-failure: 'true'
+          shared-key: release-required
           key: ${{ matrix.rust_target }}
 
       - name: Install frontend dependencies
@@ -756,8 +767,20 @@ jobs:
   # ── Android aarch64 APK ───────────────────────────────────────────────────
   # Separate job because `tauri android build` uses a different flow from
   # tauri-action. Runs on ubuntu with JDK 17 + Android SDK/NDK.
+  release-windows:
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'windows' }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - *windows_release
+    runs-on: ${{ matrix.platform }}
+    env: *desktop_release_env
+    steps: *desktop_release_steps
+
   release-android:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.mac_appstore }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform != 'windows') }}
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -895,7 +918,7 @@ jobs:
   # are set, archives + exports a signed IPA suitable for App Store /
   # TestFlight upload. Otherwise falls back to an unsigned .app.
   release-ios:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.mac_appstore }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform != 'windows') }}
     permissions:
       contents: write
     # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
