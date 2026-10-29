@@ -24,7 +24,7 @@ pub fn execute(request: &Path, response: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios", feature = "desktop-mas")))]
+#[cfg(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas"))))]
 pub fn run_cpu_budget(path: &Path, config: &OcrPipelineConfig) -> Result<Vec<RegionConf>> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -52,14 +52,20 @@ pub fn run_cpu_budget(path: &Path, config: &OcrPipelineConfig) -> Result<Vec<Reg
     })
 }
 
-#[cfg(any(target_os = "android", target_os = "ios", feature = "desktop-mas"))]
+#[cfg(not(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas")))))]
 pub fn run_cpu_budget(_path: &Path, _config: &OcrPipelineConfig) -> Result<Vec<RegionConf>> {
-    anyhow::bail!("The isolated CPU OCR profile is available on desktop builds")
+    anyhow::bail!("The isolated CPU OCR profile requires a desktop build with sidecars enabled")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas")))))]
+    #[test]
+    fn cpu_budget_is_unavailable_without_a_spawn_capable_build() {
+        let error = run_cpu_budget(Path::new("unused"), &OcrPipelineConfig::default()).unwrap_err();
+        assert!(error.to_string().contains("sidecars enabled"));
+    }
     #[test]
     fn worker_rejects_malformed_requests_before_starting_a_model() {
         let request = tempfile::NamedTempFile::new().unwrap();

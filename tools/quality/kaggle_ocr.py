@@ -122,6 +122,10 @@ try:
         run('model-free', ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--lib'], cwd=app, env=env)
     env.update(CRISPSORTER_OCR_RECEIPT=str(output / 'ocr.json'), QWEN2VL_OCR_FORCE_CPU='1', MATH_OCR_FORCE_CPU='1')
     if WORKER:
+        with kh.build_heartbeat('CrispSorter OCR sandbox feature gates'):
+            for features in ['crispembed', 'crispembed,sidecars,desktop-mas']:
+                run('worker-sandbox-' + features, ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--no-default-features', '--features', features, '--lib', 'cpu_budget_is_unavailable_without_a_spawn_capable_build'], cwd=app, env=env)
+            run('worker-protocol', ['cargo', 'run', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--bin', 'ocr-worker-probe'], cwd=app, env=env)
         env['CRISPSORTER_PROBE_REAL'] = '1'
         with kh.build_heartbeat('CrispSorter isolated CPU OCR worker'):
             run('worker-live', ['cargo', 'run', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--bin', 'ocr-worker-probe'], cwd=app, env=env, timeout=1800)

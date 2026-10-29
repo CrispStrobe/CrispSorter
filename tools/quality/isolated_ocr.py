@@ -79,8 +79,9 @@ edition = "2021"
 path = "lib.rs"
 [workspace]
 [features]
-default = ["crispembed"]
+default = ["crispembed", "sidecars"]
 crispembed = []
+sidecars = []
 desktop-mas = []
 [dependencies]
 ''' + '\n'.join(dependencies) + '\n'
