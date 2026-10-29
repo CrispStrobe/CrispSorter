@@ -17,7 +17,7 @@ on:
       platform:
         description: 'Build all platforms, or retry one desktop platform without restarting the others. Single-platform retries never publish.'
         type: choice
-        options: [all, windows, macos]
+        options: [all, windows, macos, testflight]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -44,6 +44,56 @@ env:
   APPLE_API_ISSUER_ID: 5f618ba3-98ef-42ad-835c-fbbef6c76cf5
 
 jobs:
+  testflight-existing:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'testflight' && !inputs.publish && !inputs.mac_appstore }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download and verify the qualified IPA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download v0.13.0 --repo "$GITHUB_REPOSITORY" --pattern 'CrispSorter_0.13.0_ios-arm64.ipa'
+          echo '39d272a61ad68d3c676fc47ef0ebfcb8786e876200211bdc5f8b9a3baf83f14b  CrispSorter_0.13.0_ios-arm64.ipa' | shasum -a 256 -c -
+          unzip -q CrispSorter_0.13.0_ios-arm64.ipa -d "$RUNNER_TEMP/ipa"
+          APP=$(find "$RUNNER_TEMP/ipa/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)
+          test -n "$APP" && test -f "$APP/embedded.mobileprovision"
+          codesign --verify --deep --strict "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")" = 'com.crispstrobe.crispsorter'
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")" = '0.13.0'
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")
+          echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          echo "UPLOADED_AFTER=$(date -u -v-1M +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+          xcrun altool --upload-package CrispSorter_0.13.0_ios-arm64.ipa --type ios \
+            --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
+            --bundle-version "$BUILD_NUMBER" --bundle-short-version-string 0.13.0 \
+            --api-key "$ASC_KEY_ID" --api-issuer "$ASC_ISSUER_ID"
+      - name: Assign the uploaded build to internal TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          ASC_USES_NON_EXEMPT_ENCRYPTION: 'false'
+        run: |
+          python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
+
   release-required:
     # Skip the heavy desktop matrix on a macOS-App-Store-only dispatch.
     if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
