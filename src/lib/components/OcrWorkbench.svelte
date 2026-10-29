@@ -28,7 +28,8 @@
     let preset = $state('custom');
     let cpuPixelBudget = $state(false);
     const supportsCpuBudget = $derived($caps.desktop && $caps.sidecars && $caps.ocr_tiers.includes('crispembed') && ['multilingual', 'tables', 'difficult'].includes(preset));
-    let candidate = $state<{ pageIndex: number; index: number; page: PageOcr; replacements: Region[] } | null>(null);
+    // Preserve the page object's identity for the stale-result guard.
+    let candidate = $state.raw<{ pageIndex: number; index: number; page: PageOcr; replacements: Region[] } | null>(null);
     let undoPages = $state<{ index: number; page: PageOcr }[]>([]);
     const weakPageIndices = $derived(weakPages(ocr, threshold));
     // Save options
