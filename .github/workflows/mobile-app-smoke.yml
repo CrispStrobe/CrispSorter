@@ -1,110 +1,68 @@
-name: Mobile app simulator smoke
+name: Qualify source-pinned mobile CrispEmbed builds
 
+# Builds and links native runtime test programs. No binaries are uploaded,
+# and this workflow does not establish app, simulator, or OCR qualification.
 on:
-  push:
-    branches: ['mobile-app-smoke-*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  android-release:
-    if: github.ref == 'refs/heads/mobile-app-smoke-20261029'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: android-arm64
+          - runner: macos-15
+            target: ios-arm64
+          - runner: macos-15
+            target: ios-sim-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: android-actions/setup-android@v3
         with:
-          packages: 'platform-tools build-tools;36.0.0'
-      - name: Download existing release APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download v0.14.0 --pattern 'CrispSorter_0.14.0_android-aarch64.apk' --dir "$RUNNER_TEMP"
-      - name: Enable emulator acceleration
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Launch the release APK if this image supports its ABI
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          arch: x86_64
-          target: google_apis_playstore
-          disable-animations: true
-          script: python3 scripts/mobile_simulator_smoke.py --platform android --target emulator-5554 --artifact "$RUNNER_TEMP/CrispSorter_0.14.0_android-aarch64.apk" --output "$RUNNER_TEMP/android-smoke"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: android-app-smoke
-          path: ${{ runner.temp }}/android-smoke/
-          if-no-files-found: warn
-
-  ios-simulator:
-    runs-on: macos-15
-    timeout-minutes: 120
-    env:
-      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
-      CARGO_BUILD_JOBS: '2'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          ref: 6d99dc545bdb143fa6b30c78c185c6f20ab3d315
-          path: app
+          path: sorter
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispEmbed
-          ref: v0.17.12
-          path: app/_sibling/CrispEmbed
-      - uses: actions/checkout@v4
-        with:
-          repository: CrispStrobe/CrispASR
-          ref: v0.8.32
-          path: app/_sibling/CrispASR
-      - uses: actions/checkout@v4
-        with:
-          repository: CrispStrobe/crisp-docx
-          ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
-          path: app/_sibling/crisp-docx
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios-sim
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-      - name: Prepare and build a simulator app
-        working-directory: app
+          ref: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
+          path: crispembed
+          submodules: recursive
+      - name: Build pinned runtime and check dependency closure
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import pathlib, re
-          p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text()
-          s = re.sub(r'path\s*=\s*"\.\./\.\./(CrispEmbed|CrispASR)/([\w-]+)"', r'path = "../_sibling/\1/\2"', s)
-          s = re.sub(r'path\s*=\s*"\.\./\.\./crisp-docx/crates/([\w-]+)"', r'path = "../_sibling/crisp-docx/crates/\1"', s)
-          p.write_text(s)
-          PY
-          npm ci
-          npm run build
-          npx tauri ios init
-          npx tauri ios build --target aarch64-sim --debug --no-sign --ci
-      - name: Boot a simulator and check startup
+          cd sorter
+          if [[ '${{ matrix.target }}' == android-* ]]; then
+            export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:?runner has no Android NDK}"
+          fi
+          python3 scripts/build_mobile_crispembed.py \
+            --source ../crispembed --output "$RUNNER_TEMP/crispembed-mobile" \
+            --target '${{ matrix.target }}' --jobs 4
+      - name: Link OCR C API probe
         shell: bash
         run: |
           set -euo pipefail
-          simulator=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; print(next(d["udid"] for runtime,devices in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in devices if d["name"].startswith("iPhone")))')
-          xcrun simctl boot "$simulator" || true
-          xcrun simctl bootstatus "$simulator" -b
-          app=$(find app/src-tauri/gen/apple/build -type d -name '*.app' -print -quit)
-          test -n "$app"
-          python3 scripts/mobile_simulator_smoke.py --platform ios --target "$simulator" --artifact "$app" --output "$RUNNER_TEMP/ios-smoke"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ios-app-smoke
-          path: ${{ runner.temp }}/ios-smoke/
-          if-no-files-found: warn
+          runtime="$RUNNER_TEMP/crispembed-mobile/lib"
+          if [[ '${{ matrix.target }}' == android-* ]]; then
+            cc="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            "$cc" -I crispembed/src sorter/scripts/mobile_crispembed_link_probe.c \
+              -L "$runtime" -lcrispembed -Wl,--no-undefined -o "$RUNNER_TEMP/ocr-link-probe"
+          else
+            if [[ '${{ matrix.target }}' == ios-sim-arm64 ]]; then
+              sdk=iphonesimulator
+              triple=arm64-apple-ios15.0-simulator
+            else
+              sdk=iphoneos
+              triple=arm64-apple-ios15.0
+            fi
+            sdk_path=$(xcrun --sdk "$sdk" --show-sdk-path)
+            xcrun --sdk "$sdk" clang -target "$triple" -isysroot "$sdk_path" \
+              -I crispembed/src sorter/scripts/mobile_crispembed_link_probe.c \
+              "$runtime/libcrispembed.a" -lc++ -framework Foundation -framework Metal \
+              -framework MetalKit -framework Accelerate -o "$RUNNER_TEMP/ocr-link-probe"
+          fi
