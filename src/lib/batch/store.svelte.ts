@@ -18,6 +18,7 @@ import type { BatchSession } from '../types';
 import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
+import { sortPlanMatches, type SortPlan } from './sortPlan';
 
 export interface ProcessOverrides {
     extractionWorkers?: number;
@@ -1103,7 +1104,7 @@ export class BatchManager {
         return { title: title?.trim(), author: author?.trim(), year: year?.trim() };
     }
 
-    async recalculateTargetPath(itemId: string) {
+    async recalculateTargetPath(itemId: string, autoAccept = true) {
         const item = this.items.find(i => i.id === itemId);
         if (!item) return;
         await this.calculateTargetPath(item);
@@ -1123,10 +1124,10 @@ export class BatchManager {
         const titleOk  = !isUnknownSentinel(item.suggestedTitle);
         const authorOk = !isUnknownSentinel(item.suggestedAuthor);
         const allComplete = titleOk && authorOk;
-        if (allComplete && !item.isAccepted) {
+        if (autoAccept && allComplete && !item.isAccepted) {
             item.isAccepted = true;
             flog('info', `Auto-accepted '${item.originalName}' — Title + Author are non-sentinel.`);
-        } else if (!allComplete && item.isAccepted) {
+        } else if (autoAccept && !allComplete && item.isAccepted) {
             // Same fairness rule in reverse: don't keep a green check
             // on a row the user just downgraded by reverting Title or
             // Author to "Unknown".  Prevents an awkward "I unchecked
@@ -1220,66 +1221,27 @@ export class BatchManager {
         }
     }
 
-    async executeBatch(mode: string = 'move', opts: { skipNonPrimaryDupes?: boolean } = {}) {
-        // The user's `isAccepted` flag is the affirmative consent;
-        // `status` is informational. Items at 'review' (LLM-analysed),
-        // 'error' (re-try), 'unfinished' (resumed from prior session),
-        // and 'queued' (waiting / metadata-prefilled, never analysed)
-        // are all sortable as long as the user ticked the green check
-        // and a target path is computable. Pre-fix, only 'review' and
-        // 'error' passed -- so resumed-session items the user OK'd
-        // would show a green check + enabled "Sortieren" button but
-        // executeBatch silently filtered them out and returned null.
-        const SORTABLE = new Set(['review', 'error', 'unfinished', 'queued']);
-        const accepted = this.items.filter(
-            i => i.isAccepted && i.targetPath && SORTABLE.has(i.status)
-                && !(opts.skipNonPrimaryDupes && i.isDuplicatePrimary === false)
-        );
-        flog('info', `executeBatch(${mode}) starting: ${accepted.length} sortable / ${this.items.length} total`);
-
-        // Per-item rejection diagnosis at debug level. Each rejected
-        // item logs WHICH gate it failed (no green check / no
-        // targetPath / unsortable status). Set Log-Verbosity=debug
-        // in Settings -> Allgemein to see this.
-        for (const i of this.items) {
-            const reasons: string[] = [];
-            if (!i.isAccepted)              reasons.push('not accepted');
-            if (!i.targetPath)              reasons.push('no targetPath');
-            if (!SORTABLE.has(i.status))    reasons.push(`unsortable status='${i.status}'`);
-            const verdict = reasons.length === 0
-                ? 'will sort'
-                : `skip (${reasons.join(', ')})`;
-            flog('debug', `  item ${i.originalName}: status=${i.status} accepted=${i.isAccepted} target=${i.targetPath ? 'set' : 'MISSING'} -> ${verdict}`);
-        }
-
-        if (accepted.length === 0) {
-            // Surface the reason at warn level so the silent-null case
-            // isn't silent.
-            const greenCount = this.items.filter(i => i.isAccepted).length;
-            const noTargetCount = this.items.filter(i => i.isAccepted && !i.targetPath).length;
-            const wrongStatusCount = this.items.filter(i => i.isAccepted && i.targetPath && !SORTABLE.has(i.status)).length;
-            flog('warn',
-                `executeBatch returning null: 0 sortable items. ` +
-                `${greenCount} have green check, ${noTargetCount} of those lack a targetPath, ` +
-                `${wrongStatusCount} have a non-sortable status. Re-process the batch and try again.`
-            );
-            return null;
-        }
-
-        const saveTxt = await getSetting('saveTxt', true);
-        const payload = {
-            items: accepted.map(i => ({
-                id: i.id,
-                originalPath: i.originalPath,
-                targetPath: i.targetPath!,
-                extractedText: i.extractedText
-            })),
-            saveTxt,
-            mode
-        };
-
+    async executeBatch(plan: SortPlan) {
+        // Acquire the lock before awaiting settings so concurrent confirmations
+        // cannot both dispatch. Validate again after all asynchronous work.
+        if (this.isExecuting) throw new Error('A sort is already running.');
         this.isExecuting = true;
         try {
+            const saveTxt = await getSetting('saveTxt', true) as boolean;
+            if (!plan.items.length || !sortPlanMatches(plan, this.items, saveTxt)) {
+                throw new Error('The sort plan changed. Review it again before sorting.');
+            }
+            const { mode } = plan;
+            const payload = {
+                items: plan.items.map(i => ({
+                    id: i.id,
+                    originalPath: i.originalPath,
+                    targetPath: i.targetPath!,
+                    extractedText: i.extractedText,
+                })),
+                saveTxt: plan.saveTxt,
+                mode,
+            };
             const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', { payload });
 
             let successCount = 0;
@@ -1296,6 +1258,7 @@ export class BatchManager {
             const changedItems: BatchItem[] = [];
 
             for (const [id, res] of Object.entries(results)) {
+                const planned = plan.items.find(i => i.id === id);
                 const item = this.items.find(i => i.id === id);
                 if (item) {
                     if (res.success) {
@@ -1310,10 +1273,10 @@ export class BatchManager {
                             item.statusDetail = mode.includes('copy') ? 'copied' : 'moved';
                             successCount++;
                             // Update search index location if the file was moved (not copied)
-                            if (!mode.includes('copy') && item.targetPath) {
+                            if (!mode.includes('copy') && planned?.targetPath) {
                                 invoke('index_update_location_by_path', {
-                                    oldPath: item.originalPath,
-                                    newPath: item.targetPath,
+                                    oldPath: planned.originalPath,
+                                    newPath: planned.targetPath,
                                 }).catch(e => console.warn('[Index] update_location_by_path failed:', e));
                             }
                         }
@@ -1327,7 +1290,7 @@ export class BatchManager {
                                 suggestedTitle:  item.suggestedTitle,
                                 suggestedAuthor: item.suggestedAuthor,
                                 suggestedYear:   item.suggestedYear,
-                                targetPath:      item.targetPath,
+                                targetPath:      planned?.targetPath,
                                 processedAt:     Date.now(),
                             }).catch(e => logDebug(`recordProcessed failed: ${e}`));
                         }

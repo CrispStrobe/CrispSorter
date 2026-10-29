@@ -18,6 +18,7 @@
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
+    import { createSortPlan, textSidecarPath, type SortMode, type SortPlan } from '../batch/sortPlan';
     import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
@@ -37,7 +38,7 @@
         RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud, FileDown
     } from 'lucide-svelte';
     import { buildBibFile } from '../export/bibtex';
-    import { logInfo, logWarn, logDebug } from '../log';
+    import { logInfo, logWarn } from '../log';
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
@@ -134,6 +135,24 @@
     let deepDupeCheck = $state(false);
 
     // Sorting state
+    let sortPlan = $state.raw<SortPlan | null>(null);
+    let planLabels = $derived(i18n.lang === 'de' ? {
+        title: 'Sortierplan prüfen', files: 'Datei(en)', move: 'Verschieben', copy: 'Kopieren',
+        scriptMove: 'Verschiebe-Skript erstellen', scriptCopy: 'Kopier-Skript erstellen',
+        excluded: 'akzeptierte Datei(en) ausgeschlossen: kein Ziel, ungeeigneter Status oder übersprungenes Duplikat.',
+        sidecars: 'Extrahierter Text wird, falls vorhanden, ebenfalls gespeichert.',
+        from: 'Von:', to: 'Nach:', text: 'Text:', cancel: 'Abbrechen', confirm: 'Bestätigen und ausführen', preparing: 'Vorbereitung…',
+    } : {
+        title: 'Review sort plan', files: 'file(s)', move: 'Move', copy: 'Copy',
+        scriptMove: 'Generate move script', scriptCopy: 'Generate copy script',
+        excluded: 'accepted file(s) excluded because they have no destination, have an ineligible status, or are skipped duplicates.',
+        sidecars: 'Extracted text will also be saved where available.',
+        from: 'From:', to: 'To:', text: 'Text:', cancel: 'Cancel', confirm: 'Confirm and execute', preparing: 'Preparing…',
+    });
+    let preparingSort = $state(false);
+    let confirmingSort = $state(false);
+    let planIndexAfterSort = false;
+
     let sortColumn = $state<string>('file_name');
     let sortDirection = $state<'asc' | 'desc'>('asc');
 
@@ -284,6 +303,7 @@
                 if (e.key === 'Escape') {
                     if (selectedIds.length > 0) selectedIds = [];
                     showReportModal = false;
+                    if (!confirmingSort) sortPlan = null;
                     showInfoModal = false;
                     return;
                 }
@@ -618,7 +638,7 @@
      * Distinct roots only: one grant covers a whole subtree, so a
      * thousand items under one destination is one question.
      */
-    async function ensureDestinationsWritable(items: BatchItem[]): Promise<boolean> {
+    async function ensureDestinationsWritable(items: Array<{ targetPath?: string }>): Promise<boolean> {
         const parents = new Set<string>();
         for (const it of items) {
             if (!it.targetPath) continue;
@@ -696,131 +716,58 @@
         return true;
     }
 
-    async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
-        // Visible at the default `info` log verbosity so the user can
-        // see in the Logs panel that the click made it into the
-        // handler at all -- pre-this-fix the entire executeSorting
-        // path was console-only and invisible from the in-app Logs.
-        logInfo(`Sortieren clicked: mode=${mode}, items=${batchManager.items.length}`);
-
-        // In-flight guard moved here from the button's HTML `disabled`
-        // attribute.  A disabled button swallows clicks silently and
-        // the user has no way to see what's going on.  Re-clicking
-        // while a sort is already running now produces a clear log +
-        // toast instead of looking like a broken button.
-        if (batchManager.isExecuting) {
-            logWarn('Sortieren ignored — a sort is already in flight.  Wait or use Force-reset.');
+    async function executeSorting(mode: SortMode = 'move') {
+        if (batchManager.isExecuting || preparingSort || confirmingSort || sortPlan) {
             showToast(i18n.t.batch.executing);
             return;
         }
-
-        // Compact per-item summary (status histogram + accepted /
-        // target counts). Goes through logDebug so it only fires when
-        // the user has set Log-Verbosity=debug; the histogram alone
-        // is enough to diagnose 95% of "Sortieren did nothing"
-        // reports without flooding the panel.
-        const statusHist: Record<string, number> = {};
-        let acceptedCount = 0;
-        let withTarget = 0;
-        for (const i of batchManager.items) {
-            statusHist[i.status] = (statusHist[i.status] || 0) + 1;
-            if (i.isAccepted) acceptedCount++;
-            if (i.targetPath) withTarget++;
-        }
-        logDebug(`Sortieren batch shape: ${JSON.stringify(statusHist)}, accepted=${acceptedCount}, withTargetPath=${withTarget}`);
-
-        let accepted = batchManager.items.filter(i => i.isAccepted);
-        // P15a — skip non-primary duplicates if the option is set.
-        if (skipDuplicatesOnSort) {
-            const before = accepted.length;
-            accepted = accepted.filter(i => i.isDuplicatePrimary !== false);
-            const skipped = before - accepted.length;
-            if (skipped > 0) logInfo(`P15a: skipped ${skipped} non-primary duplicate(s) from sort`);
-        }
-        logInfo(`Accepted (green-check) items: ${accepted.length} / ${batchManager.items.length} total`);
-
-        if (accepted.length === 0) {
-            logWarn('No items accepted -- showing "no items ready" toast and returning');
-            showToast(i18n.t.batch.no_items_ready);
-            return;
-        }
-
-        const confirmMsg = mode.includes('copy')
-            ? i18n.t.batch.confirm_copy.replace('{count}', accepted.length.toString())
-            : i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
-
-        logInfo(`Awaiting user confirmation for ${accepted.length} item(s) ...`);
-        let confirmed: boolean;
+        preparingSort = true;
         try {
-            confirmed = await ask(confirmMsg, { title: 'CrispSorter', kind: 'warning' });
+            const skipDuplicates = skipDuplicatesOnSort;
+            // Recover missing targets before the user sees and approves the plan.
+            const missing = batchManager.items.filter(i => i.isAccepted && !i.targetPath
+                && !(skipDuplicates && i.isDuplicatePrimary === false));
+            for (const item of missing) await batchManager.recalculateTargetPath(item.id, false);
+            const saveTxt = await getSetting('saveTxt', true) as boolean;
+            const plan = createSortPlan(batchManager.items, mode, skipDuplicates, saveTxt);
+            if (!plan.items.length) {
+                const missingTargets = plan.candidates.filter(i => !i.targetPath).length;
+                const excluded = plan.candidates.length - missingTargets;
+                const detail = plan.candidates.length ? ` (${missingTargets} without a destination, ${excluded} ineligible or skipped)` : '';
+                showToast(`${i18n.t.batch.no_items_ready}${detail}`);
+                return;
+            }
+            planIndexAfterSort = indexAfterSort;
+            sortPlan = plan;
         } catch (e: any) {
-            // Pre-this-fix: a silent throw from the dialog plugin
-            // (e.g. version-mismatch on @tauri-apps/plugin-dialog)
-            // bubbled up through the unhandled-rejection path and the
-            // user just saw "nothing happens." Now we surface it.
-            logWarn(`ask() dialog threw: ${e?.message ?? e}. Falling back to immediate sort (treating as confirmed) -- if this is wrong, click Cancel in the toast that follows.`);
-            confirmed = true;
+            logWarn(`Could not prepare sort preview: ${e?.message ?? e}`);
+            showToast(`Could not prepare sort preview: ${e?.message ?? e}`);
+        } finally {
+            preparingSort = false;
         }
-        logInfo(`Dialog returned: confirmed=${confirmed}`);
+    }
 
-        if (!confirmed) return;
-
-        // Recover items that have isAccepted but a missing targetPath
-        // — common case is non-rep chapter items pre-fix, whose metadata
-        // was propagated from the rep but whose calculateTargetPath
-        // wasn't called.  Filling targetPath in-place here lets the
-        // batch ship without making the user re-analyse.
-        const missingTarget = accepted.filter(i => !i.targetPath);
-        if (missingTarget.length > 0) {
-            logInfo(`Recovering targetPath for ${missingTarget.length} accepted item(s) before executeBatch.`);
-            for (const i of missingTarget) await batchManager.recalculateTargetPath(i.id);
-        }
-
-        // Ask for folder permission BEFORE writing anything.
-        //
-        // Previously the sandbox refusal was discovered per item, so a
-        // destination root the user had never picked produced one failure
-        // for every file — 512 of them in the run that prompted this. The
-        // destinations are known here, so the one question worth asking
-        // can be asked once, up front, and the sort either proceeds or
-        // doesn't.
-        if (!(await ensureDestinationsWritable(accepted))) {
-            logWarn('Sortieren aborted: destination folder permission not granted.');
-            return;
-        }
-
-        logInfo(`Sortieren confirmed -- handing ${accepted.length} accepted item(s) to executeBatch(${mode})`);
-        const sortStart = performance.now();
-        const stats = await batchManager.executeBatch(mode, { skipNonPrimaryDupes: skipDuplicatesOnSort });
-        const sortMs = Math.round(performance.now() - sortStart);
-        if (stats) {
-            logInfo(`Sortieren done in ${sortMs} ms: ${JSON.stringify(stats)}`);
+    async function confirmSorting() {
+        const plan = sortPlan;
+        if (!plan || confirmingSort) return;
+        confirmingSort = true;
+        try {
+            if (!(await ensureDestinationsWritable(plan.items)) || sortPlan !== plan) return;
+            const stats = await batchManager.executeBatch(plan);
+            sortPlan = null;
             lastExecutionStats = stats;
             showReportModal = true;
-        } else {
-            // Diagnose silently-dropped items: build a per-gate count so
-            // the toast tells the user WHY (no green check / no
-            // targetPath / wrong status) instead of the generic
-            // "Keine Elemente bereit" message that prompted the bug
-            // report.
-            const SORTABLE_STATES = new Set(['review', 'error', 'unfinished', 'queued']);
-            const green = accepted.length;
-            const noTarget = accepted.filter(i => !i.targetPath).length;
-            const wrongStatus = accepted.filter(i => i.targetPath && !SORTABLE_STATES.has(i.status)).length;
-            const reasonParts: string[] = [];
-            if (noTarget > 0)    reasonParts.push(`${noTarget} ohne Zielpfad`);
-            if (wrongStatus > 0) reasonParts.push(`${wrongStatus} mit ungeeignetem Status`);
-            const reason = reasonParts.length > 0 ? ` (${reasonParts.join(', ')})` : '';
-            logWarn(`Sortieren returned null after ${sortMs} ms -- ${green} green-checked but executeBatch filtered all out${reason}.`);
-            showToast(`${i18n.t.batch.no_items_ready}${reason}`);
-        }
-        // Optionally index sorted documents
-        if (indexAfterSort && !mode.startsWith('script')) {
-            const movedIds = accepted.map(i => i.id);
-            logInfo(`Auto-indexing ${movedIds.length} sorted item(s) into the search catalog`);
-            selectedIds = movedIds;
-            await addSelectedToIndex();
-            selectedIds = [];
+            if (planIndexAfterSort && !plan.mode.startsWith('script')) {
+                selectedIds = plan.items.map(i => i.id);
+                await addSelectedToIndex();
+                selectedIds = [];
+            }
+        } catch (e: any) {
+            logWarn(`Sort aborted: ${e?.message ?? e}`);
+            sortPlan = null;
+            showToast(`Sort aborted: ${e?.message ?? e}`);
+        } finally {
+            confirmingSort = false;
         }
     }
 
@@ -1780,6 +1727,42 @@
     <div class="toast-message" role="alert">{toastMessage}</div>
 {/if}
 
+{#if sortPlan}
+    <div class="modal-overlay" role="presentation">
+        <div class="modal-content sort-preview" role="dialog" aria-modal="true" aria-labelledby="sort-preview-title" tabindex="-1">
+            <div class="modal-header">
+                <h2 id="sort-preview-title">{planLabels.title}</h2>
+            </div>
+            <div class="modal-body sort-preview-body">
+                <p>{sortPlan.items.length} {planLabels.files} · {sortPlan.mode === 'move' ? planLabels.move : sortPlan.mode === 'copy' ? planLabels.copy : sortPlan.mode === 'script_move' ? planLabels.scriptMove : planLabels.scriptCopy}</p>
+                {#if sortPlan.candidates.length > sortPlan.items.length}
+                    <p>{sortPlan.candidates.length - sortPlan.items.length} {planLabels.excluded}</p>
+                {/if}
+                {#if sortPlan.saveTxt && !sortPlan.mode.startsWith('script')}
+                    <p>{planLabels.sidecars}</p>
+                {/if}
+                <ol class="sort-plan-list">
+                    {#each sortPlan.items as item (item.id)}
+                        <li>
+                            <div><strong>{planLabels.from}</strong> <span>{item.originalPath}</span></div>
+                            <div><strong>{planLabels.to}</strong> <span>{item.targetPath}</span></div>
+                            {#if sortPlan.saveTxt && !sortPlan.mode.startsWith('script') && textSidecarPath(item)}
+                                <div><strong>{planLabels.text}</strong> <span>{textSidecarPath(item)}</span></div>
+                            {/if}
+                        </li>
+                    {/each}
+                </ol>
+                <div class="sort-preview-actions">
+                    <button class="action-btn" disabled={confirmingSort} onclick={() => sortPlan = null}>{planLabels.cancel}</button>
+                    <button class="action-btn primary" disabled={confirmingSort} onclick={confirmSorting}>
+                        {confirmingSort ? planLabels.preparing : planLabels.confirm}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+{/if}
+
 {#if showReportModal && lastExecutionStats}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="modal-overlay" onclick={() => showReportModal = false} role="button" tabindex="0" onkeydown={e => e.key === 'Escape' && (showReportModal = false)}>
@@ -2138,6 +2121,16 @@
     .modal-header h2 { font-size: 1.1rem; margin: 0; display: flex; align-items: center; gap: 10px; color: #f4f4f5; }
     .modal-body { padding: 20px; }
     
+    .sort-preview { width: min(900px, 95vw); }
+    .sort-preview-body { display: flex; flex-direction: column; gap: 12px; }
+    .sort-preview-body p { margin: 0; color: #cbd5e1; }
+    .sort-plan-list { margin: 0; padding: 0 0 0 2em; max-height: 55vh; overflow: auto; }
+    .sort-plan-list li { padding: 8px; border-bottom: 1px solid #27272a; }
+    .sort-plan-list div { display: flex; gap: 8px; }
+    .sort-plan-list strong { flex: 0 0 3em; }
+    .sort-plan-list span { overflow-wrap: anywhere; font-family: monospace; user-select: text; }
+    .sort-preview-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
     .report-stats { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
     .stat-line { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 0.9rem; }
     .stat-line.success { color: #10b981; }
