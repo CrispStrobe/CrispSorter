@@ -20,7 +20,7 @@ current release APK is arm64; an x86-only emulator is insufficient. For example:
 
 ```sh
 python scripts/mobile_simulator_smoke.py --platform android --target emulator-5554 \
-  --artifact CrispSorter_0.13.0_android-aarch64-dev-signed.apk --output android-smoke
+  --artifact CrispSorter_0.14.0_android-aarch64.apk --output android-smoke
 ```
 
 iOS requires a booted simulator UDID and a **simulator-built** `.app`; the
@@ -76,8 +76,7 @@ provider. The Android instrumentation covers nested folders, case-sensitive
 document IDs, reads, unavailable access, size limits and folder cycles. The iOS
 simulator tests cover bookmark-record identity and bounded reads. They do not
 exercise either system picker, a real provider's persistent grants, or the
-complete apps. The workflow has been added; its result and the device checks
-below must be recorded before qualifying this integration.
+complete apps. The [qualification run](https://github.com/CrispStrobe/CrispSorter/actions/runs/40838687391) passed four Android emulator tests and three iOS simulator tests, along with Rust and Swift cross-checks. The device checks below remain necessary before qualifying complete provider workflows.
 
 For qualification, use a dedicated device or emulator and disposable local and
 cloud-provider fixtures. Record the build and OS/device, and verify picker
@@ -119,6 +118,14 @@ The locked Tauri dialog plugin 2.7.1 still returns `Folder picker is not
 implemented on mobile`; Android batch import uses the dedicated SAF plugin above
 instead. Full sorting on both platforms needs provider-aware destination
 selection and operations, with explicit handling for providers that do not
-support moves. The read-only iOS bookmark and coordination flow must still be
-compiled and exercised on a device. Both platforms need restart, revocation and
+support moves. The iOS flow compiled and passed focused simulator tests; it still must be
+exercised through the real system picker and on a device. Both platforms need restart, revocation and
 provider-backed move tests on actual devices.
+
+The locked iOS `libcrispembed-static.a` also lacks the separately linked core
+and ggml closure. `scripts/build_mobile_crispembed.py` prepares source-pinned
+Android, iOS device, and iOS simulator builds without unpinned sibling sources.
+The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
+was queued at handoff; inspect its results before using its outputs. A successful
+link alone does not qualify the runtime or enable mobile inference. See
+[HANDOFF_2026-10-29.md](HANDOFF_2026-10-29.md) for exact remaining steps.

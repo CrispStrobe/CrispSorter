@@ -2,6 +2,8 @@
 
 ## Follow-up improvement programme — 29 October 2026
 
+**Handoff:** [exact open tasks, run links, evidence and next steps](docs/HANDOFF_2026-10-29.md).
+
 User requested all six items, with mobile/device validation, OCR quality and
 resource controls, newer CrispEmbed OCR evaluation, search/citation quality,
 review/sorting safety, and production signing/distribution. Heavy work must be
