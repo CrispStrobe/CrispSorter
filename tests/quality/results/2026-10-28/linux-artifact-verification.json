@@ -1,0 +1,14 @@
+{
+  "checked_at_utc": "2026-10-29T02:03:58.168866+00:00",
+  "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+  "github_job": 123155730138,
+  "qualification": "1490 shipped-feature native tests passed; separate four-preset native OCR passed; extracted final Debian package passed version/doctor and image-only PDF OCR with sibling libraries hidden. No native inference was run on the development VPS.",
+  "downloaded_artifact": {
+    "filename": "CrispSorter_0.13.0_amd64.deb",
+    "bytes": 216940542,
+    "sha256": "9e87c7db828fae1d1f30c544e2de1ac35b4b93918537b469068e70e133201856",
+    "github_digest_matches": true,
+    "deb_metadata": "Package: crisp-sorter\nVersion: 0.13.0\nArchitecture: amd64\n"
+  },
+  "job_log_sha256": "57dd096fb62f797251107db978b996d6f44fd02a0e802f3571eb090cb51ff268"
+}

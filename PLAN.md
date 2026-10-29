@@ -26,7 +26,7 @@ missing. Branch: `feat/library-workflows-20261028`.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (01:16 UTC, 29 October): all eight implementation areas are on the branch.
+Checkpoint (02:06 UTC, 29 October): all eight implementation areas are on the branch.
 Frontend qualification is complete: 75 unit tests, zero Svelte errors
 (53 existing warnings), production build and all ten browser scenarios passed.
 The browser suite includes document context, cited evidence, OCR recovery,
@@ -66,11 +66,19 @@ engines remain deferred based on runtime compatibility and real-scan evidence.
 Linux cold-loader packaging has a passing independent ELF/Debian regression
 for SONAME aliases, modes, ownership and gzip/xz controls. The signed iOS IPA is downloaded and verified. Android built successfully but
 was unsigned; a separately development-signed APK now passes v2/v3 signature
-verification, with the original build retained for provenance. Linux is packaging;
-macOS and the targeted Windows retry remain queued. The original Windows job
+verification, with the original build retained for provenance. Linux is now qualified: 1,490 shipped-feature native tests and the four-preset
+OCR test passed; the extracted Debian package passed isolated version/doctor
+and scanned-PDF OCR checks. Its downloaded bytes match the source/checksum receipt.
+macOS is compiling its native tests; the targeted Windows retry is queued. The original Windows job
 failed before tests because OpenSSL selected MSYS Perl; the retry explicitly
-selects and validates native Strawberry Perl. The six-page real OCR comparison
-has verified all frozen inputs and started inference on its CPU worker. Local compilation is stopped and its exclusive target cache
+selects and validates native Strawberry Perl. That preflight passed; Git Bash then
+rewrote the slash-form math macro into a path, blocking Glint compilation. The
+second recovery uses the MSVC-supported dash form and validates it in a native
+process before Cargo. No application runtime code changed in these recoveries. The six-page real OCR comparison
+has verified all frozen inputs and completed all six Quick cases. Its first
+full-page Qwen case hit the 20-minute cap at 15.5 GB RSS; that failure is retained.
+The original panel continues, with a separately preregistered one-page native
+pixel-budget follow-up. These jobs run only on hosted CPU workers. Local compilation is stopped and its exclusive target cache
 was removed because the VPS lacks safe headroom. Public and App Store uploads
 remain disabled. Do not close this programme based on queued or prepared checks.
 
