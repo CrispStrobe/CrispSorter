@@ -1,8 +1,8 @@
 {
   "schema": "crispsorter-qualified-release-set-v1",
   "version": "0.13.0",
-  "updated_at_utc": "2026-10-29T06:10:35.271123+00:00",
-  "draft_release": "https://github.com/CrispStrobe/CrispSorter/releases/tag/untagged-62e770b4ff7a5e476665",
+  "updated_at_utc": "2026-10-29T06:15:51.750228+00:00",
+  "draft_release": "https://github.com/CrispStrobe/CrispSorter/releases/tag/untagged-6eb386a8a41adbc8ad3f",
   "published": false,
   "source_branch": "feat/library-workflows-20261028",
   "artifact_set_complete": true,
@@ -54,15 +54,19 @@
       "source_receipt": {
         "filename": "CrispSorter_0.13.0_linux-x86_64.receipt.json",
         "sha256": "347a2d969b1338fd0d84f88949ba6b5c99f8c10f96b043e2b80aacf3098a8052",
-        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_linux-x86_64.receipt.json"
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_linux-x86_64.receipt.json",
+        "github_asset_id": 687038374,
+        "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/687038374"
       },
       "artifacts": [
         {
           "filename": "CrispSorter_0.13.0_amd64.deb",
           "bytes": 216940542,
           "sha256": "9e87c7db828fae1d1f30c544e2de1ac35b4b93918537b469068e70e133201856",
-          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_amd64.deb",
-          "downloaded_bytes_verified": true
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_amd64.deb",
+          "downloaded_bytes_verified": true,
+          "github_asset_id": 686999525,
+          "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/686999525"
         }
       ],
       "package_execution": "Extracted final package version/doctor and image-only PDF OCR, with sibling build libraries hidden; macOS DMG is checksummed and the matching app archive is executed"
@@ -77,15 +81,19 @@
       "source_receipt": {
         "filename": "CrispSorter_0.13.0_windows-x86_64.receipt.json",
         "sha256": "69eeee83caf9258e965b33a5d4c29fd81e8e40b3b9f31f29a162940c67f2acd2",
-        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_windows-x86_64.receipt.json"
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_windows-x86_64.receipt.json",
+        "github_asset_id": 687313063,
+        "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/687313063"
       },
       "artifacts": [
         {
           "filename": "CrispSorter_0.13.0_x64-windows-portable.zip",
           "bytes": 230104303,
           "sha256": "e85fbdf5bd505da7a1a82366478c58575a4b31cf43d31be8514a343d19574134",
-          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_x64-windows-portable.zip",
-          "downloaded_bytes_verified": true
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_x64-windows-portable.zip",
+          "downloaded_bytes_verified": true,
+          "github_asset_id": 687311967,
+          "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/687311967"
         }
       ],
       "package_execution": "Extracted final package version/doctor and image-only PDF OCR, with sibling build libraries hidden; macOS DMG is checksummed and the matching app archive is executed",
@@ -101,22 +109,28 @@
       "source_receipt": {
         "filename": "CrispSorter_0.13.0_macos-arm64.receipt.json",
         "sha256": "dfd17c8ed1edf5faaf234021643cb439d420e637e43f8ce49442aaa8893027f8",
-        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_macos-arm64.receipt.json"
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_macos-arm64.receipt.json",
+        "github_asset_id": 687168900,
+        "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/687168900"
       },
       "artifacts": [
         {
           "filename": "CrispSorter_0.13.0_aarch64.dmg",
           "bytes": 157457974,
           "sha256": "a71648a76b554fd2d2341f40be1348386d38cffbf88ba4cebd07744ee0364f2f",
-          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_aarch64.dmg",
-          "downloaded_bytes_verified": true
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_aarch64.dmg",
+          "downloaded_bytes_verified": true,
+          "github_asset_id": 687166901,
+          "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/687166901"
         },
         {
           "filename": "CrispSorter_aarch64.app.tar.gz",
           "bytes": 142333465,
           "sha256": "e993e5ad0c5af707d3c5d5bb37e39fe492236438ab5ac6f96d0304ab23c41999",
-          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_aarch64.app.tar.gz",
-          "downloaded_bytes_verified": true
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_aarch64.app.tar.gz",
+          "downloaded_bytes_verified": true,
+          "github_asset_id": 687167251,
+          "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/687167251"
         }
       ],
       "package_execution": "Extracted final package version/doctor and image-only PDF OCR, with sibling build libraries hidden; macOS DMG is checksummed and the matching app archive is executed",
@@ -132,15 +146,19 @@
       "source_receipt": {
         "filename": "CrispSorter_0.13.0_android-arm64.receipt.json",
         "sha256": "c52eac10f2550f3b4a065a2b43db39cd22581289fb900d2c1b6be04f9687a025",
-        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_android-arm64.receipt.json"
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_android-arm64.receipt.json",
+        "github_asset_id": 686902196,
+        "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/686902196"
       },
       "artifacts": [
         {
           "filename": "CrispSorter_0.13.0_android-aarch64-dev-signed.apk",
           "bytes": 341886681,
           "sha256": "415a063d7e004ebafb1683395141e7860fafef02a803715a6ce3803ea53cef82",
-          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_android-aarch64-dev-signed.apk",
-          "downloaded_bytes_verified": true
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_android-aarch64-dev-signed.apk",
+          "downloaded_bytes_verified": true,
+          "github_asset_id": 686928119,
+          "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/686928119"
         }
       ],
       "signing": "development certificate; not a production/store identity",
@@ -167,15 +185,19 @@
       "source_receipt": {
         "filename": "CrispSorter_0.13.0_ios-arm64.receipt.json",
         "sha256": "f6ef96aec71093dbcae20c854b8f028feb7b30e47c3034d1672a8b207297ed2f",
-        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_ios-arm64.receipt.json"
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_ios-arm64.receipt.json",
+        "github_asset_id": 686865445,
+        "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/686865445"
       },
       "artifacts": [
         {
           "filename": "CrispSorter_0.13.0_ios-arm64.ipa",
           "bytes": 91031110,
           "sha256": "39d272a61ad68d3c676fc47ef0ebfcb8786e876200211bdc5f8b9a3baf83f14b",
-          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_ios-arm64.ipa",
-          "downloaded_bytes_verified": true
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-6eb386a8a41adbc8ad3f/CrispSorter_0.13.0_ios-arm64.ipa",
+          "downloaded_bytes_verified": true,
+          "github_asset_id": 686864997,
+          "api_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/releases/assets/686864997"
         }
       ],
       "signing": "App Store distribution signature/profile verified on Apple worker; no Store/TestFlight upload",
@@ -230,5 +252,8 @@
     "frontend": "Identical src tree across original binary source, Windows recovery and completed branch",
     "native_delta_from_original_binary_source": "Only optional-provider expectations inside src-tauri/src/drives/mod.rs test modules; application runtime code, Cargo dependencies and Tauri configuration unchanged",
     "windows_recovery": "Build workflow selects native Perl and preserves -D_USE_MATH_DEFINES across Git Bash; actual source/job recorded per platform"
-  }
+  },
+  "github_release_id": 427344040,
+  "draft_target_commit": "5d7914860cf17e4d894cb4dfc57db3a514a9876c",
+  "delivery_metadata_note": "Browser links reflect the current unpublished draft; stable GitHub release/asset IDs, filenames and SHA256 values identify the files independently of later publication or retargeting."
 }
