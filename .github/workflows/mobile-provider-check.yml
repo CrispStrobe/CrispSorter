@@ -1,4 +1,4 @@
-name: Android provider checks
+name: Mobile provider checks
 
 on:
   workflow_dispatch:
@@ -72,4 +72,33 @@ jobs:
         with:
           name: android-provider-test-results
           path: crates/tauri-plugin-mobile-provider/android/build/reports/androidTests/
+          if-no-files-found: warn
+
+  ios-provider:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - name: Check the Rust and Swift plugin for iOS
+        shell: bash
+        run: |
+          cp -R crates/tauri-plugin-mobile-provider "$RUNNER_TEMP/provider-crate"
+          cp Cargo.lock "$RUNNER_TEMP/provider-crate/Cargo.lock"
+          export IPHONEOS_DEPLOYMENT_TARGET=16.0
+          cargo check --manifest-path "$RUNNER_TEMP/provider-crate/Cargo.toml" --target aarch64-apple-ios
+      - name: Exercise iOS bookmark records and bounded reads
+        shell: bash
+        working-directory: ${{ runner.temp }}/provider-crate/ios
+        run: |
+          simulator=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for runtime, devices in d.items() if "iOS" in runtime for x in devices if x["name"].startswith("iPhone")))')
+          xcodebuild -scheme tauri-plugin-mobile-provider -destination "platform=iOS Simulator,id=$simulator" -resultBundlePath "$RUNNER_TEMP/provider-ios-tests.xcresult" test CODE_SIGNING_ALLOWED=NO
+      - name: Upload iOS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-provider-test-results
+          path: ${{ runner.temp }}/provider-ios-tests.xcresult
           if-no-files-found: warn

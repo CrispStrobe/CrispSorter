@@ -58,20 +58,29 @@ moved, copied, deleted, included in a sort script, or sent to the path-based
 index and document tools. This is a read-only slice, not folder-sort parity.
 The original URI and persisted grant are intended to survive restart; device
 verification of that behavior is still required, and revoked or unavailable
-provider access must produce a visible error. The iOS batch picker and sorting
-are disabled until original identities and security-scoped access can be
-preserved; other mobile picker entry points are not covered by this flow.
+provider access must produce a visible error.
 
-`.github/workflows/mobile-provider-check.yml` builds the Android plugin and
-exercises its reader on an emulator against a test ContentResolver provider.
-The instrumentation covers nested folders, case-sensitive document IDs, reads,
-unavailable access, size limits and folder cycles. It does not exercise the
-system picker, a real provider's persistent grants, the complete APK, or an
-iOS app. The workflow has been added; its result and the device checks below
-must be recorded before qualifying this integration.
+The iOS batch picker opens documents or folders in place through
+`UIDocumentPickerViewController`. It retains each original `file://` URL as
+the batch identity and stores a minimal security-scoped bookmark for reopening
+the document. Reads resolve the bookmark, start and stop scoped access, and use
+`NSFileCoordinator`; missing, stale or revoked grants require the user to select
+the document again. The same file types and limits apply; symbolic links in a
+selected folder cause an explicit error. Provider items remain read-only, and
+iOS path-based sorting is disabled because older batch rows may have come from
+copies. Other mobile picker entry points are not covered by this flow.
+
+`.github/workflows/mobile-provider-check.yml` builds both mobile plugins and
+exercises the Android reader on an emulator against a test ContentResolver
+provider. The Android instrumentation covers nested folders, case-sensitive
+document IDs, reads, unavailable access, size limits and folder cycles. The iOS
+simulator tests cover bookmark-record identity and bounded reads. They do not
+exercise either system picker, a real provider's persistent grants, or the
+complete apps. The workflow has been added; its result and the device checks
+below must be recorded before qualifying this integration.
 
 For qualification, use a dedicated device or emulator and disposable local and
-cloud-provider fixtures. Record the APK build and OS/device, and verify picker
+cloud-provider fixtures. Record the build and OS/device, and verify picker
 cancellation, individual and nested folder selections, Unicode and case-sensitive
 names, unsupported and oversized files, extraction, app restart, and provider
 access after revocation. Confirm that provider items cannot enter any move,
@@ -108,8 +117,8 @@ separately, and qualify the resulting APK on a device.
 
 The locked Tauri dialog plugin 2.7.1 still returns `Folder picker is not
 implemented on mobile`; Android batch import uses the dedicated SAF plugin above
-instead. Full Android sorting needs provider-aware destination selection and
-operations, with explicit handling for providers that do not support moves.
-iOS needs a directory picker, security-scoped bookmarks captured while access is
-valid and restored on launch, and coordinated file operations. Both platforms
-need restart, revocation and provider-backed move tests on actual devices.
+instead. Full sorting on both platforms needs provider-aware destination
+selection and operations, with explicit handling for providers that do not
+support moves. The read-only iOS bookmark and coordination flow must still be
+compiled and exercised on a device. Both platforms need restart, revocation and
+provider-backed move tests on actual devices.

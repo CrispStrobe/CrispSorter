@@ -159,6 +159,7 @@
 
     // Execution Report
     let lastExecutionStats = $state<any>(null);
+    let lastGeneratedScriptPath = $state<string | null>(null);
     let showReportModal = $state(false);
 
     // Sort options (P15)
@@ -366,7 +367,7 @@
     });
 
     async function handleAddFiles() {
-        if ($caps.platform === 'android') {
+        if ($caps.mobile) {
             await addProviderDocuments(false);
             return;
         }
@@ -389,7 +390,7 @@
     }
 
     async function handleAddFolder() {
-        if ($caps.platform === 'android') {
+        if ($caps.mobile) {
             await addProviderDocuments(true);
             return;
         }
@@ -796,6 +797,11 @@
             const stats = await batchManager.executeBatch(plan);
             sortPlan = null;
             lastExecutionStats = stats;
+            const firstTarget = plan.items[0]?.targetPath;
+            const separator = firstTarget ? Math.max(firstTarget.lastIndexOf('/'), firstTarget.lastIndexOf('\\')) : -1;
+            lastGeneratedScriptPath = plan.mode.startsWith('script_') && firstTarget && separator >= 0
+                ? firstTarget.slice(0, separator + 1) + ($caps.platform === 'windows' ? 'sort_files.ps1' : 'sort_files.sh')
+                : null;
             showReportModal = true;
             if (planIndexAfterSort && !plan.mode.startsWith('script')) {
                 selectedIds = plan.items.map(i => i.id);
@@ -1102,10 +1108,10 @@
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
-                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'ios'} title={$caps.platform === 'ios' ? 'iOS provider import is not yet available' : i18n.t.batch.add_files}>
+                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown'} title={i18n.t.batch.add_files}>
                     <Plus size={18} />
                 </button>
-                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'ios'} title={$caps.platform === 'ios' ? 'iOS provider import is not yet available' : i18n.t.batch.add_folder}>
+                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'unknown'} title={i18n.t.batch.add_folder}>
                     <FolderOpen size={18} />
                 </button>
                 <button class="icon-btn-main danger" onclick={() => batchManager.clear()} title={i18n.t.batch.clear_all}>
@@ -1284,14 +1290,10 @@
             </div>
         </div>
     </div>
-    {#if $caps.platform === 'android'}
+    {#if $caps.mobile}
         <p class="provider-import-note">{i18n.lang === 'de'
-            ? 'Dateien aus Android-Anbietern werden nur gelesen (PDF, DOCX, EPUB, TXT, Markdown, HTML; maximal 16 MiB). Verschieben und Kopieren werden noch nicht unterstützt.'
-            : 'Android provider documents are read-only (PDF, DOCX, EPUB, TXT, Markdown, HTML; up to 16 MiB). Moving and copying are not yet supported.'}</p>
-    {:else if $caps.platform === 'ios'}
-        <p class="provider-import-note">{i18n.lang === 'de'
-            ? 'Der Import aus iOS-Dateianbietern ist noch nicht verfügbar.'
-            : 'Import from iOS file providers is not yet available.'}</p>
+            ? 'Dateien aus Anbietern werden nur gelesen (PDF, DOCX, EPUB, TXT, Markdown, HTML; maximal 16 MiB). Verschieben und Kopieren werden noch nicht unterstützt.'
+            : 'Provider documents are read-only (PDF, DOCX, EPUB, TXT, Markdown, HTML; up to 16 MiB). Moving and copying are not yet supported.'}</p>
     {/if}
 
     {#if selectedIds.length > 0}
@@ -1794,6 +1796,16 @@
                 {#if sortPlan.saveTxt && !sortPlan.mode.startsWith('script')}
                     <p>{planLabels.sidecars}</p>
                 {/if}
+                {#if sortPlan.mode.startsWith('script_')}
+                    <p>{i18n.lang === 'de'
+                        ? 'Es wird nur ein Skript erstellt. Es verschiebt oder kopiert noch nichts und enthält keine extrahierten Textdateien.'
+                        : 'This creates a script only. It does not move or copy files yet, and does not include extracted-text sidecars.'}</p>
+                    {#if $caps.platform === 'windows'}
+                        <p>{i18n.lang === 'de'
+                            ? 'Die PowerShell-Ausführungsrichtlinie kann das Starten von .ps1-Dateien einschränken.'
+                            : 'The PowerShell execution policy may restrict running .ps1 files.'}</p>
+                    {/if}
+                {/if}
                 <ol class="sort-plan-list">
                     {#each sortPlan.items as item (item.id)}
                         <li>
@@ -1824,6 +1836,32 @@
                 <h2><Rocket size={18} /> {i18n.t.batch.report_title}</h2>
             </div>
             <div class="modal-body">
+                {#if lastExecutionStats.mode.startsWith('script_')}
+                    <div class="report-stats">
+                        <div class="stat-line success"><Check size={16} /> {i18n.lang === 'de'
+                            ? `Skript für ${lastExecutionStats.success} Datei(en) erstellt.`
+                            : `Script generated for ${lastExecutionStats.success} file(s).`}</div>
+                        {#if lastGeneratedScriptPath}<div class="mono-path">{lastGeneratedScriptPath}</div>{/if}
+                        <p>{i18n.lang === 'de'
+                            ? 'Es wurden keine Dateien verschoben oder kopiert. Prüfe und starte das Skript selbst.'
+                            : 'No files have been moved or copied. Review and run the script yourself.'}</p>
+                        {#if $caps.platform === 'windows'}
+                            <p>{i18n.lang === 'de'
+                                ? 'Die PowerShell-Ausführungsrichtlinie kann das Starten von .ps1-Dateien einschränken. Prüfe die gültige Richtlinie und beachte die Vorgaben deiner Organisation.'
+                                : 'The PowerShell execution policy may restrict running .ps1 files. Check the current policy and follow your organization’s guidance.'}</p>
+                        {/if}
+                        {#if (lastExecutionStats.error ?? 0) > 0}
+                            <div class="stat-line danger"><X size={16} /> {i18n.lang === 'de'
+                                ? `${lastExecutionStats.error} Datei(en) konnten nicht in das Skript aufgenommen werden.`
+                                : `${lastExecutionStats.error} file(s) could not be included in the script.`}</div>
+                        {/if}
+                    </div>
+                    <div class="report-choices">
+                        <button class="choice-btn secondary" onclick={() => handleReportChoice('keep_all')}>
+                            {i18n.t.batch.report_choice_keep_all}
+                        </button>
+                    </div>
+                {:else}
                 <div class="report-stats">
                     {#if lastExecutionStats.success > 0}
                         {#if lastExecutionStats.mode.includes('copy')}
@@ -1852,6 +1890,11 @@
                     {#if (lastExecutionStats.notPermitted ?? 0) > 0}
                         <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_not_permitted.replace('{count}', lastExecutionStats.notPermitted)}</div>
                     {/if}
+                    {#if (lastExecutionStats.error ?? 0) > 0}
+                        <div class="stat-line danger"><X size={16} /> {i18n.lang === 'de'
+                            ? `${lastExecutionStats.error} Datei(en) konnten nicht sortiert werden. Details stehen am jeweiligen Eintrag.`
+                            : `${lastExecutionStats.error} file(s) could not be sorted. See each item for details.`}</div>
+                    {/if}
                 </div>
 
                 {#if lastExecutionStats}
@@ -1859,7 +1902,8 @@
                                            + (lastExecutionStats.notWritable ?? 0)
                                            + (lastExecutionStats.notPermitted ?? 0)
                                            + (lastExecutionStats.locked ?? 0)
-                                           + (lastExecutionStats.copiedFallback ?? 0)}
+                                           + (lastExecutionStats.copiedFallback ?? 0)
+                                           + (lastExecutionStats.error ?? 0)}
                     {@const allSucceeded = problemCount === 0 && lastExecutionStats.success > 0}
                     <div class="report-choices">
                         {#if lastExecutionStats.success > 0}
@@ -1883,6 +1927,7 @@
                             </button>
                         {/if}
                     </div>
+                {/if}
                 {/if}
             </div>
         </div>

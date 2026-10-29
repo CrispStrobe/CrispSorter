@@ -1,12 +1,12 @@
-//! Read-only access to user-selected Android document providers.
+//! Read-only access to user-selected Android and iOS document providers.
 //!
 //! The plugin is also registered on other targets so its permissions exist
-//! in the generated ACL, but the commands are only implemented on Android.
+//! in the generated ACL; provider commands are implemented on mobile.
 
 use tauri::{plugin::TauriPlugin, Runtime};
 
-#[cfg(target_os = "android")]
-mod android {
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod mobile {
     use serde_json::{json, Value};
     use tauri::{plugin::PluginHandle, Runtime, State};
 
@@ -45,22 +45,28 @@ mod android {
     }
 }
 
+#[cfg(target_os = "ios")]
+tauri::ios_plugin_binding!(init_plugin_mobile_provider);
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     let builder = tauri::plugin::Builder::new("mobile-provider");
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     let builder = builder
         .invoke_handler(tauri::generate_handler![
-            android::pick_files,
-            android::pick_folder,
-            android::read_file
+            mobile::pick_files,
+            mobile::pick_folder,
+            mobile::read_file
         ])
         .setup(|app, api| {
             use tauri::Manager;
+            #[cfg(target_os = "android")]
             let handle = api.register_android_plugin(
                 "com.crispstrobe.mobileprovider",
                 "MobileProviderPlugin",
             )?;
-            app.manage(android::Provider(handle));
+            #[cfg(target_os = "ios")]
+            let handle = api.register_ios_plugin(init_plugin_mobile_provider)?;
+            app.manage(mobile::Provider(handle));
             Ok(())
         });
     builder.build()

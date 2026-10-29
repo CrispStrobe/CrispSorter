@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
-import { batchSourceKey, partitionProviderFiles, pickProviderDocuments, readProviderFile, PROVIDER_MAX_BYTES } from './mobileProvider';
+import { batchSourceKey, isProviderUri, partitionProviderFiles, pickProviderDocuments, readProviderFile, PROVIDER_MAX_BYTES } from './mobileProvider';
 
 describe('Android document providers', () => {
     beforeEach(() => invoke.mockReset());
@@ -11,6 +11,8 @@ describe('Android document providers', () => {
     it('keeps opaque URI identity, including case, and retains local path normalization', () => {
         expect(batchSourceKey('content://docs/document/A%3A1')).not.toBe(batchSourceKey('content://docs/document/a%3A1'));
         expect(batchSourceKey('content://docs/document/A%3A1')).toBe('uri:content://docs/document/A%3A1');
+        expect(isProviderUri('file:///provider/Case%20Document.txt')).toBe(true);
+        expect(batchSourceKey('file:///provider/Case%20Document.txt')).not.toBe(batchSourceKey('file:///provider/case%20Document.txt'));
         expect(batchSourceKey('C:\\Documents\\ONE.PDF')).toBe(batchSourceKey('c:/documents/one.pdf'));
     });
 
@@ -20,8 +22,9 @@ describe('Android document providers', () => {
             { uri: 'content://docs/document/a%3A2', name: 'big.txt', size: PROVIDER_MAX_BYTES + 1 },
             { uri: 'content://docs/document/a%3A3', name: 'video.mp4', size: 10 },
             { uri: '/local/doc.txt', name: 'doc.txt', size: 10 },
+            { uri: 'file:///provider/doc%20one.txt', name: 'doc one.txt', size: 5 },
         ];
-        expect(partitionProviderFiles(files)).toEqual({ accepted: [files[0]], unsupported: 2, oversized: 1 });
+        expect(partitionProviderFiles(files)).toEqual({ accepted: [files[0], files[4]], unsupported: 2, oversized: 1 });
     });
 
     it('passes through selected document URIs, reports cancellation and reads their bytes', async () => {
@@ -39,5 +42,12 @@ describe('Android document providers', () => {
     it('rejects local paths before invoking the native reader', async () => {
         await expect(readProviderFile('/tmp/copied.txt')).rejects.toThrow('provider URI');
         expect(invoke).not.toHaveBeenCalled();
+    });
+
+    it('reads the exact iOS provider URL through the native bridge', async () => {
+        const uri = 'file:///private/var/mobile/provider/Case%20document.txt';
+        invoke.mockResolvedValueOnce({ data: 'dGV4dA==' });
+        expect([...await readProviderFile(uri)]).toEqual([116, 101, 120, 116]);
+        expect(invoke).toHaveBeenCalledWith('plugin:mobile-provider|read_file', { uri });
     });
 });

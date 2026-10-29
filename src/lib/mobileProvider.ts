@@ -7,7 +7,7 @@ const PROVIDER_EXTENSIONS = new Set(['pdf', 'docx', 'epub', 'txt', 'md', 'html',
 export interface ProviderFile {
     uri: string;
     name: string;
-    /** Android may not know the size until the file has been opened. */
+    /** Providers may not know the size until the file has been opened. */
     size: number;
 }
 
@@ -17,7 +17,7 @@ interface PickerResult {
 }
 
 export function isProviderUri(path: string): boolean {
-    return /^content:\/\//i.test(path);
+    return /^(content|file):\/\//i.test(path);
 }
 
 /** Provider document IDs are opaque and case-sensitive. */
