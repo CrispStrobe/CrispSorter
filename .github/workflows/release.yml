@@ -85,7 +85,7 @@ jobs:
           xcrun altool --upload-package CrispSorter_0.13.0_ios-arm64.ipa --type ios \
             --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
             --bundle-version "$BUILD_NUMBER" --bundle-short-version-string 0.13.0 \
-            --api-key "$ASC_KEY_ID" --api-issuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
       - name: Assign the uploaded build to internal TestFlight
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
