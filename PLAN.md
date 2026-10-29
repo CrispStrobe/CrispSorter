@@ -1,11 +1,10 @@
 # CrispSorter — Development Plan
 
-## Library workflow improvement programme — 28 October 2026
+## Library workflow improvement programme — completed 29 October 2026
 
-User-authorized scope: complete all eight review recommendations and deliver
-working binaries for Linux, Windows, macOS, iOS and Android. Do not declare this
-programme complete while any implementation, evaluation or platform artifact is
-missing. Branch: `feat/library-workflows-20261028`.
+All eight authorized improvements and binaries for the five supported platform
+targets are complete on `feat/library-workflows-20261028`. The release is an
+unpublished draft; no App Store or TestFlight upload was performed.
 
 - [x] Retrieval: full matching passages for reranking, retained candidate windows,
   result-limit-aware cache, consistent fallback ranks; meaningful regressions.
@@ -13,7 +12,7 @@ missing. Branch: `feat/library-workflows-20261028`.
   clickable source navigation, honest missing-evidence behavior.
 - [x] Runtime: qualify immutable CrispEmbed 0.17.12 bindings/assets; report actual
   runtime identity and keep unsupported experimental engines unavailable.
-- [ ] OCR: task presets, selective weak-page/region reprocessing, engine comparison
+- [x] OCR: task presets, selective weak-page/region reprocessing, engine comparison
   on a frozen representative corpus; retain published and experimental distinctions.
 - [x] MoEdern: independent query/document role integration, original masks/scoring,
   corpus relevance/latency/storage comparison before default selection.
@@ -23,80 +22,44 @@ missing. Branch: `feat/library-workflows-20261028`.
   review status; inspect/edit/filter/export/use in sorting.
 - [x] Workflow UX: Inbox / Review / Library, document-context tools, processing
   presets and actionable incomplete-work indicators, preserved advanced controls.
-- [ ] Integrated validation and binaries: source-pinned checks, real packaged
+- [x] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Current gates (29 October): all five platform artifacts exist and their
-downloaded bytes match their final receipts. Native release suites passed
-1,490 Linux / 1,484 Windows / 1,495 macOS tests. Each desktop package executed
-version/doctor and scanned-PDF OCR with sibling libraries hidden. iOS signature
-and profile checks passed on Apple CI; a separate Android development-signed APK
-passes v2/v3 verification. Mobile device execution was not performed. The original
-15-case OCR panel is complete, including four declared timeouts; the separately
-frozen CPU pixel-budget confirmation and final combined release manifest remain
-open. Do not close the programme before these last items finish.
+The [release notes](RELEASE_NOTES_v0.13.0.md),
+[workflow guide](docs/library-workflows.md) and
+[measured model limits](docs/library-model-evaluation.md) describe the delivered
+behavior. Exact source/job identities, downloaded artifact hashes and native
+execution receipts are in
+[the combined manifest](tests/quality/results/2026-10-28/release-manifest.json).
 
-Checkpoint (02:06 UTC, 29 October): all eight implementation areas are on the branch.
-Frontend qualification is complete: 75 unit tests, zero Svelte errors
-(53 existing warnings), production build and all ten browser scenarios passed.
-The browser suite includes document context, cited evidence, OCR recovery,
-reviewed-field filtering/export, unapproved draft exclusion, source identity
-across preview switches and clearing stale classification choices. It uses
-explicit IPC/provider fixtures and does not claim native inference. The build
-and browser runs share the identical frontend source tree; their source/log
-hashes and initial failures are retained in tests/quality/results/2026-10-28.
+Validation completed: 75 frontend unit tests, zero Svelte errors (53 existing
+warnings), production build and ten browser scenarios; 1,490 Linux / 1,484
+Windows / 1,495 macOS native tests. Each final extracted desktop package passed
+version/doctor and scanned-PDF OCR with sibling build libraries hidden. Signed
+mobile archive checks passed; physical-device execution was not performed. The
+Android testing artifact is explicitly development-signed. Native CrispEmbed
+features are desktop capabilities; mobile client packages do not bundle it.
 
-The full CPU native regression run passed 1,470 tests (36 intentionally ignored),
-including search, evidence, metadata CAS/filtering and the experimental adapters.
-Its separate real OCR run caught an invalid historical model alias before any
-inference. The presets now use the pinned registry's actual `qwen2vl-3b` name;
-saved configurations using the old alias migrate at resolution. The initial
-failure is preserved in tests/quality/results/2026-10-28/native-run-v3.json.
-The narrower native run then passed 1,394 tests, including refreshed source
-anchors and metadata stale-write protection, but two drive tests incorrectly
-assumed optional native providers were compiled. Those test-only assumptions
-are corrected; native run 5 passed all 1,396 tests and its separate real-model test passed all four OCR presets. Production code is unchanged from the
-queued binary source `0eb1a37`.
+The frozen real OCR panel executed all 15 planned cases and retains its four
+timeouts. The separate native CPU pixel profile completed all nine Qwen cases
+on the same six pages, retaining its first exploratory case separately. Its
+82–185 second / 5,260–5,266 MiB measurements have explicit accuracy tradeoffs;
+defaults remain unchanged. MoEdern 27M matched the dense panel baseline, while
+other sizes missed the gate. SystemOne's 75% score missed its 90% gate. Both
+newer service integrations remain explicit, reviewed options. Initial failures
+and source/model/input hashes are preserved in the results directory.
 
-A source-bound OCR probe now compiles the exact production configuration,
-pipeline/cache functions, task presets and live test without unrelated index/UI
-dependencies. It passed four model-free tests after a 25-second admitted local
-compile; all four real-model cases now passed on a hosted CPU worker. Fragment hashes and
-a source-equivalence gate bind it to the queued binary source. The observed CPU timings were 7.54 seconds for Quick and 87.53–89.52 seconds
-for the Qwen tasks on the synthetic line image, excluding model downloads.
-These are wiring checks, not a corpus accuracy claim. This probe is
-not a full app build; the native suite and packaged-app checks remain separate.
+Heavy model work ran on hosted CPU workers; no weights or inference ran on the
+shared VPS. Native platform packaging used GitHub workers. Windows recovery
+fixed native Perl selection and Git Bash's conversion of MSVC slash flags;
+future Apple desktop jobs use macOS 15. Actual binary source revisions remain
+recorded rather than relabeled as later documentation commits.
 
-Actual CPU model evaluation is complete: MoEdern 27M matched the dense baseline
-on the frozen 12-query panel; 1.5M and 115M missed the predeclared quality gate.
-SystemOne scored 9/12 (75%), below its 90% gate. Both integrations remain opt-in;
-results and initial failures are in tests/quality/results/2026-10-28. Newer OCR
-engines remain deferred based on runtime compatibility and real-scan evidence.
-
-Linux cold-loader packaging has a passing independent ELF/Debian regression
-for SONAME aliases, modes, ownership and gzip/xz controls. The signed iOS IPA is downloaded and verified. Android built successfully but
-was unsigned; a separately development-signed APK now passes v2/v3 signature
-verification, with the original build retained for provenance. Linux is now qualified: 1,490 shipped-feature native tests and the four-preset
-OCR test passed; the extracted Debian package passed isolated version/doctor
-and scanned-PDF OCR checks. Its downloaded bytes match the source/checksum receipt.
-macOS is compiling its native tests; the targeted Windows retry is queued. The original Windows job
-failed before tests because OpenSSL selected MSYS Perl; the retry explicitly
-selects and validates native Strawberry Perl. That preflight passed; Git Bash then
-rewrote the slash-form math macro into a path, blocking Glint compilation. The
-second recovery uses the MSVC-supported dash form and validates it in a native
-process before Cargo. No application runtime code changed in these recoveries. The six-page real OCR comparison
-has verified all frozen inputs and completed all six Quick cases. Its first
-full-page Qwen case hit the 20-minute cap at 15.5 GB RSS; that failure is retained.
-The original panel continues, with a separately preregistered one-page native
-pixel-budget follow-up. These jobs run only on hosted CPU workers. Local compilation is stopped and its exclusive target cache
-was removed because the VPS lacks safe headroom. Public and App Store uploads
-remain disabled. Do not close this programme based on queued or prepared checks.
-
-Execution constraints: inspect average load, available memory and disk before
-heavy jobs on the shared VPS. Use the operator's Kaggle guide for model work when
-local capacity is insufficient; avoid the slow GitHub queue except where needed
-(notably native Apple/Windows/mobile packaging). Never substitute a prepared test
-or queued job for a successful result. Record initial failures and actual evidence.
+Execution constraints for future work: inspect average load, available memory
+and disk before heavy VPS jobs; follow the operator's Kaggle guide when local
+capacity is insufficient. Avoid extra GitHub queue work and preserve actual
+failures and artifact evidence. Never substitute prepared or queued checks for
+successful results.
 
 > **Full specs for completed phases** → [HISTORY.md](HISTORY.md)
 > **Technical patterns / pitfalls** → [LEARNINGS.md](LEARNINGS.md)
@@ -162,7 +125,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 
-- [ ] **Phase 2 — Linux + Windows** (~8-12 h, separate session) — RPATH / DLL colocation; each platform needs 1-2 release iterations. Opening prompt: `handover-prompts/session-prompt-crispembed-ci-matrix.md` (local-only — see .gitignore).
+- [x] **Phase 2 — Linux + Windows** — Qualified in v0.13.0: RPATH / DLL colocation, Linux SONAME aliases and final cold-package startup / scanned-PDF OCR. Source and checksum receipts are linked in the completed programme above.
 - [x] **Phase 3 — mobile** ✅ SHIPPED v0.4.0→v0.4.1 (2026-06-04/05).  Full feature parity on Android aarch64 + iOS.  No feature flags — one binary, all platforms.  Vendored OpenSSL; lance-linalg Android+iOS patch; responsive UI (bottom tab bar on phones); CI jobs for APK + IPA.  Sidecar commands (Ollama/llama.cpp/MLX/TTS spawn) compile everywhere but only surface in desktop UI.  `mistralrs` runs in-process on all platforms.  See [HISTORY.md](HISTORY.md) 2026-06-04 session log.
   - [x] **Android SAF handler** — `mobile_fs` Rust module with Tauri commands (`mobile_fs_list_folder`, `mobile_fs_read_file`, `mobile_fs_move_file`, `mobile_fs_create_dir`, `mobile_fs_delete`).  `SAFBridge.kt` in `src-tauri/android-src/` (copy into gen/android/ after init).  Desktop fallback via `std::fs`.
   - [x] **iOS security-scoped bookmarks** — `mobile_fs_start_access` / `mobile_fs_stop_access` Tauri commands.  Placeholder for objc2 FFI to `NSURL.startAccessingSecurityScopedResource()`.

@@ -57,8 +57,9 @@ The separate real-page comparison took 52–505 CPU seconds for Quick and up to
 1,200 seconds for Qwen, with four Qwen timeouts. Peak RAM reached about 5 GiB
 for Quick and 15 GiB for Qwen. Quick lost letter case and performed poorly on
 historical German print; the table prompt did not outperform Quick on the
-receipt's partial reference. Review recognized text and table structure. A
-separate pixel-budget profile is being confirmed; see the
+receipt's partial reference. Review recognized text and table structure. An
+optional pixel-budget profile has now completed all nine Qwen cases on the six
+frozen pages, with explicit accuracy tradeoffs; see the
 [complete measurements and limits](library-model-evaluation.md#preregistered-released-engine-real-scan-comparison).
 
 Retry weak pages skips proofread pages and manually corrected text. Focus a text
@@ -139,3 +140,32 @@ The qualified desktop packages include the pinned native CrispEmbed runtime.
 The Android and iOS packages are mobile client builds without that native
 runtime; native OCR presets require a binary reporting that capability. Their
 signature/archive checks are separate from physical-device execution.
+
+The resource/accuracy measurements came from a Linux CPU worker; performance on
+other hardware and desktop platforms varies. For this explicit CPU profile,
+set the native pixel budget before starting
+the app. This does not rewrite your saved OCR configuration. Linux:
+
+```sh
+CRISPEMBED_MAX_PIXELS=262144 QWEN2VL_OCR_FORCE_CPU=1 crispsorter
+```
+
+Windows PowerShell, from the extracted portable directory:
+
+```powershell
+$env:CRISPEMBED_MAX_PIXELS = '262144'
+$env:QWEN2VL_OCR_FORCE_CPU = '1'
+.\crispsorter.exe
+```
+
+macOS, after installing the application:
+
+```sh
+CRISPEMBED_MAX_PIXELS=262144 QWEN2VL_OCR_FORCE_CPU=1 /Applications/CrispSorter.app/Contents/MacOS/crispsorter
+```
+
+Close an existing app process before changing its environment. This profile
+still used about 5.1 GiB peak RAM on the frozen cases. It reduced latency but
+lost fine-text accuracy, especially on degraded print; it is an explicit choice,
+not a new default or a general RAM guarantee. See the
+[full profile results](library-model-evaluation.md#separate-native-cpu-pixel-budget-profile).

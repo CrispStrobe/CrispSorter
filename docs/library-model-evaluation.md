@@ -9,8 +9,9 @@ integration/adoption panel, not a claim about arbitrary personal libraries.
 Inputs and exact model/source identities are in
 [`tests/quality`](../tests/quality). Raw retrieval results, provenance and initial
 failures are retained in [`results/2026-10-28`](../tests/quality/results/2026-10-28).
-Model work ran on a separate CPU worker with two inference threads; no model
-weights were downloaded to the shared development VPS.
+Retrieval and decision model work used two inference threads on a separate CPU
+worker; OCR hardware/configurations are retained with their own measurements.
+No model weights were downloaded to the shared development VPS.
 
 ## Retrieval
 
@@ -170,10 +171,44 @@ at 5,266 MiB peak RSS, with CER 0.0075, CER without spaces 0.0092 and word recal
 0.9942. It uses the same production OCR code and released native archive; no
 application runtime or default changed.
 
-This first result is exploratory and limited to one English page. The separately
-preregistered remaining five-page confirmation is running, including every
-original Qwen preset assignment. It retains the first result separately rather
-than rerunning or replacing unfavorable original outcomes. Do not infer a
-universal memory bound or recognition guarantee from this one page. Plan,
-measurements and source provenance are in `ocr-cpu-followup.json`,
-`ocr-cpu-followup-provenance.json` and `tests/quality/ocr-cpu-confirmation.json`.
+The first English result remains explicitly exploratory. The preregistered
+remaining five-page confirmation completed all eight cases without timeouts.
+Together the two phases cover all nine Qwen assignments on the six original
+pages. They used the same native library, model files, input/reference hashes,
+scorer, prompts and per-page generation limits; only the native pixel budget
+changed. Source equivalence binds both phases to binary source `0eb1a37`.
+
+| Page / task | CER | Word recall | CPU seconds | Peak RSS, MiB |
+| --- | ---: | ---: | ---: | ---: |
+| English prose (exploratory) / multilingual | 0.0075 | 0.9942 | 94 | 5,266 |
+| German Antiqua / multilingual | 0.0228 | 0.9235 | 125 | 5,265 |
+| German Fraktur / multilingual | 0.0603 | 0.8523 | 107 | 5,265 |
+| English table / multilingual | 0.0862 | 0.9049 | 185 | 5,266 |
+| Degraded German / multilingual | 0.1959 | 0.6203 | 98 | 5,261 |
+| Receipt photo / multilingual | 0.3217 | 0.5088 | 82 | 5,260 |
+| English table / tables | 0.1744 | 0.8291 | 180 | 5,266 |
+| Receipt photo / tables | 0.4922 | 0.5088 | 91 | 5,260 |
+| Degraded German / difficult | 0.1959 | 0.6203 | 98 | 5,261 |
+
+Observed times were 82–185 seconds and peaks were 5,260–5,266 MiB, excluding
+initial downloads and including fresh context setup per case. These are sample
+measurements, not bounds for other pages, hardware or advanced configurations.
+The UI preset's 4,096-token limit also differs from the frozen per-page limits
+used here. The binding does not expose decoded token counts, so generation-cap
+status is unknown; output length ratios and timeouts are retained.
+
+The resource saving has an accuracy cost. Fraktur CER rose from 0.0283 to 0.0603,
+and degraded-print CER from 0.0412 to 0.1959. The budgeted table prompt had CER
+0.1744 versus 0.0862 for the ordinary multilingual prompt. Receipt word recall
+was 0.5088 for both budgeted prompts, below Quick's 0.7193 on the partial
+reference. Difficult cleanup again matched the ordinary prompt's degraded-page
+score. Do not promote any of these observations to a universal task winner.
+
+**Adoption decision:** retain the existing defaults. Offer the pixel limit as
+an explicit desktop CPU resource profile, with its measured task limits. Use
+full-resolution or selected-region retries when fine print matters and review
+recognized text against the source. Keep the original failed/slow runs alongside
+the follow-up. Plans, complete derived results, input/model hashes, license
+attribution and separate source receipts are in `tests/quality`; the combined
+`ocr-cpu-profile-summary.json` preserves each case's exploratory/confirmation
+phase. No model weights or inference ran on the development VPS.

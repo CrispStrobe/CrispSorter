@@ -1,0 +1,234 @@
+{
+  "schema": "crispsorter-qualified-release-set-v1",
+  "version": "0.13.0",
+  "updated_at_utc": "2026-10-29T06:10:35.271123+00:00",
+  "draft_release": "https://github.com/CrispStrobe/CrispSorter/releases/tag/untagged-62e770b4ff7a5e476665",
+  "published": false,
+  "source_branch": "feat/library-workflows-20261028",
+  "artifact_set_complete": true,
+  "programme_complete": true,
+  "runtime_lock": {
+    "version": "0.17.12",
+    "source_commit": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+    "ggml_commit": "890278a8342c620197c90e702e1188bcab94f510",
+    "release_url": "https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.12",
+    "assets": {
+      "crispembed-android-arm64-v8a.tar.gz": {
+        "sha256": "a02ecbfc37906ba04bc6867dc7c7af753315ae0ad96d07ed62e102815ad21555",
+        "bytes": 18323125
+      },
+      "crispembed-android-armeabi-v7a.tar.gz": {
+        "sha256": "fa233e95b8631dac5fe9f5d93f9ff18cf4feeaa4d6e70d888147ec36ee916c02",
+        "bytes": 17164555
+      },
+      "crispembed-ios-arm64.tar.gz": {
+        "sha256": "a54fac7c4cf7042f8c81cf239d5c79a1845e115ac43608fa7a45cb303f5c07b8",
+        "bytes": 3597973
+      },
+      "crispembed-linux-arm64.tar.gz": {
+        "sha256": "38cbaaa020cd17d4cd4f0b78003c79fba7a1051628b06b8e39734c39f15032bb",
+        "bytes": 10085209
+      },
+      "crispembed-linux-x86_64.tar.gz": {
+        "sha256": "1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63",
+        "bytes": 11769149
+      },
+      "crispembed-macos-arm64.tar.gz": {
+        "sha256": "6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56",
+        "bytes": 8902248
+      },
+      "crispembed-windows-x86_64.zip": {
+        "sha256": "49a1e4a89bf6f7d2df100794914f15aeb9a2b69513c3dbfb93364208994cc717",
+        "bytes": 7933796
+      }
+    }
+  },
+  "platforms": {
+    "linux-x86_64": {
+      "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+      "build_run": 40784963290,
+      "build_job": 123155730138,
+      "build_job_succeeded": true,
+      "native_regressions_passed": 1490,
+      "native_crispembed_included": true,
+      "source_receipt": {
+        "filename": "CrispSorter_0.13.0_linux-x86_64.receipt.json",
+        "sha256": "347a2d969b1338fd0d84f88949ba6b5c99f8c10f96b043e2b80aacf3098a8052",
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_linux-x86_64.receipt.json"
+      },
+      "artifacts": [
+        {
+          "filename": "CrispSorter_0.13.0_amd64.deb",
+          "bytes": 216940542,
+          "sha256": "9e87c7db828fae1d1f30c544e2de1ac35b4b93918537b469068e70e133201856",
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_amd64.deb",
+          "downloaded_bytes_verified": true
+        }
+      ],
+      "package_execution": "Extracted final package version/doctor and image-only PDF OCR, with sibling build libraries hidden; macOS DMG is checksummed and the matching app archive is executed"
+    },
+    "windows-x86_64": {
+      "app_source": "d3cb9da9d4d89f6b0a0a1cfaf61f26161ae25b75",
+      "build_run": 40804023540,
+      "build_job": 123218551796,
+      "build_job_succeeded": true,
+      "native_regressions_passed": 1484,
+      "native_crispembed_included": true,
+      "source_receipt": {
+        "filename": "CrispSorter_0.13.0_windows-x86_64.receipt.json",
+        "sha256": "69eeee83caf9258e965b33a5d4c29fd81e8e40b3b9f31f29a162940c67f2acd2",
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_windows-x86_64.receipt.json"
+      },
+      "artifacts": [
+        {
+          "filename": "CrispSorter_0.13.0_x64-windows-portable.zip",
+          "bytes": 230104303,
+          "sha256": "e85fbdf5bd505da7a1a82366478c58575a4b31cf43d31be8514a343d19574134",
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_x64-windows-portable.zip",
+          "downloaded_bytes_verified": true
+        }
+      ],
+      "package_execution": "Extracted final package version/doctor and image-only PDF OCR, with sibling build libraries hidden; macOS DMG is checksummed and the matching app archive is executed",
+      "authenticode_certificate_present": false
+    },
+    "macos-arm64": {
+      "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+      "build_run": 40784963290,
+      "build_job": 123155730263,
+      "build_job_succeeded": true,
+      "native_regressions_passed": 1495,
+      "native_crispembed_included": true,
+      "source_receipt": {
+        "filename": "CrispSorter_0.13.0_macos-arm64.receipt.json",
+        "sha256": "dfd17c8ed1edf5faaf234021643cb439d420e637e43f8ce49442aaa8893027f8",
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_macos-arm64.receipt.json"
+      },
+      "artifacts": [
+        {
+          "filename": "CrispSorter_0.13.0_aarch64.dmg",
+          "bytes": 157457974,
+          "sha256": "a71648a76b554fd2d2341f40be1348386d38cffbf88ba4cebd07744ee0364f2f",
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_aarch64.dmg",
+          "downloaded_bytes_verified": true
+        },
+        {
+          "filename": "CrispSorter_aarch64.app.tar.gz",
+          "bytes": 142333465,
+          "sha256": "e993e5ad0c5af707d3c5d5bb37e39fe492236438ab5ac6f96d0304ab23c41999",
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_aarch64.app.tar.gz",
+          "downloaded_bytes_verified": true
+        }
+      ],
+      "package_execution": "Extracted final package version/doctor and image-only PDF OCR, with sibling build libraries hidden; macOS DMG is checksummed and the matching app archive is executed",
+      "signing": "Ad-hoc bundle signature; Developer ID notarization was not performed"
+    },
+    "android-arm64": {
+      "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+      "build_run": 40784963290,
+      "build_job": 123155729858,
+      "build_job_succeeded": true,
+      "native_regressions_passed": null,
+      "native_crispembed_included": false,
+      "source_receipt": {
+        "filename": "CrispSorter_0.13.0_android-arm64.receipt.json",
+        "sha256": "c52eac10f2550f3b4a065a2b43db39cd22581289fb900d2c1b6be04f9687a025",
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_android-arm64.receipt.json"
+      },
+      "artifacts": [
+        {
+          "filename": "CrispSorter_0.13.0_android-aarch64-dev-signed.apk",
+          "bytes": 341886681,
+          "sha256": "415a063d7e004ebafb1683395141e7860fafef02a803715a6ce3803ea53cef82",
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_android-aarch64-dev-signed.apk",
+          "downloaded_bytes_verified": true
+        }
+      ],
+      "signing": "development certificate; not a production/store identity",
+      "unsigned_build_artifact": {
+        "filename": "CrispSorter_0.13.0_android-aarch64.apk",
+        "bytes": 341805422,
+        "sha256": "d250b91658692d0015338f338220ffdccba9bba931404645cc545aa009e6d69c",
+        "inspection": "APK arm64 native libraries and manifest present",
+        "native_libraries": [
+          "libc++_shared.so",
+          "libtauri_app_lib.so"
+        ]
+      },
+      "signing_receipt": "CrispSorter_0.13.0_android-aarch64-dev-signed.signing.json",
+      "device_execution": false
+    },
+    "ios-arm64": {
+      "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+      "build_run": 40784963290,
+      "build_job": 123155730070,
+      "build_job_succeeded": true,
+      "native_regressions_passed": null,
+      "native_crispembed_included": false,
+      "source_receipt": {
+        "filename": "CrispSorter_0.13.0_ios-arm64.receipt.json",
+        "sha256": "f6ef96aec71093dbcae20c854b8f028feb7b30e47c3034d1672a8b207297ed2f",
+        "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_ios-arm64.receipt.json"
+      },
+      "artifacts": [
+        {
+          "filename": "CrispSorter_0.13.0_ios-arm64.ipa",
+          "bytes": 91031110,
+          "sha256": "39d272a61ad68d3c676fc47ef0ebfcb8786e876200211bdc5f8b9a3baf83f14b",
+          "url": "https://github.com/CrispStrobe/CrispSorter/releases/download/untagged-62e770b4ff7a5e476665/CrispSorter_0.13.0_ios-arm64.ipa",
+          "downloaded_bytes_verified": true
+        }
+      ],
+      "signing": "App Store distribution signature/profile verified on Apple worker; no Store/TestFlight upload",
+      "device_execution": false
+    }
+  },
+  "qualification_limits": [
+    "Mobile signature/archive verification does not establish physical-device execution",
+    "Browser tests use explicit IPC/provider fixtures; native regression and packaged executable checks are separate",
+    "Original real OCR panel retains four timeouts; model quality is not universal",
+    "Windows was recovered through a targeted workflow run; the original all-platform run retains its original Windows failure",
+    "CPU pixel profile is optional: Fraktur/degraded-print accuracy regressed versus full resolution; measured memory/time are not universal bounds"
+  ],
+  "evaluation_set_complete": true,
+  "frontend_validation": {
+    "unit_tests_passed": 75,
+    "browser_scenarios_passed": 10,
+    "svelte_errors": 0,
+    "existing_svelte_warnings": 53,
+    "source_tree": "6bcbeeaf4b5961b29cb01602e6f0c01a7d64d6a1",
+    "scope": "Browser scenarios use explicit IPC/provider fixtures; production build and typechecking passed."
+  },
+  "model_evaluation": {
+    "retrieval": "MoEdern 27M matched the frozen dense baseline; smaller/larger arms missed the gate; opt-in unchanged",
+    "decisions": "SystemOne 9/12 correct, below its 90% gate; human-reviewed opt-in",
+    "original_real_ocr": {
+      "cases": 15,
+      "completed_inference": 11,
+      "timeouts": 4,
+      "results": "tests/quality/results/2026-10-28/ocr-real-original.json"
+    },
+    "cpu_pixel_profile": {
+      "cases": 9,
+      "completed_inference": 9,
+      "timeouts": 0,
+      "exploratory_cases": 1,
+      "confirmation_cases": 8,
+      "pixels": 262144,
+      "seconds_range": [
+        82.02048328699993,
+        185.04756931299994
+      ],
+      "peak_rss_mib_range": [
+        5260.21484375,
+        5266.3671875
+      ],
+      "automatic_default_changed": false,
+      "results": "tests/quality/results/2026-10-28/ocr-cpu-profile-summary.json"
+    }
+  },
+  "production_source_equivalence": {
+    "frontend": "Identical src tree across original binary source, Windows recovery and completed branch",
+    "native_delta_from_original_binary_source": "Only optional-provider expectations inside src-tauri/src/drives/mod.rs test modules; application runtime code, Cargo dependencies and Tauri configuration unchanged",
+    "windows_recovery": "Build workflow selects native Perl and preserves -D_USE_MATH_DEFINES across Git Bash; actual source/job recorded per platform"
+  }
+}
