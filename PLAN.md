@@ -1,5 +1,29 @@
 # CrispSorter — Development Plan
 
+## Follow-up improvement programme — 29 October 2026
+
+User requested all six items, with mobile/device validation, OCR quality and
+resource controls, newer CrispEmbed OCR evaluation, search/citation quality,
+review/sorting safety, and production signing/distribution. Heavy work must be
+admitted against shared VPS load and memory, otherwise use the operator Kaggle
+guide. Avoid unnecessary GitHub CI; real platform builds and simulator work need
+native workers. Do not report an item complete solely because code is prepared.
+
+- [ ] Mobile parity and actual Android/iOS device or simulator checks.
+- [ ] OCR resource controls, region retries and meaningful native verification.
+- [ ] Evaluate newer CrispEmbed OCR engines against the released ABI and evidence.
+- [ ] Multilingual/long-document retrieval and citation navigation/coverage.
+- [ ] Bulk evidence review, conflict handling, inspectable and safe sort moves.
+- [ ] Production signing/notarization and automated mobile smoke coverage.
+- [ ] Integrated validation and updated platform artifacts; retain actual limitations.
+
+The Android production signing identity has been created separately from the
+development key, with private material outside Git and signing secrets configured.
+The canonical Apple Distribution certificate remains untouched. A read-only Apple
+certificate inventory is queued because the local API key is not readable to this
+account. The user reports no existing Windows Authenticode certificate; a trusted
+certificate requires external identity verification and may require a purchase.
+
 ## Library workflow improvement programme — completed 29 October 2026
 
 All eight authorized improvements and binaries for the five supported platform

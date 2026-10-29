@@ -14,8 +14,27 @@ export interface MetadataField {
 }
 
 export function approvedValues(fields: MetadataField[]): Record<string, string> {
-    return Object.fromEntries(fields.filter(f => f.review_status === 'accepted' || f.review_status === 'corrected')
-        .map(f => [f.label.toLowerCase(), f.normalized_value]));
+    const groups = reviewedGroups(fields);
+    return Object.fromEntries([...groups].filter(([, values]) => values.size === 1)
+        .map(([label, values]) => [label, [...values][0]]));
+}
+
+function reviewedGroups(fields: MetadataField[]): Map<string, Set<string>> {
+    const groups = new Map<string, Set<string>>();
+    for (const field of fields) {
+        if (field.review_status !== 'accepted' && field.review_status !== 'corrected') continue;
+        const label = field.label.toLowerCase();
+        const values = groups.get(label) ?? new Set<string>();
+        values.add(field.normalized_value);
+        groups.set(label, values);
+    }
+    return groups;
+}
+
+/** A template has one value per label; silently choosing a different value
+ * when several approved fields share a label would misroute the document. */
+export function conflictingApprovedLabels(fields: MetadataField[]): string[] {
+    return [...reviewedGroups(fields)].filter(([, values]) => values.size > 1).map(([label]) => label);
 }
 
 export function applyFieldTemplate(template: string, fields: Record<string, string>): string {

@@ -121,9 +121,65 @@ pub async fn index_review_field(
     Ok(fields)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldReview {
+    field_id: String,
+    normalized_value: String,
+    expected_revision: u64,
+}
+
+/// Apply all reviews to a copy before writing, so one stale or invalid field
+/// cannot leave a partially approved batch.
+fn approve_batch(fields: &mut Vec<FieldEvidence>, reviews: Vec<FieldReview>) -> Result<(), String> {
+    if reviews.is_empty() || reviews.len() > 500 { return Err("Select between 1 and 500 fields".into()); }
+    let mut updated = fields.clone();
+    let mut seen = std::collections::HashSet::new();
+    for review in reviews {
+        if !seen.insert(review.field_id.clone()) { return Err("A field was selected twice".into()); }
+        if review.normalized_value.len() > 4096 || review.normalized_value.trim().is_empty() {
+            return Err("A field value must contain 1–4096 bytes".into());
+        }
+        let field = updated.iter_mut().find(|f| f.id == review.field_id).ok_or("Field is no longer present; reload before reviewing")?;
+        if field.revision != review.expected_revision { return Err("A field changed elsewhere; reload before reviewing".into()); }
+        if field.review_status != "suggested" { return Err("Only suggested fields can be bulk approved".into()); }
+        field.normalized_value = review.normalized_value.trim().into();
+        field.review_status = if field.normalized_value == field.original_value { "accepted" } else { "corrected" }.into();
+        field.revision = field.revision.checked_add(1).ok_or("Field revision overflow")?;
+    }
+    *fields = updated;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn index_approve_fields(state: State<'_, AppState>, doc_id: String, reviews: Vec<FieldReview>) -> Result<Vec<FieldEvidence>, String> {
+    let lock = state.index.lock().await;
+    let local = lock.local.clone().ok_or("Local index is not ready")?;
+    let metadata = local.document_metadata(&doc_id).await.map_err(|e| e.to_string())?;
+    let mut fields = read(&metadata);
+    approve_batch(&mut fields, reviews)?;
+    let mut updated = metadata.clone();
+    updated["field_evidence"] = serde_json::json!(fields);
+    local.update_field_evidence(&doc_id, &metadata, &updated).await.map_err(|e| e.to_string())?;
+    super::result_cache::invalidate();
+    Ok(fields)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_review_is_atomic_on_stale_or_duplicate_fields() {
+        let original = from_extraction("doc", "Alice and Bob", "model", vec![("name".into(), "Alice".into(), 0.9), ("name".into(), "Bob".into(), 0.8)]);
+        let mut fields = original.clone();
+        let review = |index: usize, revision| FieldReview { field_id: original[index].id.clone(), normalized_value: original[index].original_value.clone(), expected_revision: revision };
+        assert!(approve_batch(&mut fields, vec![review(0, 0), review(1, 1)]).is_err());
+        assert_eq!(fields, original);
+        assert!(approve_batch(&mut fields, vec![review(0, 0), review(0, 0)]).is_err());
+        assert_eq!(fields, original);
+        approve_batch(&mut fields, vec![review(0, 0), review(1, 0)]).unwrap();
+        assert!(fields.iter().all(|f| f.review_status == "accepted" && f.revision == 1));
+    }
     #[test]
     fn values_retain_original_text_and_unicode_source_offsets() {
         let fields = from_extraction("doc", "Ä intro\u{c}Total: €  42,50", "model", vec![("total".into(), "€  42,50".into(), 0.9)]);
