@@ -45,6 +45,10 @@ def configure_args(target, source, build, ndk=None):
             '-DBUILD_SHARED_LIBS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON',
             '-DGGML_NATIVE=OFF', '-DCRISPEMBED_NATIVE=OFF',
             '-DGGML_BLAS=OFF', '-DGGML_LLAMAFILE=OFF']
+    # The pinned CMake file auto-discovers optional CrispASR siblings. Keep
+    # this build's provenance limited to the two verified source commits.
+    for component in ('AUDIO', 'PUNC', 'LID', 'TRUECASE'):
+        args.append(f'-DCRISP_{component}_DIR={build / "disabled-optional" / component}')
     if target == 'android-arm64':
         if not ndk:
             raise ValueError('ANDROID_NDK_HOME or --ndk is required for Android')

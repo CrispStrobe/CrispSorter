@@ -62,6 +62,20 @@ class BuildTests(unittest.TestCase):
                     mobile.build_runtime(source, source / 'build', 'android-arm64', 1, None)
                 check.assert_not_called()
 
+    def test_android_disables_unpinned_optional_siblings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ndk = Path(temp)
+            toolchain = ndk / 'build/cmake/android.toolchain.cmake'
+            toolchain.parent.mkdir(parents=True)
+            toolchain.touch()
+            clang = ndk / 'toolchains/llvm/prebuilt/linux-x86_64/bin/clang'
+            clang.parent.mkdir(parents=True)
+            clang.touch()
+            args = mobile.configure_args('android-arm64', Path('/source'), Path('/out'), ndk)
+            for component in ('AUDIO', 'PUNC', 'LID', 'TRUECASE'):
+                self.assertIn(f'-DCRISP_{component}_DIR=/out/disabled-optional/{component}', args)
+            self.assertIn('-DBUILD_SHARED_LIBS=OFF', args)
+
     def test_rejects_incomplete_ndk_before_configure(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError, 'NDK is incomplete'):
