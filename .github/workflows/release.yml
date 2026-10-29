@@ -17,7 +17,7 @@ on:
       platform:
         description: 'Build all platforms, or retry one desktop platform without restarting the others. Single-platform retries never publish.'
         type: choice
-        options: [all, windows, macos, testflight, testflight_resume]
+        options: [all, windows, macos, testflight, testflight_resume, certificate_audit]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -44,6 +44,24 @@ env:
   APPLE_API_ISSUER_ID: 5f618ba3-98ef-42ad-835c-fbbef6c76cf5
 
 jobs:
+  certificate-audit:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'certificate_audit' && !inputs.publish && !inputs.mac_appstore }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'cryptography==44.0.3'
+      - name: Inspect existing Apple certificate types
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
+        run: python scripts/audit_apple_certificates.py
+
   testflight-existing:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore }}
     permissions:
