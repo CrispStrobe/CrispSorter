@@ -170,24 +170,16 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
             echo '::error::Tag does not match application version'; exit 1
           fi
+          SOURCE=$(git rev-parse HEAD)
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
             python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["isDraft"] else 1)' "$RUNNER_TEMP/release.json" || { echo '::error::Existing release is public; refusing to overwrite assets'; exit 1; }
           else
             # Distinguish an absent release from auth/network errors before creating it.
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/release-api.json" 2> "$RUNNER_TEMP/release-api.err" && { echo '::error::Unexpected release lookup discrepancy'; exit 1; }
             grep -q 'HTTP 404' "$RUNNER_TEMP/release-api.err" || { cat "$RUNNER_TEMP/release-api.err" >&2; exit 1; }
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title "$TAG" --notes 'Automated draft release'
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE" --draft --title "$TAG" --notes 'Automated draft release'
           fi
-          SOURCE=$(git rev-parse HEAD)
-          # A draft can name a tag that GitHub has not created yet. Existing
-          # tags take precedence; otherwise require an exact SHA draft target.
-          if TAG_COMMIT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2> "$RUNNER_TEMP/tag.err"); then
-            [ "$TAG_COMMIT" = "$SOURCE" ] || { echo '::error::Release tag points to a different commit'; exit 1; }
-          else
-            grep -q 'HTTP 404' "$RUNNER_TEMP/tag.err" || { cat "$RUNNER_TEMP/tag.err" >&2; exit 1; }
-            TARGET=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
-            [ "$TARGET" = "$SOURCE" ] || { echo '::error::Draft target must be the exact current commit'; exit 1; }
-          fi
+          python3 scripts/check_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --source "$SOURCE"
 
   release-required:
     needs: release-draft-preflight
