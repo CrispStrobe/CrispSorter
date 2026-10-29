@@ -28,7 +28,7 @@ async function fixtures(page: Page) {
         const callbacks = new Map<number, Function>();
         const requests = new Map<number, any>();
         const capabilities = {
-            platform: 'linux', desktop: true, mobile: false, sidecars: false,
+            platform: 'linux', desktop: true, mobile: false, sidecars: true,
             dev_tools: false, aitoolkit: false, cloud_backup: false,
             local_llm: false, launch_local_servers: false,
             ocr: true, ocr_tiers: ['crispembed'], pdf_render: true, pdf_zpdf: true,
@@ -38,6 +38,20 @@ async function fixtures(page: Page) {
             fuse: false, audio_glint: false, audio_ffmpeg: false, direct_print: false, share_sheet: false,
             flags: ['build:ocr', 'build:desktop'],
         };
+        // Exercise the shipped mobile feature set, not just a narrow desktop
+        // viewport. Real simulator/device runs are a separate qualification.
+        const fixturePlatform = new URLSearchParams(location.search).get('fixturePlatform');
+        if (fixturePlatform === 'ios' || fixturePlatform === 'android') {
+            Object.assign(capabilities, {
+                platform: fixturePlatform, desktop: false, mobile: true, sidecars: false,
+                // Android can have the pure-Rust ocrs models installed without
+                // having the CrispEmbed-only workbench engine.
+                ocr: fixturePlatform === 'android',
+                ocr_tiers: fixturePlatform === 'android' ? ['ocrs'] : [],
+                pdf_render: false, pdf_zpdf: false,
+                flags: fixturePlatform === 'android' ? ['build:ocr'] : [],
+            });
+        }
         root.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
         root.__TAURI_INTERNALS__ = {
             metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
@@ -135,6 +149,24 @@ test('mobile keeps the three workflow destinations and capability-gated tools', 
     await page.screenshot({ path: 'test-results/mobile-workflow.png', fullPage: true });
 });
 
+for (const platform of ['ios', 'android']) {
+    test(`${platform} mobile client hides unavailable native OCR while retaining navigation`, async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`/?fixturePlatform=${platform}`);
+        const nav = page.locator('nav.mobile-nav');
+        await expect(nav.getByRole('button', { name: 'Inbox', exact: true })).toBeVisible();
+        await expect(nav.getByRole('button', { name: 'Review', exact: true })).toBeVisible();
+        await expect(nav.getByRole('button', { name: 'Library', exact: true })).toBeVisible();
+        await nav.getByRole('button', { name: 'Tools', exact: true }).click();
+        const tools = page.locator('#mobile-tools-menu');
+        await expect(tools.getByRole('button', { name: 'OCR', exact: true })).toHaveCount(0);
+        await expect(tools.getByRole('button', { name: 'Chat', exact: true })).toBeVisible();
+        await tools.getByRole('button', { name: 'Chat', exact: true }).click();
+        await expect(page.locator('#mobile-tools-menu')).not.toBeVisible();
+        await expect(page.getByText('Pending scan.png', { exact: true })).toHaveCount(0);
+    });
+}
+
 test('document OCR action carries the selected Inbox file into the workbench', async ({ page }) => {
     await page.locator('.batch-container').getByText('Pending scan.png', { exact: true }).first().click();
     await page.getByRole('button', { name: 'OCR selected document', exact: true }).click();
@@ -189,13 +221,16 @@ test('OCR retries only weak pages and preserves edits through crop failure and u
     await page.getByRole('button', { name: 'OCR', exact: true }).first().click();
     const workbench = page.locator('.ocrwb');
     await workbench.getByRole('button', { name: 'Open document…', exact: true }).first().click();
+    await workbench.getByLabel('OCR task preset').selectOption('quick');
+    await expect(workbench.getByLabel('CPU pixel budget', { exact: true })).toBeDisabled();
     await workbench.getByLabel('OCR task preset').selectOption('multilingual');
+    await workbench.getByLabel('CPU pixel budget', { exact: true }).check();
     await workbench.getByRole('button', { name: 'Run OCR (all pages)', exact: true }).click();
     await expect(workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true })).toBeEnabled();
     await page.evaluate(() => { (window as any).__fixtureCalls = []; });
     await workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'ocr_page_regions').length)).toBe(1);
-    expect(await page.evaluate(() => (window as any).__fixtureCalls.find((c: any) => c.command === 'ocr_page_regions').args)).toMatchObject({ pagePath: '/fixtures/page1.png', preset: 'multilingual' });
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.find((c: any) => c.command === 'ocr_page_regions').args)).toMatchObject({ pagePath: '/fixtures/page1.png', preset: 'multilingual', cpuPixelBudget: true });
     const text = workbench.locator('textarea').first();
     await text.fill('My proofread warranty text.');
     await page.evaluate(() => { (window as any).__fixtureRegionEmpty = true; });
@@ -204,6 +239,9 @@ test('OCR retries only weak pages and preserves edits through crop failure and u
     await expect(text).toHaveValue('My proofread warranty text.');
     await page.evaluate(() => { (window as any).__fixtureRegionEmpty = false; });
     await workbench.getByRole('button', { name: 'Retry selected region', exact: true }).click();
+    await expect(workbench).toContainText('My proofread warranty text.');
+    await expect(workbench).toContainText('Corrected crop text.');
+    await workbench.getByRole('button', { name: 'Apply retry', exact: true }).click();
     await expect(text).toHaveValue('Corrected crop text.');
     await workbench.getByRole('button', { name: 'Undo OCR', exact: true }).click();
     await expect(text).toHaveValue('My proofread warranty text.');

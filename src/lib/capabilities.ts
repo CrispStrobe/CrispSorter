@@ -21,6 +21,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { writable, derived, get } from 'svelte/store';
+import { supportsOcrWorkbench } from './workflow';
 
 export interface Capabilities {
 	platform: string;
@@ -106,8 +107,13 @@ export const caps = writable<Capabilities>(UNKNOWN);
 /** True once the backend has answered — lets views hold a spinner rather than flashing an empty state. */
 export const capsLoaded = writable(false);
 
-/** The `build:*` keys, for `visibleTabs()`. Merged with the AIToolkit `service:*` keys at the call site. */
-export const buildFlags = derived(caps, ($caps) => new Set($caps.flags));
+/** Build keys for tab visibility, including the workbench derived from reported OCR tiers. */
+export const buildFlags = derived(caps, ($caps) => {
+    const flags = new Set($caps.flags);
+    flags.delete('build:ocr-workbench');
+    if (supportsOcrWorkbench($caps)) flags.add('build:ocr-workbench');
+    return flags;
+});
 
 let probe: Promise<Capabilities> | null = null;
 

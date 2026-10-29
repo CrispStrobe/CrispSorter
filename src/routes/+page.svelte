@@ -1,6 +1,6 @@
 <script lang="ts">
     import { loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
-    import { documentToolRequest } from '$lib/workflow';
+    import { documentToolRequest, supportsOcrWorkbench } from '$lib/workflow';
     import { uriToPath } from '$lib/components/viewer/types';
     import WorkflowSummary from '$lib/components/WorkflowSummary.svelte';
     import { onMount } from 'svelte';
@@ -32,7 +32,7 @@
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
     import { getBackendStatus, type BackendStatus } from '$lib/secretBackend';
 
-    $effect(() => { if ($documentToolRequest && ($documentToolRequest.tool !== 'ocr' || $caps.ocr)) activeTab = $documentToolRequest.tool; });
+    $effect(() => { if ($documentToolRequest && ($documentToolRequest.tool !== 'ocr' || supportsOcrWorkbench($caps))) activeTab = $documentToolRequest.tool; });
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
 
     /**
@@ -570,7 +570,7 @@
                 <IndexIngest />
             {:else if activeTab === 'translate'}
                 <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
-            {:else if activeTab === 'ocr' && $caps.ocr}
+            {:else if activeTab === 'ocr' && supportsOcrWorkbench($caps)}
                 <OcrWorkbench initialLocationUri={$documentToolRequest?.tool === 'ocr' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             {:else if activeTab === 'pdf'}
                 <PdfWorkspace initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />

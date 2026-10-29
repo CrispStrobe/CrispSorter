@@ -12,10 +12,15 @@ export function processingOverrides(preset: ProcessingPreset) {
 }
 export type DocumentTool = 'ocr' | 'translate' | 'pdf';
 export const documentToolRequest = writable<{ tool: DocumentTool; locationUri: string; filename: string } | null>(null);
-export function availableDocumentTools(filename: string, capabilities = { ocr: true, pdf_render: true }): DocumentTool[] {
+/** The interactive workbench calls CrispEmbed directly; other OCR tiers are insufficient. */
+export function supportsOcrWorkbench(capabilities: { ocr_tiers?: string[] }): boolean {
+    return capabilities.ocr_tiers?.includes('crispembed') ?? false;
+}
+export function availableDocumentTools(filename: string, capabilities = { ocr: true, pdf_render: true, ocr_tiers: ['crispembed'] }): DocumentTool[] {
     const ext = filename.split('.').pop()?.toLowerCase();
+    const workbench = supportsOcrWorkbench(capabilities);
     if (ext === 'docx') return ['translate'];
-    if (ext === 'pdf') return capabilities.ocr && capabilities.pdf_render ? ['ocr', 'pdf'] : ['pdf'];
-    if (ext && ['png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp'].includes(ext)) return capabilities.ocr ? ['ocr'] : [];
+    if (ext === 'pdf') return workbench && capabilities.pdf_render ? ['ocr', 'pdf'] : ['pdf'];
+    if (ext && ['png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp'].includes(ext)) return workbench ? ['ocr'] : [];
     return [];
 }
