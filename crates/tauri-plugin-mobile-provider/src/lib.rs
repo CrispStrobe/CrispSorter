@@ -8,12 +8,15 @@ use tauri::{plugin::TauriPlugin, Runtime};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile {
     use serde_json::{json, Value};
-    use tauri::{plugin::PluginHandle, Runtime, State};
+    use tauri::{plugin::PluginHandle, AppHandle, Runtime, State};
 
     pub struct Provider<R: Runtime>(pub PluginHandle<R>);
 
     #[tauri::command]
-    pub async fn pick_files<R: Runtime>(provider: State<'_, Provider<R>>) -> Result<Value, String> {
+    pub async fn pick_files<R: Runtime>(
+        _app: AppHandle<R>,
+        provider: State<'_, Provider<R>>,
+    ) -> Result<Value, String> {
         provider
             .0
             .run_mobile_plugin_async("pickFiles", json!({}))
@@ -23,6 +26,7 @@ mod mobile {
 
     #[tauri::command]
     pub async fn pick_folder<R: Runtime>(
+        _app: AppHandle<R>,
         provider: State<'_, Provider<R>>,
     ) -> Result<Value, String> {
         provider
@@ -34,6 +38,7 @@ mod mobile {
 
     #[tauri::command]
     pub async fn read_file<R: Runtime>(
+        _app: AppHandle<R>,
         provider: State<'_, Provider<R>>,
         uri: String,
     ) -> Result<Value, String> {
