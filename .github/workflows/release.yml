@@ -62,6 +62,39 @@ jobs:
           ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
         run: python scripts/audit_apple_certificates.py
 
+  certificate-p12-audit:
+    # Inspect only the retained App Store P12 locally; never alter Apple certificates.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'certificate_audit' && !inputs.publish && !inputs.mac_appstore }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Inspect retained P12 signing identities
+        shell: bash
+        env:
+          RETAINED_P12: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          RETAINED_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RETAINED_P12" && -n "$RETAINED_PASSWORD" ]] || { echo '::error::Retained P12 secret or password is absent'; exit 1; }
+          umask 077
+          P12="$RUNNER_TEMP/audit-retained.p12"
+          KC="$RUNNER_TEMP/audit-retained.keychain-db"
+          trap 'security delete-keychain "$KC" >/dev/null 2>&1 || true; rm -f "$P12"' EXIT
+          KC_PASSWORD=$(openssl rand -hex 32)
+          printf '%s' "$RETAINED_P12" | base64 --decode > "$P12"
+          security create-keychain -p "$KC_PASSWORD" "$KC"
+          security unlock-keychain -p "$KC_PASSWORD" "$KC"
+          security import "$P12" -k "$KC" -P "$RETAINED_PASSWORD" -T /usr/bin/codesign >/dev/null
+          # Only public identity labels/fingerprints are printed, never P12 contents.
+          IDENTITIES=$(security find-identity -v -p codesigning "$KC")
+          printf '%s\n' "$IDENTITIES"
+          if printf '%s\n' "$IDENTITIES" | grep -q 'Developer ID Application:'; then
+            echo 'Developer ID Application identity with private key is present in retained P12.'
+          else
+            echo 'No Developer ID Application identity with private key in retained P12.'
+          fi
+
   testflight-existing:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore }}
     permissions:
@@ -120,7 +153,44 @@ jobs:
         run: |
           python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
+  release-draft-preflight:
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require a draft release before uploading artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          TAG="v$VERSION"
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+            echo '::error::Tag does not match application version'; exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["isDraft"] else 1)' "$RUNNER_TEMP/release.json" || { echo '::error::Existing release is public; refusing to overwrite assets'; exit 1; }
+          else
+            # Distinguish an absent release from auth/network errors before creating it.
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/release-api.json" 2> "$RUNNER_TEMP/release-api.err" && { echo '::error::Unexpected release lookup discrepancy'; exit 1; }
+            grep -q 'HTTP 404' "$RUNNER_TEMP/release-api.err" || { cat "$RUNNER_TEMP/release-api.err" >&2; exit 1; }
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title "$TAG" --notes 'Automated draft release'
+          fi
+          SOURCE=$(git rev-parse HEAD)
+          # A draft can name a tag that GitHub has not created yet. Existing
+          # tags take precedence; otherwise require an exact SHA draft target.
+          if TAG_COMMIT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2> "$RUNNER_TEMP/tag.err"); then
+            [ "$TAG_COMMIT" = "$SOURCE" ] || { echo '::error::Release tag points to a different commit'; exit 1; }
+          else
+            grep -q 'HTTP 404' "$RUNNER_TEMP/tag.err" || { cat "$RUNNER_TEMP/tag.err" >&2; exit 1; }
+            TARGET=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
+            [ "$TARGET" = "$SOURCE" ] || { echo '::error::Draft target must be the exact current commit'; exit 1; }
+          fi
+
   release-required:
+    needs: release-draft-preflight
     # Skip the heavy desktop matrix on a macOS-App-Store-only dispatch.
     if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
     permissions:
@@ -532,27 +602,98 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then TARGET_ARGS=(--target "${{ matrix.rust_target }}"); fi
           cargo test -p crispsorter --release --lib "${TARGET_ARGS[@]}" --features "$FEATURES" -- --test-threads=2
 
+      # Build only. The action must not upload pre-patch, unsigned assets;
+      # the steps below upload the final packages to the preflighted draft.
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseCommitish: ${{ github.sha }}
-          releaseName: 'CrispSorter v__VERSION__'
-          releaseBody: 'Automated release from GitHub Actions.'
-          releaseDraft: true
-          prerelease: false
           args: ${{ matrix.tauri_args }}
+
+      # Direct-download identities are separate from Apple Distribution/App Store signing.
+      - name: Prepare optional Developer ID and notarization credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_DEVELOPER_ID_SHA1: ${{ secrets.MACOS_DEVELOPER_ID_SHA1 }}
+          NOTARY_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          RELEASE_PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -z "$MACOS_DEVELOPER_ID_P12_BASE64" && -z "$MACOS_DEVELOPER_ID_P12_PASSWORD" && -z "$MACOS_DEVELOPER_ID_SHA1" ]]; then
+            [[ "$RELEASE_PUBLISH" != true ]] || { echo '::error::Developer ID signing and notarization credentials are required to publish'; exit 1; }
+            echo 'MACOS_SIGNING_ENABLED=false' >> "$GITHUB_ENV"
+            echo '::notice::No Developer ID identity: macOS draft artifacts will be labeled unsigned.'
+            exit 0
+          fi
+          for name in MACOS_DEVELOPER_ID_P12_BASE64 MACOS_DEVELOPER_ID_P12_PASSWORD MACOS_DEVELOPER_ID_SHA1 NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+            [[ -n "${!name}" ]] || { echo "::error::Missing signing credential $name"; exit 1; }
+          done
+          KC="$RUNNER_TEMP/crispsorter-developer-id.keychain-db"
+          KC_PASSWORD=$(openssl rand -hex 32)
+          printf '%s' "$MACOS_DEVELOPER_ID_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary-key.p8"
+          security create-keychain -p "$KC_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASSWORD" "$KC"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$KC" -P "$MACOS_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASSWORD" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC"
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          {
+            echo 'MACOS_SIGNING_ENABLED=true'
+            echo 'CRISPSORTER_REQUIRE_DESKTOP_SIGNING=1'
+            echo "DEVELOPER_ID_SHA1=$MACOS_DEVELOPER_ID_SHA1"
+            echo 'APPLE_TEAM_ID=N9XSJ4M3GT'
+            echo "APPLE_NOTARY_KEY_PATH=$RUNNER_TEMP/notary-key.p8"
+            echo "APPLE_NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "APPLE_NOTARY_ISSUER_ID=$NOTARY_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare optional Windows signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_SIGNING_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          RELEASE_PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WINDOWS_SIGNING_PFX_BASE64 -and -not $env:WINDOWS_SIGNING_PFX_PASSWORD -and -not $env:WINDOWS_SIGNING_THUMBPRINT) {
+            if ($env:RELEASE_PUBLISH -eq 'true') { throw 'Windows production signing credentials are required to publish' }
+            'WINDOWS_SIGNING_ENABLED=false' >> $env:GITHUB_ENV
+            Write-Host '::notice::No Windows identity: portable draft will be labeled unsigned.'
+            exit 0
+          }
+          foreach ($name in @('WINDOWS_SIGNING_PFX_BASE64', 'WINDOWS_SIGNING_PFX_PASSWORD', 'WINDOWS_SIGNING_THUMBPRINT', 'WINDOWS_TIMESTAMP_URL')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing signing credential $name" }
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'crispsorter-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64))
+            $password = ConvertTo-SecureString $env:WINDOWS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $password
+            if (-not $cert -or $cert.Thumbprint -ne $env:WINDOWS_SIGNING_THUMBPRINT.ToUpperInvariant()) { throw 'Imported PFX does not match expected signing thumbprint' }
+          } finally { Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue }
+          'WINDOWS_SIGNING_ENABLED=true' >> $env:GITHUB_ENV
+          'CRISPSORTER_REQUIRE_DESKTOP_SIGNING=1' >> $env:GITHUB_ENV
+          "WINDOWS_SIGNING_THUMBPRINT=$env:WINDOWS_SIGNING_THUMBPRINT" >> $env:GITHUB_ENV
+          "WINDOWS_TIMESTAMP_URL=$env:WINDOWS_TIMESTAMP_URL" >> $env:GITHUB_ENV
 
       # ── Patch native libs into the bundled .app (macOS arm64 only) ────
       #
-      # tauri-action ships the freshly-bundled .app + .dmg without
+      # The freshly-bundled .app + .dmg lack
       # libcrispasr inside Contents/Frameworks, so the binary's
       # @rpath/libcrispasr.1.dylib lookup fails on a clean user
       # machine. Run the bundle script to copy the libs in (recursively
       # walking transitives), then repack the .dmg + .app.tar.gz from
       # the patched .app and `gh release upload --clobber` the
-      # replacements over what tauri-action already pushed.
+      # final assets to the draft release.
       - name: Patch native libs into .app + repack .dmg / .app.tar.gz (macOS)
         if: matrix.crispasr_lib_asset != '' && runner.os == 'macOS'
         shell: bash
@@ -589,7 +730,18 @@ jobs:
           fi
           APP=$(find "$APP_DIR" -maxdepth 1 -name '*.app' -type d | head -1)
           if [ -z "$APP" ]; then echo "ERROR: no .app under $APP_DIR"; exit 1; fi
-          REPACK_DMG=1 ./scripts/bundle_macos_native_libs.sh "$APP"
+          REPACK_DMG=0 ./scripts/bundle_macos_native_libs.sh "$APP"
+          DMG_DIR="$(dirname "$APP_DIR")/dmg"
+          mkdir -p "$DMG_DIR"
+          DMG=$(find "$DMG_DIR" -maxdepth 1 -name '*.dmg' -type f | head -1)
+          [ -n "$DMG" ] || { echo '::error::No original DMG found'; exit 1; }
+          if [ "$MACOS_SIGNING_ENABLED" = true ]; then
+            ./scripts/sign_macos_release.sh "$APP" "$DMG"
+          else
+            rm -f "$DMG"
+            DMG="${DMG%.dmg}-unsigned.dmg"
+            hdiutil create -volname "$(basename "$APP" .app)" -srcfolder "$APP" -format UDZO "$DMG" >/dev/null
+          fi
           # tauri also produces an .app.tar.gz alongside (used by the
           # Tauri updater + as a download alternative to .dmg). Recreate
           # it from the patched .app so users updating via tar get the
@@ -611,22 +763,14 @@ jobs:
             *)                    TAR_ARCH="" ;;
           esac
           BUNDLE_ROOT="$(dirname "$APP_DIR")"
-          TAR_GZ=$(find "$BUNDLE_ROOT" -name 'CrispSorter*.app.tar.gz' -type f | head -1)
-          if [ -n "$TAR_GZ" ]; then
-            DIR="$(cd "$(dirname "$TAR_GZ")" && pwd)"
-            if [ -n "$TAR_ARCH" ]; then
-              ABS_TAR_GZ="$DIR/CrispSorter_${TAR_ARCH}.app.tar.gz"
-            else
-              ABS_TAR_GZ="$DIR/$(basename "$TAR_GZ")"
-            fi
-            echo "Repacking $ABS_TAR_GZ"
-            tar -czf "$ABS_TAR_GZ" -C "$APP_DIR" "$(basename "$APP")"
-            # If the rename changed the path, drop the now-stale original
-            # so Re-upload doesn't pick the wrong (unpatched) file.
-            if [ "$ABS_TAR_GZ" != "$DIR/$(basename "$TAR_GZ")" ]; then
-              rm -f "$TAR_GZ"
-            fi
+          # Always make a fresh archive from the final app; never publish an old updater signature.
+          find "$BUNDLE_ROOT" -name 'CrispSorter*.app.tar.gz' -type f -delete
+          if [ "$MACOS_SIGNING_ENABLED" = true ]; then
+            ABS_TAR_GZ="$APP_DIR/CrispSorter_${TAR_ARCH}.app.tar.gz"
+          else
+            ABS_TAR_GZ="$APP_DIR/CrispSorter_${TAR_ARCH}-unsigned.app.tar.gz"
           fi
+          tar -czf "$ABS_TAR_GZ" -C "$APP_DIR" "$(basename "$APP")"
 
       - name: Patch native libs into .deb + repack (Linux)
         if: matrix.crispasr_lib_asset != '' && runner.os == 'Linux'
@@ -753,21 +897,28 @@ jobs:
           Write-Host "Portable contents:"
           Get-ChildItem -Recurse $stage | Select-Object FullName | Format-Table -HideTableHeaders
 
-          $zip = "CrispSorter_${version}_x64-windows-portable.zip"
+          if ($env:WINDOWS_SIGNING_ENABLED -eq 'true') {
+            ./scripts/sign_windows_release.ps1 -Stage $stage
+            $zip = "CrispSorter_${version}_x64-windows-portable.zip"
+          } else {
+            $zip = "CrispSorter_${version}_x64-windows-portable-unsigned.zip"
+          }
           Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
           Write-Host "Created $zip ($(((Get-Item $zip).Length / 1MB).ToString('F1')) MB)"
 
-          # Delete the broken NSIS/MSI assets tauri-action uploaded to
-          # the draft release, then upload the portable .zip in their
-          # place. `--clobber` lets a retry of this step overwrite.
+          # Remove broken installers or older portable assets left by
+          # an earlier draft, then upload the final portable ZIP.
           $assets = gh release view $tag --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>$null
           foreach ($name in $assets) {
-            if ($name -match '\.exe$|\.msi$') {
+            if ($name -match '\.exe$|\.msi$|windows-portable.*\.zip$') {
               Write-Host "Deleting broken installer asset: $name"
               gh release delete-asset $tag $name --repo "${{ github.repository }}" -y
+              if ($LASTEXITCODE -ne 0) { throw "Failed to delete stale Windows asset $name" }
             }
           }
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect or delete stale Windows assets' }
           gh release upload $tag $zip --clobber --repo "${{ github.repository }}"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to upload Windows artifact' }
 
       - name: Re-upload patched assets over tauri-action's drafts
         if: matrix.crispasr_lib_asset != ''
@@ -808,6 +959,17 @@ jobs:
             "target/${{ matrix.rust_target }}/release/bundle/deb" \
             "src-tauri/target/release/bundle/deb" \
             "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb")
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Remove stale downloads and updater signatures from earlier drafts.
+            assets=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+            while IFS= read -r name; do
+              case "$name" in
+                *.dmg|*.app.tar.gz|*.app.tar.gz.sig)
+                  case "$name" in *ios*) continue ;; esac
+                  gh release delete-asset "$TAG" "$name" --repo "${{ github.repository }}" -y ;;
+              esac
+            done <<< "$assets"
+          fi
           for asset in "$DMG" "$TAR_GZ" "$DEB"; do
             if [ -n "$asset" ] && [ -f "$asset" ]; then
               echo "Uploading patched $asset → $TAG"
@@ -842,6 +1004,17 @@ jobs:
           VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
 
+      - name: Remove temporary desktop signing credentials
+        if: always() && (runner.os == 'macOS' || runner.os == 'Windows')
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            security delete-keychain "$RUNNER_TEMP/crispsorter-developer-id.keychain-db" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/notary-key.p8"
+          fi
+          # Windows hosted runners are ephemeral; the temporary PFX is removed
+          # immediately after import in the preparation step above.
+
   # macOS-Intel (x86_64) build removed: GitHub-hosted macos-13 runners are
   # chronically queue-starved (hung releases for hours) AND CrispEmbed ships
   # no macOS-x86_64 lib, so the leg could never link. Re-add a release-optional
@@ -850,6 +1023,7 @@ jobs:
   # Separate job because `tauri android build` uses a different flow from
   # tauri-action. Runs on ubuntu with JDK 17 + Android SDK/NDK.
   release-windows:
+    needs: release-draft-preflight
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'windows' }}
     permissions:
       contents: write
@@ -862,6 +1036,7 @@ jobs:
     steps: *desktop_release_steps
 
   release-macos:
+    needs: release-draft-preflight
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'macos' }}
     permissions:
       contents: write
@@ -874,6 +1049,7 @@ jobs:
     steps: *desktop_release_steps
 
   release-android:
+    needs: release-draft-preflight
     if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
     permissions:
       contents: write
@@ -1007,6 +1183,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
           # Create draft release if it doesn't exist yet (Android may
@@ -1014,6 +1191,14 @@ jobs:
           gh release view "${TAG}" &>/dev/null || \
             gh release create "${TAG}" --target "$GITHUB_SHA" --draft --title "${TAG}" --notes "Automated release"
           test -f "$ANDROID_RELEASE_APK"
+          # Keep only the current production or explicitly development-signed APK.
+          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          while IFS= read -r asset; do
+            case "$asset" in
+              CrispSorter_*_android-aarch64*.apk|CrispSorter_*_android-aarch64*.signing.json)
+                gh release delete-asset "$TAG" "$asset" -y ;;
+            esac
+          done <<< "$ASSETS"
           gh release upload "${TAG}" "$ANDROID_RELEASE_APK" "${ANDROID_RELEASE_APK%.apk}.signing.json" --clobber
           echo "✓ Uploaded $ANDROID_RELEASE_APK"
 
@@ -1032,6 +1217,7 @@ jobs:
   # are set, archives + exports a signed IPA suitable for App Store /
   # TestFlight upload. Otherwise falls back to an unsigned .app.
   release-ios:
+    needs: release-draft-preflight
     if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
     permissions:
       contents: write
@@ -1865,8 +2051,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
+          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
           echo "Publishing release ${TAG}…"
           gh release edit "${TAG}" --draft=false --latest
           echo "✓ Published ${TAG}"

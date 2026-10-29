@@ -84,3 +84,29 @@ or clean-machine verification has been performed. Successful local syntax and
 negative-path checks do not demonstrate that these platform workflows work
 with real credentials. Run a draft build on each target platform with the real
 identities before enabling publication.
+
+## GitHub Actions credentials and gate
+
+The direct-download workflow expects these repository secrets when credentials
+are available:
+
+- macOS: `MACOS_DEVELOPER_ID_P12_BASE64`, `MACOS_DEVELOPER_ID_P12_PASSWORD`,
+  `MACOS_DEVELOPER_ID_SHA1`, plus the existing `APPSTORE_API_KEY_P8`,
+  `APPSTORE_API_KEY_ID`, and `APPSTORE_API_ISSUER_ID` notarization credentials.
+  The Developer ID P12 is separate from `DIST_CERT_P12_BASE64`; do not replace
+  or revoke the retained App Store Distribution identity.
+- Windows: `WINDOWS_SIGNING_PFX_BASE64`, `WINDOWS_SIGNING_PFX_PASSWORD`,
+  `WINDOWS_SIGNING_THUMBPRINT`, and `WINDOWS_TIMESTAMP_URL`. The PFX import is
+  intended for ephemeral hosted runners; hardware-backed certificate providers
+  may need a dedicated runner and a different import mechanism.
+
+If an identity is entirely absent, non-publishing runs create explicitly
+`-unsigned` desktop drafts. Partially configured identity credentials fail the
+job. Tag and publish runs require both identities and final-asset verification.
+The workflow refuses to overwrite a public release, verifies the existing tag or draft target
+commit, and checks the downloaded draft assets against the source-bound
+receipts before publication. Each signed macOS app is assessed from both its
+archive and mounted DMG; the Windows executable is verified from the extracted
+ZIP. The `certificate_audit` selector also examines the retained P12 inside an
+ephemeral macOS keychain and reports code-signing identities without changing
+the Apple account or the retained secret.

@@ -38,7 +38,53 @@ def hide_build_libraries(root):
             hidden.rename(sibling)
 
 
+def verify_mac_app(app):
+    """Verify a stapled Developer ID app extracted from the actual release asset."""
+    team = os.environ.get('APPLE_TEAM_ID', '')
+    fingerprint = os.environ.get('DEVELOPER_ID_SHA1', '').upper()
+    if not re.fullmatch(r'[A-Z0-9]{10}', team) or not re.fullmatch(r'[A-F0-9]{40}', fingerprint):
+        raise ValueError('Expected Developer ID team and certificate fingerprint are required')
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], check=True)
+    details = subprocess.check_output(['codesign', '-dv', '--verbose=4', str(app)], stderr=subprocess.STDOUT, text=True)
+    if not all(part in details for part in ['TeamIdentifier=' + team, 'Authority=Developer ID Application:', 'Timestamp=', 'runtime']):
+        raise ValueError('App lacks Developer ID, expected team, timestamp, or hardened runtime')
+    with tempfile.TemporaryDirectory(prefix='crispsorter-cert-') as directory:
+        subprocess.run(['codesign', '-d', '--extract-certificates', str(app)], cwd=directory, check=True)
+        certificate = Path(directory) / 'codesign0'
+        output = subprocess.check_output(['openssl', 'x509', '-inform', 'DER', '-in', str(certificate),
+                                          '-noout', '-fingerprint', '-sha1'], text=True)
+        actual = output.strip().split('=', 1)[-1].replace(':', '').upper()
+        if actual != fingerprint:
+            raise ValueError('Developer ID signing certificate fingerprint does not match')
+    subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
+    subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=2', str(app)], check=True)
+    match = re.search(r'^CDHash=([0-9a-fA-F]+)$', details, re.MULTILINE)
+    if not match:
+        raise ValueError('App signature has no CDHash')
+    return match.group(1).lower()
+
+
+def verify_mac_dmg(artifact):
+    subprocess.run(['codesign', '--verify', '--verbose=2', str(artifact)], check=True)
+    subprocess.run(['xcrun', 'stapler', 'validate', str(artifact)], check=True)
+    with tempfile.TemporaryDirectory(prefix='crispsorter-dmg-') as directory:
+        mount = Path(directory) / 'mount'
+        mount.mkdir()
+        subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', str(mount), str(artifact)], check=True)
+        try:
+            apps = list(mount.glob('*.app'))
+            if len(apps) != 1:
+                raise ValueError('DMG must contain exactly one application')
+            cdhash = verify_mac_app(apps[0])
+            info = plistlib.loads((apps[0] / 'Contents/Info.plist').read_bytes())
+            return {'signature_verification': 'Developer ID signature, hardened runtime, timestamp, stapled ticket and Gatekeeper assessment passed',
+                    'bundle_id': info['CFBundleIdentifier'], 'version': info['CFBundleShortVersionString'], 'signature_cdhash': cdhash}
+        finally:
+            subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
+
+
 def inspect_package(platform, artifact, destination):
+    mac_cdhash = None
     if artifact.suffix == '.deb':
         subprocess.run(['dpkg-deb', '-x', str(artifact), str(destination)], check=True)
         executable = next((destination / 'usr/bin').glob('*'))
@@ -47,6 +93,9 @@ def inspect_package(platform, artifact, destination):
             archive.extractall(destination)
         if platform == 'windows-x86_64':
             executable = next(destination.rglob('crispsorter.exe'))
+            if os.environ.get('CRISPSORTER_REQUIRE_DESKTOP_SIGNING') == '1':
+                script = Path(__file__).resolve().with_name('sign_windows_release.ps1')
+                subprocess.run(['pwsh', '-NoProfile', '-File', str(script), '-Stage', str(executable.parent), '-VerifyOnly'], check=True)
         elif platform == 'android-arm64':
             libraries = list(destination.glob('lib/arm64-v8a/*.so'))
             if not libraries or not (destination / 'AndroidManifest.xml').is_file():
@@ -66,9 +115,15 @@ def inspect_package(platform, artifact, destination):
                     'version': info['CFBundleShortVersionString'], 'embedded_profile': (app / 'embedded.mobileprovision').is_file(),
                     'device_execution': 'not exercised by archive inspection'}
     else:
-        with tarfile.open(artifact) as archive:
-            archive.extractall(destination, filter='data')
+        if platform == 'macos-arm64':
+            # BSD tar restores Apple metadata used by stapled tickets.
+            subprocess.run(['tar', '-xzf', str(artifact), '-C', str(destination)], check=True)
+        else:
+            with tarfile.open(artifact) as archive:
+                archive.extractall(destination, filter='data')
         app = next(destination.glob('*.app'))
+        if platform == 'macos-arm64' and os.environ.get('CRISPSORTER_REQUIRE_DESKTOP_SIGNING') == '1':
+            mac_cdhash = verify_mac_app(app)
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes()) if (app / 'Contents/Info.plist').exists() else plistlib.loads((app / 'Info.plist').read_bytes())
         executable = app / ('Contents/MacOS' if platform == 'macos-arm64' else '') / info['CFBundleExecutable']
         if platform == 'ios-arm64':
@@ -107,7 +162,11 @@ def inspect_package(platform, artifact, destination):
     checks.append({'arguments': arguments, 'result': 'image-only PDF rasterized and expected text retained',
                    'fixture_sha256': sha(fixture), 'stdout_sha256': hashlib.sha256(result.stdout.encode()).hexdigest(),
                    'stderr': result.stderr[-4000:]})
-    return {'inspection': 'packaged executable starts with build-tree libraries hidden', 'checks': checks}
+    result = {'inspection': 'packaged executable starts with build-tree libraries hidden', 'checks': checks}
+    if mac_cdhash:
+        result['signature_cdhash'] = mac_cdhash
+        result['bundle_id'] = info['CFBundleIdentifier']
+    return result
 
 
 def main():
@@ -117,7 +176,7 @@ def main():
     root = Path.cwd()
     patterns = {
         'linux-x86_64': ['target/**/bundle/deb/*.deb'],
-        'windows-x86_64': ['CrispSorter_*windows-portable.zip'],
+        'windows-x86_64': ['CrispSorter_*windows-portable*.zip'],
         'macos-arm64': ['target/**/bundle/macos/CrispSorter*.app.tar.gz', 'target/**/bundle/dmg/*.dmg'],
         'android-arm64': ['CrispSorter_*android*.apk'],
         'ios-arm64': ['CrispSorter_*ios*.ipa', 'CrispSorter_*ios*.app.tar.gz'],
@@ -125,6 +184,14 @@ def main():
     artifacts = sorted({p.resolve() for pattern in patterns[args.platform] for p in root.glob(pattern)})
     if not artifacts:
         raise RuntimeError('No final artifacts found for ' + args.platform)
+    require_signing = os.environ.get('CRISPSORTER_REQUIRE_DESKTOP_SIGNING') == '1'
+    if require_signing and args.platform == 'macos-arm64':
+        if sum(p.suffix == '.dmg' for p in artifacts) != 1 or sum(p.name.endswith('.app.tar.gz') for p in artifacts) != 1:
+            raise ValueError('Exactly one final DMG and one app archive are required')
+    if require_signing and args.platform == 'windows-x86_64' and len(artifacts) != 1:
+        raise ValueError('Exactly one final Windows ZIP is required')
+    if require_signing and any('-unsigned' in p.name for p in artifacts):
+        raise ValueError('Unsigned-labeled artifact cannot satisfy the publication gate')
     receipt = {'schema': 'crispsorter-release-receipt-v1', 'platform': args.platform,
                'app_source': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                'version': json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version'],
@@ -142,8 +209,22 @@ def main():
                     if 'checks' in entry and entry['checks'][0]['result']['version'] != receipt['version']:
                         raise ValueError('Packaged executable reports a different version')
             else:
-                entry['inspection'] = 'checksum; executable smoke uses the matching app archive'
+                entry['inspection'] = 'checksum; executable smoke uses the app archive'
+                if require_signing and args.platform == 'macos-arm64':
+                    entry.update(verify_mac_dmg(artifact))
+                    if entry['version'] != receipt['version']:
+                        raise ValueError('DMG application reports a different version')
+            if require_signing and args.platform == 'windows-x86_64':
+                entry['signature_verification'] = 'Extracted application passed expected trusted, timestamped Authenticode verification'
+            if require_signing and args.platform == 'macos-arm64' and artifact.suffix != '.dmg':
+                entry['signature_verification'] = 'Extracted app passed Developer ID, hardened runtime, timestamp, stapled ticket and Gatekeeper checks'
+            if require_signing and args.platform == 'macos-arm64' and entry.get('bundle_id') != 'com.crispstrobe.crispsorter':
+                raise ValueError('Unexpected macOS application bundle ID')
             receipt['artifacts'].append(entry)
+    if require_signing and args.platform == 'macos-arm64':
+        hashes = {entry.get('signature_cdhash') for entry in receipt['artifacts']}
+        if None in hashes or len(hashes) != 1:
+            raise ValueError('DMG and archive contain different signed applications')
     if not any('checks' in a for a in receipt['artifacts']) and args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64']:
         raise RuntimeError('Desktop package was not executed')
     name = 'CrispSorter_' + receipt['version'] + '_' + args.platform
