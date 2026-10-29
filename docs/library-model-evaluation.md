@@ -112,3 +112,21 @@ keeping Quick scan as the inexpensive option. Actual performance depends on
 image size, content and hardware. The recognized text, configurations, model
 hashes, source fragments and probe lockfile are retained in the result folder.
 The full native suite and real packaged-app PDF OCR checks are separate gates.
+
+## Preregistered released-engine real-scan comparison
+
+`tests/quality/ocr-real-panel.json` fixes all six priority-one pages whose hashes
+matched the existing upstream manifest: English prose, German Antiqua, Fraktur,
+a table, degraded print and a CORD receipt photo. The previously mismatched form
+is excluded before this comparison. Image/reference/scorer hashes, case budgets
+and the decision rule are frozen before inference. The original upstream scorer
+is reused unchanged; word recall is primary for the receipt's partial reference.
+
+Quick and multilingual run on all six pages; the table/receipt prompt is tested
+on the table and receipt, and difficult-page cleanup on degraded print. Only the
+per-page VLM token cap differs from the UI preset, using the shared manifest's
+budget for comparability. Each case uses a fresh process/context, excludes initial
+model downloads, and records failures instead of dropping them from the panel.
+This comparison is pending; the single-line wiring result above does not stand
+in for it. Images/transcripts remain on the worker; only derived metrics, hashes
+and source/license attribution will be retained in this repository.

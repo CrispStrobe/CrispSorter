@@ -17,6 +17,7 @@ import urllib.request
 
 APP_SOURCE = '@APP_SOURCE@'
 BINARY_SOURCE = '@BINARY_SOURCE@'
+PANEL = False
 root = Path('/kaggle/temp/crispsorter-ocr')
 output = Path('/kaggle/working/ocr-qualification')
 output.mkdir(parents=True, exist_ok=True)
@@ -33,11 +34,19 @@ def run(name, command, cwd=None, env=None, timeout=600):
     print('OCR qualification:', name, command, flush=True)
     started = time.monotonic()
     with (output / 'probe.log').open('a') as log:
+        last_seen = log.tell()
         process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         while process.poll() is None:
             time.sleep(10)
             elapsed = time.monotonic() - started
             print('OCR heartbeat:', name, round(elapsed), 'seconds', flush=True)
+            if name == 'real-panel':
+                with (output / 'probe.log').open() as reader:
+                    reader.seek(last_seen)
+                    text = reader.read()
+                    last_seen = reader.tell()
+                for line in text.splitlines():
+                    if line.startswith('PANEL '): print(line[:1000], flush=True)
             if elapsed > timeout:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -97,7 +106,9 @@ try:
     run('extract-runtime', ['tar', '-xzf', str(archive), '-C', str(libs)], env=env)
     env.update(CRISPEMBED_SYS_LIB_DIR=str(libs), LD_LIBRARY_PATH=str(libs))
     probe = app / 'ocr-qualification'
-    run('source-probe', ['python', 'tools/quality/isolated_ocr.py', '--app', str(app), '--embed', str(root / 'CrispEmbed'), '--destination', str(probe)], cwd=app, env=env)
+    probe_args = ['python', 'tools/quality/isolated_ocr.py', '--app', str(app), '--embed', str(root / 'CrispEmbed'), '--destination', str(probe)]
+    if PANEL: probe_args.append('--panel')
+    run('source-probe', probe_args, cwd=app, env=env)
     shutil.copyfile(probe / 'source-fragments.json', output / 'source-fragments.json')
     run('lock', ['cargo', 'generate-lockfile', '--manifest-path', str(probe / 'Cargo.toml')], cwd=app, env=env)
     shutil.copyfile(probe / 'Cargo.lock', output / 'probe.Cargo.lock')
@@ -105,8 +116,15 @@ try:
     with kh.build_heartbeat('CrispSorter source-bound OCR compilation'):
         run('model-free', ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--lib'], cwd=app, env=env)
     env.update(CRISPSORTER_OCR_RECEIPT=str(output / 'ocr.json'), QWEN2VL_OCR_FORCE_CPU='1', MATH_OCR_FORCE_CPU='1')
-    with kh.build_heartbeat('CrispSorter source-bound live OCR'):
-        run('live-ocr', ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--lib', 'ocr_task_presets_live', '--', '--ignored', '--nocapture', '--test-threads=1'], cwd=app, env=env, timeout=1800)
+    if PANEL:
+        run('panel-deps', [sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'numpy==2.2.6', 'pyarrow==17.0.0', 'rapidfuzz==3.9.7'], env=env)
+        run('panel-build', ['cargo', 'build', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--bin', 'ocr-case'], cwd=app, env=env)
+        with kh.build_heartbeat('CrispSorter frozen real OCR panel'):
+            run('real-panel', [sys.executable, 'tools/quality/real_ocr_panel.py', '--app', str(app), '--executable', str(root / 'target/debug/ocr-case'), '--output', str(output / 'real-panel')], cwd=app, env=env, timeout=4*3600)
+        report['qualification_scope'] = 'Frozen real-scan OCR comparison; see real-panel/result.json for individual failures and scores'
+    else:
+        with kh.build_heartbeat('CrispSorter source-bound live OCR'):
+            run('live-ocr', ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--lib', 'ocr_task_presets_live', '--', '--ignored', '--nocapture', '--test-threads=1'], cwd=app, env=env, timeout=1800)
     report['completed'] = True
 except Exception as error:
     report['error'] = {'type': type(error).__name__, 'message': str(error)}

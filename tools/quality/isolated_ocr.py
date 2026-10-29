@@ -26,7 +26,7 @@ def block(source, pattern):
     return source[start:match.end() + end.end()] + '\n'
 
 
-def generate(app, embed, destination):
+def generate(app, embed, destination, panel=False):
     app, embed, destination = app.resolve(), embed.resolve(), destination.resolve()
     if destination.parent != app:
         raise ValueError('Probe must sit beside tests/ so the original fixture path is unchanged')
@@ -77,6 +77,9 @@ default = ["crispembed"]
 crispembed = []
 [dependencies]
 ''' + '\n'.join(dependencies) + '\n'
+    if panel:
+        manifest += '\n[[bin]]\nname = "ocr-case"\npath = "case.rs"\n'
+        shutil.copyfile(app / 'tools/quality/ocr_case.rs', destination / 'case.rs')
     (destination / 'Cargo.toml').write_text(manifest)
     shutil.copyfile(app / 'Cargo.lock', destination / 'Cargo.lock')
     receipt = {'scope': 'Exact production OCR functions, configuration and live test; excludes unrelated application modules',
@@ -90,5 +93,6 @@ if __name__ == '__main__':
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--embed', type=Path, required=True)
     parser.add_argument('--destination', type=Path, required=True)
+    parser.add_argument('--panel', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(generate(args.app, args.embed, args.destination), indent=2))
+    print(json.dumps(generate(args.app, args.embed, args.destination, args.panel), indent=2))
