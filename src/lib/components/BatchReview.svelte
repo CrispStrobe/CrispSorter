@@ -754,6 +754,10 @@
     }
 
     async function executeSorting(mode: SortMode = 'move') {
+        if ($caps.platform === 'unknown') {
+            showToast('Platform capabilities are unavailable. Try again when they have loaded.');
+            return;
+        }
         if ($caps.platform === 'ios') {
             showToast('Sorting iOS imports is unavailable until their original provider identity can be retained.');
             return;
