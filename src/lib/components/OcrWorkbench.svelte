@@ -6,6 +6,7 @@
     import { open } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
     import { weakPages, cropRegion } from '$lib/ocrTasks';
+    import { caps } from '$lib/capabilities';
 
     let { initialLocationUri = '' }: { initialLocationUri?: string } = $props();
     $effect(() => { const path = initialLocationUri; if (path) loadDocument(path); });
@@ -25,6 +26,9 @@
     let status = $state('');
     let error = $state('');
     let preset = $state('custom');
+    let cpuPixelBudget = $state(false);
+    const supportsCpuBudget = $derived($caps.desktop && $caps.sidecars && $caps.ocr_tiers.includes('crispembed') && ['multilingual', 'tables', 'difficult'].includes(preset));
+    let candidate = $state<{ pageIndex: number; index: number; page: PageOcr; replacements: Region[] } | null>(null);
     let undoPages = $state<{ index: number; page: PageOcr }[]>([]);
     const weakPageIndices = $derived(weakPages(ocr, threshold));
     // Save options
@@ -66,6 +70,7 @@
             pageIdx = 0;
             ocr = new Map();
             undoPages = [];
+            candidate = null;
             selected = null;
             zoom = 1;
             status = `${res.count} ${i18n.t.ocrwb.pages}`;
@@ -79,9 +84,11 @@
     async function runOcr(idx: number) {
         const pagePath = pages[idx];
         if (!pagePath) return;
+        const previous = ocr.get(idx);
         busy = 'ocr'; status = i18n.t.ocrwb.running; error = '';
         try {
-            const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath, preset });
+            const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath, preset, cpuPixelBudget: supportsCpuBudget && cpuPixelBudget });
+            if (pages[idx] !== pagePath || ocr.get(idx) !== previous) throw new Error(i18n.t.ocrwb.retry_stale);
             rememberPage(idx);
             const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
             setPageOcr(idx, { width: res.width, height: res.height, regions, ocred: true });
@@ -94,12 +101,16 @@
         }
     }
 
-    async function runOcrAll(indices = pages.map((_, i) => i)) {
+    async function runOcrAll(indices = pages.map((_, i) => i), weakOnly = false) {
         busy = 'ocr-all'; error = '';
         try {
             for (const i of indices) {
+                if (weakOnly && !weakPages(ocr, threshold).includes(i)) continue;
+                const pagePath = pages[i];
+                const previous = ocr.get(i);
                 status = `${i18n.t.ocrwb.running} ${i + 1}/${pages.length}`;
-                const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath: pages[i], preset });
+                const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath, preset, cpuPixelBudget: supportsCpuBudget && cpuPixelBudget });
+                if (pages[i] !== pagePath || ocr.get(i) !== previous) throw new Error(i18n.t.ocrwb.retry_stale);
                 rememberPage(i);
                 const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
                 setPageOcr(i, { width: res.width, height: res.height, regions, ocred: true });
@@ -131,16 +142,28 @@
         const index = selected;
         const pageIndex = pageIdx;
         const page = cur;
+        const pagePath = pages[pageIndex];
+        candidate = null;
         busy = 'ocr-region'; error = '';
         try {
             const region = cropRegion(page.regions[index], page.width, page.height);
-            const res = await invoke<{ regions: Region[] }>('ocr_page_regions', { pagePath: pages[pageIndex], preset, region });
-            if (!res.regions.length) throw new Error('No text found in this region; the previous text was retained.');
-            rememberPage(pageIndex);
+            const res = await invoke<{ regions: Region[] }>('ocr_page_regions', { pagePath, preset, region, cpuPixelBudget: supportsCpuBudget && cpuPixelBudget });
+            if (!res.regions.length) throw new Error(i18n.t.ocrwb.retry_empty);
+            if (pageIdx !== pageIndex || selected !== index || pages[pageIndex] !== pagePath || ocr.get(pageIndex) !== page) throw new Error(i18n.t.ocrwb.retry_stale);
             const replacements = res.regions.map(r => ({ ...r, orig: r.text, char_conf: r.char_conf ?? [] }));
-            setPageOcr(pageIndex, { regions: [...page.regions.slice(0, index), ...replacements, ...page.regions.slice(index + 1)], proofread: false });
-            selected = null;
+            candidate = { pageIndex, index, page, replacements };
         } catch (e) { error = String(e); } finally { busy = null; }
+    }
+
+    function applyCandidate() {
+        const proposal = candidate;
+        if (!proposal) return;
+        if (ocr.get(proposal.pageIndex) !== proposal.page) { candidate = null; error = i18n.t.ocrwb.retry_stale; return; }
+        rememberPage(proposal.pageIndex);
+        const regions = proposal.page.regions;
+        setPageOcr(proposal.pageIndex, { regions: [...regions.slice(0, proposal.index), ...proposal.replacements, ...regions.slice(proposal.index + 1)], proofread: false });
+        candidate = null;
+        selected = null;
     }
 
     async function loadCleaned() {
@@ -173,6 +196,7 @@
         if (i < 0 || i >= pages.length) return;
         pageIdx = i;
         selected = null;
+        candidate = null;
         zoom = 1;
         showCleaned = showCleaned && !!ocr.get(i)?.cleanedPath;
     }
@@ -300,9 +324,13 @@
             <option value="tables">Tables and receipts</option>
             <option value="difficult">Difficult page</option>
         </select>
+        <label class="chk" title={i18n.t.ocrwb.cpu_budget_hint}>
+            <input type="checkbox" bind:checked={cpuPixelBudget} disabled={busy !== null || !supportsCpuBudget} />
+            {i18n.t.ocrwb.cpu_budget}
+        </label>
         <button class="btn" onclick={() => runOcr(pageIdx)} disabled={busy !== null || !pages.length}>{i18n.t.ocrwb.run_page}</button>
         <button class="btn" onclick={() => runOcrAll()} disabled={busy !== null || pages.length < 2}>{i18n.t.ocrwb.run_all}</button>
-        <button class="btn" onclick={() => runOcrAll(weakPageIndices)} disabled={busy !== null || !weakPageIndices.length}>Retry weak pages ({weakPageIndices.length})</button>
+        <button class="btn" onclick={() => runOcrAll(weakPageIndices, true)} disabled={busy !== null || !weakPageIndices.length}>Retry weak pages ({weakPageIndices.length})</button>
         <button class="btn" onclick={rerunRegion} disabled={busy !== null || selected == null}>Retry selected region</button>
         <button class="btn" onclick={undoOcr} disabled={busy !== null || !undoPages.length}>Undo OCR</button>
         <span class="sep"></span>
@@ -334,6 +362,16 @@
 
     {#if error}<div class="bar err">{error}</div>{/if}
     {#if status && !error}<div class="bar info">{status}</div>{/if}
+    {#if cpuPixelBudget && supportsCpuBudget}<div class="bar info">{i18n.t.ocrwb.cpu_budget_hint}</div>{/if}
+    {#if candidate && candidate.pageIndex === pageIdx}
+        <section class="bar info" aria-label={i18n.t.ocrwb.retry_preview}>
+            <strong>{i18n.t.ocrwb.retry_preview}</strong>
+            <p>{i18n.t.ocrwb.retry_previous}: {candidate.page.regions[candidate.index].text}</p>
+            <p>{i18n.t.ocrwb.retry_proposed}: {candidate.replacements.map(r => r.text).join(' ')}</p>
+            <button class="btn" onclick={applyCandidate}>{i18n.t.ocrwb.retry_apply}</button>
+            <button class="btn" onclick={() => candidate = null}>{i18n.t.ocrwb.retry_discard}</button>
+        </section>
+    {/if}
 
     {#if !pages.length}
         <div class="empty">

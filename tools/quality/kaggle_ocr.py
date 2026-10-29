@@ -18,6 +18,7 @@ import urllib.request
 APP_SOURCE = '@APP_SOURCE@'
 BINARY_SOURCE = '@BINARY_SOURCE@'
 PANEL = False
+WORKER = False
 PANEL_PLAN = 'tests/quality/ocr-real-panel.json'
 root = Path('/kaggle/temp/crispsorter-ocr')
 output = Path('/kaggle/working/ocr-qualification')
@@ -97,6 +98,8 @@ try:
     paths = ['src-tauri/src/extractors/mod.rs', 'src-tauri/src/extractors/ocr_crispembed.rs',
              'src-tauri/src/extractors/context_cache.rs', 'src-tauri/src/extractors/ocr_presets.rs',
              'tests/quality/ocr-task.png', 'tests/quality/ocr-task.json']
+    if WORKER:
+        paths.extend(['src-tauri/src/extractors/ocr_worker.rs', 'src-tauri/src/main.rs'])
     run('source-equivalence', ['git', 'diff', '--exit-code', BINARY_SOURCE, APP_SOURCE, '--', *paths], cwd=app, env=env)
     archive = root / 'crispembed-linux-x86_64.tar.gz'
     with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.12/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
@@ -109,6 +112,7 @@ try:
     probe = app / 'ocr-qualification'
     probe_args = ['python', 'tools/quality/isolated_ocr.py', '--app', str(app), '--embed', str(root / 'CrispEmbed'), '--destination', str(probe)]
     if PANEL: probe_args.append('--panel')
+    if WORKER: probe_args.append('--worker')
     run('source-probe', probe_args, cwd=app, env=env)
     shutil.copyfile(probe / 'source-fragments.json', output / 'source-fragments.json')
     run('lock', ['cargo', 'generate-lockfile', '--manifest-path', str(probe / 'Cargo.toml')], cwd=app, env=env)
@@ -117,7 +121,12 @@ try:
     with kh.build_heartbeat('CrispSorter source-bound OCR compilation'):
         run('model-free', ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--lib'], cwd=app, env=env)
     env.update(CRISPSORTER_OCR_RECEIPT=str(output / 'ocr.json'), QWEN2VL_OCR_FORCE_CPU='1', MATH_OCR_FORCE_CPU='1')
-    if PANEL:
+    if WORKER:
+        env['CRISPSORTER_PROBE_REAL'] = '1'
+        with kh.build_heartbeat('CrispSorter isolated CPU OCR worker'):
+            run('worker-live', ['cargo', 'run', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--bin', 'ocr-worker-probe'], cwd=app, env=env, timeout=1800)
+        report['qualification_scope'] = 'Real released-model OCR through the exact process-scoped CPU budget worker; synthetic fixture; not a full packaged application'
+    elif PANEL:
         # Kaggle's base interpreter can advance independently (3.13 has no
         # PyArrow 17 wheel). Match the original scorer's Python 3.12 setup.
         run('panel-uv', [sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'uv==0.8.17'], env=env)

@@ -59,6 +59,15 @@ export const translations = {
             drives: 'Drives'
         },
         ocrwb: {
+            cpu_budget: 'CPU pixel budget',
+            cpu_budget_hint: 'Uses an isolated CPU worker with a 262,144-pixel Qwen limit. Tests used about 5.1 GiB RAM; memory varies. Fine print may be missed, so review the result. Each run reloads the model.',
+            retry_empty: 'No text found; the previous text was retained.',
+            retry_stale: 'The page changed while OCR was running. Retry the region.',
+            retry_preview: 'Review region retry',
+            retry_previous: 'Previous',
+            retry_proposed: 'Proposed',
+            retry_apply: 'Apply retry',
+            retry_discard: 'Discard retry',
             open: 'Open document…',
             run_page: 'Run OCR (page)',
             run_all: 'Run OCR (all pages)',
@@ -1269,6 +1278,15 @@ export const translations = {
             drives: 'Laufwerke'
         },
         ocrwb: {
+            cpu_budget: 'CPU-Pixelbudget',
+            cpu_budget_hint: 'Verwendet einen isolierten CPU-Prozess mit einem Qwen-Limit von 262.144 Pixeln. Tests benötigten etwa 5,1 GiB RAM; der Bedarf variiert. Kleingedrucktes kann übersehen werden, bitte prüfen. Das Modell wird pro Lauf neu geladen.',
+            retry_empty: 'Kein Text gefunden; der bisherige Text bleibt erhalten.',
+            retry_stale: 'Die Seite wurde während der OCR geändert. Bitte die Region erneut versuchen.',
+            retry_preview: 'Erneute Regionserkennung prüfen',
+            retry_previous: 'Bisher',
+            retry_proposed: 'Vorschlag',
+            retry_apply: 'Vorschlag übernehmen',
+            retry_discard: 'Vorschlag verwerfen',
             open: 'Dokument öffnen…',
             run_page: 'OCR (Seite)',
             run_all: 'OCR (alle Seiten)',

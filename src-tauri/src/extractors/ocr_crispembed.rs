@@ -791,7 +791,7 @@ pub fn ocr_regions_via_pipeline(
 /// A region plus per-character confidence, for the OCR workbench. `confidence`
 /// is the **recognition** confidence (mean per-char softmax) when the engine
 /// exposes it (the signal that flags OCR errors), else the detection score.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RegionConf {
     pub text: String,
     pub x: f32,
@@ -800,6 +800,21 @@ pub struct RegionConf {
     pub h: f32,
     pub confidence: f32,
     pub char_conf: Vec<f32>,
+}
+
+/// Release any cached model and reserve the OCR pipeline while an isolated
+/// low-memory worker is running. Environment changes stay in the child process.
+#[cfg(feature = "crispembed")]
+pub fn with_released_pipeline<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let mut guard = OCR_ORCH.get_or_init(|| Mutex::new(None)).lock()
+        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    drop(guard.take());
+    work()
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn with_released_pipeline<T>(_work: impl FnOnce() -> Result<T>) -> Result<T> {
+    anyhow::bail!("CrispEmbed OCR is unavailable in this build")
 }
 
 /// Pick the confidence to surface for a region: prefer **recognition**

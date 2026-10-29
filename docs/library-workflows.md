@@ -62,9 +62,11 @@ optional pixel-budget profile has now completed all nine Qwen cases on the six
 frozen pages, with explicit accuracy tradeoffs; see the
 [complete measurements and limits](library-model-evaluation.md#preregistered-released-engine-real-scan-comparison).
 
-Retry weak pages skips proofread pages and manually corrected text. Focus a text
-region to retry its crop. A crop with no recognized text retains the previous
-result; Undo OCR restores earlier page results, including edits. Changes to a task
+Retry weak pages skips proofread pages and manually corrected text, including
+edits made while the batch is running. Focus a text region to retry its crop;
+compare the proposed text with the previous value and choose whether to apply
+it. A crop with no recognized text retains the previous result; Undo OCR
+restores earlier page results, including edits. Changes to a task
 or advanced configuration rebuild the native pipeline and release its previous
 weights before loading the replacement.
 
@@ -142,9 +144,15 @@ runtime; native OCR presets require a binary reporting that capability. Their
 signature/archive checks are separate from physical-device execution.
 
 The resource/accuracy measurements came from a Linux CPU worker; performance on
-other hardware and desktop platforms varies. For this explicit CPU profile,
-set the native pixel budget before starting
-the app. This does not rewrite your saved OCR configuration. Linux:
+other hardware and desktop platforms varies. In the desktop OCR workbench,
+choose a Qwen task preset and enable **CPU pixel budget** for the measured
+262,144-pixel limit. The task runs in a separate CPU process, without changing
+the environment or saved configuration of the main app. The previous cached
+OCR model is released first; each budgeted run reloads its model. An empty or
+stale region retry leaves the current text untouched.
+
+Alternatively, set the native pixel budget before starting the app; this also
+affects other Qwen calls in that process and does not rewrite saved settings. Linux:
 
 ```sh
 CRISPEMBED_MAX_PIXELS=262144 QWEN2VL_OCR_FORCE_CPU=1 crispsorter

@@ -4562,13 +4562,19 @@ pub async fn ocr_page_regions(
     page_path: String,
     preset: Option<String>,
     region: Option<OcrCrop>,
+    cpu_pixel_budget: Option<bool>,
 ) -> Result<OcrPageResult, String> {
     let path = std::path::PathBuf::from(&page_path);
     if !path.exists() {
         return Err(format!("page image not found: {page_path}"));
     }
     let base = state.bg_ingest.lock().await.ocr_pipeline.clone();
-    let cfg = crate::extractors::ocr_presets::apply(&base, preset.as_deref().unwrap_or("custom"))?;
+    let task = preset.as_deref().unwrap_or("custom");
+    let use_budget = cpu_pixel_budget.unwrap_or(false);
+    if use_budget && !matches!(task, "multilingual" | "tables" | "difficult") {
+        return Err("The CPU pixel budget is available for Qwen task presets only".into());
+    }
+    let cfg = crate::extractors::ocr_presets::apply(&base, task)?;
 
     tokio::task::spawn_blocking(move || -> Result<OcrPageResult, String> {
         let (w, h) = image::image_dimensions(&path).map_err(|e| e.to_string())?;
@@ -4584,7 +4590,11 @@ pub async fn ocr_page_regions(
             (Some(file), (rect.x as i32, rect.y as i32))
         } else { (None, (0, 0)) };
         let input = cropped.as_ref().map(|f| f.path()).unwrap_or(&path);
-        let regions = crate::extractors::ocr_crispembed::ocr_regions_detailed(input, &cfg)
+        let regions = if use_budget {
+            crate::extractors::ocr_worker::run_cpu_budget(input, &cfg)
+        } else {
+            crate::extractors::ocr_crispembed::ocr_regions_detailed(input, &cfg)
+        }
             .map_err(|e| format!("OCR failed: {e:#}"))?;
         Ok(OcrPageResult {
             width: w as i32,

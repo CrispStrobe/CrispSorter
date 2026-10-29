@@ -48,6 +48,7 @@ pub mod layout;
 pub mod math_ocr;
 pub mod ocr;
 pub mod ocr_crispembed;
+pub mod ocr_worker;
 pub mod ocr_ocrs;
 pub mod ocr_paddle;
 pub mod ocr_render;

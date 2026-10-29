@@ -31,6 +31,17 @@ fn main() -> ExitCode {
     // `--flag value` pair that precedes the subcommand by leaving the
     // detection to clap downstream — we only need a positive hit.
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--crispsorter-ocr-worker") {
+        if args.len() != 4 {
+            eprintln!("OCR worker requires request and response paths");
+            return ExitCode::FAILURE;
+        }
+        return match tauri_app_lib::extractors::ocr_worker::execute(
+            std::path::Path::new(&args[2]), std::path::Path::new(&args[3])) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => { eprintln!("{error:#}"); ExitCode::FAILURE }
+        };
+    }
     let cli_mode = args
         .iter()
         .skip(1)
