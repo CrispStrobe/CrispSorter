@@ -2,7 +2,7 @@
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
-    import { buildEvidenceContext, retrieveSelected, type EvidenceSource } from '../chat/evidence';
+    import { auditCitations, buildEvidenceContext, retrieveSelected, type EvidenceSource } from '../chat/evidence';
     import { getExtractedText } from '../batchStore';
     import { batchManager } from '../batch/store.svelte';
     import { DEFAULT_PROVIDERS, llmClient, type LLMProvider } from '../llm/client';
@@ -46,7 +46,7 @@
     let chatHistorySize = $state(0);
     let fileSearchTerm = $state('');
     let evidenceScope = $state<'selected' | 'library' | 'conversation'>('selected');
-    let evidenceRounds = $state<{ question: string; sources: EvidenceSource[]; tokens: number }[]>([]);
+    let evidenceRounds = $state<{ question: string; sources: EvidenceSource[]; tokens: number; cited: string[]; warning: string }[]>([]);
     let viewedSource = $state<EvidenceSource | null>(null);
     let citationWarning = $state('');
 
@@ -233,10 +233,9 @@
             const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
             const responseText = await llmClient.query(activeProviderId, effectiveModel, prompt, activeProv.apiKey, llmTemperature, undefined, evidence?.responseTokens);
             if (evidence) {
-                const ids = new Set(evidence.sources.map(s => s.id));
-                const unknown = [...responseText.matchAll(/\[(S\d+)\]/g)].map(m => m[1]).filter(id => !ids.has(id));
-                if (unknown.length) citationWarning = `The answer includes unavailable citations: ${[...new Set(unknown)].join(', ')}. Check the supplied sources.`;
-                evidenceRounds = [...evidenceRounds, { question: userMsg, sources: evidence.sources, tokens: evidence.inputTokens }].slice(-30);
+                const audit = auditCitations(responseText, evidence.sources);
+                citationWarning = audit.warning;
+                evidenceRounds = [...evidenceRounds, { question: userMsg, sources: evidence.sources, tokens: evidence.inputTokens, cited: audit.cited, warning: audit.warning }].slice(-30);
             }
             
             // Normalize math for Remarkable (Deep Chat)
@@ -654,9 +653,12 @@
                 {#each evidenceRounds as round}
                     <details open={round === evidenceRounds[evidenceRounds.length - 1]}>
                         <summary>{round.question} · {round.sources.length} passages</summary>
+                        {#if round.warning && round !== evidenceRounds[evidenceRounds.length - 1]}
+                            <p class="asr-error">{round.warning}</p>
+                        {/if}
                         {#each round.sources as source}
                             <button onclick={() => { viewedSource = source; sidebarCollapsed = true; }}>
-                                [{source.id}] {source.title}{source.page ? ` · page ${source.page}` : ` · passage ${(source.chunkIndex ?? 0) + 1}`}
+                                [{source.id}] {source.title}{source.page ? ` · page ${source.page}` : source.chunkIndex != null ? ` · passage ${source.chunkIndex + 1}` : ''} · {round.cited.includes(source.id) ? 'cited' : 'not cited'}
                             </button>
                         {/each}
                     </details>

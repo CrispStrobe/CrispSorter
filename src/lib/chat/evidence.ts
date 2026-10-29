@@ -20,8 +20,43 @@ export interface EvidenceSource {
 }
 
 const stopWords = new Set('a an the is are was were what which how why where when who do does did of to in on for and or this that me my please der die das ein eine einer eines ist sind war waren was wie welche welcher welches von zu im am und oder bitte'.split(' '));
-const terms = (text: string): string[] => (text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
-    .filter(t => !stopWords.has(t));
+// CJK text often has no spaces between words. Index adjacent characters as
+// well as individual characters; query bigrams avoid treating a common single
+// character as sufficient evidence for an unrelated multi-character query.
+const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+function terms(text: string, query = false): string[] {
+    const tokens = text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
+    const result: string[] = [];
+    for (const token of tokens) {
+        let latin = '', run: string[] = [];
+        const flushLatin = () => { if (latin && !stopWords.has(latin)) result.push(latin); latin = ''; };
+        const flushCjk = () => {
+            if (!run.length) return;
+            if (!query || run.length === 1) result.push(...run);
+            for (let i = 0; i + 1 < run.length; i++) result.push(run[i] + run[i + 1]);
+            run = [];
+        };
+        for (const ch of token) {
+            if (cjk.test(ch)) { flushLatin(); run.push(ch); }
+            else { flushCjk(); latin += ch; }
+        }
+        flushLatin(); flushCjk();
+    }
+    return result;
+}
+
+/** Inspect source labels in the answer; this does not establish entailment. */
+export function auditCitations(answer: string, sources: EvidenceSource[]): { cited: string[]; unknown: string[]; warning: string } {
+    const available = new Set(sources.map(source => source.id));
+    const labels = [...answer.matchAll(/\[(S\d+(?:\s*[,;]\s*S\d+)*)\]/gi)]
+        .flatMap(match => match[1].split(/\s*[,;]\s*/).map(id => id.toUpperCase()));
+    const cited = [...new Set(labels.filter(id => available.has(id)))];
+    const unknown = [...new Set(labels.filter(id => !available.has(id)))];
+    const messages: string[] = [];
+    if (!cited.length) messages.push('No available source citations were found in this answer. Check the passages before relying on it.');
+    if (unknown.length) messages.push(`The answer includes unavailable citations: ${unknown.join(', ')}. Check the supplied sources.`);
+    return { cited, unknown, warning: messages.join(' ') };
+}
 
 /** Search every part of selected documents, retaining real form-feed page anchors. */
 export function retrieveSelected(
@@ -29,7 +64,7 @@ export function retrieveSelected(
     documents: { id: string; originalName: string; originalPath: string; extractedText?: string }[],
     limit = 24,
 ): EvidenceSource[] {
-    const queryTerms = [...new Set(terms(query))];
+    const queryTerms = [...new Set(terms(query, true))];
     if (!queryTerms.length) return [];
     const chunks: EvidenceSource[] = [];
     for (const doc of documents) {
@@ -45,6 +80,7 @@ export function retrieveSelected(
                     locationUri: doc.originalPath, text: body,
                     page: hasPages ? pageIndex + 1 : undefined,
                     startChar: offset + start, endChar: offset + start + Array.from(body).length,
+                    offsetUnit: 'unicode_characters',
                     score: 0,
                 });
                 if (start + 1600 >= chars.length) break;
@@ -52,16 +88,27 @@ export function retrieveSelected(
             offset += chars.length + 1;
         }
     }
-    const tokenized = chunks.map(c => terms(c.text));
-    const meanLength = tokenized.reduce((n, ts) => n + ts.length, 0) / (chunks.length || 1);
-    const frequency = new Map(queryTerms.map(term => [term, tokenized.filter(ts => ts.includes(term)).length]));
+    // Retain only counts for this query, rather than all tokens for every
+    // chunk in a potentially large selection of full documents.
+    const wanted = new Set(queryTerms);
+    const frequency = new Map(queryTerms.map(term => [term, 0]));
+    const statistics = chunks.map(chunk => {
+        const tokens = terms(chunk.text);
+        const counts = new Map<string, number>();
+        for (const term of tokens) {
+            if (wanted.has(term)) counts.set(term, (counts.get(term) ?? 0) + 1);
+        }
+        for (const term of counts.keys()) frequency.set(term, (frequency.get(term) ?? 0) + 1);
+        return { length: tokens.length, counts };
+    });
+    const meanLength = statistics.reduce((n, stats) => n + stats.length, 0) / (chunks.length || 1);
     chunks.forEach((chunk, i) => {
-        const ts = tokenized[i];
+        const stats = statistics[i];
         chunk.score = queryTerms.reduce((score, term) => {
-            const count = ts.filter(t => t === term).length;
+            const count = stats.counts.get(term) ?? 0;
             const df = frequency.get(term) ?? 0;
             const idf = Math.log(1 + (chunks.length - df + 0.5) / (df + 0.5));
-            return score + idf * count * 2.2 / (count + 1.2 * (0.25 + 0.75 * ts.length / (meanLength || 1)));
+            return score + idf * count * 2.2 / (count + 1.2 * (0.25 + 0.75 * stats.length / (meanLength || 1)));
         }, 0);
     });
     return chunks.filter(c => c.score > 0).sort((a, b) => b.score - a.score).slice(0, limit);

@@ -1,0 +1,16 @@
+{
+  "schema": "crispsorter-selected-retrieval-panel-v1",
+  "license": "CC0-1.0",
+  "scope": "Author-written fictional long-document lexical retrieval examples. These are not a semantic multilingual benchmark.",
+  "padding": {"prefix_repetitions": 320, "suffix_repetitions": 320},
+  "cases": [
+    {"language": "en", "query": "cobalt warranty 2031", "answer": "The cobalt warranty expires in November 2031.", "distractor": "The cobalt warranty on another device ends in 2028."},
+    {"language": "de", "query": "München Garantie 2031", "answer": "In München endet die Garantie im Jahr 2031.", "distractor": "Die Münchner Garantie für ein anderes Gerät endet 2028."},
+    {"language": "fr", "query": "garantie appareil 2031", "answer": "La garantie de cet appareil expire en 2031.", "distractor": "La garantie de cet appareil expire en 2028."},
+    {"language": "es", "query": "garantía equipo 2031", "answer": "La garantía del equipo finaliza en 2031.", "distractor": "La garantía del equipo finaliza en 2028."},
+    {"language": "zh", "query": "保修期限 2031", "answer": "该设备的保修期限结束于2031年。", "distractor": "该设备的保修服务结束于2028年。"},
+    {"language": "ja", "query": "保証期間 2031", "answer": "製品の保証期間は2031年に終了します。", "distractor": "製品の保証手続きは2028年に終了します。"},
+    {"language": "ko", "query": "보증기간 2031", "answer": "제품의 보증기간은 2031년에 종료됩니다.", "distractor": "제품의 보증서비스는 2028년에 종료됩니다."},
+    {"language": "ar", "query": "الضمان الجهاز 2031", "answer": "ينتهي الضمان لهذا الجهاز في عام 2031.", "distractor": "ينتهي الضمان لهذا الجهاز في عام 2028."}
+  ]
+}
