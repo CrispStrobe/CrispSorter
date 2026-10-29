@@ -28,6 +28,7 @@ Usage (env-driven so CI passes secrets, never argv):
 """
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -242,7 +243,14 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_
             return semvers.get(rel["id"]) if rel else None
 
         if uploaded_after:
-            builds = [b for b in builds if b['attributes'].get('uploadedDate', '') >= uploaded_after]
+            def parse_timestamp(value):
+                parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                if parsed.tzinfo is None:
+                    raise ValueError('App Store Connect timestamp lacks a timezone')
+                return parsed.astimezone(timezone.utc)
+            cutoff = parse_timestamp(uploaded_after)
+            builds = [b for b in builds if b['attributes'].get('uploadedDate')
+                      and parse_timestamp(b['attributes']['uploadedDate']) >= cutoff]
         if version and uploaded_after:
             builds = [b for b in builds if b['attributes'].get('version') == version]
         elif version:
