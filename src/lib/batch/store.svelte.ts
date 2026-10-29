@@ -1252,6 +1252,14 @@ export class BatchManager {
             };
             const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', { payload });
 
+            // Generating a script does not move or copy any files. Leave review
+            // status, history and index locations untouched until it is run.
+            if (mode.startsWith('script_')) {
+                const generated = Object.values(results).filter(result => result.success).length;
+                return { success: generated, notFound: 0, notWritable: 0, notPermitted: 0,
+                    error: plan.items.length - generated, copiedFallback: 0, locked: 0, mode };
+            }
+
             let successCount = 0;
             let notFound = 0;
             let notWritable = 0;
@@ -1271,7 +1279,7 @@ export class BatchManager {
                 if (item) {
                     if (res.success) {
                         item.status = 'done';
-                        if (res.error === 'COPY_FALLBACK') {
+                        if (res.error?.startsWith('COPY_FALLBACK')) {
                             // Copied to destination but original not deleted (was locked by OS)
                             item.errorMessage = 'COPY_FALLBACK';
                             item.statusDetail = 'copied (orig. kept)';
