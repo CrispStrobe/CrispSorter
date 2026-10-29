@@ -405,7 +405,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 120
     env:
-      CXXFLAGS: '/D_USE_MATH_DEFINES'
+      CXXFLAGS: '-D_USE_MATH_DEFINES'
       CARGO_TERM_COLOR: always
       # The clap tree overflows libtest's default worker stack (the same
       # reason the Linux job sets this). The shipped binary no longer depends
@@ -419,6 +419,10 @@ jobs:
 
       - name: Configure native Windows Perl for vendored OpenSSL
         uses: ./repos/CrispSorter/.github/actions/windows-native-perl
+
+      - name: Validate Windows compiler flags through Git Bash
+        shell: bash
+        run: python -c "import os,shlex; flags=shlex.split(os.environ['CXXFLAGS']); assert '-D_USE_MATH_DEFINES' in flags, flags; print('Native process received the MSVC math macro unchanged')"
 
       # All three siblings are needed even though this job enables none of
       # their features: `crisp-docx-{core,llm}` are unconditional path deps,

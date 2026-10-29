@@ -137,7 +137,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     env: &desktop_release_env
-      CXXFLAGS: ${{ matrix.platform == 'windows-2025' && '/D_USE_MATH_DEFINES' || '' }}
+      CXXFLAGS: ${{ matrix.platform == 'windows-2025' && '-D_USE_MATH_DEFINES' || '' }}
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -345,6 +345,11 @@ jobs:
       - name: Configure native Windows Perl for vendored OpenSSL
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-native-perl
+
+      - name: Validate Windows compiler flags through Git Bash
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python -c "import os,shlex; flags=shlex.split(os.environ['CXXFLAGS']); assert '-D_USE_MATH_DEFINES' in flags, flags; print('Native process received the MSVC math macro unchanged')"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

@@ -73,5 +73,14 @@
     "input_sha256": "d250b91658692d0015338f338220ffdccba9bba931404645cc545aa009e6d69c",
     "fix": "Sign a separate development APK with a retained private development key; verify APK v2/v3 signatures and unchanged native-library ZIP alignment. Future public releases require configured production signing secrets. No app rebuild or production identity rotation.",
     "result": "android-artifact-verification.json"
+  },
+  {
+    "run": "release-40797005642-windows",
+    "job": 123195792137,
+    "app_source": "8f678d5668948e9827ea38040de90a1c9752c8e6",
+    "passed": "Native Strawberry Perl preflight; compilation proceeded past vendored OpenSSL",
+    "failure": "Git Bash rewrote CXXFLAGS=/D_USE_MATH_DEFINES into C:/Program Files/Git/D_USE_MATH_DEFINES. Glint then failed to compile with undeclared M_PI; native tests were not executed.",
+    "log_sha256": "7c69689f764b73226844cd24e4bbeae58737b05aa0c3b655320389929657f750",
+    "fix": "Use MSVC-supported -D_USE_MATH_DEFINES; validate the exact flag in a native Python process launched by Git Bash before Cargo; retry only Windows and retain failure cache."
   }
 ]
