@@ -109,5 +109,22 @@
       "primary_metric": "word_recall"
     }
   ],
-  "selection_rule": "All priority-one pages from the existing frozen manifest except en-form-economic-journal-67, whose input failed integrity in the prior upstream evaluation; selection fixed before this app comparison."
+  "selection_rule": "All priority-one pages from the existing frozen manifest except en-form-economic-journal-67, whose input failed integrity in the prior upstream evaluation; selection fixed before this app comparison.",
+  "models": [
+    {
+      "bytes": 12960448,
+      "registry_name": "dbnet-det",
+      "sha256": "163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2"
+    },
+    {
+      "bytes": 67508320,
+      "registry_name": "trocr-printed",
+      "sha256": "1aa4cdf3413539d7dbd53a565149abe4ca878f84a7ae2129e9a297f3a26b50d4"
+    },
+    {
+      "bytes": 2742343200,
+      "registry_name": "qwen2vl-3b",
+      "sha256": "4cc16e226005a2d7ecce7749d5a876704a499ca301428167f5ceb3b75b967312"
+    }
+  ]
 }

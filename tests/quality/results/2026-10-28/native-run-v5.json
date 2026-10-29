@@ -1,0 +1,18 @@
+{
+  "schema": "crispsorter-native-qualification-v1",
+  "app_source": "3ed6da3d0e81e19df4d1ba0ea841c333daffcf79",
+  "completed": true,
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "features": "crispembed,pdf-zpdf",
+  "regressions": {
+    "passed": 1396,
+    "failed": 0,
+    "ignored": 36
+  },
+  "live_ocr": {
+    "passed": 1,
+    "presets": 4,
+    "matched": 4
+  },
+  "log_sha256": "4e4e8d87d8760621a57c91e74f9bc0c18494afd9807bff3ac563dd07ea08f63a"
+}

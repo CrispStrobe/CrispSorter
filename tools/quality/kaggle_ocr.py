@@ -117,10 +117,15 @@ try:
         run('model-free', ['cargo', 'test', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--lib'], cwd=app, env=env)
     env.update(CRISPSORTER_OCR_RECEIPT=str(output / 'ocr.json'), QWEN2VL_OCR_FORCE_CPU='1', MATH_OCR_FORCE_CPU='1')
     if PANEL:
-        run('panel-deps', [sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'numpy==2.2.6', 'pyarrow==17.0.0', 'rapidfuzz==3.9.7'], env=env)
+        # Kaggle's base interpreter can advance independently (3.13 has no
+        # PyArrow 17 wheel). Match the original scorer's Python 3.12 setup.
+        run('panel-uv', [sys.executable, '-m', 'pip', 'install', '--no-cache-dir', 'uv==0.8.17'], env=env)
+        run('panel-python', [sys.executable, '-m', 'uv', 'venv', '--python', '3.12', '--seed', str(root / 'panel-venv')], env=env)
+        panel_python = str(root / 'panel-venv/bin/python')
+        run('panel-deps', [panel_python, '-m', 'pip', 'install', '--only-binary=:all:', '--no-cache-dir', 'numpy==2.2.6', 'pyarrow==17.0.0', 'rapidfuzz==3.9.7'], env=env)
         run('panel-build', ['cargo', 'build', '--locked', '--manifest-path', str(probe / 'Cargo.toml'), '--bin', 'ocr-case'], cwd=app, env=env)
         with kh.build_heartbeat('CrispSorter frozen real OCR panel'):
-            run('real-panel', [sys.executable, 'tools/quality/real_ocr_panel.py', '--app', str(app), '--executable', str(root / 'target/debug/ocr-case'), '--output', str(output / 'real-panel')], cwd=app, env=env, timeout=4*3600)
+            run('real-panel', [panel_python, 'tools/quality/real_ocr_panel.py', '--app', str(app), '--executable', str(root / 'target/debug/ocr-case'), '--output', str(output / 'real-panel')], cwd=app, env=env, timeout=4*3600)
         report['qualification_scope'] = 'Frozen real-scan OCR comparison; see real-panel/result.json for individual failures and scores'
     else:
         with kh.build_heartbeat('CrispSorter source-bound live OCR'):

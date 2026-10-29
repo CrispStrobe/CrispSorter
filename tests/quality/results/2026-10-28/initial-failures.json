@@ -59,5 +59,11 @@
     "log_sha256": "722377331179bf8936e59ea339613eee21ba9da5f182e89169d2064b82411dc8",
     "fix": "Use native Strawberry Perl explicitly through OPENSSL_SRC_PERL; validate platform and required modules before Cargo. Retry only Windows using shared matrix metadata and steps.",
     "workflow_validation": "actionlint 1.7.12 passed; native Windows result still pending"
+  },
+  {
+    "run": "real-ocr-1",
+    "inference_started": false,
+    "cause": "Kaggle base Python was 3.13; pinned PyArrow 17 lacked a wheel and source setup failed. Use the upstream Python 3.12 environment via pinned uv and require binary wheels. Frozen cases/references/scoring are unchanged.",
+    "report_sha256": "1790fcdf5359198688468509b267e100846146d2f4074f00b8abd78bd67ae8c9"
   }
 ]

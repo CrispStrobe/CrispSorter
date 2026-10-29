@@ -117,6 +117,9 @@ def main(app, executable, output):
     if warmup['exit_code']:
         raise RuntimeError('Model resolution failed before the comparison')
     report['models'] = json.loads(models_path.read_text())
+    if report['models'] != plan['models']:
+        save()
+        raise ValueError('Frozen model bytes differ from the qualified preset weights; no comparison will run')
     report['warmup'] = warmup
     started = time.monotonic()
     for preset in ['quick', 'multilingual', 'tables', 'difficult']:
