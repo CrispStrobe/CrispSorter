@@ -1,0 +1,68 @@
+name: Qualify source-pinned mobile CrispEmbed builds
+
+# Builds and links native runtime test programs. No binaries are uploaded,
+# and this workflow does not establish app, simulator, or OCR qualification.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: android-arm64
+          - runner: macos-15
+            target: ios-arm64
+          - runner: macos-15
+            target: ios-sim-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sorter
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
+          path: crispembed
+          submodules: recursive
+      - name: Build pinned runtime and check dependency closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd sorter
+          if [[ '${{ matrix.target }}' == android-* ]]; then
+            export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:?runner has no Android NDK}"
+          fi
+          python3 scripts/build_mobile_crispembed.py \
+            --source ../crispembed --output "$RUNNER_TEMP/crispembed-mobile" \
+            --target '${{ matrix.target }}' --jobs 4
+      - name: Link OCR C API probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/crispembed-mobile/lib"
+          if [[ '${{ matrix.target }}' == android-* ]]; then
+            cc="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            "$cc" -I crispembed/src sorter/scripts/mobile_crispembed_link_probe.c \
+              -L "$runtime" -lcrispembed -Wl,--no-undefined -o "$RUNNER_TEMP/ocr-link-probe"
+          else
+            if [[ '${{ matrix.target }}' == ios-sim-arm64 ]]; then
+              sdk=iphonesimulator
+              triple=arm64-apple-ios15.0-simulator
+            else
+              sdk=iphoneos
+              triple=arm64-apple-ios15.0
+            fi
+            sdk_path=$(xcrun --sdk "$sdk" --show-sdk-path)
+            xcrun --sdk "$sdk" clang -target "$triple" -isysroot "$sdk_path" \
+              -I crispembed/src sorter/scripts/mobile_crispembed_link_probe.c \
+              "$runtime/libcrispembed.a" -lc++ -framework Foundation -framework Metal \
+              -framework MetalKit -framework Accelerate -o "$RUNNER_TEMP/ocr-link-probe"
+          fi
