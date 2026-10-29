@@ -1,0 +1,94 @@
+{
+  "scope": "Verbatim production OCR functions/configuration and native bindings, not a full application build",
+  "harness_source": "3ed6da3d0e81e19df4d1ba0ea841c333daffcf79",
+  "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+  "completed": true,
+  "checks": [
+    {
+      "name": "apt-update",
+      "exit_code": 0,
+      "elapsed_seconds": 10.005576625999993
+    },
+    {
+      "name": "toolchain",
+      "exit_code": 0,
+      "elapsed_seconds": 30.001888433999966
+    },
+    {
+      "name": "rust",
+      "exit_code": 0,
+      "elapsed_seconds": 20.001457149999965
+    },
+    {
+      "name": "clone-CrispSorter",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001218723999955
+    },
+    {
+      "name": "checkout-CrispSorter",
+      "exit_code": 0,
+      "elapsed_seconds": 10.00126995100004
+    },
+    {
+      "name": "clone-CrispEmbed",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001068492000059
+    },
+    {
+      "name": "checkout-CrispEmbed",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001076672999943
+    },
+    {
+      "name": "clone-CrispASR",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001182300999972
+    },
+    {
+      "name": "checkout-CrispASR",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001241746000005
+    },
+    {
+      "name": "source-equivalence",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001163500000075
+    },
+    {
+      "name": "verify-runtime",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001318783999977
+    },
+    {
+      "name": "extract-runtime",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001309124000045
+    },
+    {
+      "name": "source-probe",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001252005999959
+    },
+    {
+      "name": "lock",
+      "exit_code": 0,
+      "elapsed_seconds": 10.001173537000113
+    },
+    {
+      "name": "model-free",
+      "exit_code": 0,
+      "elapsed_seconds": 20.00154610100003
+    },
+    {
+      "name": "live-ocr",
+      "exit_code": 0,
+      "elapsed_seconds": 530.0218398879999
+    }
+  ],
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "build_jobs": 2,
+  "probe_lock_sha256": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+  "completed_at_utc": "2026-10-29T00:05:13.106877+00:00",
+  "probe_log_sha256": "cf0a190cc2a167c397cc464b3281e2a6f2e65157ba9142b90f9f49364cd1fb47",
+  "test_limit": "One synthetic single-line image; proves source-bound native wiring, not multilingual/table/full-page accuracy or physical device execution"
+}

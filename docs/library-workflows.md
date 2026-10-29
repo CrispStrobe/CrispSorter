@@ -47,6 +47,12 @@ are temporary and preserve your advanced configuration:
 | Difficult page | Qwen2.5-VL after deskew, border crop, whitening and Sauvola binarization |
 | Advanced settings | Your configured pipeline |
 
+On first use, Quick scan needs about 80 MB of model files; the Qwen presets
+need a 2.74 GB model. The source-bound CPU wiring probe took about 8 seconds
+for Quick and 88–90 seconds for the other tasks on a single-line synthetic
+image, excluding downloads. These are not full-page scan estimates; see the
+[qualification scope and model hashes](library-model-evaluation.md#released-ocr-task-wiring).
+
 Retry weak pages skips proofread pages and manually corrected text. Focus a text
 region to retry its crop. A crop with no recognized text retains the previous
 result; Undo OCR restores earlier page results, including edits. Changes to a task

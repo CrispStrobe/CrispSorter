@@ -89,3 +89,26 @@ UnlimitedOCR2 and MiniCPM-OCR out of the app selector until a compatible release
 runtime, native quality checks and acceptable task latency are established.
 The workbench's selective retries and undo are useful independently of adopting
 another heavyweight model.
+
+## Released OCR task wiring
+
+A separate CPU probe executed all four task presets using the exact production
+pipeline builder, configuration/cache code and Rust → C++ bindings, verified
+against the immutable 0.17.12 archive. A source-equivalence gate and fragment
+hashes tie this probe to binary source `0eb1a37`. All four retained the known
+fixture words and year. This is one synthetic 1500 × 200 image, not a corpus
+accuracy result, a table-structure test or an estimate for full-page scans.
+
+| Preset | CPU seconds, including context setup | Known evidence retained |
+| --- | ---: | --- |
+| Quick scan | 7.54 | Yes |
+| Multilingual book | 88.10 | Yes |
+| Tables and receipts | 89.52 | Yes |
+| Difficult page | 87.53 | Yes |
+
+Timings exclude initial downloads. The verified DBNet and TrOCR files total
+about 80 MB; the Qwen2.5-VL file is 2.74 GB. These CPU measurements support
+keeping Quick scan as the inexpensive option. Actual performance depends on
+image size, content and hardware. The recognized text, configurations, model
+hashes, source fragments and probe lockfile are retained in the result folder.
+The full native suite and real packaged-app PDF OCR checks are separate gates.

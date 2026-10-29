@@ -51,8 +51,10 @@ queued binary source `0eb1a37`.
 A source-bound OCR probe now compiles the exact production configuration,
 pipeline/cache functions, task presets and live test without unrelated index/UI
 dependencies. It passed four model-free tests after a 25-second admitted local
-compile; inference runs separately on a hosted CPU worker. Fragment hashes and
-a source-equivalence gate bind it to the queued binary source. This probe is
+compile; all four real-model cases now passed on a hosted CPU worker. Fragment hashes and
+a source-equivalence gate bind it to the queued binary source. The observed CPU timings were 7.54 seconds for Quick and 87.53–89.52 seconds
+for the Qwen tasks on the synthetic line image, excluding model downloads.
+These are wiring checks, not a corpus accuracy claim. This probe is
 not a full app build; the native suite and packaged-app checks remain separate.
 
 Actual CPU model evaluation is complete: MoEdern 27M matched the dense baseline
