@@ -1,0 +1,29 @@
+{
+  "schema": "crispsorter-apk-signing-v1",
+  "signing": "development certificate; not a production/store identity",
+  "input_filename": "CrispSorter_0.13.0_android-aarch64.apk",
+  "input_sha256": "d250b91658692d0015338f338220ffdccba9bba931404645cc545aa009e6d69c",
+  "filename": "CrispSorter_0.13.0_android-aarch64-dev-signed.apk",
+  "bytes": 341886681,
+  "sha256": "415a063d7e004ebafb1683395141e7860fafef02a803715a6ce3803ea53cef82",
+  "native_zip_alignment": [
+    {
+      "name": "lib/arm64-v8a/libc++_shared.so",
+      "offset": 966656,
+      "zip_page_alignment_16k": true
+    },
+    {
+      "name": "lib/arm64-v8a/libtauri_app_lib.so",
+      "offset": 10452992,
+      "zip_page_alignment_16k": true
+    }
+  ],
+  "verification": "Verifies\nVerified using v1 scheme (JAR signing): false\nVerified using v2 scheme (APK Signature Scheme v2): true\nVerified using v3 scheme (APK Signature Scheme v3): true\nVerified using v4 scheme (APK Signature Scheme v4): false\nVerified for SourceStamp: false\nNumber of signers: 1\nSigner #1 certificate DN: CN=Android Debug, O=Android, C=US\nSigner #1 certificate SHA-256 digest: 8ef1171c7ed286ca4fde1c28c8c005df3b2f9e0fb81d2fa6de1f70e11d0f73f6\nSigner #1 certificate SHA-1 digest: 06d4d0527248229672d0e7cc6029683b1eb336a9\nSigner #1 certificate MD5 digest: eca3a4a6b7e207eb4de7bf151efe5d8e\nSigner #1 key algorithm: RSA\nSigner #1 key size (bits): 2048\nSigner #1 public key SHA-256 digest: 69dea2159389d86545ff11c83a3ba6b6fc0aa83fcf6a8aff759918dfa4ce0219\nSigner #1 public key SHA-1 digest: a72d10d5cee9b1d5272896d1d3b8165b7f241cd9\nSigner #1 public key MD5 digest: 767d40afda8b1c65a14164e7d5ba7104\n",
+  "device_execution": "not exercised by signature/archive verification",
+  "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+  "checked_at_utc": "2026-10-29T01:15:18.654153+00:00",
+  "signer_script_sha256": "5efee6a256d83eb854e7fba46050f8d19f6c66a135f634e8b730b452ae31b34b",
+  "apksigner_package": "Ubuntu apksigner/libapksig-java 31.0.2-1ubuntu1",
+  "unsigned_signature_negative_check": "apksigner rejects original unsigned APK",
+  "app_rebuilt": false
+}

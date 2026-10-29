@@ -883,6 +883,32 @@ jobs:
           export PATH="$NDK_BIN:$PATH"
           npx tauri android build --target aarch64
 
+      - name: Sign and verify Android APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          RELEASE_PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          umask 077
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          mapfile -t APKS < <(find src-tauri/gen/android -name '*.apk' -type f)
+          [[ ${#APKS[@]} -eq 1 ]] || { echo '::error::Expected exactly one Android APK'; exit 1; }
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" ]]; then
+            export ANDROID_KEYSTORE="$RUNNER_TEMP/android-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE"
+            DEST="CrispSorter_${VERSION}_android-aarch64.apk"
+            python scripts/sign_android_apk.py "${APKS[0]}" "$DEST"
+          else
+            [[ "$RELEASE_PUBLISH" != true ]] || { echo '::error::Production Android signing secrets are required to publish'; exit 1; }
+            DEST="CrispSorter_${VERSION}_android-aarch64-dev-signed.apk"
+            python scripts/sign_android_apk.py "${APKS[0]}" "$DEST" --development-keystore "$RUNNER_TEMP/android-development.jks"
+            echo '::notice::Development certificate: testing only; a new ephemeral key requires reinstalling older development builds.'
+          fi
+          echo "ANDROID_RELEASE_APK=$DEST" >> "$GITHUB_ENV"
+
       - name: Upload APK to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -893,15 +919,9 @@ jobs:
           # finish before the desktop tauri-action jobs).
           gh release view "${TAG}" &>/dev/null || \
             gh release create "${TAG}" --target "$GITHUB_SHA" --draft --title "${TAG}" --notes "Automated release"
-          APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
-          if [ -n "$APK" ]; then
-            DEST="CrispSorter_${VERSION}_android-aarch64.apk"
-            cp "$APK" "$DEST"
-            gh release upload "${TAG}" "$DEST" --clobber
-            echo "✓ Uploaded $DEST"
-          else
-            echo "::error::No APK found"; exit 1
-          fi
+          test -f "$ANDROID_RELEASE_APK"
+          gh release upload "${TAG}" "$ANDROID_RELEASE_APK" "${ANDROID_RELEASE_APK%.apk}.signing.json" --clobber
+          echo "✓ Uploaded $ANDROID_RELEASE_APK"
 
       - name: Inspect Android artifact and attach checksum receipt
         env:

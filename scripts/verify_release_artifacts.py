@@ -51,7 +51,11 @@ def inspect_package(platform, artifact, destination):
             libraries = list(destination.glob('lib/arm64-v8a/*.so'))
             if not libraries or not (destination / 'AndroidManifest.xml').is_file():
                 raise ValueError('APK lacks the arm64 application or manifest')
-            return {'inspection': 'APK arm64 native libraries and manifest present', 'native_libraries': [p.name for p in libraries]}
+            from sign_android_apk import signer_path
+            signature = subprocess.check_output([signer_path(None), 'verify', '--verbose', '--print-certs', str(artifact)], text=True)
+            return {'inspection': 'APK arm64 native libraries, manifest and verified signature present',
+                    'native_libraries': [p.name for p in libraries], 'signature_verification': signature,
+                    'device_execution': 'not exercised by signature/archive inspection'}
         else:
             app = next((destination / 'Payload').glob('*.app'))
             info = plistlib.loads((app / 'Info.plist').read_bytes())

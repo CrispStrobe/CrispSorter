@@ -116,3 +116,13 @@ run native regressions with the platform's shipped features, then inspect final
 packages and emit per-platform `.receipt.json` and `.sha256` files. Desktop smoke
 checks execute the packaged program with sibling build libraries hidden. Mobile
 archive inspection is recorded separately from execution on a physical device.
+
+Android APKs must pass `apksigner verify` before qualification. Draft testing may
+use an explicitly labeled `-dev-signed.apk`; its development certificate is not a
+production/store identity. Retain its private key to update that development
+installation; independently generated development keys require reinstalling.
+Public releases require `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_PASSWORD` repository secrets.
+`scripts/sign_android_apk.py` signs the existing aligned APK and emits a separate
+input/output hash and certificate receipt without rebuilding the app. See
+[Android's signing tool reference](https://developer.android.com/tools/apksigner).

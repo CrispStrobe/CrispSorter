@@ -65,5 +65,13 @@
     "inference_started": false,
     "cause": "Kaggle base Python was 3.13; pinned PyArrow 17 lacked a wheel and source setup failed. Use the upstream Python 3.12 environment via pinned uv and require binary wheels. Frozen cases/references/scoring are unchanged.",
     "report_sha256": "1790fcdf5359198688468509b267e100846146d2f4074f00b8abd78bd67ae8c9"
+  },
+  {
+    "run": "release-40784963290-android",
+    "job": 123155729858,
+    "failure": "Successful Gradle release build produced an unsigned APK, so ZIP-only qualification did not establish installability.",
+    "input_sha256": "d250b91658692d0015338f338220ffdccba9bba931404645cc545aa009e6d69c",
+    "fix": "Sign a separate development APK with a retained private development key; verify APK v2/v3 signatures and unchanged native-library ZIP alignment. Future public releases require configured production signing secrets. No app rebuild or production identity rotation.",
+    "result": "android-artifact-verification.json"
   }
 ]

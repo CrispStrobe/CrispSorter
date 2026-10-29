@@ -26,7 +26,7 @@ missing. Branch: `feat/library-workflows-20261028`.
 - [ ] Integrated validation and binaries: source-pinned checks, real packaged
   startup/integration checks and downloadable checksummed platform artifacts.
 
-Checkpoint (23:54 UTC): all eight implementation areas are on the branch.
+Checkpoint (01:24 UTC, 29 October): all eight implementation areas are on the branch.
 Frontend qualification is complete: 75 unit tests, zero Svelte errors
 (53 existing warnings), production build and all ten browser scenarios passed.
 The browser suite includes document context, cited evidence, OCR recovery,
@@ -45,7 +45,7 @@ failure is preserved in tests/quality/results/2026-10-28/native-run-v3.json.
 The narrower native run then passed 1,394 tests, including refreshed source
 anchors and metadata stale-write protection, but two drive tests incorrectly
 assumed optional native providers were compiled. Those test-only assumptions
-are corrected; native run 5 is active. Production code is unchanged from the
+are corrected; native run 5 passed all 1,396 tests and its separate real-model test passed all four OCR presets. Production code is unchanged from the
 queued binary source `0eb1a37`.
 
 A source-bound OCR probe now compiles the exact production configuration,
@@ -64,8 +64,13 @@ results and initial failures are in tests/quality/results/2026-10-28. Newer OCR
 engines remain deferred based on runtime compatibility and real-scan evidence.
 
 Linux cold-loader packaging has a passing independent ELF/Debian regression
-for SONAME aliases, modes, ownership and gzip/xz controls. Final platform binaries
-remain unqualified; draft-only release run 40784963290 is queued. Local compilation is stopped and its exclusive target cache
+for SONAME aliases, modes, ownership and gzip/xz controls. The signed iOS IPA is downloaded and verified. Android built successfully but
+was unsigned; a separately development-signed APK now passes v2/v3 signature
+verification, with the original build retained for provenance. Linux is packaging;
+macOS and the targeted Windows retry remain queued. The original Windows job
+failed before tests because OpenSSL selected MSYS Perl; the retry explicitly
+selects and validates native Strawberry Perl. The six-page real OCR comparison
+has verified all frozen inputs and started inference on its CPU worker. Local compilation is stopped and its exclusive target cache
 was removed because the VPS lacks safe headroom. Public and App Store uploads
 remain disabled. Do not close this programme based on queued or prepared checks.
 
