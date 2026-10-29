@@ -17,7 +17,7 @@ on:
       platform:
         description: 'Build all platforms, or retry one desktop platform without restarting the others. Single-platform retries never publish.'
         type: choice
-        options: [all, windows, macos, testflight]
+        options: [all, windows, macos, testflight, testflight_resume]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -45,7 +45,7 @@ env:
 
 jobs:
   testflight-existing:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'testflight' && !inputs.publish && !inputs.mac_appstore }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore }}
     permissions:
       contents: write # Draft releases require write access; this job never publishes.
     runs-on: macos-15
@@ -71,6 +71,7 @@ jobs:
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")
           echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
       - name: Upload to App Store Connect
+        if: inputs.platform == 'testflight'
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
@@ -86,6 +87,11 @@ jobs:
             --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
             --bundle-version "$BUILD_NUMBER" --bundle-short-version-string 0.13.0 \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+      - name: Resume the already accepted upload
+        if: inputs.platform == 'testflight_resume'
+        run: echo 'UPLOADED_AFTER=2026-10-29T06:34:11Z' >> "$GITHUB_ENV"
+      - name: Install TestFlight API dependency
+        run: python -m pip install 'cryptography==44.0.3'
       - name: Assign the uploaded build to internal TestFlight
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}

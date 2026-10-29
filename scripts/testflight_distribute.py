@@ -190,7 +190,7 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_
     and distributed the older binary while reporting success. Build numbers
     are unique per upload; semvers are not.
     """
-    q = urllib.parse.urlencode({
+    params = {
         "filter[app]": app_id,
         "filter[preReleaseVersion.platform]": platform,
         "sort": "-version",
@@ -205,7 +205,11 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_
                            "usesNonExemptEncryption,preReleaseVersion"),
         "include": "preReleaseVersion",
         "fields[preReleaseVersions]": "version,platform",
-    })
+    }
+    if uploaded_after:
+        params['filter[version]'] = version
+        params['sort'] = '-uploadedDate'
+    q = urllib.parse.urlencode(params)
     deadline = time.time() + wait_minutes * 60
     seen = None
     while True:
