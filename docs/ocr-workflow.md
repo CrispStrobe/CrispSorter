@@ -38,18 +38,48 @@ module in CrispEmbed (`ocr_orchestrator`); CrispSorter calls it via the
 
 Selectable per stage (`--engine`, or per-stage in the GUI builder):
 
-| Engine | Kind | Notes |
-|--------|------|-------|
-| `dbnet_trocr` | DBNet detect + TrOCR recognize | default; lightweight |
-| `surya` | Surya-OCR-2 | 91-language detection |
-| `tesseract` | DBNet detect + Tesseract-LSTM recognize | per-language GGUF (`tesseract-eng`, …) |
-| `got` | GOT-OCR2 | VLM, single-shot |
-| `glm` | GLM-OCR | VLM |
-| `qwen2vl` | Qwen2.5-VL | VLM, strong on German |
-| `internvl2` | InternVL2 | VLM |
+| Engine | Kind | Default model (license) | Notes |
+|--------|------|-------------------------|-------|
+| `dbnet_trocr` | DBNet detect + TrOCR recognize | `dbnet-det` (Apache-2.0) + `trocr-printed` (MIT) | default; lightweight |
+| `surya` | Surya-OCR-2 | `dbnet-det` + `trocr-printed` unless set | 91-language detection |
+| `tesseract` | DBNet detect + Tesseract-LSTM recognize | `tesseract-eng` | per-language GGUF (`tesseract-eng`, …) |
+| `got` | GOT-OCR2 | `got-ocr2` (**Tongyi Qianwen RESEARCH, non-commercial**) | VLM, single-shot; needs license acknowledgement |
+| `glm` | GLM-OCR | `glm-ocr` (MIT) | VLM |
+| `qwen2vl` | Qwen2-VL family | `german-ocr-3.1` (Apache-2.0) | VLM, strong on German |
+| `qwen3vl` | Qwen3-VL family | `qwen3vl-2b` (Apache-2.0) | VLM; also `firered-ocr`, `uni-mumer-qwen3-vl-2b` |
+| `internvl2` | InternVL2 | `internvl2-ocr` | VLM |
 
 `dbnet_trocr` runs in "simple mode"; any other engine is built as an explicit
 single stage so the choice takes effect.
+
+### Model licenses (non-commercial weights)
+
+A CrispEmbed license audit
+([CrispStrobe/CrispEmbed#92](https://github.com/CrispStrobe/CrispEmbed/pull/92),
+evidence `tests/results/licenses/registry-qwen-audit.json` on that branch) found
+registry models labelled permissive whose weights inherit non-commercial terms:
+
+| Registry alias | Effective license | Why |
+|---|---|---|
+| `qwen2vl-3b` | [Qwen RESEARCH LICENSE AGREEMENT](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE) (non-commercial) | is Qwen2.5-VL-3B-Instruct |
+| `nanonets-ocr-s` | Qwen RESEARCH (non-commercial) | fine-tune of Qwen2.5-VL-3B |
+| `uni-mumer-qwen2.5-vl-3b` | Qwen RESEARCH (non-commercial) | fine-tune of Qwen2.5-VL-3B |
+| `teleocr-f16` / `teleocr-q8_0` / `teleocr-q4_k-m` | Qwen RESEARCH (non-commercial) | Qwen2.5-VL-3B vision tower |
+| `got-ocr2` (engine `got`) | [Tongyi Qianwen RESEARCH LICENSE AGREEMENT](https://huggingface.co/Qwen/Qwen1.5-0.5B/blob/main/LICENSE) — non-commercial, and neither the model nor its outputs may be used to improve any other LLM | decoder is Qwen1.5-0.5B |
+| `transcoda` | [CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/) | encoder fine-tuned from ConvNeXt V2 ImageNet weights |
+
+None of these is a default. Configuring one (GUI field, GOT engine, registry
+download, CLI flag or a local GGUF path whose filename matches) requires an
+explicit acknowledgement that names the license, states the non-commercial
+restriction and links the text: the GUI asks once and persists it
+(`acceptedModelLicenses`); the CLI needs `--accept-license` or
+`CRISPSORTER_ACCEPT_MODEL_LICENSE=<alias>`. Without it the model is neither
+downloaded nor loaded (`index::license_consent` + `ocr_crispembed::resolve_checked`).
+After acceptance CrispSorter also sets CrispEmbed's own runtime gates
+(`CRISPEMBED_ACCEPT_QWEN_RESEARCH_LICENSE=1` / `CRISPEMBED_ACCEPT_TONGYI_QIANWEN_LICENSE=1`),
+which newer runtimes require. Apache-2.0 alternatives for document / formula
+OCR: `qwen3vl-2b`, `firered-ocr`, `uni-mumer-qwen3-vl-2b`, `paddleocr-vl`,
+`olmocr-2-7b`.
 
 ## Cleanup (pre-processors)
 

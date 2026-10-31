@@ -193,7 +193,7 @@ pub enum OcrTier {
     Tier2,
     /// Tier 3 — PaddleOCR via usls (requires `paddle-ocr` feature).
     Tier3,
-    /// Tier 4 — CrispEmbed GGUF OCR (Surya/Qwen2.5-VL/DBNet+TrOCR,
+    /// Tier 4 — CrispEmbed GGUF OCR (DBNet+TrOCR by default,
     /// requires `crispembed` feature).
     Tier4,
 }
@@ -237,10 +237,10 @@ pub struct OcrPipelineConfig {
     /// Accept-gate: minimum mean region confidence (0 = ignore).
     #[serde(default = "default_ocr_min_confidence")]
     pub min_confidence: f32,
-    /// Detection model registry name (`None` → `surya-det`).
+    /// Detection model registry name (`None` → `dbnet-det`).
     #[serde(default)]
     pub det_model: Option<String>,
-    /// Recognition model registry name (`None` → `qwen2vl-ocr`).
+    /// Recognition model registry name (`None` → `trocr-printed`).
     #[serde(default)]
     pub rec_model: Option<String>,
     /// NAFNet denoise GGUF registry name (`None` → `nafnet-denoise`).
@@ -334,7 +334,9 @@ pub struct OcrPipelineConfig {
     #[serde(default)]
     pub vlm_ocr_model: Option<String>,
     /// VLM escalation engine for `vlm_ocr_model`: `qwen2vl` (default, the
-    /// german-ocr-3.1 family), `glm`, `got`, or `internvl2`.
+    /// german-ocr-3.1 family), `glm`, `got`, or `internvl2`. `got` runs
+    /// GOT-OCR2 (Tongyi Qianwen RESEARCH license, non-commercial): it passes
+    /// the license gate in `ocr_crispembed` only after explicit acceptance.
     #[serde(default = "default_vlm_ocr_engine")]
     pub vlm_ocr_engine: String,
     /// Optional post-OCR **truecaser** model — fixes casing on ALL-CAPS /
@@ -533,8 +535,9 @@ impl Default for OcrPipelineConfig {
     }
 }
 
-/// Map an engine string to the C builder's engine id.
-#[cfg(any(feature = "crispembed", test))]
+/// Map an engine string to the C builder's engine id. Not feature-gated: the
+/// license gate's model walker (`ocr_crispembed::pipeline_model_names`) needs it
+/// in every build.
 fn engine_id(name: &str) -> i32 {
     match name {
         "surya" => 1,
