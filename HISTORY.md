@@ -7,6 +7,34 @@ of the codebase look the way they do.
 For active development plans, see [PLAN.md](PLAN.md).
 For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
+## OCR model license gate (2026-10-31)
+
+CrispEmbed's license audit
+([CrispStrobe/CrispEmbed#92](https://github.com/CrispStrobe/CrispEmbed/pull/92),
+`tests/results/licenses/registry-qwen-audit.json` on `feat/teleocr`) found
+registry models labelled Apache-2.0 / CC-BY-4.0 whose weights inherit
+non-commercial terms: `qwen2vl-3b`, `nanonets-ocr-s`, `uni-mumer-qwen2.5-vl-3b`,
+`teleocr-*` (Qwen RESEARCH), `got-ocr2` (Tongyi Qianwen RESEARCH: also no use of
+the model or its outputs to improve other LLMs) and `transcoda` (CC-BY-NC-4.0).
+The pinned runtime (v0.17.11) still carries the old labels and has no gate, so
+CrispSorter enforces consent itself:
+
+- `index::license_consent` holds the corrected table (license name, tag, link,
+  notice, runtime env gate) and matches aliases, registry filenames and path
+  stems. Unaccepted models are neither downloaded nor loaded; acceptance (GUI,
+  persisted in `acceptedModelLicenses`; CLI `--accept-license`; env
+  `CRISPSORTER_ACCEPT_MODEL_LICENSE`) also sets
+  `CRISPEMBED_ACCEPT_QWEN_RESEARCH_LICENSE` / `CRISPEMBED_ACCEPT_TONGYI_QIANWEN_LICENSE`.
+- `ocr_crispembed::resolve_checked` gates every OCR model resolution;
+  `pipeline_model_names` mirrors `build_pipeline` so engine defaults (GOT engine
+  → `got-ocr2`) are covered, and fuzzy names are predicted like the resolver.
+- Defaults: the recogniser default was `qwen2vl-ocr` — a name that never
+  resolved in the pinned registry and that refers to the non-commercial
+  Qwen2.5-VL-3B. It is now `trocr-printed` (MIT), matching the DBNet+TrOCR
+  engine; the `qwen2vl` engine's default is `german-ocr-3.1` (Apache-2.0).
+- GUI: acknowledgement dialog on OCR settings / registry download, license
+  badges in the CrispEmbed registry list, and an About → model licenses list.
+
 ## Cloud provider integration pass (2026-08-02)
 
 The registered-drive/file-manager pass shipped bounded provider search,

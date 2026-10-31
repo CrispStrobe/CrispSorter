@@ -80,7 +80,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 ## Features
 
 - **Four-tier OCR** (in quality order):
-  - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): Surya-OCR-2 text detection (91 languages) + Qwen2.5-VL recognition (German support) + DBNet/TrOCR lightweight alternative; all-GGUF, no ORT dependency
+  - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): DBNet + TrOCR by default (Apache-2.0 / MIT), Surya-OCR-2 text detection (91 languages), optional VLM engines (German-OCR-3.1, Qwen3-VL, GLM-OCR, …). Models whose weights are non-commercial (GOT-OCR2, the Qwen2.5-VL-3B family, Transcoda) are never defaults and need a license acknowledgement — see [docs/ocr-workflow.md](docs/ocr-workflow.md#model-licenses-non-commercial-weights); all-GGUF, no ORT dependency
   - **Tier 3 — PaddleOCR** (`--features paddle-ocr`): multilingual incl. CJK, ONNXRuntime via the existing ort dep, ~60 MB models auto-download; CJK/Latin model selection per document
   - **Tier 2 — ocrs**: pure Rust, zero system install, Latin-script (EN/DE/FR/…)
   - **Tier 1 — Tesseract**: shell-out for users with the system install

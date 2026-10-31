@@ -1,13 +1,20 @@
 //! P17.2 — CrispEmbed GGUF OCR (Tier 4).
 //!
-//! Wraps `crispembed::OcrPipeline` (DBNet text detection + TrOCR/Surya/
-//! Qwen2.5-VL recognition) as the highest-priority OCR tier.  All models
-//! are GGUF — no ORT or Tesseract dependency.
+//! Wraps `crispembed::OcrPipeline` (DBNet text detection + TrOCR/Surya
+//! recognition, optional VLM stages) as the highest-priority OCR tier.  All
+//! models are GGUF — no ORT or Tesseract dependency.
 //!
 //! The pipeline auto-downloads models from HuggingFace on first use via
 //! `CrispEmbed::resolve_model`.  Detection and recognition models are
-//! specified by registry name; the default pairing is `surya-det` (91
-//! languages) + `qwen2vl-ocr` (German support).
+//! specified by registry name; the default pairing is `dbnet-det` +
+//! `trocr-printed` (Apache-2.0 / MIT).
+//!
+//! **License gate.** Some registry OCR models inherit non-commercial terms
+//! (Qwen2.5-VL-3B derivatives, GOT-OCR2, Transcoda — see
+//! [`crate::index::license_consent::restricted_model`]). Every model this file
+//! resolves goes through [`resolve_checked`] / [`ensure_pipeline_licenses`],
+//! which refuse to download or load such a model until the user has accepted
+//! its license, and then set the matching CrispEmbed runtime env gate.
 //!
 //! Gated behind `--features crispembed`.
 
@@ -20,12 +27,15 @@ use std::sync::Mutex;
 
 use super::ExtractedDocument;
 
-/// Default detection model (Surya-OCR-2, EfficientViT, 91 languages).
-#[cfg(feature = "crispembed")]
-const DEFAULT_DET_MODEL: &str = "dbnet-det";
-/// Default recognition model (Qwen2.5-VL, German support).
-#[cfg(feature = "crispembed")]
-const DEFAULT_REC_MODEL: &str = "qwen2vl-ocr";
+/// Default detection model (DBNet, ICDAR2015, Apache-2.0).
+pub(crate) const DEFAULT_DET_MODEL: &str = "dbnet-det";
+/// Default recognition model (TrOCR-small printed, MIT).
+///
+/// Was `qwen2vl-ocr`, a name that never resolved in the pinned CrispEmbed
+/// registry and that refers to Qwen2.5-VL-3B — a Qwen RESEARCH LICENSE
+/// (non-commercial) model, which must never be a silent default. The
+/// DBNet+TrOCR engine this default feeds needs a TrOCR recogniser anyway.
+pub(crate) const DEFAULT_REC_MODEL: &str = "trocr-printed";
 
 /// Process-global lazy-loaded OCR pipeline.  The CrispEmbed OcrPipeline
 /// is not `Sync` so we wrap it in a `Mutex`.  This trades concurrency for
@@ -414,7 +424,7 @@ pub fn table_to_html(path: &Path, ocr_model: Option<&str>) -> Result<String> {
         .with_context(|| format!("opening {}", path.display()))?
         .to_luma8();
     let (w, h) = (gray.width(), gray.height());
-    let model = resolve(ocr_model.unwrap_or(DEFAULT_REC_MODEL));
+    let model = resolve_checked(ocr_model.unwrap_or(DEFAULT_REC_MODEL))?;
     let parser = crispembed::CrispTableParse::new(&model, 0)
         .map_err(|e| anyhow::anyhow!("table parser init: {e}"))?;
     parser
@@ -444,9 +454,9 @@ pub fn kie_extract_lilt(
     lilt_model: Option<&str>,
 ) -> Result<Vec<(String, String, f32)>> {
     let img = image_path.to_str().context("image path not UTF-8")?;
-    let det = resolve(DEFAULT_DET_MODEL);
-    let rec = resolve(DEFAULT_REC_MODEL);
-    let lilt = resolve(lilt_model.unwrap_or("lilt-funsd"));
+    let det = resolve_checked(DEFAULT_DET_MODEL)?;
+    let rec = resolve_checked(DEFAULT_REC_MODEL)?;
+    let lilt = resolve_checked(lilt_model.unwrap_or("lilt-funsd"))?;
     let kie = crispembed::CrispKie::new_lilt(&det, &rec, "", &lilt, 0)
         .map_err(|e| anyhow::anyhow!("LiLT KIE init: {e}"))?;
     let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
@@ -488,15 +498,17 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let pipeline = OCR_PIPELINE.get_or_init(|| {
-        let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_DET_MODEL.to_string());
-        let rec = crispembed::CrispEmbed::resolve_model(DEFAULT_REC_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_REC_MODEL.to_string());
-        let p = crispembed::OcrPipeline::new(&det, &rec, 0)
-            .expect("CrispEmbed OCR pipeline init failed");
-        Mutex::new(p)
-    });
+    let pipeline = match OCR_PIPELINE.get() {
+        Some(p) => p,
+        None => {
+            let det = resolve_checked(DEFAULT_DET_MODEL)?;
+            let rec = resolve_checked(DEFAULT_REC_MODEL)?;
+            let p = crispembed::OcrPipeline::new(&det, &rec, 0)
+                .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline init failed: {e:?}"))?;
+            let _ = OCR_PIPELINE.set(Mutex::new(p));
+            OCR_PIPELINE.get().expect("OCR_PIPELINE set above")
+        }
+    };
 
     let mut guard = pipeline
         .lock()
@@ -566,10 +578,8 @@ pub fn ocr_via_crispembed_custom(
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let det = crispembed::CrispEmbed::resolve_model(det_model, Some(true))
-        .unwrap_or_else(|_| det_model.to_string());
-    let rec = crispembed::CrispEmbed::resolve_model(rec_model, Some(true))
-        .unwrap_or_else(|_| rec_model.to_string());
+    let det = resolve_checked(det_model)?;
+    let rec = resolve_checked(rec_model)?;
 
     let mut pipeline = crispembed::OcrPipeline::new(&det, &rec, 0)
         .map_err(|e| anyhow::anyhow!("CrispEmbed OCR init failed: {e}"))?;
@@ -648,7 +658,7 @@ pub fn ocr_via_pipeline(
 ) -> Result<ExtractedDocument> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
+    let orch = orchestrator(cfg)?;
 
     let mut guard = orch
         .lock()
@@ -708,7 +718,7 @@ pub fn ocr_regions_via_pipeline(
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<super::ocr_render::OcrRegion>> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
+    let orch = orchestrator(cfg)?;
     let mut guard = orch
         .lock()
         .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
@@ -826,7 +836,7 @@ pub fn ocr_regions_detailed(
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<RegionConf>> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
+    let orch = orchestrator(cfg)?;
     let mut guard = orch
         .lock()
         .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
@@ -874,8 +884,13 @@ fn vlm_engine_id(engine: &str) -> i32 {
 }
 
 /// Default single-shot model registry name for a VLM engine string.
-#[cfg(feature = "crispembed")]
-fn vlm_default_model(engine: &str) -> &'static str {
+///
+/// `got` has no permissive model — GOT-OCR2 is the only one that engine runs,
+/// and it is Tongyi Qianwen RESEARCH licensed — so choosing that engine always
+/// goes through the license gate. The `qwen2vl` default is the Apache-2.0
+/// German-OCR-3.1 (Qwen2-VL-2B); it used to be `qwen2vl-ocr`, which names the
+/// non-commercial Qwen2.5-VL-3B.
+pub(crate) fn vlm_default_model(engine: &str) -> &'static str {
     match engine {
         "glm" => "glm-ocr",
         "got" => "got-ocr2",
@@ -886,44 +901,214 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "lightonocr" => "lightonocr",
         "qwen3vl" => "qwen3vl-2b",
         "unlimited_ocr" => "unlimited-ocr",
-        _ => "qwen2vl-ocr",
+        _ => "german-ocr-3.1",
     }
 }
 
-/// Resolve a model registry name to a cached/downloaded GGUF path (best-effort).
+/// Every model name / path an OCR pipeline config would load, engine defaults
+/// included. Mirrors [`build_pipeline`] so the license gate (and the GUI's
+/// pre-save check) sees exactly what the orchestrator will resolve.
+pub fn pipeline_model_names(cfg: &super::OcrPipelineConfig) -> Vec<String> {
+    use super::engine_id;
+    fn some(o: &Option<String>) -> Option<String> {
+        o.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    }
+    let mut out: Vec<String> = Vec::new();
+    for o in [
+        &cfg.punct_model,
+        &cfg.truecase_model,
+        &cfg.lid_model,
+        &cfg.layout_model,
+        &cfg.sr_model,
+        &cfg.restore_model,
+    ] {
+        out.extend(some(o));
+    }
+    if cfg.stages.is_empty() {
+        out.push(some(&cfg.det_model).unwrap_or_else(|| DEFAULT_DET_MODEL.to_string()));
+        out.push(some(&cfg.rec_model).unwrap_or_else(|| DEFAULT_REC_MODEL.to_string()));
+        out.extend(some(&cfg.vlm_ocr_model));
+    } else {
+        for st in &cfg.stages {
+            let eid = engine_id(&st.engine);
+            if eid == 0 || eid == 1 || eid == 6 || eid == 7 {
+                let rec_default = match eid {
+                    6 => "tesseract-eng",
+                    7 => "parseq",
+                    _ => DEFAULT_REC_MODEL,
+                };
+                out.push(some(&st.det_model).unwrap_or_else(|| DEFAULT_DET_MODEL.to_string()));
+                out.push(some(&st.rec_model).unwrap_or_else(|| rec_default.to_string()));
+            } else {
+                out.push(
+                    some(&st.det_model).unwrap_or_else(|| vlm_default_model(&st.engine).to_string()),
+                );
+            }
+        }
+    }
+    out.dedup();
+    out
+}
+
+/// Registry entries the CrispEmbed resolver may pick for `arg`. Mirrors the
+/// two resolvers in the pinned runtime: an exact (case-insensitive) alias or
+/// filename wins outright; otherwise the native resolver takes the first entry
+/// whose name or filename *contains* `arg` (case-sensitive) and the Rust cache
+/// probe the first case-insensitive one — both are returned. Lets the gate
+/// catch a fuzzy name such as `qwen2vl` before it downloads a restricted model.
+pub fn predicted_registry_targets<'a>(
+    arg: &str,
+    entries: &'a [(String, String)],
+) -> Vec<&'a (String, String)> {
+    let a = arg.trim();
+    if a.is_empty() {
+        return Vec::new();
+    }
+    if let Some(e) = entries
+        .iter()
+        .find(|(n, f)| n.eq_ignore_ascii_case(a) || f.eq_ignore_ascii_case(a))
+    {
+        return vec![e];
+    }
+    let lower = a.to_ascii_lowercase();
+    let mut out = Vec::new();
+    if let Some(e) = entries.iter().find(|(n, f)| n.contains(a) || f.contains(a)) {
+        out.push(e);
+    }
+    if let Some(e) = entries.iter().find(|(n, f)| {
+        n.to_ascii_lowercase().contains(&lower) || f.to_ascii_lowercase().contains(&lower)
+    }) {
+        if !out.iter().any(|x| std::ptr::eq(*x, e)) {
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// (alias, filename) pairs of the compiled-in CrispEmbed registry (empty
+/// without the `crispembed` feature).
+fn registry_entries() -> Vec<(String, String)> {
+    #[cfg(feature = "crispembed")]
+    {
+        crispembed::CrispEmbed::list_models()
+            .into_iter()
+            .map(|m| (m.name, m.filename))
+            .collect()
+    }
+    #[cfg(not(feature = "crispembed"))]
+    {
+        Vec::new()
+    }
+}
+
+/// The license-restricted model `name` would load, if any: by the name itself
+/// (alias, filename or path) or by the registry entry the resolver would pick.
+pub fn restricted_ocr_model(
+    name: &str,
+) -> Option<&'static crate::index::license_consent::RestrictedModel> {
+    use crate::index::license_consent::restricted_model;
+    if let Some(m) = restricted_model(name) {
+        return Some(m);
+    }
+    let entries = registry_entries();
+    predicted_registry_targets(name, &entries)
+        .into_iter()
+        .find_map(|(n, f)| restricted_model(n).or_else(|| restricted_model(f)))
+}
+
+/// Gate one OCR model name/path: errors until a restricted model's license is
+/// accepted; on acceptance sets the CrispEmbed runtime env gate.
+pub fn ensure_ocr_model_license(name: &str) -> Result<()> {
+    match restricted_ocr_model(name) {
+        Some(m) => crate::index::license_consent::ensure_restricted_model(name, m),
+        None => Ok(()),
+    }
+}
+
+/// Gate every model an OCR pipeline config would load.
+pub fn ensure_pipeline_licenses(cfg: &super::OcrPipelineConfig) -> Result<()> {
+    for name in pipeline_model_names(cfg) {
+        ensure_ocr_model_license(&name)?;
+    }
+    Ok(())
+}
+
+/// Restricted models in a config, with whether each is already accepted —
+/// drives the GUI's acknowledgement prompt before settings are applied.
+pub fn restricted_pipeline_models(
+    cfg: &super::OcrPipelineConfig,
+) -> Vec<(String, &'static crate::index::license_consent::RestrictedModel)> {
+    let mut out: Vec<(String, &'static crate::index::license_consent::RestrictedModel)> = Vec::new();
+    for name in pipeline_model_names(cfg) {
+        if let Some(m) = restricted_ocr_model(&name) {
+            if !out.iter().any(|(_, x)| x.key == m.key) {
+                out.push((name, m));
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a model registry name to a cached/downloaded GGUF path, behind the
+/// license gate (checked on the requested name before any download, and on
+/// the resolved path before it is handed to a loader).
+#[cfg(feature = "crispembed")]
+fn resolve_checked(name: &str) -> Result<String> {
+    ensure_ocr_model_license(name)?;
+    let path =
+        crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string());
+    ensure_ocr_model_license(&path)?;
+    Ok(path)
+}
+
+/// Best-effort [`resolve_checked`] for the infallible pre-processor paths: a
+/// model refused by the license gate is neither downloaded nor resolved (the
+/// bare name is returned, so the loader fails instead of loading it).
 #[cfg(feature = "crispembed")]
 fn resolve(name: &str) -> String {
-    crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
+    match resolve_checked(name) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[ocr] {e:#}");
+            name.to_string()
+        }
+    }
 }
 
 /// Build the orchestrator: the explicit per-stage builder when `cfg.stages` is
 /// non-empty (full tweakability), else the flat simple-mode pipeline.
 #[cfg(feature = "crispembed")]
-fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipeline {
+fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcrPipeline> {
     use super::{engine_id, source_type_id};
+    // License gate first: nothing below may download or load a restricted
+    // model the user has not accepted.
+    ensure_pipeline_licenses(cfg)?;
     // Optional post-OCR punctuation/spacing restorer (resolved once).
     let punct: Option<String> = cfg
         .punct_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(resolve);
+        .map(resolve_checked)
+        .transpose()?;
     // Optional post-OCR truecaser + text-LID models (registry names → paths).
     let truecase: Option<String> = cfg
         .truecase_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(resolve);
+        .map(resolve_checked)
+        .transpose()?;
     let lid: Option<String> = cfg
         .lid_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(resolve);
+        .map(resolve_checked)
+        .transpose()?;
     // Tesseract LID-auto-select dir is a filesystem path, not a registry model.
     let tess_dir: Option<&str> = cfg.tess_model_dir.as_deref().filter(|s| !s.is_empty());
     if cfg.stages.is_empty() {
         // Simple mode (slice-A flat config).
-        let det = resolve(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL));
-        let rec = resolve(cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL));
+        let det = resolve_checked(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?;
+        let rec = resolve_checked(cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL))?;
         let nafnet = if cfg.denoise {
             crispembed::CrispEmbed::resolve_model(
                 cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
@@ -939,7 +1124,8 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             .vlm_ocr_model
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(resolve);
+            .map(resolve_checked)
+            .transpose()?;
         return crispembed::CrispOcrPipeline::new(
             &det,
             &rec,
@@ -956,7 +1142,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             tess_dir,
             0,
         )
-        .expect("CrispEmbed OCR pipeline init failed");
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline init failed: {e:?}"));
     }
 
     // Advanced mode: explicit per-stage chains.
@@ -968,7 +1154,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
     let specs: Vec<crispembed::OcrStageSpec> = cfg
         .stages
         .iter()
-        .map(|s| {
+        .map(|s| -> Result<crispembed::OcrStageSpec> {
             let eid = engine_id(&s.engine);
             // dbnet_trocr(0) / surya(1) / tesseract(6) / parseq(7) need det+rec;
             // VLMs use a single model. Tesseract recogniser defaults to a
@@ -980,17 +1166,17 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                     _ => DEFAULT_REC_MODEL,
                 };
                 (
-                    resolve(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL)),
-                    resolve(s.rec_model.as_deref().unwrap_or(rec_default)),
+                    resolve_checked(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?,
+                    resolve_checked(s.rec_model.as_deref().unwrap_or(rec_default))?,
                 )
             } else {
                 let m = s
                     .det_model
                     .clone()
                     .unwrap_or_else(|| vlm_default_model(&s.engine).to_string());
-                (resolve(&m), String::new())
+                (resolve_checked(&m)?, String::new())
             };
-            crispembed::OcrStageSpec {
+            Ok(crispembed::OcrStageSpec {
                 source_type: source_type_id(&s.source_type),
                 engine: eid,
                 model_a,
@@ -1022,9 +1208,9 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                 vlm_prompt: s.vlm_prompt.clone(),
                 min_chars: s.min_chars,
                 min_confidence: s.min_confidence,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_>>()?;
     // sr_model = None for now (text-SR pre-processor is wired in P20 #2).
     crispembed::CrispOcrPipeline::from_stages(
         cfg.router,
@@ -1037,7 +1223,24 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
         &specs,
         0,
     )
-    .expect("CrispEmbed OCR per-stage pipeline init failed")
+    .map_err(|e| anyhow::anyhow!("CrispEmbed OCR per-stage pipeline init failed: {e:?}"))
+}
+
+/// The cached orchestrator, built on first use. Fallible (unlike a bare
+/// `get_or_init`) so a refused license or a failed init is an error for this
+/// document instead of a panic — and nothing is cached, so accepting the
+/// license later takes effect without a restart.
+#[cfg(feature = "crispembed")]
+fn orchestrator(
+    cfg: &super::OcrPipelineConfig,
+) -> Result<&'static Mutex<crispembed::CrispOcrPipeline>> {
+    if let Some(o) = OCR_ORCH.get() {
+        return Ok(o);
+    }
+    let p = build_pipeline(cfg)?;
+    // A concurrent first call may have won the race; its pipeline is kept.
+    let _ = OCR_ORCH.set(Mutex::new(p));
+    Ok(OCR_ORCH.get().expect("OCR_ORCH set above"))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -1056,6 +1259,98 @@ pub fn ocr_via_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── License gate (CrispEmbed#92 audit) ──────────────────────────
+
+    fn stage(engine: &str, det: Option<&str>) -> super::super::OcrStageSpec {
+        serde_json::from_value(serde_json::json!({ "engine": engine, "det_model": det }))
+            .unwrap()
+    }
+
+    #[test]
+    fn defaults_are_permissive() {
+        assert_eq!(DEFAULT_DET_MODEL, "dbnet-det");
+        assert_eq!(DEFAULT_REC_MODEL, "trocr-printed");
+        assert_eq!(vlm_default_model("qwen2vl"), "german-ocr-3.1");
+        assert_eq!(vlm_default_model("unknown-engine"), "german-ocr-3.1");
+        let cfg = super::super::OcrPipelineConfig::default();
+        let names = pipeline_model_names(&cfg);
+        assert_eq!(names, vec!["dbnet-det".to_string(), "trocr-printed".to_string()]);
+        assert!(restricted_pipeline_models(&cfg).is_empty());
+        assert!(ensure_pipeline_licenses(&cfg).is_ok());
+        // Every engine default except GOT's is permissive.
+        for e in [
+            "dbnet_trocr", "surya", "tesseract", "parseq", "glm", "qwen2vl", "internvl2",
+            "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl",
+            "unlimited_ocr",
+        ] {
+            let cfg = super::super::OcrPipelineConfig {
+                stages: vec![stage(e, None)],
+                ..Default::default()
+            };
+            assert!(restricted_pipeline_models(&cfg).is_empty(), "engine {e} default restricted");
+        }
+    }
+
+    #[test]
+    fn got_engine_and_restricted_models_are_found_in_configs() {
+        // Engine 2 (GOT) with no model → defaults to got-ocr2.
+        let cfg = super::super::OcrPipelineConfig {
+            stages: vec![stage("got", None), stage("dbnet_trocr", None)],
+            ..Default::default()
+        };
+        assert!(pipeline_model_names(&cfg).contains(&"got-ocr2".to_string()));
+        let r = restricted_pipeline_models(&cfg);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].1.key, "got-ocr2");
+        assert_eq!(r[0].1.terms.tag, "tongyi-qianwen-research");
+
+        // Explicit restricted models in simple mode (VLM escalation) and
+        // advanced stages (incl. a local path).
+        let cfg = super::super::OcrPipelineConfig {
+            vlm_ocr_model: Some("nanonets-ocr-s".into()),
+            ..Default::default()
+        };
+        assert_eq!(restricted_pipeline_models(&cfg)[0].1.terms.tag, "qwen-research");
+        let cfg = super::super::OcrPipelineConfig {
+            stages: vec![
+                stage("qwen2vl", Some("/models/qwen2.5-vl-3b-q4_k.gguf")),
+                stage("qwen2vl", Some("uni-mumer-qwen2.5-vl-3b")),
+                stage("qwen3vl", Some("qwen3vl-2b")),
+            ],
+            ..Default::default()
+        };
+        let keys: Vec<&str> = restricted_pipeline_models(&cfg).iter().map(|(_, m)| m.key).collect();
+        assert_eq!(keys, vec!["qwen2vl-3b", "uni-mumer-qwen2.5-vl-3b"]);
+    }
+
+    #[test]
+    fn fuzzy_names_are_predicted_like_the_resolver() {
+        let reg: Vec<(String, String)> = [
+            ("dbnet-det", "dbnet-ic15-q8_0.gguf"),
+            ("qwen2vl-3b", "qwen2.5-vl-3b-q4_k.gguf"),
+            ("qwen3vl-2b", "qwen3-vl-2b-q4_k.gguf"),
+            ("got-ocr2", "got-ocr2-q4_k.gguf"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let t = |a: &str| -> Vec<String> {
+            predicted_registry_targets(a, &reg).into_iter().map(|(n, _)| n.clone()).collect()
+        };
+        assert_eq!(t("qwen3vl-2b"), vec!["qwen3vl-2b"]);
+        assert_eq!(t("GOT-OCR2"), vec!["got-ocr2"]);
+        // A bare fuzzy name resolves to the first containing entry.
+        assert_eq!(t("qwen2vl"), vec!["qwen2vl-3b"]);
+        assert_eq!(t("QWEN2VL"), vec!["qwen2vl-3b"]);
+        assert!(t("").is_empty());
+        assert!(t("nothing-like-this").is_empty());
+        use crate::index::license_consent::restricted_model;
+        let hit = predicted_registry_targets("qwen2vl", &reg)
+            .into_iter()
+            .find_map(|(n, f)| restricted_model(n).or_else(|| restricted_model(f)));
+        assert_eq!(hit.map(|m| m.key), Some("qwen2vl-3b"));
+    }
 
     fn region(text: &str) -> super::super::ocr_render::OcrRegion {
         super::super::ocr_render::OcrRegion {
@@ -1158,7 +1453,7 @@ mod tests {
         let img = image::RgbImage::new(200, 200);
         img.save(&img_path).unwrap();
         // Use the default models explicitly.
-        let result = ocr_via_crispembed_custom(&img_path, "surya-det", "qwen2vl-ocr");
+        let result = ocr_via_crispembed_custom(&img_path, "dbnet-det", "trocr-printed");
         let doc = result.expect("custom pipeline should not crash");
         println!("OCR text length: {}", doc.full_text.len());
     }
@@ -1421,7 +1716,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut pipe = super::build_pipeline(&cfg);
+        let mut pipe = super::build_pipeline(&cfg).expect("pipeline builds");
         let res = pipe.run(p.to_str().unwrap()).expect("pipeline run");
         res.regions
             .into_iter()

@@ -2435,6 +2435,11 @@ pub struct EmbedderRegistryEntry {
     pub size: String,
     /// `true` when the GGUF file is already present in the model cache dir.
     pub cached: bool,
+    /// License tag to display. The registry's own tag, except for models whose
+    /// weights were found to inherit non-commercial terms (CrispEmbed#92) —
+    /// the pinned runtime still labels those Apache-2.0 / CC-BY-4.0.
+    #[serde(default)]
+    pub license: String,
 }
 
 /// Return CrispEmbed's bundled model registry.  Empty Vec when the
@@ -2467,12 +2472,18 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
                 let cached = cache_dir.as_ref().map_or(false, |d| {
                     d.join(&m.filename).exists()
                 });
+                let license = crate::index::license_consent::display_license_tag(
+                    &m.name,
+                    &m.filename,
+                    &m.license,
+                );
                 EmbedderRegistryEntry {
                     name: m.name,
                     desc: m.desc,
                     filename: m.filename,
                     size: m.size,
                     cached,
+                    license,
                 }
             })
             .collect()
@@ -2545,6 +2556,78 @@ pub async fn embedder_download_registry_model(
 pub fn embedder_model_license(name: String) -> Option<String> {
     let lic = crate::index::license_consent::license_for_registry_name(&name);
     lic.requires_consent().then(|| lic.label().to_string())
+}
+
+/// Full terms of a model whose weights carry inherited non-commercial terms
+/// (Qwen RESEARCH / Tongyi Qianwen RESEARCH / CC-BY-NC-4.0), as shown in the
+/// GUI acknowledgement dialog.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RestrictedModelTerms {
+    /// The name/path as configured.
+    pub requested: String,
+    /// Consent key to record on acceptance.
+    pub key: String,
+    pub display: String,
+    pub reason: String,
+    pub license_tag: String,
+    pub license_name: String,
+    pub license_url: String,
+    pub notice: String,
+    /// Full acknowledgement sentence (license name, obligations, link).
+    pub text: String,
+    /// Consent already on record.
+    pub accepted: bool,
+}
+
+fn restricted_terms_dto(
+    requested: &str,
+    m: &'static crate::index::license_consent::RestrictedModel,
+) -> RestrictedModelTerms {
+    use crate::index::license_consent as lc;
+    RestrictedModelTerms {
+        requested: requested.to_string(),
+        key: m.key.to_string(),
+        display: m.display.to_string(),
+        reason: m.reason.to_string(),
+        license_tag: m.terms.tag.to_string(),
+        license_name: m.terms.name.to_string(),
+        license_url: m.terms.url.to_string(),
+        notice: m.terms.notice.to_string(),
+        text: lc::acknowledgement_text(m),
+        accepted: lc::restricted_accepted(m, requested),
+    }
+}
+
+/// Terms for one model name / registry alias / GGUF path, or `None` when the
+/// model carries no inherited non-commercial terms. Fuzzy names are resolved
+/// the way the CrispEmbed registry would resolve them.
+#[tauri::command]
+pub fn model_license_terms(name: String) -> Option<RestrictedModelTerms> {
+    crate::extractors::ocr_crispembed::restricted_ocr_model(&name)
+        .map(|m| restricted_terms_dto(&name, m))
+}
+
+/// Every model family CrispSorter knows to carry inherited non-commercial
+/// terms, with acknowledgement status — for the About → model licenses list.
+#[tauri::command]
+pub fn restricted_model_licenses() -> Vec<RestrictedModelTerms> {
+    crate::index::license_consent::restricted_models()
+        .iter()
+        .map(|m| restricted_terms_dto(m.key, m))
+        .collect()
+}
+
+/// Every restricted model an OCR pipeline config would load (engine defaults
+/// included, e.g. the GOT engine → GOT-OCR2). The GUI acknowledges each
+/// unaccepted one before applying the config.
+#[tauri::command]
+pub fn ocr_pipeline_restricted_models(
+    config: crate::extractors::OcrPipelineConfig,
+) -> Vec<RestrictedModelTerms> {
+    crate::extractors::ocr_crispembed::restricted_pipeline_models(&config)
+        .into_iter()
+        .map(|(n, m)| restricted_terms_dto(&n, m))
+        .collect()
 }
 
 /// Record consent for one or more restrictive models (by registry/consent key).

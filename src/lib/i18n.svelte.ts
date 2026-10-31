@@ -343,7 +343,10 @@ export const translations = {
             ocr_pipeline_stage: 'Stage',
             ocr_pipeline_source: 'For image type',
             ocr_pipeline_engine: 'Engine',
-            ocr_pipeline_model_ph: 'model (e.g. got-ocr2) — blank = default',
+            ocr_pipeline_model_ph: 'model (e.g. qwen3vl-2b) — blank = default',
+            ocr_license_confirm: 'Do you confirm that you will use this model only as these license terms allow? Decline to keep it out of your OCR settings.',
+            ocr_license_declined: 'License not accepted — "{model}" was removed from the OCR settings.',
+            ocr_license_hint: 'Models marked non-commercial (GOT-OCR2, Qwen2.5-VL-3B, Nanonets-OCR-s, Uni-MuMER Qwen2.5-VL-3B, TeleOCR, Transcoda) need a one-time license acknowledgement before download or use. Apache-2.0 alternatives: qwen3vl-2b, firered-ocr, paddleocr-vl, olmocr-2-7b, uni-mumer-qwen3-vl-2b.',
             ocr_pipeline_det_ph: 'detection model (blank = surya-det)',
             ocr_pipeline_rec_ph: 'recognition model (blank = qwen2vl-ocr)',
             ocr_pipeline_clean_short: 'clean',
@@ -712,7 +715,11 @@ export const translations = {
                 license_total: '{count} licenses',
                 search_licenses: 'Search {count} licenses',
                 generated_at: 'Generated {timestamp} · {count} entries',
-                source_link: 'Source'
+                source_link: 'Source',
+                model_licenses: 'Model licenses (non-commercial weights)',
+                model_licenses_hint: 'These downloadable models were relabelled after a license audit: their weights inherit non-commercial terms. CrispSorter never selects them by default and asks for an acknowledgement before download or use.',
+                model_license_accepted: 'acknowledged',
+                model_license_not_accepted: 'not acknowledged'
             },
             // Shared status badges — used for Ollama, MLX, llamacpp sidecars
             // alike. Centralised so a translation tweak doesn't drift between
@@ -1552,7 +1559,10 @@ export const translations = {
             ocr_pipeline_stage: 'Stufe',
             ocr_pipeline_source: 'Für Bildtyp',
             ocr_pipeline_engine: 'Engine',
-            ocr_pipeline_model_ph: 'Modell (z. B. got-ocr2) — leer = Standard',
+            ocr_pipeline_model_ph: 'Modell (z. B. qwen3vl-2b) — leer = Standard',
+            ocr_license_confirm: 'Bestätigen Sie, dass Sie dieses Modell nur im Rahmen dieser Lizenzbedingungen nutzen werden? Bei Ablehnung wird es nicht in die OCR-Einstellungen übernommen.',
+            ocr_license_declined: 'Lizenz nicht akzeptiert — „{model}" wurde aus den OCR-Einstellungen entfernt.',
+            ocr_license_hint: 'Als nicht-kommerziell markierte Modelle (GOT-OCR2, Qwen2.5-VL-3B, Nanonets-OCR-s, Uni-MuMER Qwen2.5-VL-3B, TeleOCR, Transcoda) erfordern vor Download oder Nutzung eine einmalige Lizenzbestätigung. Apache-2.0-Alternativen: qwen3vl-2b, firered-ocr, paddleocr-vl, olmocr-2-7b, uni-mumer-qwen3-vl-2b.',
             ocr_pipeline_det_ph: 'Erkennungsmodell (leer = surya-det)',
             ocr_pipeline_rec_ph: 'Erkennungs-/Lesemodell (leer = qwen2vl-ocr)',
             ocr_pipeline_clean_short: 'bereinigen',
@@ -1917,7 +1927,11 @@ export const translations = {
                 license_total: '{count} Lizenzen',
                 search_licenses: '{count} Lizenzen durchsuchen',
                 generated_at: 'Erstellt {timestamp} · {count} Einträge',
-                source_link: 'Quelle'
+                source_link: 'Quelle',
+                model_licenses: 'Modell-Lizenzen (nicht-kommerzielle Gewichte)',
+                model_licenses_hint: 'Diese ladbaren Modelle wurden nach einer Lizenzprüfung neu eingestuft: Ihre Gewichte unterliegen nicht-kommerziellen Bedingungen. CrispSorter wählt sie nie standardmäßig aus und verlangt vor Download oder Nutzung eine Bestätigung.',
+                model_license_accepted: 'bestätigt',
+                model_license_not_accepted: 'nicht bestätigt'
             },
             sidecar: {
                 starting: 'Startet…',

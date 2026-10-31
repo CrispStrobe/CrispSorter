@@ -274,7 +274,8 @@ embedding dequant). Remaining gaps:
   `isVlmEngine`.  The user-configurable model overrides (`det_model`/`rec_model`
   or VLM single-model) route through to CrispEmbed's model registry, so
   PaddleOCR-VL (`paddleocr-vl`), FireRed-OCR (`firered-ocr`), Nanonets-OCR
-  (`nanonets-ocr-s`), and H2OVL (`h2ovl-2b`) are usable as model overrides on
+  (`nanonets-ocr-s` — Qwen RESEARCH, non-commercial since the 2026-10-31
+  audit; needs acknowledgement, see P20.L), and H2OVL (`h2ovl-2b`) are usable as model overrides on
   the matching engine (qwen2vl/internvl2).  **Qwen3-VL requires a CrispEmbed
   release > v0.11.8** (engine 12 is on HEAD, untagged).
 - [x] **(Minor)** `rerank_biencoder` ✅ SHIPPED — `IndexConfig.use_embedder_as_reranker`
@@ -291,6 +292,30 @@ embedding dequant). Remaining gaps:
   `index_token_highlight(query, doc_text, threshold)` registered.  4 unit
   tests (cosine, merge_adjacent, merge_overlapping).  ONNX path returns
   empty (GGUF-only).
+
+### P20.L — OCR model licenses (CrispEmbed#92 audit, 2026-10-31)
+
+The consent gate for models whose weights inherit non-commercial terms
+(Qwen2.5-VL-3B family incl. TeleOCR, GOT-OCR2, Transcoda) is in
+`index::license_consent` + `extractors::ocr_crispembed::resolve_checked`; see
+[docs/ocr-workflow.md](docs/ocr-workflow.md#model-licenses-non-commercial-weights)
+and [HISTORY.md](HISTORY.md). Open follow-ups:
+
+- [ ] **MinerU2.5-Pro and TeleOCR engines** — not wired on purpose. They become
+  available only after a qualified CrispEmbed runtime release ships them;
+  then add the engine ids, keep TeleOCR behind the existing Qwen RESEARCH
+  acknowledgement (its alias family is already in the restricted table), and
+  record MinerU2.5-Pro's license (Apache-2.0 per the audit) in the model list.
+- [ ] **Runtime pin upgrade** — when `CRISPEMBED_REF` moves to a release with
+  the native gates (`CRISPEMBED_ACCEPT_QWEN_RESEARCH_LICENSE`,
+  `CRISPEMBED_ACCEPT_TONGYI_QIANWEN_LICENSE`, registry `--accept-license`),
+  verify a consented GOT-OCR2 / Qwen2.5-VL-3B load still works end to end
+  (CrispSorter sets the env gates after acceptance) and that an unconsented one
+  is refused by both layers.
+- [ ] **Architecture-based detection** — CrispSorter matches by registry alias,
+  registry filename and filename stem; a renamed local GGUF of a restricted
+  model is only caught by the newer runtime's architecture gate. Revisit once
+  the pinned runtime exposes model metadata before load.
 
 ### P20 — Configurable OCR pipeline (cleanup + engines + post-process)
 

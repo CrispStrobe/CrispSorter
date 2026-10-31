@@ -78,9 +78,13 @@ struct Cli {
     /// collided with `catalog scan --out PATH`.
     #[arg(long = "format", short = 'f', value_enum, default_value_t = OutFormat::Json, global = true)]
     format: OutFormat,
-    /// Accept the licenses of non-commercial (CC-BY-NC) and use-restricted
-    /// (Gemma) models for downloads/use this run. Required to fetch e.g.
-    /// jina-v3 / jina-v5 / jina-reranker-v2 / embeddinggemma.
+    /// Accept the licenses of non-commercial (CC-BY-NC, Qwen RESEARCH, Tongyi
+    /// Qianwen RESEARCH) and use-restricted (Gemma) models for downloads/use
+    /// this run. Required to fetch e.g. jina-v3 / jina-v5 / jina-reranker-v2 /
+    /// embeddinggemma, and for the OCR models qwen2vl-3b / nanonets-ocr-s /
+    /// uni-mumer-qwen2.5-vl-3b / teleocr-* (Qwen RESEARCH), got-ocr2 and the
+    /// `got` engine (Tongyi Qianwen RESEARCH: also forbids using the model or
+    /// its outputs to improve any other LLM) and transcoda (CC-BY-NC-4.0).
     #[arg(long = "accept-license", global = true, default_value_t = false)]
     accept_license: bool,
     /// Acknowledge what this software is intended for, and the uses it is not
@@ -192,7 +196,8 @@ enum Command {
     Ocr {
         /// Image (png/jpg/tiff/…) or PDF to OCR.
         file: PathBuf,
-        /// Primary OCR engine.
+        /// Primary OCR engine. `got` runs GOT-OCR2 (Tongyi Qianwen RESEARCH
+        /// license, non-commercial) and needs `--accept-license`.
         #[arg(long, default_value = "dbnet_trocr",
               value_parser = ["dbnet_trocr", "surya", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl"])]
         engine: String,
@@ -206,7 +211,7 @@ enum Command {
         #[arg(long)]
         det_model: Option<String>,
         /// Recognition model registry name (dbnet_trocr / surya / tesseract).
-        /// Default per engine (`qwen2vl-ocr`, or `tesseract-eng` for tesseract).
+        /// Default per engine (`trocr-printed`, or `tesseract-eng` for tesseract).
         #[arg(long)]
         rec_model: Option<String>,
         /// Pre-processor: classical scan cleanup (deskew / crop / whiten).

@@ -805,6 +805,79 @@
         try { await invoke('embedder_accept_model_license', { keys: [key] }); } catch { /* backend not wired yet */ }
     }
 
+    /** Terms of a model whose weights inherit non-commercial terms (Qwen
+     *  RESEARCH / Tongyi Qianwen RESEARCH / CC-BY-NC-4.0) — from the Rust
+     *  `index::license_consent` table, the single source of truth. */
+    type RestrictedModelTerms = {
+        requested: string; key: string; display: string; reason: string;
+        license_tag: string; license_name: string; license_url: string;
+        notice: string; text: string; accepted: boolean;
+    };
+
+    /** Ask for (and persist) an explicit acknowledgement of a restricted
+     *  model's license. The dialog names the license, says it is
+     *  non-commercial (plus GOT's no-improving-other-LLMs clause) and links
+     *  the full text. Resolves `true` once consent is on record. */
+    async function confirmRestrictedModel(t: RestrictedModelTerms): Promise<boolean> {
+        if (t.accepted || acceptedModelLicenses.has(t.key)) return true;
+        const ok = await ask(`${t.text}\n\n${i18n.t.settings.ocr_license_confirm}`, {
+            title: `License confirmation — ${t.license_name}`, kind: 'warning'
+        });
+        if (!ok) return false;
+        await recordModelLicenseConsent(t.key);
+        return true;
+    }
+
+    /** Check one OCR model name typed into a settings field. Returns `false`
+     *  (and the caller clears the field) when the user declines its license. */
+    async function checkOcrModelLicense(name: string): Promise<boolean> {
+        const n = (name ?? '').trim();
+        if (!n) return true;
+        let t: RestrictedModelTerms | null = null;
+        try { t = await invoke<RestrictedModelTerms | null>('model_license_terms', { name: n }); } catch { t = null; }
+        if (!t) return true;
+        const ok = await confirmRestrictedModel(t);
+        if (!ok) ocrLicenseMsg = i18n.t.settings.ocr_license_declined.replace('{model}', n);
+        return ok;
+    }
+    let ocrLicenseMsg = $state('');
+    let restrictedModelLicenses = $state<RestrictedModelTerms[]>([]);
+
+    /** Stage engine changed: GOT (engine 2) has no permissive model — its
+     *  default is GOT-OCR2 — so it needs the acknowledgement too. */
+    async function handleOcrStageEngineChange(stage: OcrStage) {
+        if (!stage.det_model.trim()) {
+            const name = isVlmEngine(stage.engine) ? (stage.engine === 'got' ? 'got-ocr2' : '') : '';
+            if (name && !(await checkOcrModelLicense(name))) stage.engine = 'dbnet_trocr';
+        }
+    }
+
+    /** Before the OCR config is applied: acknowledge every restricted model it
+     *  would load (explicit names and engine defaults alike); strip any whose
+     *  license the user declines, so nothing restricted is ever selected
+     *  silently. The Rust gate refuses unaccepted models regardless. */
+    async function ensureOcrModelLicenses() {
+        for (let round = 0; round < 4; round++) {
+            let pending: RestrictedModelTerms[] = [];
+            try {
+                pending = (await invoke<RestrictedModelTerms[]>('ocr_pipeline_restricted_models', { config: ocrPipelineConfig() }))
+                    .filter((t) => !t.accepted && !acceptedModelLicenses.has(t.key));
+            } catch { return; }
+            if (pending.length === 0) return;
+            for (const t of pending) {
+                if (await confirmRestrictedModel(t)) continue;
+                const req = t.requested.trim();
+                if (ocrPipelineVlmModel.trim() === req) ocrPipelineVlmModel = '';
+                for (const st of ocrStages) {
+                    if (st.det_model.trim() === req) st.det_model = '';
+                    if (st.rec_model.trim() === req) st.rec_model = '';
+                    if (st.engine === 'got' && !st.det_model.trim()) st.engine = 'dbnet_trocr';
+                }
+                ocrLicenseMsg = i18n.t.settings.ocr_license_declined.replace('{model}', req);
+            }
+        }
+    }
+
     /** Reranker dropdowns: the Jina v2 reranker is CC-BY-NC. Confirm + record
      *  consent on selection; revert to "off" if declined (the Rust gate would
      *  otherwise hard-error at score time). */
@@ -871,7 +944,9 @@
      *  existing embedder dropdown still keys off `EmbedderModel` enum
      *  variants today, so non-enum entries are read-only.  Wiring full
      *  registry-driven selection is tracked separately. */
-    type EmbedderRegistryEntry = { name: string; desc: string; filename: string; size: string; cached: boolean };
+    type EmbedderRegistryEntry = { name: string; desc: string; filename: string; size: string; cached: boolean; license?: string };
+    /** License tags that restrict commercial use (shown highlighted). */
+    const NON_COMMERCIAL_TAGS = new Set(['qwen-research', 'tongyi-qianwen-research', 'cc-by-nc-4.0', 'cc-by-nc-sa-4.0']);
     let embedderRegistry = $state<EmbedderRegistryEntry[]>([]);
     /** Name of registry model selected via Stage X UI ("" = use enum dropdown). */
     let indexEmbedderModelName = $state<string>('');
@@ -912,6 +987,17 @@
         // License-consent gate: ask the backend whether this registry model
         // needs consent; if so, confirm before downloading and pass acceptance.
         let accepted = acceptedModelLicenses.has(name);
+        // Inherited non-commercial OCR terms (GOT-OCR2, Qwen2.5-VL-3B family,
+        // Transcoda): the full acknowledgement with license name + link.
+        if (!accepted) {
+            let t: RestrictedModelTerms | null = null;
+            try { t = await invoke<RestrictedModelTerms | null>('model_license_terms', { name }); } catch { t = null; }
+            if (t) {
+                if (!(await confirmRestrictedModel(t))) { registryDownloadMsg = 'Download cancelled (license not accepted).'; return; }
+                await recordModelLicenseConsent(name);
+                accepted = true;
+            }
+        }
         if (!accepted) {
             let lic: string | null = null;
             try { lic = await invoke<string | null>('embedder_model_license', { name }); } catch { lic = null; }
@@ -1400,6 +1486,7 @@
         if (acceptedModelLicenses.size > 0) {
             try { await invoke('embedder_accept_model_license', { keys: Array.from(acceptedModelLicenses) }); } catch { /* backend not wired yet */ }
         }
+        try { restrictedModelLicenses = await invoke<RestrictedModelTerms[]>('restricted_model_licenses'); } catch { restrictedModelLicenses = []; }
         // Sync saved config into the backend
         try {
             const backendConfig = await invoke<any>('index_get_config');
@@ -1657,6 +1744,9 @@
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('ocrTier', ocrTier);
         await saveSetting('ocrRecLang', ocrRecLang);
+        // License acknowledgement for restricted OCR models before anything
+        // OCR-related is persisted or pushed to the backend.
+        await ensureOcrModelLicenses();
         await saveSetting('ocrPipelineEnabled',  ocrPipelineEnabled);
         await saveSetting('ocrPipelineRouter',   ocrPipelineRouter);
         await saveSetting('ocrPipelineCleanup',  ocrPipelineCleanup);
@@ -3315,8 +3405,13 @@
                     <!-- VLM escalation (e.g. german-ocr-3.1) + post-OCR truecasing -->
                     <label for="ocr-pipeline-vlm-model" style="margin-top:10px;">{i18n.t.settings.ocr_pipeline_vlm_model}</label>
                     <input id="ocr-pipeline-vlm-model" type="text" bind:value={ocrPipelineVlmModel}
+                        onchange={async () => { if (!(await checkOcrModelLicense(ocrPipelineVlmModel))) ocrPipelineVlmModel = ''; }}
                         placeholder="german-ocr-3.1" />
                     <p class="hint">{i18n.t.settings.ocr_pipeline_vlm_model_hint}</p>
+                    <p class="hint">{i18n.t.settings.ocr_license_hint}</p>
+                    {#if ocrLicenseMsg}
+                        <p class="hint" style="color:#f59e0b;">{ocrLicenseMsg}</p>
+                    {/if}
                     {#if ocrPipelineVlmModel.trim()}
                         <div class="field-row" style="margin-top:4px;">
                             <label for="ocr-pipeline-vlm-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
@@ -3324,7 +3419,7 @@
                                 <select id="ocr-pipeline-vlm-engine" bind:value={ocrPipelineVlmEngine} style="margin-left:4px;">
                                     <option value="qwen2vl">Qwen2-VL (german-ocr-3.1)</option>
                                     <option value="glm">GLM-OCR</option>
-                                    <option value="got">GOT-OCR2</option>
+                                    <option value="got">GOT-OCR2 — non-commercial (Tongyi Qianwen Research)</option>
                                     <option value="internvl2">InternVL2</option>
                                     <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
                                     <option value="granite_vision">Granite Vision 3.3-2B</option>
@@ -3401,14 +3496,14 @@
                                             </select>
                                         </label>
                                         <label style="font-size:0.78rem; color:#a1a1aa;">{i18n.t.settings.ocr_pipeline_engine}
-                                            <select bind:value={stage.engine} style="margin-left:4px;">
+                                            <select bind:value={stage.engine} onchange={(e) => { stage.engine = (e.currentTarget as HTMLSelectElement).value; handleOcrStageEngineChange(stage); }} style="margin-left:4px;">
                                                 <option value="dbnet_trocr">DBNet + TrOCR</option>
                                                 <option value="surya">Surya</option>
                                                 <option value="tesseract">Tesseract LSTM (DBNet + Tesseract)</option>
                                                 <option value="parseq">PARSeq (DBNet + scene-text · per-char confidence)</option>
-                                                <option value="got">GOT-OCR2</option>
+                                                <option value="got">GOT-OCR2 — non-commercial (Tongyi Qianwen Research)</option>
                                                 <option value="glm">GLM-OCR</option>
-                                                <option value="qwen2vl">Qwen2.5-VL</option>
+                                                <option value="qwen2vl">Qwen2-VL family (default german-ocr-3.1)</option>
                                                 <option value="internvl2">InternVL2</option>
                                                 <option value="granite_vision">Granite Vision 3.3-2B</option>
                                                 <option value="lightonocr">LightOnOCR-2-1B</option>
@@ -3420,9 +3515,11 @@
                                     </div>
                                     <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
                                         <input type="text" bind:value={stage.det_model} style="flex:1; min-width:140px;"
+                                            onchange={async () => { if (!(await checkOcrModelLicense(stage.det_model))) { stage.det_model = ''; await handleOcrStageEngineChange(stage); } }}
                                             placeholder={isVlmEngine(stage.engine) ? i18n.t.settings.ocr_pipeline_model_ph : i18n.t.settings.ocr_pipeline_det_ph} />
                                         {#if !isVlmEngine(stage.engine)}
                                             <input type="text" bind:value={stage.rec_model} style="flex:1; min-width:140px;"
+                                                onchange={async () => { if (!(await checkOcrModelLicense(stage.rec_model))) stage.rec_model = ''; }}
                                                 placeholder={i18n.t.settings.ocr_pipeline_rec_ph} />
                                         {/if}
                                     </div>
@@ -4114,6 +4211,12 @@
                                         {/if}
                                         <div style="color: #9ca3af; margin-top: 2px; font-family: ui-monospace, monospace; font-size: 10px;">
                                             {entry.filename}{entry.size ? ` — ${entry.size}` : ''}
+                                            {#if entry.license}
+                                                <span style="margin-left:6px; padding:0 4px; border-radius:3px; {NON_COMMERCIAL_TAGS.has(entry.license) ? 'background:#fef3c7; color:#92400e;' : 'background:#f1f5f9; color:#475569;'}"
+                                                    title={NON_COMMERCIAL_TAGS.has(entry.license) ? 'Non-commercial license — acknowledgement required before download' : 'License'}>
+                                                    {entry.license}{NON_COMMERCIAL_TAGS.has(entry.license) ? ' · non-commercial' : ''}
+                                                </span>
+                                            {/if}
                                         </div>
                                     </div>
                                     <div style="display:flex; flex-direction:column; gap:3px; flex-shrink:0;">
@@ -5167,6 +5270,25 @@
                         {/each}
                     {/if}
                 </div>
+            </div>
+
+            <!-- Model weights with inherited non-commercial terms (CrispEmbed#92). -->
+            <div class="section-card">
+                <h3>{i18n.t.settings.legal.model_licenses}</h3>
+                <p class="hint">{i18n.t.settings.legal.model_licenses_hint}</p>
+                {#each restrictedModelLicenses as m}
+                    <div class="license-item-auto">
+                        <div class="license-item-header">
+                            <span class="lib-name"><strong>{m.display}</strong> <small>{m.key}</small></span>
+                            <span class="lib-source-badge">{(m.accepted || acceptedModelLicenses.has(m.key)) ? i18n.t.settings.legal.model_license_accepted : i18n.t.settings.legal.model_license_not_accepted}</span>
+                        </div>
+                        <div class="license-item-meta">
+                            <span class="lib-type">{m.license_name} ({m.license_tag})</span>
+                            <span class="lib-author">{m.reason}. {m.notice}</span>
+                            <button class="inline-link" onclick={() => opener.openUrl(m.license_url)}>{i18n.t.settings.legal.source_link}</button>
+                        </div>
+                    </div>
+                {/each}
             </div>
 
         {:else if selectedProviderId === 'diagnostics'}
