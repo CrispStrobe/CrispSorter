@@ -3415,6 +3415,9 @@
                                                 <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
                                                 <option value="pix2struct">Pix2Struct (doc/chart)</option>
                                                 <option value="qwen3vl">Qwen3-VL-2B (DeepStack)</option>
+                                                <option value="unlimited_ocr">Unlimited-OCR</option>
+                                                <option value="unlimited_ocr2">Unlimited-OCR-2 (experimental · CRISPEMBED_UNLIMITED_OCR2=1)</option>
+                                                <option value="minicpm_ocr">MiniCPM-OCR-1.0 (experimental · CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1)</option>
                                             </select>
                                         </label>
                                     </div>
