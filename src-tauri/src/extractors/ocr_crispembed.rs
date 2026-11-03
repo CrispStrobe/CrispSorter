@@ -886,6 +886,8 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "lightonocr" => "lightonocr",
         "qwen3vl" => "qwen3vl-2b",
         "unlimited_ocr" => "unlimited-ocr",
+        "unlimited_ocr2" => "unlimited-ocr2", // experimental: CRISPEMBED_UNLIMITED_OCR2=1
+        "minicpm_ocr" => "minicpm-ocr",       // experimental: CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1
         _ => "qwen2vl-ocr",
     }
 }

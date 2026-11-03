@@ -550,6 +550,12 @@ fn engine_id(name: &str) -> i32 {
         "lightonocr" => 11,    // LightOnOCR-2-1B (Pixtral ViT + Qwen3)
         "qwen3vl" => 12,       // Qwen3-VL-2B (DeepStack, IMROPE, per-head QK-norm)
         "unlimited_ocr" => 13, // Unlimited-OCR (SAM + CLIP + DeepSeek-V2 MoE, grounded)
+        // Experimental, gated inside CrispEmbed: Unlimited-OCR-2 shares id 13 (variant
+        // read from the GGUF; needs CRISPEMBED_UNLIMITED_OCR2=1), MiniCPM-OCR-1.0 is
+        // id 23 (needs CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1). Without
+        // the gates the engine refuses to initialise; neither is a default.
+        "unlimited_ocr2" => 13,
+        "minicpm_ocr" => 23,
         _ => 0, // dbnet_trocr
     }
 }
@@ -1509,6 +1515,8 @@ mod ocr_pipeline_tests {
         assert_eq!(engine_id("lightonocr"), 11);
         assert_eq!(engine_id("qwen3vl"), 12);
         assert_eq!(engine_id("unlimited_ocr"), 13);
+        assert_eq!(engine_id("unlimited_ocr2"), 13);
+        assert_eq!(engine_id("minicpm_ocr"), 23);
         // Unknown falls back to dbnet_trocr.
         assert_eq!(engine_id("nonsense"), 0);
     }

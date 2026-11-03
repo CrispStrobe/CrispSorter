@@ -194,7 +194,7 @@ enum Command {
         file: PathBuf,
         /// Primary OCR engine.
         #[arg(long, default_value = "dbnet_trocr",
-              value_parser = ["dbnet_trocr", "surya", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl"])]
+              value_parser = ["dbnet_trocr", "surya", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr"])]
         engine: String,
         /// Source-type routing hint. `auto` classifies the image; an explicit
         /// type pins the cleanup+engine recipe and disables reclassification.
