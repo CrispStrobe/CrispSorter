@@ -465,30 +465,6 @@ pub fn may_download(name: &str) -> bool {
     ensure_registry_download_allowed(name).is_ok()
 }
 
-/// Refuse only the restrictions we have audited, and leave names we do not know
-/// to the resolver's own error path.
-///
-/// Use this where a call site's default name cannot be verified against the
-/// pinned registry: silently downloading a known-restricted model is the bug
-/// being fixed, but turning an unknown alias into a hard failure would break a
-/// working path for no gain.
-pub fn ensure_not_known_restricted(name: &str) -> anyhow::Result<()> {
-    if !is_registry_name(name) {
-        return Ok(());
-    }
-    let lic = license_for_registry_name(name);
-    // `Unknown` also "requires consent" (fail-closed), but this gate's whole
-    // point is to let unverified aliases reach the resolver, so match the
-    // audited restrictions explicitly instead of asking `requires_consent`.
-    if matches!(
-        lic,
-        ModelLicense::Restricted(_) | ModelLicense::NonCommercial(_)
-    ) {
-        ensure(name, name, lic)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,24 +525,18 @@ mod tests {
             "ppocrv6-tiny-det",
             "ppocrv6-tiny-rec",
             "easyocr-english-g2",
+            "nafnet-denoise",
+            "yunet",
+            "layout-heron",
+            "siglip-base",
+            "bidirlm-omni-2.5b",
+            "ppformulanet-l",
         ] {
             assert!(
                 may_download(name),
                 "{name} is an OCR/enhancement default, so it must stay downloadable"
             );
         }
-    }
-
-    #[test]
-    fn relaxed_gate_leaves_unverified_aliases_alone() {
-        // The layout path's default name is not in the pinned registry; the
-        // relaxed gate must not turn that into a hard failure. Audited
-        // restrictions still refuse, which `registry_name_licenses` pins by
-        // class (an assertion on the record is process-global and order
-        // dependent, so it is not asserted here).
-        assert!(ensure_not_known_restricted("rt-detrv2-layout").is_ok());
-        assert!(ensure_not_known_restricted("/models/layout.gguf").is_ok());
-        assert!(ensure_not_known_restricted("dbnet-det").is_ok());
     }
 
     #[test]

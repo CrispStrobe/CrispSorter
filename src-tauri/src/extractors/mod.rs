@@ -266,7 +266,7 @@ pub struct OcrPipelineConfig {
     /// default (extra model load + per-region OCR). Needs `crispembed`.
     #[serde(default)]
     pub layout: bool,
-    /// Layout detection model registry name (`None` → `rt-detrv2-layout`).
+    /// Layout detection model registry name (`None` → `layout-heron`).
     #[serde(default)]
     pub layout_model: Option<String>,
     /// P20 #12 — region source for the layout pass: `rtdetr` (RT-DETRv2
@@ -894,7 +894,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         });
         r
     } else {
-        let model = cfg.layout_model.as_deref().unwrap_or("rt-detrv2-layout");
+        let model = cfg.layout_model.as_deref().unwrap_or("layout-heron");
         let det_guard = cached_layout_detector(model)?;
         let det = det_guard
             .lock()
