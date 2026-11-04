@@ -28,7 +28,9 @@ env:
   # arrow in a comment should not be able to break a release build.
   PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.11   # keep equal to ci.yml's CRISPEMBED_REF
+  # The v0.17.12 runtime artifact manifest identifies this source commit.
+  CRISPEMBED_REF: v0.17.12
+  CRISPEMBED_COMMIT: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.32  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
@@ -85,6 +87,7 @@ jobs:
             # auto-discovers.
             crispasr_lib_asset: libcrispasr-macos-arm64.tar.gz
             crispembed_lib_asset: crispembed-macos-arm64.tar.gz
+            crispembed_sha256: 6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56
             # libpdfium for the `pdf-render` feature (scanned-PDF → page
             # rasterization). Staged into src-tauri/bin/ → bundled as a
             # resource. bblanchon/pdfium-binaries asset + the path of the
@@ -128,6 +131,7 @@ jobs:
             tauri_args: '--features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
+            crispembed_sha256: 49a1e4a89bf6f7d2df100794914f15aeb9a2b69513c3dbfb93364208994cc717
             pdfium_asset: pdfium-win-x64.tgz
             pdfium_lib_glob: 'bin/pdfium.dll'
           - platform: ubuntu-24.04
@@ -140,6 +144,7 @@ jobs:
             tauri_args: '--bundles deb --features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
+            crispembed_sha256: 1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63
             pdfium_asset: pdfium-linux-x64.tgz
             pdfium_lib_glob: 'lib/libpdfium.so'
 
@@ -148,7 +153,6 @@ jobs:
       # Empty on every non-MSVC leg, which cc-rs treats as no extra flags.
       CXXFLAGS: ${{ matrix.cxxflags }}
 
-    env:
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -159,7 +163,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: _sibling/CrispEmbed
 
       - name: Check out sibling CrispASR
@@ -227,6 +231,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          echo '${{ matrix.crispembed_sha256 }}  crispembed-libs.tar.gz' | shasum -a 256 -c -
           mkdir -p _sibling/CrispEmbed/build
           tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
           echo "Extracted libs:"
@@ -239,6 +244,7 @@ jobs:
           $url = "https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
           Write-Host "Downloading $url"
           Invoke-WebRequest -Uri $url -OutFile crispembed-libs.zip
+          if ((Get-FileHash -Algorithm SHA256 crispembed-libs.zip).Hash -ne '${{ matrix.crispembed_sha256 }}') { throw 'CrispEmbed archive SHA256 mismatch' }
           New-Item -ItemType Directory -Force -Path _sibling/CrispEmbed/build | Out-Null
           # CrispEmbed Windows zip is FLAT (crispembed.dll, ggml*.dll,
           # *.lib + include/) — no top-level dir to strip.
@@ -705,7 +711,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: _sibling/CrispEmbed
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
@@ -830,7 +836,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: _sibling/CrispEmbed
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
@@ -1262,7 +1268,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: _sibling/CrispEmbed
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
@@ -1414,6 +1420,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          echo '6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56  crispembed-libs.tar.gz' | shasum -a 256 -c -
           mkdir -p _sibling/CrispEmbed/build
           tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
           find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" | head

@@ -363,7 +363,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let thin = !g.config.local_extraction_enabled;
         (push, thin, g.config.local_skeleton_only)
     };
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, image_indexing_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -394,6 +394,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         };
         // P13.7 Step 1+3 — image master switch + ingest level.
         let image_extraction_enabled = g.config.image_extraction_enabled;
+        let image_indexing_enabled = g.config.image_indexing_enabled;
         let ingest_image_level = match g.config.ingest_image_level {
             crate::index::IngestImageLevel::L1 => "l1".to_string(),
             crate::index::IngestImageLevel::L2 => "l2".to_string(),
@@ -409,7 +410,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let ocr_tier_str = bg.ocr_tier.clone();
         let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
         let ocr_pipeline_cfg = bg.ocr_pipeline.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode)
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, image_indexing_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
@@ -802,7 +803,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 let vit_available = is_image && crate::images::vit_embed::is_vit_available();
                 let omni_available = crate::index::omni_embed::is_omni_available();
 
-                if is_image && (vit_available || omni_available) {
+                if is_image && image_indexing_enabled && (vit_available || omni_available) {
                     let vit_handle = if vit_available {
                         let p2 = p.clone();
                         Some(tokio::task::spawn_blocking(move || {

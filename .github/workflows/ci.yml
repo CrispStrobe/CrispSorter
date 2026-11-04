@@ -39,7 +39,9 @@ env:
   # `OcrPipelineResult.markdown` / `.reading_order` exist on main and not on
   # v0.13.0, so code using them passes CI and breaks the release build.
   # Keep these two values equal; bump them together.
-  CRISPEMBED_REF: v0.17.11
+  # The v0.17.12 runtime artifact manifest identifies this source commit.
+  CRISPEMBED_REF: v0.17.12
+  CRISPEMBED_COMMIT: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
   CRISPASR_REPO: CrispStrobe/CrispASR
   # Pinned to the same tag release.yml uses, for the reason spelled out above
   # CRISPEMBED_REF. This one had drifted 18 patch versions: CI tracked `main`
@@ -85,7 +87,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: repos/CrispEmbed
 
       - name: Check out sibling CrispASR (cargo path dep)
@@ -128,6 +130,19 @@ jobs:
       - name: Unit tests (vitest)
         working-directory: repos/CrispSorter
         run: npm test
+
+      - name: Check CrispEmbed pin parity
+        working-directory: repos/CrispSorter
+        run: python3 tests/test_crispembed_pinning.py -v
+
+      - name: Model-free extractor regressions
+        working-directory: repos/CrispSorter
+        # These need no models, no GPU and no native CrispEmbed library: they
+        # pin the layout-table text preservation, the image-indexing opt-in and
+        # the ViT/Omni initialization recovery contracts.
+        run: |
+          python3 src-tauri/tests/layout_table_regression.py
+          python3 src-tauri/tests/image_indexing_recovery_model_free.py
 
       - name: Regenerate licenses.json
         working-directory: repos/CrispSorter
@@ -198,7 +213,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: repos/CrispEmbed
 
       - name: Check out sibling CrispASR (cargo path dep)
@@ -249,6 +264,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-linux-x86_64.tar.gz"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          echo '1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63  crispembed-libs.tar.gz' | sha256sum -c -
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
           mkdir -p ../CrispEmbed/build
@@ -411,7 +427,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: repos/CrispEmbed
 
       - name: Check out sibling CrispASR (cargo path dep)
@@ -564,7 +580,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: repos/CrispEmbed
 
       - name: Check out sibling CrispASR (cargo path dep)
@@ -604,6 +620,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          echo '6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56  crispembed-libs.tar.gz' | shasum -a 256 -c -
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
           mkdir -p ../CrispEmbed/build
@@ -728,7 +745,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: repos/CrispEmbed
 
       - name: Check out sibling CrispASR (cargo path dep)
@@ -847,7 +864,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
           path: repos/CrispEmbed
 
       - name: Check out sibling CrispASR (cargo path dep)

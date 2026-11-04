@@ -34,6 +34,8 @@ pub const OMNI_DIM: usize = 2048;
 #[cfg(feature = "crispembed")]
 static OMNI_ENCODER: std::sync::OnceLock<Mutex<crispembed::CrispEmbed>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static OMNI_INIT: Mutex<()> = Mutex::new(());
 
 /// Check if omni cross-modal embedding is available at runtime.
 pub fn is_omni_available() -> bool {
@@ -43,13 +45,24 @@ pub fn is_omni_available() -> bool {
 /// Helper to get or init the global encoder.
 #[cfg(feature = "crispembed")]
 fn get_encoder() -> Result<std::sync::MutexGuard<'static, crispembed::CrispEmbed>> {
-    let encoder = OMNI_ENCODER.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_OMNI_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_OMNI_MODEL.to_string());
-        let model = crispembed::CrispEmbed::new(&resolved, super::embedder::crispembed_threads())
-            .expect("BidirLM-Omni model init failed");
-        Mutex::new(model)
-    });
+    if OMNI_ENCODER.get().is_none() {
+        let _init = OMNI_INIT.lock()
+            .map_err(|e| anyhow::anyhow!("omni initialization lock poisoned: {e}"))?;
+        if OMNI_ENCODER.get().is_none() {
+            // Catch unwinding initialization panics while holding the lock, so
+            // the cache remains empty and later calls can retry safely.
+            let model = std::panic::catch_unwind(|| {
+                let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_OMNI_MODEL, Some(true))
+                    .map_err(|e| anyhow::anyhow!("BidirLM-Omni model resolution failed: {e}"))?;
+                crispembed::CrispEmbed::new(&resolved, super::embedder::crispembed_threads())
+                    .map_err(|e| anyhow::anyhow!("BidirLM-Omni model init failed: {e}"))
+            })
+            .map_err(|_| anyhow::anyhow!("BidirLM-Omni model initialization panicked"))??;
+            let _ = OMNI_ENCODER.set(Mutex::new(model));
+        }
+    }
+    let encoder = OMNI_ENCODER.get()
+        .ok_or_else(|| anyhow::anyhow!("omni encoder was not initialized"))?;
     encoder
         .lock()
         .map_err(|e| anyhow::anyhow!("omni encoder lock poisoned: {e}"))

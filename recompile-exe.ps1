@@ -29,10 +29,22 @@ Write-Host "--- Starting Production Build Process ---" -ForegroundColor Cyan
 # 1. Auto-detect CrispEmbed.
 $SiblingCargo = Join-Path $ProjectRoot '..\CrispEmbed\crispembed\Cargo.toml'
 $DefaultPrebuilt = Join-Path $ProjectRoot 'src-tauri\crispembed-prebuilt\crispembed.lib'
+
+# enable-crispembed.ps1 extracts each pinned release into its own GUID
+# directory and records the active one here; the older fixed
+# `crispembed-prebuilt` layout is still honoured for existing checkouts.
+$ActivePointer = Join-Path $ProjectRoot 'src-tauri\crispembed-prebuilt-cache\active.txt'
+$ActiveLibDir = $null
+if (Test-Path $ActivePointer) {
+    $ActiveLibDir = (Get-Content $ActivePointer -Raw -ErrorAction SilentlyContinue)
+    if ($ActiveLibDir) { $ActiveLibDir = $ActiveLibDir.Trim() }
+}
+$ActiveLibValid = $ActiveLibDir -and (Test-Path (Join-Path $ActiveLibDir 'crispembed.lib'))
+
 $EnvLibDir = $env:CRISPEMBED_SYS_LIB_DIR
 $EnvLibValid = $EnvLibDir -and (Test-Path (Join-Path $EnvLibDir 'crispembed.lib'))
 
-$CrispEmbedReady = (Test-Path $SiblingCargo) -and ((Test-Path $DefaultPrebuilt) -or $EnvLibValid)
+$CrispEmbedReady = (Test-Path $SiblingCargo) -and ((Test-Path $DefaultPrebuilt) -or $ActiveLibValid -or $EnvLibValid)
 
 if ($CrispEmbedReady -and -not $NoCrispEmbed) {
     Write-Host "CrispEmbed source + prebuilt detected -- delegating to enable-crispembed.ps1 -Mode build." -ForegroundColor Cyan

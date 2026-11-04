@@ -103,6 +103,11 @@ impl LayoutDetector {
     ///
     /// `n_threads`: pass 0 for automatic.
     pub fn load(model_path: &str, n_threads: i32) -> Result<Self> {
+        // A user-chosen layout model may be restricted; don't download it
+        // without consent. Only audited restrictions are enforced here: the
+        // default name (`rt-detrv2-layout`) is not in the pinned registry, so a
+        // strict allowlist would break a path that may still resolve natively.
+        crate::index::license_consent::ensure_not_known_restricted(model_path)?;
         let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
             .unwrap_or_else(|_| model_path.to_string());
         let inner = crispembed::CrispLayout::new(&resolved, n_threads)

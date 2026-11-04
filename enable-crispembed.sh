@@ -10,6 +10,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CRISPEMBED_REF=v0.17.12
+CRISPEMBED_COMMIT=78493a31fc3043f3af4ab6fd2f197a32da6f07f0
 MODE="dev"
 BACKEND=""
 SKIP_DOWNLOAD=0
@@ -42,28 +44,36 @@ echo "=== Enable CrispEmbed (GGUF) -- backend: $BACKEND ==="
 SIBLING="$PROJECT_ROOT/../CrispEmbed"
 if [[ ! -f "$SIBLING/crispembed/Cargo.toml" ]]; then
     echo "CrispEmbed sibling repo not found at $SIBLING -- cloning..."
-    (cd "$PROJECT_ROOT/.." && git clone https://github.com/CrispStrobe/CrispEmbed.git)
+    git clone --branch "$CRISPEMBED_REF" --depth 1 https://github.com/CrispStrobe/CrispEmbed.git "$SIBLING"
+fi
+SOURCE_COMMIT=$(git -C "$SIBLING" rev-parse HEAD)
+SOURCE_DIRTY=$(git -C "$SIBLING" status --porcelain --untracked-files=no)
+if [[ "$SOURCE_COMMIT" != "$CRISPEMBED_COMMIT" ]] || [[ -n "$SOURCE_DIRTY" ]]; then
+    echo "CrispEmbed source must be clean at $CRISPEMBED_COMMIT (found $SOURCE_COMMIT); no files were changed." >&2
+    exit 1
 fi
 echo "CrispEmbed source: $SIBLING"
 
-# 2. Download prebuilt lib if needed
-PREBUILT_DIR="$PROJECT_ROOT/src-tauri/crispembed-prebuilt"
-if [[ "$SKIP_DOWNLOAD" -eq 1 && (-f "$PREBUILT_DIR/libcrispembed.dylib" || -f "$PREBUILT_DIR/libcrispembed.so") ]]; then
-    echo "Reusing existing prebuilt at $PREBUILT_DIR"
-else
-    mkdir -p "$PREBUILT_DIR"
-    if [[ "$OS" == "Darwin" ]]; then
-        ASSET="crispembed-macos-arm64.tar.gz"
-    elif [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
-        ASSET="crispembed-linux-arm64.tar.gz"
-    else
-        ASSET="crispembed-linux-x86_64.tar.gz"
-    fi
-    echo "Downloading $ASSET from CrispEmbed latest release..."
-    (cd "$SIBLING" && gh release download --pattern "$ASSET" --dir "$PREBUILT_DIR" --clobber)
-    tar -xzf "$PREBUILT_DIR/$ASSET" -C "$PREBUILT_DIR"
-    rm -f "$PREBUILT_DIR/$ASSET"
+# 2. Reuse only a verified release archive, never an unverified extracted lib.
+ARCH=$(uname -m)
+case "$OS:$ARCH" in
+    Darwin:arm64|Darwin:aarch64) ASSET=crispembed-macos-arm64.tar.gz; SHA256=6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56 ;;
+    Linux:arm64|Linux:aarch64) ASSET=crispembed-linux-arm64.tar.gz; SHA256=38cbaaa020cd17d4cd4f0b78003c79fba7a1051628b06b8e39734c39f15032bb ;;
+    Linux:x86_64|Linux:amd64) ASSET=crispembed-linux-x86_64.tar.gz; SHA256=1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63 ;;
+    *) echo "No pinned CrispEmbed asset for $OS/$ARCH" >&2; exit 1 ;;
+esac
+CACHE_DIR="$PROJECT_ROOT/src-tauri/crispembed-prebuilt-cache/$CRISPEMBED_REF"
+mkdir -p "$CACHE_DIR"
+if [[ "$SKIP_DOWNLOAD" -eq 0 ]]; then
+    gh release download "$CRISPEMBED_REF" --repo CrispStrobe/CrispEmbed --pattern "$ASSET" --dir "$CACHE_DIR" --clobber
 fi
+ARCHIVE="$CACHE_DIR/$ASSET"
+[[ -f "$ARCHIVE" ]] || { echo "Pinned archive missing; run without --skip-download" >&2; exit 1; }
+ACTUAL_SHA256=$(shasum -a 256 "$ARCHIVE" | cut -d ' ' -f1)
+[[ "$ACTUAL_SHA256" == "$SHA256" ]] || { echo "CrispEmbed archive SHA256 mismatch" >&2; exit 1; }
+PREBUILT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/crispembed.XXXXXXXX")
+trap 'rm -rf "$PREBUILT_DIR"' EXIT
+tar -xzf "$ARCHIVE" -C "$PREBUILT_DIR"
 
 # 3. Wire env var
 export CRISPEMBED_SYS_LIB_DIR="$PREBUILT_DIR"
