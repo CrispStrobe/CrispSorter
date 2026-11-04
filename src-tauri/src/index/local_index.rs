@@ -85,6 +85,19 @@ pub struct LocalIndex {
 
 // ── Constructor ────────────────────────────────────────────────────────────
 
+/// What the re-ingest guard needs from a document's representative row.
+///
+/// Both fields live in `metadata_json` (see `ingest::build_metadata_json`), so
+/// no schema migration is involved and older rows simply lack the fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexedState {
+    /// Source-file mtime recorded at ingest time, epoch seconds.
+    pub mtime_unix: Option<i64>,
+    /// Row was written while image indexing was enabled, so missing vectors
+    /// (if any) are not a reason to re-ingest.
+    pub images_indexed: bool,
+}
+
 impl LocalIndex {
     /// Borrow the underlying LanceDB table handle.  Exposed so the
     /// migration framework (`crate::migrations` / `index::migrations`)
@@ -2054,7 +2067,36 @@ impl LocalIndex {
         Ok(None)
     }
 
-    pub async fn indexed_mtime_for_uri(&self, location_uri: &str) -> Result<Option<i64>> {
+    /// Parse the two fields we keep in `metadata_json` without pulling in a
+    /// JSON parser: `mtime_unix` is an integer with a fixed key, and
+    /// `images_indexed` is written as the literal `"images_indexed":true`.
+    fn parse_indexed_state(json: &str) -> IndexedState {
+        let mtime_unix = json
+            .find("\"mtime_unix\"")
+            .and_then(|start| {
+                let after = &json[start + "\"mtime_unix\"".len()..];
+                // Skip optional whitespace + colon + whitespace.
+                let rest = after.trim_start();
+                let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
+                // Read the integer up to the next non-digit.
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                if end == 0 {
+                    return None;
+                }
+                rest[..end].parse::<i64>().ok()
+            });
+        IndexedState {
+            mtime_unix,
+            images_indexed: json.contains("\"images_indexed\":true"),
+        }
+    }
+
+    pub async fn indexed_state_for_uri(
+        &self,
+        location_uri: &str,
+    ) -> Result<Option<IndexedState>> {
         let pred = format!(
             "location_uri = '{}' AND chunk_index = 0",
             location_uri.replace('\'', "''")
@@ -2079,24 +2121,7 @@ impl LocalIndex {
                     if arr.is_null(i) {
                         continue;
                     }
-                    let json = arr.value(i);
-                    // Tiny hand-parse — avoids serde_json dep cost for a
-                    // single integer field with a fixed key. Any change
-                    // beyond `{"mtime_unix": N, ...}` shape needs a real
-                    // parser.
-                    if let Some(start) = json.find("\"mtime_unix\"") {
-                        let after = &json[start + "\"mtime_unix\"".len()..];
-                        // Skip optional whitespace + colon + whitespace.
-                        let rest = after.trim_start();
-                        let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
-                        // Read the integer up to the next non-digit.
-                        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-                        if end > 0 {
-                            if let Ok(v) = rest[..end].parse::<i64>() {
-                                return Ok(Some(v));
-                            }
-                        }
-                    }
+                    return Ok(Some(Self::parse_indexed_state(arr.value(i))));
                 }
             }
         }
@@ -4474,5 +4499,25 @@ mod push_candidate_tests {
             "expected 'a' or 'b' in scoped results; results: {:?}",
             results.iter().map(|r| &r.doc_id).collect::<Vec<_>>()
         );
+    }
+
+    // ── Re-ingest guard: metadata parsing ────────────────────────────────
+
+    #[test]
+    fn indexed_state_parses_mtime_and_images_flag() {
+        let st = LocalIndex::parse_indexed_state(
+            r#"{"mtime_unix":1730000000,"fs_mtime":1730000000000,"images_indexed":true}"#,
+        );
+        assert_eq!(st.mtime_unix, Some(1730000000));
+        assert!(st.images_indexed);
+
+        // Rows written before the flag existed, or with the feature off.
+        let st = LocalIndex::parse_indexed_state(r#"{"mtime_unix":5,"fs_size":10}"#);
+        assert_eq!(st.mtime_unix, Some(5));
+        assert!(!st.images_indexed);
+
+        let st = LocalIndex::parse_indexed_state(r#"{}"#);
+        assert_eq!(st.mtime_unix, None);
+        assert!(!st.images_indexed);
     }
 }

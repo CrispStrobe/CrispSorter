@@ -213,6 +213,32 @@ impl BackgroundIngest {
     }
 }
 
+/// Should a re-scan skip this file entirely?
+///
+/// True only when the source file is untouched *and* the stored row was written
+/// under the current image-indexing setting. Recording the setting state is what
+/// lets enabling image indexing backfill documents that predate the toggle, and
+/// only once: the re-ingested row then carries the flag.
+fn skip_unchanged(
+    file_mtime: Option<i64>,
+    indexed: Option<crate::index::local_index::IndexedState>,
+    images_indexing_on: bool,
+) -> bool {
+    let (Some(file_mt), Some(state)) = (file_mtime, indexed) else {
+        return false;
+    };
+    // Unchanged file? Rows without a recorded mtime can't prove it.
+    match state.mtime_unix {
+        Some(indexed_mt) if indexed_mt >= file_mt => {}
+        _ => return false,
+    }
+    // The setting moved since this row was written: re-ingest to backfill.
+    if images_indexing_on && !state.images_indexed {
+        return false;
+    }
+    true
+}
+
 /// Spawn worker tasks up to the configured concurrency.  Safe to call
 /// repeatedly — already-running workers are counted via `active_workers`
 /// so no extras are spawned.
@@ -487,13 +513,17 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             path: p.clone(),
         }
         .to_uri();
-        // mtime-skip: already up-to-date.
-        if let (Some(file_mt), Ok(Some(indexed_mt))) =
-            (file_mtime, local.indexed_mtime_for_uri(&probe_uri).await)
-        {
-            if indexed_mt >= file_mt {
-                return Ok(());
-            }
+        // Up-to-date skip: the file is untouched *and* nothing in the settings
+        // changed since the row was written. Image indexing is the only such
+        // switch today — turning it on must backfill documents ingested while
+        // it was off, exactly once (their row then records the flag).
+        let indexed_state = local
+            .indexed_state_for_uri(&probe_uri)
+            .await
+            .ok()
+            .flatten();
+        if skip_unchanged(file_mtime, indexed_state, image_indexing_enabled) {
+            return Ok(());
         }
         // Failure-skip: non-retryable reason already stored — don't waste
         // extraction time on DRM EPUBs, corrupt files, or unsupported types.
@@ -585,6 +615,10 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             owner_id: owner.clone(),
             tags: Vec::new(),
             mtime_unix,
+            // Thin-client mode writes a skeleton with no extraction at all, so
+            // it can never gain image vectors. Recording `true` keeps the
+            // re-ingest guard from chasing it forever once image indexing is on.
+            images_indexed: true,
             file_size,
             volume_id: volume_id.clone(),
             parent_dir: parent_dir.clone(),
@@ -731,6 +765,10 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 // pre-v107 default.
                 tags: extracted.tags.clone(),
                 mtime_unix,
+                // Records whether this row went through ingest with image
+                // indexing on, which is what lets enabling the toggle backfill
+                // documents indexed while it was off.
+                images_indexed: image_indexing_enabled,
                 file_size,
                 volume_id,
                 parent_dir,
@@ -1177,5 +1215,43 @@ mod tests {
         assert!(EXTRACTION_TIMEOUT_SECS >= 60,  "timeout too short");
         assert!(EXTRACTION_TIMEOUT_SECS <= 3600,"timeout too long");
         assert_eq!(EXTRACTION_TIMEOUT_SECS, 300);
+    }
+
+    // ── Re-ingest guard (mtime + image-indexing backfill) ────────────────
+
+    use crate::index::local_index::IndexedState;
+
+    fn state(mtime: Option<i64>, images: bool) -> Option<IndexedState> {
+        Some(IndexedState { mtime_unix: mtime, images_indexed: images })
+    }
+
+    #[test]
+    fn skip_requires_the_file_to_be_untouched() {
+        // Store is newer than the file → up to date.
+        assert!(skip_unchanged(Some(100), state(Some(120), true), false));
+        // Same timestamp is still up to date (sub-second edits are ignored).
+        assert!(skip_unchanged(Some(100), state(Some(100), true), false));
+        // File changed after ingest → re-ingest.
+        assert!(!skip_unchanged(Some(200), state(Some(120), true), false));
+    }
+
+    #[test]
+    fn skip_never_happens_without_an_index_record() {
+        assert!(!skip_unchanged(Some(100), None, false));
+        assert!(!skip_unchanged(Some(100), None, true));
+        // A row with no recorded mtime cannot prove it is current.
+        assert!(!skip_unchanged(Some(100), state(None, true), false));
+        // ...and no file mtime means there is nothing to compare.
+        assert!(!skip_unchanged(None, state(Some(100), true), false));
+    }
+
+    #[test]
+    fn enabling_image_indexing_backfills_old_rows_once() {
+        // Row written while the feature was off, file untouched: re-ingest.
+        assert!(!skip_unchanged(Some(100), state(Some(120), false), true));
+        // Row written with the feature on: skip, so no reindex loop.
+        assert!(skip_unchanged(Some(100), state(Some(120), true), true));
+        // Feature off again: the old row is fine as-is.
+        assert!(skip_unchanged(Some(100), state(Some(120), false), false));
     }
 }

@@ -544,6 +544,7 @@ pub async fn index_ingest_path(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&p),
         parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
@@ -616,6 +617,7 @@ pub async fn index_ingest_document(
         // bg_ingest will treat None as "no recorded mtime → re-ingest"
         // which is the safe default.
         mtime_unix: None,
+        images_indexed: false,
         file_size: None,
         // PLAN P7.6 — frontend ingest is path-less (input is the
         // already-extracted text), so we don't have a volume to tag.
@@ -882,6 +884,7 @@ pub async fn index_ingest_batch(
                 // is path-less / mtime-less; bg_ingest skip-on-mtime
                 // treats None as "re-ingest" which is the safe default.
                 mtime_unix: None,
+                images_indexed: false,
                 file_size: None,
                 volume_id: None,
                 parent_dir: None,
@@ -974,6 +977,7 @@ pub async fn index_ingest_batch(
             owner_id: input.owner_id,
             tags: input.tags,
             mtime_unix: None,
+            images_indexed: false,
             file_size: None,
             volume_id: None,
             parent_dir: None,
@@ -1765,6 +1769,7 @@ pub async fn index_audio_promote_l3(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.as_ref().map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&path),
         parent_dir: path
@@ -1908,6 +1913,7 @@ pub async fn index_image_promote_l3(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.as_ref().map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&path),
         parent_dir: path
@@ -3234,6 +3240,7 @@ pub async fn index_l1_only_scan(
             owner_id: owner.clone(),
             tags: Vec::new(),
             mtime_unix,
+            images_indexed: false,
             file_size: Some(file_size),
             volume_id: crate::volume::volume_id_for_path(fp.as_path()),
             parent_dir,
@@ -3470,6 +3477,7 @@ async fn promote_path(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: bg_meta.map(|m| m.len() as i64),
         volume_id: None,
         parent_dir: std::path::Path::new(&original_path)
@@ -4764,6 +4772,7 @@ pub async fn ocr_workbench_reingest(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.as_ref().map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&path),
         parent_dir: path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),

@@ -4334,7 +4334,7 @@
                     <input type="checkbox" bind:checked={indexImageIndexingEnabled} />
                     <span>Semantic image embeddings (CrispEmbed)</span>
                 </label>
-                <p class="hint">Opt in to visual and cross-modal image search. This loads separate models and may download them on first use; existing images need to be re-indexed. Requires a CrispEmbed-enabled build.</p>
+                <p class="hint">Opt in to visual and cross-modal image search. This loads separate models and may download them on first use. Documents indexed while this was off are re-indexed once on the next scan; requires a CrispEmbed-enabled build.</p>
 
                 <label for="index-image-level" style="margin-top:10px;">
                     {i18n.t.settings.index.ingest_image_level ?? 'Image ingest level'}
