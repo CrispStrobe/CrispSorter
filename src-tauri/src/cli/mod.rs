@@ -7227,7 +7227,7 @@ async fn cmd_sync_cloud_backup(
                                 .unwrap_or(h.filename.as_str());
                             println!(
                                 "  [{:>6.3}] {:<60.60}  {}",
-                                h.score, title, h.path
+                                h.score, title, h.url.as_deref().unwrap_or(&h.path)
                             );
                             // Strip the server's <mark> tags for plain-text
                             // terminal output.
