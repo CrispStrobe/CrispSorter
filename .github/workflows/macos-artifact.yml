@@ -1,0 +1,88 @@
+name: macOS development artifact
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: repos/CrispSorter
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: v0.17.11
+          path: repos/CrispEmbed
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispASR
+          ref: v0.8.32
+          path: repos/CrispASR
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-docx
+          ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
+          path: repos/crisp-docx
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+          key: aarch64-apple-darwin
+      - name: Install build dependencies
+        run: |
+          brew install protobuf
+          npm ci
+          cargo install --locked cargo-license
+      - name: Download runtime libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../CrispASR/build-flutter-bundle ../CrispEmbed/build src-tauri/bin
+          curl -fsSL https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.32/libcrispasr-macos-arm64.tar.gz -o /tmp/crispasr.tar.gz
+          tar -xzf /tmp/crispasr.tar.gz -C ../CrispASR/build-flutter-bundle --strip-components=1
+          curl -fsSL https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.11/crispembed-macos-arm64.tar.gz -o /tmp/crispembed.tar.gz
+          tar -xzf /tmp/crispembed.tar.gz -C ../CrispEmbed/build
+          curl -fsSL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz -o /tmp/pdfium.tgz
+          mkdir -p /tmp/pdfium
+          tar -xzf /tmp/pdfium.tgz -C /tmp/pdfium
+          cp /tmp/pdfium/lib/libpdfium.dylib src-tauri/bin/
+          curl -fsSL https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.tar.gz -o /tmp/llama.tar.gz
+          mkdir -p /tmp/llama
+          tar -xzf /tmp/llama.tar.gz -C /tmp/llama
+          server=$(find /tmp/llama -type f -name llama-server | head -1)
+          test -n "$server"
+          cp "$server" src-tauri/bin/llama-server-aarch64-apple-darwin
+          chmod +x src-tauri/bin/llama-server-aarch64-apple-darwin
+          find /tmp/llama -type f -name '*.dylib' -exec cp {} src-tauri/bin/ \;
+      - name: Build app
+        run: npx tauri build --target aarch64-apple-darwin --bundles app --features desktop,sidecars,audio-glint,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native
+      - name: Bundle native libraries and archive
+        shell: bash
+        env:
+          REPACK_DMG: '0'
+        run: |
+          set -euo pipefail
+          app='target/aarch64-apple-darwin/release/bundle/macos/CrispSorter.app'
+          test -d "$app"
+          ./scripts/bundle_macos_native_libs.sh "$app"
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" CrispSorter-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrispSorter-macos-arm64
+          path: repos/CrispSorter/CrispSorter-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 14
