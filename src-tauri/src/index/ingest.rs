@@ -20,7 +20,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 
-use super::embedder::{chunk_text, Embedder};
+use super::embedder::Embedder;
 use super::fts_index::{FtsIndex, TantivyInput};
 use super::local_index::LocalIndex;
 use super::ner::NerHandle;
@@ -36,6 +36,8 @@ pub struct IngestConfig {
     pub chunk_stride: usize,
     /// How many chunks to embed + write per LanceDB batch.
     pub batch_size: usize,
+    /// Explicitly store searchable text without embeddings.
+    pub text_only: bool,
 }
 
 impl Default for IngestConfig {
@@ -44,6 +46,7 @@ impl Default for IngestConfig {
             chunk_max_words: 1500,
             chunk_stride: 200,
             batch_size: 32,
+            text_only: false,
         }
     }
 }
@@ -267,6 +270,7 @@ impl IngestPipeline {
                         let mut writer =
                             fts_w.writer().context("opening Tantivy writer")?;
                         for input in &job.tantivy_inputs {
+                            fts_w.delete_document(&mut writer, &input.doc_id)?;
                             fts_w.add_document(
                                 &mut writer,
                                 TantivyInput {
@@ -399,13 +403,9 @@ impl IngestPipeline {
             }
         }
 
-        let embedder = self.embedder.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Embedding (L3) is disabled. Switch the index config to \
-                 `use_vector = true` (Settings → Search Index → \
-                 Vektor-Embeddings verwenden) and re-init."
-            )
-        })?;
+        if self.embedder.is_none() && !self.config.text_only {
+            anyhow::bail!("Embedding is enabled but the model is not loaded; initialise it or select text-only indexing");
+        }
 
         let mut all_chunks: Vec<DocumentChunk> = Vec::new();
         let mut tantivy_inputs: Vec<TantivyInputOwned> = Vec::with_capacity(raws.len());
@@ -414,15 +414,22 @@ impl IngestPipeline {
         // ── Embedding phase ─────────────────────────────────────────────
         let embed_start = Instant::now();
         for raw in &raws {
-            let chunks = chunk_text(
-                &raw.full_text,
-                self.config.chunk_max_words,
-                self.config.chunk_stride,
-                &[],
-            );
+            // Text-only indexes retain the complete body as one representative
+            // row and never load or call an embedding model.
+            let chunks = if let Some(embedder) = &self.embedder {
+                embedder.lock().await.chunk_for_embedding(&raw.full_text)?
+            } else if raw.full_text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![super::embedder::TextChunk {
+                    text: raw.full_text.clone(), start_char: 0,
+                    end_char: raw.full_text.len(), chunk_index: 0,
+                }]
+            };
             let chunk_total = chunks.len() as i32;
             total_chunk_count += chunks.len();
 
+            if let Some(embedder) = &self.embedder {
             for batch in chunks.chunks(self.config.batch_size) {
                 let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
                 let (dense, sparse, multivecs, model_id) = {
@@ -463,6 +470,12 @@ impl IngestPipeline {
                 }
             }
 
+            } else {
+                for chunk in &chunks {
+                    all_chunks.push(build_doc_chunk(chunk, raw, chunk_total, None, None, String::new(), None));
+                }
+            }
+
             tantivy_inputs.push(TantivyInputOwned {
                 doc_id: doc_id_for(raw),
                 owner_id: raw.owner_id.clone(),
@@ -473,7 +486,7 @@ impl IngestPipeline {
                 body_translated: raw.translated_text.clone(),
             });
         }
-        let embed_time_ms = embed_start.elapsed().as_millis() as u64;
+        let embed_time_ms = if self.embedder.is_some() { embed_start.elapsed().as_millis() as u64 } else { 0 };
 
         // ── Write phase: submit to background writer task ───────────────
         self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms)
@@ -832,7 +845,7 @@ fn build_doc_chunk(
         full_text_md: Some(raw.full_text_md.clone()),
         embedding,
         embedding_sparse: sparse_json,
-        embedding_model: Some(model_id),
+        embedding_model: if model_id.is_empty() { None } else { Some(model_id) },
         chunk_index: tc.chunk_index,
         chunk_total,
         chunk_start_char: Some(tc.start_char as i32),
@@ -989,6 +1002,31 @@ mod tests {
             embedding_omni: None,
             embedding_vit: None,
         }
+    }
+
+    #[tokio::test]
+    async fn text_only_ingest_is_searchable_without_an_embedder() {
+        let dir = tempfile::tempdir().unwrap();
+        let fts = std::sync::Arc::new(crate::index::FtsIndex::open_or_create(&dir.path().join("fts")).unwrap());
+        let local = std::sync::Arc::new(crate::index::LocalIndex::open_or_create(dir.path(), 4).await.unwrap());
+        let pipeline = IngestPipeline::new(fts.clone(), local.clone(), None,
+            IngestConfig { text_only: true, ..Default::default() });
+        let mut raw = sample_raw();
+        raw.url = Some("https://example.invalid/article".into());
+        let stats = pipeline.ingest_document(raw.clone()).await.unwrap();
+        assert_eq!(stats.chunk_count, 1);
+        assert_eq!(stats.embed_time_ms, 0);
+        assert_eq!(local.fetch_full_text(&raw.source_hash).await.unwrap(), raw.full_text);
+        assert!(local.list_chunks_with_embeddings(0, 100).await.unwrap().is_empty());
+        let batches = local.fetch_by_doc_ids(&[raw.source_hash.clone()]).await.unwrap();
+        assert!(batches[0].column_by_name("embedding").unwrap().is_null(0));
+        assert_eq!(fts.search("fox", &crate::index::schema::SearchFilters::default(), 10).unwrap().len(), 1);
+        let engine = crate::index::search::SearchEngine::new(fts.clone(), local.clone(), None);
+        let hits = engine.search_hybrid("fox", &crate::index::schema::SearchFilters::default(), 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url.as_deref(), Some("https://example.invalid/article"));
+        pipeline.ingest_document(raw).await.unwrap();
+        assert_eq!(fts.search("fox", &crate::index::schema::SearchFilters::default(), 10).unwrap().len(), 1);
     }
 
     #[test]

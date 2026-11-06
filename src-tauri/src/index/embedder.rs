@@ -2450,6 +2450,22 @@ impl Embedder {
         })
     }
 
+    /// Use the loaded model's tokenizer and its actual truncation limit.
+    /// Refuse unsupported backends instead of silently dropping passage text.
+    pub fn chunk_for_embedding(&self, text: &str) -> Result<Vec<TextChunk>> {
+        let tokenizer = match &self.dense {
+            DenseBackend::Fastembed(fe) => &fe.tokenizer,
+            DenseBackend::OrtPath(ort) => &ort.tokenizer,
+            #[cfg(feature = "crispembed")]
+            DenseBackend::CrispEmbed(_) => anyhow::bail!(
+                "Token-aware indexing is not yet available for the GGUF backend; use an ONNX embedder or text-only indexing"
+            ),
+        };
+        let max_tokens = tokenizer.get_truncation()
+            .map(|t| t.max_length).unwrap_or_else(|| self.config.model.max_tokens());
+        chunk_text_with_tokenizer(tokenizer, text, max_tokens, self.config.model.prefix(EmbedRole::Passage))
+    }
+
     pub fn embed_dense(
         &mut self,
         texts: Vec<String>,
@@ -2713,6 +2729,45 @@ pub struct TextChunk {
     pub chunk_index: i32,
 }
 
+/// Split by the same tokenizer used for inference. Offsets remain byte
+/// offsets into the original UTF-8 text; every emitted passage is checked
+/// against the model's actual limit including prefix and special tokens.
+pub fn chunk_text_with_tokenizer(
+    tokenizer: &tokenizers::Tokenizer, text: &str, limit: usize, prefix: &str,
+) -> Result<Vec<TextChunk>> {
+    if text.trim().is_empty() { return Ok(Vec::new()); }
+    let mut tokenizer = tokenizer.clone();
+    tokenizer.with_truncation(None).map_err(|e| anyhow::anyhow!("disable tokenizer truncation: {e}"))?;
+    tokenizer.with_padding(None);
+    let prefix_tokens = tokenizer.encode(prefix, true).map_err(|e| anyhow::anyhow!("tokenize prefix: {e}"))?.len();
+    let budget = limit.checked_sub(prefix_tokens + 8)
+        .filter(|n| *n > 0).ok_or_else(|| anyhow::anyhow!("embedding token limit is too small"))?;
+    let encoding = tokenizer.encode(text, false).map_err(|e| anyhow::anyhow!("tokenize document: {e}"))?;
+    let offsets: Vec<(usize, usize)> = encoding.get_offsets().iter().copied().filter(|(a,b)| b > a).collect();
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let overlap = (budget / 8).min(64);
+    while start < offsets.len() {
+        let mut end = (start + budget).min(offsets.len());
+        loop {
+            let a = offsets[start].0;
+            let b = offsets[end - 1].1;
+            let part = text.get(a..b).ok_or_else(|| anyhow::anyhow!("invalid tokenizer UTF-8 offsets"))?;
+            let count = tokenizer.encode(format!("{prefix}{part}"), true)
+                .map_err(|e| anyhow::anyhow!("tokenize passage: {e}"))?.len();
+            if count <= limit {
+                chunks.push(TextChunk { text: part.to_owned(), start_char: a, end_char: b, chunk_index: chunks.len() as i32 });
+                break;
+            }
+            if end <= start + 1 { anyhow::bail!("a single token cannot fit the model context"); }
+            end -= 1;
+        }
+        if end == offsets.len() { break; }
+        start = end.saturating_sub(overlap).max(start + 1);
+    }
+    Ok(chunks)
+}
+
 /// Split `text` into overlapping word-boundary chunks.
 /// `max_tokens` ≈ word count per chunk; `stride` = overlap word count.
 pub fn chunk_text(
@@ -2770,6 +2825,39 @@ pub fn chunk_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_windows_respect_context_and_preserve_unicode() {
+        use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
+        let vocab = [("[UNK]".to_owned(), 0), ("passage".to_owned(), 1), ("wort".to_owned(), 2), ("ü".to_owned(), 3)]
+            .into_iter().collect();
+        let model = WordLevel::builder().vocab(vocab).unk_token("[UNK]".into()).build().unwrap();
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(Whitespace::default()));
+        let text = (0..90).map(|i| if i == 45 { "ü" } else { "wort" }).collect::<Vec<_>>().join(" ");
+        let chunks = chunk_text_with_tokenizer(&tokenizer, &text, 24, "passage ").unwrap();
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().any(|c| c.text.contains('ü')));
+        assert!(chunks.iter().all(|c| tokenizer.encode(format!("passage {}", c.text), true).unwrap().len() <= 24));
+        assert_eq!(chunks.first().unwrap().start_char, 0);
+        assert_eq!(chunks.last().unwrap().end_char, text.len());
+        assert!(chunks.windows(2).all(|w| w[1].start_char <= w[0].end_char));
+    }
+
+    #[test]
+    fn optional_real_tokenizer_windows_fit_model() {
+        let Some(path) = std::env::var_os("CRISPSORTER_TEST_TOKENIZER") else { return; };
+        let tokenizer = tokenizers::Tokenizer::from_file(path).unwrap();
+        let text = format!("{} {} {}", "Philosophie jüdischer Erkenntnis ".repeat(450),
+            "https://example.invalid/".to_owned() + &"longpath".repeat(500), "schlusswort");
+        let chunks = chunk_text_with_tokenizer(&tokenizer, &text, 512, "passage: ").unwrap();
+        let mut uncapped = tokenizer.clone();
+        uncapped.with_truncation(None).unwrap(); uncapped.with_padding(None);
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|c| uncapped.encode(format!("passage: {}", c.text), true).unwrap().len() <= 512));
+        assert!(chunks.last().unwrap().text.contains("schlusswort"));
+        assert!(chunks.windows(2).all(|w| w[1].start_char <= w[0].end_char));
+    }
 
     #[test]
     fn model_dims_correct() {

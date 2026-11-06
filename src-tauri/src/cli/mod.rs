@@ -3132,8 +3132,8 @@ enum IndexCmd {
         #[arg(long, value_name = "QUANT")]
         quant: Option<String>,
     },
-    /// Ingest files/folders into the local index — full extraction + embedding pipeline.
-    /// Run `index init` first to download the embedder model.
+    /// Extract and index files or folders. `--text-only` needs no model;
+    /// otherwise the embedding model is loaded or downloaded on first use.
     Ingest {
         /// Files or directories to ingest (directories are walked recursively).
         #[arg(required = true)]
@@ -3141,6 +3141,9 @@ enum IndexCmd {
         /// Owner UUID. Default: nil (single-user install).
         #[arg(long)]
         owner_id: Option<String>,
+        /// Extract and index full text without loading an embedding model.
+        #[arg(long)]
+        text_only: bool,
         /// Embedder model. Default: bge-m3.
         #[arg(long, default_value = "bge-m3")]
         model: String,
@@ -4040,6 +4043,8 @@ async fn cmd_index_async(
                             "ext": r.ext,
                             "language": r.language,
                             "location_uri": r.location_uri,
+                            "url": r.url,
+                            "tags": r.tags,
                             "snippet": r.snippet,
                             "score": r.score,
                         });
@@ -4084,6 +4089,7 @@ async fn cmd_index_async(
         IndexCmd::Ingest {
             paths,
             owner_id,
+            text_only,
             model,
             device,
             ocr,
@@ -4123,14 +4129,10 @@ async fn cmd_index_async(
             {
                 eprintln!(
                     "[ingest] --anydoc {anydoc} ignored: this build lacks the \
-                     `anydoc` feature, so office and e-book files will be \
+                     `anydoc` feature, so additional office formats may be \
                      skipped (rebuild with `--features anydoc`)"
                 );
             }
-
-            // Parse model + device (same logic as Init).
-            let m = parse_embedder_model(&model)?;
-            let d = parse_embedder_device(&device);
 
             // Resolve the work-list *before* touching the embedder. Loading it
             // downloads the model on first use — 2.3 GB for the bge-m3 default
@@ -4148,31 +4150,33 @@ async fn cmd_index_async(
                 if ocr { "on" } else { "off" }
             );
 
-            let cache_dir = data_dir.join("models");
-            std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-            let embedder_config =
-                apply_embedder_backend(EmbedderConfig::new(m, d, cache_dir), &backend, quant.as_deref())?;
-            eprintln!(
-                "loading embedder model ({model}, backend={:?}, quant={})…",
-                embedder_config.backend,
-                quant.as_deref().unwrap_or("<model default>")
-            );
-            let embedder = crate::index::embedder::Embedder::new(embedder_config)
-                .await.map_err(|e| e.to_string())?;
-            // The table has to be as wide as the model that fills it. This was
-            // hardcoded to 1024 (bge-m3's width), so every narrower model —
-            // MiniLM and both e5-small variants are 384, nomic is 768 — built a
-            // 1024-wide table and then panicked arrow on the first write.
-            let dims = embedder.dims();
-            let embedder_arc = std::sync::Arc::new(tokio::sync::Mutex::new(embedder));
-
+            let embedder_arc = if text_only {
+                None
+            } else {
+                let m = parse_embedder_model(&model)?;
+                let d = parse_embedder_device(&device);
+                let cache_dir = data_dir.join("models");
+                std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+                let embedder_config = apply_embedder_backend(
+                    EmbedderConfig::new(m, d, cache_dir), &backend, quant.as_deref(),
+                )?;
+                eprintln!("loading embedder model ({model})…");
+                let embedder = crate::index::embedder::Embedder::new(embedder_config)
+                    .await.map_err(|e| e.to_string())?;
+                Some(std::sync::Arc::new(tokio::sync::Mutex::new(embedder)))
+            };
+            let dims = match &embedder_arc {
+                Some(embedder) => embedder.lock().await.dims(),
+                // Choose the schema width without loading a model, so a
+                // later vector ingest can use the selected model.
+                None => parse_embedder_model(&model)?.dims(),
+            };
             let local = crate::index::LocalIndex::open_or_create(&data_dir, dims)
                 .await.map_err(|e| e.to_string())?;
-            if local.dims != dims {
+            if embedder_arc.is_some() && local.dims != dims {
                 return Err(format!(
-                    "this index stores {}-dim embeddings but --model {model} produces {dims}. \
-                     Re-init the index for the new model, or ingest with a {}-dim one.",
-                    local.dims, local.dims
+                    "this index stores {}-dim embeddings but --model {model} produces {dims}.",
+                    local.dims
                 ));
             }
             let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
@@ -4185,8 +4189,8 @@ async fn cmd_index_async(
             let pipeline = IngestPipeline::new(
                 std::sync::Arc::new(fts),
                 std::sync::Arc::new(local),
-                Some(embedder_arc),
-                IngestConfig::default(),
+                embedder_arc,
+                IngestConfig { text_only, ..Default::default() },
             )
             .with_ner(ner);
 
@@ -4247,7 +4251,7 @@ async fn cmd_index_async(
                     headings: extracted.headings, title: None, author: None, year: None,
                     filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     ext: extracted.ext, language: String::new(),
-                    source_hash, location_uri: loc.to_uri(), owner_id: owner.clone(), tags: vec![],
+                    source_hash, location_uri: loc.to_uri(), owner_id: owner.clone(), tags: extracted.tags,
                     mtime_unix: meta.as_ref().and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs() as i64),
@@ -4270,7 +4274,7 @@ async fn cmd_index_async(
                     image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
                     multivec_packed: None,
                     multivec_n_tokens: None,
-                    url: None,
+                    url: extracted.source_url,
                     embedding_omni: None,
                     embedding_vit: None,
                 };
@@ -12169,6 +12173,12 @@ mod tests {
             }
             other => panic!("expected Index Ingest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn index_ingest_accepts_text_only() {
+        let cli = Cli::try_parse_from(["crispsorter", "index", "ingest", "--text-only", "/tmp/docs"]).unwrap();
+        assert!(matches!(cli.command, Command::Index { cmd: IndexCmd::Ingest { text_only: true, .. }, .. }));
     }
 
     #[test]

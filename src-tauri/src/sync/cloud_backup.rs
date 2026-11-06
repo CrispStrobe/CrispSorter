@@ -603,17 +603,15 @@ pub struct CloudBackupClient {
 /// Gating the *module* was the obvious alternative and is wrong: its types
 /// are used by `bg_ingest` (`ManifestRow::from_raw_document`) and the local
 /// index path, so `#[cfg]`-ing it out cascades far past the network
-/// surface. The feature is about not shipping a client for a private
-/// server, not about deleting the wire format.
+/// surface. Desktop builds include the connector; other builds can opt in.
 #[inline]
 fn ensure_cloud_backup_enabled() -> Result<()> {
     if cfg!(feature = "cloud-backup") {
         return Ok(());
     }
     Err(anyhow!(
-        "cloud-backup sync is not available in this build: the server it \
-         talks to is not public, so the feature ships off. Rebuild with \
-         `--features cloud-backup` if you run a cb-api instance."
+        "cloud-backup sync is not available in this build. Rebuild with \
+         `--features cloud-backup` to use a compatible server."
     ))
 }
 

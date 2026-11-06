@@ -81,6 +81,7 @@
 
     let query       = $state('');
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
+    let vectorEnabled = $state(true);
     let limit       = $state(20);
     let results     = $state<SearchResult[]>([]);
     let compareResults = $state<SearchResult[]>([]);
@@ -210,6 +211,25 @@
     let fedLoading      = $state(false);
     let fedSearched     = $state(false);
     let fedErrors       = $state<Record<string, string>>({});
+    let fedQuery = $state('');
+    let fedQueryLimit = $state(20);
+    let fedBody = $state<Map<string, string>>(new Map());
+    let fedBodyLoading = $state<string | null>(null);
+
+    async function readFederatedBody(hit: FederatedHit) {
+        if (!hit.sha256 || !fedQuery) return;
+        fedBodyLoading = hit.sha256;
+        try {
+            const response = await invoke<{ rows: { sha256: string; full_text?: string | null }[] }>(
+                'sync_cb_search', { q: fedQuery, limit: fedQueryLimit },
+            );
+            const body = response.rows.find(r => r.sha256 === hit.sha256)?.full_text;
+            if (!body) throw new Error('Indexed text is unavailable for this result.');
+            const next = new Map(fedBody); next.set(hit.sha256, body); fedBody = next;
+        } catch (e: any) {
+            fedErrors = { ...fedErrors, article: String(e?.message ?? e) };
+        } finally { fedBodyLoading = null; }
+    }
 
     // Tier 2 tag cloud on the federated pane — same opt-in, client-side
     // pattern as the local pane. Tags ride the FederatedHit wire for local
@@ -256,6 +276,9 @@
         if (!q) return;
         fedLoading  = true;
         fedSearched = true;
+        fedQuery = q;
+        fedQueryLimit = limit;
+        fedBody = new Map();
         fedResults  = [];
         fedErrors   = {};
         fedTags     = new Set();
@@ -620,6 +643,11 @@
     }
 
     onMount(async () => {
+        try {
+            const config = await invoke<{ use_vector?: boolean }>('index_get_config');
+            vectorEnabled = config.use_vector !== false;
+            if (!vectorEnabled) mode = 'text';
+        } catch { /* use the normal default until configuration is available */ }
         const stored = (await getSetting('savedSearches', null)) as SavedSearch[] | null;
         savedSearches = stored ?? [];
         const hist = (await getSetting('searchHistory', null)) as HistoryEntry[] | null;
@@ -1051,6 +1079,10 @@
         // Opens the source URL (wallabag/pocket provenance, browser-saved
         // PDFs, …) in the default browser via the opener plugin.
         try {
+            const parsed = new URL(url);
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+                throw new Error('Only HTTP and HTTPS source links can be opened.');
+            }
             await openUrl(url);
         } catch (e) {
             console.error('[IndexSearch] openUrl failed:', e, 'url:', url);
@@ -1492,7 +1524,9 @@
     <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
     <div class="mode-row">
         {#each (['hybrid', 'text', 'vector'] as const) as m}
-            <button class="mode-chip" class:active={mode === m} onclick={() => mode = m}>
+            <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
+                    title={!vectorEnabled && m !== 'text' ? 'Enable vector embeddings in Search Index settings.' : ''}
+                    onclick={() => mode = m}>
                 { m === 'hybrid' ? 'Hybrid (RRF)' : m === 'text' ? 'Volltext (BM25)' : 'Vektor (ANN)' }
             </button>
         {/each}
@@ -2321,6 +2355,18 @@
                                     {#if hit.language}<span class="remote-lang">{hit.language}</span>{/if}
                                     {#if hit.ext}<span class="remote-lang">{hit.ext}</span>{/if}
                                 </div>
+                                {#if hit.url}
+                                    <button class="open-btn" onclick={() => openOriginal(hit.url!)} title="Open original article">Open original</button>
+                                {/if}
+                                {#if hit.source === 'cloud_backup' && hit.sha256}
+                                    <button class="open-btn" onclick={() => readFederatedBody(hit)} disabled={fedBodyLoading === hit.sha256}>Read indexed text</button>
+                                    {#if fedBody.has(hit.sha256)}
+                                        <details open><summary>Indexed text</summary><pre class="indexed-body">{fedBody.get(hit.sha256)}</pre></details>
+                                    {/if}
+                                {/if}
+                                {#if hit.tags?.length}
+                                    <div class="remote-path">{hit.tags.filter(t => !t.startsWith('collection:')).join(' · ')}</div>
+                                {/if}
                                 {#if hit.path}
                                     <div class="remote-path">{hit.path}</div>
                                 {/if}
@@ -2355,6 +2401,7 @@
         background: var(--color-bg-subtle, #2c2c2c);
     }
     .remote-path { font-size: 0.85em; color: var(--color-text-muted, #aaa); margin-top: 2px; font-family: ui-monospace, monospace; }
+    .indexed-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow-y: auto; }
     .remote-snippet { margin-top: 4px; font-size: 0.9em; color: var(--color-text-secondary, #ccc); }
     .remote-actions { margin-top: 6px; display: flex; gap: 10px; align-items: center; }
     .remote-dl-ok { color: var(--color-success, #2a8); font-size: 0.85em; }

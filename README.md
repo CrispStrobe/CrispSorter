@@ -384,11 +384,15 @@ required. In **Settings → Search Index**, enable the local index and choose an
 embedding model. Add an existing folder through the index ingest view, or use:
 
 ```bash
-crispsorter index init --model multilingual-e5-small --device cpu
-crispsorter index ingest --model multilingual-e5-small /path/to/documents
+crispsorter index ingest --text-only /path/to/documents
 crispsorter index search "search terms"
 crispsorter index stats
 ```
+
+For semantic search, enable vector embeddings in Settings and initialise an
+embedding model before ingesting. Passage chunks use the loaded tokenizer and
+its actual context limit. GGUF backends that do not expose a tokenizer cannot
+yet perform vector indexing; use an ONNX backend or text-only mode.
 
 The model must match when indexing and searching vectors. Extraction failures
 and image-only PDFs may need a different parser or OCR; check ingest results and
@@ -401,11 +405,11 @@ restored; scanning it does not index its members.
 
 For saved articles, import exported article files such as Markdown or HTML into
 that local index. Exported URLs and tags in supported Markdown frontmatter can
-be retained. CrispSorter's optional cloud-backup integration is off in standard
-release builds; it is for operators who already have a compatible server, not a
-service ordinary users must install. Importing metadata and full article bodies
-from such a server are separate choices; remote full-text search requires a
-reachable, authenticated server.
+be retained. The optional cloud-backup connector is available in desktop builds
+when a compatible server URL and credential are configured; the client does not
+need a server checkout. Open the federated search view to search the remote
+index and open an article's source URL. Importing metadata and article bodies
+are separate choices; remote search requires a reachable, authenticated server.
 
 In **Settings → Secret storage**, users can choose an encrypted file vault or
 session-only storage instead of the OS keychain; an existing named macOS

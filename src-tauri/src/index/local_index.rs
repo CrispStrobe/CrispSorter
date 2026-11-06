@@ -1576,7 +1576,7 @@ impl LocalIndex {
         limit: usize,
     ) -> Result<Vec<EmbeddingPushCandidate>> {
         let batches = self.scan_recent_for_push(
-            "chunk_index >= 0 AND embedding IS NOT NULL", since_ts, limit,
+            "chunk_index >= 0 AND embedding IS NOT NULL AND embedding_model IS NOT NULL", since_ts, limit,
             &["doc_id", "chunk_index", "embedding_model", "embedding_sparse", "indexed_at", "embedding"],
         ).await?;
         let mut out = record_batches_to_embedding_candidates(&batches)?;
@@ -2611,19 +2611,19 @@ fn chunks_to_record_batch(
     // ── Embedding ─────────────────────────────────────────────────────────
     // FixedSizeList<Float32>
     let embedding_col: Arc<dyn Array> = {
-        let flat: Vec<Option<f32>> = chunks
-            .iter()
-            .flat_map(|c| match &c.embedding {
-                Some(v) => v.iter().map(|&x| Some(x)).collect::<Vec<_>>(),
-                None => vec![None; dims],
-            })
-            .collect();
+        for c in chunks {
+            if let Some(v) = &c.embedding {
+                if v.len() != dims {
+                    anyhow::bail!("embedding has {} dimensions; index requires {dims}", v.len());
+                }
+            }
+        }
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type,
             _,
             _,
         >(
-            flat.chunks(dims).map(|chunk| Some(chunk.iter().copied())),
+            chunks.iter().map(|c| c.embedding.as_ref().map(|v| v.iter().copied().map(Some))),
             dims as i32,
         ))
     };
@@ -3183,6 +3183,9 @@ fn record_batches_to_embedding_candidates(
                         .ok_or_else(|| anyhow!("embedding inner type not Float32"))?;
                     let dim = fsl.value_length() as usize;
                     let start = i * dim;
+                    // Older text-only rows used a non-null list filled with
+                    // null elements. Never push those as zero vectors.
+                    if (start..start + dim).any(|j| arr.is_null(j)) { continue; }
                     arr.values()[start..start + dim].to_vec()
                 }
             } else {

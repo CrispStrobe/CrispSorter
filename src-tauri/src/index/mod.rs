@@ -185,8 +185,8 @@ pub struct IndexConfig {
     /// loads an embedder model — the catalog can still scan + store
     /// filesystem metadata (L1) and embedded file metadata (L2),
     /// Tantivy still does full-text indexing on extracted L3 text.
-    /// Saves multi-GB downloads + hundreds of MB of resident memory
-    /// when the user only wants offline file cataloguing.
+    /// Saves the embedding-model download and memory while retaining
+    /// full-text search of extracted documents.
     #[serde(default = "default_use_vector")]
     pub use_vector: bool,
     /// Where embedding computation happens for remote-backend ingest.

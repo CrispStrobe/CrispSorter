@@ -456,6 +456,9 @@ impl SearchEngine {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        if self.embedder.is_none() {
+            return self.search_text(query_text, filters, limit).await;
+        }
         // P23 — check result cache before doing any work.
         let filters_hash = super::result_cache::hash_filters(filters);
         {

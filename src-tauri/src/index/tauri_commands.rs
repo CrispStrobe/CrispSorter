@@ -539,7 +539,7 @@ pub async fn index_ingest_path(
         source_hash,
         location_uri,
         owner_id: owner,
-        tags: Vec::new(),
+        tags: extracted.tags,
         mtime_unix: p_meta.as_ref()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -564,7 +564,7 @@ pub async fn index_ingest_path(
         image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
         multivec_packed: None,
         multivec_n_tokens: None,
-        url: None,
+        url: extracted.source_url,
         embedding_omni: None,
         embedding_vit: None,
     };
@@ -2858,7 +2858,7 @@ pub async fn init_index(
                     fts.clone(),
                     local.clone(),
                     embedder_arc.clone(),
-                    IngestConfig::default(),
+                    IngestConfig { text_only: !config.use_vector, ..Default::default() },
                 )
                 .with_ner(ner_handle.clone()),
             );

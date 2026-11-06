@@ -64,10 +64,7 @@ pub struct Capabilities {
     /// builds: the backend is private, so for anyone outside the dev team
     /// the tabs connect to nothing.
     pub aitoolkit: bool,
-    /// cloud-backup (cb-api) sync is reachable (PLAN P36.16). Off in
-    /// shipped builds for the same reason. The client code is still
-    /// compiled — only the network seam refuses — so this reports whether
-    /// the routes will *work*, which is what the UI needs to know.
+    /// Cloud-backup-compatible API connector is included in this build.
     pub cloud_backup: bool,
 
     // ── Inference ──────────────────────────────────────────────────────

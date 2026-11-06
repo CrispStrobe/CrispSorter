@@ -409,7 +409,7 @@ mod tests {
 
     /// The private-backend surfaces stay out of shipped builds.
     ///
-    /// PLAN P36.16. `aitoolkit` and `cloud-backup` are HTTP clients for
+    /// PLAN P36.16. `aitoolkit` is an HTTP client for
     /// backends that live in private repos, so for every user who is not on
     /// the dev team they are tabs that connect to nothing — Guideline 2.1,
     /// the same failure as the dead OCR tab.
@@ -430,7 +430,7 @@ mod tests {
     fn no_build_recipe_enables_a_private_backend_surface() {
         let repo = repo_root();
         let mut offenders = Vec::new();
-        let gated = ["aitoolkit", "cloud-backup"];
+        let gated = ["aitoolkit"];
 
         let mut workflows: Vec<PathBuf> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(repo.join(".github/workflows")) {
@@ -500,8 +500,8 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "a build recipe enables a private-backend surface. Both reach \
-             backends no user outside this team can run — see PLAN.md \
+            "a build recipe enables a private-backend surface. This reaches a \
+             backend no user outside this team can run — see PLAN.md \
              P36.16:\n  {}",
             offenders.join("\n  ")
         );

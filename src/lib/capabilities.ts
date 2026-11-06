@@ -30,7 +30,7 @@ export interface Capabilities {
 	dev_tools: boolean;
 	/** PLAN P36.16 — the AIToolkit panels. Off in shipped builds. */
 	aitoolkit: boolean;
-	/** PLAN P36.16 — cloud-backup (cb-api) sync. Off in shipped builds. */
+	/** Optional cloud-backup-compatible API connector. */
 	cloud_backup: boolean;
 
 	local_llm: boolean;
