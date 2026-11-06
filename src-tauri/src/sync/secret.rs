@@ -78,9 +78,33 @@ pub fn set_token_for_url(url: &str, raw_token: &str) -> Result<(), SecretError> 
     set_token(&entry, raw_token)
 }
 
+/// Resolve a token without contacting a vault when a process-scoped token
+/// or an owner-only token file is supplied.
 pub fn get_token_for_url(url: &str) -> Result<Option<String>, SecretError> {
+    if let Ok(token) = std::env::var("CB_SYNC_API_KEY") {
+        if !token.trim().is_empty() { return Ok(Some(token.trim().to_owned())); }
+    }
+    if let Some(path) = std::env::var_os("CB_SYNC_API_KEY_FILE") {
+        return read_token_file(std::path::Path::new(&path)).map(Some);
+    }
     let entry = entry_for(url)?;
     get_token(&entry)
+}
+
+fn read_token_file(path: &std::path::Path) -> Result<String, SecretError> {
+    let meta = std::fs::metadata(path).map_err(|e| SecretError::Other(format!("token file: {e}")))?;
+    if !meta.is_file() { return Err(SecretError::Other("token path is not a file".into())); }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(SecretError::Other("token file must have owner-only permissions".into()));
+        }
+    }
+    let raw = std::fs::read_to_string(path).map_err(|e| SecretError::Other(format!("token file: {e}")))?;
+    let token = raw.trim();
+    if token.is_empty() { return Err(SecretError::Other("token file is empty".into())); }
+    Ok(token.to_owned())
 }
 
 pub fn clear_token_for_url(url: &str) -> Result<(), SecretError> {
@@ -91,6 +115,21 @@ pub fn clear_token_for_url(url: &str) -> Result<(), SecretError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owner_only_file_is_a_keychain_free_token_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "sample-token\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read_token_file(&path).is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(read_token_file(&path).unwrap(), "sample-token");
+    }
+
     /// One in-memory vault serves the whole test binary, so each case
     /// gets its own account rather than racing on a shared one.
     fn mock_entry(case: &str) -> Entry {

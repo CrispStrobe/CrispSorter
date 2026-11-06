@@ -46,13 +46,13 @@ pub const ANYDOC_ONLY_EXTS: &[&str] = &[
     "xls", "xlsx", "xlsm", "xlsb", //
     // OpenDocument text / spreadsheet / presentation.
     "odt", "ods", "odp", //
-    // Rich Text + e-books.
-    "rtf", "epub",
+    // Rich Text.
+    "rtf",
 ];
 
-/// Extensions anydoc supports that already have a **better** native
-/// extractor. Only reachable via [`AnydocMode::Prefer`].
-pub const ANYDOC_OVERLAP_EXTS: &[&str] = &["pdf", "docx", "csv", "pptx"];
+/// Extensions anydoc supports that have a native extractor. `Prefer`
+/// tries anydoc first; EPUB and PPTX may also use it as a fallback.
+pub const ANYDOC_OVERLAP_EXTS: &[&str] = &["pdf", "docx", "csv", "pptx", "epub"];
 
 /// A conversion shorter than this is treated as a failed parse, so the
 /// caller falls back to the native extractor instead of indexing an empty
@@ -227,7 +227,7 @@ mod tests {
             return; // stub build: will_handle is always false
         }
         assert!(will_handle("odp", AnydocMode::Auto));
-        assert!(will_handle("EPUB", AnydocMode::Auto), "case-insensitive");
+        assert!(!will_handle("EPUB", AnydocMode::Auto), "EPUB has a native reader");
         // Native extractors keep these under Auto — including `.pptx`,
         // which `super::pptx` reads with visual ordering and comments.
         assert!(!will_handle("pdf", AnydocMode::Auto));
@@ -243,6 +243,7 @@ mod tests {
         if !is_available() {
             return;
         }
+        assert!(will_handle("EPUB", AnydocMode::Prefer));
         assert!(will_handle("pdf", AnydocMode::Prefer));
         assert!(will_handle("docx", AnydocMode::Prefer));
         assert!(will_handle("pptx", AnydocMode::Prefer));

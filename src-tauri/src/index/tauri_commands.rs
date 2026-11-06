@@ -3377,12 +3377,12 @@ pub async fn index_promote_cb_archive(
             })
             .map(|e| e.path());
         if let Some(p) = newest {
-            return promote_path(state, doc_id, p, owner, original_path).await;
+            return promote_path(state, doc_id, p, owner, original_path, None).await;
         }
         return Err(format!("restored file not found at {}", restored_path.display()));
     }
 
-    promote_path(state, doc_id, restored_path, owner, original_path).await
+    promote_path(state, doc_id, restored_path, owner, original_path, None).await
     }
 }
 
@@ -3419,6 +3419,7 @@ async fn promote_path(
     restored_path: std::path::PathBuf,
     owner: String,
     original_path: String,
+    location_uri: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use sha2::{Digest, Sha256};
 
@@ -3463,7 +3464,7 @@ async fn promote_path(
         ext: extracted.ext,
         language: String::new(),
         source_hash,
-        location_uri: loc.to_uri(),
+        location_uri: location_uri.unwrap_or_else(|| loc.to_uri()),
         owner_id: owner,
         tags: vec![],
         mtime_unix: bg_meta.as_ref()
@@ -3498,14 +3499,17 @@ async fn promote_path(
         embedding_vit: None,
     };
 
-    // Delete the existing L1 row before re-ingesting.
-    if let Some(local) = state.index.lock().await.local.clone() {
-        let _ = local.delete_doc(&doc_id).await;
-    }
-
+    // Keep the metadata row until extraction and indexing succeed. The
+    // content-derived ID may differ from the original drive-location ID.
+    let indexed_doc_id = crate::index::ingest::doc_id_for(&raw);
     let stats = pipeline.ingest_document(raw).await.map_err(|e| e.to_string())?;
+    if doc_id != indexed_doc_id {
+        if let Some(local) = state.index.lock().await.local.clone() {
+            local.delete_doc(&doc_id).await.map_err(|e| e.to_string())?;
+        }
+    }
     Ok(serde_json::json!({
-        "doc_id": doc_id,
+        "doc_id": indexed_doc_id,
         "chunks": stats.chunk_count,
         "embed_ms": stats.embed_time_ms,
     }))
@@ -3816,6 +3820,9 @@ pub async fn index_promote_drive_archive(
         .ok_or("data_dir not initialised")?;
     let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
     let remote = remote_path.clone();
+    let drive_location = crate::index::location::FileLocation::Drive {
+        drive_id: drive_id.clone(), remote_path: remote_path.clone(),
+    }.to_uri();
     let transfer_queue = state.transfer_queue.clone();
     let transfer = transfer_queue.submit_download(
         drive_id.clone(),
@@ -3839,14 +3846,13 @@ pub async fn index_promote_drive_archive(
         Err(e) => return Err(format!("drive read queue task: {e}")),
     };
 
-    // Stage the file under app_data/drive_retrieve/ so promote_path can
-    // re-read + extract from disk like it does for cb-archive.  We use
-    // the basename verbatim (collisions get overwritten — same file
-    // re-promote is idempotent).
+    // Use a private per-transfer directory to avoid same-name collisions.
+    // Its lifetime covers extraction and indexing and cleans up afterwards.
     let basename = std::path::Path::new(&remote_path).file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| format!("remote path has no basename: {remote_path}"))?;
-    let staged = out_dir.join(&basename);
+    let staging_dir = tempfile::tempdir_in(&out_dir).map_err(|e| format!("create staging directory: {e}"))?;
+    let staged = staging_dir.path().join(&basename);
     tokio::task::spawn_blocking({
         let p = staged.clone();
         let b = bytes;
@@ -3856,10 +3862,8 @@ pub async fn index_promote_drive_archive(
     .map_err(|e| format!("stage join: {e}"))?
     .map_err(|e| format!("stage write: {e}"))?;
 
-    // Reuse the cb-archive promote pipeline: it does dedup, extract,
-    // embed, ingest — and crucially deletes the existing L1 row before
-    // re-inserting at L3 so we don't end up with duplicate doc_ids.
-    promote_path(state, doc_id, staged, owner, remote_path).await
+    // Preserve the registered-drive URI so the result remains retrievable.
+    promote_path(state, doc_id, staged, owner, remote_path, Some(drive_location)).await
 }
 
 // ── Volume helpers ────────────────────────────────────────────────────────────

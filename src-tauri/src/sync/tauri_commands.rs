@@ -1503,9 +1503,9 @@ pub async fn sync_cb_manifest_pull(
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
-    let (local, include_full_text, conflict_policy) = {
+    let (local, fts, include_full_text, conflict_policy) = {
         let idx = state.index.lock().await;
-        (idx.local.clone(), idx.config.cloud_backup_pull_full_text_enabled,
+        (idx.local.clone(), idx.fts.clone(), idx.config.cloud_backup_pull_full_text_enabled,
             idx.config.conflict_policy)
     };
     let local = local.ok_or("Local index not initialised")?;
@@ -1588,7 +1588,9 @@ pub async fn sync_cb_manifest_pull(
                 }
             }
         }
-        let row_id = crate::index::ingest::chunk_row_id(&doc_id, -1);
+        let has_body = r.full_text.as_deref().is_some_and(|s| !s.is_empty());
+        let chunk_index = if has_body { 0 } else { -1 };
+        let row_id = crate::index::ingest::chunk_row_id(&doc_id, chunk_index);
         chunks.push(crate::index::schema::DocumentChunk {
             id: row_id,
             doc_id: doc_id.clone(),
@@ -1614,13 +1616,13 @@ pub async fn sync_cb_manifest_pull(
             embedding: None,
             embedding_sparse: None,
             embedding_model: None,
-            chunk_index: -1,
-            chunk_total: 0,
+            chunk_index,
+            chunk_total: if has_body { 1 } else { 0 },
             chunk_start_char: None,
             chunk_end_char: None,
             indexed_at: now_ms,
             source_hash: r.sha256.clone(),
-            tags: vec![],
+            tags: r.tags.clone(),
             metadata_json: Some(format!(
                 r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
                 r.indexed_at
@@ -1641,7 +1643,7 @@ pub async fn sync_cb_manifest_pull(
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
-            url: None,
+            url: r.url.clone(),
             embedding_omni: None,
             embedding_vit: None,
             summary: None,
@@ -1651,6 +1653,11 @@ pub async fn sync_cb_manifest_pull(
 
     let applied = chunks.len();
     local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+    if chunks.iter().any(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())) {
+        let fts = fts.ok_or("Local full-text index not initialised")?;
+        crate::index::fts_index::index_synced_documents(&fts, &chunks)
+            .map_err(|e| format!("indexing pulled text: {e:#}"))?;
+    }
 
     let new_watermark = pulled.max_indexed_at;
     mgr.set_state("cb_last_manifest_pull_ts", &new_watermark.to_string())

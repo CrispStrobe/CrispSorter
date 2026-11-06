@@ -354,12 +354,10 @@ pub struct IndexConfig {
     pub ingest_image_level: IngestImageLevel,
     /// How far the anydoc office/e-book converter reaches. `auto`
     /// (default) lets it serve only the formats no native extractor
-    /// covers — PowerPoint, spreadsheets, OpenDocument, RTF, EPUB,
-    /// legacy `.doc` — so it can add documents to the index but never
-    /// change how an already-supported file extracts. `prefer` puts it
-    /// ahead of the native pdf/docx/csv extractors; `never` pins the
-    /// pre-anydoc behaviour. Inert unless the `anydoc` feature is
-    /// compiled in.
+    /// covers — PowerPoint, spreadsheets, OpenDocument, RTF and legacy
+    /// `.doc` — and falls back to it if native EPUB extraction fails.
+    /// `prefer` tries it first for supported formats; `never` disables it.
+    /// Inert unless the `anydoc` feature is compiled in.
     #[serde(default)]
     pub anydoc_mode: crate::extractors::AnydocMode,
     /// P13.7 Step 4 — when enabled, the bg_ingest image path

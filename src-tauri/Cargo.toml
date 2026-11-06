@@ -61,6 +61,7 @@ crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features
 # deliberately, after re-running the extractor tests — not via `cargo
 # update`. Off by default; see the `anydoc` feature.
 anydoc           = { version = "=0.1.7", optional = true }
+html2text        = "0.16.7"
 futures          = "0.3"
 
 tauri = { version = "2", features = [] }

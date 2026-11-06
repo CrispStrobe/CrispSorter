@@ -1980,11 +1980,12 @@
                try to save the token — the URL might already be applied. */
         }
         try {
+            const clearing = indexCloudBackupApiKeyInput.trim() === '';
             await invoke('sync_cb_set_token', { token: indexCloudBackupApiKeyInput });
             indexCloudBackupApiKeyInput = '';
-            indexCloudBackupTokenSavedMsg = indexCloudBackupApiKeyInput === ''
+            indexCloudBackupTokenSavedMsg = clearing
                 ? 'Token cleared.'
-                : 'Saved to keychain.';
+                : 'Saved to the selected secret store.';
             await refreshCloudBackupStatus();
         } catch (e: any) {
             indexCloudBackupTokenSavedMsg = `Error: ${e}`;
@@ -4743,7 +4744,7 @@
                             · last push: {indexCloudBackupStatus.last_manifest_push_ts ?? '—'}
                             · last pull: {indexCloudBackupStatus.last_manifest_pull_ts ?? '—'}
                         {:else if indexCloudBackupStatus.configured && !indexCloudBackupStatus.token_present}
-                            ⚠️ URL configured but no API key in keychain — paste one above and Save.
+                            ⚠️ URL configured but no API key in the selected secret store — paste one above and Save.
                         {:else if indexCloudBackupStatus.error}
                             ❌ {indexCloudBackupStatus.error}
                         {/if}

@@ -74,6 +74,28 @@ pub struct IndexFields {
     pub language: Field,
 }
 
+/// Add bodies received from a remote index to the local full-text index.
+/// Commit before advancing the sync watermark so failures are retried.
+pub fn index_synced_documents(fts: &FtsIndex, chunks: &[super::schema::DocumentChunk]) -> Result<usize> {
+    let bodies: Vec<_> = chunks.iter().filter(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())).collect();
+    if bodies.is_empty() { return Ok(0); }
+    let mut writer = fts.writer()?;
+    for c in &bodies {
+        fts.delete_document(&mut writer, &c.doc_id)?;
+        fts.add_document(&mut writer, TantivyInput {
+            doc_id: &c.doc_id,
+            owner_id: &c.owner_id,
+            language: c.language.as_deref().unwrap_or(""),
+            title: c.title.as_deref().unwrap_or(""),
+            headings: c.headings_text.as_deref().unwrap_or(""),
+            body: c.full_text.as_deref().unwrap_or(""),
+            body_translated: c.text_translated.as_deref(),
+        })?;
+    }
+    writer.commit()?;
+    Ok(bodies.len())
+}
+
 pub struct TantivyInput<'a> {
     pub doc_id: &'a str,
     pub owner_id: &'a str,
@@ -356,6 +378,23 @@ mod tests {
         let hits = idx.search("rahner", &SearchFilters::default(), 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].doc_id, "doc1");
+    }
+
+    #[test]
+    fn pulled_bodies_are_searchable_and_replaced_on_retry() {
+        let (idx, _dir) = make_index();
+        let mut chunk: super::super::schema::DocumentChunk = serde_json::from_value(serde_json::json!({
+            "id": "a:0", "doc_id": "a", "location_uri": "https://example.invalid/a",
+            "owner_id": "reader", "full_text": "a rare passage in a saved article",
+            "chunk_index": 0, "chunk_total": 1, "indexed_at": 1,
+            "source_hash": "a", "tags": []
+        })).unwrap();
+        assert_eq!(index_synced_documents(&idx, &[chunk.clone()]).unwrap(), 1);
+        assert_eq!(idx.search("rare", &SearchFilters::default(), 10).unwrap().len(), 1);
+        chunk.full_text = Some("a revised unique passage".into());
+        assert_eq!(index_synced_documents(&idx, &[chunk]).unwrap(), 1);
+        assert_eq!(idx.search("rare", &SearchFilters::default(), 10).unwrap().len(), 0);
+        assert_eq!(idx.search("revised", &SearchFilters::default(), 10).unwrap().len(), 1);
     }
 
     #[test]

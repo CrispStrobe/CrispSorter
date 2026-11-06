@@ -24,10 +24,7 @@
 //! * **HTML** — basic tag-stripping via the regex crate. Lower
 //!   fidelity than scraper but zero new heavy deps.
 //!
-//! Deferred to follow-ups (heavier deps): epub
-//! P30.2: docx now handled via crisp-docx-core (extract + heading inference)
-//! (epub crate), rtf (rtf-grimoire). Once those land, this module
-//! grows new dispatch arms; the public API stays the same.
+//! EPUB has an in-process reader; DOCX uses crisp-docx-core.
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -38,6 +35,7 @@ pub mod audio;
 pub mod clipboard;
 pub mod convert;
 pub mod eml;
+pub mod epub;
 #[cfg(feature = "desktop")]
 pub mod export;
 #[cfg(feature = "desktop")]
@@ -161,7 +159,7 @@ pub fn supported(ext: &str) -> bool {
             // so callers can pre-filter accept lists with `supported`.
             | "html" | "htm"
             // Word documents (crisp-docx-core)
-            | "docx"
+            | "docx" | "epub"
             // PowerPoint — native reader, no feature needed.
             | "pptx"
             // Email formats
@@ -573,9 +571,8 @@ fn source_type_id(name: &str) -> i32 {
 
 /// How far the anydoc converter reaches into the dispatch table.
 ///
-/// The default only lets it serve formats nothing else can read, so
-/// turning the feature on cannot change the output for any file that
-/// already extracted. `Prefer` is the opt-in that puts it ahead of the
+/// The default serves formats nothing else can read and retries EPUBs
+/// when the native reader fails. `Prefer` puts it ahead of the
 /// native PDF / DOCX / CSV extractors — useful when you want Markdown
 /// structure (tables, lists) rather than the flat text those produce,
 /// and willing to give up the OCR ladder and heading inference for it.
@@ -583,7 +580,8 @@ fn source_type_id(name: &str) -> i32 {
 #[serde(rename_all = "kebab-case")]
 pub enum AnydocMode {
     /// anydoc handles only what no native extractor covers: PowerPoint,
-    /// spreadsheets, OpenDocument, RTF, EPUB, legacy `.doc`.
+    /// spreadsheets, OpenDocument, RTF and legacy `.doc`. It also
+    /// serves as a fallback when the native EPUB reader fails.
     #[default]
     Auto,
     /// anydoc gets first refusal on every format it supports, `pdf` /
@@ -591,7 +589,7 @@ pub enum AnydocMode {
     /// fallback whenever the conversion fails or comes back empty.
     Prefer,
     /// Never call anydoc, even for formats that would otherwise be
-    /// unreadable. Restores exactly the pre-anydoc dispatch table.
+    /// unreadable. Native EPUB extraction remains available.
     Never,
 }
 
@@ -1121,6 +1119,22 @@ pub fn extract_text_from_path_with_opts(
         "eml" => eml::extract(path),
         "mbox" => eml::extract_mbox(path),
         "docx" => extract_docx(path, &ext),
+        "epub" => epub::extract(path).or_else(|native_error| {
+            if opts.anydoc != AnydocMode::Never && anydoc_conv::is_available() {
+                eprintln!("[epub] native reader failed ({native_error:#}); trying anydoc");
+                match anydoc_conv::extract(path, &ext) {
+                    Ok(doc) if doc.full_text.trim().chars().count() >= 16 => return Ok(doc),
+                    Ok(_) => eprintln!("[epub] anydoc returned too little text"),
+                    Err(err) => eprintln!("[epub] anydoc failed: {err:#}"),
+                }
+            }
+            // Some malformed books contain a broken spine item alongside
+            // hundreds of readable chapters. Preserve those chapters, but
+            // report the omission instead of pretending it was complete.
+            epub::extract_partial(path).map_err(|partial_error| anyhow::anyhow!(
+                "strict EPUB reader: {native_error:#}; recovery: {partial_error:#}"
+            ))
+        }),
         // `.pptx` has its own reader rather than going through anydoc: it
         // recovers reading order from shape geometry, reads comments, and
         // gives every slide its own heading. anydoc keeps the legacy binary
@@ -1134,7 +1148,7 @@ pub fn extract_text_from_path_with_opts(
             eprintln!("[pptx] native reader failed ({e:#}); trying anydoc");
             anydoc_conv::extract(path, &ext)
         }),
-        // PowerPoint / spreadsheets / OpenDocument / RTF / EPUB / legacy
+        // PowerPoint / spreadsheets / OpenDocument / RTF / legacy
         // `.doc`. Nothing native reads these, so this arm is purely
         // additive — before it, they fell to the `no extractor` arm and
         // were indexed as filesystem metadata only.
@@ -1670,10 +1684,9 @@ mod tests {
         assert!(supported("HTML")); // case-insensitive
         assert!(supported("docx")); // P30.2: now handled via crisp-docx-core
         assert!(!supported("zip"));
-        // Office / e-book formats track the `anydoc` feature: claiming
-        // them on a build that cannot read them would queue files that
-        // every extractor then refuses.
-        assert_eq!(supported("EPUB"), anydoc_conv::is_available());
+        // EPUB has a native reader; other office formats track the
+        // optional anydoc feature.
+        assert!(supported("EPUB"));
         assert_eq!(supported("xlsx"), anydoc_conv::is_available());
         // `.pptx` has a native reader, so it does NOT track the feature.
         assert!(supported("pptx"));
@@ -1719,7 +1732,7 @@ mod tests {
     #[test]
     fn anydoc_never_pins_the_pre_anydoc_dispatch_table() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let p = tmp.path().join("book.epub");
+        let p = tmp.path().join("book.odp");
         std::fs::write(&p, b"stub").unwrap();
         let opts = ExtractOptions {
             anydoc: AnydocMode::Never,

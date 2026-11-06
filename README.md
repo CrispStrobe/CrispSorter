@@ -120,7 +120,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 - **Editable grid** — column visibility, width, sort; inline field editing; metadata edits immediately update the sort destination path
 - **Search index** — optional semantic + full-text search over all sorted documents (local, remote, or hybrid), with optional cross-encoder reranking, sparse retrieval (BGE-M3/SPLADE), and Matryoshka dim truncation
 - **Mountable archive index (`.cidx`)** — export a per-volume slice of the search index as a portable directory (LanceDB + optional Tantivy FTS companion). Ship the archive drive + `.cidx` in the same backup snapshot; CrispSorter mounts it as a read-only "Archiv" tab and full-text search works offline.
-- **cloud-backup integration** ([`../cloud-backup`](https://github.com/CrispStrobe/cloud-backup)): import 482k+ files as L1 metadata in seconds (`index_ingest_cb_manifest`), promote individual files to L3 on demand via `retrieve.py`, reverse-lookup tier availability (Lokal/VPS) in the preview pane, opt-in VPS-side indexing trigger
+- **External backup integration** — optional metadata import and sync for compatible self-hosted servers. The ordinary local index and registered cloud drives do not require a backup server.
 - **cloud-backup HTTP sync** (P13.7 Step 5, complete) — incremental manifest sync over HTTP against the cloud-backup VPS without rsync'ing the SQLite DB.  Adds a small FastAPI module (`../cloud-backup/api/app.py`, deployed via the new `cb-api.service` systemd unit) that exposes `POST /api/manifest/push`, `GET /api/manifest/pull`, `POST /api/index/push-embeddings`, `GET /api/index/by-embedding` against the same catalog database that `vps_worker.py` writes to today.  Bearer auth via a new `api_keys` table (bcrypt-hashed; mint via `python -m api.admin mint <NAME>` on the VPS).  Default per-owner scoping (`CRISP_CB_SHARED_OWNERS=1` env flips into shared-catalog mode).  Client side: `crispsorter sync cloud-backup {status,push-manifest,pull,login,logout}` CLI + Settings → Cloud-backup sync panel.  Token stored in OS keychain under `CrispSorter.CloudBackup`, never in `index_config.json`.  Live-verified against the production VPS (3 env-gated `cb_sync_live_*` tests pass; default test run skips them when `CB_SYNC_TEST_URL`/`CB_SYNC_TEST_API_KEY` env are absent).
 - **cloud-backup TB-scale tier split** (cb-api Stage W) — the remote `cb-api` backend now keeps the SQLite catalog at metadata-only size and routes body text (`full_text`) into per-shard LanceDB on attached object storage.  Toggled per-deployment via `CB_BODY_BACKEND=lance` (default `sqlite` for back-compat).  The CrispSorter wire client (`cloud_backup.rs::ManifestRow` / `ManifestPullResponse` / `SearchHit`) works against both backends with **zero protocol changes** — `crispsorter sync cloud-backup pull --include-full-text` returns identical bytes whether the cb-api stores bodies in SQLite or Lance.  Catalog typically shrinks ~3× on a body-heavy corpus after the migration; extrapolated to 5 TB of PDFs it stays around 3 GB on the block volume.
 - **Source URL + tags as first-class metadata** (v106 / v107) — read-later exports, web-archive captures, and YAML-headered markdown carry an `url:` and `tags: [...]` in their frontmatter; the markdown extractor lifts both into `DocumentChunk.url` (Arrow Utf8) and `DocumentChunk.tags` (Arrow `List<Utf8>`).  PDF extractor lifts a source URL from lopdf's Info dict / XMP `<dc:source>` when present.  Both round-trip through cb-api sync (no protocol change beyond optional fields with `#[serde(default)]`).  Local CLI: `--url-domain spiegel.de` on `index search` filters via LanceDB scalar SQL.  Federated path: `crispsorter sync cloud-backup hybrid-search --url-domain spiegel.de --tag pocket-import` pushes both filters into cb-api's `/api/v2/index/search`; the URL filter becomes `url LIKE '%spiegel.de%'`, the tag filter becomes `array_has(tags, 'pocket-import')`.  Both surface on every hit so the UI can render the original-source link + tag chips without a second round-trip.
@@ -307,7 +307,7 @@ crispsorter index list-failed --retryable-only
 crispsorter index retry-failed [--dry-run]
 crispsorter index export-cidx my-archive.cidx --include-fts
 crispsorter index inspect-cidx my-archive.cidx
-crispsorter index ingest-cb-manifest cloud-backup.db   # bulk import 482 k file metadata
+crispsorter index ingest-cb-manifest backup-manifest.db # import file metadata only
 
 crispsorter batch add ~/Downloads/papers/              # enqueue for the GUI
 crispsorter batch list
@@ -378,6 +378,42 @@ In Hybrid mode, writes go to the local cache and queue to a SQLite **sync outbox
 ---
 
 ## Search index
+
+CrispSorter can index files directly; no separate backup repository or server is
+required. In **Settings → Search Index**, enable the local index and choose an
+embedding model. Add an existing folder through the index ingest view, or use:
+
+```bash
+crispsorter index init --model multilingual-e5-small --device cpu
+crispsorter index ingest --model multilingual-e5-small /path/to/documents
+crispsorter index search "search terms"
+crispsorter index stats
+```
+
+The model must match when indexing and searching vectors. Extraction failures
+and image-only PDFs may need a different parser or OCR; check ingest results and
+failed files. A backup manifest alone contains metadata, not the body text or
+vectors. If the original files are still present, index that folder directly.
+Otherwise restore the files first, or register a supported cloud drive, scan it
+in the index ingest view and promote selected files to extract and embed them.
+An encrypted archive is a single file to a cloud drive until its contents are
+restored; scanning it does not index its members.
+
+For saved articles, import exported article files such as Markdown or HTML into
+that local index. Exported URLs and tags in supported Markdown frontmatter can
+be retained. CrispSorter's optional cloud-backup integration is off in standard
+release builds; it is for operators who already have a compatible server, not a
+service ordinary users must install. Importing metadata and full article bodies
+from such a server are separate choices; remote full-text search requires a
+reachable, authenticated server.
+
+In **Settings → Secret storage**, users can choose an encrypted file vault or
+session-only storage instead of the OS keychain; an existing named macOS
+keychain can also be selected. For headless compatible-server clients,
+`CB_SYNC_API_KEY` or `CB_SYNC_API_KEY_FILE` supplies the token without opening
+any vault. On Unix the token file must be accessible only to its owner. A
+device-keyed file vault does not require a password, but its key is stored on the
+same device; a passphrase vault offers stronger protection against file copies.
 
 CrispSorter can build a searchable index of your sorted documents — combining BM25 full-text search (Tantivy) with dense vector search (LanceDB) fused via Reciprocal Rank Fusion (RRF). This lets you ask natural-language questions across your entire library.
 
@@ -465,7 +501,7 @@ The full-text component of every search mode supports the following syntax:
 | DOCX | mammoth plain-text | `mammoth.convertToMarkdown` |
 | TXT | direct | — |
 | MD / Markdown | direct | `#`/`##`/`###` headings parsed |
-| EPUB | epub-parser text | — |
+| EPUB | native EPUB reader, with recovery for damaged reading-order references | — |
 | PPTX | native reader → GFM | one heading per slide (title or number) |
 | XLSX / ODT / ODS / ODP / RTF / DOC | anydoc → GFM | `#` headings parsed from the conversion |
 
@@ -473,10 +509,11 @@ Headings extracted from DOCX/MD/PDF are stored in the index and boost search rel
 
 #### Office and e-book conversion (`--features anydoc`)
 
-Formats that had no native extractor — PowerPoint, spreadsheets, OpenDocument,
-RTF, EPUB and legacy `.doc` — go through [anydoc](https://github.com/firecrawl/anydoc),
-a pure-Rust converter. No model, no subprocess, no network, so it works in the
-sandboxed App Store build too.
+Formats without a native extractor — older PowerPoint, spreadsheets,
+OpenDocument, RTF and legacy `.doc` — go through [anydoc](https://github.com/firecrawl/anydoc),
+a pure-Rust converter when that optional feature is enabled. EPUB has a
+native reader and can fall back to anydoc when available. Both run without a
+subprocess or network.
 
 ```bash
 crispsorter convert budget.xlsx --out budget.md    # → file (GFM tables)

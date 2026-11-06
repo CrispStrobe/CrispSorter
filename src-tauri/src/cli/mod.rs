@@ -3159,7 +3159,7 @@ enum IndexCmd {
         ocr_min_chars: usize,
         /// How far the office/e-book converter reaches. `auto` (default)
         /// gives it only the formats no other extractor covers —
-        /// PowerPoint, spreadsheets, OpenDocument, RTF, EPUB, legacy
+        /// PowerPoint, spreadsheets, OpenDocument, RTF, legacy
         /// `.doc`. `prefer` also puts it ahead of the native PDF, DOCX and
         /// CSV extractors, trading their OCR ladder and heading inference
         /// for Markdown structure. `never` pins the pre-anydoc behaviour.
@@ -6888,11 +6888,15 @@ async fn cmd_sync_cloud_backup(
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                     .unwrap_or(serde_json::Value::Null);
                 let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0);
-                let fs_mtime = meta.get("fs_mtime").and_then(|v| v.as_f64())
-                    .or_else(|| meta.get("fs_mtime").and_then(|v| v.as_i64()).map(|i| i as f64))
+                let fs_mtime = meta.get("mtime_unix").and_then(|v| v.as_f64())
+                    .or_else(|| meta.get("fs_mtime").and_then(|v| v.as_f64()).map(|m| m / 1000.0))
                     .unwrap_or(0.0);
-                let path = meta.get("fs_path").and_then(|v| v.as_str()).map(|s| s.to_string())
-                    .unwrap_or_else(|| c.location_uri.clone());
+                let local_path = meta.get("fs_path").and_then(|v| v.as_str()).map(str::to_owned)
+                    .or_else(|| match crate::index::FileLocation::from_uri(&c.location_uri) {
+                        Ok(crate::index::FileLocation::Local { path, .. }) => Some(path.to_string_lossy().into_owned()),
+                        _ => None,
+                    });
+                let path = local_path.clone().unwrap_or_else(|| c.location_uri.clone());
                 max_ts = max_ts.max(c.indexed_at);
                 rows.push(ManifestRow {
                     path,
@@ -6914,7 +6918,7 @@ async fn cmd_sync_cloud_backup(
                     tags: vec![],
                 });
                 if delta {
-                    if let Some(path) = meta.get("fs_path").and_then(|v| v.as_str()) {
+                    if let Some(path) = local_path.as_deref() {
                         if let Ok(uploaded) = push_delta_file(&client, std::path::Path::new(path), &c.source_hash).await {
                             delta_files += 1;
                             delta_blocks += uploaded;
@@ -7169,51 +7173,11 @@ async fn cmd_sync_cloud_backup(
             let applied = chunks.len();
             local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
 
-            // v107 follow-up — also write each L1 chunk's metadata +
-            // body into Tantivy so `crispsorter index search`
-            // returns these rows offline.  Without this, pulled
-            // wallabag rows live in LanceDB but the local search
-            // verb errors with "FTS index not found" because the
-            // hybrid path expects L3 chunks from the extract-and-
-            // embed pipeline.  Soft-fails so a pull doesn't break
-            // when the FTS dir is unwritable for some reason.
-            let fts_dir = data_dir.join("fts");
-            if let Ok(fts) = crate::index::FtsIndex::open_or_create(&fts_dir) {
-                if let Ok(mut writer) = fts.writer() {
-                    let mut wrote = 0usize;
-                    for c in &chunks {
-                        let body = c.full_text.as_deref().unwrap_or("");
-                        if body.is_empty() {
-                            continue;
-                        }
-                        let title = c.title.as_deref().unwrap_or("");
-                        let language = c.language.as_deref().unwrap_or("");
-                        let owner = c.owner_id.as_str();
-                        let heading_join = c.headings_text.as_deref().unwrap_or("");
-                        // Delete any prior entry for this doc_id so
-                        // re-pulls don't double-index.  Soft-fail.
-                        let _ = fts.delete_document(&mut writer, &c.doc_id);
-                        if fts.add_document(
-                            &mut writer,
-                            crate::index::fts_index::TantivyInput {
-                                doc_id: &c.doc_id,
-                                owner_id: owner,
-                                language,
-                                title,
-                                headings: heading_join,
-                                body,
-                                body_translated: c.text_translated.as_deref(),
-                            },
-                        ).is_ok() {
-                            wrote += 1;
-                        }
-                    }
-                    if let Err(e) = writer.commit() {
-                        eprintln!("[sync] FTS commit failed: {e}");
-                    } else if wrote > 0 {
-                        eprintln!("[sync] indexed {wrote} L1 row(s) into local Tantivy");
-                    }
-                }
+            if chunks.iter().any(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())) {
+                let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                    .map_err(|e| format!("opening local full-text index: {e:#}"))?;
+                crate::index::fts_index::index_synced_documents(&fts, &chunks)
+                    .map_err(|e| format!("indexing pulled text: {e:#}"))?;
             }
 
             mgr.set_state("cb_last_manifest_pull_ts", &resp.max_indexed_at.to_string())

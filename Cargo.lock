@@ -2362,11 +2362,13 @@ dependencies = [
 
 [[package]]
 name = "crispsorter"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anydoc",
  "anyhow",
  "arboard",
+ "argon2",
  "arrow",
  "arrow-array",
  "arrow-schema",
@@ -2399,6 +2401,7 @@ dependencies = [
  "hex",
  "hf-hub",
  "hound",
+ "html2text",
  "image",
  "image_hasher",
  "jwalk",
@@ -2428,6 +2431,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rten",
  "rusqlite",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sha1 0.10.6",
@@ -2453,6 +2457,7 @@ dependencies = [
  "usls",
  "uuid 1.23.3",
  "walkdir",
+ "zeroize",
  "zip 7.2.0",
  "zpdf",
  "zpdf-writer",

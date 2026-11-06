@@ -1499,35 +1499,67 @@ impl LocalIndex {
 
     /// P13.7 Stage A — list documents in a shape suitable for
     /// pushing to cloud-backup over HTTP.  Returns one row per
-    /// document (chunk_index <= 0) with the body text included.
+    /// document (chunk_index <= 0) with all indexed body chunks included.
     ///
-    /// Push-down filter: `chunk_index <= 0`.  The `indexed_at >
-    /// since_ts` watermark is applied client-side after the fetch
-    /// because LanceDB stores `indexed_at` as Timestamp(ms) and
-    /// DataFusion doesn't coerce an Int64 literal against it
-    /// transparently.  Caller passes `limit * 2` worst-case to
-    /// allow for the post-filter; we still return at most `limit`.
+    /// Scan newer rows in timestamp order, so the watermark cannot skip
+    /// older unseen rows. Refuse a page boundary inside a timestamp tie.
     pub async fn list_documents_for_push(
         &self,
         since_ts: i64,
         limit: usize,
     ) -> Result<Vec<ManifestPushCandidate>> {
-        // Over-fetch by 4× so a recent batch where only the tail
-        // is above the watermark still saturates the limit.
-        let fetch_n = limit.saturating_mul(4).max(limit);
-        let batches: Vec<RecordBatch> = self
-            .table
-            .query()
-            .only_if("chunk_index <= 0")
-            .limit(fetch_n)
-            .execute()
-            .await?
-            .try_collect()
-            .await?;
+        let batches = self.scan_recent_for_push(
+            "chunk_index <= 0", since_ts, limit,
+            &["doc_id", "location_uri", "owner_id", "filename", "title", "author",
+              "year", "ext", "language", "source_hash", "parent_dir", "full_text",
+              "indexed_at", "metadata_json"],
+        ).await?;
         let mut out = record_batches_to_push_candidates(&batches)?;
-        out.retain(|c| c.indexed_at > since_ts);
         if out.len() > limit {
+            if limit == 0 || out[limit - 1].indexed_at == out[limit].indexed_at {
+                anyhow::bail!("push page splits rows with the same timestamp; increase the limit");
+            }
             out.truncate(limit);
+        }
+        if !out.is_empty() {
+            // The representative row contains only chunk zero.  Sending it
+            // as the document body silently drops the rest of long files.
+            // Fetch the selected documents' chunks in one query, then join
+            // them in order without mixing owners or locations.
+            let ids = out.iter().map(|c| format!("'{}'", c.doc_id.replace('\'', "''")))
+                .collect::<Vec<_>>().join(",");
+            let predicate = format!("doc_id IN ({ids}) AND chunk_index >= 0");
+            let chunks: Vec<RecordBatch> = self.table.query()
+                .only_if(&predicate)
+                .select(lancedb::query::Select::Columns(vec![
+                    "doc_id".into(), "owner_id".into(), "location_uri".into(),
+                    "chunk_index".into(), "full_text".into(),
+                ]))
+                .execute().await?.try_collect().await?;
+            let mut by_doc: std::collections::HashMap<(String, String, String), Vec<(i32, String)>> =
+                std::collections::HashMap::new();
+            for batch in &chunks {
+                let ids = str_col(batch, "doc_id")?;
+                let owners = str_col(batch, "owner_id")?;
+                let locations = str_col(batch, "location_uri")?;
+                let indexes = i32_col_opt(batch, "chunk_index")
+                    .ok_or_else(|| anyhow!("missing chunk_index"))?;
+                let texts = str_col_opt(batch, "full_text");
+                for i in 0..batch.num_rows() {
+                    if indexes.is_null(i) { continue; }
+                    if let Some(text) = str_col_val_opt(&texts, i) {
+                        by_doc.entry((str_val(ids, i), str_val(owners, i), str_val(locations, i)))
+                            .or_default().push((indexes.value(i), text));
+                    }
+                }
+            }
+            for candidate in &mut out {
+                let key = (candidate.doc_id.clone(), candidate.owner_id.clone(), candidate.location_uri.clone());
+                if let Some(mut parts) = by_doc.remove(&key) {
+                    parts.sort_by_key(|(index, _)| *index);
+                    candidate.full_text = Some(parts.into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n"));
+                }
+            }
         }
         Ok(out)
     }
@@ -1543,22 +1575,36 @@ impl LocalIndex {
         since_ts: i64,
         limit: usize,
     ) -> Result<Vec<EmbeddingPushCandidate>> {
-        let fetch_n = limit.saturating_mul(4).max(limit);
-        let batches: Vec<RecordBatch> = self
-            .table
-            .query()
-            .only_if("chunk_index >= 0 AND embedding IS NOT NULL")
-            .limit(fetch_n)
-            .execute()
-            .await?
-            .try_collect()
-            .await?;
+        let batches = self.scan_recent_for_push(
+            "chunk_index >= 0 AND embedding IS NOT NULL", since_ts, limit,
+            &["doc_id", "chunk_index", "embedding_model", "embedding_sparse", "indexed_at", "embedding"],
+        ).await?;
         let mut out = record_batches_to_embedding_candidates(&batches)?;
-        out.retain(|c| c.indexed_at > since_ts);
         if out.len() > limit {
+            if limit == 0 || out[limit - 1].indexed_at == out[limit].indexed_at {
+                anyhow::bail!("embedding page splits rows with the same timestamp; increase the limit");
+            }
             out.truncate(limit);
         }
         Ok(out)
+    }
+
+    /// Ordered server-side scan with one extra row to detect cursor ties.
+    async fn scan_recent_for_push(
+        &self, filter: &str, since_ts: i64, limit: usize, columns: &[&str],
+    ) -> Result<Vec<RecordBatch>> {
+        use lance::dataset::scanner::ColumnOrdering;
+        let mut scanner = {
+            let guard = self.table.dataset()
+                .ok_or_else(|| anyhow!("local index: not a native LanceDB table"))?
+                .get().await.context("acquiring lance dataset read guard")?;
+            guard.scan()
+        };
+        scanner.filter(&format!("({filter}) AND indexed_at > to_timestamp_millis({since_ts})"))?;
+        scanner.order_by(Some(vec![ColumnOrdering::asc_nulls_last("indexed_at".to_owned())]))?;
+        scanner.limit(Some(limit.saturating_add(1).min(i64::MAX as usize) as i64), None)?;
+        scanner.project(columns)?;
+        Ok(scanner.try_into_stream().await?.try_collect().await?)
     }
 
     /// PLAN P9 step 1 — paginated, filterable, sortable browse of the
@@ -3962,9 +4008,8 @@ mod push_candidate_tests {
             mk("a", -1, 100, Some("body a"), None, None),
             // L3 chunk-zero — included.
             mk("b",  0, 200, Some("body b"), Some(vec![1.0, 0.0, 0.0, 0.0]), Some("m")),
-            // L3 chunk-one — excluded by the chunk_index <= 0 filter
-            // (push only takes one representative row per doc).
-            mk("b",  1, 200, Some("body b"), Some(vec![0.0, 1.0, 0.0, 0.0]), Some("m")),
+            // L3 chunk-one contributes to the same document's body.
+            mk("b",  1, 200, Some("later passage"), Some(vec![0.0, 1.0, 0.0, 0.0]), Some("m")),
         ]).await.unwrap();
 
         let cand = local.list_documents_for_push(0, 100).await.unwrap();
@@ -3977,7 +4022,23 @@ mod push_candidate_tests {
         let cand = local.list_documents_for_push(150, 100).await.unwrap();
         let ids: Vec<&str> = cand.iter().map(|c| c.doc_id.as_str()).collect();
         assert_eq!(ids, vec!["b"]);
-        assert_eq!(cand[0].full_text.as_deref(), Some("body b"));
+        assert_eq!(cand[0].full_text.as_deref(), Some("body b\nlater passage"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_scan_orders_rows_and_rejects_split_timestamps() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        local.ingest_batch(&[
+            mk("new", 0, 300, Some("new"), None, None),
+            mk("old", 0, 100, Some("old"), None, None),
+            mk("mid", 0, 200, Some("mid"), None, None),
+        ]).await.unwrap();
+        let first = local.list_documents_for_push(0, 2).await.unwrap();
+        assert_eq!(first.iter().map(|c| c.indexed_at).collect::<Vec<_>>(), vec![100, 200]);
+        assert_eq!(local.list_documents_for_push(200, 1).await.unwrap()[0].doc_id, "new");
+        local.ingest_batch(&[mk("tie", 0, 200, Some("tie"), None, None)]).await.unwrap();
+        assert!(local.list_documents_for_push(0, 2).await.is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]
