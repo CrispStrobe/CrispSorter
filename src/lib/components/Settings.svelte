@@ -103,6 +103,7 @@
     import { listen } from '@tauri-apps/api/event';
     import AutomationPanel from './AutomationPanel.svelte';
     import SyncPairPanel from './SyncPairPanel.svelte';
+    import WallabagImport from './WallabagImport.svelte';
     import { fetch } from '@tauri-apps/plugin-http';
     import { loadWebLLM, unloadWebLLM, getWebLLMLoadedModel, WEBLLM_MODELS } from '../llm/webllm';
     import type { InitProgressReport } from '@mlc-ai/web-llm';
@@ -3932,6 +3933,7 @@
             <p style="color:#a1a1aa; font-size:0.85rem; margin-bottom:16px;">{i18n.t.settings.index.hint}</p>
 
             <SyncPairPanel />
+            <WallabagImport />
 
             <!-- Enable toggle -->
             <div class="section-card">

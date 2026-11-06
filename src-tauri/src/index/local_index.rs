@@ -1256,6 +1256,22 @@ impl LocalIndex {
         Err(anyhow!("Document not found: {}", doc_id))
     }
 
+    /// Read a complete stored article body. Wallabag imports store the complete
+    /// plain text here even when vector indexing splits full_text into chunks.
+    pub async fn fetch_article_text(&self, doc_id: &str) -> Result<String> {
+        use lancedb::query::Select;
+        let filter = format!("doc_id = '{}' AND chunk_index = 0", doc_id.replace('\'', "''"));
+        let batches: Vec<RecordBatch> = self.table.query().only_if(filter)
+            .select(Select::Columns(vec!["full_text_md".to_owned()])).limit(1)
+            .execute().await?.try_collect().await?;
+        for batch in &batches {
+            if let Some(arr) = batch.column_by_name("full_text_md").and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>()) {
+                if !arr.is_empty() && !arr.is_null(0) { return Ok(arr.value(0).to_owned()); }
+            }
+        }
+        Err(anyhow!("Article text is unavailable"))
+    }
+
     /// P24.3 helper — fetch the tags column for all documents.
     pub async fn query_tags_for_graph(&self) -> Result<Vec<RecordBatch>> {
         use lancedb::query::Select;

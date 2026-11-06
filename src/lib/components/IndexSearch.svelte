@@ -573,6 +573,20 @@
         translations = new Map();
     }
 
+    let wallabagBodies = $state<Map<string, string>>(new Map());
+    let wallabagReading = $state<string | null>(null);
+    async function readWallabag(r: SearchResult) {
+        if (wallabagBodies.has(r.doc_id)) {
+            const next = new Map(wallabagBodies); next.delete(r.doc_id); wallabagBodies = next; return;
+        }
+        wallabagReading = r.doc_id;
+        try {
+            const body = await invoke<string>('wallabag_read', { docId: r.doc_id });
+            const next = new Map(wallabagBodies); next.set(r.doc_id, body); wallabagBodies = next;
+        } catch (e) { error = `Could not read article: ${String(e)}`; }
+        finally { wallabagReading = null; }
+    }
+
     // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
     // Right-side slide-in pane using the universal DocumentViewer component.
     // Format detection + rendering is handled entirely by the viewer.
@@ -1058,6 +1072,10 @@
     }
 
     async function openFile(uri: string) {
+        if (uri.startsWith('https://') || uri.startsWith('http://')) {
+            await openOriginal(uri);
+            return;
+        }
         // uri may be: absolute path, crisp+local://... URI, or similar
         let path = uri;
         // Strip crisp+local:// scheme — everything after the scheme+authority is the path
@@ -1880,6 +1898,10 @@
                                     {#if promoteBusy === r.doc_id}<Loader2 size={13} class="spin" />{:else}L3{/if}
                                 </button>
                             {/if}
+                            {#if r.filename?.startsWith('wallabag-') && r.filename?.endsWith('.html')}
+                                <button class="open-btn" disabled={wallabagReading === r.doc_id}
+                                    onclick={(e) => { e.stopPropagation(); void readWallabag(r); }} title="Read indexed article">Read</button>
+                            {/if}
                             {#if r.url}
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); openOriginal(r.url!); }}
@@ -1923,6 +1945,10 @@
                         </div>
                     {:else}
                         <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
+                    {/if}
+
+                    {#if wallabagBodies.has(r.doc_id)}
+                        <details open><summary>Indexed article</summary><pre class="indexed-body">{wallabagBodies.get(r.doc_id)}</pre></details>
                     {/if}
 
                     <!-- P13.5 on-demand translation surface.  Renders three

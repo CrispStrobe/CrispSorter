@@ -968,3 +968,24 @@ and verifies `inspect-cidx` reports the right counts.
 ## License
 
 **AGPL-3.0** — see [LICENSE](LICENSE).
+
+### Search your Wallabag articles
+
+CrispSorter can import a Wallabag account directly into its local search index;
+cloud-backup and a VPS are not required. Enable and initialise **Settings →
+Search Index**, and switch vector embeddings off if you only need keyword
+search. Under **Wallabag**, enter your HTTPS instance URL, username and password,
+and the client ID and secret from an API client created in Wallabag's Developer
+settings, then select **Import Wallabag articles**. Credentials are held in
+memory by default. Optional save/load buttons use the secret store selected in
+Settings, including its session and encrypted-file options; no store is
+accessed automatically. HTTP is accepted only for localhost.
+
+Search locally by article title or full text; results include tags (including `wallabag:archived` and `wallabag:starred`
+when applicable), a link to
+the original article, and a **Read** button for the saved text. Run the import
+again to fetch additions and changes. It scans all pages and skips unchanged
+articles already present in the index. The import is read-only: articles
+removed from Wallabag are not automatically removed locally. The account is not
+continuously synchronised, and each run requires credentials to be entered or explicitly loaded again. Large
+libraries take longer when vector embeddings are enabled.

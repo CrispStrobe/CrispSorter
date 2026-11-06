@@ -40,6 +40,7 @@ pub mod translate;
 #[cfg(feature = "desktop")]
 pub mod tts;
 pub mod volume;
+pub mod wallabag;
 #[cfg(feature = "desktop")]
 pub mod watcher;
 
@@ -3323,6 +3324,8 @@ pub fn run() {
             index::tauri_commands::index_search_by_image,
             index::tauri_commands::index_token_highlight,
             index::translate_commands::translate_text,
+            wallabag::wallabag_sync,
+            wallabag::wallabag_read,
             index::tauri_commands::index_ingest_document,
             index::tauri_commands::index_ingest_batch,
             index::tauri_commands::index_ingest_l1,
@@ -3745,6 +3748,8 @@ pub fn run() {
             index::tauri_commands::index_search_by_image,
             index::tauri_commands::index_token_highlight,
             index::translate_commands::translate_text,
+            wallabag::wallabag_sync,
+            wallabag::wallabag_read,
             index::tauri_commands::index_ingest_document,
             index::tauri_commands::index_ingest_batch,
             index::tauri_commands::index_ingest_l1,
