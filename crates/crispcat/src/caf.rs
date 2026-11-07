@@ -1,9 +1,8 @@
 //! Reader/writer for the classic Cathy `.caf` (Catalog File) format.
 //!
-//! Backwards-compatible with versions 1 through 8. Round-trips byte-
-//! identically with Catfish (Python) and the original Cathy.exe (C++)
-//! for the v8 case the writer emits; legacy versions 1-7 are
-//! read-only.
+//! Reads versions 1 through 8 and writes v6 or v8. Round trips preserve
+//! supported metadata; entry ordering and reconstructed directory IDs need
+//! not be byte-identical. v7/v8 file sizes include genuine zero-byte files.
 //!
 //! ## Format reference
 //!
@@ -424,10 +423,11 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
             if let Some(parent_path) = dir_path_map.get(pid) {
                 let mut p = parent_path.clone();
                 p.push(name);
-                // v <= 6 stored no per-file size; clamp to 1 so the
-                // size_index bucket still works, matching Catfish.
+                // v7/v8 store an exact nonnegative file size. Zero is a real
+                // size, not a missing-value sentinel. Keep the established
+                // v1-v6 zero-size fallback separate for legacy compatibility.
                 let actual_size = if version > 6 {
-                    (*size as u64).max(1)
+                    *size as u64
                 } else if *size == 0 {
                     1024
                 } else {
@@ -730,6 +730,68 @@ mod tests {
         assert_eq!(got, want);
         // Save version is v8 by default for fresh indexes.
         assert_eq!(loaded.save_version, 8);
+    }
+
+    #[test]
+    fn zero_byte_files_round_trip_with_full_paths_and_size_buckets() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("zero.caf");
+        let root = tmp.path().join("source");
+        let mut index = FileIndex::new(root.clone(), cfg!(windows));
+        for (relative, size) in [("empty.txt", 0), ("a/b/empty.txt", 0), ("a/data", 7)] {
+            index.add(FileEntry::new(root.join(relative), size, 1_700_000_000));
+        }
+        write_file(&path, &index, 1_700_000_001).unwrap();
+        let loaded = read_file(&path).unwrap();
+        let mut expected: Vec<_> = index.all_files.iter()
+            .map(|entry| (&entry.path, entry.size, entry.mtime)).collect();
+        let mut actual: Vec<_> = loaded.all_files.iter()
+            .map(|entry| (&entry.path, entry.size, entry.mtime)).collect();
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+        assert_eq!(loaded.by_size(0).count(), 2);
+        assert_eq!(loaded.total_size(), 7);
+        assert_eq!(read_metadata(&path).unwrap().total_size, 7);
+    }
+
+    #[test]
+    fn v7_zero_size_is_exact_and_v6_legacy_fallback_is_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        // A small hand-written fixture exercises the v7 reader independently
+        // of our writer, which intentionally only emits v6 and v8.
+        for (version, expected_size) in [(6, 1024), (7, 0)] {
+            let path = tmp.path().join(format!("v{version}.caf"));
+            let mut bytes = Vec::new();
+            write_u32_le(&mut bytes, 3 * UL_MODUS + UL_MAGIC_BASE).unwrap();
+            write_i16_le(&mut bytes, version).unwrap();
+            write_u32_le(&mut bytes, 1_700_000_000).unwrap();
+            write_cstr_latin1(&mut bytes, "/catalog-root").unwrap();
+            write_cstr_latin1(&mut bytes, "fixture").unwrap();
+            write_cstr_latin1(&mut bytes, "").unwrap();
+            write_u32_le(&mut bytes, 0).unwrap();
+            write_cstr_latin1(&mut bytes, "").unwrap();
+            write_f32_le(&mut bytes, 0.0).unwrap();
+            write_i16_le(&mut bytes, 0).unwrap();
+            write_i32_le(&mut bytes, 1).unwrap();
+            write_cstr_latin1(&mut bytes, "").unwrap();
+            write_i32_le(&mut bytes, 1).unwrap();
+            write_f64_le(&mut bytes, 0.0).unwrap();
+            write_i32_le(&mut bytes, 1).unwrap();
+            write_u32_le(&mut bytes, 1_700_000_000).unwrap();
+            if version <= 6 {
+                write_i32_le(&mut bytes, 0).unwrap();
+            } else {
+                write_i64_le(&mut bytes, 0).unwrap();
+            }
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            write_cstr_latin1(&mut bytes, "empty.txt").unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            let loaded = read_file(&path).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded.all_files[0].size, expected_size);
+            assert_eq!(loaded.all_files[0].path, PathBuf::from("/catalog-root/empty.txt"));
+        }
     }
 
     #[test]
