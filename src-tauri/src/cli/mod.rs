@@ -2090,6 +2090,9 @@ enum CatalogCmd {
         /// Skip files larger than this many bytes.
         #[arg(long)]
         max_size: Option<u64>,
+        /// Save successfully observed files despite scan errors; retain the JSON report.
+        #[arg(long)]
+        allow_partial: bool,
     },
     /// Read a .caf file's header-only metadata.
     Info {
@@ -2210,8 +2213,8 @@ fn run_on_current_stack() -> ExitCode {
         Command::Version => cmd_version(cli.format),
         Command::Doctor => cmd_doctor(cli.format),
         Command::Catalog { cmd } => match cmd {
-            CatalogCmd::Scan { folder, out, hash, max_size } => {
-                cmd_catalog_scan(cli.format, folder, out, hash, max_size)
+            CatalogCmd::Scan { folder, out, hash, max_size, allow_partial } => {
+                cmd_catalog_scan(cli.format, folder, out, hash, max_size, allow_partial)
             }
             CatalogCmd::Info { path } => cmd_catalog_info(cli.format, path),
             CatalogCmd::Browse { path, filter, limit } => {
@@ -2797,19 +2800,20 @@ fn cmd_catalog_scan(
     out_path: Option<PathBuf>,
     hash: Option<String>,
     max_size: Option<u64>,
+    allow_partial: bool,
 ) -> Result<(), String> {
     let opts = crate::catalog::scan::ScanOptions {
-        hash: hash.as_deref().and_then(|s| match s.to_ascii_lowercase().as_str() {
-            "md5" => Some(crate::catalog::scan::HashAlgo::Md5),
-            "sha1" => Some(crate::catalog::scan::HashAlgo::Sha1),
-            "sha256" => Some(crate::catalog::scan::HashAlgo::Sha256),
-            _ => None,
-        }),
+        hash: hash.as_deref().map(str::parse::<crate::catalog::scan::HashAlgo>).transpose()?,
         max_size_bytes: max_size,
         follow_symlinks: false,
     };
     eprintln!("scanning {}…", folder.display());
-    let idx = crate::catalog::scan::scan_dir(&folder, opts).map_err(|e| e.to_string())?;
+    let report = crate::catalog::scan::scan_dir_with_report(&folder, opts).map_err(|e| e.to_string())?;
+    if let Err(error) = report.require_complete() {
+        if !allow_partial { return Err(error.to_string()); }
+        eprintln!("warning: {error}; CAF does not store these diagnostics; retain the JSON report");
+    }
+    let idx = &report.index;
     let out_caf = out_path.unwrap_or_else(|| {
         let leaf = folder
             .file_name()
@@ -2817,7 +2821,7 @@ fn cmd_catalog_scan(
             .unwrap_or_else(|| "catalog".into());
         PathBuf::from(format!("{leaf}.caf"))
     });
-    crate::catalog::caf::write_file(&out_caf, &idx, crate::catalog::caf::unix_now())
+    crate::catalog::caf::write_file(&out_caf, idx, crate::catalog::caf::unix_now())
         .map_err(|e| e.to_string())?;
     match out {
         OutFormat::Json => {
@@ -2826,6 +2830,13 @@ fn cmd_catalog_scan(
                 "out": out_caf.display().to_string(),
                 "files": idx.len(),
                 "total_size_bytes": idx.total_size(),
+                "complete": report.is_complete(),
+                "issue_count": report.issue_count(),
+                "issues": report.issues,
+                "suppressed_issues": report.suppressed_issues,
+                "skipped_symlinks": report.skipped_symlinks,
+                "skipped_special_entries": report.skipped_special_entries,
+                "excluded_by_size": report.excluded_by_size,
             });
             println!("{}", payload);
         }

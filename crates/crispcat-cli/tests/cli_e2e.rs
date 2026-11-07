@@ -50,6 +50,9 @@ fn scan_then_info_round_trips() {
     let payload: serde_json::Value = serde_json::from_str(stdout.trim())
         .expect("scan stdout must be valid JSON");
     assert_eq!(payload["files"].as_i64().unwrap(), 4, "scanned file count mismatch");
+    assert_eq!(payload["complete"], true);
+    assert_eq!(payload["issue_count"], 0);
+    assert_eq!(payload["issues"], serde_json::json!([]));
     assert!(caf_path.exists(), ".caf file must be created");
 
     // Now info on the same .caf — must read back the same count.
@@ -193,4 +196,73 @@ fn scan_skips_max_size_files() {
     assert!(out.status.success());
     let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(payload["files"].as_i64().unwrap(), 1, "10 KB file should be excluded");
+    assert_eq!(payload["excluded_by_size"], 1);
+    assert_eq!(payload["complete"], true);
+}
+
+#[test]
+fn invalid_root_and_unknown_hash_leave_existing_output_untouched() {
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let caf = out.path().join("existing.caf");
+    std::fs::write(&caf, b"existing catalog bytes").unwrap();
+    let missing = src.path().join("missing");
+    let file_root = src.path().join("file");
+    std::fs::write(&file_root, b"file").unwrap();
+    for root in [&missing, &file_root] {
+        let result = bin().args(["scan", root.to_str().unwrap(), "--out", caf.to_str().unwrap()]).output().unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert_eq!(std::fs::read(&caf).unwrap(), b"existing catalog bytes");
+    }
+    let result = bin().args(["scan", src.path().to_str().unwrap(), "--out", caf.to_str().unwrap(), "--hash", "sha512"]).output().unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unknown hash algorithm"));
+    assert_eq!(std::fs::read(&caf).unwrap(), b"existing catalog bytes");
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_scan_requires_opt_in_and_returns_its_diagnostics() {
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let path = src.path().join("pre-epoch");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(7).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(
+        std::time::UNIX_EPOCH - std::time::Duration::from_secs(1))).unwrap();
+    let caf = out.path().join("existing.caf");
+    std::fs::write(&caf, b"keep previous catalog").unwrap();
+
+    let strict = bin().args(["scan", src.path().to_str().unwrap(), "--out", caf.to_str().unwrap()]).output().unwrap();
+    assert!(!strict.status.success());
+    assert!(String::from_utf8_lossy(&strict.stderr).contains("incomplete scan"));
+    assert_eq!(std::fs::read(&caf).unwrap(), b"keep previous catalog");
+
+    let partial = bin().args(["scan", src.path().to_str().unwrap(), "--out", caf.to_str().unwrap(), "--allow-partial"]).output().unwrap();
+    assert!(partial.status.success(), "{}", String::from_utf8_lossy(&partial.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&partial.stdout).unwrap();
+    assert_eq!(report["complete"], false);
+    assert_eq!(report["files"], 1);
+    assert_eq!(report["total_size_bytes"], 7);
+    assert_eq!(report["issue_count"], 1);
+    assert_eq!(report["issues"][0]["kind"], "modified_time");
+    assert_eq!(report["issues"][0]["path"], path.to_str().unwrap());
+    assert_eq!(report["suppressed_issues"], 0);
+    let loaded = crispcat::caf::read_file(&caf).unwrap();
+    assert_eq!(loaded.total_size(), 7);
+}
+
+#[test]
+fn zero_byte_files_remain_zero_after_scan_and_browse() {
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    std::fs::write(src.path().join("empty"), b"").unwrap();
+    let caf = out.path().join("zero.caf");
+    let scan = bin().args(["scan", src.path().to_str().unwrap(), "--out", caf.to_str().unwrap()]).output().unwrap();
+    assert!(scan.status.success());
+    let browse = bin().args(["browse", caf.to_str().unwrap()]).output().unwrap();
+    assert!(browse.status.success());
+    let entry: serde_json::Value = serde_json::from_slice(&browse.stdout).unwrap();
+    assert_eq!(entry["size"], 0);
 }

@@ -33,6 +33,9 @@ enum Cmd {
         hash: Option<String>,
         #[arg(long)]
         max_size: Option<u64>,
+        /// Save successfully observed files despite scan errors; retain the JSON report.
+        #[arg(long)]
+        allow_partial: bool,
     },
     /// Read a .caf file's header-only metadata.
     Info { path: PathBuf },
@@ -60,7 +63,7 @@ fn main() -> ExitCode {
         Err(e) => { e.print().ok(); return if e.use_stderr() { ExitCode::from(2) } else { ExitCode::SUCCESS } }
     };
     let r: anyhow::Result<()> = match cli.command {
-        Cmd::Scan { folder, out, hash, max_size }       => run_scan(cli.format, folder, out, hash, max_size),
+        Cmd::Scan { folder, out, hash, max_size, allow_partial } => run_scan(cli.format, folder, out, hash, max_size, allow_partial),
         Cmd::Info { path }                              => run_info(cli.format, path),
         Cmd::Browse { path, filter, limit }             => run_browse(cli.format, path, filter, limit),
         Cmd::FindDupes { source, destinations, strategy }=> run_find_dupes(cli.format, source, destinations, strategy),
@@ -68,30 +71,38 @@ fn main() -> ExitCode {
     match r { Ok(()) => ExitCode::SUCCESS, Err(e) => { eprintln!("error: {e}"); ExitCode::FAILURE } }
 }
 
-fn run_scan(out: OutFormat, folder: PathBuf, out_path: Option<PathBuf>, hash: Option<String>, max_size: Option<u64>) -> anyhow::Result<()> {
+fn run_scan(out: OutFormat, folder: PathBuf, out_path: Option<PathBuf>, hash: Option<String>, max_size: Option<u64>, allow_partial: bool) -> anyhow::Result<()> {
     let opts = crispcat::scan::ScanOptions {
-        hash: hash.as_deref().and_then(|s| match s.to_ascii_lowercase().as_str() {
-            "md5" => Some(crispcat::scan::HashAlgo::Md5),
-            "sha1" => Some(crispcat::scan::HashAlgo::Sha1),
-            "sha256" => Some(crispcat::scan::HashAlgo::Sha256),
-            _ => None,
-        }),
+        hash: hash.as_deref().map(str::parse::<crispcat::scan::HashAlgo>)
+            .transpose().map_err(anyhow::Error::msg)?,
         max_size_bytes: max_size,
         follow_symlinks: false,
     };
     eprintln!("scanning {}…", folder.display());
-    let idx = crispcat::scan::scan_dir(&folder, opts)?;
+    let report = crispcat::scan::scan_dir_with_report(&folder, opts)?;
+    if let Err(error) = report.require_complete() {
+        if !allow_partial { return Err(error.into()); }
+        eprintln!("warning: {error}; CAF does not store these diagnostics; retain the JSON report");
+    }
+    let idx = &report.index;
     let out_caf = out_path.unwrap_or_else(|| {
         let leaf = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "catalog".into());
         PathBuf::from(format!("{leaf}.caf"))
     });
-    crispcat::caf::write_file(&out_caf, &idx, crispcat::caf::unix_now())?;
+    crispcat::caf::write_file(&out_caf, idx, crispcat::caf::unix_now())?;
     match out {
         OutFormat::Json => println!("{}", serde_json::json!({
             "scanned_folder": folder.display().to_string(),
             "out": out_caf.display().to_string(),
             "files": idx.len(),
             "total_size_bytes": idx.total_size(),
+            "complete": report.is_complete(),
+            "issue_count": report.issue_count(),
+            "issues": report.issues,
+            "suppressed_issues": report.suppressed_issues,
+            "skipped_symlinks": report.skipped_symlinks,
+            "skipped_special_entries": report.skipped_special_entries,
+            "excluded_by_size": report.excluded_by_size,
         })),
         OutFormat::Text => println!("scanned {} files ({} bytes total) → {}", idx.len(), idx.total_size(), out_caf.display()),
     }
