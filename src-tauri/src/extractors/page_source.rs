@@ -11,6 +11,7 @@
 //! `tiff` decoder directly and re-encodes each frame to PNG via `image`.
 
 use anyhow::{Context, Result};
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 /// Per-page rendered images. Holds the `TempDir` so split pages outlive use.
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 pub struct PageImages {
     paths: Vec<PathBuf>,
     physical_sizes: Vec<Option<(f64, f64)>>,
+    orientations: Vec<u32>,
     _tmp: Option<tempfile::TempDir>,
 }
 
@@ -36,10 +38,165 @@ impl PageImages {
     pub fn page_size_points(&self, index: usize) -> Option<(f64, f64)> {
         self.physical_sizes.get(index).copied().flatten()
     }
+    /// Orientation still to apply to a source image. TIFF/PDF frames have
+    /// already been normalized, so return 1 for those rendered assets.
+    pub fn page_orientation(&self, index: usize) -> u32 {
+        self.orientations.get(index).copied().unwrap_or(1)
+    }
     /// The single original path (no decode) — the safe fallback.
     pub fn single(path: &Path) -> Self {
-        PageImages { paths: vec![path.to_path_buf()], physical_sizes: vec![None], _tmp: None }
+        let metadata = raster_metadata(path);
+        let size = image::image_dimensions(path).ok().and_then(|(w, h)| {
+            metadata.dpi.and_then(|(x, y)| physical_size_from_dpi(w, h, x, y))
+        });
+        PageImages { paths: vec![path.to_path_buf()], physical_sizes: vec![size],
+            orientations: vec![metadata.orientation], _tmp: None }
     }
+}
+
+const MAX_RASTER_METADATA_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug)]
+struct RasterMetadata {
+    dpi: Option<(f64, f64)>,
+    orientation: u32,
+}
+
+fn checked_dpi(x: f64, y: f64) -> Option<(f64, f64)> {
+    // Reject placeholders, zero denominators and implausible damaged tags.
+    // This range includes ordinary screen, document, photo and film scans.
+    [x, y].iter().all(|v| v.is_finite() && (10.0..=9600.0).contains(v)).then_some((x, y))
+}
+
+fn physical_size_from_dpi(width: u32, height: u32, x: f64, y: f64) -> Option<(f64, f64)> {
+    let (x, y) = checked_dpi(x, y)?;
+    let size = (f64::from(width) * 72.0 / x, f64::from(height) * 72.0 / y);
+    [size.0, size.1].iter().all(|v| v.is_finite() && (0.01..=14400.0).contains(v)).then_some(size)
+}
+
+fn density_in_dpi(x: f64, y: f64, unit: u32) -> Option<(f64, f64)> {
+    let factor = match unit { 2 => 1.0, 3 => 2.54, _ => return None };
+    checked_dpi(x * factor, y * factor)
+}
+
+fn exif_metadata(bytes: &[u8]) -> RasterMetadata {
+    let mut owner = exif::Reader::new();
+    let reader = owner.continue_on_error(true);
+    let exif = match reader.read_from_container(&mut std::io::Cursor::new(bytes)) {
+        Ok(exif) => exif,
+        Err(exif::Error::PartialResult(partial)) => partial.into_inner().0,
+        Err(_) => return RasterMetadata { dpi: None, orientation: 1 },
+    };
+    let uint = |tag| exif.get_field(tag, exif::In::PRIMARY).and_then(|field| field.value.get_uint(0));
+    let orientation = uint(exif::Tag::Orientation).filter(|v| (1..=8).contains(v)).unwrap_or(1);
+    let rational = |tag| {
+        match &exif.get_field(tag, exif::In::PRIMARY)?.value {
+            exif::Value::Rational(values) if values.len() == 1 && values[0].denom != 0 =>
+                Some(f64::from(values[0].num) / f64::from(values[0].denom)),
+            _ => None,
+        }
+    };
+    // TIFF/EXIF define an omitted resolution unit as inches. A present but
+    // unreadable or unitless value must not be treated as an inch measurement.
+    let unit = match exif.get_field(exif::Tag::ResolutionUnit, exif::In::PRIMARY) {
+        Some(field) => field.value.get_uint(0),
+        None => Some(2),
+    };
+    let dpi = rational(exif::Tag::XResolution).zip(rational(exif::Tag::YResolution))
+        .zip(unit).and_then(|((x, y), unit)| density_in_dpi(x, y, unit));
+    RasterMetadata { dpi, orientation }
+}
+
+/// Read at most one MiB, without following data beyond the prefix. Normal
+/// JPEG APP0/APP1 and PNG pre-IDAT metadata fit here; unusually late or corrupt
+/// metadata deliberately leaves the caller's explicit fallback in effect.
+fn raster_metadata(path: &Path) -> RasterMetadata {
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path)
+        .and_then(|file| file.take(MAX_RASTER_METADATA_BYTES).read_to_end(&mut bytes));
+    if read.is_err() { return RasterMetadata { dpi: None, orientation: 1 }; }
+    let mut metadata = exif_metadata(&bytes);
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        metadata.dpi = png_density(&bytes).or(metadata.dpi);
+    } else if bytes.starts_with(&[0xff, 0xd8]) {
+        metadata.dpi = metadata.dpi.or_else(|| jpeg_density(&bytes));
+    }
+    metadata
+}
+
+fn png_crc(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 { crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1)); }
+    }
+    !crc
+}
+
+fn png_density(bytes: &[u8]) -> Option<(f64, f64)> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") { return None; }
+    let mut offset = 8usize;
+    while offset.checked_add(12)? <= bytes.len() {
+        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+        let kind = &bytes[offset + 4..offset + 8];
+        if kind == b"IDAT" || kind == b"IEND" { break; }
+        let end = offset.checked_add(12)?.checked_add(length)?;
+        if end > bytes.len() { break; }
+        if kind == b"pHYs" {
+            if length != 9 || bytes[offset + 16] != 1 { return None; }
+            let expected = u32::from_be_bytes(bytes[end - 4..end].try_into().ok()?);
+            if png_crc(&bytes[offset + 4..end - 4]) != expected { return None; }
+            let x = u32::from_be_bytes(bytes[offset + 8..offset + 12].try_into().ok()?);
+            let y = u32::from_be_bytes(bytes[offset + 12..offset + 16].try_into().ok()?);
+            // PNG unit 1 is pixels per metre, not per centimetre.
+            return checked_dpi(f64::from(x) * 0.0254, f64::from(y) * 0.0254);
+        }
+        offset = end;
+    }
+    None
+}
+
+fn jpeg_density(bytes: &[u8]) -> Option<(f64, f64)> {
+    if !bytes.starts_with(&[0xff, 0xd8]) { return None; }
+    let mut offset = 2usize;
+    while offset < bytes.len() {
+        if bytes[offset] != 0xff { break; }
+        while bytes.get(offset) == Some(&0xff) { offset += 1; }
+        let marker = *bytes.get(offset)?;
+        offset += 1;
+        if marker == 0xda || marker == 0xd9 { break; } // Do not scan entropy-coded pixels.
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) { continue; }
+        let size = u16::from_be_bytes(bytes.get(offset..offset + 2)?.try_into().ok()?) as usize;
+        if size < 2 { return None; }
+        let end = offset.checked_add(size)?;
+        let segment = bytes.get(offset + 2..end)?;
+        if marker == 0xe0 && segment.len() >= 14 && segment.starts_with(b"JFIF\0") {
+            let unit = match segment[7] { 1 => 2, 2 => 3, _ => return None };
+            let x = u16::from_be_bytes(segment[8..10].try_into().ok()?);
+            let y = u16::from_be_bytes(segment[10..12].try_into().ok()?);
+            return density_in_dpi(f64::from(x), f64::from(y), unit);
+        }
+        offset = end;
+    }
+    None
+}
+
+fn tiff_density<R: Read + Seek>(decoder: &mut tiff::decoder::Decoder<R>) -> Option<(f64, f64)> {
+    use tiff::{decoder::ifd::Value, tags::Tag};
+    let unit = match decoder.find_tag_unsigned::<u32>(Tag::ResolutionUnit) {
+        Ok(value) => value.unwrap_or(2),
+        Err(_) => return None,
+    };
+    let rational = |value| match value {
+        Value::Rational(numerator, denominator) if denominator != 0 =>
+            Some(f64::from(numerator) / f64::from(denominator)),
+        _ => None,
+    };
+    // The existing TIFF decoder caps any tag value at one MiB. Only the two
+    // scalar rationals are accepted; vectors or malformed tags are ignored.
+    let x = rational(decoder.find_tag(Tag::XResolution).ok()??)?;
+    let y = rational(decoder.find_tag(Tag::YResolution).ok()??)?;
+    density_in_dpi(x, y, unit)
 }
 
 /// Decode `path` into per-page image files. Multi-page TIFF is split into temp
@@ -64,6 +221,7 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
 
     let tmp = tempfile::tempdir().context("temp dir for TIFF pages")?;
     let mut paths: Vec<PathBuf> = Vec::new();
+    let mut physical_sizes = Vec::new();
     let mut idx = 0usize;
 
     loop {
@@ -82,6 +240,8 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
         if !(1..=8).contains(&orientation) {
             anyhow::bail!("TIFF page {} has invalid orientation {orientation}; no pages were imported", idx + 1);
         }
+        let size = tiff_density(&mut dec).and_then(|(x, y)| physical_size_from_dpi(w, h, x, y))
+            .map(|(width, height)| if orientation >= 5 { (height, width) } else { (width, height) });
         let color = dec.colortype().context("TIFF colortype")?;
         let data = dec.read_image().context("TIFF read_image")?;
 
@@ -119,6 +279,7 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
         let out = tmp.path().join(format!("page_{idx}.png"));
         img.save(&out).with_context(|| format!("saving TIFF page {}", idx + 1))?;
         paths.push(out);
+        physical_sizes.push(size);
         idx += 1;
 
         if dec.more_images() {
@@ -129,7 +290,7 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
     }
 
     if paths.is_empty() { anyhow::bail!("TIFF contains no readable pages"); }
-    Ok(PageImages { physical_sizes: vec![None; paths.len()], paths, _tmp: Some(tmp) })
+    Ok(PageImages { orientations: vec![1; paths.len()], physical_sizes, paths, _tmp: Some(tmp) })
 }
 
 /// TIFF 0.11 returns packed MSB-first sub-byte grayscale samples, padded at
@@ -229,7 +390,7 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
     if paths.is_empty() {
         anyhow::bail!("PDF has no renderable pages: {}", path.display());
     }
-    Ok(PageImages { paths, physical_sizes, _tmp: Some(tmp) })
+    Ok(PageImages { orientations: vec![1; paths.len()], paths, physical_sizes, _tmp: Some(tmp) })
 }
 
 #[cfg(any(feature = "pdf-render", test))]
@@ -276,6 +437,109 @@ pub const PAGE_SEPARATOR: &str = "\u{000C}";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_points(actual: Option<(f64, f64)>, expected: (f64, f64)) {
+        let actual = actual.expect("source resolution must be retained");
+        assert!((actual.0 - expected.0).abs() < 0.001, "width: {actual:?} vs {expected:?}");
+        assert!((actual.1 - expected.1).abs() < 0.001, "height: {actual:?} vs {expected:?}");
+    }
+
+    #[test]
+    fn tiff_resolution_is_per_frame_and_follows_orientation() {
+        use tiff::encoder::{colortype, Rational, TiffEncoder};
+        use tiff::tags::{ResolutionUnit, Tag};
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("resolution.tiff");
+        {
+            let mut file = std::fs::File::create(&source).unwrap();
+            let mut encoder = TiffEncoder::new(&mut file).unwrap();
+            for (width, height, unit, numerator, denominator, orientation) in [
+                (600, 300, ResolutionUnit::Inch, 600, 1, 1),
+                (254, 127, ResolutionUnit::Centimeter, 100, 1, 6),
+                (600, 300, ResolutionUnit::None, 600, 1, 1),
+                (600, 300, ResolutionUnit::Inch, 600, 0, 1),
+            ] {
+                let mut frame = encoder.new_image::<colortype::Gray8>(width, height).unwrap();
+                frame.resolution(unit, Rational { n: numerator, d: denominator });
+                frame.encoder().write_tag(Tag::Orientation, orientation as u16).unwrap();
+                frame.write_data(&vec![255; (width * height) as usize]).unwrap();
+            }
+        }
+        let pages = rasterize_pages(&source, "tiff").unwrap();
+        assert_eq!(pages.len(), 4);
+        assert_points(pages.page_size_points(0), (72.0, 36.0));
+        assert_points(pages.page_size_points(1), (36.0, 72.0));
+        assert_eq!(image::image_dimensions(&pages.paths()[1]).unwrap(), (127, 254));
+        assert_eq!(pages.page_orientation(1), 1, "TIFF orientation is already baked");
+        assert_eq!(pages.page_size_points(2), None, "unitless density is only an aspect ratio");
+        assert_eq!(pages.page_size_points(3), None, "zero rational denominators are not physical measurements");
+
+        // Rename the first IFD's ResolutionUnit tag to an unknown private tag.
+        // Its valid X/YResolution then use TIFF's documented default inches.
+        let mut bytes = std::fs::read(&source).unwrap();
+        let little = &bytes[..2] == b"II";
+        let u16_at = |slice: &[u8]| if little { u16::from_le_bytes(slice.try_into().unwrap()) } else { u16::from_be_bytes(slice.try_into().unwrap()) };
+        let directory = if little { u32::from_le_bytes(bytes[4..8].try_into().unwrap()) } else { u32::from_be_bytes(bytes[4..8].try_into().unwrap()) } as usize;
+        let count = u16_at(&bytes[directory..directory + 2]) as usize;
+        let entry = (0..count).map(|i| directory + 2 + i * 12)
+            .find(|offset| u16_at(&bytes[*offset..*offset + 2]) == 296).unwrap();
+        bytes[entry..entry + 2].copy_from_slice(&if little { 65000u16.to_le_bytes() } else { 65000u16.to_be_bytes() });
+        let no_unit = root.path().join("omitted-unit.tiff");
+        std::fs::write(&no_unit, bytes).unwrap();
+        let pages = rasterize_pages(&no_unit, "tiff").unwrap();
+        assert_points(pages.page_size_points(0), (72.0, 36.0));
+    }
+
+    #[test]
+    fn png_physical_density_uses_metres_and_rejects_unitless_or_corrupt_values() {
+        assert_eq!(png_crc(b"123456789"), 0xcbf4_3926, "standard CRC32 reference vector");
+        let root = tempfile::tempdir().unwrap();
+        let plain = root.path().join("plain.png");
+        image::GrayImage::from_pixel(600, 300, image::Luma([255])).save(&plain).unwrap();
+        let original = std::fs::read(&plain).unwrap();
+        for (name, unit, density, corrupt) in [
+            ("600-dpi", 1u8, 23_622u32, false),
+            ("unitless", 0, 23_622, false),
+            ("implausible", 1, u32::MAX, false),
+            ("bad-crc", 1, 23_622, true),
+        ] {
+            let mut chunk = 9u32.to_be_bytes().to_vec();
+            chunk.extend_from_slice(b"pHYs");
+            chunk.extend_from_slice(&density.to_be_bytes());
+            chunk.extend_from_slice(&density.to_be_bytes());
+            chunk.push(unit);
+            let crc = png_crc(&chunk[4..]) ^ u32::from(corrupt);
+            chunk.extend_from_slice(&crc.to_be_bytes());
+            let mut bytes = original[..33].to_vec(); // PNG signature plus IHDR.
+            bytes.extend_from_slice(&chunk);
+            bytes.extend_from_slice(&original[33..]);
+            let source = root.path().join(format!("{name}.png"));
+            std::fs::write(&source, bytes).unwrap();
+            let pages = rasterize_pages(&source, "png").unwrap();
+            if name == "600-dpi" {
+                assert_points(pages.page_size_points(0), (72.0, 36.0));
+                assert_eq!(image::open(&source).unwrap().width(), 600);
+            } else { assert_eq!(pages.page_size_points(0), None, "{name}"); }
+        }
+    }
+
+    #[test]
+    fn jpeg_jfif_density_distinguishes_inches_centimetres_and_aspect_ratio() {
+        let jpeg = |unit: u8, x: u16, y: u16| {
+            let mut bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0, 16];
+            bytes.extend_from_slice(b"JFIF\0\x01\x02");
+            bytes.push(unit);
+            bytes.extend_from_slice(&x.to_be_bytes());
+            bytes.extend_from_slice(&y.to_be_bytes());
+            bytes.extend_from_slice(&[0, 0, 0xff, 0xd9]);
+            bytes
+        };
+        assert_eq!(jpeg_density(&jpeg(1, 600, 600)), Some((600.0, 600.0)));
+        assert_eq!(jpeg_density(&jpeg(2, 100, 50)), Some((254.0, 127.0)));
+        assert_eq!(jpeg_density(&jpeg(0, 600, 600)), None);
+        assert_eq!(jpeg_density(&jpeg(1, 0, 600)), None);
+        assert_eq!(jpeg_density(&jpeg(1, 600, 600)[..12]), None);
+    }
 
     // Procedural 13×3 CCITT Group4 scan, encoded with libtiff; no external
     // document content. Each row has five padding bits to catch row drift.

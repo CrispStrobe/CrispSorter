@@ -77,6 +77,7 @@
     captureExtractionSource,
     extractionSourceIsCurrent,
     readExtraction,
+    tableToCsv,
     type ExtractionSource,
   } from "$lib/ocr/extraction";
   import {
@@ -1299,12 +1300,6 @@
       busy = "";
     }
   }
-  const csv = (rows: string[][]) =>
-    rows
-      .map((row) =>
-        row.map((value) => `"${value.replace(/"/g, '""')}"`).join(","),
-      )
-      .join("\r\n");
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -1329,7 +1324,7 @@
       extractionKind === "fields"
         ? JSON.stringify(data.fields, null, 2)
         : extractionKind === "table"
-          ? csv(data.tableRows)
+          ? tableToCsv(data.tableRows)
           : data.formula;
     if (!data.sources[kind] || !text) return;
     busy = "Saving extracted data";
@@ -2978,7 +2973,7 @@
                   <div class="section-heading">
                     <strong>{tableRows.length} rows</strong><button
                       class="text-button"
-                      onclick={() => copy(csv(tableRows))}
+                      onclick={() => copy(tableToCsv(tableRows))}
                       ><Copy size={13} /> CSV</button
                     >
                   </div>
@@ -3010,8 +3005,9 @@
                     </table>
                   </div>
                   <p class="field-hint">
-                    CSV contains editable cell text. Check merged cells and
-                    headers against the page.
+                    CSV contains editable cell text and treats formula-like
+                    entries as text. Check merged cells and headers against the
+                    page.
                   </p>
                 </div>{/if}
             {:else}<div class="tool-explanation">

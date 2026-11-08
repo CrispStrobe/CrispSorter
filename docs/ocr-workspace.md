@@ -131,9 +131,17 @@ legacy sequence buffer; those are never treated as character offsets just
 because the array length happens to match the text.
 
 Physical page sizes are kept separately from raster dimensions. PDF import
-retains the source page size; images without resolution metadata use 300 DPI.
+retains the source page size. Raster import reads per-frame TIFF resolution,
+PNG pixel density, and JPEG EXIF/JFIF density; orientation swaps the paper axes
+together with the image. Images without valid resolution metadata use 300 DPI.
 Crop, rotation, and splitting update paper dimensions, while upscaling preserves
 them. The PDF export panel offers an explicit scan-DPI override.
+
+Optional PNG/JPEG metadata reads are bounded to the first 1 MiB. Density must
+use physical units, be finite, fall within 10–9,600 DPI, and yield dimensions
+within 0.01–14,400 points. Missing, unitless, invalid, or unusually late metadata
+uses the 300 DPI fallback; an omitted TIFF resolution-unit tag uses the format's
+inch default. JPEG EXIF density takes precedence over conflicting JFIF density.
 
 The optional paired native diagnostics include source and working dimensions,
 coordinate validity, engine stages, automatic acceptance decisions, detected
@@ -151,7 +159,10 @@ The **Extract** panel works on the current page or selected region:
   original model extraction. Export the result as JSON.
 - **Tables:** native structure recognition returns a table. Only inert cell text
   is placed in the editor; returned HTML is not inserted into the live DOM.
-  Cells are editable and export as CSV. Inspect merged cells against the source.
+  Cells are editable and export as CSV. Formula-like entries are prefixed as
+  literal text for spreadsheet readers; ordinary numbers remain numeric and the
+  original cell values remain unchanged in the project and structured JSON.
+  Inspect merged cells against the source.
 - **Formulas:** native math recognition returns LaTeX. Edit and copy it, or save a
   `.tex` file.
 

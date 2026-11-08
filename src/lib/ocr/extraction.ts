@@ -19,6 +19,32 @@ export interface ExtractionData {
   sources: Partial<Record<ExtractionKind, ExtractionSource>>;
   updatedAt: string;
 }
+
+/**
+ * Keep spreadsheet formulas literal at the CSV boundary. Whitespace and control
+ * characters may be ignored by spreadsheet readers, so inspect past them without
+ * removing them from the exported value. Plain decimal numbers remain numeric.
+ */
+export function tableToCsv(rows: readonly (readonly string[])[]): string {
+  const leadingBoundaryCharacters = /^[\s\p{Cc}\p{Cf}]+/u;
+  const decimalNumber =
+    /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[\s\p{Cc}\p{Cf}]*$/u;
+  return rows
+    .map((row) =>
+      row
+        .map((value) => {
+          const inspected = value.replace(leadingBoundaryCharacters, "");
+          const literal =
+            /^[=+\-@]/.test(inspected) && !decimalNumber.test(inspected)
+              ? `'${value}`
+              : value;
+          return `"${literal.replace(/"/g, '""')}"`;
+        })
+        .join(","),
+    )
+    .join("\r\n");
+}
+
 const pageText = (page: OcrPage) =>
   page.regions
     .filter((r) => !r.excluded && r.kind !== "picture")

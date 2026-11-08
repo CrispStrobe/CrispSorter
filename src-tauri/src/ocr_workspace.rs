@@ -281,11 +281,13 @@ fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String>
     let mut pages = Vec::with_capacity(images.len());
     for (index, page) in images.paths().iter().enumerate() {
         let img = decode_page(page).map_err(|e| format!("Page {}: {e}", index + 1))?;
-        let orientation = crate::images::exif::read_exif(page).ok().and_then(|e| e.orientation).unwrap_or(1);
+        let orientation = images.page_orientation(index);
         let mut page = persist_image(root, &orient_image(img, orientation))?;
-        // Preserve PDF paper size; raster sources without a reliable DPI use
-        // the explicit 300 DPI policy rather than treating pixels as points.
+        // TIFF/PDF assets are already oriented; single images still carry their
+        // source orientation, so swap their physical axes with their pixels.
         let (width_points, height_points) = images.page_size_points(index)
+            .map(|(w, h)| if (5..=8).contains(&orientation) { (h, w) } else { (w, h) })
+            // Only sources without reliable resolution use the 300 DPI policy.
             .unwrap_or((f64::from(page.width) * 72.0 / 300.0, f64::from(page.height) * 72.0 / 300.0));
         let size = checked_physical_size(Some(width_points), Some(height_points))?;
         set_physical_size(&mut page, size);
@@ -1419,6 +1421,43 @@ mod tests {
         assert_ne!(Path::new(&imported.pages[0].image_path), source);
         fs::remove_file(&source).unwrap();
         assert!(Path::new(&imported.pages[0].image_path).exists());
+    }
+
+    #[test]
+    fn jpeg_import_preserves_exif_resolution_and_rotated_paper_axes() {
+        use exif::{Field, In, Rational, Tag, Value};
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("600-dpi-scan.jpg");
+        image::RgbImage::from_pixel(600, 300, image::Rgb([255, 255, 255])).save(&source).unwrap();
+        let encoded = fs::read(&source).unwrap();
+        let fields = [
+            Field { tag: Tag::Orientation, ifd_num: In::PRIMARY, value: Value::Short(vec![6]) },
+            Field { tag: Tag::ResolutionUnit, ifd_num: In::PRIMARY, value: Value::Short(vec![2]) },
+            Field { tag: Tag::XResolution, ifd_num: In::PRIMARY, value: Value::Rational(vec![Rational { num: 600, denom: 1 }]) },
+            Field { tag: Tag::YResolution, ifd_num: In::PRIMARY, value: Value::Rational(vec![Rational { num: 600, denom: 1 }]) },
+        ];
+        let mut writer = exif::experimental::Writer::new();
+        for field in &fields { writer.push_field(field); }
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        writer.write(&mut tiff, true).unwrap();
+        let mut metadata = b"Exif\0\0".to_vec();
+        metadata.extend_from_slice(&tiff.into_inner());
+        let mut bytes = encoded[..2].to_vec();
+        // A conflicting ordinary JFIF density must not replace explicit EXIF.
+        bytes.extend_from_slice(&[0xff, 0xe0, 0, 16]);
+        bytes.extend_from_slice(b"JFIF\0\x01\x02\x01\x01\x2c\x01\x2c\0\0");
+        bytes.extend_from_slice(&[0xff, 0xe1]);
+        bytes.extend_from_slice(&((metadata.len() + 2) as u16).to_be_bytes());
+        bytes.extend_from_slice(&metadata);
+        bytes.extend_from_slice(&encoded[2..]);
+        fs::write(&source, &bytes).unwrap();
+
+        let imported = import_document(root.path(), &source).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), bytes, "resolution import must preserve the source");
+        let page = &imported.pages[0];
+        assert_eq!((page.width, page.height), (300, 600));
+        assert_eq!((page.page_width_points, page.page_height_points), (Some(36.0), Some(72.0)));
+        assert_eq!(image::image_dimensions(&page.image_path).unwrap(), (300, 600));
     }
 
     #[test]

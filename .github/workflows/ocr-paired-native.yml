@@ -18,7 +18,9 @@ permissions:
 
 concurrency:
   group: ocr-paired-native-${{ github.ref }}
-  cancel-in-progress: true
+  # Finish the running source build so incremental branch saves retain its
+  # test evidence and dependency cache; GitHub keeps only the latest pending run.
+  cancel-in-progress: false
 
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
