@@ -8,6 +8,7 @@ on:
       - src-tauri/src/ocr_reading_order.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
+      - src-tauri/src/extractors/ocr_render.rs
       - src-tauri/src/extractors/page_source.rs
       - src-tauri/Cargo.toml
       - .github/workflows/ocr-paired-native.yml
@@ -22,7 +23,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: 55285de6adafb6634b055f6b264bb55ee9f72172
+  OCR_CRISPEMBED_REF: ae15ffb79781404fb5c6dc0664cb125059c096a4
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -51,14 +52,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf protobuf-compiler libssl-dev
-      - name: Build matching native OCR library and serialization tests
+      - name: Build matching native OCR library and serialization/export tests
         run: |
           cmake -S repos/CrispEmbed -B repos/CrispEmbed/build \
             -DCMAKE_BUILD_TYPE=Release -DCRISPEMBED_BUILD_SHARED=ON \
             -DCRISPEMBED_NATIVE=OFF -DGGML_NATIVE=OFF \
             -DGGML_BLAS=OFF -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF
-          cmake --build repos/CrispEmbed/build --target crispembed-shared test-ocr-review --parallel 2
+          cmake --build repos/CrispEmbed/build --target crispembed-shared test-ocr-review test-ocr-render --parallel 2
           repos/CrispEmbed/build/test-ocr-review
+          repos/CrispEmbed/build/test-ocr-render
       # Resolve the application's optional sibling Cargo paths AFTER configuring
       # the OCR-only native library, so unrelated audio integrations stay off.
       - uses: actions/checkout@v4
@@ -84,17 +86,20 @@ jobs:
           mkdir -p build src-tauri/bin
           touch src-tauri/bin/.gitkeep
           cargo test -p crispsorter --lib --no-default-features \
-            --features crispembed,pdf-render,ocr-review-diagnostics \
+            --features ocr-workspace \
             ocr_workspace::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
-            --features crispembed,pdf-render,ocr-review-diagnostics \
+            --features ocr-workspace \
             extractors::ocr_crispembed::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
-            --features crispembed,pdf-render,ocr-review-diagnostics \
+            --features ocr-workspace \
             extractors::page_source::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
-            --features crispembed,pdf-render,ocr-review-diagnostics \
+            --features ocr-workspace \
             ocr_reading_order::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            extractors::ocr_render::tests -- --test-threads=1
       - name: Save native diagnostics library
         uses: actions/upload-artifact@v4
         with:

@@ -41,9 +41,9 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
 The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
-`?scenario=queue-control`, `?scenario=extraction-delay`, or
-`?scenario=project-recovery`. The queue and extraction scenarios hold native
-responses until the harness releases them. The recovery scenario includes an
+`?scenario=queue-control`, `?scenario=extraction-delay`,
+`?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
+extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
 
@@ -53,8 +53,11 @@ without relying on debounce timing.
 - Corrections preserve original recognition, undo/redo works, and editing invalidates
   page approval.
 - The review queue traverses uncertain text and pending pages.
+- Preparation that returns the same image preserves corrections, recognition
+  evidence, physical dimensions, and approval while showing its returned warning.
 - Incomplete output is blocked; an explicit approved page scope exports exactly that
-  scope.
+  scope. A custom 150 DPI PDF export changes physical page points while preserving
+  raster dimensions, source pixels, and text region geometry.
 - Batch errors remain attached to their pages; retry processes only failed work.
 - Pause/resume/stop never overlaps native operations or drops pending pages.
 - Table model output becomes inert cell text, with active HTML removed.
@@ -65,6 +68,8 @@ without relying on debounce timing.
 - Confirmation dialogs suppress page navigation shortcuts and retain their target.
 - Replacing after a query change never applies stale offsets to another match.
 - Desktop and compact layouts produce screenshots and retain the review controls.
+  Fit page keeps the complete paper within its viewport, fills one available axis,
+  and requires no scrolling; this catches duplicate padding deductions.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same
 harness on feature-branch changes and attaches its JSON report and screenshots as

@@ -70,8 +70,8 @@
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
     expandRecognitionZone,
+    effectiveRecognitionZone,
     mergeZoneRegions,
-    type PixelRectangle,
   } from "$lib/ocr/zones";
   import {
     captureExtractionSource,
@@ -214,6 +214,8 @@
   let exportFormat = $state("pdf"),
     exportScope = $state("all"),
     requireReviewed = $state(true);
+  let pdfScale = $state("source"),
+    pdfDpi = $state(300);
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
@@ -294,13 +296,16 @@
         Math.floor((visiblePages.length - 1) / pageWindowSize) * pageWindowSize,
       );
   });
-  const recognitionWarnings = $derived(
-    Array.isArray(activePage?.provenance.warnings)
-      ? activePage.provenance.warnings.filter(
-          (value): value is string => typeof value === "string",
-        )
-      : [],
-  );
+  const recognitionWarnings = $derived([
+    ...new Set(
+      [
+        activePage?.provenance.warnings,
+        activePage?.provenance.preparationWarnings,
+      ]
+        .flatMap((value) => (Array.isArray(value) ? value : []))
+        .filter((value): value is string => typeof value === "string"),
+    ),
+  ]);
   const matches = $derived(
     findMatches(project, query, { caseSensitive: matchCase }),
   );
@@ -822,6 +827,8 @@
             if (!current) throw new Error("The page was removed.");
             return client.recognize({
               pagePath: current.imagePath,
+              pageWidthPoints: current.widthPoints,
+              pageHeightPoints: current.heightPoints,
               config: configSnapshot,
               engine: engineSnapshot,
               language: languageSnapshot,
@@ -909,6 +916,8 @@
     try {
       const result = await client.transform({
         pagePath: page.imagePath,
+        pageWidthPoints: page.widthPoints,
+        pageHeightPoints: page.heightPoints,
         operation,
         ...options,
       });
@@ -935,12 +944,51 @@
     busy = "Repairing scan";
     error = "";
     try {
-      const result = await client.prepare(page.imagePath, config);
-      change(applyPageImage(project, page.id, result, "scan repair"));
-      if (selectedPageId === page.id) selectedRegionId = null;
-      showOriginal = false;
-      notice =
-        "Scan repair applied. Use Original to compare, or Undo to restore.";
+      const result = await client.prepare(
+        page.imagePath,
+        config,
+        page.widthPoints,
+        page.heightPoints,
+      );
+      const warnings = (result.warnings ?? []).filter(
+        (value): value is string => typeof value === "string",
+      );
+      const pixelsChanged =
+        result.image_path !== page.imagePath ||
+        result.width !== page.width ||
+        result.height !== page.height;
+      // Managed paths are content-addressed. A failed or unnecessary repair can
+      // return the original pixels; retain their corrected text and approval.
+      const next = pixelsChanged
+        ? applyPageImage(project, page.id, result, "scan repair")
+        : project;
+      const updatedPage = next.pages.find((item) => item.id === page.id);
+      if (!updatedPage) return;
+      change(
+        updatePage(next, page.id, {
+          provenance: {
+            ...updatedPage.provenance,
+            preparationWarnings: warnings,
+            lastPreparation: {
+              sourceImagePath: page.imagePath,
+              resultImagePath: result.image_path,
+              pixelsChanged,
+              warnings,
+              completedAt: new Date().toISOString(),
+            },
+          },
+        }),
+      );
+      if (pixelsChanged) {
+        if (selectedPageId === page.id) selectedRegionId = null;
+        showOriginal = false;
+      }
+      notice = [
+        pixelsChanged
+          ? "Scan repair applied. Use Original to compare, or Undo to restore."
+          : "Scan repair made no pixel changes. Reviewed text and approval were retained.",
+        ...warnings,
+      ].join(" · ");
     } catch (e) {
       fail(e);
     } finally {
@@ -964,6 +1012,8 @@
         const zone = expandRecognitionZone(page, rect);
         const result = await client.recognize({
           pagePath: page.imagePath,
+          pageWidthPoints: page.widthPoints,
+          pageHeightPoints: page.heightPoints,
           config,
           engine,
           language,
@@ -975,12 +1025,12 @@
           result,
           project.profileId,
         ).pages.find((p) => p.id === page.id)!;
-        const effective =
-          (
-            result.diagnostics as
-              | { effective_zone?: PixelRectangle }
-              | undefined
-          )?.effective_zone ?? zone;
+        const effective = effectiveRecognitionZone(
+          page,
+          zone,
+          (result.diagnostics as { effective_zone?: unknown } | undefined)
+            ?.effective_zone,
+        );
         const { extraction: _staleExtraction, ...provenance } = page.provenance;
         change(
           updatePage(project, page.id, {
@@ -1070,13 +1120,29 @@
       error = preflight.errors.join("\n");
       return;
     }
+    if (
+      !snapshot &&
+      exportFormat === "pdf" &&
+      pdfScale === "dpi" &&
+      (!Number.isFinite(pdfDpi) || pdfDpi < 36 || pdfDpi > 2400)
+    ) {
+      error = "Enter a scan resolution between 36 and 2400 DPI.";
+      return;
+    }
     const request =
       snapshot ??
       (JSON.parse(
         JSON.stringify({
           format: exportFormat,
           pdfa: false,
-          pages: preflight.pages,
+          pages:
+            exportFormat === "pdf" && pdfScale === "dpi"
+              ? preflight.pages.map((p) => ({
+                  ...p,
+                  page_width_points: (p.width * 72) / pdfDpi,
+                  page_height_points: (p.height * 72) / pdfDpi,
+                }))
+              : preflight.pages,
           sourceUris: project.documents.map((d) => d.sourceUri),
         }),
       ) as Omit<ExportRequest, "outputPath" | "overwrite">);
@@ -1180,6 +1246,11 @@
               threshold,
             )
           : await client.extractFields(source.text ?? "", list, threshold);
+        resultFields = resultFields.map((field) => ({
+          ...field,
+          original_value: field.value,
+          review: "unreviewed",
+        }));
         notice = `${resultFields.length} fields extracted${layout ? " from page layout" : " from reviewed text"}`;
       } else if (kind === "table") {
         const result = await client.table(await extractionPath(source));
@@ -2862,14 +2933,26 @@
                           onchange={(e) => {
                             fields = fields.map((f, i) =>
                               i === index
-                                ? { ...f, value: e.currentTarget.value }
+                                ? {
+                                    ...f,
+                                    value: e.currentTarget.value,
+                                    original_value: f.original_value ?? f.value,
+                                    review:
+                                      e.currentTarget.value ===
+                                      (f.original_value ?? f.value)
+                                        ? "unreviewed"
+                                        : "corrected",
+                                  }
                                 : f,
                             );
                             persistExtraction();
                           }}
                         /></label
-                      ><span title="Model extraction score"
-                        >{Math.round(field.score * 100)}%</span
+                      ><span
+                        title="Original model extraction score; manual corrections do not produce a new model score"
+                        >{field.review === "corrected"
+                          ? "Edited · "
+                          : ""}{Math.round(field.score * 100)}%</span
                       >
                     </div>{/each}
                   <p class="field-hint">
@@ -3015,6 +3098,32 @@
             {#if capabilities.pdf_export_reason}<p class="field-hint">
                 {capabilities.pdf_export_reason}
               </p>{/if}
+            {#if exportFormat === "pdf"}
+              <label class="field-label"
+                >Page sizes
+                <select bind:value={pdfScale} disabled={locked}>
+                  <option value="source">Preserve source page sizes</option>
+                  <option value="dpi">Use custom scan resolution</option>
+                </select>
+              </label>
+              {#if pdfScale === "dpi"}
+                <label class="field-label"
+                  >Scan resolution (DPI)
+                  <input
+                    type="number"
+                    min="36"
+                    max="2400"
+                    step="1"
+                    bind:value={pdfDpi}
+                    disabled={locked}
+                  />
+                </label>
+              {/if}
+              <p class="field-hint">
+                Scan resolution determines printed page size. Page images
+                without resolution metadata use 300 DPI by default.
+              </p>
+            {/if}
             <label class="field-label"
               >Pages<select bind:value={exportScope} disabled={locked}
                 ><option value="all"

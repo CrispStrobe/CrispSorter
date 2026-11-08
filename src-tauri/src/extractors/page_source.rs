@@ -3,9 +3,9 @@
 //! Decodes a document file into **one image per page** so the OCR dispatch can
 //! run the pipeline per page and concatenate. Multi-page **TIFF** scans are
 //! split via the pure-Rust `tiff` crate (each frame → a temp PNG). Single-page
-//! image formats return the original path unchanged (zero-copy). Multi-page
-//! **PDF** rasterization is a follow-up (see PLAN — `pdfium-render`); for now a
-//! PDF returns no pages here and the caller keeps its text-layer/legacy path.
+//! image formats return the original path unchanged (zero-copy). The optional
+//! `pdf-render` feature rasterizes PDFs with PDFium and retains each page's
+//! physical dimensions. Invalid or unsupported frames fail the entire import.
 //!
 //! `image` decodes only the first TIFF frame, so multi-frame handling uses the
 //! `tiff` decoder directly and re-encodes each frame to PNG via `image`.
@@ -14,8 +14,10 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Per-page rendered images. Holds the `TempDir` so split pages outlive use.
+#[derive(Debug)]
 pub struct PageImages {
     paths: Vec<PathBuf>,
+    physical_sizes: Vec<Option<(f64, f64)>>,
     _tmp: Option<tempfile::TempDir>,
 }
 
@@ -29,9 +31,14 @@ impl PageImages {
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }
+    /// Physical page dimensions in PDF points (1/72 inch), when the source
+    /// carries them. Raster-only sources leave resolution policy to the caller.
+    pub fn page_size_points(&self, index: usize) -> Option<(f64, f64)> {
+        self.physical_sizes.get(index).copied().flatten()
+    }
     /// The single original path (no decode) — the safe fallback.
     pub fn single(path: &Path) -> Self {
-        PageImages { paths: vec![path.to_path_buf()], _tmp: None }
+        PageImages { paths: vec![path.to_path_buf()], physical_sizes: vec![None], _tmp: None }
     }
 }
 
@@ -122,7 +129,7 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
     }
 
     if paths.is_empty() { anyhow::bail!("TIFF contains no readable pages"); }
-    Ok(PageImages { paths, _tmp: Some(tmp) })
+    Ok(PageImages { physical_sizes: vec![None; paths.len()], paths, _tmp: Some(tmp) })
 }
 
 /// TIFF 0.11 returns packed MSB-first sub-byte grayscale samples, padded at
@@ -187,6 +194,7 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
 
     let tmp = tempfile::tempdir().context("temp dir for PDF pages")?;
     let mut paths: Vec<PathBuf> = Vec::new();
+    let mut physical_sizes = Vec::new();
     let path_str = path.to_string_lossy();
 
     for (i, page) in doc.pages().iter().enumerate() {
@@ -216,11 +224,12 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
             .save(&out)
             .with_context(|| format!("saving PDF page {i}"))?;
         paths.push(out);
+        physical_sizes.push(Some((f64::from(page.width().value), f64::from(page.height().value))));
     }
     if paths.is_empty() {
         anyhow::bail!("PDF has no renderable pages: {}", path.display());
     }
-    Ok(PageImages { paths, _tmp: Some(tmp) })
+    Ok(PageImages { paths, physical_sizes, _tmp: Some(tmp) })
 }
 
 #[cfg(any(feature = "pdf-render", test))]

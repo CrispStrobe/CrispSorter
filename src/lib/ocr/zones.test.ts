@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { addDocument, applyRecognition, createProject } from "./model";
-import { expandRecognitionZone, mergeZoneRegions } from "./zones";
+import {
+  effectiveRecognitionZone,
+  expandRecognitionZone,
+  mergeZoneRegions,
+} from "./zones";
 
 function sample() {
   let project = addDocument(createProject(), {
@@ -21,6 +25,24 @@ function sample() {
 }
 
 describe("safe zone recognition", () => {
+  it("rejects malformed native effective crops before altering existing text", () => {
+    const page = sample(),
+      zone = { x: 0, y: 0, w: 1000, h: 1000 };
+    expect(effectiveRecognitionZone(page, zone, undefined)).toEqual(zone);
+    expect(effectiveRecognitionZone(page, zone, zone)).toEqual(zone);
+    for (const invalid of [
+      null,
+      {},
+      { ...zone, w: 1001 },
+      { ...zone, x: NaN },
+      { ...zone, h: -1 },
+      { ...zone, y: 0.5 },
+    ]) {
+      expect(() => effectiveRecognitionZone(page, zone, invalid)).toThrow(
+        "existing text was preserved",
+      );
+    }
+  });
   it("expands a partial paragraph selection to preserve the complete text", () => {
     const page = sample();
     expect(
@@ -70,5 +92,25 @@ describe("safe zone recognition", () => {
     expect(() =>
       expandRecognitionZone(page, { x: NaN, y: 0, w: 1, h: 1 }),
     ).toThrow();
+  });
+  it("replaces page-edge boxes within the accepted floating point tolerance", () => {
+    const page = sample();
+    const edge = { ...page.regions[0], x: 900, y: 0, w: 100.005, h: 100 };
+    page.regions = [edge];
+    const replacement = { ...edge, id: "edge-replacement", w: 100 };
+    expect(
+      mergeZoneRegions(page, { x: 0, y: 0, w: 1000, h: 1000 }, [replacement]),
+    ).toEqual([replacement]);
+  });
+  it("continues expansion to earlier regions after reaching a clipped page edge", () => {
+    const page = sample();
+    page.regions = [
+      { ...page.regions[0], x: 0, y: 50, w: 100, h: 100 },
+      { ...page.regions[1], x: 50, y: 0, w: 200, h: 100 },
+      { ...page.regions[2], x: 900, y: 0, w: 100.005, h: 100 },
+    ];
+    expect(
+      expandRecognitionZone(page, { x: 100, y: 0, w: 900, h: 10 }),
+    ).toEqual({ x: 0, y: 0, w: 1000, h: 150 });
   });
 });

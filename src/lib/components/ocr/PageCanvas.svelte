@@ -68,11 +68,8 @@
     fit === "custom"
       ? zoom
       : fit === "width"
-        ? Math.max(0.05, (paneWidth - 72) / width)
-        : Math.max(
-            0.05,
-            Math.min((paneWidth - 72) / width, (paneHeight - 64) / height),
-          ),
+        ? Math.max(0.001, paneWidth / width)
+        : Math.max(0.001, Math.min(paneWidth / width, paneHeight / height)),
   );
   const selected = $derived(page.regions.find((r) => r.id === selectedId));
   const canDraw = $derived(!disabled && !original);
@@ -90,6 +87,8 @@
 
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
+      // contentRect already excludes the viewport's padding. Subtracting it
+      // again made compact previews too small and Fit width leave extra space.
       paneWidth = entry.contentRect.width;
       paneHeight = entry.contentRect.height;
     });
@@ -260,19 +259,23 @@
                     }
                   }}
                 />
-                <g
-                  class="region-label"
-                  transform="translate({box.x},{Math.max(
-                    0,
-                    box.y - 18 / scale,
-                  )})"
-                  pointer-events="none"
-                >
-                  <rect width={25 / scale} height={18 / scale} rx={3 / scale} />
-                  <text x={5 / scale} y={13 / scale} font-size={11 / scale}
-                    >{index + 1}</text
+                {#if scale >= 0.25 || selectedId === region.id}<g
+                    class="region-label"
+                    transform="translate({box.x},{Math.max(
+                      0,
+                      box.y - 18 / scale,
+                    )})"
+                    pointer-events="none"
                   >
-                </g>
+                    <rect
+                      width={25 / scale}
+                      height={18 / scale}
+                      rx={3 / scale}
+                    />
+                    <text x={5 / scale} y={13 / scale} font-size={11 / scale}
+                      >{index + 1}</text
+                    >
+                  </g>{/if}
               </g>
             {/each}
             {#if selected && canDraw && mode === "select"}

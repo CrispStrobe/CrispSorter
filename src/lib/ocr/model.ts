@@ -1,5 +1,8 @@
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
+/** Raster sources with no physical-size metadata are interpreted at 300 DPI. */
+export const DEFAULT_PAGE_DPI = 300;
+export const MAX_PAGE_POINTS = 14_400;
 export type RecognitionStatus = 'pending' | 'running' | 'recognized' | 'failed';
 export type ReviewStatus = 'unreviewed' | 'corrected' | 'approved';
 export type RegionKind = 'text' | 'title' | 'table' | 'picture' | 'formula' | 'header' | 'footer';
@@ -14,6 +17,8 @@ export interface OcrRegion {
 export interface OcrPage {
     id: string; documentId: string; sourcePage: number; name: string;
     imagePath: string; originalImagePath: string; width: number; height: number;
+    /** Physical paper size in 1/72-inch points, independent of raster resolution. */
+    widthPoints?: number; heightPoints?: number;
     status: RecognitionStatus; regions: OcrRegion[]; excluded: boolean; approved: boolean;
     error: string | null; elapsedMs: number | null;
     provenance: Record<string, unknown>; profileId: string;
@@ -24,7 +29,7 @@ export interface OcrProject {
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
     recognitionSettings?: Record<string, unknown>;
 }
-export interface ImportedPage { image_path: string; width: number; height: number; }
+export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
 export interface ImportedDocument { source_uri: string; name: string; pages: ImportedPage[]; }
 export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
@@ -34,6 +39,7 @@ export interface RecognitionRegion {
 }
 export interface RecognitionResult {
     image_path?: string; width: number; height: number; regions: RecognitionRegion[];
+    page_width_points?: number; page_height_points?: number;
     elapsed_ms?: number; [key: string]: unknown;
 }
 export interface OcrProfile {
@@ -55,6 +61,7 @@ export interface ExportRegion {
 }
 export interface ExportPage {
     image_path: string; width: number; height: number; regions: ExportRegion[];
+    page_width_points?: number; page_height_points?: number;
     id?: string; name?: string; source_uri?: string; source_page?: number;
     approved?: boolean; provenance?: Record<string, unknown>;
 }
@@ -81,6 +88,17 @@ const now = () => new Date().toISOString();
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const validDimension = (value: unknown): value is number => finite(value) && value > 0 && value <= 100_000;
+const validPagePoints = (value: unknown): value is number => finite(value) && value > 0 && value <= MAX_PAGE_POINTS;
+interface PhysicalSize { widthPoints: number; heightPoints: number; }
+const rasterPhysicalSize = (width: number, height: number): PhysicalSize => ({ widthPoints: width * 72 / DEFAULT_PAGE_DPI, heightPoints: height * 72 / DEFAULT_PAGE_DPI });
+const pagePhysicalSize = (page: Pick<OcrPage, 'width'|'height'|'widthPoints'|'heightPoints'>): PhysicalSize => ({
+    widthPoints: page.widthPoints ?? page.width * 72 / DEFAULT_PAGE_DPI,
+    heightPoints: page.heightPoints ?? page.height * 72 / DEFAULT_PAGE_DPI,
+});
+/** Only a complete valid metadata pair replaces a known physical paper size. */
+const importedPhysicalSize = (image: {page_width_points?: number;page_height_points?: number}, fallback: PhysicalSize): PhysicalSize =>
+    validPagePoints(image.page_width_points) && validPagePoints(image.page_height_points)
+        ? {widthPoints:image.page_width_points,heightPoints:image.page_height_points} : fallback;
 const confidence = (value: unknown): number | null => finite(value) && value >= 0 && value <= 1 ? value : null;
 const touch = (project: OcrProject, pages: OcrPage[]): OcrProject => ({ ...project, pages, updatedAt: now() });
 const activeRegions = (page: OcrPage) => page.regions.filter((region) => !region.excluded && textKinds.has(region.kind));
@@ -101,9 +119,11 @@ export function addDocument(project: OcrProject, imported: ImportedDocument): Oc
     const pages: OcrPage[] = imported.pages.map((page, index) => ({
         id: id('page'), documentId: document.id, sourcePage: index + 1, name: `${document.name} · ${index + 1}`,
         imagePath: page.image_path, originalImagePath: page.image_path, width: page.width, height: page.height,
+        ...importedPhysicalSize(page, rasterPhysicalSize(page.width, page.height)),
         status: 'pending', regions: [], excluded: false, approved: false, error: null, elapsedMs: null,
         provenance: {}, profileId: project.profileId,
     }));
+    if (pages.some((page)=>!validPagePoints(page.widthPoints)||!validPagePoints(page.heightPoints))) throw new Error('Imported page exceeds the supported physical size at the default 300 DPI. Supply valid physical page dimensions.');
     return { ...touch(project, [...project.pages, ...pages]), documents: [...project.documents, document] };
 }
 
@@ -142,6 +162,7 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
     const { regions: _regions, ...metadata } = result;
     return updatePage(project, pageId, {
         width: result.width, height: result.height, imagePath: result.image_path || page.imagePath,
+        ...importedPhysicalSize(result, pagePhysicalSize(page)),
         regions, status: 'recognized', approved: false, error: null,
         elapsedMs: finite(result.elapsed_ms) ? result.elapsed_ms : null,
         provenance: { ...metadata, recognizedAt: now(), profileId }, profileId,
@@ -225,7 +246,13 @@ export function applyPageImage(project: OcrProject, pageId: string, image: Impor
     if (!validDimension(image.width) || !validDimension(image.height) || !image.image_path) throw new Error('Invalid transformed page.');
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) return project;
-    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...withoutExtraction(page.provenance), lastImageOperation: operation, transformedAt: now() } });
+    const priorSize = pagePhysicalSize(page);
+    const fallback = operation === 'rotate' && image.width === page.height && image.height === page.width
+        ? {widthPoints:priorSize.heightPoints,heightPoints:priorSize.widthPoints}
+        : operation === 'crop'
+            ? {widthPoints:priorSize.widthPoints * image.width / page.width,heightPoints:priorSize.heightPoints * image.height / page.height}
+            : priorSize;
+    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, ...importedPhysicalSize(image,fallback), regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...withoutExtraction(page.provenance), lastImageOperation: operation, transformedAt: now() } });
 }
 
 /** Replace one spread with independently recognizable pages in reading order. */
@@ -233,9 +260,11 @@ export function splitPage(project: OcrProject, pageId: string, images: ImportedP
     const source = project.pages.find((page) => page.id === pageId);
     if (!source) return project;
     if (images.length < 2 || images.some((image) => !image.image_path || !validDimension(image.width) || !validDimension(image.height))) throw new Error('Page split must produce at least two valid images.');
+    const priorSize = pagePhysicalSize(source);
     const children = images.map((image, index): OcrPage => ({
         ...source, id: id('page'), name: `${source.name} · part ${index+1}`,
         imagePath: image.image_path, width: image.width, height: image.height,
+        ...importedPhysicalSize(image,{widthPoints:priorSize.widthPoints * image.width / source.width,heightPoints:priorSize.heightPoints * image.height / source.height}),
         regions: [], status: 'pending', approved: false, error: null, elapsedMs: null,
         provenance: {...withoutExtraction(source.provenance), splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
     }));
@@ -325,8 +354,10 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     const payload: ExportPage[] = [];
     const sources = new Map(project.documents.map(document => [document.id, document.sourceUri]));
     for (const page of pages) {
+        const physicalSize = pagePhysicalSize(page);
         if (page.status!=='recognized') errors.push(`${page.name}: recognition is ${page.status}. Recognize or explicitly exclude this page.`);
         if (!page.imagePath || !validDimension(page.width) || !validDimension(page.height)) errors.push(`${page.name}: page image or dimensions are missing.`);
+        if (!validPagePoints(physicalSize.widthPoints) || !validPagePoints(physicalSize.heightPoints)) errors.push(`${page.name}: physical page dimensions must be positive and no greater than ${MAX_PAGE_POINTS} points.`);
         if (options.requireReviewed && !page.approved) errors.push(`${page.name}: page review is required.`);
         const regions = activeRegions(page);
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
@@ -336,6 +367,7 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
             id:page.id, name:page.name, source_uri:sources.get(page.documentId),
             source_page:page.sourcePage, approved:page.approved, provenance:clone(page.provenance),
             image_path:page.imagePath, width:page.width, height:page.height,
+            page_width_points:physicalSize.widthPoints, page_height_points:physicalSize.heightPoints,
             regions:regions.map((r): ExportRegion => {
             const originalAligned = r.charConfidenceAligned && r.charConfidenceUnit !== 'token' &&
                 r.char_conf.length > 0 && r.char_conf.length === Array.from(r.originalText).length;
@@ -404,6 +436,10 @@ export function parseProject(input: unknown): OcrProject {
     for (const page of p.pages) {
         checkId(page.id);
         if (!p.documents.some((d)=>d.id===page.documentId)||typeof page.name!=='string'||!Number.isInteger(page.sourcePage)||page.sourcePage<1||typeof page.imagePath!=='string'||!page.imagePath||typeof page.originalImagePath!=='string'||!page.originalImagePath||!validDimension(page.width)||!validDimension(page.height)||!statuses.includes(page.status)||!Array.isArray(page.regions)||page.regions.length>100000||typeof page.excluded!=='boolean'||typeof page.approved!=='boolean') throw new Error('OCR project contains an invalid page.');
+        if ((page.widthPoints!==undefined&&!validPagePoints(page.widthPoints))||(page.heightPoints!==undefined&&!validPagePoints(page.heightPoints))) throw new Error('OCR project contains invalid physical page dimensions.');
+        const physicalSize=pagePhysicalSize(page);
+        if (!validPagePoints(physicalSize.widthPoints)||!validPagePoints(physicalSize.heightPoints)) throw new Error('OCR page exceeds the supported physical size at the default 300 DPI.');
+        Object.assign(page,physicalSize);
         if (!page.provenance||typeof page.provenance!=='object'||Array.isArray(page.provenance)) page.provenance={};
         if (typeof page.profileId!=='string') page.profileId=p.profileId;
         for (const region of page.regions) {

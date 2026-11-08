@@ -108,6 +108,72 @@ describe('OCR project and recognition',()=>{
     });
 });
 
+describe('physical paper size',()=>{
+    it('preserves PDF dimensions and assigns an explicit 300 DPI fallback to raster imports',()=>{
+        const p=addDocument(createProject(),{source_uri:'/sources/pages.pdf',name:'Pages',pages:[
+            {image_path:'/letter.png',width:2550,height:3300,page_width_points:612,page_height_points:792},
+            {image_path:'/raster.png',width:1000,height:1400},
+            {image_path:'/bad-metadata.png',width:1000,height:1400,page_width_points:0,page_height_points:792},
+        ]});
+        expect(p.pages.map(page=>[page.widthPoints,page.heightPoints])).toEqual([[612,792],[240,336],[240,336]]);
+        expect(parseProject(serializeProject(p)).pages[0].widthPoints).toBe(612);
+        expect(()=>addDocument(createProject(),{source_uri:'/huge.png',name:'Huge',pages:[{image_path:'/huge.png',width:100_000,height:1000}]})).toThrow(/physical size/);
+    });
+    it('recognition preserves paper size through higher pixel resolution and accepts native crop metadata',()=>{
+        let p=project(1);
+        const id=p.pages[0].id;
+        p=updatePage(p,id,{widthPoints:612,heightPoints:792});
+        p=applyRecognition(p,id,{image_path:'/upscaled.png',width:2000,height:2800,regions:[]});
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([612,792]);
+        p=applyRecognition(p,id,{image_path:'/cropped.png',width:1000,height:1400,page_width_points:306,page_height_points:396,regions:[]});
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([306,396]);
+        p=applyRecognition(p,id,{width:1000,height:1400,page_width_points:0,page_height_points:100,regions:[]});
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([306,396]);
+    });
+    it('rotation swaps physical axes, cropping scales them, and scan repair preserves them',()=>{
+        let p=project(1);
+        const id=p.pages[0].id;
+        p=updatePage(p,id,{widthPoints:500,heightPoints:700});
+        p=applyPageImage(p,id,{image_path:'/rotated.png',width:1400,height:1000},'rotate');
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([700,500]);
+        p=applyPageImage(p,id,{image_path:'/crop.png',width:700,height:500},'crop');
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([350,250]);
+        p=applyPageImage(p,id,{image_path:'/repair.png',width:1400,height:1000},'scan repair');
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([350,250]);
+        p=applyPageImage(p,id,{image_path:'/auto-crop.png',width:1200,height:800,page_width_points:300,page_height_points:200},'scan repair');
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([300,200]);
+    });
+    it('split pages receive their proportional share of the spread physical width',()=>{
+        const initial=project(1),id=initial.pages[0].id;
+        const p=updatePage(initial,id,{widthPoints:500,heightPoints:700});
+        const next=splitPage(p,id,[{image_path:'/left.png',width:300,height:1400},{image_path:'/right.png',width:700,height:1400}]);
+        expect(next.pages.map(page=>[page.widthPoints,page.heightPoints])).toEqual([[150,700],[350,700]]);
+        expect([p.pages[0].widthPoints,p.pages[0].heightPoints]).toEqual([500,700]);
+    });
+    it('legacy recovery derives physical size and rejects malformed persisted point dimensions',()=>{
+        const old=project(1);
+        delete old.pages[0].widthPoints;delete old.pages[0].heightPoints;
+        const restored=parseProject(old);
+        expect([restored.pages[0].widthPoints,restored.pages[0].heightPoints]).toEqual([240,336]);
+        expect(old.pages[0].widthPoints).toBeUndefined();
+        for (const widthPoints of [0,-1,14_400.1,NaN,Infinity]) {
+            const bad=updatePage(restored,restored.pages[0].id,{widthPoints});
+            expect(()=>parseProject(bad)).toThrow(/physical page dimensions/);
+        }
+    });
+    it('export uses physical page points independently from pixels and blocks invalid physical sizes',()=>{
+        let p=recognize(project(1));
+        const id=p.pages[0].id;
+        p=updatePage(p,id,{widthPoints:612,heightPoints:792});
+        const out=prepareExport(p);
+        expect(out.errors).toEqual([]);
+        expect(out.pages[0]).toMatchObject({width:1000,height:1400,page_width_points:612,page_height_points:792});
+        const bad=prepareExport(updatePage(p,id,{heightPoints:0}));
+        expect(bad.pages).toEqual([]);
+        expect(bad.errors[0]).toMatch(/physical page dimensions/);
+    });
+});
+
 describe('proofreading and geometry',()=>{
     it('edits preserve raw recognition evidence and revoke page approval',()=>{
         let p=recognize(project(1));

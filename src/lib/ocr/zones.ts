@@ -9,12 +9,42 @@ export interface PixelRectangle {
 
 const intersects = (a: PixelRectangle, b: PixelRectangle) =>
   a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+// Match the model and native geometry boundary tolerance. Floating point boxes
+// at a page edge must still be replaced by a crop of that complete page.
+const edgeTolerance = 0.01;
 const contains = (outer: PixelRectangle, inner: PixelRectangle) =>
-  inner.x >= outer.x &&
-  inner.y >= outer.y &&
-  inner.x + inner.w <= outer.x + outer.w &&
-  inner.y + inner.h <= outer.y + outer.h;
+  inner.x >= outer.x - edgeTolerance &&
+  inner.y >= outer.y - edgeTolerance &&
+  inner.x + inner.w <= outer.x + outer.w + edgeTolerance &&
+  inner.y + inner.h <= outer.y + outer.h + edgeTolerance;
 const replaceable = (r: OcrRegion) => !r.excluded && r.kind !== "picture";
+
+/** Native diagnostics must describe a real integer crop of this page. */
+export function effectiveRecognitionZone(
+  page: OcrPage,
+  requested: PixelRectangle,
+  value: unknown,
+): PixelRectangle {
+  if (value === undefined) return requested;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(
+      "Recognition returned invalid crop geometry. The existing text was preserved.",
+    );
+  const rect = value as PixelRectangle;
+  if (
+    ![rect.x, rect.y, rect.w, rect.h].every(Number.isInteger) ||
+    rect.x < 0 ||
+    rect.y < 0 ||
+    rect.w <= 0 ||
+    rect.h <= 0 ||
+    rect.x + rect.w > page.width ||
+    rect.y + rect.h > page.height
+  )
+    throw new Error(
+      "Recognition returned invalid crop geometry. The existing text was preserved.",
+    );
+  return { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+}
 
 /** Match native crop rounding, then cover whole intersecting text regions. */
 export function expandRecognitionZone(
@@ -65,6 +95,7 @@ export function expandRecognitionZone(
       );
       const next = { x: left, y: top, w: right - left, h: bottom - top };
       changed =
+        changed ||
         next.x !== zone.x ||
         next.y !== zone.y ||
         next.w !== zone.w ||

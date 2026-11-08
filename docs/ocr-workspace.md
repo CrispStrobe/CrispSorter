@@ -108,6 +108,8 @@ Prepared images are materialized before recognition. The recognizer's internal
 geometric cleanup is disabled for review runs; returned boxes must match the
 prepared image used for the preview and export. Pipeline instances are keyed by
 configuration, so changing a profile does not keep an earlier engine cached.
+Preparation notes are retained with the page and shown for review. If a repair
+returns the same image pixels, corrected text and approval remain intact.
 
 ## Confidence and review evidence
 
@@ -128,6 +130,11 @@ exact codepoint count. Some native engines expose token likelihoods in the same
 legacy sequence buffer; those are never treated as character offsets just
 because the array length happens to match the text.
 
+Physical page sizes are kept separately from raster dimensions. PDF import
+retains the source page size; images without resolution metadata use 300 DPI.
+Crop, rotation, and splitting update paper dimensions, while upscaling preserves
+them. The PDF export panel offers an explicit scan-DPI override.
+
 The optional paired native diagnostics include source and working dimensions,
 coordinate validity, engine stages, automatic acceptance decisions, detected
 language, reading order, score provenance, and warnings. Automatic pipeline
@@ -139,7 +146,9 @@ The **Extract** panel works on the current page or selected region:
 
 - **Fields:** GLiNER operates on the reviewed text, so corrections affect the
   resulting values. The layout option runs LiLT against page pixels. Field names,
-  minimum extraction score, and values are editable. Export the result as JSON.
+  minimum extraction score, and values are editable. Field JSON retains the
+  original value and flags manual corrections; its score always describes the
+  original model extraction. Export the result as JSON.
 - **Tables:** native structure recognition returns a table. Only inert cell text
   is placed in the editor; returned HTML is not inserted into the live DOM.
   Cells are editable and export as CSV. Inspect merged cells against the source.
@@ -174,6 +183,12 @@ formats. Archival PDF/A export is not advertised: it requires embedded resources
 and independent conformance validation. DOCX export produces flowing text, not
 an exact reconstruction of arbitrary page typography. Exports preserve empty recognized
 pages as image pages when the output supports images.
+
+The reviewed PDF renderer rejects right-to-left text and directional controls
+with an actionable error. Its current text mapping cannot preserve their logical
+order consistently across PDF readers. Such documents can still be reviewed and
+exported as text, JSON, hOCR, or ALTO without publishing a reversed searchable
+layer. Full bidirectional PDF support needs a separately validated renderer.
 
 All exports validate dimensions, finite coordinates, nonempty page selection,
 and asset availability. Existing output files require explicit replacement.

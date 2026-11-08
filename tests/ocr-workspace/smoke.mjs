@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, extraction-delay, project-recovery');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -87,6 +87,31 @@ if (process.argv.includes('--serve')) {
             } finally { await page?.close({ runBeforeUnload: false }); }
         }
 
+        function canvasFitState(details = false) {
+            const viewport = document.querySelector('.canvas-shell .viewport');
+            const paper = viewport?.querySelector('.paper');
+            if (!viewport || !paper) return false;
+            const style = getComputedStyle(viewport);
+            const left = parseFloat(style.paddingLeft), right = parseFloat(style.paddingRight);
+            const top = parseFloat(style.paddingTop), bottom = parseFloat(style.paddingBottom);
+            const width = viewport.clientWidth - left - right;
+            const height = viewport.clientHeight - top - bottom;
+            const view = viewport.getBoundingClientRect(), image = paper.getBoundingClientRect();
+            const state = {
+                contentWidth: width, contentHeight: height, paperWidth: image.width, paperHeight: image.height,
+                inside: image.left >= view.left + left - 1 && image.right <= view.left + viewport.clientWidth - right + 1 &&
+                    image.top >= view.top + top - 1 && image.bottom <= view.top + viewport.clientHeight - bottom + 1,
+                fillsAxis: Math.abs(image.width - width) <= 1 || Math.abs(image.height - height) <= 1,
+                noScroll: viewport.scrollWidth <= viewport.clientWidth + 1 && viewport.scrollHeight <= viewport.clientHeight + 1,
+            };
+            return details ? state : width > 0 && height > 0 && state.inside && state.fillsAxis && state.noScroll;
+        }
+        async function assertFitPage(page, label) {
+            await page.getByRole('button', { name: 'Fit page', exact: true }).click();
+            try { await page.waitForFunction(canvasFitState, false); }
+            catch { assert.fail(`${label} Fit page did not fill and remain inside its viewport: ${JSON.stringify(await page.evaluate(canvasFitState, true))}`); }
+        }
+
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
             assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
             assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'load').length), 1);
@@ -121,13 +146,46 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.getByRole('button', { name: /^Page 1:/ }).getAttribute('aria-current'), 'page');
         });
 
+        await test('unchanged preparation preserves corrections and approval while showing its warning', 'prepare-unchanged', async page => {
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            const corrected = 'Invoice NS-2026-1042 · confirmed';
+            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await text.fill(corrected);
+            await text.blur();
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('button', { name: 'Page approved', exact: true }).waitFor();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[2].approved === true &&
+                window.ocrSmoke.lastSaved.pages[2].regions[2].text.endsWith(' · confirmed'));
+            const before = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[2]);
+
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: 'Apply preparation to this page', exact: true }).click();
+            await page.getByText('Cleanup unavailable; original pixels retained.', { exact: false }).first().waitFor({ state: 'visible' });
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
+            await page.getByRole('tab', { name: 'Review', exact: true }).click();
+            assert.equal(await text.inputValue(), corrected);
+            await page.getByRole('button', { name: 'Page approved', exact: true }).waitFor();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.getByText('Project saved', { exact: true }).waitFor();
+            const after = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[2]);
+            assert.equal(after.status, 'recognized');
+            assert.equal(after.approved, true);
+            assert.equal(after.imagePath, before.imagePath);
+            assert.deepEqual([after.width, after.height, after.widthPoints, after.heightPoints],
+                [before.width, before.height, before.widthPoints, before.heightPoints]);
+            assert.deepEqual(after.regions, before.regions);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
         await test('export preflight blocks incomplete pages and exports explicit approved scope', 'review', async page => {
             await page.getByRole('tab', { name: 'Export', exact: true }).click();
             await page.getByText(/recognition is pending/).waitFor();
             assert.equal(await page.evaluate(() => window.ocrSmoke.exports.length), 0);
             await page.getByRole('button', { name: /^Page 3:/ }).click();
-            await page.getByLabel('Pages', { exact: true }).selectOption('current');
-            await page.getByLabel('Output format', { exact: true }).selectOption('text');
+            // Implicit labels wrap the select, so their text includes options.
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('text');
             await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
             await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
             const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
@@ -136,6 +194,21 @@ if (process.argv.includes('--serve')) {
             assert.equal(request.pages[0].regions[2].text, 'Invoice NS-2026-1042');
             assert.equal(request.overwrite, false);
             assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
+
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdf');
+            await page.getByRole('combobox', { name: /^Page sizes/ }).selectOption('dpi');
+            await page.getByRole('spinbutton', { name: /^Scan resolution \(DPI\)/ }).fill('150');
+            await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 2);
+            const pdf = await page.evaluate(() => window.ocrSmoke.exports[1]);
+            assert.equal(pdf.format, 'pdf');
+            assert.equal(pdf.pdfa, false);
+            assert.equal(pdf.pages.length, 1);
+            assert.equal(pdf.pages[0].image_path, request.pages[0].image_path);
+            assert.deepEqual([pdf.pages[0].width, pdf.pages[0].height], [1000, 1400]);
+            assert.equal(pdf.pages[0].page_width_points, pdf.pages[0].width * 72 / 150);
+            assert.equal(pdf.pages[0].page_height_points, pdf.pages[0].height * 72 / 150);
+            assert.deepEqual(pdf.pages[0].regions, request.pages[0].regions);
         });
 
         await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
@@ -290,8 +363,10 @@ if (process.argv.includes('--serve')) {
 
         await test('desktop and compact layouts remain usable', 'review', async page => {
             await page.getByRole('button', { name: 'Next issue', exact: true }).click();
+            await assertFitPage(page, 'Desktop');
             await page.screenshot({ path: path.join(output, 'ocr-workspace-desktop.png'), fullPage: true });
             await page.setViewportSize({ width: 390, height: 844 });
+            await assertFitPage(page, 'Compact');
             await page.screenshot({ path: path.join(output, 'ocr-workspace-compact.png'), fullPage: true });
             const sizes = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
             assert.ok(sizes.documentWidth <= sizes.width + 2, `Compact layout overflows: ${sizes.documentWidth} > ${sizes.width}`);

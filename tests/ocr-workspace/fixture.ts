@@ -147,7 +147,15 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(options.operation==='rotate')return {pages:[{image_path:options.pagePath+'-rotated',width:1400,height:1000}]};
             return {pages:[{image_path:options.pagePath+'-crop',width:Math.round(options.crop?.w??1000),height:Math.round(options.crop?.h??1400)}]};
         },
-        async prepare(path,config){note('prepare',{path,config});return {image_path:path+'-prepared',width:1000,height:1400};},
+        async prepare(path,config,pageWidthPoints,pageHeightPoints){
+            note('prepare',{path,config,pageWidthPoints,pageHeightPoints});
+            if(scenario==='prepare-unchanged')return {
+                image_path:path,width:1000,height:1400,
+                page_width_points:pageWidthPoints,page_height_points:pageHeightPoints,
+                warnings:['Cleanup unavailable; original pixels retained.'],
+            };
+            return {image_path:path+'-prepared',width:1000,height:1400};
+        },
         async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};},
         async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
         async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},

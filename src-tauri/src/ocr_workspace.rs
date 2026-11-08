@@ -32,6 +32,23 @@ pub struct PageAsset {
     pub image_path: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_width_points: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_height_points: Option<f64>,
+}
+
+fn checked_physical_size(width: Option<f64>, height: Option<f64>) -> Result<Option<(f64, f64)>, String> {
+    match (width, height) {
+        (None, None) => Ok(None),
+        (Some(w), Some(h)) if [w, h].iter().all(|n| n.is_finite() && *n > 0.0 && *n <= 14_400.0) => Ok(Some((w, h))),
+        _ => Err("Physical page dimensions must both be positive and no larger than 14400 PDF points (200 inches).".into()),
+    }
+}
+
+fn set_physical_size(page: &mut PageAsset, size: Option<(f64, f64)>) {
+    page.page_width_points = size.map(|(w, _)| w);
+    page.page_height_points = size.map(|(_, h)| h);
 }
 
 #[derive(Debug, Serialize)]
@@ -172,7 +189,8 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
         Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {},
         Err(e) => return Err(format!("Save page snapshot: {}", e.error)),
     }
-    Ok(PageAsset { image_path: path.to_string_lossy().into_owned(), width, height })
+    Ok(PageAsset { image_path: path.to_string_lossy().into_owned(), width, height,
+        page_width_points: None, page_height_points: None })
 }
 
 fn opaque_page(image: &DynamicImage) -> DynamicImage {
@@ -236,10 +254,7 @@ pub fn ocr_workspace_capabilities() -> Value {
 }
 
 fn reviewed_pdf_available() -> bool {
-    // Stay disabled until the paired native renderer exposes verified raster,
-    // Unicode, and arbitrary page-count support. Enabling diagnostics alone
-    // cannot certify an older renderer's output.
-    false
+    crate::extractors::ocr_render::reviewed_pdf_render_available()
 }
 
 #[tauri::command]
@@ -267,7 +282,14 @@ fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String>
     for (index, page) in images.paths().iter().enumerate() {
         let img = decode_page(page).map_err(|e| format!("Page {}: {e}", index + 1))?;
         let orientation = crate::images::exif::read_exif(page).ok().and_then(|e| e.orientation).unwrap_or(1);
-        pages.push(persist_image(root, &orient_image(img, orientation))?);
+        let mut page = persist_image(root, &orient_image(img, orientation))?;
+        // Preserve PDF paper size; raster sources without a reliable DPI use
+        // the explicit 300 DPI policy rather than treating pixels as points.
+        let (width_points, height_points) = images.page_size_points(index)
+            .unwrap_or((f64::from(page.width) * 72.0 / 300.0, f64::from(page.height) * 72.0 / 300.0));
+        let size = checked_physical_size(Some(width_points), Some(height_points))?;
+        set_physical_size(&mut page, size);
+        pages.push(page);
     }
     Ok(ImportedDocument {
         source_uri: path.to_string_lossy().into_owned(),
@@ -299,14 +321,17 @@ pub async fn ocr_workspace_transform(
     degrees: Option<i32>,
     crop: Option<PixelRect>,
     split_x: Option<u32>,
+    page_width_points: Option<f64>,
+    page_height_points: Option<f64>,
 ) -> Result<TransformedPages, String> {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
-    tokio::task::spawn_blocking(move || transform_page(&root, &path, &operation, degrees, crop, split_x)).await
+    let size = checked_physical_size(page_width_points, page_height_points)?;
+    tokio::task::spawn_blocking(move || transform_page(&root, &path, &operation, degrees, crop, split_x, size)).await
         .map_err(|e| format!("Page transform worker: {e}"))?
 }
 
-fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>) -> Result<TransformedPages, String> {
+fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>, physical_size: Option<(f64, f64)>) -> Result<TransformedPages, String> {
     let image = decode_page(path)?;
     let output = match operation {
         "rotate" => vec![match degrees.unwrap_or(90).rem_euclid(360) {
@@ -324,7 +349,17 @@ fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32
         },
         _ => return Err(format!("Unknown page operation: {operation}")),
     };
-    let pages = output.iter().map(|img| persist_image(root, img)).collect::<Result<Vec<_>, _>>()?;
+    let mut pages = output.iter().map(|img| persist_image(root, img)).collect::<Result<Vec<_>, _>>()?;
+    for page in &mut pages {
+        let size = physical_size.map(|(width, height)| {
+            if operation == "rotate" {
+                if degrees.unwrap_or(90).rem_euclid(180) == 90 { (height, width) } else { (width, height) }
+            } else {
+                (width * f64::from(page.width) / f64::from(image.width()), height * f64::from(page.height) / f64::from(image.height()))
+            }
+        });
+        set_physical_size(page, size);
+    }
     Ok(TransformedPages { pages })
 }
 
@@ -340,15 +375,18 @@ pub async fn ocr_workspace_prepare(
     app: tauri::AppHandle,
     page_path: String,
     config: crate::extractors::OcrPipelineConfig,
+    page_width_points: Option<f64>,
+    page_height_points: Option<f64>,
 ) -> Result<PreparedPage, String> {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     validate_config(&config)?;
-    tokio::task::spawn_blocking(move || prepare_page(&root, &path, &config)).await
+    let size = checked_physical_size(page_width_points, page_height_points)?;
+    tokio::task::spawn_blocking(move || prepare_page(&root, &path, &config, size)).await
         .map_err(|e| format!("Page preparation worker: {e}"))?
 }
 
-fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig) -> Result<PreparedPage, String> {
+fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig, mut physical_size: Option<(f64, f64)>) -> Result<PreparedPage, String> {
     use crate::extractors::ocr_crispembed;
     let mut path = source.to_path_buf();
     let mut guards = Vec::new();
@@ -378,6 +416,9 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
         }
     }
     let image = decode_page(&path)?;
+    // Restoration and super-resolution change the sampling density, not the
+    // physical sheet size. Only the subsequent pixel crop changes the paper.
+    let before_cleanup = (image.width(), image.height());
     let recipe = config.stages.first().map(|s| s.cleanup.clone()).unwrap_or_default();
     if config.stages.iter().any(|s| s.cleanup.page_split) {
         warnings.push("This profile requests spread splitting. Use Split page to create and review both halves; recognition retains the complete current page.".into());
@@ -390,18 +431,23 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
         }
         cleanup_image(image, config, &recipe, use_cleanup, denoise)?
     } else { image };
+    physical_size = physical_size.map(|(w, h)| (w * f64::from(image.width()) / f64::from(before_cleanup.0), h * f64::from(image.height()) / f64::from(before_cleanup.1)));
     let page = persist_image(root, &image)?;
     let page = if recipe.auto_crop {
         if let Some((left, top, right, bottom)) = ocr_crispembed::content_bbox(Path::new(&page.image_path)) {
             let rect = PixelRect { x: left as f64, y: top as f64, w: (right - left) as f64, h: (bottom - top) as f64 };
             let (x, y, w, h) = checked_rect(rect, page.width, page.height)
                 .map_err(|e| format!("Automatic content crop: {e}"))?;
+            physical_size = physical_size.map(|(wp, hp)| (wp * f64::from(w) / f64::from(page.width), hp * f64::from(h) / f64::from(page.height)));
             persist_image(root, &image.crop_imm(x, y, w, h))?
         } else {
             warnings.push("Automatic content crop found no bounding area. The complete prepared page was retained.".into());
             page
         }
     } else { page };
+    let mut page = page;
+    let size = checked_physical_size(physical_size.map(|(w, _)| w), physical_size.map(|(_, h)| h))?;
+    set_physical_size(&mut page, size);
     drop(guards);
     Ok(PreparedPage { page, warnings })
 }
@@ -576,21 +622,24 @@ pub async fn ocr_workspace_recognize(
     engine: Option<String>,
     language: Option<String>,
     zone: Option<PixelRect>,
+    page_width_points: Option<f64>,
+    page_height_points: Option<f64>,
 ) -> Result<RecognizedPage, String> {
     if !cfg!(feature = "crispembed") { return Err("Recognition requires a build with CrispEmbed.".into()); }
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
+    let size = checked_physical_size(page_width_points, page_height_points)?;
     let config = match config {
         Some(config) => config,
         None => state.bg_ingest.lock().await.ocr_pipeline.clone(),
     };
     let (config, warnings) = recognition_config(config, engine.as_deref(), language.as_deref())?;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
-    tokio::task::spawn_blocking(move || recognize_page(&root, &path, &config, zone, warnings)).await
+    tokio::task::spawn_blocking(move || recognize_page(&root, &path, &config, zone, warnings, size)).await
         .map_err(|e| format!("Recognition worker: {e}"))?
 }
 
-fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>) -> Result<RecognizedPage, String> {
+fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>) -> Result<RecognizedPage, String> {
     let started = std::time::Instant::now();
     let (page, recognition_path, offset) = if let Some(zone) = zone {
         // A zone result must align with the current whole page. Geometric
@@ -599,9 +648,10 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         let (x, y, w, h) = checked_rect(zone, image.width(), image.height())?;
         let crop = persist_image(root, &image.crop_imm(x, y, w, h))?;
         warnings.push("Zone recognition preserves the current page geometry; scan repair settings are applied only when recognizing a complete page.".into());
-        (PageAsset { image_path: path.to_string_lossy().into_owned(), width: image.width(), height: image.height() }, PathBuf::from(crop.image_path), (x, y))
+        (PageAsset { image_path: path.to_string_lossy().into_owned(), width: image.width(), height: image.height(),
+            page_width_points:physical_size.map(|(w, _)| w), page_height_points:physical_size.map(|(_, h)| h) }, PathBuf::from(crop.image_path), (x, y))
     } else {
-        let prepared = prepare_page(root, path, config)?;
+        let prepared = prepare_page(root, path, config, physical_size)?;
         warnings.extend(prepared.warnings);
         let recognition_path = PathBuf::from(&prepared.page.image_path);
         (prepared.page, recognition_path, (0, 0))
@@ -839,8 +889,8 @@ pub struct ExportRegion {
     pub y: f32,
     pub w: f32,
     pub h: f32,
-    /// Unknown is null in review JSON. It becomes the renderer's neutral zero
-    /// only at the native output boundary, never in the persisted evidence.
+    /// Unknown is null in review JSON. Paired renderers omit unknown scores;
+    /// legacy output receives neutral zero only at the rendering boundary.
     pub confidence: Option<f32>,
     #[serde(default)]
     pub char_conf: Vec<f32>,
@@ -869,6 +919,10 @@ pub struct ExportPage {
     pub image_path: String,
     pub width: i32,
     pub height: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_width_points: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_height_points: Option<f64>,
     pub regions: Vec<ExportRegion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -891,6 +945,8 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
         if page.width <= 0 || page.height <= 0 || page.width as u32 != width || page.height as u32 != height {
             return Err(format!("Page {} dimensions do not match its image. Recognize the current page image before exporting.", i + 1));
         }
+        checked_physical_size(page.page_width_points, page.page_height_points)
+            .map_err(|e| format!("Page {}: {e}", i + 1))?;
         if page.regions.len() > MAX_REGIONS { return Err(format!("Page {} has too many regions.", i + 1)); }
         for (j, region) in page.regions.iter().enumerate() {
             checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, width, height)
@@ -933,6 +989,14 @@ fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+fn transcription_confidence(region: &ExportRegion) -> f32 {
+    let unknown = if cfg!(feature = "ocr-reviewed-pdf") { -1.0 } else { 0.0 };
+    if region.confidence_basis.as_deref() == Some("recognition")
+        && region.original_text.as_deref() == Some(region.text.as_str()) {
+        region.confidence.filter(|score| score.is_finite() && (0.0..=1.0).contains(score)).unwrap_or(unknown)
+    } else { unknown }
+}
+
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
     if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
@@ -959,8 +1023,11 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
             let render_pages: Vec<_> = pages.iter().map(|p| RenderPage::from_regions(p.regions.iter().map(|r| OcrRegion {
-                text: r.text.clone(), x: r.x, y: r.y, w: r.w, h: r.h, confidence: r.confidence.unwrap_or(0.0),
-            }).collect(), p.width, p.height, p.image_path.clone())).collect();
+                text: r.text.clone(), x: r.x, y: r.y, w: r.w, h: r.h, confidence: transcription_confidence(r),
+            }).collect(), p.width, p.height, p.image_path.clone()).with_physical_size(
+                p.page_width_points.unwrap_or(f64::from(p.width) * 72.0 / 300.0) as f32,
+                p.page_height_points.unwrap_or(f64::from(p.height) * 72.0 / 300.0) as f32,
+            )).collect();
             crate::extractors::ocr_render::render(&render_pages, format, pdfa).map_err(|e| format!("Render OCR document: {e:#}"))
         },
     }
@@ -1056,7 +1123,7 @@ mod tests {
 
     fn export_page(root: &Path, text: &str) -> ExportPage {
         let asset = persist_image(root, &image()).unwrap();
-        ExportPage { image_path: asset.image_path, width: 8, height: 4, regions: vec![ExportRegion {
+        ExportPage { image_path: asset.image_path, width: 8, height: 4, page_width_points:None, page_height_points:None, regions: vec![ExportRegion {
             text: text.into(), x: 1.0, y: 1.0, w: 6.0, h: 2.0, confidence: Some(0.0), char_conf: vec![],
             id: None, original_text: None, confidence_basis: None, char_conf_unit: None,
             char_conf_aligned: None, original_char_conf: None, original_char_conf_aligned: None,
@@ -1095,10 +1162,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let source = persist_image(root.path(), &image()).unwrap();
         let before = fs::read(&source.image_path).unwrap();
-        let rotated = transform_page(root.path(), Path::new(&source.image_path), "rotate", Some(90), None, None).unwrap();
+        let rotated = transform_page(root.path(), Path::new(&source.image_path), "rotate", Some(90), None, None, Some((200.0, 100.0))).unwrap();
         assert_eq!((rotated.pages[0].width, rotated.pages[0].height), (4, 8));
         assert_eq!(fs::read(&source.image_path).unwrap(), before);
         assert_ne!(source.image_path, rotated.pages[0].image_path);
+        assert_eq!(rotated.pages[0].page_width_points, Some(100.0));
+        assert_eq!(rotated.pages[0].page_height_points, Some(200.0));
         assert_eq!(image::open(&rotated.pages[0].image_path).unwrap().to_rgb8(), image().rotate90().to_rgb8());
     }
 
@@ -1106,12 +1175,14 @@ mod tests {
     fn split_preserves_both_halves_and_the_last_pixel() {
         let root = tempfile::tempdir().unwrap();
         let source = persist_image(root.path(), &image()).unwrap();
-        let split = transform_page(root.path(), Path::new(&source.image_path), "split", None, None, Some(3)).unwrap();
+        let split = transform_page(root.path(), Path::new(&source.image_path), "split", None, None, Some(3), Some((800.0, 400.0))).unwrap();
         assert_eq!(split.pages.len(), 2);
         assert_eq!((split.pages[0].width, split.pages[1].width), (3, 5));
+        assert_eq!(split.pages[0].page_width_points, Some(300.0));
+        assert_eq!(split.pages[1].page_width_points, Some(500.0));
         let right = image::open(&split.pages[1].image_path).unwrap().to_rgb8();
         assert_eq!(right.get_pixel(4, 3), image().to_rgb8().get_pixel(7, 3));
-        assert!(transform_page(root.path(), Path::new(&source.image_path), "split", None, None, Some(8)).is_err());
+        assert!(transform_page(root.path(), Path::new(&source.image_path), "split", None, None, Some(8), None).is_err());
     }
 
     #[test]
@@ -1121,6 +1192,24 @@ mod tests {
             PixelRect{x:7.0,y:0.0,w:2.0,h:2.0}, PixelRect{x:f64::NAN,y:0.0,w:2.0,h:2.0},
         ] { assert!(checked_rect(rect, 8, 4).is_err()); }
         assert_eq!(checked_rect(PixelRect{x:1.5,y:0.5,w:2.5,h:2.0}, 8, 4).unwrap(), (1, 0, 3, 3));
+    }
+
+    #[test]
+    fn crop_scales_paper_size_but_repair_preserves_sampling_independence() {
+        let root = tempfile::tempdir().unwrap();
+        let source = persist_image(root.path(), &image()).unwrap();
+        let crop = transform_page(root.path(), Path::new(&source.image_path), "crop", None,
+            Some(PixelRect{x:1.0,y:1.0,w:3.0,h:2.0}), None, Some((80.0,40.0))).unwrap();
+        assert_eq!(crop.pages[0].page_width_points, Some(30.0));
+        assert_eq!(crop.pages[0].page_height_points, Some(20.0));
+        let mut config = crate::extractors::OcrPipelineConfig::default();
+        config.cleanup_enabled = false;
+        let prepared = prepare_page(root.path(), Path::new(&source.image_path), &config, Some((80.0,40.0))).unwrap();
+        assert_eq!(prepared.page.page_width_points, Some(80.0));
+        assert_eq!(prepared.page.page_height_points, Some(40.0));
+        assert!(checked_physical_size(Some(80.0), None).is_err());
+        assert!(checked_physical_size(Some(f64::NAN), Some(40.0)).is_err());
+        assert!(checked_physical_size(Some(20_000.0), Some(40.0)).is_err());
     }
 
     #[test]
@@ -1251,6 +1340,27 @@ mod tests {
     }
 
     #[test]
+    fn structured_confidence_requires_unchanged_transcription_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "original");
+        let region = &mut page.regions[0];
+        let unknown = if cfg!(feature = "ocr-reviewed-pdf") { -1.0 } else { 0.0 };
+        region.confidence = Some(0.99);
+        region.original_text = Some("original".into());
+        region.confidence_basis = Some("detection".into());
+        assert_eq!(transcription_confidence(region), unknown);
+        region.confidence_basis = Some("recognition".into());
+        assert_eq!(transcription_confidence(region), 0.99);
+        region.text = "corrected".into();
+        assert_eq!(transcription_confidence(region), unknown);
+        region.text = "original".into();
+        region.confidence = Some(0.0);
+        assert_eq!(transcription_confidence(region), 0.0);
+        region.confidence = None;
+        assert_eq!(transcription_confidence(region), unknown);
+    }
+
+    #[test]
     fn html_export_escapes_recognized_markup() {
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "<script>alert('x')</script>&")];
@@ -1303,6 +1413,8 @@ mod tests {
         let workspace = root.path().join("workspace");
         let imported = import_document(&workspace, &source).unwrap();
         assert_eq!(imported.pages.len(), 1);
+        assert_eq!(imported.pages[0].page_width_points, Some(8.0 * 72.0 / 300.0));
+        assert_eq!(imported.pages[0].page_height_points, Some(4.0 * 72.0 / 300.0));
         assert_eq!(fs::read(&source).unwrap(), before);
         assert_ne!(Path::new(&imported.pages[0].image_path), source);
         fs::remove_file(&source).unwrap();

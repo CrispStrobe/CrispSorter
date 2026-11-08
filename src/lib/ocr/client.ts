@@ -36,6 +36,8 @@ export interface ProjectSummary {
 }
 export interface RecognitionOptions {
   pagePath: string;
+  pageWidthPoints?: number;
+  pageHeightPoints?: number;
   config?: Record<string, unknown>;
   engine?: string;
   language?: string;
@@ -43,6 +45,8 @@ export interface RecognitionOptions {
 }
 export interface TransformOptions {
   pagePath: string;
+  pageWidthPoints?: number;
+  pageHeightPoints?: number;
   operation: "rotate" | "crop" | "split";
   degrees?: number;
   crop?: { x: number; y: number; w: number; h: number };
@@ -52,6 +56,8 @@ export interface ExtractionField {
   label: string;
   value: string;
   score: number;
+  original_value?: string;
+  review?: "unreviewed" | "corrected";
 }
 export interface ExportResult {
   saved_path: string;
@@ -80,6 +86,8 @@ export interface WorkspaceClient {
   prepare(
     pagePath: string,
     config: Record<string, unknown>,
+    pageWidthPoints?: number,
+    pageHeightPoints?: number,
   ): Promise<ImportedPage>;
   exportDocument(request: ExportRequest): Promise<ExportResult>;
   extractFields(
@@ -131,8 +139,13 @@ export const workspaceClient: WorkspaceClient = {
       crop: options.crop ?? null,
       splitX: options.splitX ?? null,
     }),
-  prepare: (pagePath, config) =>
-    invoke("ocr_workspace_prepare", { pagePath, config }),
+  prepare: (pagePath, config, pageWidthPoints, pageHeightPoints) =>
+    invoke("ocr_workspace_prepare", {
+      pagePath,
+      config,
+      pageWidthPoints,
+      pageHeightPoints,
+    }),
   exportDocument: (request) => invoke("ocr_workspace_export", { ...request }),
   extractFields: (text, labels, threshold) =>
     invoke("ocr_workspace_extract_fields", { text, labels, threshold }),
