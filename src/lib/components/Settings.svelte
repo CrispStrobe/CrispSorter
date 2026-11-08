@@ -3332,9 +3332,9 @@
                             <label for="ocr-pipeline-vlm-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
                                 {i18n.t.settings.ocr_pipeline_vlm_engine}
                                 <select id="ocr-pipeline-vlm-engine" bind:value={ocrPipelineVlmEngine} style="margin-left:4px;">
-                                    <option value="qwen2vl">Qwen2.5-VL (qwen2vl-3b)</option>
+                                    <option value="qwen2vl">Qwen2-VL / Qwen2.5-VL (3B weights: non-commercial)</option>
                                     <option value="glm">GLM-OCR</option>
-                                    <option value="got">GOT-OCR2</option>
+                                    <option value="got">GOT-OCR2 (non-commercial)</option>
                                     <option value="internvl2">InternVL2</option>
                                     <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
                                     <option value="granite_vision">Granite Vision 3.3-2B</option>
@@ -3416,7 +3416,7 @@
                                                 <option value="surya">Surya</option>
                                                 <option value="tesseract">Tesseract LSTM (DBNet + Tesseract)</option>
                                                 <option value="parseq">PARSeq (DBNet + scene-text · per-char confidence)</option>
-                                                <option value="got">GOT-OCR2</option>
+                                                <option value="got">GOT-OCR2 (non-commercial)</option>
                                                 <option value="glm">GLM-OCR</option>
                                                 <option value="qwen2vl">Qwen2.5-VL</option>
                                                 <option value="internvl2">InternVL2</option>

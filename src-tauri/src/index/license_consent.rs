@@ -142,6 +142,26 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "sauerkraut-gliner-lfm" => ModelLicense::Restricted("LFM Open License v1.0"),
         "texo-distill" => ModelLicense::Restricted("AGPL-3.0"),
         "surya-det" => ModelLicense::Restricted("OpenRAIL-M"),
+        // CrispEmbed's licence audit (README "VLM OCR engines' upstream
+        // licences", verified against the base chain): Qwen2.5-VL-3B
+        // derivatives are Qwen Research and GOT-OCR2's decoder is Tongyi
+        // Qianwen Research, both non-commercial. v0.17.12's registry still
+        // labels them permissive. `qwen2vl-ocr` is this app's alias for
+        // `qwen2vl-3b`. The Apache-2.0 Qwen2-VL-2B family (`german-ocr-3.1`,
+        // `nanonets-ocr2-1.5b`) is unaffected.
+        "qwen2vl-3b"
+        | "qwen2vl-ocr"
+        | "nanonets-ocr-s"
+        | "uni-mumer-qwen2.5-vl-3b"
+        | "teleocr-f16"
+        | "teleocr-q4_k-m"
+        | "teleocr-q4_k-mix"
+        | "teleocr-q8_0" => ModelLicense::NonCommercial("Qwen Research License"),
+        "got-ocr2"
+        | "got-ocr2-f16"
+        | "got-ocr2-q4_k-experimental"
+        | "got-ocr2-q8-q4k-mix-experimental"
+        | "got-ocr2-q8_0-experimental" => ModelLicense::NonCommercial("Tongyi Qianwen Research License"),
         "adair-5d"
         | "all-MiniLM-L12-v2"
         | "all-MiniLM-L12-v2-iq4xs"
@@ -229,7 +249,6 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "gliner-deberta-q4k"
         | "glm-ocr"
         | "glotlid"
-        | "got-ocr2"
         | "granite-embedding-107m"
         | "granite-embedding-278m"
         | "granite-vision"
@@ -299,7 +318,6 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "mxbai-rerank-base-v1"
         | "mxbai-rerank-xsmall-v1"
         | "nafnet-denoise"
-        | "nanonets-ocr-s"
         | "nanonets-ocr2-1.5b"
         | "nomic-bert-moe"
         | "nomic-embed-text-v1.5"
@@ -355,11 +373,6 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "ppocrv6-tiny-det"
         | "ppocrv6-tiny-rec"
         | "qari-ocr"
-        | "qwen2vl-3b"
-        // Application alias for the Qwen2-VL OCR recogniser Sorter's pipeline
-        // uses by default; the upstream family entry (`qwen2vl-3b`) is
-        // Apache-2.0, so the alias is classified the same way.
-        | "qwen2vl-ocr"
         | "qwen3-embed-0.6b"
         | "qwen3-embed-0.6b-iq4xs"
         | "qwen3-embed-0.6b-q4k"
@@ -423,7 +436,6 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "transcoda"
         | "trocr-printed"
         | "tromr"
-        | "uni-mumer-qwen2.5-vl-3b"
         | "uni-mumer-qwen3-vl-2b"
         | "unlimited-ocr"
         | "yunet" => ModelLicense::Permissive,
@@ -500,6 +512,17 @@ mod tests {
     }
 
     #[test]
+    fn research_only_vlm_ocr_weights_require_consent() {
+        for name in ["qwen2vl-3b", "qwen2vl-ocr", "nanonets-ocr-s", "uni-mumer-qwen2.5-vl-3b",
+                     "teleocr-q8_0", "got-ocr2", "got-ocr2-f16"] {
+            assert!(matches!(license_for_registry_name(name), ModelLicense::NonCommercial(_)), "{name}");
+        }
+        // The Apache-2.0 Qwen2-VL-2B fine-tunes stay usable without consent.
+        assert!(!license_for_registry_name("german-ocr-3.1").requires_consent());
+        assert!(!license_for_registry_name("nanonets-ocr2-1.5b").requires_consent());
+    }
+
+    #[test]
     fn ocr_and_enhancement_defaults_never_trip_the_download_gate() {
         // These are the literal names the lazy OCR / enhancement initialisers
         // resolve. If one of them becomes restricted or unreviewed, OCR stops
@@ -507,7 +530,7 @@ mod tests {
         // expectation here rather than discovering it in the field.
         for name in [
             "dbnet-det",
-            "qwen2vl-ocr",
+            "german-ocr-3.1",
             "tesseract-eng",
             "parseq",
             "lilt-funsd",

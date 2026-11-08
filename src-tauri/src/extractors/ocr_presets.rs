@@ -20,6 +20,9 @@ pub fn apply(base: &OcrPipelineConfig, preset: &str) -> Result<OcrPipelineConfig
             stage.det_model = Some("dbnet-det".into());
             stage.rec_model = Some("trocr-printed".into());
         }
+        // The Qwen presets name `qwen2vl-3b` explicitly because their quality
+        // receipt was recorded with it. It is Qwen Research (non-commercial),
+        // so `resolve_checked` refuses to download it without licence consent.
         "multilingual" => {
             // Qwen is a complete VLM, not a TrOCR line recognizer.
             stage.engine = "qwen2vl".into();
