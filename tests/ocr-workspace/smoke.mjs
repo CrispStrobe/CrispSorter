@@ -136,6 +136,22 @@ if (process.argv.includes('--serve')) {
             assert.ok(await page.evaluate(() => window.ocrSmoke.saves.every(save => save.revision > 7)));
         });
 
+        await test('a document sent from another tab is imported once and selected', `review&open=${encodeURIComponent('/fixtures/sent-from-library.png')}`, async page => {
+            await page.getByRole('button', { name: /^Page 4:/ }).waitFor();
+            await page.waitForFunction(() => [...document.querySelectorAll('[aria-current="page"]')]
+                .some(el => /^Page 4:/.test(el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '')));
+            const imports = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importDocument'));
+            assert.equal(imports.length, 1);
+            assert.equal(imports[0].data.locationUri, '/fixtures/sent-from-library.png');
+            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 4);
+        });
+
+        await test('a document already in the project is selected instead of imported again', `review&open=${encodeURIComponent('/fixtures/northstar-statement.pdf')}`, async page => {
+            await page.getByText('is already in this project').waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importDocument').length), 0);
+            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
+        });
+
         await test('next issue navigates from uncertain text to an unrecognized page', 'review', async page => {
             await page.getByRole('button', { name: 'Next issue', exact: true }).click();
             assert.equal(await page.locator('.region-card.selected textarea').inputValue(), 'Inv0ice NS-2026-1042');

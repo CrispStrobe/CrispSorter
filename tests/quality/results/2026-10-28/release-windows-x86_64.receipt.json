@@ -1,0 +1,116 @@
+{
+  "schema": "crispsorter-release-receipt-v1",
+  "platform": "windows-x86_64",
+  "app_source": "d3cb9da9d4d89f6b0a0a1cfaf61f26161ae25b75",
+  "version": "0.13.0",
+  "runtime_lock": {
+    "version": "0.17.12",
+    "source_commit": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+    "ggml_commit": "890278a8342c620197c90e702e1188bcab94f510",
+    "release_url": "https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.12",
+    "assets": {
+      "crispembed-android-arm64-v8a.tar.gz": {
+        "sha256": "a02ecbfc37906ba04bc6867dc7c7af753315ae0ad96d07ed62e102815ad21555",
+        "bytes": 18323125
+      },
+      "crispembed-android-armeabi-v7a.tar.gz": {
+        "sha256": "fa233e95b8631dac5fe9f5d93f9ff18cf4feeaa4d6e70d888147ec36ee916c02",
+        "bytes": 17164555
+      },
+      "crispembed-ios-arm64.tar.gz": {
+        "sha256": "a54fac7c4cf7042f8c81cf239d5c79a1845e115ac43608fa7a45cb303f5c07b8",
+        "bytes": 3597973
+      },
+      "crispembed-linux-arm64.tar.gz": {
+        "sha256": "38cbaaa020cd17d4cd4f0b78003c79fba7a1051628b06b8e39734c39f15032bb",
+        "bytes": 10085209
+      },
+      "crispembed-linux-x86_64.tar.gz": {
+        "sha256": "1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63",
+        "bytes": 11769149
+      },
+      "crispembed-macos-arm64.tar.gz": {
+        "sha256": "6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56",
+        "bytes": 8902248
+      },
+      "crispembed-windows-x86_64.zip": {
+        "sha256": "49a1e4a89bf6f7d2df100794914f15aeb9a2b69513c3dbfb93364208994cc717",
+        "bytes": 7933796
+      }
+    }
+  },
+  "native_crispembed_included": true,
+  "artifacts": [
+    {
+      "filename": "CrispSorter_0.13.0_x64-windows-portable.zip",
+      "bytes": 230104303,
+      "sha256": "e85fbdf5bd505da7a1a82366478c58575a4b31cf43d31be8514a343d19574134",
+      "inspection": "packaged executable starts with build-tree libraries hidden",
+      "checks": [
+        {
+          "arguments": [
+            "--format",
+            "json",
+            "version"
+          ],
+          "result": {
+            "name": "crispsorter",
+            "version": "0.13.0",
+            "target": "windows",
+            "arch": "x86_64"
+          },
+          "stderr": ""
+        },
+        {
+          "arguments": [
+            "--format",
+            "json",
+            "doctor"
+          ],
+          "result": {
+            "tesseract_installed": false,
+            "ocrs_models_available": false,
+            "paddle_ocr_available": false,
+            "pdf_extract_compiled_in": true,
+            "fuse_compiled": false,
+            "fuse_runtime_available": false,
+            "embedder_model_cached": false,
+            "lance_dir_exists": false,
+            "lance_dir": "C:\\Users\\runneradmin\\Library/Application Support/com.crispstrobe.crispsorter/lance"
+          },
+          "stderr": ""
+        },
+        {
+          "arguments": [
+            "ocr",
+            "D:\\a\\CrispSorter\\CrispSorter\\tests\\quality\\ocr-task.pdf",
+            "--engine",
+            "dbnet_trocr",
+            "--cleanup",
+            "false",
+            "--render",
+            "hocr",
+            "--min-confidence",
+            "0",
+            "--min-chars",
+            "0"
+          ],
+          "result": "image-only PDF rasterized and expected text retained",
+          "fixture_sha256": "538f504756f35ace8af3ff2b970b9f35794aba5a186036596580a4676de922bb",
+          "stdout_sha256": "1893ab5744b84591cc318ed088f7ca5e792d29fa00cd0191d5bfa47cb844a267",
+          "stderr": "############                               60.6%\n##############################################                            64.0%\n###############################################                           65.9%\n##################################################################        91.9%\n######################################################################## 100.0%\nVerifying SHA-256...\nDownloaded to C:\\Users\\runneradmin\\.cache\\crispembed/trocr-small-printed-q8_0.gguf\nmath_ocr: enc=12L/6H/384 dec=6L/8H/256 vocab=64044(64044)\nmath_ocr: init backend...\nmath_ocr: loading weights...\nmath_ocr: weights loaded (360 tensors)\nmath_ocr: creating scheduler...\nmath_ocr: scheduler created\nmath_ocr: tensors mapped\nmath_ocr: mapped 12/12 enc, 6/6 dec\nmath_ocr: init complete, returning context\nocr_pipeline: loaded det + rec (vocab=64044)\nocr_pipeline: detected 6 text regions\nocr_pipeline: recognizing region 1/6\nmath_ocr: decoder KV cache: 6 layers, max_seq=200, n_enc=578, 9.1 MB\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-5.034 -5.327 8.565 0.305 2.797] best=5972\nmath_ocr: [graph] dec step 1: tok=5972 logits[0..4]=[-12.639 -14.518 7.029 9.850 -2.910] best=890\nmath_ocr: [graph] dec step 2: tok=890 logits[0..4]=[-13.288 -13.191 14.306 8.453 1.387] best=7263\nmath_ocr: [graph] dec step 3: tok=7263 logits[0..4]=[-10.839 -14.173 20.849 15.555 1.988] best=887\nmath_ocr: [graph] dec step 4: tok=887 logits[0..4]=[-8.736 -8.056 28.689 1.286 -0.449] best=2\nocr_pipeline: recognizing region 2/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-5.142 -13.764 5.456 1.370 1.194] best=24425\nmath_ocr: [graph] dec step 1: tok=24425 logits[0..4]=[-11.641 -9.092 8.856 5.229 -2.302] best=53095\nmath_ocr: [graph] dec step 2: tok=53095 logits[0..4]=[-10.804 -13.162 18.849 7.056 2.953] best=2225\nmath_ocr: [graph] dec step 3: tok=2225 logits[0..4]=[-8.747 -7.325 24.044 -2.108 -0.203] best=2\nocr_pipeline: recognizing region 3/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-9.281 -11.337 7.290 2.163 -0.275] best=36042\nmath_ocr: [graph] dec step 1: tok=36042 logits[0..4]=[-13.954 -11.391 15.152 5.944 7.839] best=156\nmath_ocr: [graph] dec step 2: tok=156 logits[0..4]=[-8.886 -10.038 10.744 9.632 1.877] best=24436\nmath_ocr: [graph] dec step 3: tok=24436 logits[0..4]=[-9.002 -6.444 22.062 -0.426 1.442] best=2\nocr_pipeline: recognizing region 4/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-13.677 -12.579 8.851 -1.844 8.269] best=773\nmath_ocr: [graph] dec step 1: tok=773 logits[0..4]=[-11.785 -15.879 10.202 0.835 4.628] best=40776\nmath_ocr: [graph] dec step 2: tok=40776 logits[0..4]=[-6.627 -5.089 16.697 11.100 1.147] best=1002\nmath_ocr: [graph] dec step 3: tok=1002 logits[0..4]=[-9.755 -8.230 24.785 1.245 0.222] best=2\nocr_pipeline: recognizing region 5/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-13.382 -12.541 6.451 -3.011 9.071] best=622\nmath_ocr: [graph] dec step 1: tok=622 logits[0..4]=[-9.520 -9.804 13.658 5.057 5.365] best=6519\nmath_ocr: [graph] dec step 2: tok=6519 logits[0..4]=[-9.491 -8.052 21.617 0.381 0.889] best=2\nocr_pipeline: recognizing region 6/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-7.078 -6.856 4.862 -4.325 5.051] best=449\nmath_ocr: [graph] dec step 1: tok=449 logits[0..4]=[-5.890 -10.319 12.820 6.150 -3.547] best=10617\nmath_ocr: [graph] dec step 2: tok=10617 logits[0..4]=[-7.256 -9.972 22.388 8.049 -0.005] best=5\nmath_ocr: [graph] dec step 3: tok=5 logits[0..4]=[-8.402 -9.254 32.058 4.823 -0.677] best=2\nocr_pipeline: recognized 6/6 regions\n"
+        }
+      ]
+    }
+  ],
+  "toolchains": {
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "node": "v24.22.1"
+  },
+  "dependency_sources": {
+    "CrispEmbed": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+    "CrispASR": "0c9a4b6d828feffddc24e13e9140fac89c785214",
+    "crisp-docx": "ddf7830d8d92e6b59b10874d144a59f163a256e1"
+  }
+}

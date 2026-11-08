@@ -58,13 +58,13 @@ export async function loadWebLLM(
 /**
  * Run a single-turn chat completion. Call loadWebLLM first.
  */
-export async function queryWebLLM(prompt: string, systemPrompt?: string): Promise<string> {
+export async function queryWebLLM(prompt: string, systemPrompt?: string, maxOutputTokens?: number): Promise<string> {
     if (!engine) throw new Error('WebLLM engine not loaded — select and load a model in Settings first.');
     type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
     const messages: Msg[] = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
-    const reply = await engine.chat.completions.create({ messages });
+    const reply = await engine.chat.completions.create({ messages, ...(maxOutputTokens == null ? {} : { max_tokens: maxOutputTokens }) });
     return reply.choices[0].message.content ?? '';
 }
 

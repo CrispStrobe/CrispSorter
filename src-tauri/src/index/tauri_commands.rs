@@ -43,6 +43,7 @@ pub async fn index_search(
     include_unmounted: Option<bool>,
     fuzzy: Option<bool>,
     doc_id_scope: Option<Vec<String>>,
+    tag: Option<String>,
 ) -> Result<Vec<SearchResult>, String> {
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
@@ -55,6 +56,7 @@ pub async fn index_search(
         owner_id,
         fuzzy: fuzzy.unwrap_or(false),
         doc_id_scope: doc_id_scope.unwrap_or_default(),
+        tag,
         ..Default::default()
     };
 
@@ -135,7 +137,7 @@ pub async fn index_search(
     // returned that many — net result is at most `limit` rows from each
     // channel, presented in two visually distinct groups (the frontend
     // uses `catalog_source` to badge them).
-    if let Ok(data_dir) = app.path().app_data_dir() {
+    if let (true, Ok(data_dir)) = (filters.tag.is_none() && filters.doc_id_scope.is_empty(), app.path().app_data_dir()) {
         let remaining = limit.saturating_sub(results.len()).max(limit / 2);
         if let Ok(hits) =
             crate::catalog::lance::search(&data_dir, &query, Some(remaining)).await
@@ -544,6 +546,7 @@ pub async fn index_ingest_path(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&p),
         parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
@@ -616,6 +619,7 @@ pub async fn index_ingest_document(
         // bg_ingest will treat None as "no recorded mtime → re-ingest"
         // which is the safe default.
         mtime_unix: None,
+        images_indexed: false,
         file_size: None,
         // PLAN P7.6 — frontend ingest is path-less (input is the
         // already-extracted text), so we don't have a volume to tag.
@@ -882,6 +886,7 @@ pub async fn index_ingest_batch(
                 // is path-less / mtime-less; bg_ingest skip-on-mtime
                 // treats None as "re-ingest" which is the safe default.
                 mtime_unix: None,
+                images_indexed: false,
                 file_size: None,
                 volume_id: None,
                 parent_dir: None,
@@ -974,6 +979,7 @@ pub async fn index_ingest_batch(
             owner_id: input.owner_id,
             tags: input.tags,
             mtime_unix: None,
+            images_indexed: false,
             file_size: None,
             volume_id: None,
             parent_dir: None,
@@ -1765,6 +1771,7 @@ pub async fn index_audio_promote_l3(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.as_ref().map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&path),
         parent_dir: path
@@ -1908,6 +1915,7 @@ pub async fn index_image_promote_l3(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.as_ref().map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&path),
         parent_dir: path
@@ -3234,6 +3242,7 @@ pub async fn index_l1_only_scan(
             owner_id: owner.clone(),
             tags: Vec::new(),
             mtime_unix,
+            images_indexed: false,
             file_size: Some(file_size),
             volume_id: crate::volume::volume_id_for_path(fp.as_path()),
             parent_dir,
@@ -3471,6 +3480,7 @@ async fn promote_path(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: bg_meta.map(|m| m.len() as i64),
         volume_id: None,
         parent_dir: std::path::Path::new(&original_path)
@@ -4555,22 +4565,49 @@ pub struct OcrPageResult {
 
 /// OCR a single page image into regions (box + text + confidence) using the
 /// persisted Smart-OCR-pipeline config. Coordinates are in image pixels.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OcrCrop { pub x: u32, pub y: u32, pub w: u32, pub h: u32 }
+
 #[tauri::command]
 pub async fn ocr_page_regions(
     state: State<'_, AppState>,
     page_path: String,
+    preset: Option<String>,
+    region: Option<OcrCrop>,
+    cpu_pixel_budget: Option<bool>,
 ) -> Result<OcrPageResult, String> {
     let path = std::path::PathBuf::from(&page_path);
     if !path.exists() {
         return Err(format!("page image not found: {page_path}"));
     }
-    let mut cfg = state.bg_ingest.lock().await.ocr_pipeline.clone();
-    cfg.enabled = true;
+    let base = state.bg_ingest.lock().await.ocr_pipeline.clone();
+    let task = preset.as_deref().unwrap_or("custom");
+    let use_budget = cpu_pixel_budget.unwrap_or(false);
+    if use_budget && !matches!(task, "multilingual" | "tables" | "difficult") {
+        return Err("The CPU pixel budget is available for Qwen task presets only".into());
+    }
+    let cfg = crate::extractors::ocr_presets::apply(&base, task)?;
 
     tokio::task::spawn_blocking(move || -> Result<OcrPageResult, String> {
-        let regions = crate::extractors::ocr_crispembed::ocr_regions_detailed(&path, &cfg)
+        let (w, h) = image::image_dimensions(&path).map_err(|e| e.to_string())?;
+        if u64::from(w) * u64::from(h) > 100_000_000 { return Err("Page exceeds the 100 megapixel processing limit".into()); }
+        let (cropped, offset) = if let Some(rect) = region {
+            if rect.w == 0 || rect.h == 0 || rect.x.checked_add(rect.w).is_none_or(|right| right > w)
+                || rect.y.checked_add(rect.h).is_none_or(|bottom| bottom > h) {
+                return Err("Selected region is outside the page".into());
+            }
+            let file = tempfile::Builder::new().suffix(".png").tempfile().map_err(|e| e.to_string())?;
+            image::open(&path).map_err(|e| e.to_string())?.crop_imm(rect.x, rect.y, rect.w, rect.h)
+                .save(file.path()).map_err(|e| e.to_string())?;
+            (Some(file), (rect.x as i32, rect.y as i32))
+        } else { (None, (0, 0)) };
+        let input = cropped.as_ref().map(|f| f.path()).unwrap_or(&path);
+        let regions = if use_budget {
+            crate::extractors::ocr_worker::run_cpu_budget(input, &cfg)
+        } else {
+            crate::extractors::ocr_crispembed::ocr_regions_detailed(input, &cfg)
+        }
             .map_err(|e| format!("OCR failed: {e:#}"))?;
-        let (w, h) = image::image_dimensions(&path).unwrap_or((0, 0));
         Ok(OcrPageResult {
             width: w as i32,
             height: h as i32,
@@ -4578,8 +4615,8 @@ pub async fn ocr_page_regions(
                 .into_iter()
                 .map(|r| OcrRegionDto {
                     text: r.text,
-                    x: r.x,
-                    y: r.y,
+                    x: r.x + offset.0 as f32,
+                    y: r.y + offset.1 as f32,
                     w: r.w,
                     h: r.h,
                     confidence: r.confidence,
@@ -4768,6 +4805,7 @@ pub async fn ocr_workbench_reingest(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
+        images_indexed: false,
         file_size: p_meta.as_ref().map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&path),
         parent_dir: path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),

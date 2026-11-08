@@ -46,15 +46,18 @@ export interface TabDef {
  */
 export const CORE_TABS: TabDef[] = [
     { id: 'batch', icon: ListChecks, mobile: true },
+    { id: 'review', icon: ListChecks, mobile: true },
+    { id: 'catalog', icon: Library, mobile: true },
     { id: 'drives', icon: HardDrive, separatorBefore: true },
 	{ id: 'chat', icon: MessageSquare, mobile: true },
 	{ id: 'history', icon: Database },
-	{ id: 'catalog', icon: Library, separatorBefore: true, mobile: true },
+
 	// Translate has no `requires`: the HTTP providers work on every build,
 	// and `translate-align` / `translate-nmt` only add offline and
 	// format-preserving modes that the view already gates individually.
 	{ id: 'translate', icon: Languages, mobile: true },
-	{ id: 'ocr', icon: ScanText, mobile: true, requires: ['build:ocr'] },
+	// The interactive workbench requires CrispEmbed, even when another OCR tier is available.
+	{ id: 'ocr', icon: ScanText, mobile: true, requires: ['build:ocr-workbench'] },
 	{ id: 'pdf', icon: FileText },
 	// PLAN P36.16 — the AIToolkit backend lives in a private repo, so for
 	// anyone outside the dev team this tab connects to nothing. Off in every

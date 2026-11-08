@@ -1,0 +1,30 @@
+{
+  "checked_at_utc": "2026-10-29T05:38:53.626164+00:00",
+  "app_source": "d3cb9da9d4d89f6b0a0a1cfaf61f26161ae25b75",
+  "github_job": 123218551796,
+  "native_regressions_passed": 1484,
+  "qualification": "Native worker executed final extracted package version/doctor and image-only PDF OCR with sibling libraries hidden. Local download byte hashes match CI receipt and GitHub digest; archive architecture inspected without running foreign binaries.",
+  "artifacts": [
+    {
+      "filename": "CrispSorter_0.13.0_x64-windows-portable.zip",
+      "bytes": 230104303,
+      "sha256": "e85fbdf5bd505da7a1a82366478c58575a4b31cf43d31be8514a343d19574134",
+      "github_digest_matches": true,
+      "architecture": "x86_64",
+      "zip_crc": "passed",
+      "pdfium_present": true,
+      "native_libraries": [
+        "crispasr.dll",
+        "crispembed.dll",
+        "DirectML.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "ggml-vulkan.dll",
+        "ggml.dll",
+        "pdfium.dll",
+        "whisper.dll"
+      ]
+    }
+  ],
+  "job_log_sha256": "65e67390ed2e746a35df1fc998e01cf2760d8a3f2a9145c9bfca52c7b622a41b"
+}

@@ -6,6 +6,7 @@
     // shown to a person is generated text, and the rule this project set itself
     // is that there is no exemption list. Found unmarked in the 2026-08-02 audit.
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+    import CrispEmbedServiceSettings from './CrispEmbedServiceSettings.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { caps, currentCaps } from '../capabilities';
@@ -440,7 +441,10 @@
         const j = i + dir; if (j < 0 || j >= ocrStages.length) return;
         const a = [...ocrStages]; [a[i], a[j]] = [a[j], a[i]]; ocrStages = a;
     }
-    function isVlmEngine(e: string) { return e !== 'dbnet_trocr' && e !== 'surya' && e !== 'tesseract' && e !== 'parseq'; }
+    // Engines whose stage takes a detector + recogniser pair (model_a/model_b).
+    // Must stay in sync with `needs_det_and_rec` in src-tauri/src/extractors/ocr_crispembed.rs.
+    const DET_REC_ENGINES = ['dbnet_trocr', 'surya', 'tesseract', 'parseq', 'tesseract_fraktur', 'ppocrv6', 'easyocr'];
+    function isVlmEngine(e: string) { return !DET_REC_ENGINES.includes(e); }
     /** Build the OcrPipelineConfig payload (snake_case = Rust serde field names). */
     function ocrPipelineConfig() {
         const stages = (ocrPipelineAdvanced ? ocrStages : []).map((s) => ({
@@ -682,6 +686,7 @@
      *  = EXIF + OCR.  Promote via the "Re-OCR" search-result
      *  action (Step 2). */
     let indexImageExtractionEnabled = $state<boolean>(true);
+    let indexImageIndexingEnabled = $state<boolean>(false);
     let indexIngestImageLevel = $state<string>('l3');
     // How far the anydoc office/e-book converter reaches. 'auto' is
     // additive-only and cannot change how an already-supported file
@@ -1367,6 +1372,7 @@
         indexAudioLidMethod  = await getSetting('indexAudioLidMethod', 'whisper') as string;
         indexIngestAudioLevel = await getSetting('indexIngestAudioLevel', 'l3') as string;
         indexImageExtractionEnabled = await getSetting('indexImageExtractionEnabled', true) as boolean;
+        indexImageIndexingEnabled = await getSetting('indexImageIndexingEnabled', false) as boolean;
         indexIngestImageLevel = await getSetting('indexIngestImageLevel', 'l3') as string;
         indexAnydocMode = await getSetting('indexAnydocMode', 'auto') as string;
         indexCrispLensImageEnrichment = await getSetting('indexCrispLensImageEnrichment', false) as boolean;
@@ -1738,6 +1744,7 @@
         await saveSetting('indexAudioLidMethod',         indexAudioLidMethod);
         await saveSetting('indexIngestAudioLevel',       indexIngestAudioLevel);
         await saveSetting('indexImageExtractionEnabled', indexImageExtractionEnabled);
+        await saveSetting('indexImageIndexingEnabled', indexImageIndexingEnabled);
         await saveSetting('indexIngestImageLevel',       indexIngestImageLevel);
         await saveSetting('indexAnydocMode',             indexAnydocMode);
         await saveSetting('indexCrispLensImageEnrichment', indexCrispLensImageEnrichment);
@@ -1912,6 +1919,7 @@
                     audio_lid_method:         indexAudioLidMethod || 'whisper',
                     ingest_audio_level:       indexIngestAudioLevel || 'l3',
                     image_extraction_enabled: indexImageExtractionEnabled,
+                    image_indexing_enabled:   indexImageIndexingEnabled,
                     ingest_image_level:       indexIngestImageLevel || 'l3',
                     anydoc_mode:              indexAnydocMode || 'auto',
                     crisplens_image_enrichment_enabled: indexCrispLensImageEnrichment,
@@ -3324,7 +3332,7 @@
                             <label for="ocr-pipeline-vlm-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
                                 {i18n.t.settings.ocr_pipeline_vlm_engine}
                                 <select id="ocr-pipeline-vlm-engine" bind:value={ocrPipelineVlmEngine} style="margin-left:4px;">
-                                    <option value="qwen2vl">Qwen2-VL (german-ocr-3.1)</option>
+                                    <option value="qwen2vl">Qwen2.5-VL (qwen2vl-3b)</option>
                                     <option value="glm">GLM-OCR</option>
                                     <option value="got">GOT-OCR2</option>
                                     <option value="internvl2">InternVL2</option>
@@ -3417,9 +3425,15 @@
                                                 <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
                                                 <option value="pix2struct">Pix2Struct (doc/chart)</option>
                                                 <option value="qwen3vl">Qwen3-VL-2B (DeepStack)</option>
-                                                <option value="unlimited_ocr">Unlimited-OCR</option>
+                                                <option value="unlimited_ocr">Unlimited-OCR (SAM + CLIP + MoE)</option>
                                                 <option value="unlimited_ocr2">Unlimited-OCR-2 (experimental · CRISPEMBED_UNLIMITED_OCR2=1)</option>
                                                 <option value="minicpm_ocr">MiniCPM-OCR-1.0 (experimental · CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1)</option>
+                                                <option value="ppocrv6">PP-OCRv6 (CJK line boxes)</option>
+                                                <option value="easyocr">EasyOCR (DBNet + CRNN)</option>
+                                                <option value="tesseract_fraktur">Tesseract LSTM · Fraktur</option>
+                                                <option value="olmocr">olmOCR-2-7B</option>
+                                                <option value="lfm2_vl">LFM2.5-VL</option>
+                                                <option value="unified">Unified (metadata-dispatched GGUF)</option>
                                             </select>
                                         </label>
                                     </div>
@@ -3931,6 +3945,7 @@
             </div>
 
             <p style="color:#a1a1aa; font-size:0.85rem; margin-bottom:16px;">{i18n.t.settings.index.hint}</p>
+            <CrispEmbedServiceSettings />
 
             <SyncPairPanel />
             <WallabagImport />
@@ -4321,6 +4336,12 @@
                     {i18n.t.settings.index.image_extraction_hint ??
                      'When off, image files (jpg/png/heic/…) are indexed with filesystem metadata only — no OCR, no EXIF. OCR is still gated by the OCR-tier toggle above; this is the master switch that overrides everything.'}
                 </p>
+
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+                    <input type="checkbox" bind:checked={indexImageIndexingEnabled} />
+                    <span>Semantic image embeddings (CrispEmbed)</span>
+                </label>
+                <p class="hint">Opt in to visual and cross-modal image search. This loads separate models and may download them on first use. Documents indexed while this was off are re-indexed once on the next scan; requires a CrispEmbed-enabled build.</p>
 
                 <label for="index-image-level" style="margin-top:10px;">
                     {i18n.t.settings.index.ingest_image_level ?? 'Image ingest level'}

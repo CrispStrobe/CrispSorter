@@ -119,10 +119,14 @@
     client = workspaceClient,
     initialProject = null,
     active = true,
+    initialLocationUri = "",
   }: {
     client?: WorkspaceClient;
     initialProject?: OcrProject | null;
     active?: boolean;
+    /** A document sent from another tab ("Open in OCR"). It is added to the
+     *  current project once, or selected when that project already has it. */
+    initialLocationUri?: string;
   } = $props();
   let history = $state(
     createHistory(untrack(() => initialProject) ?? createProject()),
@@ -568,6 +572,30 @@
     } finally {
       busy = "";
     }
+  }
+  // Handle each hand-off once, after the last project has been restored (so
+  // the document joins it instead of being replaced by it) and while no batch,
+  // save or import holds the workspace (`locked` also covers booting).
+  let handledLocationUri = "";
+  $effect(() => {
+    const uri = initialLocationUri;
+    if (!uri || locked || uri === handledLocationUri) return;
+    handledLocationUri = uri;
+    untrack(() => void openRequestedDocument(uri));
+  });
+  async function openRequestedDocument(uri: string) {
+    const existing = project.documents.find((d) => d.sourceUri === uri);
+    const firstPage =
+      existing && project.pages.find((p) => p.documentId === existing.id);
+    if (firstPage) {
+      selectPage(firstPage.id);
+      notice = `${existing.name} is already in this project`;
+      return;
+    }
+    const before = project.pages.length;
+    await importFiles([uri]);
+    const added = project.pages[before];
+    if (added) selectPage(added.id);
   }
   function selectPage(id: string) {
     selectedPageId = id;

@@ -1,4 +1,6 @@
 <script lang="ts">
+    let { initialPath = '' }: { initialPath?: string } = $props();
+    $effect(() => { const path = initialPath; if (path) openSession(path); });
     // P32.1b — direct-manipulation PDF page editor.
     //
     // Talks to the `pdf_session_*` commands (P32.1a) rather than the

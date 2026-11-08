@@ -1,0 +1,19 @@
+{
+  "schema": "crispsorter-native-qualification-v1",
+  "app_source": "274e57aad67fd743d9430db690f8a32d6c80f146",
+  "completed": false,
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "features": "crispembed,pdf-zpdf",
+  "error": {
+    "type": "RuntimeError",
+    "message": "cargo exited 101; see native.log"
+  },
+  "regressions": {
+    "passed": 1394,
+    "failed": 2,
+    "ignored": 36
+  },
+  "failure_scope": "Two drive tests assumed native Filen/Internxt even when their features were absent. The full desktop run passed these tests. Corrected tests now assert missing-provider errors in minimal builds.",
+  "native_log_sha256": "1d45eabd78ec1b7ea1fe98f9a11c94ee546279af9633adb9d8af7a8bed2dbf9b",
+  "live_ocr": "Not reached because the regression command failed; isolated source-bound inference is qualified separately."
+}

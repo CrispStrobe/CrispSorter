@@ -1,0 +1,242 @@
+{
+  "schema": "crispsorter-library-quality-v1",
+  "license": "CC0-1.0",
+  "scope": "Author-written fictional English/German office and research documents. This bounded adoption panel does not establish quality on an arbitrary user corpus.",
+  "documents": [
+    {
+      "id": "warranty-cobalt",
+      "type": "Correspondence",
+      "text": "Dear customer, your Cobalt scanner warranty expires on 30 November 2031. Keep invoice CB-2030-17 as proof of purchase. Repairs during the warranty period are handled by Acme Support. This letter confirms the expiry date; it is not an invoice."
+    },
+    {
+      "id": "invoice-acme",
+      "type": "Invoice",
+      "text": "INVOICE AC-1042. Vendor: Acme Supplies. Invoice date: 2026-05-03. Description: paper and envelopes. Subtotal EUR 35.71. VAT EUR 6.79. Total amount due EUR 42.50. Payment due on 2026-05-17. Customer: Example Reading Club."
+    },
+    {
+      "id": "invoice-muenchen",
+      "type": "Invoice",
+      "text": "RECHNUNG MU-781. Lieferant: Münchner Bürobedarf. Rechnungsdatum: 12. Juni 2026. Bestellt wurden Ordner und Druckerpapier. Der Gesamtbetrag beträgt 119,00 EUR einschließlich Mehrwertsteuer. Zahlungsziel: 26. Juni 2026. Bitte geben Sie MU-781 als Verwendungszweck an."
+    },
+    {
+      "id": "invoice-camera",
+      "type": "Invoice",
+      "text": "INVOICE PHOTO-92. Aurora Cameras supplied one camera tripod. Total GBP 89.00 including tax. Invoice date 2026-07-08. Please pay within fourteen days. This is a purchase invoice, not a camera instruction manual."
+    },
+    {
+      "id": "letter-return",
+      "type": "Correspondence",
+      "text": "Dear Example Reading Club, we confirm receipt of the returned Cobalt scanner. The refund of EUR 210.00 was issued on 18 March 2026. Reference RMA-912. Kind regards, Acme customer service."
+    },
+    {
+      "id": "letter-library",
+      "type": "Correspondence",
+      "text": "Sehr geehrte Frau Beispiel, die Stadtbibliothek bestätigt Ihre Reservierung des Lesesaals für den 16. September 2026 von 14 bis 17 Uhr. Bitte bringen Sie Ihren Bibliotheksausweis mit. Mit freundlichen Grüßen, Ihre Stadtbibliothek."
+    },
+    {
+      "id": "letter-conference",
+      "type": "Correspondence",
+      "text": "Dear Dr Example, your poster on multilingual document retrieval has been accepted for the 2027 Research Tools Workshop. Please upload the final poster by 15 February 2027. The workshop takes place in Utrecht on 20 March 2027."
+    },
+    {
+      "id": "article-retrieval",
+      "type": "Article",
+      "text": "Title: Comparing sparse and dense document retrieval. Author: Lina Example. Year: 2025. Abstract: We compare keyword matching, dense semantic vectors and late interaction on a multilingual collection. Sparse retrieval preserves rare identifiers; dense retrieval finds paraphrases. A hybrid candidate set improves recall before reranking."
+    },
+    {
+      "id": "article-ocr",
+      "type": "Article",
+      "text": "Title: Reading damaged historical scans. Author: Pavel Fiction. Year: 2024. Abstract: Page curvature, skew, blur and mixed columns reduce recognition accuracy. We evaluate cleanup and dewarping before OCR. Character error rate and reading order are measured separately; attractive page images alone do not prove accurate transcription."
+    },
+    {
+      "id": "article-climate",
+      "type": "Article",
+      "text": "Titel: Temperaturmessung in Stadtgärten. Autorin: Mira Beispiel. Jahr: 2023. Zusammenfassung: Zwölf Sensoren messen stündlich die Lufttemperatur. Beschattete Flächen bleiben im Sommer kühler. Die Messwerte werden nach Standort und Tageszeit verglichen. Die Studie enthält keine Rechnungen oder Zahlungsaufforderungen."
+    },
+    {
+      "id": "article-storage",
+      "type": "Article",
+      "text": "Title: Portable indexes for offline archives. Author: Noor Sample. Year: 2026. Abstract: An archive index stores document metadata and retrieval data beside removable volumes. A small local catalog can locate offline files without keeping every full document on the laptop. Volume identity and content hashes prevent stale links."
+    },
+    {
+      "id": "book-botany",
+      "type": "Book",
+      "text": "Field Notes on Garden Botany. By Ada Fiction. Published 2022 by Example Press. ISBN 978-1-4028-9462-6. Table of contents: Roots; Leaves; Flowers; Seeds. Chapter One introduces plant structures for amateur gardeners. This volume includes a glossary and an index."
+    },
+    {
+      "id": "book-computing",
+      "type": "Book",
+      "text": "Practical Library Computing. Author: Ben Sample. Second edition, 2021. Example Academic Press. ISBN 978-0-306-40615-7. Contents: Catalogs, search indexes, archival formats and backups. Chapter Five explains why searching document content differs from matching filenames."
+    },
+    {
+      "id": "book-deutsch",
+      "type": "Book",
+      "text": "Handbuch der Papierrestaurierung. Clara Beispiel. Beispiel Verlag, 2019. Dritte Auflage. ISBN 978-3-16-148410-0. Inhaltsverzeichnis: Papierfasern, Reinigung, Lagerung und Digitalisierung. Kapitel zwei behandelt die schonende Reinigung alter Buchseiten."
+    },
+    {
+      "id": "book-cooking",
+      "type": "Book",
+      "text": "Seasonal Soup Recipes. By Dana Example. Example Kitchen Books, 2020. ISBN 978-1-86197-271-2. Contents: Spring greens; Summer tomatoes; Autumn squash; Winter lentils. Each chapter contains ingredient lists and cooking instructions."
+    },
+    {
+      "id": "manual-scanner",
+      "type": "Other",
+      "text": "Cobalt Scanner User Guide. To scan a two-sided page, select duplex mode in the capture menu. For small print use 300 dots per inch. Clean the glass with a lint-free cloth. This manual does not state the customer's warranty expiry date."
+    },
+    {
+      "id": "minutes-reading",
+      "type": "Other",
+      "text": "Example Reading Club meeting minutes, 2026-04-12. The committee voted to purchase envelopes and printer paper from Acme Supplies. The treasurer will retain purchase receipts. The next meeting is scheduled for May. No invoice total was recorded in these minutes."
+    },
+    {
+      "id": "recipe-lentils",
+      "type": "Other",
+      "text": "Lentil soup recipe. Ingredients: lentils, carrots, onion, stock and thyme. Rinse the lentils. Simmer for thirty minutes and season to taste. This standalone recipe has no author or publication year stated."
+    },
+    {
+      "id": "schedule-room",
+      "type": "Other",
+      "text": "Reading-room schedule for September 2026. Morning sessions: catalog training. Afternoon sessions: open reading. The calendar template lists dates but does not confirm any person's reservation. Contact the city library for booking confirmation."
+    },
+    {
+      "id": "packing-list",
+      "type": "Other",
+      "text": "PACKING LIST SHIP-702. Contents: twelve notebooks and two boxes of pencils. Carrier: Example Parcel Service. Tracking reference EP-88311. The parcel is addressed to the Example Reading Club. No prices, taxes or amount due are shown."
+    },
+    {
+      "id": "letter-subscription",
+      "type": "Correspondence",
+      "text": "Hello, this message confirms cancellation of your Example Journal subscription. Access remains available until 31 December 2026. You will not be charged again. Please retain this confirmation for your records."
+    },
+    {
+      "id": "invoice-journal",
+      "type": "Invoice",
+      "text": "Invoice J-2026-12 from Example Journal Ltd. Annual journal subscription for 2026. Amount due EUR 60.00. VAT EUR 0.00. Payment reference J-2026-12. This invoice is distinct from the later subscription cancellation confirmation."
+    },
+    {
+      "id": "article-duplex",
+      "type": "Article",
+      "text": "Title: Duplex capture for small archives. Author: Emil Example. Year: 2026. Abstract: Scanning both sides reduces handling time but requires consistent page order. We compare page-pair detection methods and report failures where blank backs are mistaken for missing pages."
+    },
+    {
+      "id": "notes-unattributed",
+      "type": "Other",
+      "text": "Working notes: several loose pages discuss document metadata. The title page is missing. No author, publication date, invoice number or publisher can be established from the surviving text. Review is required before assigning bibliographic metadata."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-warranty",
+      "text": "When does my Cobalt scanner warranty expire?",
+      "relevant": [
+        "warranty-cobalt"
+      ]
+    },
+    {
+      "id": "q-acme-total",
+      "text": "Find the Acme invoice for paper and envelopes with a total of 42.50 euros.",
+      "relevant": [
+        "invoice-acme"
+      ]
+    },
+    {
+      "id": "q-munich",
+      "text": "Welche Rechnung von Münchner Bürobedarf muss ich im Juni bezahlen?",
+      "relevant": [
+        "invoice-muenchen"
+      ]
+    },
+    {
+      "id": "q-reservation",
+      "text": "Wo ist die Bestätigung für den reservierten Lesesaal am 16. September?",
+      "relevant": [
+        "letter-library"
+      ]
+    },
+    {
+      "id": "q-paraphrase",
+      "text": "Research comparing keyword search with semantic vectors and late interaction",
+      "relevant": [
+        "article-retrieval"
+      ]
+    },
+    {
+      "id": "q-damaged",
+      "text": "Which paper measures recognition errors after straightening curved book scans?",
+      "relevant": [
+        "article-ocr"
+      ]
+    },
+    {
+      "id": "q-offline",
+      "text": "Find research about locating files on disconnected archive drives.",
+      "relevant": [
+        "article-storage"
+      ]
+    },
+    {
+      "id": "q-book",
+      "text": "Ich suche das Handbuch über Reinigung und Lagerung alter Papierseiten.",
+      "relevant": [
+        "book-deutsch"
+      ]
+    },
+    {
+      "id": "q-refund",
+      "text": "Find confirmation that the returned scanner was refunded.",
+      "relevant": [
+        "letter-return"
+      ]
+    },
+    {
+      "id": "q-subscription",
+      "text": "Show the message confirming that my journal subscription will not renew.",
+      "relevant": [
+        "letter-subscription"
+      ]
+    },
+    {
+      "id": "q-workshop",
+      "text": "When must I upload my accepted Utrecht workshop poster?",
+      "relevant": [
+        "letter-conference"
+      ]
+    },
+    {
+      "id": "q-dpi",
+      "text": "How do I scan both sides of a page and what resolution is recommended?",
+      "relevant": [
+        "manual-scanner"
+      ]
+    }
+  ],
+  "decision_ids": [
+    "invoice-acme",
+    "invoice-muenchen",
+    "invoice-camera",
+    "letter-return",
+    "letter-library",
+    "letter-conference",
+    "article-retrieval",
+    "article-climate",
+    "article-storage",
+    "book-botany",
+    "book-deutsch",
+    "packing-list"
+  ],
+  "decision_choices": [
+    "Invoice",
+    "Correspondence",
+    "Article",
+    "Book",
+    "Other"
+  ],
+  "acceptance": {
+    "default_promotion": false,
+    "minimum_recall_at_5_delta": -0.01,
+    "minimum_ndcg_at_10_delta": -0.01,
+    "report_latency_and_vector_storage": true,
+    "systemone_default_requires_independent_quality": true,
+    "systemone_accuracy_min": 0.9
+  }
+}

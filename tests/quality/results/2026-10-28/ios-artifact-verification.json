@@ -1,0 +1,18 @@
+{
+  "checked_at_utc": "2026-10-29T00:59:03.309954+00:00",
+  "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+  "scope": "Downloaded bytes, ZIP integrity, iOS-device arm64 executable and signing/profile presence; cryptographic codesign verification ran on the Apple worker; no physical device execution",
+  "artifacts": [
+    {
+      "filename": "CrispSorter_0.13.0_ios-arm64.ipa",
+      "sha256": "39d272a61ad68d3c676fc47ef0ebfcb8786e876200211bdc5f8b9a3baf83f14b",
+      "bytes": 91031110,
+      "architecture": "arm64",
+      "macho_platform": "iOS device",
+      "code_signature_command": true,
+      "embedded_profile": true,
+      "version": "0.13.0",
+      "bundle_id": "com.crispstrobe.crispsorter"
+    }
+  ]
+}

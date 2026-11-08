@@ -1,0 +1,177 @@
+{
+  "report": {
+    "scope": "Verbatim production OCR functions/configuration and native bindings, not a full application build",
+    "harness_source": "5685cefeb287f2644f3d9de4a4af5513372a87dc",
+    "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "completed": true,
+    "checks": [
+      {
+        "name": "apt-update",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00447351699998
+      },
+      {
+        "name": "toolchain",
+        "exit_code": 0,
+        "elapsed_seconds": 30.001891889000007
+      },
+      {
+        "name": "rust",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001513068000037
+      },
+      {
+        "name": "clone-CrispSorter",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001416995999989
+      },
+      {
+        "name": "checkout-CrispSorter",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00142557700002
+      },
+      {
+        "name": "clone-CrispEmbed",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001574848000018
+      },
+      {
+        "name": "checkout-CrispEmbed",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001354743000036
+      },
+      {
+        "name": "clone-CrispASR",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001412515000027
+      },
+      {
+        "name": "checkout-CrispASR",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001621090999947
+      },
+      {
+        "name": "source-equivalence",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001191365000011
+      },
+      {
+        "name": "verify-runtime",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001515629999972
+      },
+      {
+        "name": "extract-runtime",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001449992999994
+      },
+      {
+        "name": "source-probe",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00147918099998
+      },
+      {
+        "name": "lock",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001312478999978
+      },
+      {
+        "name": "model-free",
+        "exit_code": 0,
+        "elapsed_seconds": 20.00152849699998
+      },
+      {
+        "name": "panel-uv",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001253842999972
+      },
+      {
+        "name": "panel-python",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001242789999992
+      },
+      {
+        "name": "panel-deps",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001542400999995
+      },
+      {
+        "name": "panel-build",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001421429999994
+      },
+      {
+        "name": "real-panel",
+        "exit_code": 0,
+        "elapsed_seconds": 9411.188326025
+      }
+    ],
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "build_jobs": 2,
+    "probe_lock_sha256": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+    "qualification_scope": "Frozen real-scan OCR comparison; see real-panel/result.json for individual failures and scores"
+  },
+  "dispatch": {
+    "harness_source": "5685cefeb287f2644f3d9de4a4af5513372a87dc",
+    "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "code_sha256": "751e222a374875140c441f20817c3ae9a41ecdc3dce1ede20aaef89e6e3aba92"
+  },
+  "raw_result_sha256": "87bf4ab39d69554166e3969d8a8da5342bd21a884c51a234fc19b27bdf0f8302",
+  "source_fragments": {
+    "scope": "Exact production OCR functions, configuration and live test; excludes unrelated application modules",
+    "fragments_sha256": {
+      "configuration_types_and_defaults": "1b7d762f006b891fa4dad61941ee8c7dd009ca6e81ca88c7773ecd310386a57f",
+      "vlm_engine_id": "0bd74d9e3d4d93d2a3ce7189e03f1a0822ce489b245b0029b948b13d774d539e",
+      "vlm_default_model": "347a5d395ac9117233916c811d30d3fec230e336b056fcb20a60fd795c8af116",
+      "resolve": "b892c676e727071a9d034cdcf4edd705ff4d9c4e5e08e2cbc3bc92c3cf660d19",
+      "build_pipeline": "e8e4ffab630882805304bb235ca47ff2f850d321aa254662ace8b7fd7680ab64",
+      "cached_pipeline": "e2b58e86e901785ec418acb97fd60c3400ee4f49a2b9bfd837c91fbc7eaab4be",
+      "effective_confidence": "4dedf03c8711d4d0c9ba95432c432f9ccab3e7f503e339fc0f64422691dee0b0",
+      "ocr_regions_detailed": "340d84c34b8e2314343d943614369724d78d42d3e57badd1f94c859645b7820f",
+      "RegionConf": "5d485dbb6ba927694fcddd3c228914e81098727b9a6ecbfab864bfee5ea9a1c9",
+      "DEFAULT_DET_MODEL": "22406965e58fba1845522b2ba614ca86395545be6524b21bdb2433d93c307675",
+      "DEFAULT_REC_MODEL": "f3ae01a8499f3d7bee85aa3f3edfa22586dae6b47b52d320cb605ddd933aeea5",
+      "NAFNET_MODEL": "9827397eeab48f1ac055eeeace4bc648dbd89a1b07fc9eefe51f74627cf6cf06",
+      "OCR_ORCH": "3fd381c2684bdf5281f7349ef2e6d8eda8e98d8aaeebd6d5f935063de7edbbef",
+      "live_test": "0b4f79abf6f06af660cc892dc9c42f6f9da9531131b62055cc379ddaa5312eda",
+      "context_cache": "1cd23936e99e4d325f132112462c6703009eb442ecc1bad40a5a81799f2242ea",
+      "ocr_presets": "558e700f75972f73b91a6e114b03eb8231e395fb0bfc1e202496364722e0dcc2"
+    }
+  },
+  "raw_files_sha256": {
+    "source-fragments.json": "b199634e5bd03445416760387bb98e478d715298c3b591ec56f7e882aab472bd",
+    "probe.Cargo.lock": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+    "probe.log": "9afd18f9aed54178c49f49ca3a195b16ada34523d4f826161c2434698465b39c",
+    "report.json": "c8719e002faaef949c1d58f64ec2306939b295fe675272de89839892e057e3bb",
+    "real-panel/de-degraded-freiligrath-46-quick.log": "57fb78c6d0a00946274079aaabcbf458e516e9e63b4417830a2fe765f4773cf7",
+    "real-panel/models.log": "14d4d26d20f50b278c7c023ef4c90e7fe72d96baf0f78c750498f663b5d39e7f",
+    "real-panel/receipt-cord-test-29-tables.log": "a6d9b1113d2d00d9261bbb4df4971f53e57103f8432e7adf70f55d502f5fa6b9",
+    "real-panel/de-degraded-freiligrath-46-difficult.log": "42ad9f52c5aec996ecc5c52a3e9f8fd4297149979ef470de3d3b9db0a077ba53",
+    "real-panel/models.json": "c81c732dca5b71450a0080701ffa96975eb999de423d98135aba5560b7bf9bce",
+    "real-panel/de-degraded-freiligrath-46-difficult.json": "65ffbe3ad8094b31b67ae85a1181a74baf532a09cbbbeece7595e5fc39caf4f1",
+    "real-panel/en-prose-constitution-13-quick.json": "94a6c4145a4983ef8b54a356676d29e80cdafbfbaac3f590a7dd3f12b661edb8",
+    "real-panel/receipt-cord-test-29-tables.json": "e4357406786d2fe67d7ccbc24a408e89cc26fa4297a8fcb1a2e0b3c1f851b30c",
+    "real-panel/de-fraktur-grimm-319-quick.log": "33afd87c1250a18eb2928cd7c81061b235e72cc8b6911032e93c759607b988b3",
+    "real-panel/en-table-climatic-26-tables.log": "9596ba5016bcbd87f7ef7d5a9627e69bc358399a0de9e4678a30faf8fa946f1a",
+    "real-panel/en-table-climatic-26-quick.log": "dc0cac57dad677bcbb01263c2acaccfa3ddc568c38398b08aad8365fdd46e309",
+    "real-panel/de-fraktur-grimm-319-quick.json": "410ee05d618b7df3a3040c990400a1012807fecd7ebfe7d05a0f51f598e0ed85",
+    "real-panel/de-antiqua-kafka-schloss-211-quick.log": "18a3e8a267ce3c6589cbc33c8da8279e18225d2cf5bedd7e3c4954a7d3ef7da6",
+    "real-panel/en-prose-constitution-13-quick.log": "6f1b91915271af961e40801ed1d615e81262ea4b5cbb9b35ac4fbe9102c07b99",
+    "real-panel/result.json": "87bf4ab39d69554166e3969d8a8da5342bd21a884c51a234fc19b27bdf0f8302",
+    "real-panel/receipt-cord-test-29-multilingual.log": "bf43d27fe43521e3397bf1fdb7d6e7f2d8c1e4ac648ca11476bb5d3d43fa5aec",
+    "real-panel/de-antiqua-kafka-schloss-211-multilingual.log": "17995bd7572c690821e8ab170dbdd8e054fd1749b2e415e633aaa4ee8b50a262",
+    "real-panel/de-fraktur-grimm-319-multilingual.json": "dd937d3c5795f547ca57031ea60e24f8d93033829f40e63c072441bb2a335246",
+    "real-panel/de-antiqua-kafka-schloss-211-quick.json": "86da7afae7c882a98b2861b62a2b1fb6429fa2f0936527cc136ee0865a5003d6",
+    "real-panel/en-prose-constitution-13-multilingual.log": "d3417123866e1b86ff309498157b8fcbe16fd2c2c1fd8a4d7366066679aef264",
+    "real-panel/receipt-cord-test-29-quick.json": "e82501cd94680a930b3eb1ed4ed9cd99041c444b8ad8eeea24a088628cb9d36c",
+    "real-panel/de-degraded-freiligrath-46-quick.json": "2d6b20068a150948611fd319f745b374eae61a7504b877a4035e7ad1198f1579",
+    "real-panel/de-degraded-freiligrath-46-multilingual.log": "42ad9f52c5aec996ecc5c52a3e9f8fd4297149979ef470de3d3b9db0a077ba53",
+    "real-panel/en-table-climatic-26-quick.json": "5bdf848fdfd649215ac9fe33de0f9af789e9d3a1d3f8e8c67c8a14be5e7e3a95",
+    "real-panel/receipt-cord-test-29-quick.log": "8e256acec8533f7980ddf2cca9afa3e0743f5a939239c9a7b79230f9e5c3137f",
+    "real-panel/receipt-cord-test-29-multilingual.json": "37efe01877a8e2a2e722720d639b19c77803ed1a3a354012d2b5513a27dc7e19",
+    "real-panel/de-degraded-freiligrath-46-multilingual.json": "a79ceb196ad64b499ac6daea168c824c8d404d0e1e5945067f659149688649e0",
+    "real-panel/en-table-climatic-26-multilingual.log": "56f0dcf63d5da3b18129051ef18495f48a278037eadd7732d15790dcb379bde6",
+    "real-panel/de-fraktur-grimm-319-multilingual.log": "7f9d85178b2d4248a5e5589bb7271cd66f09049cb28c3435e46c71f5648d536f"
+  },
+  "scope": "All frozen input/reference/model hashes checked before inference. Derived metrics and attribution retained; full predictions/logs stay in the private worker output. Model-free source probe, not a full app build; actual desktop package checks are separate."
+}

@@ -25,6 +25,39 @@ const DEFAULT_VIT_MODEL: &str = "siglip-base";
 #[cfg(feature = "crispembed")]
 static VIT_ENCODER: std::sync::OnceLock<Mutex<crispembed::CrispVit>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static VIT_INIT: Mutex<()> = Mutex::new(());
+
+// Catch Rust panics before they can poison the initialization lock. Ordinary
+// model errors and unwinding panics both leave the cache empty for a retry.
+#[cfg(feature = "crispembed")]
+fn init_vit(model_path: &str) -> Result<crispembed::CrispVit> {
+    std::panic::catch_unwind(|| {
+        // `resolve_model` returns an existing file path unchanged, so this only
+        // fails for an unknown name or a missing download — an initialization
+        // error, not something to paper over with the raw string.
+        let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
+            .map_err(|e| anyhow::anyhow!("ViT model resolution failed: {e}"))?;
+        crispembed::CrispVit::new(&resolved, 0)
+            .map_err(|e| anyhow::anyhow!("ViT model init failed: {e}"))
+    })
+    .map_err(|_| anyhow::anyhow!("ViT model initialization panicked"))?
+}
+
+#[cfg(feature = "crispembed")]
+fn get_encoder() -> Result<std::sync::MutexGuard<'static, crispembed::CrispVit>> {
+    if VIT_ENCODER.get().is_none() {
+        let _init = VIT_INIT.lock()
+            .map_err(|e| anyhow::anyhow!("ViT initialization lock poisoned: {e}"))?;
+        if VIT_ENCODER.get().is_none() {
+            let vit = init_vit(DEFAULT_VIT_MODEL)?;
+            let _ = VIT_ENCODER.set(Mutex::new(vit));
+        }
+    }
+    let encoder = VIT_ENCODER.get()
+        .ok_or_else(|| anyhow::anyhow!("ViT encoder was not initialized"))?;
+    encoder.lock().map_err(|e| anyhow::anyhow!("ViT encoder lock poisoned: {e}"))
+}
 
 /// Check if ViT image embedding is available at runtime.
 pub fn is_vit_available() -> bool {
@@ -33,24 +66,14 @@ pub fn is_vit_available() -> bool {
 
 /// Encode an image file to a dense embedding via SigLIP/CLIP.
 ///
-/// Returns an L2-normalized embedding vector.  Empty on failure.
+/// Returns an L2-normalized embedding vector, or an error on failure.
 #[cfg(feature = "crispembed")]
 pub fn embed_image(image_path: &Path) -> Result<Vec<f32>> {
     let path_str = image_path
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let encoder = VIT_ENCODER.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_VIT_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_VIT_MODEL.to_string());
-        let vit = crispembed::CrispVit::new(&resolved, 0)
-            .expect("ViT model init failed");
-        Mutex::new(vit)
-    });
-
-    let mut guard = encoder
-        .lock()
-        .map_err(|e| anyhow::anyhow!("ViT encoder lock poisoned: {e}"))?;
+    let mut guard = get_encoder()?;
 
     let embedding = guard.encode_file(path_str);
     if embedding.is_empty() {
@@ -65,16 +88,7 @@ pub fn embed_image(image_path: &Path) -> Result<Vec<f32>> {
 /// Get the embedding dimension of the loaded ViT model.
 #[cfg(feature = "crispembed")]
 pub fn vit_dim() -> Result<usize> {
-    let encoder = VIT_ENCODER.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_VIT_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_VIT_MODEL.to_string());
-        let vit = crispembed::CrispVit::new(&resolved, 0)
-            .expect("ViT model init failed");
-        Mutex::new(vit)
-    });
-    let guard = encoder
-        .lock()
-        .map_err(|e| anyhow::anyhow!("ViT encoder lock poisoned: {e}"))?;
+    let guard = get_encoder()?;
     Ok(guard.dim() as usize)
 }
 
@@ -84,10 +98,7 @@ pub fn embed_image_with_model(image_path: &Path, model_path: &str) -> Result<Vec
     let path_str = image_path
         .to_str()
         .context("image path is not valid UTF-8")?;
-    let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
-        .unwrap_or_else(|_| model_path.to_string());
-    let mut vit = crispembed::CrispVit::new(&resolved, 0)
-        .map_err(|e| anyhow::anyhow!("ViT init failed: {e}"))?;
+    let mut vit = init_vit(model_path)?;
     let embedding = vit.encode_file(path_str);
     if embedding.is_empty() {
         return Err(anyhow::anyhow!("ViT encoding returned empty vector"));

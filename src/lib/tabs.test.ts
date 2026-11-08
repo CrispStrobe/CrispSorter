@@ -63,7 +63,7 @@ describe('tab registry', () => {
 
 	it('MOBILE_TABS is the core mobile subset', () => {
 		const ids = MOBILE_TABS.map((t) => t.id);
-		expect(ids).toEqual(['batch', 'chat', 'catalog', 'translate', 'ocr']);
+		expect(ids).toEqual(['batch', 'review', 'catalog', 'chat', 'translate', 'ocr']);
 		expect(ids).not.toContain('history');
 	});
 
@@ -73,7 +73,8 @@ describe('tab registry', () => {
 	// common rejection there is.
 	it('the OCR tab is hidden when no OCR tier was compiled in', () => {
 		expect(visibleTabs(CORE_TABS, new Set()).map((t) => t.id)).not.toContain('ocr');
-		expect(visibleTabs(CORE_TABS, new Set(['build:ocr'])).map((t) => t.id)).toContain('ocr');
+		expect(visibleTabs(CORE_TABS, new Set(['build:ocr'])).map((t) => t.id)).not.toContain('ocr');
+		expect(visibleTabs(CORE_TABS, new Set(['build:ocr-workbench'])).map((t) => t.id)).toContain('ocr');
 	});
 
 	// The mobile bar has to obey the same gate. Filtering `MOBILE_TABS`
@@ -81,7 +82,7 @@ describe('tab registry', () => {
 	// dead tab back on precisely the platform it was dead on.
 	it('the mobile bar applies the same build gate as the desktop nav', () => {
 		expect(visibleTabs(MOBILE_TABS, new Set()).map((t) => t.id)).not.toContain('ocr');
-		expect(visibleTabs(MOBILE_TABS, new Set(['build:ocr'])).map((t) => t.id)).toContain('ocr');
+		expect(visibleTabs(MOBILE_TABS, new Set(['build:ocr-workbench'])).map((t) => t.id)).toContain('ocr');
 	});
 
 	// `build:*` and `service:*` share one capability set. They must not be

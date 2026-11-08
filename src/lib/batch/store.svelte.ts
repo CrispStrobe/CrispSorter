@@ -17,8 +17,13 @@ import type { BatchItem, Metadata } from '../types';
 import type { BatchSession } from '../types';
 import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
+import { applyFieldTemplate } from '../metadataFields';
+import { sortPlanMatches, type SortPlan } from './sortPlan';
+import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
 
 export interface ProcessOverrides {
+    extractionWorkers?: number;
+    llmWorkers?: number;
     providerId?: string;
     modelId?: string;
     maxChars?: number;
@@ -97,8 +102,8 @@ export class BatchManager {
     });
 
     addItem(path: string, name: string, size: number) {
-        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
-        if (this.items.some(i => norm(i.originalPath) === norm(path))) return; // skip duplicates (case-insensitive, cross-separator)
+        const norm = batchSourceKey;
+        if (this.items.some(i => norm(i.originalPath) === norm(path))) return;
         flog('info', 'Adding item: ' + name);
         const id = crypto.randomUUID();
         const extension = name.split('.').pop() || '';
@@ -118,7 +123,7 @@ export class BatchManager {
     }
 
     async addItemsBulk(entries: { path: string, name: string, size: number }[]) {
-        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+        const norm = batchSourceKey;
         const existingPaths = new Set(this.items.map(i => norm(i.originalPath)));
         const newItems: BatchItem[] = [];
         
@@ -487,8 +492,9 @@ export class BatchManager {
         // panels), clamped to [1, 16]. Default is 1 + 1, matching the
         // pre-this-commit producer/consumer pipeline; users with fast
         // CPUs / large round-robin pools can scale up.
-        const extractionN = Math.max(1, Math.min(16, (await getSetting('extractionWorkers', 1)) as number));
-        const llmN = Math.max(1, Math.min(16, (await getSetting('llmWorkers', 1)) as number));
+        const maxExtractionWorkers = this.items.some(item => isProviderUri(item.originalPath)) ? 1 : 16;
+        const extractionN = Math.max(1, Math.min(maxExtractionWorkers, overrides?.extractionWorkers ?? (await getSetting('extractionWorkers', 1)) as number));
+        const llmN = Math.max(1, Math.min(16, overrides?.llmWorkers ?? (await getSetting('llmWorkers', 1)) as number));
         this.extractionTargetWorkers = extractionN;
         this.llmTargetWorkers = llmN;
 
@@ -541,7 +547,7 @@ export class BatchManager {
                 // before (same SHA-256) pre-fill the metadata from the last run
                 // and jump straight to 'review' — no extraction, no LLM call.
                 // The user can click "Re-process" to override (sets skipHistoryCheck).
-                if (!item.skipHistoryCheck) {
+                if (!item.skipHistoryCheck && !isProviderUri(item.originalPath)) {
                     if (!item.sha256) {
                         try {
                             item.sha256 = await invoke<string>('file_sha256', { path: item.originalPath });
@@ -606,7 +612,7 @@ export class BatchManager {
                 flog('info', `Starting extraction: ${item.originalName} via worker ${workerId}`);
 
                 try {
-                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
+                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR && !isProviderUri(item.originalPath)) {
                         flog('info', `Rust extraction: ${item.originalName}`);
                         const extractCall = invoke<string>('extract_pdf_native', { path: item.originalPath });
                         const text = FILE_TIMEOUT_MS > 0
@@ -653,15 +659,15 @@ export class BatchManager {
                             }, FILE_TIMEOUT_MS);
                         }
 
-                        const fileData = await readFile(item.originalPath);
-                        if (this.stopRequested) {
-                            if (watchdogId) clearTimeout(watchdogId);
-                            this.extractionAbort?.signal.removeEventListener('abort', onSharedAbort);
-                            item.status = 'queued';
-                            break;
-                        }
                         let extraction;
                         try {
+                            const fileData = isProviderUri(item.originalPath)
+                                ? await readProviderFile(item.originalPath)
+                                : await readFile(item.originalPath);
+                            if (this.stopRequested) {
+                                item.status = 'queued';
+                                break;
+                            }
                             const extractCall = extractText(
                                 {
                                     name: item.originalName,
@@ -745,7 +751,7 @@ export class BatchManager {
                     const hasMetadataConvention =
                         // file types where metadata-read makes sense
                         ['pdf', 'docx', 'epub', 'jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'].includes(ext);
-                    if (isPdf && (await getSetting('pdfMetadataPrefill', true))) {
+                    if (isPdf && !isProviderUri(item.originalPath) && (await getSetting('pdfMetadataPrefill', true))) {
                         try {
                             // 30 s wall-clock cap on the Rust-side lopdf call.
                             // `lopdf::Document::load` is fully synchronous and
@@ -844,7 +850,7 @@ export class BatchManager {
                     item.status = overrides?.extractionOnly ? 'review' : 'queued';
                     if (overrides?.extractionOnly) await this.calculateTargetPath(item);
                     const extractedBytes = item.extractedText?.length ?? 0;
-                    const tool = isPdf && pdfBackend === 'rust' && !forceOCR ? 'pdf-extract (Rust)'
+                    const tool = isPdf && pdfBackend === 'rust' && !forceOCR && !isProviderUri(item.originalPath) ? 'pdf-extract (Rust)'
                                 : forceOCR ? 'OCR (Tesseract)'
                                 : `JS extractor (.${ext})`;
                     const extractMs = Math.round(performance.now() - extractStartTs);
@@ -1100,7 +1106,7 @@ export class BatchManager {
         return { title: title?.trim(), author: author?.trim(), year: year?.trim() };
     }
 
-    async recalculateTargetPath(itemId: string) {
+    async recalculateTargetPath(itemId: string, autoAccept = true) {
         const item = this.items.find(i => i.id === itemId);
         if (!item) return;
         await this.calculateTargetPath(item);
@@ -1120,10 +1126,10 @@ export class BatchManager {
         const titleOk  = !isUnknownSentinel(item.suggestedTitle);
         const authorOk = !isUnknownSentinel(item.suggestedAuthor);
         const allComplete = titleOk && authorOk;
-        if (allComplete && !item.isAccepted) {
+        if (autoAccept && allComplete && !item.isAccepted) {
             item.isAccepted = true;
             flog('info', `Auto-accepted '${item.originalName}' — Title + Author are non-sentinel.`);
-        } else if (!allComplete && item.isAccepted) {
+        } else if (autoAccept && !allComplete && item.isAccepted) {
             // Same fairness rule in reverse: don't keep a green check
             // on a row the user just downgraded by reverting Title or
             // Author to "Unknown".  Prevents an awkward "I unchecked
@@ -1136,6 +1142,12 @@ export class BatchManager {
     }
 
     private async calculateTargetPath(item: BatchItem) {
+        // SAF entries identify originals in a provider; path-based sorting
+        // cannot move them. Do not manufacture a local destination for one.
+        if (isProviderUri(item.originalPath)) {
+            item.targetPath = undefined;
+            return;
+        }
         const exportPath = await getSetting('exportPath', '');
         const pathTemplate = await getSetting('pathTemplate', '{Author}/{Year}/{Title}') as string;
 
@@ -1147,7 +1159,11 @@ export class BatchManager {
         const filename = item.originalName;
 
         const hasExtToken = /\{Ext\}/i.test(pathTemplate);
-        let relative = pathTemplate
+        const reviewedFields = await getSetting('reviewedSortFields', {}) as Record<string, Record<string, string>>;
+        if (/\{Field:/i.test(pathTemplate)) {
+            await invoke('verify_sort_field_source', { path: item.originalPath, expectedHash: reviewedFields[item.originalPath]?.__source_hash || '' });
+        }
+        let relative = applyFieldTemplate(pathTemplate, reviewedFields[item.originalPath] ?? {})
             .replace(/\{Author\}/gi,   author)
             .replace(/\{Year\}/gi,     year)
             .replace(/\{Title\}/gi,    title)
@@ -1213,67 +1229,36 @@ export class BatchManager {
         }
     }
 
-    async executeBatch(mode: string = 'move', opts: { skipNonPrimaryDupes?: boolean } = {}) {
-        // The user's `isAccepted` flag is the affirmative consent;
-        // `status` is informational. Items at 'review' (LLM-analysed),
-        // 'error' (re-try), 'unfinished' (resumed from prior session),
-        // and 'queued' (waiting / metadata-prefilled, never analysed)
-        // are all sortable as long as the user ticked the green check
-        // and a target path is computable. Pre-fix, only 'review' and
-        // 'error' passed -- so resumed-session items the user OK'd
-        // would show a green check + enabled "Sortieren" button but
-        // executeBatch silently filtered them out and returned null.
-        const SORTABLE = new Set(['review', 'error', 'unfinished', 'queued']);
-        const accepted = this.items.filter(
-            i => i.isAccepted && i.targetPath && SORTABLE.has(i.status)
-                && !(opts.skipNonPrimaryDupes && i.isDuplicatePrimary === false)
-        );
-        flog('info', `executeBatch(${mode}) starting: ${accepted.length} sortable / ${this.items.length} total`);
-
-        // Per-item rejection diagnosis at debug level. Each rejected
-        // item logs WHICH gate it failed (no green check / no
-        // targetPath / unsortable status). Set Log-Verbosity=debug
-        // in Settings -> Allgemein to see this.
-        for (const i of this.items) {
-            const reasons: string[] = [];
-            if (!i.isAccepted)              reasons.push('not accepted');
-            if (!i.targetPath)              reasons.push('no targetPath');
-            if (!SORTABLE.has(i.status))    reasons.push(`unsortable status='${i.status}'`);
-            const verdict = reasons.length === 0
-                ? 'will sort'
-                : `skip (${reasons.join(', ')})`;
-            flog('debug', `  item ${i.originalName}: status=${i.status} accepted=${i.isAccepted} target=${i.targetPath ? 'set' : 'MISSING'} -> ${verdict}`);
-        }
-
-        if (accepted.length === 0) {
-            // Surface the reason at warn level so the silent-null case
-            // isn't silent.
-            const greenCount = this.items.filter(i => i.isAccepted).length;
-            const noTargetCount = this.items.filter(i => i.isAccepted && !i.targetPath).length;
-            const wrongStatusCount = this.items.filter(i => i.isAccepted && i.targetPath && !SORTABLE.has(i.status)).length;
-            flog('warn',
-                `executeBatch returning null: 0 sortable items. ` +
-                `${greenCount} have green check, ${noTargetCount} of those lack a targetPath, ` +
-                `${wrongStatusCount} have a non-sortable status. Re-process the batch and try again.`
-            );
-            return null;
-        }
-
-        const saveTxt = await getSetting('saveTxt', true);
-        const payload = {
-            items: accepted.map(i => ({
-                id: i.id,
-                originalPath: i.originalPath,
-                targetPath: i.targetPath!,
-                extractedText: i.extractedText
-            })),
-            saveTxt,
-            mode
-        };
-
+    async executeBatch(plan: SortPlan) {
+        // Acquire the lock before awaiting settings so concurrent confirmations
+        // cannot both dispatch. Validate again after all asynchronous work.
+        if (this.isExecuting) throw new Error('A sort is already running.');
         this.isExecuting = true;
         try {
+            const saveTxt = await getSetting('saveTxt', true) as boolean;
+            if (!plan.items.length || !sortPlanMatches(plan, this.items, saveTxt)) {
+                throw new Error('The sort plan changed. Review it again before sorting.');
+            }
+            const { mode } = plan;
+            const payload = {
+                items: plan.items.map(i => ({
+                    id: i.id,
+                    originalPath: i.originalPath,
+                    targetPath: i.targetPath!,
+                    extractedText: i.extractedText,
+                })),
+                saveTxt: plan.saveTxt,
+                mode,
+            };
             const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', { payload });
+
+            // Generating a script does not move or copy any files. Leave review
+            // status, history and index locations untouched until it is run.
+            if (mode.startsWith('script_')) {
+                const generated = Object.values(results).filter(result => result.success).length;
+                return { success: generated, notFound: 0, notWritable: 0, notPermitted: 0,
+                    error: plan.items.length - generated, copiedFallback: 0, locked: 0, mode };
+            }
 
             let successCount = 0;
             let notFound = 0;
@@ -1289,11 +1274,12 @@ export class BatchManager {
             const changedItems: BatchItem[] = [];
 
             for (const [id, res] of Object.entries(results)) {
+                const planned = plan.items.find(i => i.id === id);
                 const item = this.items.find(i => i.id === id);
                 if (item) {
                     if (res.success) {
                         item.status = 'done';
-                        if (res.error === 'COPY_FALLBACK') {
+                        if (res.error?.startsWith('COPY_FALLBACK')) {
                             // Copied to destination but original not deleted (was locked by OS)
                             item.errorMessage = 'COPY_FALLBACK';
                             item.statusDetail = 'copied (orig. kept)';
@@ -1303,10 +1289,10 @@ export class BatchManager {
                             item.statusDetail = mode.includes('copy') ? 'copied' : 'moved';
                             successCount++;
                             // Update search index location if the file was moved (not copied)
-                            if (!mode.includes('copy') && item.targetPath) {
+                            if (!mode.includes('copy') && planned?.targetPath) {
                                 invoke('index_update_location_by_path', {
-                                    oldPath: item.originalPath,
-                                    newPath: item.targetPath,
+                                    oldPath: planned.originalPath,
+                                    newPath: planned.targetPath,
                                 }).catch(e => console.warn('[Index] update_location_by_path failed:', e));
                             }
                         }
@@ -1320,7 +1306,7 @@ export class BatchManager {
                                 suggestedTitle:  item.suggestedTitle,
                                 suggestedAuthor: item.suggestedAuthor,
                                 suggestedYear:   item.suggestedYear,
-                                targetPath:      item.targetPath,
+                                targetPath:      planned?.targetPath,
                                 processedAt:     Date.now(),
                             }).catch(e => logDebug(`recordProcessed failed: ${e}`));
                         }

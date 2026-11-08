@@ -38,6 +38,7 @@ members  = [
     "crates/crisp-internxt-native",
     "crates/crisp-filen-native",
     "crates/internxt-core",
+    "crates/tauri-plugin-mobile-provider",
 ]
 # release.yml extracts sibling repos (CrispEmbed / CrispASR / crisp-docx)
 # under `_sibling/` so path deps in src-tauri/Cargo.toml resolve in CI.

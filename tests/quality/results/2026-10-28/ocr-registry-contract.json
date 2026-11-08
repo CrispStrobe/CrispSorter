@@ -1,0 +1,21 @@
+{
+  "scope": "Registry-name contract inspection only; not inference qualification for every advanced engine",
+  "source_commit": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+  "registry_sha256": "54aa6393eda98f0d83508e09a0a2aa154cb6eab19bb128f4924c139915a07588",
+  "default_models_present": [
+    "glm-ocr",
+    "got-ocr2",
+    "internvl2-2b",
+    "deepseek-ocr2",
+    "pix2struct-base",
+    "granite-vision",
+    "lightonocr",
+    "qwen3vl-2b",
+    "unlimited-ocr",
+    "qwen2vl-3b"
+  ],
+  "legacy_aliases": {
+    "qwen2vl-ocr": "qwen2vl-3b",
+    "internvl2-ocr": "internvl2-2b"
+  }
+}

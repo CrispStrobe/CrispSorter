@@ -1,0 +1,86 @@
+[
+  {
+    "run": 1,
+    "report_sha256": "11652a152ab0da36de56386c1ccd051c8dfd87d6f3fdc43b4e374a1aeb75a48f",
+    "error": {
+      "type": "RuntimeError",
+      "message": "Native server exited during startup; see /kaggle/working/qualification/moedern-1p5m.log"
+    },
+    "completed": false
+  },
+  {
+    "run": 2,
+    "report_sha256": "38dd9301f1d09875fa98a27c71e92714d310052f2b47914c6146052fa834e26a",
+    "error": {
+      "type": "HTTPError",
+      "message": "HTTP Error 400: Bad Request"
+    },
+    "completed": false
+  },
+  {
+    "run": "native-1",
+    "error": {
+      "type": "RuntimeError",
+      "message": "python exited 2; see native.log"
+    },
+    "cause": "Launcher omitted the required --asset verifier argument; fixed before native run 2."
+  },
+  {
+    "run": "native-2",
+    "error": "lance-encoding could not find google/protobuf/empty.proto",
+    "cause": "The worker omits recommended apt packages. Explicit libprotobuf-dev and PROTOC_INCLUDE are required; native run 3 checks the include before compiling."
+  },
+  {
+    "run": "native-3",
+    "cause": "All 1470 native regressions passed, then live OCR failed before inference: qwen2vl-ocr is absent from the pinned registry. Corrected presets and legacy alias migration use qwen2vl-3b.",
+    "report": "native-run-v3.json"
+  },
+  {
+    "run": "frontend-2",
+    "cause": "Production build and 75 unit tests passed. An extra parenthesis in the new sorting race browser test blocked typechecking and browser discovery. Corrected and all ten tests now parse.",
+    "app_source": "854f5f742a4cffe86a5e45427d01b96f8fcbe00b"
+  },
+  {
+    "run": "frontend-3",
+    "app_source": "c13822422e3c5593c60eed3f04330c2666213af8",
+    "passed": [
+      "svelte",
+      "unit (75)",
+      "production build",
+      "8 browser scenarios"
+    ],
+    "cause": "Two new assertions used the wrong IPC shape or selector: CSV writes carry UTF-8 bytes, and the implicit select label was not located by exact getByLabel. Corrected byte decoding and accessible combobox role; all ten browser scenarios passed in frontend-4."
+  },
+  {
+    "run": "release-40784963290-windows",
+    "job": 123155730201,
+    "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "failure": "Vendored openssl-sys selected Git MSYS Perl, which lacked Locale::Maketext::Simple. Native regression executable was not reached.",
+    "log_sha256": "722377331179bf8936e59ea339613eee21ba9da5f182e89169d2064b82411dc8",
+    "fix": "Use native Strawberry Perl explicitly through OPENSSL_SRC_PERL; validate platform and required modules before Cargo. Retry only Windows using shared matrix metadata and steps.",
+    "workflow_validation": "actionlint 1.7.12 passed; native Windows result still pending"
+  },
+  {
+    "run": "real-ocr-1",
+    "inference_started": false,
+    "cause": "Kaggle base Python was 3.13; pinned PyArrow 17 lacked a wheel and source setup failed. Use the upstream Python 3.12 environment via pinned uv and require binary wheels. Frozen cases/references/scoring are unchanged.",
+    "report_sha256": "1790fcdf5359198688468509b267e100846146d2f4074f00b8abd78bd67ae8c9"
+  },
+  {
+    "run": "release-40784963290-android",
+    "job": 123155729858,
+    "failure": "Successful Gradle release build produced an unsigned APK, so ZIP-only qualification did not establish installability.",
+    "input_sha256": "d250b91658692d0015338f338220ffdccba9bba931404645cc545aa009e6d69c",
+    "fix": "Sign a separate development APK with a retained private development key; verify APK v2/v3 signatures and unchanged native-library ZIP alignment. Future public releases require configured production signing secrets. No app rebuild or production identity rotation.",
+    "result": "android-artifact-verification.json"
+  },
+  {
+    "run": "release-40797005642-windows",
+    "job": 123195792137,
+    "app_source": "8f678d5668948e9827ea38040de90a1c9752c8e6",
+    "passed": "Native Strawberry Perl preflight; compilation proceeded past vendored OpenSSL",
+    "failure": "Git Bash rewrote CXXFLAGS=/D_USE_MATH_DEFINES into C:/Program Files/Git/D_USE_MATH_DEFINES. Glint then failed to compile with undeclared M_PI; native tests were not executed.",
+    "log_sha256": "7c69689f764b73226844cd24e4bbeae58737b05aa0c3b655320389929657f750",
+    "fix": "Use MSVC-supported -D_USE_MATH_DEFINES; validate the exact flag in a native Python process launched by Git Bash before Cargo; retry only Windows and retain failure cache."
+  }
+]

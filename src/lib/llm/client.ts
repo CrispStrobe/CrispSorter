@@ -223,22 +223,24 @@ export class LLMClient {
         }
     }
 
-    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal): Promise<string> {
+    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal, maxOutputTokens?: number): Promise<string> {
         flog('info', `LLM query: provider=${providerId} model=${modelId} prompt_len=${prompt.length}`);
+        if (maxOutputTokens != null && (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 1)) throw new Error('Invalid answer token budget');
+        const outputTokenBudget = maxOutputTokens == null ? undefined : Math.floor(maxOutputTokens);
 
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
         if (providerId === 'webllm') {
             const loaded = getWebLLMLoadedModel();
             if (!loaded) throw new Error('WebLLM: no model loaded — open Settings and click Load.');
-            const result = await queryWebLLM(prompt);
+            const result = await queryWebLLM(prompt, undefined, outputTokenBudget);
             return this.stripThinking(result);
         }
 
         if (providerId === 'ort') {
             const loaded = getORTLoadedModel();
             if (!loaded) throw new Error('ORT: no model loaded — open Settings and click Load.');
-            const result = await queryORT(prompt);
+            const result = await queryORT(prompt, undefined, outputTokenBudget);
             return this.stripThinking(result);
         }
 
@@ -247,7 +249,7 @@ export class LLMClient {
             const invokePromise = invoke<string>('run_mistralrs_query', {
                 modelPath: modelId,
                 prompt,
-                maxTokens: 512,
+                maxTokens: outputTokenBudget ?? 512,
                 noThinking: this.noThinking,
             });
             // Race against abort signal and 3-minute timeout
@@ -323,7 +325,11 @@ export class LLMClient {
                     response = await fetch(`${baseUrl}/chat/completions`, {
                         method: 'POST',
                         headers,
-                        body: JSON.stringify({ model: modelId, messages, temperature, stream: false }),
+                        body: JSON.stringify({ model: modelId, messages, temperature, stream: false,
+                            ...(outputTokenBudget == null ? {} : providerId === 'openai'
+                                ? { max_completion_tokens: outputTokenBudget }
+                                : { max_tokens: outputTokenBudget }),
+                        }),
                         connectTimeout: isLocal ? 30000 : 15000,
                         signal: reqController.signal,
                     });

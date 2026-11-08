@@ -17,11 +17,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ABI="arm64-v8a"
+REQUIRE_CRISPEMBED=0
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --abi) ABI="$2"; shift ;;
-        --help) echo "Usage: $0 [--abi arm64-v8a|armeabi-v7a|x86_64]"; exit 0 ;;
+        --require-crispembed) REQUIRE_CRISPEMBED=1 ;;
+        --help) echo "Usage: $0 [--abi arm64-v8a|armeabi-v7a|x86_64] [--require-crispembed]"; exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
 done
@@ -50,16 +53,25 @@ fi
 
 # CrispEmbed
 if [ -f "$CRISPEMBED_DIR/libcrispembed.so" ]; then
-    cp "$CRISPEMBED_DIR/libcrispembed.so" "$JNILIBS/"
-    echo "✓ Bundled libcrispembed.so ($(du -h "$JNILIBS/libcrispembed.so" | cut -f1))"
+    # Check the full dependency closure before copying anything from this
+    # runtime. A lone libcrispembed.so is insufficient when it links ggml
+    # dynamically. Never substitute a different runtime's same-named ggml.
+    LIBS=$(python3 "$SCRIPT_DIR/validate_android_native_libs.py" "$CRISPEMBED_DIR" --abi "$ABI")
+    while IFS= read -r lib; do
+        if [ -e "$JNILIBS/$lib" ] && ! cmp -s "$CRISPEMBED_DIR/$lib" "$JNILIBS/$lib"; then
+            echo "Conflicting Android native library: $lib" >&2
+            exit 1
+        fi
+    done <<< "$LIBS"
+    while IFS= read -r lib; do
+        cp "$CRISPEMBED_DIR/$lib" "$JNILIBS/$lib"
+        echo "✓ Bundled $lib"
+    done <<< "$LIBS"
     FOUND=$((FOUND + 1))
-    # Also copy GGML backend libs if present (avoid duplicates from CrispASR)
-    for lib in "$CRISPEMBED_DIR"/libggml*.so; do
-        [ -f "$lib" ] && [ ! -f "$JNILIBS/$(basename "$lib")" ] && cp "$lib" "$JNILIBS/" && echo "  + $(basename "$lib")"
-    done
 else
     echo "⚠ libcrispembed.so not found at $CRISPEMBED_DIR"
     echo "  Run: cd ../CrispEmbed && ./build-android.sh --abi $ABI"
+    if [ "$REQUIRE_CRISPEMBED" -eq 1 ]; then exit 1; fi
 fi
 
 echo ""

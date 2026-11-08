@@ -8,6 +8,11 @@
   Streams `translate://progress` events for a live progress indicator.
 -->
 <script lang="ts">
+    let { initialPath = '' }: { initialPath?: string } = $props();
+    $effect(() => {
+        const path = initialPath;
+        if (path) { inputPath = path; outputPath = path.replace(/\.docx$/i, '-translated.docx'); }
+    });
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { invoke } from '@tauri-apps/api/core';

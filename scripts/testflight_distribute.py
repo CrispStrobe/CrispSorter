@@ -28,6 +28,7 @@ Usage (env-driven so CI passes secrets, never argv):
 """
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -167,7 +168,7 @@ def errors_of(payload):
 
 
 # ── Steps ───────────────────────────────────────────────────────────────
-def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
+def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_after=None):
     """The newest build for this app+platform, waited until it is VALID.
 
     Apple processes an upload asynchronously; a build in PROCESSING cannot be
@@ -190,7 +191,7 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
     and distributed the older binary while reporting success. Build numbers
     are unique per upload; semvers are not.
     """
-    q = urllib.parse.urlencode({
+    params = {
         "filter[app]": app_id,
         "filter[preReleaseVersion.platform]": platform,
         "sort": "-version",
@@ -205,7 +206,11 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
                            "usesNonExemptEncryption,preReleaseVersion"),
         "include": "preReleaseVersion",
         "fields[preReleaseVersions]": "version,platform",
-    })
+    }
+    if uploaded_after:
+        params['filter[version]'] = version
+        params['sort'] = '-uploadedDate'
+    q = urllib.parse.urlencode(params)
     deadline = time.time() + wait_minutes * 60
     seen = None
     while True:
@@ -237,7 +242,18 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
             rel = b.get("relationships", {}).get("preReleaseVersion", {}).get("data")
             return semvers.get(rel["id"]) if rel else None
 
-        if version:
+        if uploaded_after:
+            def parse_timestamp(value):
+                parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                if parsed.tzinfo is None:
+                    raise ValueError('App Store Connect timestamp lacks a timezone')
+                return parsed.astimezone(timezone.utc)
+            cutoff = parse_timestamp(uploaded_after)
+            builds = [b for b in builds if b['attributes'].get('uploadedDate')
+                      and parse_timestamp(b['attributes']['uploadedDate']) >= cutoff]
+        if version and uploaded_after:
+            builds = [b for b in builds if b['attributes'].get('version') == version]
+        elif version:
             builds = [b for b in builds
                       if version in (b["attributes"].get("version"), semver_of(b))]
         if builds:
@@ -486,6 +502,7 @@ def main():
     ap.add_argument("--version", default=None, help="build version to target (default: newest)")
     ap.add_argument("--notes", default=None, help="'what to test' text")
     ap.add_argument("--wait-minutes", type=int, default=25)
+    ap.add_argument("--uploaded-after", default=None, help="ISO UTC timestamp; require an exact build number uploaded at or after this time")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -511,7 +528,9 @@ def main():
         + (" [dry-run]" if args.dry_run else ""))
 
     log("1. locating the build")
-    build = latest_build(asc, app_id, args.platform, args.version, args.wait_minutes)
+    if args.uploaded_after and not args.version:
+        sys.exit('--uploaded-after requires an exact --version build number')
+    build = latest_build(asc, app_id, args.platform, args.version, args.wait_minutes, args.uploaded_after)
     build_id = build["id"]
 
     log("2. export compliance")

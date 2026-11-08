@@ -1,0 +1,21 @@
+{
+  "scope": "Exact production OCR functions, configuration and live test; excludes unrelated application modules",
+  "fragments_sha256": {
+    "configuration_types_and_defaults": "1b7d762f006b891fa4dad61941ee8c7dd009ca6e81ca88c7773ecd310386a57f",
+    "vlm_engine_id": "0bd74d9e3d4d93d2a3ce7189e03f1a0822ce489b245b0029b948b13d774d539e",
+    "vlm_default_model": "347a5d395ac9117233916c811d30d3fec230e336b056fcb20a60fd795c8af116",
+    "resolve": "b892c676e727071a9d034cdcf4edd705ff4d9c4e5e08e2cbc3bc92c3cf660d19",
+    "build_pipeline": "e8e4ffab630882805304bb235ca47ff2f850d321aa254662ace8b7fd7680ab64",
+    "cached_pipeline": "e2b58e86e901785ec418acb97fd60c3400ee4f49a2b9bfd837c91fbc7eaab4be",
+    "effective_confidence": "4dedf03c8711d4d0c9ba95432c432f9ccab3e7f503e339fc0f64422691dee0b0",
+    "ocr_regions_detailed": "340d84c34b8e2314343d943614369724d78d42d3e57badd1f94c859645b7820f",
+    "RegionConf": "5d485dbb6ba927694fcddd3c228914e81098727b9a6ecbfab864bfee5ea9a1c9",
+    "DEFAULT_DET_MODEL": "22406965e58fba1845522b2ba614ca86395545be6524b21bdb2433d93c307675",
+    "DEFAULT_REC_MODEL": "f3ae01a8499f3d7bee85aa3f3edfa22586dae6b47b52d320cb605ddd933aeea5",
+    "NAFNET_MODEL": "9827397eeab48f1ac055eeeace4bc648dbd89a1b07fc9eefe51f74627cf6cf06",
+    "OCR_ORCH": "3fd381c2684bdf5281f7349ef2e6d8eda8e98d8aaeebd6d5f935063de7edbbef",
+    "live_test": "0b4f79abf6f06af660cc892dc9c42f6f9da9531131b62055cc379ddaa5312eda",
+    "context_cache": "1cd23936e99e4d325f132112462c6703009eb442ecc1bad40a5a81799f2242ea",
+    "ocr_presets": "558e700f75972f73b91a6e114b03eb8231e395fb0bfc1e202496364722e0dcc2"
+  }
+}

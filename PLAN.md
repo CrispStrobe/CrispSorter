@@ -1,5 +1,107 @@
 # CrispSorter — Development Plan
 
+## Follow-up improvement programme — 29 October 2026
+
+**Handoff:** [exact open tasks, run links, evidence and next steps](docs/HANDOFF_2026-10-29.md).
+
+User requested all six items, with mobile/device validation, OCR quality and
+resource controls, newer CrispEmbed OCR evaluation, search/citation quality,
+review/sorting safety, and production signing/distribution. Heavy work must be
+admitted against shared VPS load and memory, otherwise use the operator Kaggle
+guide. Avoid unnecessary GitHub CI; real platform builds and simulator work need
+native workers. Do not report an item complete solely because code is prepared.
+
+- [ ] Mobile parity and actual Android/iOS device or simulator checks.
+- [x] OCR resource controls, region retries and meaningful native verification.
+- [ ] Evaluate newer CrispEmbed OCR engines against the released ABI and evidence.
+- [x] Multilingual/long-document retrieval and citation navigation/coverage.
+- [x] Bulk evidence review, conflict handling, inspectable and safe sort moves.
+- [ ] Production signing/notarization and automated mobile smoke coverage.
+- [ ] Integrated validation and updated platform artifacts; retain actual limitations.
+
+Version 0.14.0 has been assigned to the existing internal TestFlight group.
+The [draft release](https://github.com/CrispStrobe/CrispSorter/releases/tag/untagged-904dfadba8df7a234ec5)
+contains six verified artifacts for the five platform targets. All uploaded
+hashes match source-bound receipts for commit `6d99dc545bdb143fa6b30c78c185c6f20ab3d315`.
+Android uses the retained production release key; macOS and Windows direct
+packages are explicitly unsigned until the relevant production identities exist.
+The retained Apple App Store signing bundle does not contain a Developer ID
+Application private key. No Apple certificate was created or revoked. A Windows
+trusted Authenticode certificate is not yet available.
+
+The final frontend run passed 101 unit tests and 14 browser scenarios; the
+source-pinned Linux native run passed 1,483 tests, with 36 ignored, and five
+script tests. The release workflow completed on all five platforms. Focused
+native provider tests passed on Android (four emulator tests) and iOS (three
+simulator tests), but real picker grants, restarts, cloud providers, full-app
+mobile startup and physical devices require further qualification. The isolated
+CPU OCR worker passed sandbox and real-model smoke checks; its sample read
+“warrant” for “warranty,” recorded as a quality limit. Mobile native CrispEmbed
+inference remains unavailable: the released Android bundle lacks required ggml
+libraries, and iOS needs target-specific static linking. Newer development-only
+OCR engines are not represented as qualified released capabilities.
+
+## Library workflow improvement programme — completed 29 October 2026
+
+All eight authorized improvements and binaries for the five supported platform
+targets are complete on `feat/library-workflows-20261028`. The release is an
+unpublished draft; version 0.13.0 was subsequently delivered to internal TestFlight.
+
+- [x] Retrieval: full matching passages for reranking, retained candidate windows,
+  result-limit-aware cache, consistent fallback ranks; meaningful regressions.
+- [x] Cited chat: selected-document and library retrieval, token-budgeted evidence,
+  clickable source navigation, honest missing-evidence behavior.
+- [x] Runtime: qualify immutable CrispEmbed 0.17.12 bindings/assets; report actual
+  runtime identity and keep unsupported experimental engines unavailable.
+- [x] OCR: task presets, selective weak-page/region reprocessing, engine comparison
+  on a frozen representative corpus; retain published and experimental distinctions.
+- [x] MoEdern: independent query/document role integration, original masks/scoring,
+  corpus relevance/latency/storage comparison before default selection.
+- [x] Structured decisions: optional SystemOne suggestions, bounded schemas,
+  independent labeled evaluation; preserve human review and open-ended extraction.
+- [x] Metadata evidence: original and normalized values, source anchors, model and
+  review status; inspect/edit/filter/export/use in sorting.
+- [x] Workflow UX: Inbox / Review / Library, document-context tools, processing
+  presets and actionable incomplete-work indicators, preserved advanced controls.
+- [x] Integrated validation and binaries: source-pinned checks, real packaged
+  startup/integration checks and downloadable checksummed platform artifacts.
+
+The [release notes](RELEASE_NOTES_v0.13.0.md),
+[workflow guide](docs/library-workflows.md) and
+[measured model limits](docs/library-model-evaluation.md) describe the delivered
+behavior. Exact source/job identities, downloaded artifact hashes and native
+execution receipts are in
+[the combined manifest](tests/quality/results/2026-10-28/release-manifest.json).
+
+Validation completed: 75 frontend unit tests, zero Svelte errors (53 existing
+warnings), production build and ten browser scenarios; 1,490 Linux / 1,484
+Windows / 1,495 macOS native tests. Each final extracted desktop package passed
+version/doctor and scanned-PDF OCR with sibling build libraries hidden. Signed
+mobile archive checks passed; physical-device execution was not performed. The
+Android testing artifact is explicitly development-signed. Native CrispEmbed
+features are desktop capabilities; mobile client packages do not bundle it.
+
+The frozen real OCR panel executed all 15 planned cases and retains its four
+timeouts. The separate native CPU pixel profile completed all nine Qwen cases
+on the same six pages, retaining its first exploratory case separately. Its
+82–185 second / 5,260–5,266 MiB measurements have explicit accuracy tradeoffs;
+defaults remain unchanged. MoEdern 27M matched the dense panel baseline, while
+other sizes missed the gate. SystemOne's 75% score missed its 90% gate. Both
+newer service integrations remain explicit, reviewed options. Initial failures
+and source/model/input hashes are preserved in the results directory.
+
+Heavy model work ran on hosted CPU workers; no weights or inference ran on the
+shared VPS. Native platform packaging used GitHub workers. Windows recovery
+fixed native Perl selection and Git Bash's conversion of MSVC slash flags;
+future Apple desktop jobs use macOS 15. Actual binary source revisions remain
+recorded rather than relabeled as later documentation commits.
+
+Execution constraints for future work: inspect average load, available memory
+and disk before heavy VPS jobs; follow the operator's Kaggle guide when local
+capacity is insufficient. Avoid extra GitHub queue work and preserve actual
+failures and artifact evidence. Never substitute prepared or queued checks for
+successful results.
+
 > **Full specs for completed phases** → [HISTORY.md](HISTORY.md)
 > **Technical patterns / pitfalls** → [LEARNINGS.md](LEARNINGS.md)
 > **In-flight integration designs** → [docs/](docs/)
@@ -64,7 +166,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 
-- [ ] **Phase 2 — Linux + Windows** (~8-12 h, separate session) — RPATH / DLL colocation; each platform needs 1-2 release iterations. Opening prompt: `handover-prompts/session-prompt-crispembed-ci-matrix.md` (local-only — see .gitignore).
+- [x] **Phase 2 — Linux + Windows** — Qualified in v0.13.0: RPATH / DLL colocation, Linux SONAME aliases and final cold-package startup / scanned-PDF OCR. Source and checksum receipts are linked in the completed programme above.
 - [x] **Phase 3 — mobile** ✅ SHIPPED v0.4.0→v0.4.1 (2026-06-04/05).  Full feature parity on Android aarch64 + iOS.  No feature flags — one binary, all platforms.  Vendored OpenSSL; lance-linalg Android+iOS patch; responsive UI (bottom tab bar on phones); CI jobs for APK + IPA.  Sidecar commands (Ollama/llama.cpp/MLX/TTS spawn) compile everywhere but only surface in desktop UI.  `mistralrs` runs in-process on all platforms.  See [HISTORY.md](HISTORY.md) 2026-06-04 session log.
   - [x] **Android SAF handler** — `mobile_fs` Rust module with Tauri commands (`mobile_fs_list_folder`, `mobile_fs_read_file`, `mobile_fs_move_file`, `mobile_fs_create_dir`, `mobile_fs_delete`).  `SAFBridge.kt` in `src-tauri/android-src/` (copy into gen/android/ after init).  Desktop fallback via `std::fs`.
   - [x] **iOS security-scoped bookmarks** — `mobile_fs_start_access` / `mobile_fs_stop_access` Tauri commands.  Placeholder for objc2 FFI to `NSURL.startAccessingSecurityScopedResource()`.

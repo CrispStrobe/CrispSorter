@@ -237,10 +237,11 @@ mod tests {
         // dead code in every shipped artifact and were deleted rather than
         // kept as an unreachable fallback. There is no longer a spawn to
         // gate, which is a stronger guarantee than gating one.
-        let gated: [(&str, &str); 6] = [
+        let gated: [(&str, &str); 7] = [
             ("lib.rs", "mod no_sidecars — HTTP client without the launcher"),
             ("tts/mod.rs", "CrispASR synthesis, watermarked, played by the webview"),
             ("extractors/ocr.rs", "CrispEmbed / PaddleOCR / ocrs tiers"),
+            ("extractors/ocr_worker.rs", "CPU pixel-budget profile unavailable without sidecars"),
             ("audio/ffmpeg_fallback.rs", "the glint decode tier"),
             ("volume/mod.rs", "getattrlist(2) / getfsstat(2) on macOS"),
             ("platform_share.rs", "NSWorkspace via Launch Services"),

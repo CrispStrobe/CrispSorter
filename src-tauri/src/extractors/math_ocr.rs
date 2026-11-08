@@ -97,6 +97,10 @@ pub fn recognize_formula_with_model(
     let (w, h) = img.dimensions();
     let pixels = img.into_raw();
 
+    // An explicitly requested formula model may be restricted (e.g. the
+    // CC-BY-NC-SA `posformer-crohme`), so refuse the implicit download without
+    // consent instead of fetching it silently.
+    crate::index::license_consent::ensure_registry_download_allowed(model_path)?;
     let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
         .unwrap_or_else(|_| model_path.to_string());
     let mut ocr = crispembed::MathOcr::new(&resolved, 0)

@@ -102,6 +102,16 @@ pub struct RawDocument {
     /// or when the platform helper fails (best-effort enrichment).
     pub volume_id: Option<String>,
 
+    /// Whether this row was written while image indexing was enabled.
+    ///
+    /// Stored in `metadata_json` as `"images_indexed":true` (absent when
+    /// false, mirroring `mtime_unix`'s convention) so the re-ingest guard can
+    /// tell "no image vectors because there are none to have" from "no image
+    /// vectors because the feature was off at the time". Turning image
+    /// indexing on therefore backfills existing documents exactly once
+    /// instead of leaving them permanently without vectors.
+    pub images_indexed: bool,
+
     /// Parent directory of the source file (PLAN P9 step 3).
     /// Written directly to the `parent_dir` column so folder-prefix
     /// filters in `query_documents` use a scalar index instead of a
@@ -386,12 +396,23 @@ impl IngestPipeline {
         // the resulting entity tags into raw.tags BEFORE chunk rows are built,
         // so every chunk of a doc carries the same entity tags (chunk_index
         // convention).  No-op when NER is disabled or the feature is off.
+        let mut field_evidence = std::collections::HashMap::new();
         if let Some(ner) = &self.ner {
             for raw in raws.iter_mut() {
-                let entity_tags = ner.extract_tags(&raw.full_text).await;
-                if !entity_tags.is_empty() {
-                    merge_tags(&mut raw.tags, entity_tags);
-                }
+                let mut extracted = ner.extract_fields(&raw.full_text).await;
+                if ner.entity_limit() > 0 { extracted.truncate(ner.entity_limit()); }
+                let entities = extracted.iter().map(|(label, value, score)| super::ner::ScoredEntity {
+                    label: label.clone(), text: value.clone(), score: *score,
+                }).collect();
+                let entity_tags = super::ner::build_entity_tags(entities, 0.0, ner.entity_limit());
+                merge_tags(&mut raw.tags, entity_tags);
+                let doc_id = doc_id_for(raw);
+                let mut fields = super::fields::from_extraction(&doc_id, &raw.full_text, ner.model().display_name(), extracted);
+                // Preserve reviewed values when the same source is reindexed.
+                let previous = self.vector.document_metadata(&doc_id).await?;
+                let reviewed = super::fields::read(&previous);
+                super::fields::preserve_reviews(&mut fields, &reviewed);
+                field_evidence.insert(doc_id, fields);
             }
         }
 
@@ -488,6 +509,12 @@ impl IngestPipeline {
         }
         let embed_time_ms = if self.embedder.is_some() { embed_start.elapsed().as_millis() as u64 } else { 0 };
 
+        for chunk in &mut all_chunks {
+            if let Some(fields) = field_evidence.get(&chunk.doc_id) {
+                super::fields::attach(&mut chunk.metadata_json, fields);
+                merge_tags(&mut chunk.tags, fields.iter().filter(|f| f.review_status != "rejected").map(super::fields::tag).collect());
+            }
+        }
         // ── Write phase: submit to background writer task ───────────────
         self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms)
             .await
@@ -863,7 +890,12 @@ fn build_doc_chunk(
         // working — it only finds the `mtime_unix` key and reads digits
         // up to the next non-digit (which is `,` when volume_id is
         // present, `}` when it isn't).
-        metadata_json: build_metadata_json(raw.mtime_unix, raw.file_size, raw.volume_id.as_deref()),
+        metadata_json: build_metadata_json(
+            raw.mtime_unix,
+            raw.file_size,
+            raw.volume_id.as_deref(),
+            raw.images_indexed,
+        ),
         parent_dir: raw.parent_dir.clone(),
         volume_id: raw.volume_id.clone(),
         // Stage AA: store translation only on chunk_index=0 (the
@@ -912,6 +944,7 @@ fn build_metadata_json(
     mtime_unix: Option<i64>,
     file_size:  Option<i64>,
     volume_id:  Option<&str>,
+    images_indexed: bool,
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(m) = mtime_unix {
@@ -931,6 +964,11 @@ fn build_metadata_json(
         // no backslashes), but escape defensively.
         let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
         parts.push(format!(r#""volume_id":"{escaped}""#));
+    }
+    // Only present when true: absence is what makes an older row (or a row
+    // written with the feature off) look stale to the re-ingest guard.
+    if images_indexed {
+        parts.push(r#""images_indexed":true"#.to_string());
     }
     if parts.is_empty() {
         None
@@ -981,6 +1019,7 @@ mod tests {
             owner_id: "user-uuid".to_owned(),
             tags: vec!["theology".to_owned()],
             mtime_unix: None,
+            images_indexed: false,
             file_size:  None,
             volume_id:  None,
             parent_dir: None,
@@ -1043,21 +1082,21 @@ mod tests {
 
     #[test]
     fn metadata_json_packs_both_fields() {
-        assert_eq!(build_metadata_json(None, None, None), None);
+        assert_eq!(build_metadata_json(None, None, None, false), None);
         assert_eq!(
-            build_metadata_json(Some(1700000000), None, None).as_deref(),
+            build_metadata_json(Some(1700000000), None, None, false).as_deref(),
             Some(r#"{"mtime_unix":1700000000,"fs_mtime":1700000000000}"#)
         );
         assert_eq!(
-            build_metadata_json(None, Some(12345), None).as_deref(),
+            build_metadata_json(None, Some(12345), None, false).as_deref(),
             Some(r#"{"fs_size":12345}"#)
         );
         assert_eq!(
-            build_metadata_json(None, None, Some("ABCD-1234")).as_deref(),
+            build_metadata_json(None, None, Some("ABCD-1234"), false).as_deref(),
             Some(r#"{"volume_id":"ABCD-1234"}"#)
         );
         assert_eq!(
-            build_metadata_json(Some(42), Some(999), Some("ABCD-1234")).as_deref(),
+            build_metadata_json(Some(42), Some(999), Some("ABCD-1234"), false).as_deref(),
             Some(r#"{"mtime_unix":42,"fs_mtime":42000,"fs_size":999,"volume_id":"ABCD-1234"}"#)
         );
     }
@@ -1067,7 +1106,7 @@ mod tests {
         // The hand-parser in LocalIndex::indexed_mtime_for_uri reads
         // digits after `"mtime_unix":` up to the next non-digit. Adding
         // fs_mtime and other keys after must not break that contract.
-        let s = build_metadata_json(Some(1700000000), Some(0), Some("ABCD")).unwrap();
+        let s = build_metadata_json(Some(1700000000), Some(0), Some("ABCD"), false).unwrap();
         let start = s.find("\"mtime_unix\"").unwrap();
         let after = &s[start + "\"mtime_unix\"".len()..];
         let after = after.trim_start().strip_prefix(':').unwrap().trim_start();
@@ -1180,5 +1219,19 @@ mod tests {
         let tiny = IngestConfig { batch_size: 1, ..Default::default() };
         let lance_tiny = tiny.batch_size.saturating_mul(16).max(256);
         assert_eq!(lance_tiny, 256, "floor must be 256");
+    }
+
+    #[test]
+    fn metadata_json_records_images_indexed_only_when_true() {
+        // Presence means "written with image indexing on"; absence is what the
+        // re-ingest guard reads as "may still need a backfill".
+        let plain = build_metadata_json(Some(42), Some(10), None, false).unwrap();
+        assert!(plain.contains(r#""mtime_unix":42"#));
+        assert!(!plain.contains("images_indexed"));
+
+        let on = build_metadata_json(Some(42), Some(10), None, true).unwrap();
+        assert!(on.contains(r#""images_indexed":true"#));
+        // mtime stays first so the digit-scan parser keeps terminating there.
+        assert!(on.starts_with(r#"{"mtime_unix":42"#));
     }
 }
