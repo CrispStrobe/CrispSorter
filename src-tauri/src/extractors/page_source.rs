@@ -44,9 +44,8 @@ pub fn rasterize_pages(path: &Path, ext: &str) -> Result<PageImages> {
     }
 }
 
-/// Split a (possibly multi-page) TIFF into per-frame temp PNGs. Returns the
-/// single original path when the TIFF has only one frame (avoids a needless
-/// decode→encode round-trip).
+/// Split a TIFF into one PNG per frame. Every frame must decode; a partially
+/// decoded document is an error rather than an apparently successful import.
 fn tiff_pages(path: &Path) -> Result<PageImages> {
     use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
     use tiff::decoder::{Decoder, DecodingResult};
@@ -62,36 +61,39 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
 
     loop {
         let (w, h) = dec.dimensions().context("TIFF dimensions")?;
+        if w == 0 || h == 0 || u64::from(w) * u64::from(h) > 100_000_000 {
+            anyhow::bail!("TIFF page {} exceeds the 100 megapixel limit", idx + 1);
+        }
+        if idx >= 10_000 { anyhow::bail!("TIFF exceeds the 10000 page limit"); }
         let color = dec.colortype().context("TIFF colortype")?;
         let data = dec.read_image().context("TIFF read_image")?;
 
-        // Convert the frame to an 8-bit DynamicImage for PNG encoding. Handle
-        // the common scan color types; bail on exotic ones (caller falls back).
+        // Convert common 8/16-bit scan types. Reject the entire import for
+        // unsupported frames: skipping one would silently change page numbers
+        // and could misassociate review decisions with the wrong source page.
         let dynimg: Option<DynamicImage> = match (color, data) {
-            (ColorType::Gray(8), DecodingResult::U8(buf)) => {
-                GrayImage::from_raw(w, h, buf).map(DynamicImage::ImageLuma8)
-            }
-            (ColorType::RGB(8), DecodingResult::U8(buf)) => {
-                RgbImage::from_raw(w, h, buf).map(DynamicImage::ImageRgb8)
-            }
-            (ColorType::RGBA(8), DecodingResult::U8(buf)) => {
-                RgbaImage::from_raw(w, h, buf).map(DynamicImage::ImageRgba8)
-            }
-            _ => None, // 16-bit / palette / CMYK etc. — skip this frame
+            (ColorType::Gray(8), DecodingResult::U8(buf)) =>
+                GrayImage::from_raw(w, h, buf).map(DynamicImage::ImageLuma8),
+            (ColorType::RGB(8), DecodingResult::U8(buf)) =>
+                RgbImage::from_raw(w, h, buf).map(DynamicImage::ImageRgb8),
+            (ColorType::RGBA(8), DecodingResult::U8(buf)) =>
+                RgbaImage::from_raw(w, h, buf).map(DynamicImage::ImageRgba8),
+            (ColorType::Gray(16), DecodingResult::U16(buf)) =>
+                GrayImage::from_raw(w, h, buf.into_iter().map(|v| (v >> 8) as u8).collect()).map(DynamicImage::ImageLuma8),
+            (ColorType::RGB(16), DecodingResult::U16(buf)) =>
+                RgbImage::from_raw(w, h, buf.into_iter().map(|v| (v >> 8) as u8).collect()).map(DynamicImage::ImageRgb8),
+            (ColorType::RGBA(16), DecodingResult::U16(buf)) =>
+                RgbaImage::from_raw(w, h, buf.into_iter().map(|v| (v >> 8) as u8).collect()).map(DynamicImage::ImageRgba8),
+            _ => None,
         };
-
-        if let Some(img) = dynimg {
-            let out = tmp.path().join(format!("page_{idx}.png"));
-            img.save(&out)
-                .with_context(|| format!("saving TIFF page {idx}"))?;
-            paths.push(out);
-            idx += 1;
-        } else {
-            eprintln!(
-                "[page_source] TIFF {} frame {idx}: unsupported color type {color:?}; skipped",
-                path.display()
-            );
-        }
+        let img = dynimg.ok_or_else(|| anyhow::anyhow!(
+            "TIFF {} page {} has unsupported color data ({color:?}); no pages were imported",
+            path.display(), idx + 1,
+        ))?;
+        let out = tmp.path().join(format!("page_{idx}.png"));
+        img.save(&out).with_context(|| format!("saving TIFF page {}", idx + 1))?;
+        paths.push(out);
+        idx += 1;
 
         if dec.more_images() {
             dec.next_image().context("TIFF next_image")?;
@@ -100,10 +102,7 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
         }
     }
 
-    // Single frame (the common case) → just use the original file; no temp.
-    if paths.len() <= 1 {
-        return Ok(PageImages::single(path));
-    }
+    if paths.is_empty() { anyhow::bail!("TIFF contains no readable pages"); }
     Ok(PageImages { paths, _tmp: Some(tmp) })
 }
 
@@ -274,5 +273,38 @@ mod tests {
         for p in pages.paths() {
             assert!(p.exists(), "page image written: {}", p.display());
         }
+    }
+
+    #[test]
+    fn mixed_bit_depth_tiff_preserves_every_page_in_order() {
+        use tiff::encoder::{colortype, TiffEncoder};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mixed.tiff");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = TiffEncoder::new(&mut file).unwrap();
+            encoder.write_image::<colortype::Gray8>(4, 4, &[64u8; 16]).unwrap();
+            encoder.write_image::<colortype::Gray16>(4, 4, &[32_768u16; 16]).unwrap();
+            encoder.write_image::<colortype::RGB16>(4, 4, &[65_535u16; 48]).unwrap();
+        }
+        let pages = rasterize_pages(&path, "tiff").unwrap();
+        assert_eq!(pages.len(), 3);
+        let intensities: Vec<_> = pages.paths().iter().map(|p| image::open(p).unwrap().to_luma8().get_pixel(0, 0)[0]).collect();
+        assert_eq!(intensities, vec![64, 128, 255]);
+    }
+
+    #[test]
+    fn unsupported_tiff_frame_rejects_complete_import() {
+        use tiff::encoder::{colortype, TiffEncoder};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("float.tiff");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = TiffEncoder::new(&mut file).unwrap();
+            encoder.write_image::<colortype::Gray8>(4, 4, &[64u8; 16]).unwrap();
+            encoder.write_image::<colortype::Gray32Float>(4, 4, &[0.5f32; 16]).unwrap();
+        }
+        let error = rasterize_pages(&path, "tiff").err().expect("unsupported second page must not disappear");
+        assert!(error.to_string().contains("page 2"), "{error}");
     }
 }

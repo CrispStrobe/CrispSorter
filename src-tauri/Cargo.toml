@@ -392,6 +392,10 @@ pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]
 crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
+# Additive review snapshots are supplied by the paired OCR feature branch of
+# CrispEmbed. Existing release pins still build and run the workbench without
+# this optional provenance extension.
+ocr-review-diagnostics = ["crispembed"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
 crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
