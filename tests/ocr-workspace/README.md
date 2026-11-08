@@ -7,14 +7,20 @@ native model downloads, user files, or a desktop runtime.
 
 ## Run
 
-Install the repository's normal npm dependencies and make Playwright available
-(either locally as a development tool or in the configured primary runtime). Use a
+Install the repository's normal npm dependencies, run `npx svelte-kit sync`, and
+make Playwright available (from an isolated install through `PLAYWRIGHT_MODULE_PATH`,
+locally as a development tool, or in the configured primary runtime). Use a
 Playwright Chromium installation, a system `/usr/bin/chromium`, or set
 `OCR_SMOKE_CHROMIUM` to the browser executable.
 
 ```sh
 node tests/ocr-workspace/smoke.mjs
 ```
+
+`PLAYWRIGHT_MODULE_PATH` is the absolute package directory, for example
+`/path/to/browser-tools/node_modules/playwright`. The workflow installs its pinned
+browser tools outside the repository so they cannot replace locked application
+dependencies.
 
 The script starts an isolated Vite server, runs Chromium headlessly, and writes
 `report.json` plus screenshots to the ignored `tests/ocr-workspace/artifacts/`

@@ -62,9 +62,21 @@
     type ProjectSummary,
     type ExtractionField,
     type TransformOptions,
+    type ExportRequest,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
+  import {
+    expandRecognitionZone,
+    mergeZoneRegions,
+    type PixelRectangle,
+  } from "$lib/ocr/zones";
+  import {
+    captureExtractionSource,
+    extractionSourceIsCurrent,
+    readExtraction,
+    type ExtractionSource,
+  } from "$lib/ocr/extraction";
   import {
     PROFILES,
     createProject,
@@ -103,8 +115,12 @@
   let {
     client = workspaceClient,
     initialProject = null,
-  }: { client?: WorkspaceClient; initialProject?: OcrProject | null } =
-    $props();
+    active = true,
+  }: {
+    client?: WorkspaceClient;
+    initialProject?: OcrProject | null;
+    active?: boolean;
+  } = $props();
   let history = $state(
     createHistory(untrack(() => initialProject) ?? createProject()),
   );
@@ -180,6 +196,13 @@
   });
   $effect(() => {
     if (helpOpen && helpDialog && !helpDialog.open) helpDialog.showModal();
+  });
+  $effect(() => {
+    if (!active) {
+      confirm = null;
+      helpOpen = false;
+      recentOpen = false;
+    }
   });
   let exportFormat = $state("pdf"),
     exportScope = $state("all"),
@@ -388,8 +411,11 @@
     }
   }
   async function activate(next: OcrProject, revision = 0) {
+    // Validate before closing the current writer: an invalid file must never
+    // leave the still-visible project with an autosaver that silently ignores edits.
+    const parsed = parseProject(next);
     await autosave?.close();
-    history = createHistory(parseProject(next));
+    history = createHistory(parsed);
     selectedPageId = history.present.pages[0]?.id ?? null;
     selectedRegionId = null;
     checkedPages = [];
@@ -403,11 +429,14 @@
   }
   async function newProject() {
     if (locked) return;
+    busy = "Creating project";
     try {
       await activate(createProject());
       notice = "New project ready";
     } catch (e) {
       fail(e);
+    } finally {
+      busy = "";
     }
   }
   async function loadProject(id: string) {
@@ -415,6 +444,14 @@
     busy = "Opening project";
     error = "";
     try {
+      // Flush before reading so reopening this project cannot roll back a
+      // debounced correction or install an obsolete optimistic-lock revision.
+      await autosave?.flush();
+      if (id === project.id) {
+        recentOpen = false;
+        notice = "Current project saved";
+        return;
+      }
       const saved = await client.load(id);
       if (!saved) throw new Error("The saved project is no longer available.");
       await activate(saved.project, saved.revision);
@@ -438,6 +475,7 @@
   async function importFiles(paths?: string[]) {
     if (locked) return;
     error = "";
+    busy = "Choosing documents";
     try {
       const selected = paths ?? (await client.pickDocuments());
       if (!selected.length) return;
@@ -481,6 +519,33 @@
     showOriginal = false;
     drawMode = "select";
     currentMatch = null;
+  }
+  function confirmRemovePage() {
+    const page = activePage;
+    if (!page || locked) return;
+    const originalIndex = pageIndex;
+    confirmation(
+      "Remove this page?",
+      `${page.name} will be removed from this project. The original is preserved and Undo can restore this page.`,
+      "Remove page",
+      () => {
+        change(removePage(project, page.id));
+        selectPage(
+          project.pages[Math.min(originalIndex, project.pages.length - 1)]
+            ?.id ?? "",
+        );
+      },
+    );
+  }
+  function confirmSplitPage() {
+    const page = activePage;
+    if (!page || locked) return;
+    confirmation(
+      "Split this spread?",
+      `Split ${page.name} at the detected gutter, or at the center when no gutter is detected. Each half becomes an independent page. Existing recognition is kept in Undo.`,
+      "Split page",
+      () => transform("split", {}, page.id),
+    );
   }
   function gotoPage(delta: number) {
     const next = project.pages[pageIndex + delta];
@@ -636,20 +701,23 @@
   async function recognize(
     scope: "current" | "selected" | "pending" | "all" | "failed",
     confirmed = false,
+    confirmedIds?: string[],
   ) {
     if (locked || !capabilities.ocr) return;
     const pages = project.pages.filter(
       (p) =>
         !p.excluded &&
-        (scope === "current"
-          ? p.id === activePage?.id
-          : scope === "selected"
-            ? checkedPages.includes(p.id)
-            : scope === "pending"
-              ? p.status === "pending" || p.status === "failed"
-              : scope === "failed"
-                ? p.status === "failed"
-                : true),
+        (confirmedIds
+          ? confirmedIds.includes(p.id)
+          : scope === "current"
+            ? p.id === activePage?.id
+            : scope === "selected"
+              ? checkedPages.includes(p.id)
+              : scope === "pending"
+                ? p.status === "pending" || p.status === "failed"
+                : scope === "failed"
+                  ? p.status === "failed"
+                  : true),
     );
     if (!pages.length) {
       notice = "No pages match this recognition scope";
@@ -669,7 +737,12 @@
         "Replace reviewed recognition?",
         `${pages.length} pages will be recognized with the current profile. Existing corrections can be recovered with Undo.`,
         "Recognize again",
-        () => recognize(scope, true),
+        () =>
+          recognize(
+            scope,
+            true,
+            pages.map((p) => p.id),
+          ),
       );
       return;
     }
@@ -737,37 +810,32 @@
     }
   }
   function persistExtraction() {
-    if (!activePage) return;
+    if (!activePage || locked || extractionPageId !== activePage.id) return;
+    const saved = readExtraction(activePage);
     change(
       updatePage(project, activePage.id, {
         provenance: {
           ...activePage.provenance,
           extraction: {
+            ...saved,
             fields,
             tableRows,
             formula,
             labels,
             sourceImagePath: activePage.imagePath,
-            regionId: selectedRegionId,
             updatedAt: new Date().toISOString(),
           },
         },
       }),
     );
   }
-  let lastExtractionPage: string | undefined;
+  let lastExtractionSnapshot = "";
   $effect(() => {
     const page = activePage;
-    if (page?.id === lastExtractionPage) return;
-    lastExtractionPage = page?.id;
-    const data = page?.provenance.extraction as
-      | {
-          fields?: ExtractionField[];
-          tableRows?: string[][];
-          formula?: string;
-          labels?: string;
-        }
-      | undefined;
+    const data = page ? readExtraction(page) : undefined;
+    const key = JSON.stringify([project.id, page?.id, page?.imagePath, data]);
+    if (key === lastExtractionSnapshot) return;
+    lastExtractionSnapshot = key;
     fields = data?.fields ?? [];
     tableRows = data?.tableRows ?? [];
     formula = data?.formula ?? "";
@@ -777,9 +845,11 @@
   async function transform(
     operation: TransformOptions["operation"],
     options: Partial<TransformOptions> = {},
+    pageId = activePage?.id,
   ) {
-    if (!activePage || locked) return;
-    const page = activePage;
+    if (!pageId || locked) return;
+    const page = project.pages.find((p) => p.id === pageId);
+    if (!page) return;
     busy = "Preparing page";
     error = "";
     try {
@@ -791,10 +861,10 @@
       if (result.pages.length > 1) {
         const before = project.pages.findIndex((p) => p.id === page.id);
         change(splitPage(project, page.id, result.pages));
-        selectPage(project.pages[before].id);
+        if (selectedPageId === page.id) selectPage(project.pages[before].id);
       } else if (result.pages[0]) {
         change(applyPageImage(project, page.id, result.pages[0], operation));
-        selectedRegionId = null;
+        if (selectedPageId === page.id) selectedRegionId = null;
       } else throw new Error("The operation produced no pages.");
       showOriginal = false;
       drawMode = "select";
@@ -813,7 +883,7 @@
     try {
       const result = await client.prepare(page.imagePath, config);
       change(applyPageImage(project, page.id, result, "scan repair"));
-      selectedRegionId = null;
+      if (selectedPageId === page.id) selectedRegionId = null;
       showOriginal = false;
       notice =
         "Scan repair applied. Use Original to compare, or Undo to restore.";
@@ -837,12 +907,13 @@
       busy = "Recognizing selected zone";
       error = "";
       try {
+        const zone = expandRecognitionZone(page, rect);
         const result = await client.recognize({
           pagePath: page.imagePath,
           config,
           engine,
           language,
-          zone: rect,
+          zone,
         });
         const recognized = applyRecognition(
           project,
@@ -850,26 +921,26 @@
           result,
           project.profileId,
         ).pages.find((p) => p.id === page.id)!;
-        const keep = page.regions.filter(
-          (r) =>
-            r.x + r.w <= rect.x ||
-            r.x >= rect.x + rect.w ||
-            r.y + r.h <= rect.y ||
-            r.y >= rect.y + rect.h,
-        );
+        const effective =
+          (
+            result.diagnostics as
+              | { effective_zone?: PixelRectangle }
+              | undefined
+          )?.effective_zone ?? zone;
+        const { extraction: _staleExtraction, ...provenance } = page.provenance;
         change(
           updatePage(project, page.id, {
-            regions: [...keep, ...recognized.regions],
+            regions: mergeZoneRegions(page, effective, recognized.regions),
             status: "recognized",
             approved: false,
             error: null,
             provenance: {
-              ...page.provenance,
+              ...provenance,
               lastZoneRecognition: recognized.provenance,
             },
           }),
         );
-        notice = `${recognized.regions.length} regions recognized in the selected zone`;
+        notice = `${recognized.regions.length} regions recognized. Intersecting text regions were covered in full and reading order was preserved.`;
       } catch (e) {
         fail(e);
       } finally {
@@ -905,7 +976,21 @@
   }
   function replaceOne() {
     if (!currentMatch || !activePage) return;
-    const r = activePage.regions.find((r) => r.id === currentMatch!.regionId);
+    // Stored selection offsets are not authority after the query or text changes.
+    const match = matches.find(
+      (m) =>
+        m.pageId === currentMatch!.pageId &&
+        m.regionId === currentMatch!.regionId &&
+        m.start === currentMatch!.start &&
+        m.end === currentMatch!.end &&
+        m.text === currentMatch!.text,
+    );
+    if (!match || match.pageId !== activePage.id) {
+      currentMatch = null;
+      void findNext();
+      return;
+    }
+    const r = activePage.regions.find((r) => r.id === match.regionId);
     if (!r) return;
     safe(() =>
       change(
@@ -913,27 +998,40 @@
           project,
           activePage.id,
           r.id,
-          r.text.slice(0, currentMatch!.start) +
-            replacement +
-            r.text.slice(currentMatch!.end),
+          r.text.slice(0, match.start) + replacement + r.text.slice(match.end),
         ),
       ),
     );
     currentMatch = null;
     void findNext();
   }
-  async function exportProject(overwrite = false, path?: string) {
+  async function exportProject(
+    overwrite = false,
+    path?: string,
+    snapshot?: Omit<ExportRequest, "outputPath" | "overwrite">,
+  ) {
     if (locked) return;
     error = "";
-    if (preflight.errors.length) {
+    if (!snapshot && preflight.errors.length) {
       error = preflight.errors.join("\n");
       return;
     }
+    const request =
+      snapshot ??
+      (JSON.parse(
+        JSON.stringify({
+          format: exportFormat,
+          pdfa: exportFormat === "pdf" && exportPdfa,
+          pages: preflight.pages,
+          sourceUris: project.documents.map((d) => d.sourceUri),
+        }),
+      ) as Omit<ExportRequest, "outputPath" | "overwrite">);
     const ext =
       ({ text: "txt", markdown: "md", alto: "xml" } as Record<string, string>)[
-        exportFormat
-      ] ?? exportFormat;
+        request.format
+      ] ?? request.format;
     let target = path;
+    busy = "Choosing export destination";
     try {
       target =
         path ??
@@ -946,12 +1044,9 @@
       busy = "Exporting reviewed document";
       await autosave?.flush();
       const result = await client.exportDocument({
+        ...request,
         outputPath: target,
-        format: exportFormat,
-        pdfa: exportFormat === "pdf" && exportPdfa,
-        pages: preflight.pages,
         overwrite,
-        sourceUris: project.documents.map((d) => d.sourceUri),
       });
       notice = `Exported ${result.pages} pages · ${result.saved_path}`;
     } catch (e) {
@@ -963,9 +1058,9 @@
         const chosen = target;
         confirmation(
           "Replace the existing export?",
-          `The file ${chosen} already exists. Replacing it writes the currently selected reviewed pages.`,
+          `The file ${chosen} already exists. Replace it with the ${request.pages.length} pages selected for this export?`,
           "Replace export",
-          () => exportProject(true, chosen),
+          () => exportProject(true, chosen, request),
         );
       } else fail(e);
     } finally {
@@ -984,54 +1079,95 @@
       )
       .filter((row) => row.length);
   }
-  async function extractionPath() {
-    if (!activePage) throw new Error("Select a page.");
-    if (region) {
+  async function extractionPath(source: ExtractionSource) {
+    if (source.bounds) {
       const result = await client.transform({
-        pagePath: activePage.imagePath,
+        pagePath: source.imagePath,
         operation: "crop",
-        crop: { x: region.x, y: region.y, w: region.w, h: region.h },
+        crop: source.bounds,
       });
       if (!result.pages[0])
         throw new Error("The selected region could not be cropped.");
       return result.pages[0].image_path;
     }
-    return activePage.imagePath;
+    return source.imagePath;
   }
   async function extract(kind: "fields" | "table" | "formula") {
     if (!activePage || locked) return;
+    const pageId = activePage.id,
+      projectId = project.id;
+    const layout = useLayoutFields;
+    const threshold = fieldThreshold,
+      labelSnapshot = labels;
+    const source = captureExtractionSource(
+      activePage,
+      region,
+      kind === "fields" && !layout ? "text" : "pixels",
+    );
     busy = `Extracting ${kind}`;
     error = "";
     extractionKind = kind;
     try {
+      let resultFields: ExtractionField[] = [],
+        resultRows: string[][] = [],
+        resultFormula = "";
       if (kind === "fields") {
-        const list = labels
+        const list = labelSnapshot
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
         if (!list.length) throw new Error("Enter at least one field label.");
-        fields = useLayoutFields
+        if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)
+          throw new Error("Field score must be between zero and one.");
+        resultFields = layout
           ? await client.layoutFields(
-              await extractionPath(),
+              await extractionPath(source),
               list,
-              fieldThreshold,
+              threshold,
             )
-          : await client.extractFields(
-              region ? region.text : pageText,
-              list,
-              fieldThreshold,
-            );
-        notice = `${fields.length} fields extracted${useLayoutFields ? " from page layout" : " from reviewed text"}`;
+          : await client.extractFields(source.text ?? "", list, threshold);
+        notice = `${resultFields.length} fields extracted${layout ? " from page layout" : " from reviewed text"}`;
       } else if (kind === "table") {
-        const result = await client.table(await extractionPath());
-        tableRows = tableFromHtml(result.html);
+        const result = await client.table(await extractionPath(source));
+        resultRows = tableFromHtml(result.html);
         notice = `${result.rows} rows × ${result.cols} columns extracted`;
       } else {
-        formula = (await client.math(await extractionPath())) ?? "";
-        notice = formula ? "Formula recognized" : "No formula was recognized";
+        resultFormula = (await client.math(await extractionPath(source))) ?? "";
+        notice = resultFormula
+          ? "Formula recognized"
+          : "No formula was recognized";
       }
-      extractionPageId = activePage.id;
-      persistExtraction();
+      const page = project.pages.find((p) => p.id === pageId);
+      if (
+        project.id !== projectId ||
+        !page ||
+        !extractionSourceIsCurrent(page, source)
+      )
+        throw new Error(
+          "The source changed during extraction. Run extraction again for the current page.",
+        );
+      const saved = readExtraction(page);
+      change(
+        updatePage(project, pageId, {
+          provenance: {
+            ...page.provenance,
+            extraction: {
+              ...saved,
+              ...(kind === "fields"
+                ? { fields: resultFields, labels: labelSnapshot }
+                : kind === "table"
+                  ? { tableRows: resultRows }
+                  : { formula: resultFormula }),
+              sources: { ...saved.sources, [kind]: source },
+              sourceImagePath: source.imagePath,
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        }),
+      );
+      // The restoration effect updates editors only for the selected page.
+      // Results from an in-flight page remain attached to that page after navigation.
+      if (selectedPageId !== pageId) notice += ` · saved to ${page.name}`;
     } catch (e) {
       fail(e);
     } finally {
@@ -1054,6 +1190,10 @@
     }
   }
   async function saveExtraction() {
+    if (locked || !activePage || extractionPageId !== activePage.id) return;
+    const data = readExtraction(activePage),
+      kind = extractionKind;
+    const sources = project.documents.map((d) => d.sourceUri);
     const ext =
       extractionKind === "fields"
         ? "json"
@@ -1062,23 +1202,19 @@
           : "tex";
     const text =
       extractionKind === "fields"
-        ? JSON.stringify(fields, null, 2)
+        ? JSON.stringify(data.fields, null, 2)
         : extractionKind === "table"
-          ? csv(tableRows)
-          : formula;
-    if (!text) return;
+          ? csv(data.tableRows)
+          : data.formula;
+    if (!data.sources[kind] || !text) return;
+    busy = "Saving extracted data";
     try {
       const outputPath = await client.pickExport(
         `${project.name}-${extractionKind}`,
         ext,
       );
       if (!outputPath) return;
-      busy = "Saving extracted data";
-      const result = await client.writeText(
-        outputPath,
-        text,
-        project.documents.map((d) => d.sourceUri),
-      );
+      const result = await client.writeText(outputPath, text, sources);
       notice = `Saved ${result.saved_path}`;
     } catch (e) {
       fail(e);
@@ -1113,6 +1249,7 @@
     }
   }
   function keydown(event: KeyboardEvent) {
+    if (!active || confirm || helpOpen) return;
     const target = event.target as HTMLElement;
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
@@ -1170,7 +1307,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (autosave?.hasUnsavedChanges()) {
+    if (queueActive || busy || autosave?.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1204,7 +1341,7 @@
     // Native drag/drop supplies real filesystem paths; web File names are not paths.
     if (client === workspaceClient)
       void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
-        if (!locked) void importFiles(event.payload.paths);
+        if (active && !locked) void importFiles(event.payload.paths);
       })
         .then((fn) => {
           if (mounted) unlisten = fn;
@@ -1670,21 +1807,7 @@
             <div class="toolbar-spacer"></div>
             <button
               class="icon-button danger"
-              onclick={() =>
-                activePage &&
-                confirmation(
-                  "Remove this page?",
-                  `${activePage.name} will be removed from this project. The original is preserved and Undo can restore this page.`,
-                  "Remove page",
-                  () => {
-                    change(removePage(project, activePage.id));
-                    selectPage(
-                      project.pages[
-                        Math.min(pageIndex, project.pages.length - 1)
-                      ]?.id ?? "",
-                    );
-                  },
-                )}
+              onclick={confirmRemovePage}
               disabled={locked || !activePage}
               aria-label="Remove page"
               title="Remove page"><Trash2 size={15} /></button
@@ -1746,14 +1869,7 @@
               title="Crop page"><Crop size={16} /></button
             ><button
               class="icon-button"
-              onclick={() =>
-                activePage &&
-                confirmation(
-                  "Split this spread?",
-                  "Split at the detected gutter, or at the center when no gutter is detected. Each half becomes an independent page. Existing recognition is kept in Undo.",
-                  "Split page",
-                  () => transform("split"),
-                )}
+              onclick={confirmSplitPage}
               disabled={locked}
               aria-label="Split book spread"
               title="Split book spread"><Scissors size={16} /></button
@@ -2594,6 +2710,7 @@
                       <label
                         >{field.label}<input
                           value={field.value}
+                          disabled={locked}
                           onchange={(e) => {
                             fields = fields.map((f, i) =>
                               i === index
@@ -2641,6 +2758,7 @@
                             >{#each row as cell, columnIndex}<td
                                 ><input
                                   value={cell}
+                                  disabled={locked}
                                   aria-label={`Row ${rowIndex + 1}, column ${columnIndex + 1}`}
                                   onchange={(e) => {
                                     tableRows = tableRows.map((r, i) =>
@@ -2684,6 +2802,7 @@
                   >LaTeX<textarea
                     class="latex-editor"
                     value={formula}
+                    disabled={locked}
                     oninput={(e) => {
                       formula = e.currentTarget.value;
                       persistExtraction();

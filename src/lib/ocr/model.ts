@@ -42,7 +42,22 @@ export interface OcrProfile {
 export interface ReviewIssue { pageId: string; regionId: string | null; reason: 'failed' | 'pending' | 'empty' | 'low-confidence' | 'unknown-confidence' | 'changed'; message: string; }
 export interface TextMatch { pageId: string; regionId: string; start: number; end: number; text: string; }
 export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; }
-export interface ExportPage { image_path: string; width: number; height: number; regions: Array<{text: string; x:number; y:number; w:number; h:number; confidence:number; char_conf:number[]}>; }
+export interface ExportRegion {
+    id: string; text: string; original_text: string;
+    x: number; y: number; w: number; h: number;
+    /** Original engine score; null means unavailable, even after manual review. */
+    confidence: number | null; confidence_basis: ConfidenceBasis;
+    char_conf_unit: 'unicode_codepoint' | 'token' | 'unknown';
+    /** Character scores are attached to current text only with proven alignment. */
+    char_conf_aligned: boolean; char_conf: number[];
+    original_char_conf: number[]; original_char_conf_aligned: boolean;
+    review: ReviewStatus; kind: RegionKind;
+}
+export interface ExportPage {
+    image_path: string; width: number; height: number; regions: ExportRegion[];
+    id?: string; name?: string; source_uri?: string; source_page?: number;
+    approved?: boolean; provenance?: Record<string, unknown>;
+}
 export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
 export interface History { past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number; }
@@ -198,12 +213,19 @@ export function normalizeRectangle(start: {x:number;y:number}, end: {x:number;y:
     return {x, y, w: right-x, h: bottom-y};
 }
 
+/** Extracted values describe the old pixels and must not follow a transformed image. */
+function withoutExtraction(provenance: Record<string, unknown>): Record<string, unknown> {
+    const next = { ...provenance };
+    delete next.extraction;
+    return next;
+}
+
 /** Transforming page pixels invalidates recognition rather than warping stale boxes. */
 export function applyPageImage(project: OcrProject, pageId: string, image: ImportedPage, operation: string): OcrProject {
     if (!validDimension(image.width) || !validDimension(image.height) || !image.image_path) throw new Error('Invalid transformed page.');
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) return project;
-    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...page.provenance, lastImageOperation: operation, transformedAt: now() } });
+    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...withoutExtraction(page.provenance), lastImageOperation: operation, transformedAt: now() } });
 }
 
 /** Replace one spread with independently recognizable pages in reading order. */
@@ -215,7 +237,7 @@ export function splitPage(project: OcrProject, pageId: string, images: ImportedP
         ...source, id: id('page'), name: `${source.name} · part ${index+1}`,
         imagePath: image.image_path, width: image.width, height: image.height,
         regions: [], status: 'pending', approved: false, error: null, elapsedMs: null,
-        provenance: {...source.provenance, splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
+        provenance: {...withoutExtraction(source.provenance), splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
     }));
     return touch(project, project.pages.flatMap((page) => page.id === pageId ? children : [page]));
 }
@@ -301,6 +323,7 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     const pages = project.pages.filter((p)=>(!p.excluded || options.includeExcluded) && (!selectedIds || selectedIds.has(p.id)));
     if (!pages.length) errors.push('Select at least one included page to export.');
     const payload: ExportPage[] = [];
+    const sources = new Map(project.documents.map(document => [document.id, document.sourceUri]));
     for (const page of pages) {
         if (page.status!=='recognized') errors.push(`${page.name}: recognition is ${page.status}. Recognize or explicitly exclude this page.`);
         if (!page.imagePath || !validDimension(page.width) || !validDimension(page.height)) errors.push(`${page.name}: page image or dimensions are missing.`);
@@ -309,7 +332,24 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
         if (!regions.some((r)=>r.text.trim())) warnings.push(`${page.name}: this page contains no text and will be retained as an image page.`);
         if (!page.approved) warnings.push(`${page.name}: the page has not been approved.`);
-        payload.push({image_path:page.imagePath,width:page.width,height:page.height,regions:regions.map((r)=>({text:r.text,x:r.x,y:r.y,w:r.w,h:r.h,confidence:r.confidence??0,char_conf:r.text===r.originalText?r.char_conf:[]}))});
+        payload.push({
+            id:page.id, name:page.name, source_uri:sources.get(page.documentId),
+            source_page:page.sourcePage, approved:page.approved, provenance:clone(page.provenance),
+            image_path:page.imagePath, width:page.width, height:page.height,
+            regions:regions.map((r): ExportRegion => {
+            const originalAligned = r.charConfidenceAligned && r.charConfidenceUnit !== 'token' &&
+                r.char_conf.length > 0 && r.char_conf.length === Array.from(r.originalText).length;
+            const currentAligned = originalAligned && r.text === r.originalText;
+            return {
+                id:r.id, text:r.text, original_text:r.originalText,
+                x:r.x, y:r.y, w:r.w, h:r.h,
+                confidence:r.confidence, confidence_basis:r.confidenceBasis,
+                char_conf_unit:r.charConfidenceUnit, char_conf_aligned:currentAligned,
+                char_conf:currentAligned?[...r.char_conf]:[],
+                original_char_conf:[...r.char_conf], original_char_conf_aligned:originalAligned,
+                review:r.review, kind:r.kind,
+            };
+        })});
     }
     return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>activeRegions(p).map((r)=>r.text).join('\n')).join('\f')};
 }

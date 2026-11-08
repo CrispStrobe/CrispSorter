@@ -74,6 +74,38 @@ describe('OCR project and recognition',()=>{
         expect(next.pages[0].originalImagePath).toBe(p.pages[0].originalImagePath);
         expect(next.pages[0].provenance.lastImageOperation).toBe('rotate');
     });
+    it('pixel transforms clear extracted values while undo restores the source evidence',()=>{
+        let p=recognize(project(1));
+        const source=p.pages[0];
+        const extraction={fields:[{name:'Invoice total',value:'120.00'}],tableRows:[['Item','Amount'],['Paper','120.00']],formula:'x^2',labels:['invoice'],sourceImagePath:source.imagePath,regionId:source.regions[0].id};
+        p=updatePage(p,source.id,{provenance:{...source.provenance,extraction}});
+        const history=createHistory(p);
+        const next=applyPageImage(p,source.id,{image_path:'/cache/cropped.png',width:500,height:700},'crop');
+        expect(next.pages[0].provenance.extraction).toBeUndefined();
+        expect(next.pages[0].provenance.engine).toBe('surya');
+        expect(next.pages[0].provenance.lastImageOperation).toBe('crop');
+        expect(p.pages[0].provenance.extraction).toEqual(extraction);
+        const undone=undoHistory(commitHistory(history,next)).present;
+        expect(undone.pages[0].imagePath).toBe(source.imagePath);
+        expect(undone.pages[0].provenance.extraction).toEqual(extraction);
+    });
+    it('split children never inherit spread extraction while other pages retain theirs',()=>{
+        let p=recognize(project(2));
+        const source=p.pages[0], other=p.pages[1];
+        const spreadExtraction={tableRows:[['Left','Right']],sourceImagePath:source.imagePath};
+        const otherExtraction={fields:[{name:'Reference',value:'ABC'}],sourceImagePath:other.imagePath};
+        p=updatePage(p,source.id,{provenance:{...source.provenance,extraction:spreadExtraction}});
+        p=updatePage(p,other.id,{provenance:{...other.provenance,extraction:otherExtraction}});
+        const next=splitPage(p,source.id,[{image_path:'/left.png',width:500,height:1400},{image_path:'/right.png',width:500,height:1400}]);
+        for (const child of next.pages.slice(0,2)) {
+            expect(child.provenance.extraction).toBeUndefined();
+            expect(child.provenance.engine).toBe('surya');
+            expect(child.provenance.splitFromPageId).toBe(source.id);
+        }
+        expect(next.pages[2].provenance.extraction).toEqual(otherExtraction);
+        expect(p.pages[0].provenance.extraction).toEqual(spreadExtraction);
+        expect(undoHistory(commitHistory(createHistory(p),next)).present.pages[0].provenance.extraction).toEqual(spreadExtraction);
+    });
 });
 
 describe('proofreading and geometry',()=>{
@@ -173,6 +205,61 @@ describe('find, replace and export',()=>{
         expect(out.text).toBe('second\fcorrected');
         expect(out.pages[1].regions).toHaveLength(1);
         expect(out.pages[1].regions[0].char_conf).toEqual([]);
+    });
+    it('structured export retains page/source identities and native provenance',()=>{
+        let p=recognize(project(1));
+        p=approvePage(p,p.pages[0].id);
+        const out=prepareExport(p).pages[0];
+        expect(out.id).toBe(p.pages[0].id);
+        expect(out.name).toBe(p.pages[0].name);
+        expect(out.source_uri).toBe('/sources/invoice.pdf');
+        expect(out.source_page).toBe(1);
+        expect(out.approved).toBe(true);
+        expect(out.provenance?.engine).toBe('surya');
+        expect(out.provenance).toEqual(p.pages[0].provenance);
+        expect(out.provenance).not.toBe(p.pages[0].provenance);
+    });
+    it('structured export preserves unavailable confidence and the original evidence identity',()=>{
+        const p=recognize(project(1),0,'Unscored text',null);
+        const region=p.pages[0].regions[0];
+        const out=prepareExport(p).pages[0].regions[0];
+        expect(out.id).toBe(region.id);
+        expect(out.original_text).toBe('Unscored text');
+        expect(out.confidence).toBeNull();
+        expect(out.confidence_basis).toBe('recognition');
+        expect(out.review).toBe('unreviewed');
+        expect(out.kind).toBe('text');
+        expect(out.char_conf).toEqual([]);
+        expect(out.original_char_conf).toEqual([]);
+    });
+    it('structured export retains corrected text and its separately aligned original scores',()=>{
+        let p=project(1);
+        p=applyRecognition(p,p.pages[0].id,{width:1000,height:1400,regions:[{text:'Hi',x:10,y:10,w:50,h:30,confidence:0.6,confidence_basis:'recognition',char_conf:[0.3,0.9],char_conf_unit:'unicode_codepoint'}]});
+        const before=prepareExport(p).pages[0].regions[0];
+        expect(before.char_conf).toEqual([0.3,0.9]);
+        expect(before.char_conf_aligned).toBe(true);
+        expect(before.char_conf_unit).toBe('unicode_codepoint');
+        p=editRegion(p,p.pages[0].id,p.pages[0].regions[0].id,'Hello');
+        const after=prepareExport(p).pages[0].regions[0];
+        expect(after.text).toBe('Hello');
+        expect(after.original_text).toBe('Hi');
+        expect(after.review).toBe('corrected');
+        expect(after.char_conf).toEqual([]);
+        expect(after.char_conf_aligned).toBe(false);
+        expect(after.original_char_conf).toEqual([0.3,0.9]);
+        expect(after.original_char_conf_aligned).toBe(true);
+        expect(after.confidence).toBe(0.6);
+    });
+    it('structured export keeps token evidence separate from character scores',()=>{
+        let p=project(1);
+        p=applyRecognition(p,p.pages[0].id,{width:1000,height:1400,regions:[{text:'Hi',x:10,y:10,w:50,h:30,confidence:0.9,confidence_basis:'detection',char_conf:[0.8,0.9],char_conf_unit:'token'}]});
+        const out=prepareExport(p).pages[0].regions[0];
+        expect(out.confidence_basis).toBe('detection');
+        expect(out.char_conf_unit).toBe('token');
+        expect(out.char_conf).toEqual([]);
+        expect(out.char_conf_aligned).toBe(false);
+        expect(out.original_char_conf).toEqual([0.8,0.9]);
+        expect(out.original_char_conf_aligned).toBe(false);
     });
     it('review policy blocks export and preserves approved blank pages',()=>{
         let p=project(1);

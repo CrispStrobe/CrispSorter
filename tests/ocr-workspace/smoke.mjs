@@ -40,11 +40,15 @@ if (process.argv.includes('--serve')) {
     await mkdir(browserTemp, { recursive: true });
     process.env.TMPDIR = browserTemp;
     let playwright;
-    try { playwright = require('playwright'); }
-    catch {
-        const runtimeModules = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES;
-        if (!runtimeModules) throw new Error('Install playwright as a development tool before running this browser smoke harness.');
-        playwright = require(path.join(runtimeModules, 'playwright'));
+    if (process.env.PLAYWRIGHT_MODULE_PATH) {
+        playwright = require(path.resolve(process.env.PLAYWRIGHT_MODULE_PATH));
+    } else {
+        try { playwright = require('playwright'); }
+        catch {
+            const runtimeModules = process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES;
+            if (!runtimeModules) throw new Error('Install Playwright or set PLAYWRIGHT_MODULE_PATH to its package directory before running this browser smoke harness.');
+            playwright = require(path.join(runtimeModules, 'playwright'));
+        }
     }
     const { chromium } = playwright;
     const browserPath = process.env.OCR_SMOKE_CHROMIUM ?? [chromium.executablePath(), '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);

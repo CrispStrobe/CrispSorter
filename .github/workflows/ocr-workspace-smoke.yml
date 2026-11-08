@@ -38,13 +38,17 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Generate SvelteKit configuration
+        run: npx svelte-kit sync
       - name: Install browser verification tools
-        run: npm install --no-save --package-lock=false playwright@1.62.1
+        run: npm install --prefix "$RUNNER_TEMP/ocr-browser-tools" --no-save --package-lock=false playwright@1.62.1
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        run: node "$RUNNER_TEMP/ocr-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
       - name: Test OCR model, queue, and durable save logic
         run: npm test -- --run src/lib/ocr
       - name: Verify production workspace interactions
+        env:
+          PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/ocr-browser-tools/node_modules/playwright
         run: node tests/ocr-workspace/smoke.mjs
       - name: Save browser report and screenshots
         if: always()
