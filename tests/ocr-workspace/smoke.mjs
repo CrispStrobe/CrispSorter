@@ -161,7 +161,7 @@ if (process.argv.includes('--serve')) {
 
             await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
             await page.getByRole('button', { name: 'Apply preparation to this page', exact: true }).click();
-            await page.getByText('Cleanup unavailable; original pixels retained.', { exact: false }).first().waitFor({ state: 'visible' });
+            await page.locator('.status-message').filter({ hasText: 'Cleanup unavailable; original pixels retained.' }).waitFor({ state: 'visible' });
             assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
             await page.getByRole('tab', { name: 'Review', exact: true }).click();
             assert.equal(await text.inputValue(), corrected);
