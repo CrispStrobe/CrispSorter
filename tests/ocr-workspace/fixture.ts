@@ -59,9 +59,16 @@ export interface SmokeControl {
     activeNative: number;
     maxNative: number;
     holdRecognition: boolean;
+    holdExtraction: boolean;
+    pendingExtractions: number;
+    holdSaves: boolean;
+    pendingSaves: number;
     failPages: number[];
     released: string[];
     releaseNext():boolean;
+    releaseExtraction():boolean;
+    releaseSave():boolean;
+    writes: Array<{outputPath:string;text:string;sourceUris:string[]}>;
     lastSaved: OcrProject | null;
 }
 
@@ -85,20 +92,41 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const savedById=new Map<string,ProjectEnvelope>();
     const initialEnvelope:ProjectEnvelope={project:copy(project),revision:7,saved_at:Date.parse(stamp),path:'/fixtures/project.json'};
     savedById.set(project.id,initialEnvelope);
+    if(scenario==='project-recovery') {
+        // Simulate a visible saved project from an unsupported future format.
+        // The adapter intentionally returns invalid input at this trust boundary.
+        const invalid=copy(project);
+        invalid.id='ocr-fixture-invalid';invalid.name='Invalid archived project';
+        (invalid as {version:number}).version=99;
+        savedById.set(invalid.id,{...initialEnvelope,project:invalid});
+    }
     const pending:Array<{path:string;release:()=>void}>=[];
+    const pendingExtractions:Array<()=>void>=[];
+    const pendingSaves:Array<()=>void>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
-        holdRecognition:scenario==='queue-control',failPages:scenario==='queue-failure'?[2]:[],released:[],lastSaved:null,
+        holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
+        holdSaves:false,pendingSaves:0,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
+        releaseExtraction(){const release=pendingExtractions.shift();if(!release)return false;control.pendingExtractions=pendingExtractions.length;release();return true;},
+        releaseSave(){const release=pendingSaves.shift();if(!release)return false;control.pendingSaves=pendingSaves.length;release();return true;},
     };
     window.ocrSmoke=control;
     const note=(method:string,data:unknown={})=>control.calls.push({method,data:copy(data)});
+    const waitForExtraction=async()=>{
+        if(control.holdExtraction)await new Promise<void>(release=>{
+            pendingExtractions.push(release);control.pendingExtractions=pendingExtractions.length;
+        });
+    };
     const client:WorkspaceClient={
         async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
             note('save',{id:snapshot.id,expectedRevision});
+            if(control.holdSaves)await new Promise<void>(release=>{
+                pendingSaves.push(release);control.pendingSaves=pendingSaves.length;
+            });
             const previous=savedById.get(snapshot.id)?.revision??0;
             if(previous!==expectedRevision)throw new Error(`Project revision conflict: expected ${previous}, received ${expectedRevision}`);
             const saved={project:copy(snapshot),revision:previous+1,saved_at:Date.now(),path:'/fixtures/project.json'};
@@ -121,14 +149,14 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         },
         async prepare(path,config){note('prepare',{path,config});return {image_path:path+'-prepared',width:1000,height:1400};},
         async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};},
-        async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
-        async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
-        async table(path){note('table',{path});return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
-        async math(path){note('math',{path});return String.raw`E = mc^2`;},
+        async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
+        async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
+        async table(path){note('table',{path});await waitForExtraction();return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
+        async math(path){note('math',{path});await waitForExtraction();return String.raw`E = mc^2`;},
         async reindex(sourceUri,text){note('reindex',{sourceUri,text});return {documents:1};},
         async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
-        async writeText(outputPath,text,sourceUris){note('writeText',{outputPath,text,sourceUris});return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
+        async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
         imageUrl(path){return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(pageNumber(path)))}`;},
     };
     return {client,initialProject:null};

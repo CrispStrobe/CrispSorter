@@ -38,39 +38,58 @@ pub fn is_crispembed_ocr_available() -> bool {
     cfg!(feature = "crispembed")
 }
 
-// ── Pre-OCR image-restoration engines (cached; `None` once init fails) ──
+// ── Pre-OCR image-restoration engines ──
+// Model changes replace the loaded instance. Failed loads remain retryable.
+#[cfg(any(feature = "crispembed", test))]
+type ModelCache<T> = std::sync::OnceLock<std::sync::Mutex<Option<(String, T)>>>;
+
+#[cfg(any(feature = "crispembed", test))]
+fn with_cached_model<T, R>(
+    cache: &ModelCache<T>,
+    key: &str,
+    load: impl FnOnce() -> Option<T>,
+    run: impl FnOnce(&mut T) -> Option<R>,
+) -> Option<R> {
+    let mut slot = cache.get_or_init(|| std::sync::Mutex::new(None)).lock().ok()?;
+    if slot.as_ref().map(|(key, _)| key.as_str()) != Some(key) {
+        *slot = None;
+        *slot = Some((key.to_owned(), load()?));
+    }
+    run(&mut slot.as_mut()?.1)
+}
+
 #[cfg(feature = "crispembed")]
-static PAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispPanSr>>> =
+static PAN_SR: ModelCache<crispembed::CrispPanSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static ESRGAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispEsrganSr>>> =
+static ESRGAN_SR: ModelCache<crispembed::CrispEsrganSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SAFMN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSafmnSr>>> =
+static SAFMN_SR: ModelCache<crispembed::CrispSafmnSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static RESTORMER: std::sync::OnceLock<Option<Mutex<crispembed::CrispRestormer>>> =
+static RESTORMER: ModelCache<crispembed::CrispRestormer> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SCUNET: std::sync::OnceLock<Option<Mutex<crispembed::CrispScunet>>> =
+static SCUNET: ModelCache<crispembed::CrispScunet> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static HAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispHatSr>>> =
+static HAT_SR: ModelCache<crispembed::CrispHatSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static TBSRN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispTbsrnSr>>> =
+static TBSRN_SR: ModelCache<crispembed::CrispTbsrnSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static INSTRUCTIR: std::sync::OnceLock<Option<Mutex<crispembed::CrispInstructIR>>> =
+static INSTRUCTIR: ModelCache<crispembed::CrispInstructIR> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static DAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispDatSr>>> =
+static DAT_SR: ModelCache<crispembed::CrispDatSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SWINIR_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSwinirSr>>> =
+static SWINIR_SR: ModelCache<crispembed::CrispSwinirSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SCAN_CLEANUP: std::sync::OnceLock<Option<Mutex<crispembed::CrispScanCleanup>>> =
+static SCAN_CLEANUP: ModelCache<crispembed::CrispScanCleanup> =
     std::sync::OnceLock::new();
 
 /// Save an RGB buffer to a temp PNG and return it + its path (held alive).
@@ -111,10 +130,8 @@ fn save_rgb_stable(prefix: &str, w: u32, h: u32, rgb: Vec<u8>) -> Option<std::pa
 pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    let (out, ow, oh) = eng.lock().ok()?.process(img.as_raw(), w as i32, h as i32, 3).ok()?;
+    let (out, ow, oh) = with_cached_model(&SCAN_CLEANUP, "classical", || crispembed::CrispScanCleanup::new(None, 0).ok(),
+        |engine| engine.process(img.as_raw(), w as i32, h as i32, 3).ok())?;
     save_rgb_stable("cleaned_", ow as u32, oh as u32, out)
 }
 
@@ -129,12 +146,8 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
 pub fn detect_page_split(path: &Path) -> Option<i32> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    eng.lock()
-        .ok()?
-        .detect_page_split(img.as_raw(), w as i32, h as i32, 3)
+    with_cached_model(&SCAN_CLEANUP, "classical", || crispembed::CrispScanCleanup::new(None, 0).ok(),
+        |engine| engine.detect_page_split(img.as_raw(), w as i32, h as i32, 3))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -151,12 +164,8 @@ pub fn detect_page_split(_path: &Path) -> Option<i32> {
 pub fn content_bbox(path: &Path) -> Option<(i32, i32, i32, i32)> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    eng.lock()
-        .ok()?
-        .content_bbox(img.as_raw(), w as i32, h as i32, 3)
+    with_cached_model(&SCAN_CLEANUP, "classical", || crispembed::CrispScanCleanup::new(None, 0).ok(),
+        |engine| engine.content_bbox(img.as_raw(), w as i32, h as i32, 3))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -196,57 +205,43 @@ fn run_sr(
 ) -> Option<(Vec<u8>, i32, i32)> {
     match engine {
         "esrgan" => {
-            let m = resolve(model.unwrap_or("esrgan-x4"));
-            let e = ESRGAN_SR
-                .get_or_init(|| crispembed::CrispEsrganSr::new(m, 0).map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h)
+            let m = resolve_checked(model.unwrap_or("esrgan-x4")).ok()?;
+            with_cached_model(&ESRGAN_SR, &m, || crispembed::CrispEsrganSr::new(m.clone(), 0),
+                |engine| engine.process(rgb, w, h))
         }
         "safmn" => {
-            let m = resolve(model.unwrap_or("safmn-x4"));
-            let e = SAFMN_SR
-                .get_or_init(|| crispembed::CrispSafmnSr::new(m, 0).map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h)
+            let m = resolve_checked(model.unwrap_or("safmn-x4")).ok()?;
+            with_cached_model(&SAFMN_SR, &m, || crispembed::CrispSafmnSr::new(m.clone(), 0),
+                |engine| engine.process(rgb, w, h))
         }
         "hat" => {
             // HAT — Hybrid Attention Transformer, SOTA 4× SR (CVPR 2023).
-            let m = resolve(model.unwrap_or("hat-sr-x4"));
-            let e = HAT_SR
-                .get_or_init(|| crispembed::CrispHatSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+            let m = resolve_checked(model.unwrap_or("hat-sr-x4")).ok()?;
+            with_cached_model(&HAT_SR, &m, || crispembed::CrispHatSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h, 0, 0).ok())
         }
         "tbsrn" => {
             // TBSRN — text-line scene-text SR (tiny, PaddleOCR Telescope).
-            let m = resolve(model.unwrap_or("tbsrn-telescope"));
-            let e = TBSRN_SR
-                .get_or_init(|| crispembed::CrispTbsrnSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h).ok()
+            let m = resolve_checked(model.unwrap_or("tbsrn-telescope")).ok()?;
+            with_cached_model(&TBSRN_SR, &m, || crispembed::CrispTbsrnSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h).ok())
         }
         "dat" => {
             // DAT — Dual Aggregation Transformer SR (strong transformer SR).
-            let m = resolve(model.unwrap_or("dat-sr-x2"));
-            let e = DAT_SR
-                .get_or_init(|| crispembed::CrispDatSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+            let m = resolve_checked(model.unwrap_or("dat-sr-x2")).ok()?;
+            with_cached_model(&DAT_SR, &m, || crispembed::CrispDatSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h, 0, 0).ok())
         }
         "swinir" => {
             // SwinIR-light — classic Swin-Transformer SR (tiny, 930K params).
-            let m = resolve(model.unwrap_or("swinir-sr-x4"));
-            let e = SWINIR_SR
-                .get_or_init(|| crispembed::CrispSwinirSr::new(&m, 0).map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0)
+            let m = resolve_checked(model.unwrap_or("swinir-sr-x4")).ok()?;
+            with_cached_model(&SWINIR_SR, &m, || crispembed::CrispSwinirSr::new(&m, 0),
+                |engine| engine.process(rgb, w, h, 0, 0))
         }
         _ => {
-            let m = resolve(model.unwrap_or("pan-x4"));
-            let e = PAN_SR
-                .get_or_init(|| crispembed::CrispPanSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+            let m = resolve_checked(model.unwrap_or("pan-x4")).ok()?;
+            with_cached_model(&PAN_SR, &m, || crispembed::CrispPanSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h, 0, 0).ok())
         }
     }
 }
@@ -291,36 +286,28 @@ pub fn restore_page(
     let rgb = image::open(path).ok()?.to_rgb8();
     let (w, h) = (rgb.width(), rgb.height());
     let model = cfg.restore_model.as_deref().filter(|s| !s.is_empty());
-    let out = match cfg.restore_engine.as_str() {
+    let (out, out_width, out_height) = match cfg.restore_engine.as_str() {
         "scunet" => {
-            let m = resolve(model.unwrap_or("scunet-color"));
-            let eng = SCUNET
-                .get_or_init(|| crispembed::CrispScunet::new(m, 0).map(Mutex::new))
-                .as_ref()?;
-            let (o, _ow, _oh) = eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32)?;
-            o
+            let m = resolve_checked(model.unwrap_or("scunet-color")).ok()?;
+            with_cached_model(&SCUNET, &m, || crispembed::CrispScunet::new(m.clone(), 0),
+                |engine| engine.process(rgb.as_raw(), w as i32, h as i32))?
         }
         "instructir" => {
             // InstructIR — all-in-one task-driven restoration (same dims out).
-            let m = resolve(model.unwrap_or("instructir"));
+            let m = resolve_checked(model.unwrap_or("instructir")).ok()?;
             let task = instructir_task_id(&cfg.restore_task);
-            let eng = INSTRUCTIR
-                .get_or_init(|| crispembed::CrispInstructIR::new(&m, 0).map(Mutex::new))
-                .as_ref()?;
-            let (o, _ow, _oh) =
-                eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32, task)?;
-            o
+            with_cached_model(&INSTRUCTIR, &m, || crispembed::CrispInstructIR::new(&m, 0),
+                |engine| engine.process(rgb.as_raw(), w as i32, h as i32, task))?
         }
         _ => {
-            let m = resolve(model.unwrap_or("restormer-denoise"));
-            let eng = RESTORMER
-                .get_or_init(|| crispembed::CrispRestormer::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            let guard = eng.lock().ok()?;
-            guard.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok()?
+            let m = resolve_checked(model.unwrap_or("restormer-denoise")).ok()?;
+            let output = with_cached_model(&RESTORMER, &m, || crispembed::CrispRestormer::new(&m, 0).ok(),
+                |engine| engine.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok())?;
+            (output, w as i32, h as i32)
         }
     };
-    save_rgb_temp("ocr_restore_", w, h, out)
+    if out_width <= 0 || out_height <= 0 { return None; }
+    save_rgb_temp("ocr_restore_", out_width as u32, out_height as u32, out)
 }
 
 /// Dewarp (straighten curved/warped text lines) a page before OCR. Grayscale
@@ -1205,6 +1192,17 @@ mod tests {
         assert!(parse_review_snapshot(r#"{"schema":"unknown","schema_version":1}"#).is_none());
         assert!(parse_review_snapshot(r#"{"geometry":{}}"#).is_none());
         assert!(parse_review_snapshot("{interrupted").is_none());
+    }
+
+    #[test]
+    fn model_cache_reuses_only_matching_models_and_retries_failed_loads() {
+        let cache: ModelCache<u32> = std::sync::OnceLock::new();
+        assert_eq!(with_cached_model(&cache, "first", || None, |model| Some(*model)), None);
+        assert_eq!(with_cached_model(&cache, "first", || Some(7), |model| Some(*model)), Some(7));
+        assert_eq!(with_cached_model(&cache, "first", || panic!("same model should stay loaded"), |model| Some(*model)), Some(7));
+        assert_eq!(with_cached_model(&cache, "second", || Some(11), |model| Some(*model)), Some(11));
+        assert_eq!(with_cached_model(&cache, "third", || None, |model| Some(*model)), None);
+        assert_eq!(with_cached_model(&cache, "third", || Some(13), |model| Some(*model)), Some(13));
     }
 
     fn region(text: &str) -> super::super::ocr_render::OcrRegion {

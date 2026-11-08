@@ -20,6 +20,7 @@ export interface WorkspaceCapabilities {
   table: boolean;
   math: boolean;
   reason?: string;
+  pdf_export_reason?: string;
   reasons?: Record<string, string>;
 }
 export interface ProjectEnvelope extends SaveReceipt {

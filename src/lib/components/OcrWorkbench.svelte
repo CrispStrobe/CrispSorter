@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { message as nativeMessage } from "@tauri-apps/plugin-dialog";
   import {
     ScanText,
     Plus,
@@ -133,6 +135,8 @@
   let pageFilter = $state("all");
   let pageQuery = $state("");
   let pageRange = $state("");
+  let pageWindowStart = $state(0);
+  const pageWindowSize = 100;
   let pageRail = $state(true);
   let inspector = $state<"review" | "recognition" | "extract" | "export">(
     "review",
@@ -152,6 +156,7 @@
     matchCase = $state(false);
   let currentMatch = $state<TextMatch | null>(null);
   let booting = $state(true),
+    closing = $state(false),
     busy = $state(""),
     error = $state(""),
     notice = $state("");
@@ -175,7 +180,9 @@
     message: string;
     label: string;
     action: () => void | Promise<void>;
+    splitWidth?: number;
   } | null>(null);
+  let splitPosition = $state(0);
   let queueState = $state<QueueState>({
     phase: "idle",
     total: 0,
@@ -206,7 +213,6 @@
   });
   let exportFormat = $state("pdf"),
     exportScope = $state("all"),
-    exportPdfa = $state(false),
     requireReviewed = $state(true);
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
@@ -256,13 +262,52 @@
           (pageFilter === "excluded" && p.excluded)),
     ),
   );
+  const pageNumbers = $derived(
+    new Map(project.pages.map((p, i) => [p.id, i + 1])),
+  );
+  const issueCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const issue of reviewIssues)
+      counts.set(issue.pageId, (counts.get(issue.pageId) ?? 0) + 1);
+    return counts;
+  });
+  const windowPages = $derived(
+    visiblePages.slice(pageWindowStart, pageWindowStart + pageWindowSize),
+  );
+  let lastRailSelection = "";
+  $effect(() => {
+    const key = JSON.stringify([
+      project.id,
+      activePage?.id,
+      pageFilter,
+      pageQuery,
+    ]);
+    if (key !== lastRailSelection) {
+      lastRailSelection = key;
+      const index = visiblePages.findIndex((p) => p.id === activePage?.id);
+      pageWindowStart =
+        index < 0 ? 0 : Math.floor(index / pageWindowSize) * pageWindowSize;
+    }
+    if (pageWindowStart >= visiblePages.length)
+      pageWindowStart = Math.max(
+        0,
+        Math.floor((visiblePages.length - 1) / pageWindowSize) * pageWindowSize,
+      );
+  });
+  const recognitionWarnings = $derived(
+    Array.isArray(activePage?.provenance.warnings)
+      ? activePage.provenance.warnings.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+  );
   const matches = $derived(
     findMatches(project, query, { caseSensitive: matchCase }),
   );
   const queueActive = $derived(
     ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
   );
-  const locked = $derived(booting || !!busy || queueActive);
+  const locked = $derived(booting || closing || !!busy || queueActive);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
     typeof settings.engine === "string" ? settings.engine : "auto",
@@ -321,6 +366,7 @@
   const engineNames: Record<string, string> = {
     auto: "Automatic pipeline",
     dbnet_trocr: "DBNet + TrOCR",
+    parseq: "PARSeq scene text",
     surya: "Surya multilingual",
     tesseract: "Tesseract LSTM",
     got: "GOT OCR",
@@ -328,6 +374,11 @@
     qwen2vl: "Qwen2.5 VL",
     qwen3vl: "Qwen3 VL",
     internvl2: "InternVL2",
+    deepseek_ocr2: "DeepSeek OCR 2",
+    pix2struct: "Pix2Struct",
+    granite_vision: "Granite Vision",
+    lightonocr: "LightOnOCR",
+    unlimited_ocr: "Unlimited OCR",
   };
   const regionsKinds: RegionKind[] = [
     "text",
@@ -540,11 +591,13 @@
   function confirmSplitPage() {
     const page = activePage;
     if (!page || locked) return;
+    splitPosition = Math.floor(page.width / 2);
     confirmation(
       "Split this spread?",
-      `Split ${page.name} at the detected gutter, or at the center when no gutter is detected. Each half becomes an independent page. Existing recognition is kept in Undo.`,
+      `Split ${page.name} at a vertical line. Each half becomes an independent page. Existing recognition is kept in Undo.`,
       "Split page",
-      () => transform("split", {}, page.id),
+      () => transform("split", { splitX: Math.round(splitPosition) }, page.id),
+      page.width,
     );
   }
   function gotoPage(delta: number) {
@@ -596,8 +649,9 @@
     body: string,
     label: string,
     action: () => void | Promise<void>,
+    splitWidth?: number,
   ) {
-    confirm = { title, message: body, label, action };
+    confirm = { title, message: body, label, action, splitWidth };
   }
   function undo() {
     if (locked) return;
@@ -1021,7 +1075,7 @@
       (JSON.parse(
         JSON.stringify({
           format: exportFormat,
-          pdfa: exportFormat === "pdf" && exportPdfa,
+          pdfa: false,
           pages: preflight.pages,
           sourceUris: project.documents.map((d) => d.sourceUri),
         }),
@@ -1315,6 +1369,7 @@
   onMount(() => {
     mounted = true;
     let unlisten: (() => void) | undefined;
+    let unlistenClose: (() => void) | undefined;
     bindSave();
     void (async () => {
       const results = await Promise.allSettled([
@@ -1348,9 +1403,45 @@
           else fn();
         })
         .catch(() => {});
+    if (client === workspaceClient)
+      void getCurrentWindow()
+        .onCloseRequested(async (event) => {
+          if (closing) {
+            event.preventDefault();
+            return;
+          }
+          if (busy || (queueActive && queueState.phase !== "paused")) {
+            event.preventDefault();
+            await nativeMessage(
+              "A document operation is still running. Stop the recognition queue or wait for the current operation to finish, then close the window again. Completed pages are saved automatically.",
+              { title: "OCR work is still running", kind: "info" },
+            );
+            return;
+          }
+          closing = true;
+          if (queueState.phase === "paused") queue.cancel();
+          try {
+            // Tauri waits for this handler before honoring the user's close.
+            await autosave?.flush();
+          } catch (e) {
+            event.preventDefault();
+            closing = false;
+            fail(e);
+            await nativeMessage(
+              `The project could not be saved. The window remains open so corrections can be recovered.\n\n${message(e)}`,
+              { title: "Project save failed", kind: "error" },
+            );
+          }
+        })
+        .then((fn) => {
+          if (mounted) unlistenClose = fn;
+          else fn();
+        })
+        .catch(fail);
     return () => {
       mounted = false;
       unlisten?.();
+      unlistenClose?.();
       queue.cancel();
       void queue
         .whenSettled()
@@ -1691,12 +1782,9 @@
               >{/if}
           </div>
           <div class="page-list">
-            {#each visiblePages as page (page.id)}
-              {@const number =
-                project.pages.findIndex((p) => p.id === page.id) + 1}
-              {@const issues = reviewIssues.filter(
-                (i) => i.pageId === page.id,
-              ).length}
+            {#each windowPages as page (page.id)}
+              {@const number = pageNumbers.get(page.id) ?? 0}
+              {@const issues = issueCounts.get(page.id) ?? 0}
               <div
                 class="page-card"
                 class:current={activePage?.id === page.id}
@@ -1720,6 +1808,7 @@
                       src={client.imageUrl(page.imagePath)}
                       alt=""
                       loading="lazy"
+                      decoding="async"
                     />{#if page.approved}<span class="thumb-approved"
                         ><Check size={11} /></span
                       >{/if}
@@ -1752,6 +1841,34 @@
                 No pages match this filter.
               </p>{/if}
           </div>
+          {#if visiblePages.length > pageWindowSize}
+            <div class="page-window-controls">
+              <button
+                class="icon-button"
+                aria-label="Previous group of pages"
+                disabled={pageWindowStart === 0}
+                onclick={() =>
+                  (pageWindowStart = Math.max(
+                    0,
+                    pageWindowStart - pageWindowSize,
+                  ))}><ChevronLeft size={14} /></button
+              >
+              <span
+                >{pageWindowStart + 1}–{Math.min(
+                  pageWindowStart + pageWindowSize,
+                  visiblePages.length,
+                )} of {visiblePages.length}</span
+              >
+              <button
+                class="icon-button"
+                aria-label="Next group of pages"
+                disabled={pageWindowStart + pageWindowSize >=
+                  visiblePages.length}
+                onclick={() => (pageWindowStart += pageWindowSize)}
+                ><ChevronRight size={14} /></button
+              >
+            </div>
+          {/if}
           <div class="range-control">
             <label for="ocr-page-range">Select a range</label>
             <div>
@@ -2088,6 +2205,17 @@
               onclick={() => (textView = "text")}>Reading order</button
             ><span>{activePage?.width} × {activePage?.height} px</span>
           </div>
+          {#if recognitionWarnings.length}
+            <details class="recognition-notes">
+              <summary
+                ><AlertTriangle size={13} />
+                {recognitionWarnings.length} recognition notes</summary
+              >
+              <ul>
+                {#each recognitionWarnings as warning}<li>{warning}</li>{/each}
+              </ul>
+            </details>
+          {/if}
           {#if region && !showOriginal}<div class="source-loupe">
               <div class="loupe-label">
                 <ScanText size={12} /> SOURCE DETAIL
@@ -2426,8 +2554,8 @@
                   onchange={(e) =>
                     setSetting("language", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto">Automatic</option><option value="eng"
-                    >English</option
+                  ><option value="auto">Model default</option><option
+                    value="eng">English</option
                   ><option value="deu">German</option><option value="fra"
                     >French</option
                   ><option value="spa">Spanish</option><option value="ita"
@@ -2446,11 +2574,12 @@
             </div>
             <p class="field-hint">
               Language selects the language model for Tesseract LSTM. Other
-              engines use their multilingual model.
+              engines support the languages learned by their selected model;
+              supported vision engines also receive a language hint.
             </p>
             <div class="settings-section">
               <h3><WandSparkles size={15} /> Scan preparation</h3>
-              {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Restore blurred scans", hint: "Deblur and restore page detail." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label
+              {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Image restoration", hint: "Repair the scan with the selected model and task." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label
                   class="setting-toggle"
                   ><span
                     ><strong>{option.label}</strong><small>{option.hint}</small
@@ -2486,6 +2615,25 @@
                   ></label
                 >
               </div>
+              {#if config.restore_engine === "instructir"}
+                <label class="field-label"
+                  >Restoration task
+                  <select
+                    value={String(config.restore_task ?? "denoise")}
+                    onchange={(e) =>
+                      setConfig("restore_task", e.currentTarget.value)}
+                    disabled={locked || !config.restore}
+                  >
+                    <option value="denoise">Remove noise</option>
+                    <option value="deblur">Reduce blur</option>
+                    <option value="dehaze">Remove haze</option>
+                    <option value="derain">Remove rain</option>
+                    <option value="super_resolution">Improve resolution</option>
+                    <option value="low_light">Recover low-light scans</option>
+                    <option value="enhance">Enhance detail</option>
+                  </select>
+                </label>
+              {/if}
               <button
                 class="button full"
                 onclick={prepareImage}
@@ -2864,14 +3012,9 @@
                 </p>
               </div>
             </div>
-            {#if exportFormat === "pdf"}<label
-                class="check-label archive-option"
-                ><input
-                  type="checkbox"
-                  bind:checked={exportPdfa}
-                  disabled={locked}
-                /> Archival PDF/A-2b output</label
-              >{/if}
+            {#if capabilities.pdf_export_reason}<p class="field-hint">
+                {capabilities.pdf_export_reason}
+              </p>{/if}
             <label class="field-label"
               >Pages<select bind:value={exportScope} disabled={locked}
                 ><option value="all"
@@ -2989,10 +3132,30 @@
   >
     <h2 id="ocr-confirm-title">{confirm.title}</h2>
     <p>{confirm.message}</p>
+    {#if confirm.splitWidth}
+      <label class="field-label"
+        >Split position from left edge (pixels)
+        <input
+          type="number"
+          min="1"
+          max={confirm.splitWidth - 1}
+          step="1"
+          bind:value={splitPosition}
+          aria-label="Split position in pixels"
+        />
+        <small
+          >Page width: {confirm.splitWidth} pixels. The default divides it in half.</small
+        >
+      </label>
+    {/if}
     <div class="dialog-actions">
       <button class="button" onclick={() => (confirm = null)}>Cancel</button
       ><button
         class="button primary"
+        disabled={!!confirm.splitWidth &&
+          (!Number.isFinite(splitPosition) ||
+            splitPosition < 1 ||
+            splitPosition >= confirm.splitWidth)}
         onclick={() => {
           const action = confirm?.action;
           confirm = null;
@@ -3063,6 +3226,34 @@
       "Segoe UI",
       sans-serif;
     overflow: hidden;
+  }
+  .page-window-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .recognition-notes {
+    padding: 8px 14px;
+    border-bottom: 1px solid #655237;
+    background: #30271b;
+    color: #efc88d;
+    font-size: 11px;
+  }
+  .recognition-notes summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+  }
+  .recognition-notes ul {
+    max-height: 110px;
+    overflow: auto;
+    padding-left: 18px;
+    line-height: 1.5;
   }
   .ocr-workspace :global(button),
   .ocr-workspace :global(input),
@@ -4354,9 +4545,6 @@
     line-height: 1.65;
     color: #8eabce;
     margin: 5px 0 0;
-  }
-  .archive-option {
-    margin: -4px 0 20px;
   }
   .preflight-card {
     border: 1px solid #755b3366;

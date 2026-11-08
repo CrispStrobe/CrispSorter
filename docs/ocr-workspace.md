@@ -36,7 +36,7 @@ saved, or failed state. A save failure remains visible and retryable.
 
 The native workspace stores immutable, content-addressed page PNGs and versioned
 JSON manifests in the application's data directory. Original files are not
-modified. Reopening the OCR tab restores the latest project. **Projects** opens
+modified. The workspace stays alive across tab changes, so its queue and save writer stay coordinated. Starting the application restores the latest project. **Projects** opens
 another saved project; **New** starts a fresh one after flushing the current
 project. Interrupted running pages return to pending when a project is restored.
 
@@ -66,9 +66,14 @@ image.
 - Picture regions remain on the source image and are excluded from the text
   layer. Excluding a text region removes its text, not the underlying image.
   This control is not a redaction tool.
-- Zone recognition processes a selected rectangle and retains regions outside
-  it. It does not geometrically repair the crop, because its boxes must map back
+- Zone recognition expands a selected rectangle to cover intersecting text
+  regions completely, preserves their reading-order position, and retains
+  unaffected regions. The effective crop and its page offset are recorded.
+  It does not geometrically repair the crop, because its boxes must map back
   to the unchanged page.
+- Spread splitting starts at the center and accepts an exact vertical split
+  position in pixels. Large projects display the page rail in groups of 100;
+  range selection and batch processing still cover the full project.
 - The Reading order view shows the text sequence used by export. Move regions
   earlier/later to change that sequence.
 - Find/replace works across included pages, handles literal Unicode text, and
@@ -86,13 +91,16 @@ The native integration exposes the supported engines reported by the build,
 including DBNet + TrOCR, PARSeq, Tesseract LSTM, and the supported vision-language
 OCR engines. Explicit engine selection builds a concrete pipeline stage.
 Tesseract language selection resolves the corresponding language model; other
-engines use their configured multilingual models. Missing, incomplete, or
+engines use the languages supported by their configured models. Missing, incomplete, or
 unresolvable model files produce actionable errors.
 
 The preparation controls expose classical deskew/cleanup, NAFNet denoise,
 straightening curved pages, Restormer/SCUNet/InstructIR restoration, and
 PAN/Real-ESRGAN/SAFMN super-resolution. Layout analysis supports semantic document
 regions or model-free connected components, with optional header/footer removal.
+A conservative left-to-right block/column heuristic preserves line order within
+blocks and handles spanning headings; ambiguous geometry keeps the native order.
+Inspect the resulting sequence, especially for complex or right-to-left layouts.
 Advanced settings accept registry names or installed model paths and the existing
 per-stage pipeline configuration.
 
@@ -138,7 +146,12 @@ The **Extract** panel works on the current page or selected region:
 - **Formulas:** native math recognition returns LaTeX. Edit and copy it, or save a
   `.tex` file.
 
-Extracted results are retained with their page. **Update search index** uses the
+Extracted results are retained with their source page, selected region, and
+source evidence. Navigation during extraction cannot attach a result to another
+page. Text-based fields become stale when their input text changes; pixel-based
+results become stale when the source image or crop geometry changes. Undo/redo
+restores the matching editor values. Original scores and text remain available
+in structured JSON even after corrections. **Update search index** uses the
 approved corrected text for the current source document, feeding CrispSorter's
 existing chunking and semantic/full-text indexing pipeline.
 
@@ -153,12 +166,13 @@ existing chunking and semantic/full-text indexing pipeline.
 | DOCX | Editable flowing text in page order | Desktop builds |
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
-| Searchable PDF | Working page image plus invisible corrected text | CrispEmbed |
+| Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
 
-PDF export can request the native renderer's PDF/A-2b mode. Independent archival
-conformance validation is a release qualification step; the checkbox itself is
-not a validation certificate. DOCX export produces flowing text, not an exact
-reconstruction of arbitrary page typography. Exports preserve empty recognized
+Searchable PDF export requires the matching updated native renderer and the
+`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Older native builds retain the other export
+formats. Archival PDF/A export is not advertised: it requires embedded resources
+and independent conformance validation. DOCX export produces flowing text, not
+an exact reconstruction of arbitrary page typography. Exports preserve empty recognized
 pages as image pages when the output supports images.
 
 All exports validate dimensions, finite coordinates, nonempty page selection,
@@ -206,7 +220,7 @@ synthetic document fixture; it does not claim model accuracy. See
 The standard CI/release recipes keep their existing CrispEmbed pin. To enable
 new native review diagnostics, use the matching CrispEmbed feature-branch source
 and native library together, then build CrispSorter with
-`--features crispembed,pdf-render,ocr-review-diagnostics` (plus `desktop` for the
+`--features ocr-workspace` (plus `desktop` for the
 desktop-only features). The paired CI workflow pins an immutable native source
 revision, builds its library, and checks the Rust consumer against that exact
 revision. Never mix a new Rust binding with an older prebuilt native library.

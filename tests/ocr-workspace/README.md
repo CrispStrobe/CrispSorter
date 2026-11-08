@@ -22,6 +22,13 @@ node tests/ocr-workspace/smoke.mjs
 browser tools outside the repository so they cannot replace locked application
 dependencies.
 
+The browser uses the host's default temporary directory. If a restricted runtime
+requires a different location, set `OCR_SMOKE_TMPDIR` to a short writable absolute
+path. Do not point it into a deeply nested artifact directory: Chromium uses Unix
+socket paths whose length is limited. Browser launch failures are recorded in
+`report.json` as a `browser setup` failure, with no interaction tests marked as
+passed; the workflow uploads that report even when screenshots cannot be captured.
+
 The script starts an isolated Vite server, runs Chromium headlessly, and writes
 `report.json` plus screenshots to the ignored `tests/ocr-workspace/artifacts/`
 directory. A failed assertion or browser exception causes a nonzero exit code.
@@ -33,9 +40,12 @@ For interactive inspection:
 node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
-The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`, or
-`?scenario=queue-control`. The last scenario holds recognition responses until the
-harness releases them, making pause and stop behavior deterministic.
+The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
+`?scenario=queue-control`, `?scenario=extraction-delay`, or
+`?scenario=project-recovery`. The queue and extraction scenarios hold native
+responses until the harness releases them. The recovery scenario includes an
+unsupported saved project, and saves can be held to exercise revision races
+without relying on debounce timing.
 
 ## Assertions
 
@@ -48,6 +58,12 @@ harness releases them, making pause and stop behavior deterministic.
 - Batch errors remain attached to their pages; retry processes only failed work.
 - Pause/resume/stop never overlaps native operations or drops pending pages.
 - Table model output becomes inert cell text, with active HTML removed.
+- Delayed extraction remains attached to its captured page after navigation;
+  editing and undo restore both the visible cells and exported CSV.
+- Invalid project input leaves the original autosaver usable, and reopening the
+  current project flushes pending edits without rolling back text or its revision.
+- Confirmation dialogs suppress page navigation shortcuts and retain their target.
+- Replacing after a query change never applies stale offsets to another match.
 - Desktop and compact layouts produce screenshots and retain the review controls.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same

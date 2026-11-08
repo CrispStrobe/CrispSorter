@@ -30,15 +30,18 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, extraction-delay, project-recovery');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
-    // Restricted workspaces may not expose /tmp. Keep browser profiles and
-    // artifacts under the explicitly writable output directory.
-    const browserTemp = path.join(output, 'tmp');
-    await mkdir(browserTemp, { recursive: true });
-    process.env.TMPDIR = browserTemp;
+    // Preserve the host's short temporary path: Chromium's Unix socket name
+    // exceeds platform limits when TMPDIR points into a deep artifact directory.
+    // Restricted environments can opt into an explicitly writable, short path.
+    if (process.env.OCR_SMOKE_TMPDIR) {
+        const browserTemp = path.resolve(process.env.OCR_SMOKE_TMPDIR);
+        await mkdir(browserTemp, { recursive: true });
+        process.env.TMPDIR = browserTemp;
+    }
     let playwright;
     if (process.env.PLAYWRIGHT_MODULE_PATH) {
         playwright = require(path.resolve(process.env.PLAYWRIGHT_MODULE_PATH));
@@ -182,6 +185,107 @@ if (process.argv.includes('--serve')) {
             const table = cell.locator('xpath=ancestor::table');
             assert.equal(await table.locator('img,script,a,iframe').count(), 0);
             assert.equal(await table.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).inputValue(), 'EUR 1,250.00');
+        });
+
+        await test('delayed extraction follows its source page and undo restores visible and exported cells', 'extraction-delay', async page => {
+            await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+            await page.getByRole('button', { name: 'Table', exact: true }).click();
+            await page.getByRole('button', { name: 'Extract table', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExtractions === 1);
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseExtraction()), true);
+            await page.getByText(/rows × 2 columns extracted · saved to/).waitFor();
+            assert.equal(await page.getByRole('textbox', { name: 'Row 2, column 1', exact: true }).count(), 0);
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].provenance.extraction?.tableRows?.length === 2);
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
+            assert.equal(saved.pages[0].provenance.extraction.sourceImagePath, saved.pages[0].imagePath);
+            assert.equal(saved.pages[2].provenance.extraction, undefined);
+
+            await page.getByRole('button', { name: /^Page 1:/ }).click();
+            const cell = page.getByRole('textbox', { name: 'Row 2, column 1', exact: true });
+            await cell.waitFor();
+            assert.equal(await cell.inputValue(), 'Secure cell');
+            await cell.fill('Reviewed material');
+            await cell.blur();
+            await page.getByRole('button', { name: 'Save table as CSV', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.writes.length === 1);
+            assert.match(await page.evaluate(() => window.ocrSmoke.writes[0].text), /Reviewed material/);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.waitForFunction(() => document.querySelector('[aria-label="Row 2, column 1"]')?.value === 'Secure cell');
+            await page.getByRole('button', { name: 'Save table as CSV', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.writes.length === 2);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.writes[1].text), '"Item","Value"\r\n"Secure cell","EUR 1,250.00"');
+        });
+
+        await test('an invalid saved project leaves the current project and autosaver usable', 'project-recovery', async page => {
+            await page.getByRole('button', { name: 'Projects', exact: true }).click();
+            await page.getByRole('region', { name: 'Saved projects', exact: true }).getByRole('button', { name: /Invalid archived project/ }).click();
+            await page.getByText('Unsupported OCR project version: 99.', { exact: true }).waitFor();
+            assert.equal(await page.getByRole('textbox', { name: 'Project name', exact: true }).inputValue(), 'Northstar · quarterly statement');
+            await page.getByRole('button', { name: 'Close projects', exact: true }).click();
+            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await text.fill('Invoice corrected after invalid restore');
+            await text.blur();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === 'Invoice corrected after invalid restore');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.id), 'ocr-fixture-project-recovery');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.at(-1).revision), 8);
+        });
+
+        await test('reopening the current project flushes pending edits without rollback or revision conflicts', 'project-recovery', async page => {
+            await page.getByRole('button', { name: 'Projects', exact: true }).click();
+            await page.evaluate(() => { window.ocrSmoke.holdSaves = true; });
+            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await text.fill('Invoice with an unsaved correction');
+            await text.blur();
+            await page.getByRole('region', { name: 'Saved projects', exact: true }).getByRole('button', { name: /Northstar · quarterly statement/ }).click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingSaves === 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'load').length), 1);
+            await page.evaluate(() => { window.ocrSmoke.holdSaves = false; window.ocrSmoke.releaseSave(); });
+            await page.getByText('Current project saved', { exact: true }).waitFor();
+            assert.equal(await text.inputValue(), 'Invoice with an unsaved correction');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.at(-1).revision), 8);
+            await text.fill('Invoice after reopening the same project');
+            await text.blur();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === 'Invoice after reopening the same project');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.at(-1).revision), 9);
+        });
+
+        await test('a confirmation blocks navigation shortcuts and removes only its captured page', 'review', async page => {
+            await page.getByRole('button', { name: 'Remove page', exact: true }).click();
+            const dialog = page.getByRole('dialog', { name: 'Remove this page?', exact: true });
+            await dialog.waitFor();
+            await page.keyboard.press('Alt+ArrowRight');
+            await page.keyboard.press('F8');
+            assert.match(await page.locator('button[aria-current="page"]').getAttribute('aria-label'), /^Page 1:/);
+            await dialog.getByRole('button', { name: 'Remove page', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 2);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.lastSaved.pages.map(item => item.imagePath)), ['/fixtures/northstar-page-2.png', '/fixtures/northstar-page-3.png']);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
+        });
+
+        await test('changing the search query cannot replace text at a stale match offset', 'review', async page => {
+            await page.getByRole('button', { name: 'Find and replace', exact: true }).click();
+            const query = page.getByRole('textbox', { name: 'Find text', exact: true });
+            await query.fill('Inv0ice');
+            await page.getByRole('textbox', { name: 'Replacement text', exact: true }).fill('Receipt');
+            await page.getByRole('button', { name: 'Next match', exact: true }).click();
+            assert.equal(await page.locator('.region-card.selected textarea').inputValue(), 'Inv0ice NS-2026-1042');
+            await query.fill('Total due');
+            await page.getByRole('button', { name: 'Replace', exact: true }).click();
+            assert.equal(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).inputValue(), 'Inv0ice NS-2026-1042');
+            assert.equal(await page.locator('.region-card.selected textarea').inputValue(), 'Total due EUR 1,250.00');
+            await page.getByRole('button', { name: 'Replace', exact: true }).click();
+            // Successful replacement advances to the next page's matching text.
+            await page.getByRole('button', { name: /^Page 1:/ }).click();
+            assert.equal(await page.getByRole('textbox', { name: 'Text for region 6', exact: true }).inputValue(), 'Receipt EUR 1,250.00');
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[5].text === 'Receipt EUR 1,250.00');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].text), 'Inv0ice NS-2026-1042');
         });
 
         await test('desktop and compact layouts remain usable', 'review', async page => {

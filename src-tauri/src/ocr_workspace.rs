@@ -151,7 +151,10 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
     fs::create_dir_all(&assets).map_err(|e| format!("Create page cache: {e}"))?;
     let mut staging = tempfile::NamedTempFile::new_in(&assets)
         .map_err(|e| format!("Create page snapshot: {e}"))?;
-    image.write_to(staging.as_file_mut(), image::ImageFormat::Png)
+    // A recognizer that asks for RGB drops alpha, whereas the preview browser
+    // composites it. Flatten onto white paper once so both see identical pixels.
+    let canonical = opaque_page(image);
+    canonical.write_to(staging.as_file_mut(), image::ImageFormat::Png)
         .map_err(|e| format!("Encode page snapshot: {e}"))?;
     staging.as_file_mut().flush().map_err(|e| e.to_string())?;
     staging.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -170,6 +173,18 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
         Err(e) => return Err(format!("Save page snapshot: {}", e.error)),
     }
     Ok(PageAsset { image_path: path.to_string_lossy().into_owned(), width, height })
+}
+
+fn opaque_page(image: &DynamicImage) -> DynamicImage {
+    if !image.color().has_alpha() { return image.clone(); }
+    let rgba = image.to_rgba8();
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+        let source = rgba.get_pixel(x, y);
+        let alpha = u16::from(source[3]);
+        image::Rgb([0, 1, 2].map(|channel| {
+            ((u16::from(source[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+        }))
+    }))
 }
 
 fn sync_directory(path: &Path) -> Result<(), String> {
@@ -202,12 +217,14 @@ fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
     let mut formats = vec!["text", "markdown", "html", "json"];
-    if native { formats.extend(["pdf", "hocr", "alto"]); }
+    if native { formats.extend(["hocr", "alto"]); }
+    if reviewed_pdf_available() { formats.push("pdf"); }
     if cfg!(feature = "desktop") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
         "ocr": native, "crispembed": native,
         "pdf_import": cfg!(feature = "pdf-render"),
+        "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
@@ -216,6 +233,13 @@ pub fn ocr_workspace_capabilities() -> Value {
         "pdf_reason": if cfg!(feature = "pdf-render") { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
     })
+}
+
+fn reviewed_pdf_available() -> bool {
+    // Stay disabled until the paired native renderer exposes verified raster,
+    // Unicode, and arbitrary page-count support. Enabling diagnostics alone
+    // cannot certify an older renderer's output.
+    false
 }
 
 #[tauri::command]
@@ -355,6 +379,9 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
     }
     let image = decode_page(&path)?;
     let recipe = config.stages.first().map(|s| s.cleanup.clone()).unwrap_or_default();
+    if config.stages.iter().any(|s| s.cleanup.page_split) {
+        warnings.push("This profile requests spread splitting. Use Split page to create and review both halves; recognition retains the complete current page.".into());
+    }
     let use_cleanup = config.cleanup_enabled || config.stages.iter().any(|s| s.cleanup.enabled);
     let denoise = config.denoise || config.stages.iter().any(|s| s.cleanup.denoise);
     let image = if use_cleanup || denoise {
@@ -364,6 +391,17 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
         cleanup_image(image, config, &recipe, use_cleanup, denoise)?
     } else { image };
     let page = persist_image(root, &image)?;
+    let page = if recipe.auto_crop {
+        if let Some((left, top, right, bottom)) = ocr_crispembed::content_bbox(Path::new(&page.image_path)) {
+            let rect = PixelRect { x: left as f64, y: top as f64, w: (right - left) as f64, h: (bottom - top) as f64 };
+            let (x, y, w, h) = checked_rect(rect, page.width, page.height)
+                .map_err(|e| format!("Automatic content crop: {e}"))?;
+            persist_image(root, &image.crop_imm(x, y, w, h))?
+        } else {
+            warnings.push("Automatic content crop found no bounding area. The complete prepared page was retained.".into());
+            page
+        }
+    } else { page };
     drop(guards);
     Ok(PreparedPage { page, warnings })
 }
@@ -419,6 +457,10 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
         || !["got", "glm", "qwen2vl", "internvl2", "qwen3vl"].contains(&config.vlm_ocr_engine.as_str()) {
         return Err("Unknown layout or escalation engine.".into());
     }
+    if config.restore_engine == "instructir"
+        && !["denoise", "deblur", "dehaze", "derain", "super_resolution", "low_light", "enhance"].contains(&config.restore_task.as_str()) {
+        return Err("Unknown restoration task.".into());
+    }
     for stage in &config.stages {
         if !["dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract", "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr"].contains(&stage.engine.as_str())
             || !["auto", "screenshot", "scanned_doc", "photo"].contains(&stage.source_type.as_str()) {
@@ -461,28 +503,42 @@ fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: 
         if !["dbnet_trocr", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr"].contains(&engine) {
             return Err(format!("Unsupported OCR engine: {engine}"));
         }
-        let mut stage: crate::extractors::OcrStageSpec = serde_json::from_value(json!({
-            "engine": engine, "min_confidence": config.min_confidence, "min_chars": config.min_chars,
-        })).map_err(|e| e.to_string())?;
-        stage.det_model = config.det_model.clone();
-        stage.rec_model = config.rec_model.clone();
-        if stage.rec_model.is_none() {
+        let configured_stage = config.stages.iter().find(|s| s.engine == engine).cloned();
+        let mut stage: crate::extractors::OcrStageSpec = if let Some(stage) = configured_stage {
+            stage
+        } else {
+            let mut stage: crate::extractors::OcrStageSpec = serde_json::from_value(json!({"engine":engine}))
+                .map_err(|e| e.to_string())?;
+            if ["dbnet_trocr", "tesseract", "parseq"].contains(&engine) {
+                stage.det_model = config.det_model.clone();
+                if engine == "dbnet_trocr" { stage.rec_model = config.rec_model.clone(); }
+            } else if config.vlm_ocr_engine == engine {
+                // Flat det/rec model fields describe the DBNet path, never a
+                // newly selected vision engine. Only use its matching VLM slot.
+                stage.det_model = config.vlm_ocr_model.clone();
+            }
+            stage
+        };
+        stage.source_type = "auto".into();
+        stage.min_confidence = config.min_confidence;
+        stage.min_chars = config.min_chars;
+        if engine == "tesseract" && (language.is_some() || stage.rec_model.is_none()) {
+            let lang = match language.unwrap_or("eng") {
+                "en" => "eng", "de" => "deu", "fr" => "fra", "es" => "spa", "it" => "ita",
+                "pt" => "por", "nl" => "nld", "ru" => "rus", "ar" => "ara", "zh" | "chi_sim" => "chi-sim",
+                "ja" => "jpn", "ko" => "kor", lang => lang,
+            };
+            if !["eng", "deu", "fra", "spa", "ita", "por", "nld", "rus", "ara", "chi-sim", "jpn", "kor"].contains(&lang) {
+                return Err(format!("No registered Tesseract model is available for '{lang}'. Configure a matching custom language model in an OCR stage and use Automatic language, or select a vision engine."));
+            }
+            stage.rec_model = Some(format!("tesseract-{lang}"));
+        } else if stage.rec_model.is_none() {
             stage.rec_model = match engine {
-                "dbnet_trocr" => Some("trocr-printed".into()),
-                "tesseract" => {
-                    let lang = match language.unwrap_or("eng") {
-                        "en" => "eng", "de" => "deu", "fr" => "fra", "es" => "spa", "it" => "ita",
-                        "pt" => "por", "nl" => "nld", "ru" => "rus", "ar" => "ara", "zh" | "chi_sim" => "chi-sim",
-                        "ja" => "jpn", "ko" => "kor", lang => lang,
-                    };
-                    Some(format!("tesseract-{lang}"))
-                },
-                "parseq" => Some("parseq".into()),
-                _ => None,
+                "dbnet_trocr" => Some("trocr-printed".into()), "parseq" => Some("parseq".into()), _ => None,
             };
         }
         if let Some(language) = language {
-            if ["got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr"].contains(&engine) {
+            if ["qwen2vl", "internvl2", "granite_vision", "qwen3vl"].contains(&engine) {
                 stage.vlm_prompt = format!("Transcribe the document exactly. The expected language is {language}. Preserve reading order, numbers, punctuation and line breaks. Do not summarize or translate.");
             } else if engine != "tesseract" {
                 warnings.push("This recognizer uses its model's trained languages; the language selector does not change that model.".into());
@@ -570,6 +626,8 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     if let Some(zone) = zone {
         result.diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?;
         result.diagnostics["effective_zone"] = json!({"x":offset.0,"y":offset.1,"w":result.width,"h":result.height});
+        result.diagnostics["recognition_image_path"] = json!(recognition_path.to_string_lossy());
+        result.diagnostics["region_offset"] = json!({"x":offset.0,"y":offset.1});
     }
     result.diagnostics["requested_config"] = serde_json::to_value(config).map_err(|e| e.to_string())?;
     Ok(RecognizedPage { page, regions: result.regions, elapsed_ms: started.elapsed().as_millis() as u64, warnings, diagnostics: result.diagnostics })
@@ -602,6 +660,19 @@ fn annotate_layout(path: &Path, config: &crate::extractors::OcrPipelineConfig, r
             }.into();
         }
     }
+    let text_boxes: Vec<_> = regions.iter().map(|r| crate::ocr_reading_order::Rect { x:r.x, y:r.y, w:r.w, h:r.h }).collect();
+    let layout_boxes: Vec<_> = layout.iter().map(|r| crate::ocr_reading_order::Rect { x:r.x1, y:r.y1, w:r.x2-r.x1, h:r.y2-r.y1 }).collect();
+    let order = crate::ocr_reading_order::order_regions(&text_boxes, &layout_boxes);
+    diagnostics["layout_reading_order"] = json!({"strategy":"layout_blocks_and_column_gutters","indices":order});
+    // Keep every original region even if a future ordering implementation
+    // returns incomplete indices. Geometry repair must never lose text.
+    let mut rank = vec![usize::MAX; regions.len()];
+    for (position, &index) in order.iter().enumerate() {
+        if index < rank.len() && rank[index] == usize::MAX { rank[index] = position; }
+    }
+    let mut ordered: Vec<_> = std::mem::take(regions).into_iter().enumerate().collect();
+    ordered.sort_by_key(|(index, _)| (rank[*index], *index));
+    *regions = ordered.into_iter().map(|(_, region)| region).collect();
     if config.drop_headers_footers {
         let count = regions.iter().filter(|r| r.kind == "header" || r.kind == "footer").count();
         regions.retain(|r| r.kind != "header" && r.kind != "footer");
@@ -863,7 +934,10 @@ fn escape_html(text: &str) -> String {
 }
 
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
-    if pdfa && format != "pdf" { return Err("The archival PDF option applies only to PDF export.".into()); }
+    if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
+    if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
+        return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
+    }
     match format {
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
         "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
@@ -1001,6 +1075,22 @@ mod tests {
     }
 
     #[test]
+    fn transparent_scans_use_the_same_white_paper_for_preview_and_recognition() {
+        let root = tempfile::tempdir().unwrap();
+        let input = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(3, 1, |x, _| {
+            image::Rgba([0, 0, 0, [0, 255, 128][x as usize]])
+        }));
+        let saved = persist_image(root.path(), &input).unwrap();
+        let output = image::open(saved.image_path).unwrap();
+        assert!(!output.color().has_alpha());
+        let pixels = output.to_rgb8();
+        assert_eq!(pixels.get_pixel(0, 0).0, [255, 255, 255]);
+        assert_eq!(pixels.get_pixel(1, 0).0, [0, 0, 0]);
+        assert_eq!(pixels.get_pixel(2, 0).0, [127, 127, 127]);
+        assert_eq!(input.to_rgba8().get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
     fn rotation_keeps_source_bytes_and_changes_snapshot_dimensions() {
         let root = tempfile::tempdir().unwrap();
         let source = persist_image(root.path(), &image()).unwrap();
@@ -1097,6 +1187,21 @@ mod tests {
         let mut page = export_page(root.path(), "reviewed"); page.regions[0].x = 7.0;
         assert!(validate_export_pages(&[page]).is_err());
         assert!(validate_export_pages(&[]).is_err());
+    }
+
+    #[test]
+    fn export_capabilities_never_offer_an_unverified_pdf_renderer() {
+        let capabilities = ocr_workspace_capabilities();
+        let formats = capabilities["formats"].as_array().unwrap();
+        assert_eq!(formats.iter().any(|format| format == "pdf"), reviewed_pdf_available());
+        if !reviewed_pdf_available() { assert!(capabilities["pdf_export_reason"].as_str().is_some()); }
+        let root = tempfile::tempdir().unwrap();
+        let pages = vec![export_page(root.path(), "reviewed")];
+        assert!(export_bytes(&pages, "pdf", true).unwrap_err().contains("PDF/A"));
+        if !reviewed_pdf_available() {
+            assert!(export_bytes(&pages, "pdf", false).unwrap_err().contains("matching updated CrispEmbed renderer"));
+        }
+        assert_eq!(export_bytes(&pages, "text", false).unwrap(), b"reviewed");
     }
 
     #[test]
@@ -1214,6 +1319,25 @@ mod tests {
         assert_eq!(config.stages[0].rec_model.as_deref(), Some("trocr-printed"));
         assert!(recognition_config(Default::default(), Some("missing-engine"), None).is_err());
         assert!(recognition_config(Default::default(), Some("tesseract"), Some("../../invalid")).is_err());
+        assert!(recognition_config(Default::default(), Some("tesseract"), Some("pol")).unwrap_err().contains("custom language model"));
+        let (got, warnings) = recognition_config(Default::default(), Some("got"), Some("de")).unwrap();
+        assert!(got.stages[0].vlm_prompt.is_empty());
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn engine_changes_do_not_inherit_another_recognizers_weights() {
+        let mut profile = crate::extractors::OcrPipelineConfig::default();
+        profile.det_model = Some("dbnet-det".into());
+        profile.rec_model = Some("trocr-printed".into());
+        let (qwen, _) = recognition_config(profile.clone(), Some("qwen2vl"), None).unwrap();
+        assert!(qwen.stages[0].det_model.is_none());
+        assert!(qwen.stages[0].rec_model.is_none());
+        let (tesseract, _) = recognition_config(profile.clone(), Some("tesseract"), Some("de")).unwrap();
+        assert_eq!(tesseract.stages[0].rec_model.as_deref(), Some("tesseract-deu"));
+        profile.stages = vec![serde_json::from_value(json!({"engine":"qwen2vl","det_model":"custom-qwen.gguf"})).unwrap()];
+        let (qwen, _) = recognition_config(profile, Some("qwen2vl"), None).unwrap();
+        assert_eq!(qwen.stages[0].det_model.as_deref(), Some("custom-qwen.gguf"));
     }
 
     #[test]

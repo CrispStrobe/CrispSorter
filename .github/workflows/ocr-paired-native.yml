@@ -2,17 +2,11 @@ name: OCR paired native integration
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feature/ocr-production-workspace]
-    paths:
-      - src-tauri/src/ocr_workspace.rs
-      - src-tauri/src/extractors/ocr_crispembed.rs
-      - src-tauri/src/extractors/page_source.rs
-      - src-tauri/Cargo.toml
-      - .github/workflows/ocr-paired-native.yml
   pull_request:
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_reading_order.rs
+      - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
       - src-tauri/src/extractors/page_source.rs
       - src-tauri/Cargo.toml
@@ -28,7 +22,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: dabe1caf55ecbffb213ec4ea76ba4412461f3d50
+  OCR_CRISPEMBED_REF: 55285de6adafb6634b055f6b264bb55ee9f72172
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -47,6 +41,12 @@ jobs:
           ref: ${{ env.OCR_CRISPEMBED_REF }}
           submodules: recursive
           path: repos/CrispEmbed
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify conservative reading-order permutations
+        working-directory: repos/CrispSorter
+        run: |
+          rustc --edition 2021 --test src-tauri/src/ocr_reading_order.rs -o "$RUNNER_TEMP/ocr-reading-order-tests"
+          "$RUNNER_TEMP/ocr-reading-order-tests"
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -71,7 +71,6 @@ jobs:
           repository: CrispStrobe/crisp-docx
           ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
           path: repos/crisp-docx
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: repos/CrispSorter -> target
@@ -90,6 +89,12 @@ jobs:
           cargo test -p crispsorter --lib --no-default-features \
             --features crispembed,pdf-render,ocr-review-diagnostics \
             extractors::ocr_crispembed::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features crispembed,pdf-render,ocr-review-diagnostics \
+            extractors::page_source::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features crispembed,pdf-render,ocr-review-diagnostics \
+            ocr_reading_order::tests -- --test-threads=1
       - name: Save native diagnostics library
         uses: actions/upload-artifact@v4
         with:
