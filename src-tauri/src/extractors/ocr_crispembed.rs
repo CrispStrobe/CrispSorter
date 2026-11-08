@@ -1445,7 +1445,9 @@ mod tests {
         assert_eq!(super::vlm_default_model("lfm2_vl"), "lfm2-vl");
         // `unified` dispatches on metadata, so it must not inherit a default.
         assert_eq!(super::vlm_default_model("unified"), "");
-        assert_eq!(super::vlm_default_model("qwen2vl"), "qwen2vl-ocr");
+        // The registry name; the historical `qwen2vl-ocr` alias is absent from
+        // v0.17.12 and `resolve()` migrates it to this name.
+        assert_eq!(super::vlm_default_model("qwen2vl"), "qwen2vl-3b");
     }
 
     #[test]
