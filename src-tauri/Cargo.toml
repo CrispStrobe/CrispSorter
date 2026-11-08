@@ -64,7 +64,7 @@ anydoc           = { version = "=0.1.7", optional = true }
 html2text        = "0.16.7"
 futures          = "0.3"
 
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -228,7 +228,7 @@ rten = "0.24.0"
 image = "0.25.10"
 # Pure-Rust multi-page TIFF decode (page-sourcing for multi-page document OCR).
 # Same version the `image` crate uses transitively, so no duplicate.
-tiff = "0.9"
+tiff = "0.11.3"
 # PDF page rasterization for scanned/image PDFs (page-sourcing). Binds PDFium
 # at runtime via libloading — compiles without the lib; degrades gracefully if
 # absent. Optional (the `pdf-render` feature); the release build bundles a
@@ -392,6 +392,15 @@ pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]
 crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
+# Additive review snapshots are supplied by the paired OCR feature branch of
+# CrispEmbed. Existing release pins still build and run the workbench without
+# this optional provenance extension.
+ocr-review-diagnostics = ["crispembed"]
+# Reviewed PDF output requires the matching native renderer with lossless
+# raster embedding, Unicode text, and document-sized page tables.
+ocr-reviewed-pdf = ["ocr-review-diagnostics"]
+# Complete paired OCR workspace without imposing desktop-only integrations.
+ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
 crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]

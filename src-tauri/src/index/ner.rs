@@ -335,19 +335,25 @@ impl NerHandle {
     /// merge-ready `label:text` strings) this keeps label/value/score separate.
     /// Empty on empty input, load failure, or a build without `crispembed`.
     pub async fn extract_fields(&self, text: &str) -> Vec<(String, String, f32)> {
+        match self.try_extract_fields(text).await {
+            Ok(fields) => fields,
+            Err(e) => {
+                eprintln!("[ner] field extraction failed: {e:#}");
+                vec![]
+            }
+        }
+    }
+
+    /// Interactive callers need a load/consent error to differ from a genuine
+    /// empty extraction. Background ingest can continue using `extract_fields`.
+    pub async fn try_extract_fields(&self, text: &str) -> Result<Vec<(String, String, f32)>> {
         if text.trim().is_empty() || self.labels.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
         let truncated = self.truncate(text);
         let mut guard = self.slot.lock().await;
         if guard.is_none() {
-            match Ner::load(self.model, &self.cache_dir).await {
-                Ok(n) => *guard = Some(n),
-                Err(e) => {
-                    eprintln!("[ner] load failed, no KIE fields: {e:#}");
-                    return vec![];
-                }
-            }
+            *guard = Some(Ner::load(self.model, &self.cache_dir).await?);
         }
         let n = guard.as_mut().unwrap();
         let label_refs: Vec<&str> = self.labels.iter().map(|s| s.as_str()).collect();
@@ -358,7 +364,7 @@ impl NerHandle {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        ents.into_iter().map(|e| (e.label, e.text, e.score)).collect()
+        Ok(ents.into_iter().map(|e| (e.label, e.text, e.score)).collect())
     }
 
     /// Truncate `text` to at most `max_chars` bytes on a char boundary.

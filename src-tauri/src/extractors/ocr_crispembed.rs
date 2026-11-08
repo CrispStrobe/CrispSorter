@@ -6,8 +6,7 @@
 //!
 //! The pipeline auto-downloads models from HuggingFace on first use via
 //! `CrispEmbed::resolve_model`.  Detection and recognition models are
-//! specified by registry name; the default pairing is `surya-det` (91
-//! languages) + `qwen2vl-ocr` (German support).
+//! specified by registry name; the default pairing is `dbnet-det` + `trocr-printed`.
 //!
 //! Gated behind `--features crispembed`.
 
@@ -20,12 +19,12 @@ use std::sync::Mutex;
 
 use super::ExtractedDocument;
 
-/// Default detection model (Surya-OCR-2, EfficientViT, 91 languages).
+/// Default detector and recognizer are registered, compatible native models.
 #[cfg(feature = "crispembed")]
 const DEFAULT_DET_MODEL: &str = "dbnet-det";
-/// Default recognition model (Qwen2.5-VL, German support).
+/// Printed-text recognizer paired with DBNet.
 #[cfg(feature = "crispembed")]
-const DEFAULT_REC_MODEL: &str = "qwen2vl-ocr";
+const DEFAULT_REC_MODEL: &str = "trocr-printed";
 
 /// Process-global lazy-loaded OCR pipeline.  The CrispEmbed OcrPipeline
 /// is not `Sync` so we wrap it in a `Mutex`.  This trades concurrency for
@@ -39,39 +38,58 @@ pub fn is_crispembed_ocr_available() -> bool {
     cfg!(feature = "crispembed")
 }
 
-// ── Pre-OCR image-restoration engines (cached; `None` once init fails) ──
+// ── Pre-OCR image-restoration engines ──
+// Model changes replace the loaded instance. Failed loads remain retryable.
+#[cfg(any(feature = "crispembed", test))]
+type ModelCache<T> = std::sync::OnceLock<std::sync::Mutex<Option<(String, T)>>>;
+
+#[cfg(any(feature = "crispembed", test))]
+fn with_cached_model<T, R>(
+    cache: &ModelCache<T>,
+    key: &str,
+    load: impl FnOnce() -> Option<T>,
+    run: impl FnOnce(&mut T) -> Option<R>,
+) -> Option<R> {
+    let mut slot = cache.get_or_init(|| std::sync::Mutex::new(None)).lock().ok()?;
+    if slot.as_ref().map(|(key, _)| key.as_str()) != Some(key) {
+        *slot = None;
+        *slot = Some((key.to_owned(), load()?));
+    }
+    run(&mut slot.as_mut()?.1)
+}
+
 #[cfg(feature = "crispembed")]
-static PAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispPanSr>>> =
+static PAN_SR: ModelCache<crispembed::CrispPanSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static ESRGAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispEsrganSr>>> =
+static ESRGAN_SR: ModelCache<crispembed::CrispEsrganSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SAFMN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSafmnSr>>> =
+static SAFMN_SR: ModelCache<crispembed::CrispSafmnSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static RESTORMER: std::sync::OnceLock<Option<Mutex<crispembed::CrispRestormer>>> =
+static RESTORMER: ModelCache<crispembed::CrispRestormer> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SCUNET: std::sync::OnceLock<Option<Mutex<crispembed::CrispScunet>>> =
+static SCUNET: ModelCache<crispembed::CrispScunet> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static HAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispHatSr>>> =
+static HAT_SR: ModelCache<crispembed::CrispHatSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static TBSRN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispTbsrnSr>>> =
+static TBSRN_SR: ModelCache<crispembed::CrispTbsrnSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static INSTRUCTIR: std::sync::OnceLock<Option<Mutex<crispembed::CrispInstructIR>>> =
+static INSTRUCTIR: ModelCache<crispembed::CrispInstructIR> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static DAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispDatSr>>> =
+static DAT_SR: ModelCache<crispembed::CrispDatSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SWINIR_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSwinirSr>>> =
+static SWINIR_SR: ModelCache<crispembed::CrispSwinirSr> =
     std::sync::OnceLock::new();
 #[cfg(feature = "crispembed")]
-static SCAN_CLEANUP: std::sync::OnceLock<Option<Mutex<crispembed::CrispScanCleanup>>> =
+static SCAN_CLEANUP: ModelCache<crispembed::CrispScanCleanup> =
     std::sync::OnceLock::new();
 
 /// Save an RGB buffer to a temp PNG and return it + its path (held alive).
@@ -112,10 +130,8 @@ fn save_rgb_stable(prefix: &str, w: u32, h: u32, rgb: Vec<u8>) -> Option<std::pa
 pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    let (out, ow, oh) = eng.lock().ok()?.process(img.as_raw(), w as i32, h as i32, 3).ok()?;
+    let (out, ow, oh) = with_cached_model(&SCAN_CLEANUP, "classical", || crispembed::CrispScanCleanup::new(None, 0).ok(),
+        |engine| engine.process(img.as_raw(), w as i32, h as i32, 3).ok())?;
     save_rgb_stable("cleaned_", ow as u32, oh as u32, out)
 }
 
@@ -130,12 +146,8 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
 pub fn detect_page_split(path: &Path) -> Option<i32> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    eng.lock()
-        .ok()?
-        .detect_page_split(img.as_raw(), w as i32, h as i32, 3)
+    with_cached_model(&SCAN_CLEANUP, "classical", || crispembed::CrispScanCleanup::new(None, 0).ok(),
+        |engine| engine.detect_page_split(img.as_raw(), w as i32, h as i32, 3))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -152,12 +164,8 @@ pub fn detect_page_split(_path: &Path) -> Option<i32> {
 pub fn content_bbox(path: &Path) -> Option<(i32, i32, i32, i32)> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    eng.lock()
-        .ok()?
-        .content_bbox(img.as_raw(), w as i32, h as i32, 3)
+    with_cached_model(&SCAN_CLEANUP, "classical", || crispembed::CrispScanCleanup::new(None, 0).ok(),
+        |engine| engine.content_bbox(img.as_raw(), w as i32, h as i32, 3))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -197,57 +205,43 @@ fn run_sr(
 ) -> Option<(Vec<u8>, i32, i32)> {
     match engine {
         "esrgan" => {
-            let m = resolve(model.unwrap_or("esrgan-x4"));
-            let e = ESRGAN_SR
-                .get_or_init(|| crispembed::CrispEsrganSr::new(m, 0).map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h)
+            let m = resolve_checked(model.unwrap_or("esrgan-x4")).ok()?;
+            with_cached_model(&ESRGAN_SR, &m, || crispembed::CrispEsrganSr::new(m.clone(), 0),
+                |engine| engine.process(rgb, w, h))
         }
         "safmn" => {
-            let m = resolve(model.unwrap_or("safmn-x4"));
-            let e = SAFMN_SR
-                .get_or_init(|| crispembed::CrispSafmnSr::new(m, 0).map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h)
+            let m = resolve_checked(model.unwrap_or("safmn-x4")).ok()?;
+            with_cached_model(&SAFMN_SR, &m, || crispembed::CrispSafmnSr::new(m.clone(), 0),
+                |engine| engine.process(rgb, w, h))
         }
         "hat" => {
             // HAT — Hybrid Attention Transformer, SOTA 4× SR (CVPR 2023).
-            let m = resolve(model.unwrap_or("hat-sr-x4"));
-            let e = HAT_SR
-                .get_or_init(|| crispembed::CrispHatSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+            let m = resolve_checked(model.unwrap_or("hat-sr-x4")).ok()?;
+            with_cached_model(&HAT_SR, &m, || crispembed::CrispHatSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h, 0, 0).ok())
         }
         "tbsrn" => {
             // TBSRN — text-line scene-text SR (tiny, PaddleOCR Telescope).
-            let m = resolve(model.unwrap_or("tbsrn-telescope"));
-            let e = TBSRN_SR
-                .get_or_init(|| crispembed::CrispTbsrnSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h).ok()
+            let m = resolve_checked(model.unwrap_or("tbsrn-telescope")).ok()?;
+            with_cached_model(&TBSRN_SR, &m, || crispembed::CrispTbsrnSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h).ok())
         }
         "dat" => {
             // DAT — Dual Aggregation Transformer SR (strong transformer SR).
-            let m = resolve(model.unwrap_or("dat-sr-x2"));
-            let e = DAT_SR
-                .get_or_init(|| crispembed::CrispDatSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+            let m = resolve_checked(model.unwrap_or("dat-sr-x2")).ok()?;
+            with_cached_model(&DAT_SR, &m, || crispembed::CrispDatSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h, 0, 0).ok())
         }
         "swinir" => {
             // SwinIR-light — classic Swin-Transformer SR (tiny, 930K params).
-            let m = resolve(model.unwrap_or("swinir-sr-x4"));
-            let e = SWINIR_SR
-                .get_or_init(|| crispembed::CrispSwinirSr::new(&m, 0).map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0)
+            let m = resolve_checked(model.unwrap_or("swinir-sr-x4")).ok()?;
+            with_cached_model(&SWINIR_SR, &m, || crispembed::CrispSwinirSr::new(&m, 0),
+                |engine| engine.process(rgb, w, h, 0, 0))
         }
         _ => {
-            let m = resolve(model.unwrap_or("pan-x4"));
-            let e = PAN_SR
-                .get_or_init(|| crispembed::CrispPanSr::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+            let m = resolve_checked(model.unwrap_or("pan-x4")).ok()?;
+            with_cached_model(&PAN_SR, &m, || crispembed::CrispPanSr::new(&m, 0).ok(),
+                |engine| engine.process(rgb, w, h, 0, 0).ok())
         }
     }
 }
@@ -292,36 +286,28 @@ pub fn restore_page(
     let rgb = image::open(path).ok()?.to_rgb8();
     let (w, h) = (rgb.width(), rgb.height());
     let model = cfg.restore_model.as_deref().filter(|s| !s.is_empty());
-    let out = match cfg.restore_engine.as_str() {
+    let (out, out_width, out_height) = match cfg.restore_engine.as_str() {
         "scunet" => {
-            let m = resolve(model.unwrap_or("scunet-color"));
-            let eng = SCUNET
-                .get_or_init(|| crispembed::CrispScunet::new(m, 0).map(Mutex::new))
-                .as_ref()?;
-            let (o, _ow, _oh) = eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32)?;
-            o
+            let m = resolve_checked(model.unwrap_or("scunet-color")).ok()?;
+            with_cached_model(&SCUNET, &m, || crispembed::CrispScunet::new(m.clone(), 0),
+                |engine| engine.process(rgb.as_raw(), w as i32, h as i32))?
         }
         "instructir" => {
             // InstructIR — all-in-one task-driven restoration (same dims out).
-            let m = resolve(model.unwrap_or("instructir"));
+            let m = resolve_checked(model.unwrap_or("instructir")).ok()?;
             let task = instructir_task_id(&cfg.restore_task);
-            let eng = INSTRUCTIR
-                .get_or_init(|| crispembed::CrispInstructIR::new(&m, 0).map(Mutex::new))
-                .as_ref()?;
-            let (o, _ow, _oh) =
-                eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32, task)?;
-            o
+            with_cached_model(&INSTRUCTIR, &m, || crispembed::CrispInstructIR::new(&m, 0),
+                |engine| engine.process(rgb.as_raw(), w as i32, h as i32, task))?
         }
         _ => {
-            let m = resolve(model.unwrap_or("restormer-denoise"));
-            let eng = RESTORMER
-                .get_or_init(|| crispembed::CrispRestormer::new(&m, 0).ok().map(Mutex::new))
-                .as_ref()?;
-            let guard = eng.lock().ok()?;
-            guard.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok()?
+            let m = resolve_checked(model.unwrap_or("restormer-denoise")).ok()?;
+            let output = with_cached_model(&RESTORMER, &m, || crispembed::CrispRestormer::new(&m, 0).ok(),
+                |engine| engine.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok())?;
+            (output, w as i32, h as i32)
         }
     };
-    save_rgb_temp("ocr_restore_", w, h, out)
+    if out_width <= 0 || out_height <= 0 { return None; }
+    save_rgb_temp("ocr_restore_", out_width as u32, out_height as u32, out)
 }
 
 /// Dewarp (straighten curved/warped text lines) a page before OCR. Grayscale
@@ -630,14 +616,34 @@ pub fn ocr_via_crispembed_custom(
 #[cfg(feature = "crispembed")]
 const NAFNET_MODEL: &str = "nafnet-denoise";
 
-/// Process-global lazy-loaded OCR pipeline orchestrator (cleanup + routing +
-/// accept-gate). Like [`OCR_PIPELINE`], cached behind a `Mutex` (not `Sync`)
-/// so the models stay loaded across documents. The first call's config wins
-/// for the process; changing OCR-pipeline settings takes effect on index
-/// re-init (same lazy-once contract as the embedder/reranker).
+/// Keep one model bundle warm, keyed by the complete requested configuration.
+/// Failed initialization is not cached: fixing a model path or completing a
+/// download must permit a retry without restarting the application.
 #[cfg(feature = "crispembed")]
-static OCR_ORCH: std::sync::OnceLock<Mutex<crispembed::CrispOcrPipeline>> =
+struct CachedOcrPipeline {
+    key: String,
+    pipeline: crispembed::CrispOcrPipeline,
+}
+
+#[cfg(feature = "crispembed")]
+static OCR_ORCH: std::sync::OnceLock<Mutex<Option<CachedOcrPipeline>>> =
     std::sync::OnceLock::new();
+
+#[cfg(feature = "crispembed")]
+fn with_ocr_pipeline<T>(
+    cfg: &super::OcrPipelineConfig,
+    run: impl FnOnce(&mut crispembed::CrispOcrPipeline) -> Result<T>,
+) -> Result<T> {
+    let key = serde_json::to_string(cfg).context("serialize OCR configuration")?;
+    let mut slot = OCR_ORCH.get_or_init(|| Mutex::new(None)).lock()
+        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    if slot.as_ref().map(|p| p.key.as_str()) != Some(key.as_str()) {
+        // Release the previous bundle before loading another large model.
+        *slot = None;
+        *slot = Some(CachedOcrPipeline { key, pipeline: build_pipeline(cfg)? });
+    }
+    run(&mut slot.as_mut().context("OCR pipeline was not initialized")?.pipeline)
+}
 
 /// Run the C++ OCR pipeline orchestrator (source-type routing + per-stage
 /// cleanup + NAFNet denoise + accept-gate escalation) on an image.
@@ -648,14 +654,11 @@ pub fn ocr_via_pipeline(
 ) -> Result<ExtractedDocument> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
-
-    let mut guard = orch
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
-    let res = guard
-        .run(path_str)
-        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+    let (res, detected_lang) = with_ocr_pipeline(cfg, |pipeline| {
+        let result = pipeline.run(path_str)
+            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+        Ok((result, pipeline.detected_lang()))
+    })?;
     if res.mean_confidence > 0.0 {
         println!(
             "[ocr] pipeline: {} regions, mean confidence {:.2}",
@@ -672,7 +675,6 @@ pub fn ocr_via_pipeline(
     // was already present at v0.13.0, so the stub outlived its reason by
     // several releases while silently discarding a language the pipeline had
     // already computed.
-    let detected_lang = guard.detected_lang();
 
     // CrispEmbed v0.16.1 exposes the joined OCR body but not the later
     // markdown/reading-order fields. Keep the body stable and leave heading
@@ -708,13 +710,10 @@ pub fn ocr_regions_via_pipeline(
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<super::ocr_render::OcrRegion>> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
-    let mut guard = orch
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
-    let res = guard
-        .run(path_str)
-        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+    let res = with_ocr_pipeline(cfg, |pipeline| {
+        pipeline.run(path_str)
+            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))
+    })?;
     let regions: Vec<super::ocr_render::OcrRegion> = res
         .regions
         .into_iter()
@@ -731,7 +730,7 @@ pub fn ocr_regions_via_pipeline(
         })
         .collect();
 
-    Ok(regions)
+    Ok(apply_reading_order(regions, &res.reading_order))
 }
 
 /// Reorder regions into the pipeline's reading order.
@@ -753,17 +752,13 @@ pub fn ocr_regions_via_pipeline(
 /// release-only artifact), so gating this would put the ordering logic in the
 /// set of code no job compiles. It needs nothing from CrispEmbed — our own
 /// `OcrRegion` and a slice of indices — so it compiles and is tested everywhere.
-fn apply_reading_order(
-    regions: Vec<super::ocr_render::OcrRegion>,
-    order: &[i32],
-) -> Vec<super::ocr_render::OcrRegion> {
+fn apply_reading_order<T>(regions: Vec<T>, order: &[i32]) -> Vec<T> {
     if order.is_empty() {
         return regions;
     }
     let mut taken = vec![false; regions.len()];
-    let mut out: Vec<super::ocr_render::OcrRegion> = Vec::with_capacity(regions.len());
-    let mut slots: Vec<Option<super::ocr_render::OcrRegion>> =
-        regions.into_iter().map(Some).collect();
+    let mut out: Vec<T> = Vec::with_capacity(regions.len());
+    let mut slots: Vec<Option<T>> = regions.into_iter().map(Some).collect();
 
     for &idx in order {
         let Ok(i) = usize::try_from(idx) else { continue };
@@ -811,10 +806,12 @@ pub struct RegionConf {
 /// else fall back to the detection score (usually ~1.0 and useless for
 /// proofreading). Pure helper, kept ungated so it's unit-testable.
 pub fn effective_confidence(detection: f32, rec: f32, char_conf_len: usize) -> f32 {
-    if char_conf_len > 0 && rec > 0.0 {
+    if char_conf_len > 0 && rec.is_finite() && (0.0..=1.0).contains(&rec) {
         rec
-    } else {
+    } else if detection.is_finite() && (0.0..=1.0).contains(&detection) {
         detection
+    } else {
+        -1.0
     }
 }
 
@@ -826,17 +823,11 @@ pub fn ocr_regions_detailed(
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<RegionConf>> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
-    let mut guard = orch
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
-    let res = guard
-        .run(path_str)
-        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
-    Ok(res
-        .regions
-        .into_iter()
-        .map(|r| {
+    let res = with_ocr_pipeline(cfg, |pipeline| {
+        pipeline.run(path_str)
+            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))
+    })?;
+    let regions = res.regions.into_iter().map(|r| {
             let confidence = effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
             RegionConf {
                 text: r.text,
@@ -847,8 +838,8 @@ pub fn ocr_regions_detailed(
                 confidence,
                 char_conf: r.char_conf,
             }
-        })
-        .collect())
+        }).collect();
+    Ok(apply_reading_order(regions, &res.reading_order))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -857,6 +848,127 @@ pub fn ocr_regions_detailed(
     _cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<RegionConf>> {
     anyhow::bail!("OCR region extraction requires the `crispembed` cargo feature")
+}
+
+/// Review regions distinguish detector scores from recognition evidence. The
+/// native confidence array may contain tokenizer scores; equality with the text
+/// length alone is not proof of character alignment.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrReviewRegion {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub confidence: Option<f32>,
+    pub confidence_basis: String,
+    pub char_conf: Vec<f32>,
+    pub char_conf_unit: String,
+    pub char_conf_aligned: bool,
+    pub kind: String,
+}
+
+#[derive(Debug)]
+pub struct OcrReviewResult {
+    pub image_path: std::path::PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub regions: Vec<OcrReviewRegion>,
+    pub warnings: Vec<String>,
+    pub diagnostics: serde_json::Value,
+}
+
+/// Recognition must see exactly the pixels displayed by the reviewer. Cleanup
+/// and restoration happen explicitly before this call and produce a new asset;
+/// repeating them inside individual engine stages would invalidate the boxes.
+fn review_pipeline_config(cfg: &super::OcrPipelineConfig) -> super::OcrPipelineConfig {
+    let mut config = cfg.clone();
+    config.enabled = true;
+    config.cleanup_enabled = false;
+    config.denoise = false;
+    config.dewarp = false;
+    config.restore = false;
+    config.sr = false;
+    for stage in &mut config.stages {
+        stage.cleanup.enabled = false;
+        stage.cleanup.denoise = false;
+    }
+    config
+}
+
+#[cfg(any(feature = "ocr-review-diagnostics", test))]
+fn parse_review_snapshot(payload: &str) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if value.get("schema").and_then(serde_json::Value::as_str) != Some("crispembed.ocr.review")
+        || value.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return None;
+    }
+    Some(value)
+}
+
+#[cfg(feature = "crispembed")]
+pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Result<OcrReviewResult> {
+    let config = review_pipeline_config(cfg);
+    let path_str = path.to_str().context("image path is not valid UTF-8")?;
+    let (width, height) = image::image_dimensions(path).context("read review image dimensions")?;
+    let (result, language, snapshot) = with_ocr_pipeline(&config, |pipeline| {
+        let result = pipeline.run(path_str).map_err(|e| anyhow::anyhow!("OCR recognition failed: {e}"))?;
+        #[cfg(feature = "ocr-review-diagnostics")]
+        let snapshot = pipeline.review_json().and_then(|s| parse_review_snapshot(&s));
+        #[cfg(not(feature = "ocr-review-diagnostics"))]
+        let snapshot: Option<serde_json::Value> = None;
+        Ok((result, pipeline.detected_lang(), snapshot))
+    })?;
+    if !result.regions.is_empty()
+        && snapshot.as_ref().and_then(|s| s.pointer("/geometry/coordinates_valid_for_input")).and_then(serde_json::Value::as_bool) == Some(false) {
+        anyhow::bail!("The recognition engine changed image coordinates. Apply scan repair explicitly and retry on the prepared page.");
+    }
+    let mut warnings: Vec<String> = snapshot.as_ref().and_then(|s| s.get("warnings")).and_then(serde_json::Value::as_array)
+        .map(|list| list.iter().filter_map(serde_json::Value::as_str).map(String::from).collect()).unwrap_or_default();
+    if snapshot.is_none() {
+        warnings.push("Detailed engine provenance is unavailable or its schema is unsupported in this build. Confidence scores are uncalibrated and character alignment is unverified.".into());
+    }
+    let diagnostics = serde_json::json!({
+        "coordinate_space": "prepared_image_pixels", "internal_cleanup": false,
+        "language": language, "reading_order": result.reading_order,
+        "full_text": result.full_text, "markdown": result.markdown,
+        "native_review": snapshot,
+    });
+    let snapshot_regions = snapshot.as_ref().and_then(|s| s.get("regions")).and_then(serde_json::Value::as_array);
+    let regions = result.regions.into_iter().enumerate().map(|(index, region)| {
+        let native = snapshot_regions.and_then(|regions| regions.get(index));
+        let score = effective_confidence(region.confidence, region.rec_confidence, region.char_conf.len());
+        let (confidence, basis) = if let Some(native) = native {
+            let confidence = native.get("confidence").and_then(serde_json::Value::as_f64)
+                .filter(|v| v.is_finite() && (0.0..=1.0).contains(v)).map(|v| v as f32);
+            let basis = match native.get("confidence_source").and_then(serde_json::Value::as_str) {
+                Some("recognizer") => "recognition", Some("detector") => "detection", _ => "unknown",
+            };
+            (confidence, basis)
+        } else {
+            // Older native versions do not distinguish real scores from engine
+            // placeholders. Retain numerical evidence for diagnostics, but the
+            // review queue treats its source as unverified.
+            (if score >= 0.0 { Some(score) } else { None }, "unknown")
+        };
+        let token_scores = native.and_then(|s| s.get("sequence_unit")).and_then(serde_json::Value::as_str) == Some("engine_token");
+        OcrReviewRegion {
+            text: region.text, x: region.x, y: region.y, w: region.w, h: region.h,
+            confidence, confidence_basis: basis.into(),
+            char_conf: region.char_conf.into_iter().filter(|v| v.is_finite() && (0.0..=1.0).contains(v)).collect(),
+            char_conf_unit: if token_scores { "token" } else { "unknown" }.into(), char_conf_aligned: false, kind: "text".into(),
+        }
+    }).collect();
+    Ok(OcrReviewResult {
+        image_path: path.to_path_buf(), width, height,
+        regions: apply_reading_order(regions, &result.reading_order),
+        warnings, diagnostics,
+    })
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn ocr_regions_for_review(_path: &Path, _cfg: &super::OcrPipelineConfig) -> Result<OcrReviewResult> {
+    anyhow::bail!("OCR review requires a build with the crispembed feature")
 }
 
 /// Map a VLM escalation engine name to the C `vlm_engine` id used by
@@ -879,7 +991,7 @@ fn vlm_default_model(engine: &str) -> &'static str {
     match engine {
         "glm" => "glm-ocr",
         "got" => "got-ocr2",
-        "internvl2" => "internvl2-ocr",
+        "internvl2" => "internvl2-2b",
         "deepseek_ocr2" => "deepseek-ocr2",
         "pix2struct" => "pix2struct-base",
         "granite_vision" => "granite-vision",
@@ -888,7 +1000,7 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "unlimited_ocr" => "unlimited-ocr",
         "unlimited_ocr2" => "unlimited-ocr2", // experimental: CRISPEMBED_UNLIMITED_OCR2=1
         "minicpm_ocr" => "minicpm-ocr",       // experimental: CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1
-        _ => "qwen2vl-ocr",
+        _ => "qwen2vl-3b",
     }
 }
 
@@ -898,40 +1010,56 @@ fn resolve(name: &str) -> String {
     crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
+/// Interactive OCR must report missing models instead of treating the native
+/// engine's empty fallback as a successfully recognized blank page.
+#[cfg(feature = "crispembed")]
+fn resolve_checked(name: &str) -> Result<String> {
+    anyhow::ensure!(!name.contains('\0'), "OCR model path contains a null character");
+    let resolved = if Path::new(name).is_file() {
+        name.to_string()
+    } else {
+        crispembed::CrispEmbed::resolve_model(name, Some(true))
+            .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}"))?
+    };
+    let mut file = std::fs::File::open(&resolved)
+        .with_context(|| format!("OCR model '{name}' is unavailable at {resolved}"))?;
+    let mut magic = [0u8; 4];
+    std::io::Read::read_exact(&mut file, &mut magic)
+        .with_context(|| format!("OCR model '{name}' is incomplete"))?;
+    anyhow::ensure!(&magic == b"GGUF", "OCR model '{name}' is not a GGUF model");
+    Ok(resolved)
+}
+
 /// Build the orchestrator: the explicit per-stage builder when `cfg.stages` is
 /// non-empty (full tweakability), else the flat simple-mode pipeline.
 #[cfg(feature = "crispembed")]
-fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipeline {
+fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcrPipeline> {
     use super::{engine_id, source_type_id};
     // Optional post-OCR punctuation/spacing restorer (resolved once).
     let punct: Option<String> = cfg
         .punct_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(resolve);
+        .map(resolve_checked).transpose()?;
     // Optional post-OCR truecaser + text-LID models (registry names → paths).
     let truecase: Option<String> = cfg
         .truecase_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(resolve);
+        .map(resolve_checked).transpose()?;
     let lid: Option<String> = cfg
         .lid_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(resolve);
+        .map(resolve_checked).transpose()?;
     // Tesseract LID-auto-select dir is a filesystem path, not a registry model.
     let tess_dir: Option<&str> = cfg.tess_model_dir.as_deref().filter(|s| !s.is_empty());
     if cfg.stages.is_empty() {
         // Simple mode (slice-A flat config).
-        let det = resolve(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL));
-        let rec = resolve(cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL));
+        let det = resolve_checked(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?;
+        let rec = resolve_checked(cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL))?;
         let nafnet = if cfg.denoise {
-            crispembed::CrispEmbed::resolve_model(
-                cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
-                Some(true),
-            )
-            .ok()
+            Some(resolve_checked(cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL))?)
         } else {
             None
         };
@@ -941,7 +1069,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             .vlm_ocr_model
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(resolve);
+            .map(resolve_checked).transpose()?;
         return crispembed::CrispOcrPipeline::new(
             &det,
             &rec,
@@ -958,19 +1086,17 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             tess_dir,
             0,
         )
-        .expect("CrispEmbed OCR pipeline init failed");
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline initialization failed: {e}"));
     }
 
     // Advanced mode: explicit per-stage chains.
-    let nafnet = crispembed::CrispEmbed::resolve_model(
-        cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
-        Some(true),
-    )
-    .ok();
+    let nafnet = if cfg.stages.iter().any(|s| s.cleanup.enabled && s.cleanup.denoise) {
+        Some(resolve_checked(cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL))?)
+    } else { None };
     let specs: Vec<crispembed::OcrStageSpec> = cfg
         .stages
         .iter()
-        .map(|s| {
+        .map(|s| -> Result<crispembed::OcrStageSpec> {
             let eid = engine_id(&s.engine);
             // dbnet_trocr(0) / surya(1) / tesseract(6) / parseq(7) need det+rec;
             // VLMs use a single model. Tesseract recogniser defaults to a
@@ -982,17 +1108,17 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                     _ => DEFAULT_REC_MODEL,
                 };
                 (
-                    resolve(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL)),
-                    resolve(s.rec_model.as_deref().unwrap_or(rec_default)),
+                    resolve_checked(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?,
+                    resolve_checked(s.rec_model.as_deref().unwrap_or(rec_default))?,
                 )
             } else {
                 let m = s
                     .det_model
                     .clone()
                     .unwrap_or_else(|| vlm_default_model(&s.engine).to_string());
-                (resolve(&m), String::new())
+                (resolve_checked(&m)?, String::new())
             };
-            crispembed::OcrStageSpec {
+            Ok(crispembed::OcrStageSpec {
                 source_type: source_type_id(&s.source_type),
                 engine: eid,
                 model_a,
@@ -1024,9 +1150,9 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                 vlm_prompt: s.vlm_prompt.clone(),
                 min_chars: s.min_chars,
                 min_confidence: s.min_confidence,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     // sr_model = None for now (text-SR pre-processor is wired in P20 #2).
     crispembed::CrispOcrPipeline::from_stages(
         cfg.router,
@@ -1039,7 +1165,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
         &specs,
         0,
     )
-    .expect("CrispEmbed OCR per-stage pipeline init failed")
+    .map_err(|e| anyhow::anyhow!("CrispEmbed OCR per-stage pipeline initialization failed: {e}"))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -1058,6 +1184,26 @@ pub fn ocr_via_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_diagnostics_accept_only_the_versioned_contract() {
+        assert!(parse_review_snapshot(r#"{"schema":"crispembed.ocr.review","schema_version":1}"#).is_some());
+        assert!(parse_review_snapshot(r#"{"schema":"crispembed.ocr.review","schema_version":2}"#).is_none());
+        assert!(parse_review_snapshot(r#"{"schema":"unknown","schema_version":1}"#).is_none());
+        assert!(parse_review_snapshot(r#"{"geometry":{}}"#).is_none());
+        assert!(parse_review_snapshot("{interrupted").is_none());
+    }
+
+    #[test]
+    fn model_cache_reuses_only_matching_models_and_retries_failed_loads() {
+        let cache: ModelCache<u32> = std::sync::OnceLock::new();
+        assert_eq!(with_cached_model(&cache, "first", || None, |model| Some(*model)), None);
+        assert_eq!(with_cached_model(&cache, "first", || Some(7), |model| Some(*model)), Some(7));
+        assert_eq!(with_cached_model(&cache, "first", || panic!("same model should stay loaded"), |model| Some(*model)), Some(7));
+        assert_eq!(with_cached_model(&cache, "second", || Some(11), |model| Some(*model)), Some(11));
+        assert_eq!(with_cached_model(&cache, "third", || None, |model| Some(*model)), None);
+        assert_eq!(with_cached_model(&cache, "third", || Some(13), |model| Some(*model)), Some(13));
+    }
 
     fn region(text: &str) -> super::super::ocr_render::OcrRegion {
         super::super::ocr_render::OcrRegion {
@@ -1355,8 +1501,26 @@ mod tests {
         assert_eq!(super::effective_confidence(0.99, 0.42, 5), 0.42);
         // no char_conf → fall back to detection score.
         assert_eq!(super::effective_confidence(0.99, 0.42, 0), 0.99);
-        // char_conf present but rec is 0 (engine reported none) → detection.
-        assert_eq!(super::effective_confidence(0.88, 0.0, 3), 0.88);
+        // A real zero must not turn into a confident detector score.
+        assert_eq!(super::effective_confidence(0.88, 0.0, 3), 0.0);
+        assert_eq!(super::effective_confidence(f32::NAN, f32::NAN, 0), -1.0);
+        assert_eq!(super::effective_confidence(0.75, f32::INFINITY, 2), 0.75);
+    }
+
+    #[test]
+    fn review_recognition_preserves_the_prepared_coordinate_space() {
+        let mut cfg = super::super::OcrPipelineConfig {
+            cleanup_enabled: true, denoise: true, dewarp: true, restore: true, sr: true,
+            ..Default::default()
+        };
+        cfg.stages.push(serde_json::from_value(serde_json::json!({
+            "engine":"tesseract","cleanup":{"enabled":true,"denoise":true}
+        })).unwrap());
+        let review = super::review_pipeline_config(&cfg);
+        assert!(!review.cleanup_enabled && !review.denoise && !review.dewarp && !review.restore && !review.sr);
+        assert!(!review.stages[0].cleanup.enabled && !review.stages[0].cleanup.denoise);
+        assert_eq!(review.stages[0].engine, "tesseract");
+        assert!(cfg.cleanup_enabled && cfg.stages[0].cleanup.enabled, "caller profile must remain intact");
     }
 
     #[test]
@@ -1423,7 +1587,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let mut pipe = super::build_pipeline(&cfg);
+        let mut pipe = super::build_pipeline(&cfg).expect("pipeline should initialize");
         let res = pipe.run(p.to_str().unwrap()).expect("pipeline run");
         res.regions
             .into_iter()

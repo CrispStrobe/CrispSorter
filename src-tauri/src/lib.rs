@@ -23,6 +23,8 @@ pub mod kindle_clippings;
 pub mod kindle_import;
 pub mod kindle_match;
 pub mod migrations;
+pub mod ocr_workspace;
+mod ocr_reading_order;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;
@@ -3512,6 +3514,17 @@ pub fn run() {
             index::tauri_commands::template_apply,
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
+            ocr_workspace::ocr_workspace_capabilities,
+            ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_transform,
+            ocr_workspace::ocr_workspace_prepare,
+            ocr_workspace::ocr_workspace_recognize,
+            ocr_workspace::ocr_workspace_save,
+            ocr_workspace::ocr_workspace_load,
+            ocr_workspace::ocr_workspace_list,
+            ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_write_text,
+            ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,
@@ -3934,6 +3947,17 @@ pub fn run() {
             index::tauri_commands::template_apply,
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
+            ocr_workspace::ocr_workspace_capabilities,
+            ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_transform,
+            ocr_workspace::ocr_workspace_prepare,
+            ocr_workspace::ocr_workspace_recognize,
+            ocr_workspace::ocr_workspace_save,
+            ocr_workspace::ocr_workspace_load,
+            ocr_workspace::ocr_workspace_list,
+            ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_write_text,
+            ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,

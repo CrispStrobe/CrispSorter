@@ -27,7 +27,7 @@ describe('tab registry', () => {
 		expect(ids).toEqual(expect.arrayContaining(['batch', 'drives', 'chat', 'catalog', 'pdf']));
 		// Exactly the tabs carrying `requires` are the ones that drop out.
 		const gated = CORE_TABS.filter((t) => t.requires?.length).map((t) => t.id);
-		expect(gated.sort()).toEqual(['aitoolkit', 'ocr']);
+		expect(gated.sort()).toEqual(['aitoolkit']);
 		for (const id of gated) expect(ids).not.toContain(id);
 	});
 
@@ -67,20 +67,15 @@ describe('tab registry', () => {
 		expect(ids).not.toContain('history');
 	});
 
-	// PLAN P36.5. The iOS release job passes no `--features`, so no OCR
-	// tier is compiled in — and the tab used to render anyway, opening onto
-	// nothing. App Review Guideline 2.1 (App Completeness) is the most
-	// common rejection there is.
-	it('the OCR tab is hidden when no OCR tier was compiled in', () => {
-		expect(visibleTabs(CORE_TABS, new Set()).map((t) => t.id)).not.toContain('ocr');
+	// Saved projects, corrections and text export remain useful without a native
+	// recognizer. The workspace itself disables unavailable engine actions.
+	it('OCR project recovery is accessible without a compiled recognition tier', () => {
+		expect(visibleTabs(CORE_TABS, new Set()).map((t) => t.id)).toContain('ocr');
 		expect(visibleTabs(CORE_TABS, new Set(['build:ocr'])).map((t) => t.id)).toContain('ocr');
 	});
 
-	// The mobile bar has to obey the same gate. Filtering `MOBILE_TABS`
-	// directly — which is what the bottom nav used to do — would put the
-	// dead tab back on precisely the platform it was dead on.
-	it('the mobile bar applies the same build gate as the desktop nav', () => {
-		expect(visibleTabs(MOBILE_TABS, new Set()).map((t) => t.id)).not.toContain('ocr');
+	it('mobile and desktop both expose OCR project recovery', () => {
+		expect(visibleTabs(MOBILE_TABS, new Set()).map((t) => t.id)).toContain('ocr');
 		expect(visibleTabs(MOBILE_TABS, new Set(['build:ocr'])).map((t) => t.id)).toContain('ocr');
 	});
 
@@ -90,6 +85,7 @@ describe('tab registry', () => {
 		const buildOnly = new Set(['build:ocr']);
 		expect(visibleTabs(AITOOLKIT_TABS, buildOnly).length).toBe(0);
 		const serviceOnly = new Set(['service:ocr']);
-		expect(visibleTabs(CORE_TABS, serviceOnly).map((t) => t.id)).not.toContain('ocr');
+		expect(visibleTabs(AITOOLKIT_TABS, serviceOnly)).toHaveLength(0);
+		expect(visibleTabs(CORE_TABS, serviceOnly).map((t) => t.id)).not.toContain('aitoolkit');
 	});
 });

@@ -29,6 +29,13 @@
     import { getBackendStatus, type BackendStatus } from '$lib/secretBackend';
 
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
+    let ocrInitialized = $state(false);
+
+    // Preserve the queue, review history, and autosave revision across tab changes.
+    // Opening another tab must not start a second workspace for the same project.
+    $effect(() => {
+        if (activeTab === 'ocr') ocrInitialized = true;
+    });
 
     /**
      * Set when the credential store has refused to hand over a secret, or
@@ -558,8 +565,6 @@
                 <IndexIngest />
             {:else if activeTab === 'translate'}
                 <Translate />
-            {:else if activeTab === 'ocr'}
-                <OcrWorkbench />
             {:else if activeTab === 'pdf'}
                 <PdfWorkspace />
             <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that
@@ -573,6 +578,11 @@
                 <AIToolkitView />
             {:else if activeTab.startsWith('ai:') && $caps.aitoolkit}
                 <AIToolkitCapability capability={activeTab.slice(3)} />
+            {/if}
+            {#if ocrInitialized || activeTab === 'ocr'}
+                <div class="persistent-ocr" hidden={activeTab !== 'ocr'} inert={activeTab !== 'ocr'}>
+                    <OcrWorkbench active={activeTab === 'ocr'} />
+                </div>
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />
@@ -768,6 +778,14 @@
         inset: 0;
         z-index: 5;
     }
+
+    .persistent-ocr {
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .persistent-ocr[hidden] { display: none; }
 
     .nav-separator { height: 1px; background: #27272a; margin: 8px 16px; }
     .batch-stats { padding: 8px 16px; margin-bottom: 8px; border-top: 1px solid #27272a; }
