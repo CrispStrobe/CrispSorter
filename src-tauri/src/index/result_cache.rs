@@ -162,9 +162,26 @@ pub fn hash_filters(filters: &super::schema::SearchFilters) -> u64 {
     h.finish()
 }
 
+/// Result count is part of a request: a cached top-5 cannot answer top-50.
+pub fn hash_request(filters: &super::schema::SearchFilters, limit: usize) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    hash_filters(filters).hash(&mut h);
+    limit.hash(&mut h);
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinct_result_limits_do_not_share_cached_answers() {
+        let filters = super::super::schema::SearchFilters::default();
+        let mut cache = ResultCache::new_pinned(4);
+        cache.put("same query", "hybrid", hash_request(&filters, 5), vec![]);
+        assert!(cache.get("same query", "hybrid", hash_request(&filters, 50)).is_none());
+        assert!(cache.get("same query", "hybrid", hash_request(&filters, 5)).is_some());
+    }
 
     #[test]
     fn cache_hit_and_miss() {

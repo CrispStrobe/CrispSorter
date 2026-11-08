@@ -25,9 +25,11 @@
     let {
         locationUri = '',
         filename = '',
+        initialPage = undefined,
     }: {
         locationUri: string;
         filename?: string;
+        initialPage?: number;
     } = $props();
 
     let path = $derived(uriToPath(locationUri));
@@ -44,7 +46,7 @@
     {#if !path}
         <FallbackViewer path="" filename={filename} />
     {:else if kind === 'pdf'}
-        <PdfViewer {path} />
+        <PdfViewer {path} {initialPage} />
     {:else if kind === 'image'}
         <ImageViewer {path} />
     {:else if kind === 'docx'}

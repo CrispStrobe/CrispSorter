@@ -1,7 +1,7 @@
 //! P17.2 — CrispEmbed GGUF OCR (Tier 4).
 //!
-//! Wraps `crispembed::OcrPipeline` (DBNet text detection + TrOCR/Surya/
-//! Qwen2.5-VL recognition) as the highest-priority OCR tier.  All models
+//! Wraps `crispembed::OcrPipeline` (DBNet text detection + TrOCR line
+//! recognition) as the highest-priority OCR tier.  All models
 //! are GGUF — no ORT or Tesseract dependency.
 //!
 //! The pipeline auto-downloads models from HuggingFace on first use via
@@ -30,7 +30,7 @@ const DEFAULT_REC_MODEL: &str = "trocr-printed";
 /// is not `Sync` so we wrap it in a `Mutex`.  This trades concurrency for
 /// zero-overhead repeated calls (model stays loaded across documents).
 #[cfg(feature = "crispembed")]
-static OCR_PIPELINE: std::sync::OnceLock<Mutex<crispembed::OcrPipeline>> =
+static OCR_PIPELINE: std::sync::OnceLock<Mutex<Option<super::context_cache::CachedContext<crispembed::OcrPipeline>>>> =
     std::sync::OnceLock::new();
 
 /// Check if CrispEmbed OCR is available at runtime.
@@ -474,19 +474,13 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let pipeline = OCR_PIPELINE.get_or_init(|| {
-        let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_DET_MODEL.to_string());
-        let rec = crispembed::CrispEmbed::resolve_model(DEFAULT_REC_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_REC_MODEL.to_string());
-        let p = crispembed::OcrPipeline::new(&det, &rec, 0)
-            .expect("CrispEmbed OCR pipeline init failed");
-        Mutex::new(p)
-    });
-
-    let mut guard = pipeline
-        .lock()
-        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let key = format!("{DEFAULT_DET_MODEL}:{DEFAULT_REC_MODEL}");
+    let mut cache = super::context_cache::acquire(&OCR_PIPELINE, key, || {
+        let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))?;
+        let rec = crispembed::CrispEmbed::resolve_model(DEFAULT_REC_MODEL, Some(true))?;
+        crispembed::OcrPipeline::new(&det, &rec, 0)
+    }).map_err(|e| anyhow::anyhow!("CrispEmbed OCR initialization failed: {e}"))?;
+    let guard = &mut cache.as_mut().unwrap().context;
 
     let results = guard.run(path_str);
 
@@ -790,7 +784,7 @@ pub fn ocr_regions_via_pipeline(
 /// A region plus per-character confidence, for the OCR workbench. `confidence`
 /// is the **recognition** confidence (mean per-char softmax) when the engine
 /// exposes it (the signal that flags OCR errors), else the detection score.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RegionConf {
     pub text: String,
     pub x: f32,
@@ -799,6 +793,21 @@ pub struct RegionConf {
     pub h: f32,
     pub confidence: f32,
     pub char_conf: Vec<f32>,
+}
+
+/// Release any cached model and reserve the OCR pipeline while an isolated
+/// low-memory worker is running. Environment changes stay in the child process.
+#[cfg(feature = "crispembed")]
+pub fn with_released_pipeline<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let mut guard = OCR_ORCH.get_or_init(|| Mutex::new(None)).lock()
+        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    drop(guard.take());
+    work()
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn with_released_pipeline<T>(_work: impl FnOnce() -> Result<T>) -> Result<T> {
+    anyhow::bail!("CrispEmbed OCR is unavailable in this build")
 }
 
 /// Pick the confidence to surface for a region: prefer **recognition**
@@ -1007,6 +1016,12 @@ fn vlm_default_model(engine: &str) -> &'static str {
 /// Resolve a model registry name to a cached/downloaded GGUF path (best-effort).
 #[cfg(feature = "crispembed")]
 fn resolve(name: &str) -> String {
+    // Migrate the historical UI alias, which is absent from v0.17.12.
+    let name = match name {
+        "qwen2vl-ocr" => "qwen2vl-3b",
+        "internvl2-ocr" => "internvl2-2b",
+        _ => name,
+    };
     crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
@@ -1306,7 +1321,7 @@ mod tests {
         let img = image::RgbImage::new(200, 200);
         img.save(&img_path).unwrap();
         // Use the default models explicitly.
-        let result = ocr_via_crispembed_custom(&img_path, "surya-det", "qwen2vl-ocr");
+        let result = ocr_via_crispembed_custom(&img_path, DEFAULT_DET_MODEL, DEFAULT_REC_MODEL);
         let doc = result.expect("custom pipeline should not crash");
         println!("OCR text length: {}", doc.full_text.len());
     }
@@ -1341,6 +1356,50 @@ mod tests {
         let doc = ocr_via_pipeline(&img_path, &cfg)
             .expect("orchestrator pipeline should run end-to-end without crashing");
         println!("pipeline full_text len: {}", doc.full_text.len());
+    }
+
+    /// Actual released-model inference through the application's production
+    /// workbench path. Kept separate from model-free regressions because it
+    /// downloads weights and exercises four model configurations on a CPU.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore = "downloads OCR weights; run on an admitted inference worker"]
+    fn ocr_task_presets_live() {
+        let image = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
+        let reference: serde_json::Value = serde_json::from_slice(&std::fs::read(image.with_extension("json")).unwrap()).unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap())), reference["sha256"].as_str().unwrap());
+        let mut models = Vec::new();
+        for name in ["dbnet-det", "trocr-printed", "qwen2vl-3b"] {
+            use std::io::Read;
+            let path = crispembed::CrispEmbed::resolve_model(name, Some(true)).expect("released OCR model must resolve");
+            let mut file = std::fs::File::open(&path).unwrap();
+            let bytes = file.metadata().unwrap().len();
+            let mut digest = Sha256::new();
+            let mut block = [0u8; 65536];
+            loop {
+                let count = file.read(&mut block).unwrap();
+                if count == 0 { break; }
+                digest.update(&block[..count]);
+            }
+            models.push(serde_json::json!({"registry_name":name,"bytes":bytes,"sha256":format!("{:x}",digest.finalize())}));
+        }
+        let mut cases = Vec::new();
+        for preset in ["quick", "multilingual", "tables", "difficult"] {
+            let config = super::super::ocr_presets::apply(&Default::default(), preset).unwrap();
+            let started = std::time::Instant::now();
+            let regions = ocr_regions_detailed(&image, &config).expect("released OCR task should run through the app binding");
+            let text = regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+            let normalized = text.to_lowercase();
+            let matched = ["cobalt", "warranty", "2031"].iter().all(|word| normalized.contains(word));
+            cases.push(serde_json::json!({"preset":preset,"text":text,"matched":matched,"elapsed_seconds":started.elapsed().as_secs_f64(),"config":config}));
+        }
+        let receipt = serde_json::json!({"scope":"Synthetic native app wiring smoke, not a corpus accuracy claim; timings exclude initial downloads", "models":models,"cases":cases});
+        println!("{receipt}");
+        if let Ok(path) = std::env::var("CRISPSORTER_OCR_RECEIPT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        }
+        assert!(cases.iter().all(|case| case["matched"] == true), "OCR task failed to retain the known fixture evidence: {receipt}");
     }
 
     /// Live E2E for the per-stage builder (`from_stages`) with a Tesseract

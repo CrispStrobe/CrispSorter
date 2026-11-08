@@ -67,13 +67,13 @@ ar x "$DEB_ABS"
 # probe for both. control + debian-binary stay verbatim.
 if [[ -f data.tar.xz ]]; then
   DATA_EXT=xz
-  tar xJf data.tar.xz
+  tar xJpf data.tar.xz
 elif [[ -f data.tar.gz ]]; then
   DATA_EXT=gz
-  tar xzf data.tar.gz
+  tar xzpf data.tar.gz
 elif [[ -f data.tar.zst ]]; then
   DATA_EXT=zst
-  zstd -d -c data.tar.zst | tar xf -
+  zstd -d -c data.tar.zst | tar xpf -
 else
   echo "[bundle-linux] no data.tar.{xz,gz,zst} in $DEB" >&2
   ls -la
@@ -91,6 +91,7 @@ echo "[bundle-linux] binary: $BIN"
 # ── Stage CrispASR + CrispEmbed libs into usr/lib/CrispSorter/native/ ──
 NATIVE="usr/lib/CrispSorter/native"
 mkdir -p "$NATIVE"
+chmod 755 usr/lib usr/lib/CrispSorter "$NATIVE"
 
 stage_libs() {
   local label="$1" dir="$2"
@@ -101,9 +102,12 @@ stage_libs() {
   local count=0
   while IFS= read -r f; do
     cp -L "$f" "$NATIVE/"
-    chmod u+w "$NATIVE/$(basename "$f")"
+    chmod 755 "$NATIVE/$(basename "$f")"
     count=$((count + 1))
-  done < <(find "$dir" -maxdepth 5 \( -name "lib*.so" -o -name "lib*.so.*" \) -type f 2>/dev/null)
+  # Include SONAME symlinks (.so.0/.so.1), materialized by cp -L. Copying
+  # only versioned regular files passes on a build host with global ggml
+  # installed but leaves a clean user's loader unable to resolve them.
+  done < <(find "$dir" -maxdepth 5 \( -name "lib*.so" -o -name "lib*.so.*" \) \( -type f -o -type l \) 2>/dev/null)
   echo "  [$label] staged $count libs from $dir"
 }
 stage_libs "crispasr"   "$CRISPASR_BUILD_DIR"
@@ -131,14 +135,19 @@ echo "[bundle-linux] new RUNPATH on $BIN: $(patchelf --print-rpath "$BIN")"
 
 # ── Repack data.tar.<ext> ───────────────────────────────────────────────
 case "$DATA_EXT" in
-  xz)  tar cJf data.tar.xz  usr ;;
-  gz)  tar czf data.tar.gz  usr ;;
-  zst) tar cf - usr | zstd -o data.tar.zst ;;
+  xz)  tar --owner=0 --group=0 --numeric-owner -cJf data.tar.xz usr ;;
+  gz)  tar --owner=0 --group=0 --numeric-owner -czf data.tar.gz usr ;;
+  zst) tar --owner=0 --group=0 --numeric-owner -cf - usr | zstd -f -o data.tar.zst ;;
 esac
 
 # ── Re-create the .deb ──────────────────────────────────────────────────
 # Order matters: debian-binary, then control.tar.gz, then data.tar.*
-ar rcs "${DEB_ABS}.tmp" debian-binary control.tar.gz "data.tar.${DATA_EXT}"
+CONTROL_ARCHIVE=""
+for candidate in control.tar.gz control.tar.xz control.tar.zst; do
+  if [[ -f "$candidate" ]]; then CONTROL_ARCHIVE="$candidate"; break; fi
+done
+[[ -n "$CONTROL_ARCHIVE" ]] || { echo "[bundle-linux] missing control archive" >&2; exit 3; }
+ar rcs "${DEB_ABS}.tmp" debian-binary "$CONTROL_ARCHIVE" "data.tar.${DATA_EXT}"
 mv "${DEB_ABS}.tmp" "$DEB_ABS"
 
 echo "[bundle-linux] repacked: $DEB_ABS"

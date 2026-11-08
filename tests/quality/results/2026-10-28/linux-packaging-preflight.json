@@ -1,0 +1,21 @@
+{
+  "scope": "Released CrispEmbed CLI used only as a library-loader probe; not a CrispSorter app binary",
+  "before": {
+    "exit_code": 127,
+    "loader_cache_disabled": true,
+    "message": "libggml.so.0: cannot open shared object file: No such file or directory"
+  },
+  "after": {
+    "exit_code": 0,
+    "loader_cache_disabled": true,
+    "deb_sha256": "4cdb8f5b679c11bef2a4f2f59e1307c3b823970dbb7463a14680086148521d0c",
+    "payload_uid": 0,
+    "payload_gid": 0
+  },
+  "joint_crispasr_crispembed_loader": {
+    "exit_code": 0,
+    "message": "both released wrappers resolve"
+  },
+  "regression_command": "python scripts/test_linux_bundle.py",
+  "regression_result": "passed for gzip and xz controls"
+}

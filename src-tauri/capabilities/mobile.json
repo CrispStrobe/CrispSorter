@@ -11,6 +11,7 @@
     "dialog:default",
     "dialog:allow-ask",
     "dialog:allow-confirm",
+    "mobile-provider:default",
     "store:default",
     "fs:default",
     "fs:read-all",

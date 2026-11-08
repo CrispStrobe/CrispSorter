@@ -45,6 +45,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = $PSScriptRoot
 if (-not $ProjectRoot) { $ProjectRoot = Get-Location }
+$RuntimeLock = Get-Content (Join-Path $ProjectRoot 'scripts/crispembed-runtime-lock.json') -Raw | ConvertFrom-Json
+$RuntimeTag = 'v' + $RuntimeLock.version
 
 # 1. Pick a default backend per OS if not specified.
 if (-not $Backend) {
@@ -66,7 +68,7 @@ if (-not $SiblingRoot -or -not (Test-Path (Join-Path $SiblingRoot 'crispembed\Ca
     Write-Host "Cloning into $clonePath\CrispEmbed ..." -ForegroundColor Yellow
     Push-Location $clonePath
     try {
-        & git clone https://github.com/CrispStrobe/CrispEmbed.git
+        & git clone --branch $RuntimeTag --single-branch https://github.com/CrispStrobe/CrispEmbed.git
         if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
     } finally {
         Pop-Location
@@ -108,7 +110,7 @@ if ($LibDir) {
                  elseif ($IsLinux) { 'crispembed-linux-x86_64.tar.gz' }
                  else { 'crispembed-windows-x86_64.zip' }
 
-    Write-Host "Downloading $AssetName from CrispEmbed latest release ..." -ForegroundColor Yellow
+    Write-Host "Downloading $AssetName from CrispEmbed $RuntimeTag ..." -ForegroundColor Yellow
 
     # Find gh.exe (release.ps1 has the same fallback list -- keep these in sync).
     $GH_EXE = 'gh'
@@ -124,7 +126,7 @@ if ($LibDir) {
 
     Push-Location $SiblingRoot
     try {
-        & $GH_EXE release download --pattern $AssetName --dir $PrebuiltDir --clobber
+        & $GH_EXE release download $RuntimeTag --pattern $AssetName --dir $PrebuiltDir --clobber
         if ($LASTEXITCODE -ne 0) {
             throw "Could not download $AssetName from CrispEmbed releases. Make sure 'gh auth login' has been run."
         }
@@ -133,6 +135,8 @@ if ($LibDir) {
     }
 
     $ArchivePath = Join-Path $PrebuiltDir $AssetName
+    & python (Join-Path $ProjectRoot 'scripts/verify_crispembed_bundle.py') $ArchivePath --asset $AssetName --source $SiblingRoot
+    if ($LASTEXITCODE -ne 0) { throw 'CrispEmbed runtime verification failed' }
     Write-Host "Extracting $AssetName ..." -ForegroundColor Yellow
     if ($AssetName.EndsWith('.zip')) {
         Expand-Archive -Path $ArchivePath -DestinationPath $PrebuiltDir -Force

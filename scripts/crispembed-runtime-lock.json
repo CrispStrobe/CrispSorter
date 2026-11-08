@@ -1,0 +1,36 @@
+{
+  "version": "0.17.12",
+  "source_commit": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+  "ggml_commit": "890278a8342c620197c90e702e1188bcab94f510",
+  "release_url": "https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.12",
+  "assets": {
+    "crispembed-android-arm64-v8a.tar.gz": {
+      "sha256": "a02ecbfc37906ba04bc6867dc7c7af753315ae0ad96d07ed62e102815ad21555",
+      "bytes": 18323125
+    },
+    "crispembed-android-armeabi-v7a.tar.gz": {
+      "sha256": "fa233e95b8631dac5fe9f5d93f9ff18cf4feeaa4d6e70d888147ec36ee916c02",
+      "bytes": 17164555
+    },
+    "crispembed-ios-arm64.tar.gz": {
+      "sha256": "a54fac7c4cf7042f8c81cf239d5c79a1845e115ac43608fa7a45cb303f5c07b8",
+      "bytes": 3597973
+    },
+    "crispembed-linux-arm64.tar.gz": {
+      "sha256": "38cbaaa020cd17d4cd4f0b78003c79fba7a1051628b06b8e39734c39f15032bb",
+      "bytes": 10085209
+    },
+    "crispembed-linux-x86_64.tar.gz": {
+      "sha256": "1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63",
+      "bytes": 11769149
+    },
+    "crispembed-macos-arm64.tar.gz": {
+      "sha256": "6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56",
+      "bytes": 8902248
+    },
+    "crispembed-windows-x86_64.zip": {
+      "sha256": "49a1e4a89bf6f7d2df100794914f15aeb9a2b69513c3dbfb93364208994cc717",
+      "bytes": 7933796
+    }
+  }
+}

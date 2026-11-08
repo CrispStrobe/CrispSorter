@@ -1,0 +1,374 @@
+{
+  "schema": "crispsorter-library-model-evaluation-v1",
+  "completed": true,
+  "default_promotion": false,
+  "app_source": "933317ab46d5eb0849645f73c5b9643e5f3ab329",
+  "model_scope": "systemone",
+  "corpus_sha256": "d76037dad154f8df7d0d08bf428cdf4f6009f1dbd2e207361bc2853fae048733",
+  "vendor_source": "9651c55a7561a08391db8dbaa24a3b75cfc53b99",
+  "ggml_source": "a06fc0bb46b73cc10011fc90ae4054aee8438aeb",
+  "runtime_binary_sha256": "fb97fd8131b3c074b222128d6c0d10b8af5108d0920db745bbf15e58c088f5ab",
+  "moedern": {},
+  "systemone": {
+    "accuracy": 0.75,
+    "cases": [
+      {
+        "document": "invoice-acme",
+        "expected": "Invoice",
+        "actual": "Invoice",
+        "correct": true,
+        "model_score": 1.0,
+        "elapsed_seconds": 29.713608138999916,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c00",
+              "confidence": 1.0,
+              "probabilities": {
+                "c00": 1.0,
+                "c01": 0.0,
+                "c02": 0.0,
+                "c03": 0.0,
+                "c04": 0.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 275,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "invoice-muenchen",
+        "expected": "Invoice",
+        "actual": "Invoice",
+        "correct": true,
+        "model_score": 0.9991,
+        "elapsed_seconds": 28.334884441999975,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c00",
+              "confidence": 0.9991,
+              "probabilities": {
+                "c00": 0.9991,
+                "c01": 0.0002,
+                "c02": 0.0001,
+                "c03": 0.0001,
+                "c04": 0.0006
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 279,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "invoice-camera",
+        "expected": "Invoice",
+        "actual": "Invoice",
+        "correct": true,
+        "model_score": 0.9999,
+        "elapsed_seconds": 24.91732651799998,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c00",
+              "confidence": 0.9999,
+              "probabilities": {
+                "c00": 0.9999,
+                "c01": 0.0001,
+                "c02": 0.0,
+                "c03": 0.0,
+                "c04": 0.0
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 246,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "letter-return",
+        "expected": "Correspondence",
+        "actual": "Correspondence",
+        "correct": true,
+        "model_score": 0.9631,
+        "elapsed_seconds": 24.803195092000124,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c01",
+              "confidence": 0.9631,
+              "probabilities": {
+                "c00": 0.0002,
+                "c01": 0.9631,
+                "c02": 0.0003,
+                "c03": 0.0002,
+                "c04": 0.0362
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 244,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "letter-library",
+        "expected": "Correspondence",
+        "actual": "Correspondence",
+        "correct": true,
+        "model_score": 0.9621,
+        "elapsed_seconds": 25.64365879900015,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c01",
+              "confidence": 0.9621,
+              "probabilities": {
+                "c00": 0.0002,
+                "c01": 0.9621,
+                "c02": 0.0002,
+                "c03": 0.0008,
+                "c04": 0.0367
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 252,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "letter-conference",
+        "expected": "Correspondence",
+        "actual": "Other",
+        "correct": false,
+        "model_score": 0.8535,
+        "elapsed_seconds": 29.60215144200015,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c04",
+              "confidence": 0.8535,
+              "probabilities": {
+                "c00": 0.0012,
+                "c01": 0.0033,
+                "c02": 0.1366,
+                "c03": 0.0055,
+                "c04": 0.8535
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 247,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "article-retrieval",
+        "expected": "Article",
+        "actual": "Other",
+        "correct": false,
+        "model_score": 0.6502,
+        "elapsed_seconds": 31.91556351700001,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c04",
+              "confidence": 0.6502,
+              "probabilities": {
+                "c00": 0.0018,
+                "c01": 0.0038,
+                "c02": 0.3198,
+                "c03": 0.0244,
+                "c04": 0.6502
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 254,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "article-climate",
+        "expected": "Article",
+        "actual": "Article",
+        "correct": true,
+        "model_score": 0.8783,
+        "elapsed_seconds": 26.28459222299989,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c02",
+              "confidence": 0.8783,
+              "probabilities": {
+                "c00": 0.0002,
+                "c01": 0.0003,
+                "c02": 0.8783,
+                "c03": 0.0042,
+                "c04": 0.1171
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 265,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "article-storage",
+        "expected": "Article",
+        "actual": "Book",
+        "correct": false,
+        "model_score": 0.8689,
+        "elapsed_seconds": 24.612462026000003,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c03",
+              "confidence": 0.8689,
+              "probabilities": {
+                "c00": 0.0014,
+                "c01": 0.0057,
+                "c02": 0.0102,
+                "c03": 0.8689,
+                "c04": 0.1138
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 252,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "book-botany",
+        "expected": "Book",
+        "actual": "Book",
+        "correct": true,
+        "model_score": 0.9952,
+        "elapsed_seconds": 25.051044417999947,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c03",
+              "confidence": 0.9952,
+              "probabilities": {
+                "c00": 0.0,
+                "c01": 0.0,
+                "c02": 0.0046,
+                "c03": 0.9952,
+                "c04": 0.0002
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 262,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "book-deutsch",
+        "expected": "Book",
+        "actual": "Book",
+        "correct": true,
+        "model_score": 0.9995,
+        "elapsed_seconds": 25.395400220000056,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c03",
+              "confidence": 0.9995,
+              "probabilities": {
+                "c00": 0.0,
+                "c01": 0.0,
+                "c02": 0.0002,
+                "c03": 0.9995,
+                "c04": 0.0003
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 258,
+            "output_tokens": 0
+          }
+        }
+      },
+      {
+        "document": "packing-list",
+        "expected": "Other",
+        "actual": "Other",
+        "correct": true,
+        "model_score": 0.9767,
+        "elapsed_seconds": 24.99119359799988,
+        "response": {
+          "model": "mayflowergmbh/Josev-2B",
+          "answers": {
+            "suggestion": {
+              "type": "choice",
+              "choice": "c04",
+              "confidence": 0.9767,
+              "probabilities": {
+                "c00": 0.0011,
+                "c01": 0.0143,
+                "c02": 0.0011,
+                "c03": 0.0068,
+                "c04": 0.9767
+              }
+            }
+          },
+          "usage": {
+            "input_tokens": 245,
+            "output_tokens": 0
+          }
+        }
+      }
+    ],
+    "default_promotion": false,
+    "quality_gate": false,
+    "scope": "12 author-written examples; independent of publisher parity fixtures",
+    "model": {
+      "id": "systemone",
+      "url": "https://huggingface.co/cstr/Josev-2B-SystemOne-GGUF/resolve/bffe62522f826b4c33f2e731d5b870ced5150a17/josev2b-systemone-f32.gguf",
+      "sha256": "72684e39d0eed526b40c5150c78b2d881d324c39e16af48060b3d741f526ccf2",
+      "bytes": 7659180448
+    }
+  }
+}

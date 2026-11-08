@@ -67,7 +67,7 @@ export async function loadORT(
 /**
  * Run a single-turn chat completion. Call loadORT first.
  */
-export async function queryORT(prompt: string, systemPrompt?: string): Promise<string> {
+export async function queryORT(prompt: string, systemPrompt?: string, maxOutputTokens = 512): Promise<string> {
     if (!generator) throw new Error('ORT engine not loaded — select and load a model in Settings first.');
 
     type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -75,7 +75,7 @@ export async function queryORT(prompt: string, systemPrompt?: string): Promise<s
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
 
-    const output = await generator(messages as any, { max_new_tokens: 512, do_sample: false });
+    const output = await generator(messages as any, { max_new_tokens: maxOutputTokens, do_sample: false });
     const result = output as any;
     const generated = Array.isArray(result) ? result[0] : result;
     const genText = generated?.generated_text ?? generated?.text ?? '';

@@ -1,0 +1,122 @@
+{
+  "schema": "crispsorter-release-receipt-v1",
+  "platform": "macos-arm64",
+  "app_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+  "version": "0.13.0",
+  "runtime_lock": {
+    "version": "0.17.12",
+    "source_commit": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+    "ggml_commit": "890278a8342c620197c90e702e1188bcab94f510",
+    "release_url": "https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.12",
+    "assets": {
+      "crispembed-android-arm64-v8a.tar.gz": {
+        "sha256": "a02ecbfc37906ba04bc6867dc7c7af753315ae0ad96d07ed62e102815ad21555",
+        "bytes": 18323125
+      },
+      "crispembed-android-armeabi-v7a.tar.gz": {
+        "sha256": "fa233e95b8631dac5fe9f5d93f9ff18cf4feeaa4d6e70d888147ec36ee916c02",
+        "bytes": 17164555
+      },
+      "crispembed-ios-arm64.tar.gz": {
+        "sha256": "a54fac7c4cf7042f8c81cf239d5c79a1845e115ac43608fa7a45cb303f5c07b8",
+        "bytes": 3597973
+      },
+      "crispembed-linux-arm64.tar.gz": {
+        "sha256": "38cbaaa020cd17d4cd4f0b78003c79fba7a1051628b06b8e39734c39f15032bb",
+        "bytes": 10085209
+      },
+      "crispembed-linux-x86_64.tar.gz": {
+        "sha256": "1e53efd8d78e6f6abeed252e3f715c5c34c8b97508922c5983285400c96e2b63",
+        "bytes": 11769149
+      },
+      "crispembed-macos-arm64.tar.gz": {
+        "sha256": "6bdbf65587eac063ec6658d9e03345a63614cee680ea887ef51eaabcc72f7a56",
+        "bytes": 8902248
+      },
+      "crispembed-windows-x86_64.zip": {
+        "sha256": "49a1e4a89bf6f7d2df100794914f15aeb9a2b69513c3dbfb93364208994cc717",
+        "bytes": 7933796
+      }
+    }
+  },
+  "native_crispembed_included": true,
+  "artifacts": [
+    {
+      "filename": "CrispSorter_0.13.0_aarch64.dmg",
+      "bytes": 157457974,
+      "sha256": "a71648a76b554fd2d2341f40be1348386d38cffbf88ba4cebd07744ee0364f2f",
+      "inspection": "checksum; executable smoke uses the matching app archive"
+    },
+    {
+      "filename": "CrispSorter_aarch64.app.tar.gz",
+      "bytes": 142333465,
+      "sha256": "e993e5ad0c5af707d3c5d5bb37e39fe492236438ab5ac6f96d0304ab23c41999",
+      "inspection": "packaged executable starts with build-tree libraries hidden",
+      "checks": [
+        {
+          "arguments": [
+            "--format",
+            "json",
+            "version"
+          ],
+          "result": {
+            "name": "crispsorter",
+            "version": "0.13.0",
+            "target": "macos",
+            "arch": "aarch64"
+          },
+          "stderr": ""
+        },
+        {
+          "arguments": [
+            "--format",
+            "json",
+            "doctor"
+          ],
+          "result": {
+            "tesseract_installed": false,
+            "ocrs_models_available": false,
+            "paddle_ocr_available": false,
+            "pdf_extract_compiled_in": true,
+            "fuse_compiled": false,
+            "fuse_runtime_available": false,
+            "embedder_model_cached": true,
+            "lance_dir_exists": false,
+            "lance_dir": "/Users/runner/Library/Application Support/com.crispstrobe.crispsorter/lance"
+          },
+          "stderr": ""
+        },
+        {
+          "arguments": [
+            "ocr",
+            "/Users/runner/work/CrispSorter/CrispSorter/tests/quality/ocr-task.pdf",
+            "--engine",
+            "dbnet_trocr",
+            "--cleanup",
+            "false",
+            "--render",
+            "hocr",
+            "--min-confidence",
+            "0",
+            "--min-chars",
+            "0"
+          ],
+          "result": "image-only PDF rasterized and expected text retained",
+          "fixture_sha256": "538f504756f35ace8af3ff2b970b9f35794aba5a186036596580a4676de922bb",
+          "stdout_sha256": "0f748be9e88633ccc9dc35a31b303283438df7bea1226c891b6158da4ac0b78c",
+          "stderr": "ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0'\nggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=0_nf=1_rb=1_cb=0   0x600000ab8280 | th_max = 1024 | th_width =   32\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_bin_fuse_f32_f32_f32_4', name = 'kernel_bin_fuse_f32_f32_f32_4_op=2_nf=1_rb=1_cb=0'\nggml_metal_library_compile_pipeline: loaded kernel_bin_fuse_f32_f32_f32_4_op=2_nf=1_rb=1_cb=0   0x600000abe3a0 | th_max = 1024 | th_width =   32\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'kernel_unary_f32_f32_4', name = 'kernel_unary_f32_f32_4_op=101_cnt=1'\nggml_metal_library_compile_pipeline: loaded kernel_unary_f32_f32_4_op=101_cnt=1        0x600000ab4460 | th_max = 1024 | th_width =   32\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-4.980 -5.056 8.668 0.299 2.670] best=5972\nmath_ocr: [graph] dec step 1: tok=5972 logits[0..4]=[-12.487 -14.494 6.918 9.824 -2.697] best=890\nmath_ocr: [graph] dec step 2: tok=890 logits[0..4]=[-13.033 -13.223 14.337 8.307 1.535] best=7263\nmath_ocr: [graph] dec step 3: tok=7263 logits[0..4]=[-10.911 -14.309 21.099 15.835 2.332] best=887\nmath_ocr: [graph] dec step 4: tok=887 logits[0..4]=[-8.667 -8.115 28.860 1.290 -0.417] best=2\nocr_pipeline: recognizing region 2/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-5.059 -13.553 5.409 1.390 1.200] best=24425\nmath_ocr: [graph] dec step 1: tok=24425 logits[0..4]=[-11.710 -9.425 9.022 5.158 -2.100] best=53095\nmath_ocr: [graph] dec step 2: tok=53095 logits[0..4]=[-10.949 -13.327 18.911 7.021 3.009] best=2225\nmath_ocr: [graph] dec step 3: tok=2225 logits[0..4]=[-8.860 -7.338 23.911 -2.242 -0.260] best=2\nocr_pipeline: recognizing region 3/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-9.392 -11.474 7.152 2.018 -0.227] best=36042\nmath_ocr: [graph] dec step 1: tok=36042 logits[0..4]=[-13.895 -11.298 15.021 5.822 7.767] best=156\nmath_ocr: [graph] dec step 2: tok=156 logits[0..4]=[-8.756 -10.015 10.567 9.694 1.974] best=24436\nmath_ocr: [graph] dec step 3: tok=24436 logits[0..4]=[-8.907 -6.490 21.858 -0.705 1.311] best=2\nocr_pipeline: recognizing region 4/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-13.463 -12.491 8.790 -1.680 8.429] best=773\nmath_ocr: [graph] dec step 1: tok=773 logits[0..4]=[-11.606 -15.458 10.136 0.259 4.828] best=40776\nmath_ocr: [graph] dec step 2: tok=40776 logits[0..4]=[-6.571 -5.071 16.618 11.161 1.084] best=1002\nmath_ocr: [graph] dec step 3: tok=1002 logits[0..4]=[-9.685 -8.217 24.663 1.551 0.027] best=2\nocr_pipeline: recognizing region 5/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-13.470 -12.531 6.706 -2.882 9.215] best=622\nmath_ocr: [graph] dec step 1: tok=622 logits[0..4]=[-9.427 -9.498 13.646 5.072 5.380] best=6519\nmath_ocr: [graph] dec step 2: tok=6519 logits[0..4]=[-9.642 -7.932 21.810 0.475 0.839] best=2\nocr_pipeline: recognizing region 6/6\nmath_ocr: [graph] dec embed+pos+ln x[:5]=[0.1828 -0.1273 0.0431 -0.0379 -0.1756]\nmath_ocr: [graph] dec step 0: tok=2 logits[0..4]=[-7.131 -6.817 4.755 -4.358 5.048] best=449\nmath_ocr: [graph] dec step 1: tok=449 logits[0..4]=[-5.980 -10.308 12.878 6.243 -3.601] best=10617\nmath_ocr: [graph] dec step 2: tok=10617 logits[0..4]=[-7.069 -9.650 22.373 7.853 0.020] best=5\nmath_ocr: [graph] dec step 3: tok=5 logits[0..4]=[-8.067 -9.042 32.248 5.176 -0.501] best=2\nocr_pipeline: recognized 6/6 regions\ncrispasr_metal_pipeline_cache_flush: pipeline cache serialised \u2192 /Users/runner/Library/Caches/ggml-metal/Apple_Paravirtual_device.archive\n"
+        }
+      ]
+    }
+  ],
+  "toolchains": {
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "node": "v24.20.0"
+  },
+  "dependency_sources": {
+    "CrispEmbed": "78493a31fc3043f3af4ab6fd2f197a32da6f07f0",
+    "CrispASR": "0c9a4b6d828feffddc24e13e9140fac89c785214",
+    "crisp-docx": "ddf7830d8d92e6b59b10874d144a59f163a256e1"
+  }
+}

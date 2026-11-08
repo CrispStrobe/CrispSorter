@@ -1,10 +1,13 @@
 <script lang="ts">
     import OcrWorkbench from '../../src/lib/components/OcrWorkbench.svelte';
     import { createFixtureClient } from './fixture';
-    const fixture = createFixtureClient(new URLSearchParams(location.search).get('scenario') ?? 'review');
+    const params = new URLSearchParams(location.search);
+    const fixture = createFixtureClient(params.get('scenario') ?? 'review');
+    // `open` simulates a document sent from another tab ("Open in OCR").
+    const initialLocationUri = params.get('open') ?? '';
 </script>
 
-<main><OcrWorkbench client={fixture.client} initialProject={fixture.initialProject} /></main>
+<main><OcrWorkbench client={fixture.client} initialProject={fixture.initialProject} {initialLocationUri} /></main>
 
 <style>
     :global(html), :global(body), :global(#app) { margin:0; width:100%; height:100%; overflow:hidden; }

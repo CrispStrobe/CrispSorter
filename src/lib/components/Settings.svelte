@@ -6,6 +6,7 @@
     // shown to a person is generated text, and the rule this project set itself
     // is that there is no exemption list. Found unmarked in the 2026-08-02 audit.
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+    import CrispEmbedServiceSettings from './CrispEmbedServiceSettings.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { caps, currentCaps } from '../capabilities';
@@ -3324,7 +3325,7 @@
                             <label for="ocr-pipeline-vlm-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
                                 {i18n.t.settings.ocr_pipeline_vlm_engine}
                                 <select id="ocr-pipeline-vlm-engine" bind:value={ocrPipelineVlmEngine} style="margin-left:4px;">
-                                    <option value="qwen2vl">Qwen2-VL (german-ocr-3.1)</option>
+                                    <option value="qwen2vl">Qwen2.5-VL (qwen2vl-3b)</option>
                                     <option value="glm">GLM-OCR</option>
                                     <option value="got">GOT-OCR2</option>
                                     <option value="internvl2">InternVL2</option>
@@ -3931,6 +3932,7 @@
             </div>
 
             <p style="color:#a1a1aa; font-size:0.85rem; margin-bottom:16px;">{i18n.t.settings.index.hint}</p>
+            <CrispEmbedServiceSettings />
 
             <SyncPairPanel />
             <WallabagImport />

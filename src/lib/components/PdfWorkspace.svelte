@@ -14,6 +14,7 @@
     import ConvertTools from './ConvertTools.svelte';
     import { LayoutGrid, Wrench, FileType2, FileOutput } from 'lucide-svelte';
 
+    let { initialPath = '' }: { initialPath?: string } = $props();
     let mode = $state<'edit' | 'tools' | 'docx' | 'convert'>('edit');
 </script>
 
@@ -36,7 +37,7 @@
          edit session, a half-filled tool panel, a loaded DOCX report, or a
          conversion preview. -->
     <div class="pw-pane" style:display={mode === 'edit' ? 'flex' : 'none'}>
-        <PdfEditor />
+        <PdfEditor {initialPath} />
     </div>
     <div class="pw-pane" style:display={mode === 'tools' ? 'flex' : 'none'}>
         <PdfTools />

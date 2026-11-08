@@ -1,0 +1,168 @@
+{
+  "report": {
+    "scope": "Verbatim production OCR functions/configuration and native bindings, not a full application build",
+    "harness_source": "cb7b149089125828368214388ae51e0063c45002",
+    "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "completed": true,
+    "checks": [
+      {
+        "name": "apt-update",
+        "exit_code": 0,
+        "elapsed_seconds": 10.003195473000005
+      },
+      {
+        "name": "toolchain",
+        "exit_code": 0,
+        "elapsed_seconds": 30.001376740000012
+      },
+      {
+        "name": "rust",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001385088999996
+      },
+      {
+        "name": "clone-CrispSorter",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001156253000033
+      },
+      {
+        "name": "checkout-CrispSorter",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001198509000005
+      },
+      {
+        "name": "clone-CrispEmbed",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001026824999997
+      },
+      {
+        "name": "checkout-CrispEmbed",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001001443000007
+      },
+      {
+        "name": "clone-CrispASR",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00102393900005
+      },
+      {
+        "name": "checkout-CrispASR",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00122359400001
+      },
+      {
+        "name": "source-equivalence",
+        "exit_code": 0,
+        "elapsed_seconds": 10.003230265000013
+      },
+      {
+        "name": "verify-runtime",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001104325999961
+      },
+      {
+        "name": "extract-runtime",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001116562999982
+      },
+      {
+        "name": "source-probe",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001001110999994
+      },
+      {
+        "name": "lock",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001022895000006
+      },
+      {
+        "name": "model-free",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001357724000002
+      },
+      {
+        "name": "panel-uv",
+        "exit_code": 0,
+        "elapsed_seconds": 10.00098875499998
+      },
+      {
+        "name": "panel-python",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001005233
+      },
+      {
+        "name": "panel-deps",
+        "exit_code": 0,
+        "elapsed_seconds": 20.001254206999988
+      },
+      {
+        "name": "panel-build",
+        "exit_code": 0,
+        "elapsed_seconds": 10.001056648999963
+      },
+      {
+        "name": "real-panel",
+        "exit_code": 0,
+        "elapsed_seconds": 1290.124368941
+      }
+    ],
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "build_jobs": 2,
+    "probe_lock_sha256": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+    "qualification_scope": "Frozen real-scan OCR comparison; see real-panel/result.json for individual failures and scores"
+  },
+  "dispatch": {
+    "harness_source": "cb7b149089125828368214388ae51e0063c45002",
+    "binary_source": "0eb1a377899347b1740c0a245f0e73326a4f9398",
+    "code_sha256": "e09fa2bf580173ba5e0fed9197acf835e9d2c9dbf76dc234852a40e1bc45ee2b",
+    "plan_sha256": "9886d779dc2c94c881df2a1511d2b2b524666bcd9a6128b910e2ad9994b6644f"
+  },
+  "raw_result_sha256": "22913e9c4aa1d5d2477950c8c686ea53fdf6b3f855bc2a42ac064d75c5ace088",
+  "source_fragments": {
+    "scope": "Exact production OCR functions, configuration and live test; excludes unrelated application modules",
+    "fragments_sha256": {
+      "configuration_types_and_defaults": "1b7d762f006b891fa4dad61941ee8c7dd009ca6e81ca88c7773ecd310386a57f",
+      "vlm_engine_id": "0bd74d9e3d4d93d2a3ce7189e03f1a0822ce489b245b0029b948b13d774d539e",
+      "vlm_default_model": "347a5d395ac9117233916c811d30d3fec230e336b056fcb20a60fd795c8af116",
+      "resolve": "b892c676e727071a9d034cdcf4edd705ff4d9c4e5e08e2cbc3bc92c3cf660d19",
+      "build_pipeline": "e8e4ffab630882805304bb235ca47ff2f850d321aa254662ace8b7fd7680ab64",
+      "cached_pipeline": "e2b58e86e901785ec418acb97fd60c3400ee4f49a2b9bfd837c91fbc7eaab4be",
+      "effective_confidence": "4dedf03c8711d4d0c9ba95432c432f9ccab3e7f503e339fc0f64422691dee0b0",
+      "ocr_regions_detailed": "340d84c34b8e2314343d943614369724d78d42d3e57badd1f94c859645b7820f",
+      "RegionConf": "5d485dbb6ba927694fcddd3c228914e81098727b9a6ecbfab864bfee5ea9a1c9",
+      "DEFAULT_DET_MODEL": "22406965e58fba1845522b2ba614ca86395545be6524b21bdb2433d93c307675",
+      "DEFAULT_REC_MODEL": "f3ae01a8499f3d7bee85aa3f3edfa22586dae6b47b52d320cb605ddd933aeea5",
+      "NAFNET_MODEL": "9827397eeab48f1ac055eeeace4bc648dbd89a1b07fc9eefe51f74627cf6cf06",
+      "OCR_ORCH": "3fd381c2684bdf5281f7349ef2e6d8eda8e98d8aaeebd6d5f935063de7edbbef",
+      "live_test": "0b4f79abf6f06af660cc892dc9c42f6f9da9531131b62055cc379ddaa5312eda",
+      "context_cache": "1cd23936e99e4d325f132112462c6703009eb442ecc1bad40a5a81799f2242ea",
+      "ocr_presets": "558e700f75972f73b91a6e114b03eb8231e395fb0bfc1e202496364722e0dcc2"
+    }
+  },
+  "raw_files_sha256": {
+    "source-fragments.json": "b199634e5bd03445416760387bb98e478d715298c3b591ec56f7e882aab472bd",
+    "probe.Cargo.lock": "c6e50c7dfd79affb4af872bfc2059d30257f001529fbb416949be58056cfc369",
+    "probe.log": "08fdfcf5e72f4ff34736e568b4e9a9939f92137d17f9eb4f227b8d27da1ca866",
+    "report.json": "d39e85e1da27a61a53995e049cefa4ade2838bd2e33ecd8d8473ccb0666ea4c2",
+    "real-panel/models.log": "78d423b64ca9f6e63938ce1b16314ebbfe1299869bbbbd8c218028568093ae0d",
+    "real-panel/en-table-climatic-26-multilingual.json": "48ee5565151d26c9da9789257e0b14042d90c4fc002a757ce66d53d6d69c7472",
+    "real-panel/receipt-cord-test-29-tables.log": "55a027f2e7dc2e4ad4210de08b3add3b672ac68549fdac4783d186315fe8c323",
+    "real-panel/de-degraded-freiligrath-46-difficult.log": "b1b9383cd6bf5cc422dd21f86e2b6c4515d9944eaa14ba3ad13c0e2667653061",
+    "real-panel/models.json": "c81c732dca5b71450a0080701ffa96975eb999de423d98135aba5560b7bf9bce",
+    "real-panel/de-degraded-freiligrath-46-difficult.json": "9f2c9c22871bc206b3c50427190b15afad3b7e7d927aabe655f0eeb92d77f597",
+    "real-panel/receipt-cord-test-29-tables.json": "6684f233c70a2f5e8bdfd31077128bb64929d9492304d33f9d16d0a227d633da",
+    "real-panel/en-table-climatic-26-tables.log": "9f9088197a5e3c43a845421ddd6123a7d6d87e9145ace0ab0f27010b80d1107e",
+    "real-panel/en-table-climatic-26-tables.json": "b9deb593a4e7823d30a9b92852ada61d3a5f74f9d84c7dc1b8c33de7d8f35da3",
+    "real-panel/result.json": "22913e9c4aa1d5d2477950c8c686ea53fdf6b3f855bc2a42ac064d75c5ace088",
+    "real-panel/receipt-cord-test-29-multilingual.log": "ab10490d00dbf9a6446c3b25397a5960ade5b5d031a5d31eafba6c2bbfdc0a35",
+    "real-panel/de-antiqua-kafka-schloss-211-multilingual.json": "54100a19bbb274ff91a5e045cc6d3c21cda337edf36794c60efe4da7f8707824",
+    "real-panel/de-antiqua-kafka-schloss-211-multilingual.log": "1a1fa76513fefa9f5fc06f3fa9869e20065103b51d6fa8d0d3184f52d01590af",
+    "real-panel/de-fraktur-grimm-319-multilingual.json": "6bd937841ebd29ef7defa8d5f21051bc5a62e6d4843ee3a01b1143e608ffda1d",
+    "real-panel/de-degraded-freiligrath-46-multilingual.log": "b1b9383cd6bf5cc422dd21f86e2b6c4515d9944eaa14ba3ad13c0e2667653061",
+    "real-panel/receipt-cord-test-29-multilingual.json": "dbb42054b815bec49a864ac575d21af01896bda431adc5fa357d4e0d014d5f6f",
+    "real-panel/de-degraded-freiligrath-46-multilingual.json": "bb72fbacca2363ba45ad95c119e971c9984fafe06362cdf66d6187665657bf8a",
+    "real-panel/en-table-climatic-26-multilingual.log": "6e7720f8f8c67b11a68ada2a33fd2c135e12a93f45718ad7e78ddf5efe017926",
+    "real-panel/de-fraktur-grimm-319-multilingual.log": "6d93a9b33b459bc8bce941a440015d24a5141e396d7a6ff67cb787618653b463"
+  },
+  "scope": "Confirmation of the remaining five fixed real pages and all eight Qwen assignments. Original input/reference/model/scorer hashes and per-page output caps retained. No new application code or automatic default."
+}

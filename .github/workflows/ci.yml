@@ -5,6 +5,16 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Run the necessary native Linux checks, all platform checks, or the entire CI suite.'
+        type: choice
+        options: [native-linux, platforms, all]
+        default: native-linux
+      cloud_live:
+        description: 'Explicitly run tests that mutate dedicated cloud test accounts.'
+        type: boolean
+        default: false
 
 concurrency:
   # Branches and PRs: superseding a stale run is the right trade — nobody needs a
@@ -39,7 +49,7 @@ env:
   # `OcrPipelineResult.markdown` / `.reading_order` exist on main and not on
   # v0.13.0, so code using them passes CI and breaks the release build.
   # Keep these two values equal; bump them together.
-  CRISPEMBED_REF: v0.17.11
+  CRISPEMBED_REF: v0.17.12
   CRISPASR_REPO: CrispStrobe/CrispASR
   # Pinned to the same tag release.yml uses, for the reason spelled out above
   # CRISPEMBED_REF. This one had drifted 18 patch versions: CI tracked `main`
@@ -73,6 +83,7 @@ jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
   # Tauri builds live in release.yml and only fire on version tags.
   frontend:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: Frontend check + licenses
     runs-on: ubuntu-latest
     steps:
@@ -249,6 +260,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-linux-x86_64.tar.gz"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source ../CrispEmbed
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
           mkdir -p ../CrispEmbed/build
@@ -321,6 +333,16 @@ jobs:
         # all — the exact drift this list exists to prevent.
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
+      - name: Batch sorting script tests
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
+
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
         # With `pdf-zpdf`, so the harness's decrypt-with-a-user-password and
@@ -388,10 +410,12 @@ jobs:
   # feature-gated native paths are already covered on Linux; what is *not*
   # covered anywhere else is "does this run on Windows at all".
   windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: Windows lib tests + CLI smoke
     runs-on: windows-2025
     timeout-minutes: 120
     env:
+      CXXFLAGS: '-D_USE_MATH_DEFINES'
       CARGO_TERM_COLOR: always
       # The clap tree overflows libtest's default worker stack (the same
       # reason the Linux job sets this). The shipped binary no longer depends
@@ -402,6 +426,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: repos/CrispSorter
+
+      - name: Configure native Windows Perl for vendored OpenSSL
+        uses: ./repos/CrispSorter/.github/actions/windows-native-perl
+
+      - name: Validate Windows compiler flags through Git Bash
+        shell: bash
+        run: python -c "import os,shlex; flags=shlex.split(os.environ['CXXFLAGS']); assert '-D_USE_MATH_DEFINES' in flags, flags; print('Native process received the MSVC math macro unchanged')"
 
       # All three siblings are needed even though this job enables none of
       # their features: `crisp-docx-{core,llm}` are unconditional path deps,
@@ -476,11 +507,21 @@ jobs:
 
       - name: Library tests
         working-directory: repos/CrispSorter
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Batch sorting script tests
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
 
       - name: CLI smoke test
         working-directory: repos/CrispSorter
@@ -537,6 +578,7 @@ jobs:
           Write-Host "  ok: ingest of a missing path fails loudly (exit $($p.ExitCode))"
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: macOS lib tests + secret-store smoke
     runs-on: macos-15
     timeout-minutes: 120
@@ -597,6 +639,7 @@ jobs:
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
           echo "Downloading $URL"
           curl -fL -o crispembed-libs.tar.gz "$URL"
+          python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source ../CrispEmbed
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
           mkdir -p ../CrispEmbed/build
@@ -669,6 +712,16 @@ jobs:
         # crates, so the CrispSorter code compiled is identical.
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render,anydoc
 
+      - name: Batch sorting script tests
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
+
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
         # With the native features, matching the Linux job — and runnable
@@ -708,6 +761,7 @@ jobs:
             "$EXE" --format json secrets --data-dir "$DATA" status | grep -q '"session"'
 
   cloud-backends:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: Native cloud crates
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -775,6 +829,7 @@ jobs:
           cargo package -p crisp-filen --allow-dirty
 
   cloud-facade:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: crisp-cloud-rs (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -816,7 +871,7 @@ jobs:
 
   cloud-live:
     name: Gated cloud live matrix
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.cloud_live
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:

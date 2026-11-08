@@ -1,0 +1,11 @@
+{
+  "checked_at_utc": "2026-10-29T01:21:58.000207+00:00",
+  "source": "https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/",
+  "retirement_date": "2026-11-02",
+  "notice": "GitHub may reduce macOS 14 capacity before retirement, increasing queue time.",
+  "change": "Future desktop release and CI use macos-15; add macOS-only recovery dispatch with shared desktop steps.",
+  "original_job": 123155730263,
+  "original_job_started_at": "2026-10-29T01:20:28Z",
+  "action": "Keep the original job running; no duplicate macOS build dispatched.",
+  "workflow_validation": "actionlint 1.7.12 passed"
+}
