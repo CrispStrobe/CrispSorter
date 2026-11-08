@@ -1,471 +1,4935 @@
 <script lang="ts">
-    // OCR Workbench — interactive, user-steered OCR + proofreading.
-    // Open a doc → page through → run OCR → see image + recognized text,
-    // low-confidence regions highlighted → fix inline → save/export.
-    import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-    import { open } from '@tauri-apps/plugin-dialog';
-    import { i18n } from '$lib/i18n.svelte';
+  import { onMount, tick, untrack } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import {
+    ScanText,
+    Plus,
+    FolderOpen,
+    Save,
+    Download,
+    Play,
+    Pause,
+    Square,
+    RotateCcw,
+    RotateCw,
+    Undo2,
+    Redo2,
+    ZoomIn,
+    ZoomOut,
+    Maximize2,
+    Columns2,
+    Check,
+    CheckCheck,
+    ChevronLeft,
+    ChevronRight,
+    ChevronDown,
+    ArrowUp,
+    ArrowDown,
+    Search,
+    X,
+    SlidersHorizontal,
+    FileText,
+    Layers,
+    Table2,
+    Sigma,
+    Braces,
+    WandSparkles,
+    Crop,
+    Scissors,
+    MousePointer2,
+    Eye,
+    EyeOff,
+    RefreshCw,
+    AlertTriangle,
+    CircleCheck,
+    Clock3,
+    Trash2,
+    Copy,
+    Keyboard,
+    ListFilter,
+    LoaderCircle,
+    Image,
+    PanelLeftClose,
+    PanelLeftOpen,
+    ScanLine,
+    ShieldCheck,
+  } from "lucide-svelte";
+  import PageCanvas from "./ocr/PageCanvas.svelte";
+  import {
+    workspaceClient,
+    type WorkspaceClient,
+    type WorkspaceCapabilities,
+    type ProjectSummary,
+    type ExtractionField,
+    type TransformOptions,
+  } from "$lib/ocr/client";
+  import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
+  import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
+  import {
+    PROFILES,
+    createProject,
+    createHistory,
+    commitHistory,
+    undoHistory,
+    redoHistory,
+    parseProject,
+    addDocument,
+    updatePage,
+    applyRecognition,
+    editRegion,
+    updateRegion,
+    addRegion,
+    deleteRegion,
+    moveRegion,
+    movePage,
+    removePage,
+    approvePage,
+    applyPageImage,
+    splitPage,
+    getReviewIssues,
+    getMetrics,
+    findMatches,
+    replaceMatches,
+    nextMatch,
+    prepareExport,
+    type OcrProject,
+    type OcrPage,
+    type OcrRegion,
+    type RegionKind,
+    type RecognitionResult,
+    type TextMatch,
+  } from "$lib/ocr/model";
 
-    interface Region { text: string; x: number; y: number; w: number; h: number; confidence: number; char_conf: number[]; orig: string; }
-    interface PageOcr { width: number; height: number; regions: Region[]; ocred: boolean; proofread: boolean; cleanedPath?: string | null; }
+  let {
+    client = workspaceClient,
+    initialProject = null,
+  }: { client?: WorkspaceClient; initialProject?: OcrProject | null } =
+    $props();
+  let history = $state(
+    createHistory(untrack(() => initialProject) ?? createProject()),
+  );
+  const project = $derived(history.present);
+  let selectedPageId = $state<string | null>(
+    untrack(() => initialProject)?.pages[0]?.id ?? null,
+  );
+  let selectedRegionId = $state<string | null>(null);
+  let checkedPages = $state<string[]>([]);
+  let pageFilter = $state("all");
+  let pageQuery = $state("");
+  let pageRange = $state("");
+  let pageRail = $state(true);
+  let inspector = $state<"review" | "recognition" | "extract" | "export">(
+    "review",
+  );
+  let drawMode = $state<
+    "select" | "text" | "table" | "picture" | "formula" | "crop" | "recognize"
+  >("select");
+  let fit = $state<"page" | "width" | "custom">("page");
+  let zoom = $state(1);
+  let overlays = $state(true);
+  let showOriginal = $state(false);
+  let onlyIssues = $state(false);
+  let textView = $state<"regions" | "text">("regions");
+  let searchOpen = $state(false);
+  let query = $state(""),
+    replacement = $state(""),
+    matchCase = $state(false);
+  let currentMatch = $state<TextMatch | null>(null);
+  let booting = $state(true),
+    busy = $state(""),
+    error = $state(""),
+    notice = $state("");
+  let saveStatus = $state<SaveStatus>({ state: "saved" });
+  let capabilities = $state<WorkspaceCapabilities>({
+    ocr: false,
+    crispembed: false,
+    pdf_import: false,
+    formats: ["text"],
+    engines: [],
+    layout: false,
+    kie: false,
+    table: false,
+    math: false,
+  });
+  let recent = $state<ProjectSummary[]>([]),
+    recentOpen = $state(false),
+    helpOpen = $state(false);
+  let confirm = $state<{
+    title: string;
+    message: string;
+    label: string;
+    action: () => void | Promise<void>;
+  } | null>(null);
+  let queueState = $state<QueueState>({
+    phase: "idle",
+    total: 0,
+    completed: 0,
+    failed: 0,
+    currentId: null,
+    remainingIds: [],
+  });
+  let queuePromise: Promise<void> | null = null;
+  let autosave: ProjectAutosave<OcrProject> | null = null;
+  let mounted = true;
+  let editGroup: string | null = null;
+  let editorPane = $state<HTMLDivElement>();
+  let actionDialog = $state<HTMLDialogElement>();
+  let helpDialog = $state<HTMLDialogElement>();
+  $effect(() => {
+    if (confirm && actionDialog && !actionDialog.open) actionDialog.showModal();
+  });
+  $effect(() => {
+    if (helpOpen && helpDialog && !helpDialog.open) helpDialog.showModal();
+  });
+  let exportFormat = $state("pdf"),
+    exportScope = $state("all"),
+    exportPdfa = $state(false),
+    requireReviewed = $state(true);
+  let labels = $state("vendor, invoice number, date, total, tax"),
+    fieldThreshold = $state(0.5),
+    useLayoutFields = $state(false);
+  let fields = $state<ExtractionField[]>([]),
+    tableRows = $state<string[][]>([]),
+    formula = $state("");
+  let extractionKind = $state<"fields" | "table" | "formula">("fields");
+  let extractionPageId = $state<string | null>(null);
+  let geometryOpen = $state(false);
+  let advancedConfig = $state(""),
+    configError = $state("");
 
-    let locationUri = $state('');          // source doc path (sidecar/export/re-ingest target)
-    let pages = $state<string[]>([]);       // per-page image paths
-    let pageIdx = $state(0);
-    let ocr = $state<Map<number, PageOcr>>(new Map());
-    let showCleaned = $state(false);
-    let threshold = $state(0.5);
-    let selected = $state<number | null>(null);   // selected region index on the current page
-    let zoom = $state(1);
-    let busy = $state<string | null>(null);        // 'open' | 'ocr' | 'ocr-all' | 'clean' | 'save'
-    let status = $state('');
-    let error = $state('');
-    // Save options
-    let exportFormat = $state('pdf');              // pdf | hocr | alto | text
-    let exportPdfa = $state(false);
+  const activePage = $derived(
+    project.pages.find((p) => p.id === selectedPageId) ?? project.pages[0],
+  );
+  const pageIndex = $derived(
+    activePage ? project.pages.findIndex((p) => p.id === activePage.id) : -1,
+  );
+  const region = $derived(
+    activePage?.regions.find((r) => r.id === selectedRegionId),
+  );
+  const metrics = $derived(getMetrics(project));
+  const reviewIssues = $derived(getReviewIssues(project));
+  const pageIssues = $derived(
+    reviewIssues.filter((i) => i.pageId === activePage?.id),
+  );
+  const issueRegionIds = $derived(
+    new Set(pageIssues.flatMap((i) => (i.regionId ? [i.regionId] : []))),
+  );
+  const visibleRegions = $derived(
+    activePage?.regions.filter(
+      (r) => !onlyIssues || issueRegionIds.has(r.id),
+    ) ?? [],
+  );
+  const visiblePages = $derived(
+    project.pages.filter(
+      (p) =>
+        (!pageQuery ||
+          p.name.toLowerCase().includes(pageQuery.toLowerCase())) &&
+        (pageFilter === "all" ||
+          (pageFilter === "review" &&
+            reviewIssues.some((i) => i.pageId === p.id)) ||
+          (pageFilter === "approved" && p.approved) ||
+          (pageFilter === "pending" && p.status === "pending") ||
+          (pageFilter === "failed" && p.status === "failed") ||
+          (pageFilter === "excluded" && p.excluded)),
+    ),
+  );
+  const matches = $derived(
+    findMatches(project, query, { caseSensitive: matchCase }),
+  );
+  const queueActive = $derived(
+    ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
+  );
+  const locked = $derived(booting || !!busy || queueActive);
+  const settings = $derived(project.recognitionSettings ?? {});
+  const engine = $derived(
+    typeof settings.engine === "string" ? settings.engine : "auto",
+  );
+  const language = $derived(
+    typeof settings.language === "string" ? settings.language : "auto",
+  );
+  const profile = $derived(
+    PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0],
+  );
+  const config = $derived({
+    ...profile.config,
+    ...(settings.config && typeof settings.config === "object"
+      ? (settings.config as Record<string, unknown>)
+      : {}),
+  });
+  const exportIds = $derived(
+    exportScope === "current"
+      ? activePage
+        ? [activePage.id]
+        : []
+      : exportScope === "selected"
+        ? checkedPages
+        : undefined,
+  );
+  const preflight = $derived(
+    prepareExport(project, { pageIds: exportIds, requireReviewed }),
+  );
+  const pageText = $derived(
+    activePage?.regions
+      .filter((r) => !r.excluded && r.kind !== "picture")
+      .map((r) => r.text)
+      .join("\n") ?? "",
+  );
+  const allText = $derived(
+    project.pages
+      .filter((p) => !p.excluded)
+      .map((p) =>
+        p.regions
+          .filter((r) => !r.excluded && r.kind !== "picture")
+          .map((r) => r.text)
+          .join("\n"),
+      )
+      .join("\f"),
+  );
+  const formatNames: Record<string, string> = {
+    pdf: "Searchable PDF",
+    hocr: "hOCR",
+    alto: "ALTO XML",
+    text: "Plain text",
+    json: "Structured JSON",
+    html: "HTML document",
+    markdown: "Markdown",
+    docx: "Word document",
+  };
+  const engineNames: Record<string, string> = {
+    auto: "Automatic pipeline",
+    dbnet_trocr: "DBNet + TrOCR",
+    surya: "Surya multilingual",
+    tesseract: "Tesseract LSTM",
+    got: "GOT OCR",
+    glm: "GLM OCR",
+    qwen2vl: "Qwen2.5 VL",
+    qwen3vl: "Qwen3 VL",
+    internvl2: "InternVL2",
+  };
+  const regionsKinds: RegionKind[] = [
+    "text",
+    "title",
+    "table",
+    "picture",
+    "formula",
+    "header",
+    "footer",
+  ];
 
-    const cur = $derived(ocr.get(pageIdx));
-    const curImg = $derived.by(() => {
-        const p = pages[pageIdx];
-        if (!p) return '';
-        if (showCleaned && cur?.cleanedPath) return convertFileSrc(cur.cleanedPath);
-        return convertFileSrc(p);
+  const queue = new SequentialQueue<RecognitionResult>({
+    canStart: () => !busy && capabilities.ocr,
+    isCurrent: (job) => project.pages.some((p) => p.id === job.id),
+    onState: (state) => {
+      queueState = { ...state, remainingIds: [...state.remainingIds] };
+    },
+    onStart: (job) => {
+      change(
+        updatePage(project, job.id, { status: "running", error: null }),
+        false,
+      );
+    },
+    onResult: (job, result) => {
+      change(
+        applyRecognition(project, job.id, result, project.profileId),
+        false,
+      );
+    },
+    onError: (job, failure) => {
+      change(
+        updatePage(project, job.id, {
+          status: "failed",
+          error: message(failure),
+          approved: false,
+        }),
+        false,
+      );
+    },
+  });
+
+  function message(value: unknown) {
+    return value instanceof Error ? value.message : String(value);
+  }
+  function fail(value: unknown) {
+    error = message(value);
+  }
+  function change(next: OcrProject, record = true) {
+    if (next === project) return;
+    editGroup = null;
+    history = record
+      ? commitHistory(history, next)
+      : { ...history, present: next };
+    autosave?.schedule(next);
+  }
+  function safe(action: () => void) {
+    try {
+      error = "";
+      action();
+    } catch (e) {
+      fail(e);
+    }
+  }
+  function bindSave(revision = 0) {
+    const projectId = project.id;
+    autosave = new ProjectAutosave(
+      (snapshot, expected) => client.save(snapshot, expected),
+      (state) => {
+        if (project.id === projectId) saveStatus = state;
+      },
+      revision,
+    );
+  }
+  async function flush() {
+    try {
+      await autosave?.flush();
+      notice = "Project saved";
+      error = "";
+    } catch (e) {
+      fail(e);
+    }
+  }
+  async function activate(next: OcrProject, revision = 0) {
+    await autosave?.close();
+    history = createHistory(parseProject(next));
+    selectedPageId = history.present.pages[0]?.id ?? null;
+    selectedRegionId = null;
+    checkedPages = [];
+    fields = [];
+    tableRows = [];
+    formula = "";
+    extractionPageId = null;
+    saveStatus = { state: "saved" };
+    bindSave(revision);
+    recentOpen = false;
+  }
+  async function newProject() {
+    if (locked) return;
+    try {
+      await activate(createProject());
+      notice = "New project ready";
+    } catch (e) {
+      fail(e);
+    }
+  }
+  async function loadProject(id: string) {
+    if (locked) return;
+    busy = "Opening project";
+    error = "";
+    try {
+      const saved = await client.load(id);
+      if (!saved) throw new Error("The saved project is no longer available.");
+      await activate(saved.project, saved.revision);
+      notice = saved.warnings?.join(" · ") || "Project restored";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  async function openRecent() {
+    recentOpen = !recentOpen;
+    if (recentOpen) {
+      try {
+        recent = await client.list();
+      } catch (e) {
+        fail(e);
+      }
+    }
+  }
+  async function importFiles(paths?: string[]) {
+    if (locked) return;
+    error = "";
+    try {
+      const selected = paths ?? (await client.pickDocuments());
+      if (!selected.length) return;
+      busy = "Importing documents";
+      let added = 0;
+      const errors: string[] = [];
+      for (const path of selected) {
+        try {
+          if (project.documents.some((d) => d.sourceUri === path)) {
+            errors.push(
+              `${path.split(/[\\/]/).pop()}: already in this project`,
+            );
+            continue;
+          }
+          busy = `Importing ${path.split(/[\\/]/).pop()}`;
+          const imported = await client.importDocument(path);
+          const next = addDocument(project, imported);
+          if (!project.pages.length) {
+            next.name = imported.name.replace(/\.[^.]+$/, "") || "OCR project";
+            selectedPageId = next.pages[0].id;
+          }
+          change(next);
+          added += imported.pages.length;
+          await autosave?.flush();
+        } catch (e) {
+          errors.push(`${path.split(/[\\/]/).pop()}: ${message(e)}`);
+        }
+      }
+      notice = `${added} ${added === 1 ? "page" : "pages"} added`;
+      if (errors.length) error = errors.join("\n");
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  function selectPage(id: string) {
+    selectedPageId = id;
+    selectedRegionId = null;
+    editGroup = null;
+    showOriginal = false;
+    drawMode = "select";
+    currentMatch = null;
+  }
+  function gotoPage(delta: number) {
+    const next = project.pages[pageIndex + delta];
+    if (next) selectPage(next.id);
+  }
+  async function selectRegion(id: string) {
+    selectedRegionId = id;
+    inspector = "review";
+    textView = "regions";
+    if (onlyIssues && !issueRegionIds.has(id)) onlyIssues = false;
+    await tick();
+    editorPane
+      ?.querySelector<HTMLElement>(`[data-region-id="${id}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }
+  function togglePage(id: string) {
+    checkedPages = checkedPages.includes(id)
+      ? checkedPages.filter((p) => p !== id)
+      : [...checkedPages, id];
+  }
+  function applyPageRange() {
+    const ids = new Set<string>();
+    try {
+      for (const part of pageRange
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)) {
+        if (!/^\d+(?:\s*-\s*\d+)?$/.test(part))
+          throw new Error(
+            "Use page numbers and ranges, for example 1–4, 8. Enter a hyphen for a range.",
+          );
+        const [a, b] = part.split("-").map(Number);
+        const end = b ?? a;
+        if (a < 1 || end < a || end > project.pages.length)
+          throw new Error(
+            `Page ranges must be between 1 and ${project.pages.length}.`,
+          );
+        for (let i = a; i <= end; i++) ids.add(project.pages[i - 1].id);
+      }
+      checkedPages = [...ids];
+      error = "";
+    } catch (e) {
+      fail(e);
+    }
+  }
+  function confirmation(
+    title: string,
+    body: string,
+    label: string,
+    action: () => void | Promise<void>,
+  ) {
+    confirm = { title, message: body, label, action };
+  }
+  function undo() {
+    if (locked) return;
+    history = undoHistory(history);
+    autosave?.schedule(project);
+    selectedRegionId = null;
+    editGroup = null;
+  }
+  function redo() {
+    if (locked) return;
+    history = redoHistory(history);
+    autosave?.schedule(project);
+    selectedRegionId = null;
+    editGroup = null;
+  }
+  function editText(r: OcrRegion, text: string) {
+    if (!activePage || locked) return;
+    const key = `${activePage.id}:${r.id}`;
+    const next = editRegion(project, activePage.id, r.id, text);
+    history =
+      editGroup === key
+        ? { ...history, present: next }
+        : commitHistory(history, next);
+    editGroup = key;
+    autosave?.schedule(next);
+  }
+  function patchRegion(patch: Partial<OcrRegion>) {
+    if (activePage && region)
+      safe(() =>
+        change(updateRegion(project, activePage.id, region.id, patch)),
+      );
+  }
+  function reviewNext() {
+    if (!reviewIssues.length) {
+      notice = "No outstanding review issues";
+      return;
+    }
+    const current = reviewIssues.findIndex(
+      (i) => i.pageId === activePage?.id && i.regionId === selectedRegionId,
+    );
+    const issue = reviewIssues[(current + 1) % reviewIssues.length];
+    selectPage(issue.pageId);
+    if (issue.regionId) void selectRegion(issue.regionId);
+    else inspector = "review";
+  }
+  function approveRegion() {
+    if (activePage && region) {
+      safe(() =>
+        change(
+          updateRegion(project, activePage.id, region.id, {
+            review: "approved",
+          }),
+        ),
+      );
+      reviewNext();
+    }
+  }
+  function approveCurrent() {
+    if (activePage)
+      safe(() => {
+        change(approvePage(project, activePage.id, !activePage.approved));
+        notice = activePage.approved
+          ? "Page approved"
+          : "Page approval removed";
+      });
+  }
+  function setSetting(key: string, value: unknown) {
+    change({
+      ...project,
+      recognitionSettings: { ...settings, [key]: value },
+      updatedAt: new Date().toISOString(),
     });
-    const lowConfCount = $derived(cur ? cur.regions.filter(r => r.confidence < threshold).length : 0);
-
-    function setPageOcr(idx: number, patch: Partial<PageOcr>) {
-        const next = new Map(ocr);
-        const base: PageOcr = next.get(idx) ?? { width: 0, height: 0, regions: [], ocred: false, proofread: false };
-        next.set(idx, { ...base, ...patch });
-        ocr = next;
+  }
+  function setConfig(key: string, value: unknown) {
+    setSetting("config", {
+      ...((settings.config as object) ?? {}),
+      [key]: value,
+    });
+  }
+  function chooseProfile(id: string) {
+    change({
+      ...project,
+      profileId: id,
+      recognitionSettings: { ...settings, config: {} },
+      updatedAt: new Date().toISOString(),
+    });
+    advancedConfig = "";
+  }
+  function applyAdvanced() {
+    try {
+      const value = JSON.parse(advancedConfig);
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new Error("Enter a configuration object.");
+      setSetting("config", value);
+      configError = "";
+      notice = "Advanced configuration applied";
+    } catch (e) {
+      configError = message(e);
     }
-
-    async function openDoc() {
-        error = '';
-        const picked = await open({
-            multiple: false,
-            filters: [{ name: 'Documents', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp'] }],
+  }
+  async function recognize(
+    scope: "current" | "selected" | "pending" | "all" | "failed",
+    confirmed = false,
+  ) {
+    if (locked || !capabilities.ocr) return;
+    const pages = project.pages.filter(
+      (p) =>
+        !p.excluded &&
+        (scope === "current"
+          ? p.id === activePage?.id
+          : scope === "selected"
+            ? checkedPages.includes(p.id)
+            : scope === "pending"
+              ? p.status === "pending" || p.status === "failed"
+              : scope === "failed"
+                ? p.status === "failed"
+                : true),
+    );
+    if (!pages.length) {
+      notice = "No pages match this recognition scope";
+      return;
+    }
+    if (
+      !confirmed &&
+      pages.some(
+        (p) =>
+          p.approved ||
+          p.regions.some(
+            (r) => r.text !== r.originalText || r.review === "approved",
+          ),
+      )
+    ) {
+      confirmation(
+        "Replace reviewed recognition?",
+        `${pages.length} pages will be recognized with the current profile. Existing corrections can be recovered with Undo.`,
+        "Recognize again",
+        () => recognize(scope, true),
+      );
+      return;
+    }
+    error = "";
+    selectedRegionId = null;
+    showOriginal = false;
+    const configSnapshot = JSON.parse(JSON.stringify(config)),
+      engineSnapshot = engine,
+      languageSnapshot = language,
+      projectId = project.id;
+    // One undo boundary covers the entire batch. Each page result is still autosaved.
+    change(
+      updatePage(project, pages[0].id, { status: "running", error: null }),
+    );
+    try {
+      const started = queue.start(
+        pages.map((p) => ({
+          id: p.id,
+          run: async () => {
+            if (project.id !== projectId)
+              throw new Error("The active project changed.");
+            const current = project.pages.find((page) => page.id === p.id);
+            if (!current) throw new Error("The page was removed.");
+            return client.recognize({
+              pagePath: current.imagePath,
+              config: configSnapshot,
+              engine: engineSnapshot,
+              language: languageSnapshot,
+            });
+          },
+        })),
+      );
+      if (!started) throw new Error("The recognition queue is already active.");
+      queuePromise = queue.whenSettled();
+      await queuePromise;
+      await autosave?.flush();
+      notice =
+        queueState.phase === "paused"
+          ? "Queue paused. Completed pages are saved."
+          : queueState.phase === "cancelled"
+            ? "Queue stopped. Completed pages are saved; remaining pages are ready to resume."
+            : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
+    } catch (e) {
+      fail(e);
+    } finally {
+      queuePromise = null;
+    }
+  }
+  async function resumeQueue() {
+    if (!queue.resume()) return;
+    queuePromise = queue.whenSettled();
+    try {
+      await queuePromise;
+      await autosave?.flush();
+      notice =
+        queueState.phase === "paused"
+          ? "Queue paused"
+          : queueState.phase === "cancelled"
+            ? "Queue stopped. Completed pages are saved."
+            : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed` : ""}`;
+    } catch (e) {
+      fail(e);
+    } finally {
+      queuePromise = null;
+    }
+  }
+  function persistExtraction() {
+    if (!activePage) return;
+    change(
+      updatePage(project, activePage.id, {
+        provenance: {
+          ...activePage.provenance,
+          extraction: {
+            fields,
+            tableRows,
+            formula,
+            labels,
+            sourceImagePath: activePage.imagePath,
+            regionId: selectedRegionId,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }),
+    );
+  }
+  let lastExtractionPage: string | undefined;
+  $effect(() => {
+    const page = activePage;
+    if (page?.id === lastExtractionPage) return;
+    lastExtractionPage = page?.id;
+    const data = page?.provenance.extraction as
+      | {
+          fields?: ExtractionField[];
+          tableRows?: string[][];
+          formula?: string;
+          labels?: string;
+        }
+      | undefined;
+    fields = data?.fields ?? [];
+    tableRows = data?.tableRows ?? [];
+    formula = data?.formula ?? "";
+    if (data?.labels) labels = data.labels;
+    extractionPageId = data ? (page?.id ?? null) : null;
+  });
+  async function transform(
+    operation: TransformOptions["operation"],
+    options: Partial<TransformOptions> = {},
+  ) {
+    if (!activePage || locked) return;
+    const page = activePage;
+    busy = "Preparing page";
+    error = "";
+    try {
+      const result = await client.transform({
+        pagePath: page.imagePath,
+        operation,
+        ...options,
+      });
+      if (result.pages.length > 1) {
+        const before = project.pages.findIndex((p) => p.id === page.id);
+        change(splitPage(project, page.id, result.pages));
+        selectPage(project.pages[before].id);
+      } else if (result.pages[0]) {
+        change(applyPageImage(project, page.id, result.pages[0], operation));
+        selectedRegionId = null;
+      } else throw new Error("The operation produced no pages.");
+      showOriginal = false;
+      drawMode = "select";
+      notice = "Page updated. Recognize the new pixels before export.";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  async function prepareImage() {
+    if (!activePage || locked) return;
+    const page = activePage;
+    busy = "Repairing scan";
+    error = "";
+    try {
+      const result = await client.prepare(page.imagePath, config);
+      change(applyPageImage(project, page.id, result, "scan repair"));
+      selectedRegionId = null;
+      showOriginal = false;
+      notice =
+        "Scan repair applied. Use Original to compare, or Undo to restore.";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  async function onRectangle(
+    rect: { x: number; y: number; w: number; h: number },
+    mode: string,
+  ) {
+    if (!activePage || locked) return;
+    if (mode === "crop") {
+      await transform("crop", { crop: rect });
+      return;
+    }
+    if (mode === "recognize") {
+      const page = activePage;
+      busy = "Recognizing selected zone";
+      error = "";
+      try {
+        const result = await client.recognize({
+          pagePath: page.imagePath,
+          config,
+          engine,
+          language,
+          zone: rect,
         });
-        if (!picked || typeof picked !== 'string') return;
-        busy = 'open'; status = i18n.t.ocrwb.opening;
+        const recognized = applyRecognition(
+          project,
+          page.id,
+          result,
+          project.profileId,
+        ).pages.find((p) => p.id === page.id)!;
+        const keep = page.regions.filter(
+          (r) =>
+            r.x + r.w <= rect.x ||
+            r.x >= rect.x + rect.w ||
+            r.y + r.h <= rect.y ||
+            r.y >= rect.y + rect.h,
+        );
+        change(
+          updatePage(project, page.id, {
+            regions: [...keep, ...recognized.regions],
+            status: "recognized",
+            approved: false,
+            error: null,
+            provenance: {
+              ...page.provenance,
+              lastZoneRecognition: recognized.provenance,
+            },
+          }),
+        );
+        notice = `${recognized.regions.length} regions recognized in the selected zone`;
+      } catch (e) {
+        fail(e);
+      } finally {
+        busy = "";
+        drawMode = "select";
+      }
+      return;
+    }
+    safe(() => {
+      change(addRegion(project, activePage.id, rect, mode as RegionKind));
+      selectedRegionId =
+        activePage.regions[activePage.regions.length - 1]?.id ?? null;
+      inspector = "review";
+      drawMode = "select";
+    });
+  }
+  async function findNext(direction: -1 | 1 = 1) {
+    const match = nextMatch(matches, currentMatch, direction);
+    if (!match) return;
+    selectedPageId = match.pageId;
+    selectedRegionId = match.regionId;
+    currentMatch = match;
+    onlyIssues = false;
+    inspector = "review";
+    textView = "regions";
+    await tick();
+    const field = editorPane?.querySelector<HTMLTextAreaElement>(
+      `[data-region-id="${match.regionId}"] textarea`,
+    );
+    field?.focus();
+    field?.setSelectionRange(match.start, match.end);
+    field?.scrollIntoView({ block: "nearest" });
+  }
+  function replaceOne() {
+    if (!currentMatch || !activePage) return;
+    const r = activePage.regions.find((r) => r.id === currentMatch!.regionId);
+    if (!r) return;
+    safe(() =>
+      change(
+        editRegion(
+          project,
+          activePage.id,
+          r.id,
+          r.text.slice(0, currentMatch!.start) +
+            replacement +
+            r.text.slice(currentMatch!.end),
+        ),
+      ),
+    );
+    currentMatch = null;
+    void findNext();
+  }
+  async function exportProject(overwrite = false, path?: string) {
+    if (locked) return;
+    error = "";
+    if (preflight.errors.length) {
+      error = preflight.errors.join("\n");
+      return;
+    }
+    const ext =
+      ({ text: "txt", markdown: "md", alto: "xml" } as Record<string, string>)[
+        exportFormat
+      ] ?? exportFormat;
+    let target = path;
+    try {
+      target =
+        path ??
+        (await client.pickExport(
+          project.name.replace(/[^\p{L}\p{N}._ -]/gu, "_"),
+          ext,
+        )) ??
+        undefined;
+      if (!target) return;
+      busy = "Exporting reviewed document";
+      await autosave?.flush();
+      const result = await client.exportDocument({
+        outputPath: target,
+        format: exportFormat,
+        pdfa: exportFormat === "pdf" && exportPdfa,
+        pages: preflight.pages,
+        overwrite,
+        sourceUris: project.documents.map((d) => d.sourceUri),
+      });
+      notice = `Exported ${result.pages} pages · ${result.saved_path}`;
+    } catch (e) {
+      if (
+        !overwrite &&
+        target &&
+        /already exists|file exists/i.test(message(e))
+      ) {
+        const chosen = target;
+        confirmation(
+          "Replace the existing export?",
+          `The file ${chosen} already exists. Replacing it writes the currently selected reviewed pages.`,
+          "Replace export",
+          () => exportProject(true, chosen),
+        );
+      } else fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  function tableFromHtml(html: string): string[][] {
+    // Parse into an inert template; only cell text reaches the live document.
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    return Array.from(template.content.querySelectorAll("tr"))
+      .map((row) =>
+        Array.from(row.querySelectorAll("td,th")).map(
+          (cell) => cell.textContent ?? "",
+        ),
+      )
+      .filter((row) => row.length);
+  }
+  async function extractionPath() {
+    if (!activePage) throw new Error("Select a page.");
+    if (region) {
+      const result = await client.transform({
+        pagePath: activePage.imagePath,
+        operation: "crop",
+        crop: { x: region.x, y: region.y, w: region.w, h: region.h },
+      });
+      if (!result.pages[0])
+        throw new Error("The selected region could not be cropped.");
+      return result.pages[0].image_path;
+    }
+    return activePage.imagePath;
+  }
+  async function extract(kind: "fields" | "table" | "formula") {
+    if (!activePage || locked) return;
+    busy = `Extracting ${kind}`;
+    error = "";
+    extractionKind = kind;
+    try {
+      if (kind === "fields") {
+        const list = labels
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (!list.length) throw new Error("Enter at least one field label.");
+        fields = useLayoutFields
+          ? await client.layoutFields(
+              await extractionPath(),
+              list,
+              fieldThreshold,
+            )
+          : await client.extractFields(
+              region ? region.text : pageText,
+              list,
+              fieldThreshold,
+            );
+        notice = `${fields.length} fields extracted${useLayoutFields ? " from page layout" : " from reviewed text"}`;
+      } else if (kind === "table") {
+        const result = await client.table(await extractionPath());
+        tableRows = tableFromHtml(result.html);
+        notice = `${result.rows} rows × ${result.cols} columns extracted`;
+      } else {
+        formula = (await client.math(await extractionPath())) ?? "";
+        notice = formula ? "Formula recognized" : "No formula was recognized";
+      }
+      extractionPageId = activePage.id;
+      persistExtraction();
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  const csv = (rows: string[][]) =>
+    rows
+      .map((row) =>
+        row.map((value) => `"${value.replace(/"/g, '""')}"`).join(","),
+      )
+      .join("\r\n");
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      notice = "Copied to clipboard";
+    } catch {
+      error =
+        "Clipboard access was unavailable. Select and copy the text manually.";
+    }
+  }
+  async function saveExtraction() {
+    const ext =
+      extractionKind === "fields"
+        ? "json"
+        : extractionKind === "table"
+          ? "csv"
+          : "tex";
+    const text =
+      extractionKind === "fields"
+        ? JSON.stringify(fields, null, 2)
+        : extractionKind === "table"
+          ? csv(tableRows)
+          : formula;
+    if (!text) return;
+    try {
+      const outputPath = await client.pickExport(
+        `${project.name}-${extractionKind}`,
+        ext,
+      );
+      if (!outputPath) return;
+      busy = "Saving extracted data";
+      const result = await client.writeText(
+        outputPath,
+        text,
+        project.documents.map((d) => d.sourceUri),
+      );
+      notice = `Saved ${result.saved_path}`;
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  async function reindex() {
+    if (!activePage || locked) return;
+    const source = project.documents.find(
+      (d) => d.id === activePage.documentId,
+    );
+    if (!source) return;
+    const sourcePages = project.pages.filter((p) => p.documentId === source.id);
+    const check = prepareExport(
+      { ...project, pages: sourcePages },
+      { requireReviewed: true },
+    );
+    if (check.errors.length) {
+      error = check.errors.join("\n");
+      return;
+    }
+    busy = "Updating search index";
+    error = "";
+    try {
+      await client.reindex(source.sourceUri, check.text);
+      notice = "Search index updated with the approved text";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+    }
+  }
+  function keydown(event: KeyboardEvent) {
+    const target = event.target as HTMLElement;
+    const editing = target?.matches(
+      'input,textarea,select,[contenteditable="true"]',
+    );
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void flush();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      searchOpen = true;
+      return;
+    }
+    if (
+      !editing &&
+      (event.metaKey || event.ctrlKey) &&
+      event.key.toLowerCase() === "z"
+    ) {
+      event.preventDefault();
+      event.shiftKey ? redo() : undo();
+      return;
+    }
+    if (
+      !editing &&
+      (event.metaKey || event.ctrlKey) &&
+      event.key.toLowerCase() === "y"
+    ) {
+      event.preventDefault();
+      redo();
+      return;
+    }
+    if (event.key === "F8") {
+      event.preventDefault();
+      reviewNext();
+      return;
+    }
+    if (event.key === "Escape") {
+      drawMode = "select";
+      confirm = null;
+      helpOpen = false;
+      recentOpen = false;
+      return;
+    }
+    if (!editing && event.altKey && event.key === "ArrowRight") {
+      event.preventDefault();
+      gotoPage(1);
+    }
+    if (!editing && event.altKey && event.key === "ArrowLeft") {
+      event.preventDefault();
+      gotoPage(-1);
+    }
+    if (!editing && event.key === "?") {
+      helpOpen = true;
+    }
+  }
+  function beforeUnload(event: BeforeUnloadEvent) {
+    if (autosave?.hasUnsavedChanges()) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  }
+  onMount(() => {
+    mounted = true;
+    let unlisten: (() => void) | undefined;
+    bindSave();
+    void (async () => {
+      const results = await Promise.allSettled([
+        client.capabilities(),
+        initialProject ? Promise.resolve(null) : client.load(),
+      ]);
+      if (!mounted) return;
+      if (results[0].status === "fulfilled") {
+        capabilities = results[0].value;
+        if (!capabilities.formats.includes(exportFormat))
+          exportFormat = capabilities.formats[0] ?? "text";
+      } else fail(results[0].reason);
+      if (results[1].status === "fulfilled" && results[1].value) {
+        const saved = results[1].value;
         try {
-            const res = await invoke<{ count: number; pages: string[] }>('ocr_doc_open', { locationUri: picked });
-            locationUri = picked;
-            pages = res.pages;
-            pageIdx = 0;
-            ocr = new Map();
-            selected = null;
-            zoom = 1;
-            status = `${res.count} ${i18n.t.ocrwb.pages}`;
-        } catch (e: any) {
-            error = String(e?.message ?? e);
-        } finally {
-            busy = null;
+          await activate(saved.project, saved.revision);
+          notice = saved.warnings?.join(" · ") || "Last project restored";
+        } catch (e) {
+          fail(e);
         }
-    }
-
-    async function runOcr(idx: number) {
-        const pagePath = pages[idx];
-        if (!pagePath) return;
-        busy = 'ocr'; status = i18n.t.ocrwb.running; error = '';
-        try {
-            const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath });
-            const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
-            setPageOcr(idx, { width: res.width, height: res.height, regions, ocred: true });
-            selected = null;
-            status = `${regions.length} ${i18n.t.ocrwb.regions}`;
-        } catch (e: any) {
-            error = String(e?.message ?? e);
-        } finally {
-            busy = null;
-        }
-    }
-
-    async function runOcrAll() {
-        busy = 'ocr-all'; error = '';
-        try {
-            for (let i = 0; i < pages.length; i++) {
-                status = `${i18n.t.ocrwb.running} ${i + 1}/${pages.length}`;
-                const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath: pages[i] });
-                const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
-                setPageOcr(i, { width: res.width, height: res.height, regions, ocred: true });
-            }
-            status = i18n.t.ocrwb.done;
-        } catch (e: any) {
-            error = String(e?.message ?? e);
-        } finally {
-            busy = null;
-        }
-    }
-
-    async function loadCleaned() {
-        const pagePath = pages[pageIdx];
-        if (!pagePath || cur?.cleanedPath !== undefined) { showCleaned = !showCleaned; return; }
-        busy = 'clean'; error = '';
-        try {
-            const path = await invoke<string>('ocr_page_cleaned', { pagePath });
-            setPageOcr(pageIdx, { cleanedPath: path || null });
-            showCleaned = !!path;
-            if (!path) status = i18n.t.ocrwb.no_cleaned;
-        } catch (e: any) {
-            error = String(e?.message ?? e);
-        } finally {
-            busy = null;
-        }
-    }
-
-    function editRegion(i: number, text: string) {
-        if (!cur) return;
-        const regions = cur.regions.map((r, j) => (j === i ? { ...r, text } : r));
-        setPageOcr(pageIdx, { regions });
-    }
-
-    function toggleProofread() {
-        if (cur) setPageOcr(pageIdx, { proofread: !cur.proofread });
-    }
-
-    function goto(i: number) {
-        if (i < 0 || i >= pages.length) return;
-        pageIdx = i;
-        selected = null;
-        zoom = 1;
-        showCleaned = showCleaned && !!ocr.get(i)?.cleanedPath;
-    }
-
-    /** Pages that have OCR results, as the backend export payload. */
-    function exportPayload() {
-        const out: any[] = [];
-        for (let i = 0; i < pages.length; i++) {
-            const p = ocr.get(i);
-            if (p?.ocred) {
-                out.push({ image_path: pages[i], width: p.width, height: p.height, regions: p.regions });
-            }
-        }
-        return out;
-    }
-    /** Joined corrected text across OCR'd pages (for sidecar / re-ingest). */
-    function joinedText() {
-        const parts: string[] = [];
-        for (let i = 0; i < pages.length; i++) {
-            const p = ocr.get(i);
-            if (p?.ocred) parts.push(p.regions.map(r => r.text).join('\n'));
-        }
-        return parts.join('\n\n');
-    }
-
-    async function doExport() {
-        const payload = exportPayload();
-        if (!payload.length) { error = i18n.t.ocrwb.run_first; return; }
-        busy = 'save'; error = '';
-        try {
-            const res = await invoke<{ saved_path: string; pages: number }>('ocr_workbench_export', {
-                locationUri, format: exportFormat, pdfa: exportPdfa, pages: payload,
-            });
-            status = `${i18n.t.ocrwb.saved}: ${res.saved_path}`;
-        } catch (e: any) { error = String(e?.message ?? e); } finally { busy = null; }
-    }
-    async function doSidecar() {
-        busy = 'save'; error = '';
-        try {
-            const path = await invoke<string>('ocr_workbench_sidecar', { locationUri, text: joinedText() });
-            status = `${i18n.t.ocrwb.saved}: ${path}`;
-        } catch (e: any) { error = String(e?.message ?? e); } finally { busy = null; }
-    }
-    async function doReingest() {
-        busy = 'save'; error = '';
-        try {
-            await invoke('ocr_workbench_reingest', { locationUri, text: joinedText() });
-            status = i18n.t.ocrwb.reingested;
-        } catch (e: any) { error = String(e?.message ?? e); } finally { busy = null; }
-    }
-
-    // ── KIE extraction ────────────────────────────────────────────────────────
-    interface KieField { label: string; value: string; score: number; }
-    let kieLabelsInput = $state('');
-    let kieResults     = $state<KieField[]>([]);
-    let kieBusy        = $state(false);
-    let kieError       = $state('');
-
-    async function runKie() {
-        const labels = kieLabelsInput.split(',').map(s => s.trim()).filter(Boolean);
-        if (!labels.length || !locationUri) return;
-        kieBusy = true; kieError = ''; kieResults = [];
-        try {
-            kieResults = await invoke<KieField[]>('tool_kie_extract', {
-                locationUri, labels, threshold: 0.5, lilt: false, liltModel: null,
-            });
-        } catch (e: any) {
-            kieError = String(e?.message ?? e);
-        } finally {
-            kieBusy = false;
-        }
-    }
-
-    // ── Table extraction ──────────────────────────────────────────────────────
-    interface TableResult { html: string; rows: number; cols: number; }
-    let tableResult = $state<TableResult | null>(null);
-    let tableBusy   = $state(false);
-    let tableError  = $state('');
-
-    async function runTable() {
-        if (!locationUri) return;
-        tableBusy = true; tableError = ''; tableResult = null;
-        try {
-            tableResult = await invoke<TableResult>('tool_table_extract', {
-                locationUri, ocrModel: null, save: false,
-            });
-        } catch (e: any) {
-            tableError = String(e?.message ?? e);
-        } finally {
-            tableBusy = false;
-        }
-    }
-
-    // ── Math OCR (LaTeX) ─────────────────────────────────────────────────────
-    let mathLoading = $state(false);
-    let mathResult = $state<string | null>(null);
-    let mathError = $state('');
-
-    async function runMathOcr() {
-        mathLoading = true;
-        mathResult = null;
-        mathError = '';
-        try {
-            mathResult = await invoke<string | null>('tool_math_ocr', {
-                locationUri,
-                model: null,
-            });
-        } catch (e: any) {
-            mathError = String(e?.message ?? e);
-        } finally {
-            mathLoading = false;
-        }
-    }
+      } else if (results[1].status === "rejected") fail(results[1].reason);
+      booting = false;
+    })();
+    // Native drag/drop supplies real filesystem paths; web File names are not paths.
+    if (client === workspaceClient)
+      void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
+        if (!locked) void importFiles(event.payload.paths);
+      })
+        .then((fn) => {
+          if (mounted) unlisten = fn;
+          else fn();
+        })
+        .catch(() => {});
+    return () => {
+      mounted = false;
+      unlisten?.();
+      queue.cancel();
+      void queue
+        .whenSettled()
+        .then(() => autosave?.close())
+        .catch(() => {});
+    };
+  });
 </script>
 
-<div class="ocrwb">
-    <!-- Toolbar -->
-    <div class="toolbar">
-        <button class="btn" onclick={openDoc} disabled={busy !== null}>{i18n.t.ocrwb.open}</button>
-        <span class="sep"></span>
-        <button class="btn" onclick={() => runOcr(pageIdx)} disabled={busy !== null || !pages.length}>{i18n.t.ocrwb.run_page}</button>
-        <button class="btn" onclick={runOcrAll} disabled={busy !== null || pages.length < 2}>{i18n.t.ocrwb.run_all}</button>
-        <span class="sep"></span>
-        <button class="btn" class:active={showCleaned} onclick={loadCleaned} disabled={busy !== null || !pages.length}>{i18n.t.ocrwb.cleaned}</button>
-        <button class="btn" onclick={() => zoom = Math.min(zoom + 0.25, 6)} disabled={!pages.length}>＋</button>
-        <button class="btn" onclick={() => zoom = Math.max(zoom - 0.25, 0.25)} disabled={!pages.length}>－</button>
-        <button class="btn" onclick={() => zoom = 1} disabled={!pages.length}>1:1</button>
-        <span class="sep"></span>
-        <label class="thr">
-            {i18n.t.ocrwb.threshold} ({threshold.toFixed(2)})
-            <input type="range" min="0" max="1" step="0.05" bind:value={threshold} />
-        </label>
-        {#if cur?.ocred}<span class="muted">{lowConfCount} {i18n.t.ocrwb.lowconf}</span>{/if}
-        <span class="grow"></span>
-        <!-- Save controls -->
-        <select bind:value={exportFormat} disabled={busy !== null} title={i18n.t.ocrwb.format}>
-            <option value="pdf">Searchable PDF</option>
-            <option value="hocr">hOCR</option>
-            <option value="alto">ALTO</option>
-            <option value="text">Text</option>
-        </select>
-        {#if exportFormat === 'pdf'}
-            <label class="chk"><input type="checkbox" bind:checked={exportPdfa} /> PDF/A</label>
-        {/if}
-        <button class="btn" onclick={doExport} disabled={busy !== null || !pages.length}>{i18n.t.ocrwb.export}</button>
-        <button class="btn" onclick={doSidecar} disabled={busy !== null || !pages.length} title={i18n.t.ocrwb.sidecar_hint}>{i18n.t.ocrwb.sidecar}</button>
-        <button class="btn" onclick={doReingest} disabled={busy !== null || !pages.length} title={i18n.t.ocrwb.reingest_hint}>{i18n.t.ocrwb.reingest}</button>
+<svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
+
+<section class="ocr-workspace" aria-label="OCR document workspace">
+  <header class="workspace-header">
+    <div class="workspace-mark"><ScanText size={22} /></div>
+    <div class="workspace-title">
+      <div class="eyebrow">
+        DOCUMENT WORKSPACE <span class="local-badge">LOCAL</span>
+      </div>
+      <input
+        aria-label="Project name"
+        value={project.name}
+        disabled={locked}
+        onchange={(e) =>
+          change({
+            ...project,
+            name: e.currentTarget.value.trim() || "Untitled OCR project",
+            updatedAt: new Date().toISOString(),
+          })}
+      />
     </div>
+    <div
+      class="save-state"
+      class:save-error={saveStatus.state === "error"}
+      title={saveStatus.error ??
+        "Project and corrections are saved on this device"}
+    >
+      {#if saveStatus.state === "saving"}<LoaderCircle
+          size={13}
+          class="spin"
+        />{:else if saveStatus.state === "error"}<AlertTriangle
+          size={13}
+        />{:else if saveStatus.state === "pending"}<Clock3
+          size={13}
+        />{:else}<ShieldCheck size={13} />{/if}
+      <span
+        >{saveStatus.state === "saved"
+          ? "All changes saved"
+          : saveStatus.state === "pending"
+            ? "Unsaved changes"
+            : saveStatus.state === "saving"
+              ? "Saving…"
+              : "Save failed"}</span
+      >
+      {#if saveStatus.state === "error"}<button onclick={flush}>Retry</button
+        >{/if}
+    </div>
+    <div class="header-actions">
+      <button
+        class="icon-button"
+        onclick={() => (helpOpen = true)}
+        title="Keyboard shortcuts"
+        aria-label="Keyboard shortcuts"><Keyboard size={17} /></button
+      ><button class="button subtle" onclick={openRecent} disabled={locked}
+        ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
+      ><button class="button subtle" onclick={newProject} disabled={locked}
+        ><Plus size={15} /> New</button
+      ><button class="button subtle" onclick={flush} disabled={booting}
+        ><Save size={15} /><span class="optional-label">Save</span></button
+      >
+    </div>
+  </header>
 
-    {#if error}<div class="bar err">{error}</div>{/if}
-    {#if status && !error}<div class="bar info">{status}</div>{/if}
+  <div class="command-bar">
+    <button
+      class="button primary"
+      onclick={() => importFiles()}
+      disabled={locked}><Plus size={16} /> Add documents</button
+    >
+    <div class="command-separator"></div>
+    <button
+      class="button"
+      onclick={() => recognize("current")}
+      disabled={locked ||
+        !activePage ||
+        !capabilities.ocr ||
+        activePage.excluded}
+      title="Recognize the current page using the selected profile"
+      ><ScanLine size={16} /> Recognize page</button
+    >
+    <button
+      class="button"
+      onclick={() => recognize(checkedPages.length ? "selected" : "pending")}
+      disabled={locked || !project.pages.length || !capabilities.ocr}
+      ><Play size={14} />
+      {checkedPages.length
+        ? `Process ${checkedPages.length} selected`
+        : "Process pending"}</button
+    >
+    <button
+      class="button subtle"
+      onclick={() =>
+        (inspector = inspector === "recognition" ? "review" : "recognition")}
+      class:active={inspector === "recognition"}
+      title="Recognition settings"
+      ><SlidersHorizontal size={15} /><span class="optional-label"
+        >{profile.name}</span
+      ></button
+    >
+    <div class="toolbar-spacer"></div>
+    <div class="undo-group">
+      <button
+        class="icon-button"
+        onclick={undo}
+        disabled={locked || !history.past.length}
+        title="Undo (Ctrl/Cmd Z)"
+        aria-label="Undo"><Undo2 size={17} /></button
+      ><button
+        class="icon-button"
+        onclick={redo}
+        disabled={locked || !history.future.length}
+        title="Redo (Ctrl/Cmd Shift Z)"
+        aria-label="Redo"><Redo2 size={17} /></button
+      >
+    </div>
+    <button
+      class="button export-button"
+      onclick={() => (inspector = "export")}
+      disabled={!project.pages.length}
+      ><Download size={15} /> Export <ChevronRight size={14} /></button
+    >
+  </div>
 
-    {#if !pages.length}
-        <div class="empty">
-            <p>{i18n.t.ocrwb.empty_title}</p>
-            <p class="muted">{i18n.t.ocrwb.empty_hint}</p>
-            <button class="btn big" onclick={openDoc}>{i18n.t.ocrwb.open}</button>
+  {#if recentOpen}
+    <div class="project-menu" role="region" aria-label="Saved projects">
+      <div class="section-heading">
+        <strong>Saved projects</strong><button
+          class="icon-button"
+          onclick={() => (recentOpen = false)}
+          aria-label="Close projects"><X size={15} /></button
+        >
+      </div>
+      {#if recent.length === 0}<p class="muted">
+          Your projects appear here after their first save.
+        </p>{/if}
+      {#each recent as item}<button
+          class="project-option"
+          onclick={() => loadProject(item.id)}
+          ><FileText size={17} /><span
+            ><strong>{item.name}</strong><small
+              >{item.page_count} pages · {new Date(
+                item.updated_at,
+              ).toLocaleString()}</small
+            ></span
+          >{#if item.id === project.id}<Check size={15} />{/if}</button
+        >{/each}
+    </div>
+  {/if}
+  {#if error}<div class="feedback error" role="alert">
+      <AlertTriangle size={17} /><span>{error}</span><button
+        class="icon-button"
+        onclick={() => (error = "")}
+        aria-label="Dismiss error"><X size={15} /></button
+      >
+    </div>{/if}
+  {#if saveStatus.state === "error"}<div class="feedback error" role="alert">
+      <AlertTriangle size={16} /><span
+        >Project could not be saved: {saveStatus.error}. Keep this workspace
+        open and retry.</span
+      >
+    </div>{/if}
+  {#if queueActive || queueState.phase === "completed" || queueState.phase === "cancelled"}
+    <div class="queue-bar" aria-live="polite">
+      <div class="queue-label">
+        {#if queueActive}<LoaderCircle
+            size={15}
+            class={queueState.phase !== "paused" ? "spin" : ""}
+          />{:else}<CircleCheck size={15} />{/if}<strong
+          >{queueState.phase === "paused"
+            ? "Queue paused"
+            : queueState.phase === "pausing"
+              ? "Pausing after this page"
+              : queueState.phase === "cancelling"
+                ? "Stopping after this page"
+                : queueState.phase === "cancelled"
+                  ? "Queue stopped"
+                  : queueState.phase === "completed"
+                    ? "Batch complete"
+                    : "Recognizing documents"}</strong
+        ><span
+          >{queueState.completed + queueState.failed} / {queueState.total} pages{queueState.failed
+            ? ` · ${queueState.failed} failed`
+            : ""}</span
+        >
+      </div>
+      <progress
+        max={queueState.total || 1}
+        value={queueState.completed + queueState.failed}
+        aria-label="Recognition progress"
+      ></progress>
+      {#if queueActive}<div class="queue-actions">
+          {#if queueState.phase === "paused"}<button
+              class="button small"
+              onclick={resumeQueue}><Play size={13} /> Resume</button
+            >{:else}<button
+              class="button small"
+              onclick={() => queue.pause()}
+              disabled={queueState.phase !== "running"}
+              ><Pause size={13} /> Pause</button
+            >{/if}<button
+            class="button small"
+            onclick={() => queue.cancel()}
+            disabled={queueState.phase === "cancelling"}
+            ><Square size={12} /> Stop</button
+          >
+        </div>{:else if queueState.failed}<button
+          class="button small"
+          onclick={() => recognize("failed")}
+          disabled={locked}><RefreshCw size={13} /> Retry failed</button
+        >{/if}
+    </div>
+  {/if}
+
+  {#if booting}
+    <div class="loading-state">
+      <LoaderCircle size={30} class="spin" />
+      <h2>Opening your workspace</h2>
+      <p>Checking recognition tools and saved projects…</p>
+    </div>
+  {:else if !project.pages.length}
+    <div class="welcome">
+      <div class="welcome-main">
+        <div class="welcome-icon"><ScanText size={40} strokeWidth={1.4} /></div>
+        <div class="eyebrow">FROM SCAN TO SEARCHABLE DOCUMENT</div>
+        <h1>Every page. Every detail.</h1>
+        <p>
+          Recognize, refine, and review your documents in one place.<br />Keep
+          the page image and the text side by side, from first scan to final
+          export.
+        </p>
+        <button
+          class="button primary large"
+          onclick={() => importFiles()}
+          disabled={locked}><Plus size={18} /> Add documents</button
+        >
+        <div class="supported">PDF · TIFF · PNG · JPEG · BMP · WebP</div>
+        {#if !capabilities.ocr}<div class="capability-note">
+            <AlertTriangle size={16} /><span
+              >{capabilities.reason ??
+                "This build does not include the CrispEmbed recognition engine. You can open saved projects, review text, and use the available export formats."}</span
+            >
+          </div>{/if}
+      </div>
+      <div class="welcome-steps">
+        <article>
+          <span class="step-number">01</span><Layers size={23} />
+          <h3>Build your batch</h3>
+          <p>
+            Bring multiple documents together. Arrange pages and repair scans
+            without modifying the source.
+          </p>
+        </article>
+        <article>
+          <span class="step-number">02</span><ScanLine size={23} />
+          <h3>Recognize & review</h3>
+          <p>
+            Choose a processing profile. Follow uncertain regions, correct text,
+            and approve each page.
+          </p>
+        </article>
+        <article>
+          <span class="step-number">03</span><Download size={23} />
+          <h3>Export with confidence</h3>
+          <p>
+            Check page completeness, preserve corrections, and save searchable
+            or editable output.
+          </p>
+        </article>
+      </div>
+      <div class="welcome-footer">
+        <ShieldCheck size={14} /> Local processing · Automatic project recovery ·
+        Original files preserved
+      </div>
+    </div>
+  {:else}
+    <div class="work-area" class:rail-hidden={!pageRail}>
+      {#if pageRail}
+        <aside class="page-rail" aria-label="Document pages">
+          <div class="rail-heading">
+            <strong>Pages <span>{project.pages.length}</span></strong><button
+              class="icon-button"
+              onclick={() => (pageRail = false)}
+              aria-label="Hide page list"><PanelLeftClose size={16} /></button
+            >
+          </div>
+          <div class="rail-controls">
+            <div class="search-input">
+              <Search size={13} /><input
+                bind:value={pageQuery}
+                placeholder="Find a document…"
+                aria-label="Filter documents"
+              />
+            </div>
+            <select bind:value={pageFilter} aria-label="Filter pages by status"
+              ><option value="all">All pages</option><option value="review"
+                >Needs review</option
+              ><option value="pending">Pending</option><option value="failed"
+                >Failed</option
+              ><option value="approved">Approved</option><option
+                value="excluded">Excluded</option
+              ></select
+            >
+          </div>
+          <div class="selection-row">
+            <label
+              ><input
+                type="checkbox"
+                checked={visiblePages.length > 0 &&
+                  visiblePages.every((p) => checkedPages.includes(p.id))}
+                onchange={(e) =>
+                  (checkedPages = e.currentTarget.checked
+                    ? [
+                        ...new Set([
+                          ...checkedPages,
+                          ...visiblePages.map((p) => p.id),
+                        ]),
+                      ]
+                    : checkedPages.filter(
+                        (id) => !visiblePages.some((p) => p.id === id),
+                      ))}
+              /><span
+                >{checkedPages.length
+                  ? `${checkedPages.length} selected`
+                  : "Select pages"}</span
+              ></label
+            >{#if checkedPages.length}<button
+                class="text-button"
+                onclick={() => (checkedPages = [])}>Clear</button
+              >{/if}
+          </div>
+          <div class="page-list">
+            {#each visiblePages as page (page.id)}
+              {@const number =
+                project.pages.findIndex((p) => p.id === page.id) + 1}
+              {@const issues = reviewIssues.filter(
+                (i) => i.pageId === page.id,
+              ).length}
+              <div
+                class="page-card"
+                class:current={activePage?.id === page.id}
+                class:excluded={page.excluded}
+              >
+                <input
+                  class="page-checkbox"
+                  type="checkbox"
+                  checked={checkedPages.includes(page.id)}
+                  onchange={() => togglePage(page.id)}
+                  aria-label={`Select page ${number}`}
+                />
+                <button
+                  class="page-card-main"
+                  onclick={() => selectPage(page.id)}
+                  aria-label={`Page ${number}: ${page.name}`}
+                  aria-current={activePage?.id === page.id ? "page" : undefined}
+                >
+                  <div class="thumbnail">
+                    <img
+                      src={client.imageUrl(page.imagePath)}
+                      alt=""
+                      loading="lazy"
+                    />{#if page.approved}<span class="thumb-approved"
+                        ><Check size={11} /></span
+                      >{/if}
+                  </div>
+                  <span class="page-card-info"
+                    ><strong>Page {number}</strong><span
+                      class="page-filename"
+                      title={page.name}>{page.name}</span
+                    ><span
+                      class="page-state"
+                      class:failed={page.status === "failed"}
+                      class:approved={page.approved}
+                      >{#if page.excluded}Excluded{:else if page.status === "running"}<LoaderCircle
+                          size={10}
+                          class="spin"
+                        /> Recognizing{:else if page.status === "failed"}<AlertTriangle
+                          size={10}
+                        /> Failed{:else if page.approved}<Check size={11} /> Approved{:else if page.status === "pending"}<Clock3
+                          size={10}
+                        /> Pending{:else if issues}<span class="amber-dot"
+                        ></span>{issues} to review{:else}<CircleCheck
+                          size={10}
+                        /> Recognized{/if}</span
+                    ></span
+                  >
+                </button>
+              </div>
+            {/each}
+            {#if visiblePages.length === 0}<p class="rail-empty">
+                No pages match this filter.
+              </p>{/if}
+          </div>
+          <div class="range-control">
+            <label for="ocr-page-range">Select a range</label>
+            <div>
+              <input
+                id="ocr-page-range"
+                bind:value={pageRange}
+                placeholder="1-4, 8"
+                onkeydown={(e) => {
+                  if (e.key === "Enter") applyPageRange();
+                }}
+              /><button
+                class="icon-button"
+                onclick={applyPageRange}
+                aria-label="Apply page range"><Check size={14} /></button
+              >
+            </div>
+          </div>
+          <div class="rail-footer">
+            <button
+              class="icon-button"
+              onclick={() =>
+                activePage && change(movePage(project, activePage.id, -1))}
+              disabled={locked || pageIndex < 1}
+              aria-label="Move page up"
+              title="Move page earlier"><ArrowUp size={15} /></button
+            ><button
+              class="icon-button"
+              onclick={() =>
+                activePage && change(movePage(project, activePage.id, 1))}
+              disabled={locked || pageIndex === project.pages.length - 1}
+              aria-label="Move page down"
+              title="Move page later"><ArrowDown size={15} /></button
+            ><button
+              class="icon-button"
+              onclick={() =>
+                activePage &&
+                change(
+                  updatePage(project, activePage.id, {
+                    excluded: !activePage.excluded,
+                  }),
+                )}
+              disabled={locked || !activePage}
+              aria-label={activePage?.excluded
+                ? "Include page"
+                : "Exclude page"}
+              title={activePage?.excluded
+                ? "Include in output"
+                : "Exclude from output"}
+              >{#if activePage?.excluded}<Eye size={15} />{:else}<EyeOff
+                  size={15}
+                />{/if}</button
+            >
+            <div class="toolbar-spacer"></div>
+            <button
+              class="icon-button danger"
+              onclick={() =>
+                activePage &&
+                confirmation(
+                  "Remove this page?",
+                  `${activePage.name} will be removed from this project. The original is preserved and Undo can restore this page.`,
+                  "Remove page",
+                  () => {
+                    change(removePage(project, activePage.id));
+                    selectPage(
+                      project.pages[
+                        Math.min(pageIndex, project.pages.length - 1)
+                      ]?.id ?? "",
+                    );
+                  },
+                )}
+              disabled={locked || !activePage}
+              aria-label="Remove page"
+              title="Remove page"><Trash2 size={15} /></button
+            >
+          </div>
+        </aside>
+      {/if}
+
+      <main class="document-pane" aria-label="Page image and regions">
+        <div class="image-toolbar">
+          {#if !pageRail}<button
+              class="icon-button"
+              onclick={() => (pageRail = true)}
+              aria-label="Show page list"><PanelLeftOpen size={16} /></button
+            >{/if}
+          <div class="tool-group">
+            <button
+              class="icon-button"
+              class:active={drawMode === "select"}
+              onclick={() => (drawMode = "select")}
+              title="Select and edit regions"
+              aria-label="Select regions"><MousePointer2 size={16} /></button
+            ><select
+              bind:value={drawMode}
+              disabled={locked || showOriginal}
+              aria-label="Region drawing tool"
+              ><option value="select">Select region</option><option value="text"
+                >Draw text region</option
+              ><option value="table">Draw table region</option><option
+                value="picture">Draw picture region</option
+              ><option value="formula">Draw formula region</option><option
+                value="recognize"
+                disabled={!capabilities.ocr}>Recognize a zone</option
+              ><option value="crop">Crop page</option></select
+            >
+          </div>
+          <div class="tool-group">
+            <button
+              class="icon-button"
+              onclick={() => transform("rotate", { degrees: 270 })}
+              disabled={locked}
+              aria-label="Rotate page left"
+              title="Rotate left"><RotateCcw size={16} /></button
+            ><button
+              class="icon-button"
+              onclick={() => transform("rotate", { degrees: 90 })}
+              disabled={locked}
+              aria-label="Rotate page right"
+              title="Rotate right"><RotateCw size={16} /></button
+            ><button
+              class="icon-button"
+              class:active={drawMode === "crop"}
+              onclick={() => {
+                drawMode = "crop";
+                showOriginal = false;
+              }}
+              disabled={locked}
+              aria-label="Crop page"
+              title="Crop page"><Crop size={16} /></button
+            ><button
+              class="icon-button"
+              onclick={() =>
+                activePage &&
+                confirmation(
+                  "Split this spread?",
+                  "Split at the detected gutter, or at the center when no gutter is detected. Each half becomes an independent page. Existing recognition is kept in Undo.",
+                  "Split page",
+                  () => transform("split"),
+                )}
+              disabled={locked}
+              aria-label="Split book spread"
+              title="Split book spread"><Scissors size={16} /></button
+            >
+          </div>
+          <div class="toolbar-spacer"></div>
+          <button
+            class="icon-button"
+            class:active={overlays}
+            onclick={() => (overlays = !overlays)}
+            title="Toggle region overlays"
+            aria-label="Toggle region overlays"><Layers size={16} /></button
+          ><button
+            class="button small subtle"
+            class:active={showOriginal}
+            onclick={() => (showOriginal = !showOriginal)}
+            title="Compare with the preserved original image">Original</button
+          >
         </div>
-    {:else}
-        <div class="split">
-            <!-- Image pane -->
-            <div class="image-pane">
-                <div class="canvas-scroll">
-                    <div class="canvas" style="transform: scale({zoom}); transform-origin: top left;">
-                        {#if curImg}
-                            <img src={curImg} alt="page {pageIdx + 1}" draggable="false" />
-                        {/if}
-                        {#if cur?.ocred && cur.width > 0}
-                            <svg viewBox="0 0 {cur.width} {cur.height}" preserveAspectRatio="none" class="overlay">
-                                {#each cur.regions as r, i}
-                                    <rect x={r.x} y={r.y} width={r.w} height={r.h}
-                                        class="rgn"
-                                        class:low={r.confidence < threshold}
-                                        class:sel={selected === i}
-                                        onclick={() => selected = i}
-                                        onkeydown={(e) => { if (e.key === 'Enter') selected = i; }}
-                                        role="button" tabindex="-1" />
-                                {/each}
-                            </svg>
-                        {/if}
-                    </div>
+        {#if activePage}
+          <PageCanvas
+            page={activePage}
+            imageUrl={client.imageUrl}
+            selectedId={selectedRegionId}
+            threshold={project.confidenceThreshold}
+            mode={drawMode}
+            {overlays}
+            original={showOriginal}
+            {zoom}
+            {fit}
+            disabled={locked}
+            onselect={selectRegion}
+            onrectangle={onRectangle}
+            ongeometry={(id, rect) =>
+              safe(() =>
+                change(updateRegion(project, activePage.id, id, rect)),
+              )}
+          />
+        {/if}
+        <div class="image-footer">
+          <button
+            class="icon-button"
+            onclick={() => gotoPage(-1)}
+            disabled={pageIndex <= 0}
+            aria-label="Previous page"><ChevronLeft size={17} /></button
+          ><span class="page-counter"
+            >{pageIndex + 1} <span>/ {project.pages.length}</span></span
+          ><button
+            class="icon-button"
+            onclick={() => gotoPage(1)}
+            disabled={pageIndex >= project.pages.length - 1}
+            aria-label="Next page"><ChevronRight size={17} /></button
+          >
+          <div class="toolbar-spacer"></div>
+          <button
+            class="icon-button"
+            onclick={() => {
+              zoom = Math.max(0.1, zoom - 0.25);
+              fit = "custom";
+            }}
+            aria-label="Zoom out"><ZoomOut size={16} /></button
+          ><select
+            value={fit === "custom" ? String(zoom) : fit}
+            onchange={(e) => {
+              const v = e.currentTarget.value;
+              if (v === "page" || v === "width") fit = v;
+              else {
+                fit = "custom";
+                zoom = Number(v);
+              }
+            }}
+            aria-label="Page zoom"
+            ><option value="page">Fit page</option><option value="width"
+              >Fit width</option
+            ><option value="0.5">50%</option><option value="1">100%</option
+            ><option value="1.5">150%</option><option value="2">200%</option
+            ><option value="3">300%</option
+            >{#if fit === "custom" && ![0.5, 1, 1.5, 2, 3].includes(zoom)}<option
+                value={zoom}>{Math.round(zoom * 100)}%</option
+              >{/if}</select
+          ><button
+            class="icon-button"
+            onclick={() => {
+              zoom = Math.min(6, zoom + 0.25);
+              fit = "custom";
+            }}
+            aria-label="Zoom in"><ZoomIn size={16} /></button
+          ><button
+            class="icon-button"
+            onclick={() => (fit = "page")}
+            aria-label="Fit page"
+            title="Fit page"><Maximize2 size={15} /></button
+          >
+        </div>
+      </main>
+
+      <aside class="inspector" aria-label="Recognition and review inspector">
+        <div
+          class="inspector-tabs"
+          role="tablist"
+          aria-label="Workspace panels"
+        >
+          <button
+            role="tab"
+            aria-selected={inspector === "review"}
+            onclick={() => (inspector = "review")}
+            class:active={inspector === "review"}
+            ><CheckCheck size={15} /> Review</button
+          ><button
+            role="tab"
+            aria-selected={inspector === "recognition"}
+            onclick={() => (inspector = "recognition")}
+            class:active={inspector === "recognition"}
+            ><SlidersHorizontal size={15} /> Recognize</button
+          ><button
+            role="tab"
+            aria-selected={inspector === "extract"}
+            onclick={() => (inspector = "extract")}
+            class:active={inspector === "extract"}
+            ><Braces size={15} /> Extract</button
+          ><button
+            role="tab"
+            aria-selected={inspector === "export"}
+            onclick={() => (inspector = "export")}
+            class:active={inspector === "export"}
+            ><Download size={15} /> Export</button
+          >
+        </div>
+        {#if inspector === "review"}
+          <div class="review-heading">
+            <div>
+              <h2>Text review</h2>
+              <span
+                >{activePage?.regions.length ?? 0} regions · {pageIssues.length}
+                need attention</span
+              >
+            </div>
+            <button
+              class="icon-button"
+              class:active={searchOpen}
+              onclick={() => (searchOpen = !searchOpen)}
+              aria-label="Find and replace"
+              title="Find and replace (Ctrl/Cmd F)"><Search size={16} /></button
+            >
+          </div>
+          {#if searchOpen}<div class="find-panel">
+              <div class="find-row">
+                <input
+                  bind:value={query}
+                  placeholder="Find in project…"
+                  aria-label="Find text"
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void findNext(e.shiftKey ? -1 : 1);
+                    }
+                  }}
+                /><span>{matches.length}</span><button
+                  class="icon-button"
+                  onclick={() => findNext(-1)}
+                  disabled={!matches.length}
+                  aria-label="Previous match"><ChevronLeft size={14} /></button
+                ><button
+                  class="icon-button"
+                  onclick={() => findNext()}
+                  disabled={!matches.length}
+                  aria-label="Next match"><ChevronRight size={14} /></button
+                >
+              </div>
+              <div class="find-row">
+                <input
+                  bind:value={replacement}
+                  placeholder="Replace with…"
+                  aria-label="Replacement text"
+                /><button
+                  class="button small"
+                  onclick={replaceOne}
+                  disabled={locked || !currentMatch}>Replace</button
+                ><button
+                  class="button small"
+                  onclick={() =>
+                    safe(() => {
+                      change(
+                        replaceMatches(project, query, replacement, {
+                          caseSensitive: matchCase,
+                        }),
+                      );
+                      currentMatch = null;
+                    })}
+                  disabled={locked || !matches.length}>All</button
+                >
+              </div>
+              <label class="check-label"
+                ><input type="checkbox" bind:checked={matchCase} /> Match case
+                <span class="muted">· Literal text, included pages</span></label
+              >
+            </div>{/if}
+          <div class="review-options">
+            <label class="check-label"
+              ><input type="checkbox" bind:checked={onlyIssues} /> Needs attention</label
+            >
+            <div class="toolbar-spacer"></div>
+            <button
+              class="text-button"
+              onclick={reviewNext}
+              disabled={!reviewIssues.length}
+              >Next issue <ChevronRight size={13} /></button
+            >
+          </div>
+          <div class="review-view-tabs">
+            <button
+              class:active={textView === "regions"}
+              onclick={() => (textView = "regions")}>Regions</button
+            ><button
+              class:active={textView === "text"}
+              onclick={() => (textView = "text")}>Reading order</button
+            ><span>{activePage?.width} × {activePage?.height} px</span>
+          </div>
+          {#if region && !showOriginal}<div class="source-loupe">
+              <div class="loupe-label">
+                <ScanText size={12} /> SOURCE DETAIL
+                <span
+                  >Region {(activePage?.regions.findIndex(
+                    (r) => r.id === region.id,
+                  ) ?? 0) + 1}</span
+                >
+              </div>
+              <svg
+                viewBox="{Math.max(0, region.x - 10)} {Math.max(
+                  0,
+                  region.y - 6,
+                )} {region.w + 20} {region.h + 12}"
+                role="img"
+                aria-label="Magnified selected source text"
+                ><image
+                  href={client.imageUrl(activePage.imagePath)}
+                  width={activePage.width}
+                  height={activePage.height}
+                /></svg
+              >
+            </div>{/if}
+          <div class="region-list" bind:this={editorPane}>
+            {#if activePage?.status === "failed"}<div
+                class="panel-message warning"
+              >
+                <AlertTriangle size={24} />
+                <h3>Recognition needs another try</h3>
+                <p>{activePage.error}</p>
+                <button
+                  class="button"
+                  onclick={() => recognize("current")}
+                  disabled={locked || !capabilities.ocr}
+                  ><RefreshCw size={14} /> Retry this page</button
+                >
+              </div>
+            {:else if activePage?.status === "pending"}<div
+                class="panel-message"
+              >
+                <ScanText size={32} />
+                <h3>Ready to recognize</h3>
+                <p>
+                  Choose a profile and recognize this page. You can also draw a
+                  region and enter text manually.
+                </p>
+                <button
+                  class="button primary"
+                  onclick={() => recognize("current")}
+                  disabled={locked || !capabilities.ocr}
+                  ><ScanLine size={15} /> Recognize page</button
+                >
+              </div>
+            {:else if textView === "text"}<div class="reading-order">
+                <p class="muted">
+                  Text follows the region order below. Reorder regions to change
+                  the exported reading order.
+                </p>
+                <textarea
+                  class="plain-text"
+                  readonly
+                  value={pageText}
+                  aria-label="Page text in reading order"
+                ></textarea><button
+                  class="button small"
+                  onclick={() => copy(pageText)}
+                  disabled={!pageText}><Copy size={13} /> Copy page text</button
+                >
+              </div>
+            {:else if visibleRegions.length === 0}<div class="panel-message">
+                <CircleCheck size={28} />
+                <h3>{onlyIssues ? "No flagged regions" : "No text regions"}</h3>
+                <p>
+                  {onlyIssues
+                    ? "Review the page image and approve it when ready."
+                    : "Check whether this is a blank or image-only page, or draw a text region to add text."}
+                </p>
+              </div>
+            {:else}
+              {#each visibleRegions as r (r.id)}
+                {@const regionIndex = activePage.regions.findIndex(
+                  (item) => item.id === r.id,
+                )}
+                <article
+                  class="region-card"
+                  data-region-id={r.id}
+                  class:selected={r.id === selectedRegionId}
+                  class:attention={issueRegionIds.has(r.id)}
+                  class:excluded={r.excluded}
+                >
+                  <div class="region-card-heading">
+                    <button
+                      class="region-number"
+                      onclick={() => selectRegion(r.id)}
+                      aria-label={`Select region ${regionIndex + 1}`}
+                      >{regionIndex + 1}</button
+                    ><button
+                      class="region-kind"
+                      onclick={() => selectRegion(r.id)}>{r.kind}</button
+                    ><span
+                      class="confidence"
+                      class:unknown={r.confidenceBasis !== "recognition"}
+                      title={r.confidenceBasis === "recognition"
+                        ? "Recognition score; a review signal, not calibrated accuracy"
+                        : r.confidenceBasis === "detection"
+                          ? "Detection score only; text confidence is unknown"
+                          : "Recognition confidence unavailable"}
+                      >{r.confidenceBasis === "recognition" &&
+                      r.confidence !== null
+                        ? `${Math.round(r.confidence * 100)}%`
+                        : r.confidenceBasis === "manual"
+                          ? "Manual"
+                          : "Unscored"}</span
+                    >{#if r.review === "approved"}<span
+                        class="region-approved"
+                        title="Approved"><Check size={14} /></span
+                      >{:else if r.review === "corrected"}<span
+                        class="edited-badge">Edited</span
+                      >{/if}
+                  </div>
+                  {#if r.charConfidenceAligned && r.char_conf.length === Array.from(r.originalText).length}<div
+                      class="character-evidence"
+                      aria-label="Original text with character confidence"
+                    >
+                      <span class="evidence-label">OCR</span
+                      >{#each Array.from(r.originalText) as ch, index}<span
+                          class:uncertain={(r.char_conf[index] ?? 1) <
+                            project.confidenceThreshold}>{ch}</span
+                        >{/each}
+                    </div>{/if}
+                  <textarea
+                    aria-label={`Text for region ${regionIndex + 1}`}
+                    value={r.text}
+                    oninput={(e) => editText(r, e.currentTarget.value)}
+                    onfocus={() => {
+                      selectedRegionId = r.id;
+                    }}
+                    onblur={() => (editGroup = null)}
+                    disabled={locked || r.excluded}
+                    rows={Math.max(
+                      2,
+                      Math.min(
+                        8,
+                        r.text.split("\n").length +
+                          Math.floor(r.text.length / 48),
+                      ),
+                    )}
+                    spellcheck="true"
+                    dir="auto"
+                  ></textarea>
+                  {#if r.id === selectedRegionId}<div class="region-actions">
+                      <button
+                        class="text-button"
+                        onclick={() => {
+                          safe(() =>
+                            change(
+                              updateRegion(project, activePage.id, r.id, {
+                                review:
+                                  r.review === "approved"
+                                    ? "unreviewed"
+                                    : "approved",
+                              }),
+                            ),
+                          );
+                        }}
+                        disabled={locked || r.excluded}
+                        ><Check size={13} />{r.review === "approved"
+                          ? "Reopen"
+                          : "Accept region"}</button
+                      >
+                      <div class="toolbar-spacer"></div>
+                      <button
+                        class="icon-button"
+                        onclick={() =>
+                          safe(() =>
+                            change(
+                              moveRegion(project, activePage.id, r.id, -1),
+                            ),
+                          )}
+                        disabled={locked || regionIndex === 0}
+                        title="Read earlier"
+                        aria-label="Move region earlier"
+                        ><ArrowUp size={13} /></button
+                      ><button
+                        class="icon-button"
+                        onclick={() =>
+                          safe(() =>
+                            change(moveRegion(project, activePage.id, r.id, 1)),
+                          )}
+                        disabled={locked ||
+                          regionIndex === activePage.regions.length - 1}
+                        title="Read later"
+                        aria-label="Move region later"
+                        ><ArrowDown size={13} /></button
+                      ><button
+                        class="icon-button"
+                        onclick={() => (geometryOpen = !geometryOpen)}
+                        title="Region properties"
+                        aria-label="Region properties"
+                        ><SlidersHorizontal size={13} /></button
+                      >
+                    </div>{/if}
+                </article>
+              {/each}
+            {/if}
+          </div>
+          {#if region && geometryOpen}<div class="region-properties">
+              <div class="section-heading">
+                <strong>Region properties</strong><button
+                  class="icon-button"
+                  onclick={() => (geometryOpen = false)}
+                  aria-label="Close region properties"><X size={13} /></button
+                >
+              </div>
+              <div class="field-grid">
+                <label
+                  >Type<select
+                    value={region.kind}
+                    onchange={(e) =>
+                      patchRegion({
+                        kind: e.currentTarget.value as RegionKind,
+                      })}
+                    disabled={locked}
+                    >{#each regionsKinds as kind}<option value={kind}
+                        >{kind}</option
+                      >{/each}</select
+                  ></label
+                >{#each ["x", "y", "w", "h"] as key}<label
+                    >{(
+                      {
+                        x: "Left",
+                        y: "Top",
+                        w: "Width",
+                        h: "Height",
+                      } as Record<string, string>
+                    )[key]}<input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={Math.round(region[key as "x" | "y" | "w" | "h"])}
+                      onchange={(e) =>
+                        patchRegion({ [key]: Number(e.currentTarget.value) })}
+                      disabled={locked}
+                    /></label
+                  >{/each}
+              </div>
+              <div class="region-actions">
+                <label class="check-label"
+                  ><input
+                    type="checkbox"
+                    checked={region.excluded}
+                    onchange={(e) =>
+                      patchRegion({ excluded: e.currentTarget.checked })}
+                    disabled={locked}
+                  /> Exclude from text</label
+                >
+                <div class="toolbar-spacer"></div>
+                <button
+                  class="text-button danger"
+                  onclick={() =>
+                    safe(() => {
+                      change(deleteRegion(project, activePage.id, region.id));
+                      selectedRegionId = null;
+                    })}
+                  disabled={locked}><Trash2 size={13} /> Remove</button
+                >
+              </div>
+              {#if region.text !== region.originalText}<details>
+                  <summary>Original recognition</summary>
+                  <p class="original-text">
+                    {region.originalText || "(Manually created region)"}
+                  </p>
+                  <button
+                    class="text-button"
+                    onclick={() => patchRegion({ text: region.originalText })}
+                    disabled={locked}>Restore original text</button
+                  >
+                </details>{/if}
+            </div>{/if}
+          <div class="approval-bar">
+            <span
+              >{#if activePage?.approved}<CircleCheck size={15} />{/if}</span
+            ><button
+              class="button"
+              class:approved-button={activePage?.approved}
+              onclick={approveCurrent}
+              disabled={locked || activePage?.status !== "recognized"}
+              ><CheckCheck size={16} />{activePage?.approved
+                ? "Page approved"
+                : "Approve page"}</button
+            ><button
+              class="button subtle"
+              onclick={approveRegion}
+              disabled={locked || !region || region.excluded}
+              title="Approve this region and go to the next issue"
+              >Accept & next <ChevronRight size={14} /></button
+            >
+          </div>
+        {:else if inspector === "recognition"}
+          <div class="panel-scroll settings-panel">
+            <div class="panel-intro">
+              <span class="eyebrow">RECOGNITION PIPELINE</span>
+              <h2>The right treatment for every page</h2>
+              <p>
+                Profiles combine CrispEmbed recognition, scan restoration, and
+                document layout tools. Changes apply to the next run.
+              </p>
+            </div>
+            {#if !capabilities.ocr}<div class="inline-warning">
+                <AlertTriangle size={16} />{capabilities.reason ??
+                  "Recognition is unavailable in this build."}
+              </div>{/if}
+            <label class="field-label"
+              >Processing profile<select
+                value={project.profileId}
+                onchange={(e) => chooseProfile(e.currentTarget.value)}
+                disabled={locked}
+                >{#each PROFILES as p}<option value={p.id}>{p.name}</option
+                  >{/each}</select
+              ><small>{profile.description}</small></label
+            >
+            <div class="field-grid two">
+              <label class="field-label"
+                >Recognition engine<select
+                  value={engine}
+                  onchange={(e) => setSetting("engine", e.currentTarget.value)}
+                  disabled={locked}
+                  ><option value="auto">Automatic pipeline</option
+                  >{#each capabilities.engines.filter((e) => e !== "auto") as e}<option
+                      value={e}>{engineNames[e] ?? e}</option
+                    >{/each}</select
+                ></label
+              ><label class="field-label"
+                >Document language<select
+                  value={language}
+                  onchange={(e) =>
+                    setSetting("language", e.currentTarget.value)}
+                  disabled={locked}
+                  ><option value="auto">Automatic</option><option value="eng"
+                    >English</option
+                  ><option value="deu">German</option><option value="fra"
+                    >French</option
+                  ><option value="spa">Spanish</option><option value="ita"
+                    >Italian</option
+                  ><option value="por">Portuguese</option><option value="nld"
+                    >Dutch</option
+                  ><option value="pol">Polish</option><option value="rus"
+                    >Russian</option
+                  ><option value="ara">Arabic</option><option value="chi_sim"
+                    >Chinese, simplified</option
+                  ><option value="chi_tra">Chinese, traditional</option><option
+                    value="jpn">Japanese</option
+                  ><option value="kor">Korean</option></select
+                ></label
+              >
+            </div>
+            <p class="field-hint">
+              Language selects the language model for Tesseract LSTM. Other
+              engines use their multilingual model.
+            </p>
+            <div class="settings-section">
+              <h3><WandSparkles size={15} /> Scan preparation</h3>
+              {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Restore blurred scans", hint: "Deblur and restore page detail." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label
+                  class="setting-toggle"
+                  ><span
+                    ><strong>{option.label}</strong><small>{option.hint}</small
+                    ></span
+                  ><input
+                    type="checkbox"
+                    checked={!!config[option.key]}
+                    onchange={(e) =>
+                      setConfig(option.key, e.currentTarget.checked)}
+                    disabled={locked || !capabilities.ocr}
+                  /></label
+                >{/each}
+              <div class="field-grid two">
+                <label class="field-label"
+                  >Restoration<select
+                    value={String(config.restore_engine ?? "restormer")}
+                    onchange={(e) =>
+                      setConfig("restore_engine", e.currentTarget.value)}
+                    disabled={locked || !config.restore}
+                    ><option value="restormer">Restormer</option><option
+                      value="scunet">SCUNet</option
+                    ><option value="instructir">InstructIR</option></select
+                  ></label
+                ><label class="field-label"
+                  >Super-resolution<select
+                    value={String(config.sr_engine ?? "pan")}
+                    onchange={(e) =>
+                      setConfig("sr_engine", e.currentTarget.value)}
+                    disabled={locked || !config.sr}
+                    ><option value="pan">PAN · fast</option><option
+                      value="esrgan">Real-ESRGAN · detail</option
+                    ><option value="safmn">SAFMN · compact</option></select
+                  ></label
+                >
+              </div>
+              <button
+                class="button full"
+                onclick={prepareImage}
+                disabled={locked || !activePage || !capabilities.ocr}
+                ><WandSparkles size={15} /> Apply preparation to this page</button
+              >
+              <p class="field-hint">
+                Recognition also applies enabled preparation. The prepared image
+                becomes the review and export image. Undo restores the previous
+                result.
+              </p>
+            </div>
+            <div class="settings-section">
+              <h3><Columns2 size={15} /> Layout & reading order</h3>
+              <label class="setting-toggle"
+                ><span
+                  ><strong>Analyze document layout</strong><small
+                    >Find columns, headings, tables, and formulas.</small
+                  ></span
+                ><input
+                  type="checkbox"
+                  checked={!!config.layout}
+                  onchange={(e) => setConfig("layout", e.currentTarget.checked)}
+                  disabled={locked || !capabilities.layout}
+                /></label
+              ><label class="setting-toggle"
+                ><span
+                  ><strong>Exclude running headers & footers</strong><small
+                    >Keep repeating marginal text out of the output.</small
+                  ></span
+                ><input
+                  type="checkbox"
+                  checked={!!config.drop_headers_footers}
+                  onchange={(e) =>
+                    setConfig("drop_headers_footers", e.currentTarget.checked)}
+                  disabled={locked || !config.layout}
+                /></label
+              ><label class="field-label"
+                >Layout engine<select
+                  value={String(config.layout_engine ?? "rtdetr")}
+                  onchange={(e) =>
+                    setConfig("layout_engine", e.currentTarget.value)}
+                  disabled={locked || !config.layout}
+                  ><option value="rtdetr">Semantic document layout</option
+                  ><option value="cc"
+                    >Connected components · no model download</option
+                  ></select
+                ></label
+              >
+            </div>
+            <div class="settings-section">
+              <h3><ShieldCheck size={15} /> Review threshold</h3>
+              <label class="threshold-label"
+                >Flag recognition scores below <strong
+                  >{Math.round(project.confidenceThreshold * 100)}%</strong
+                ><input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={project.confidenceThreshold}
+                  onchange={(e) =>
+                    change({
+                      ...project,
+                      confidenceThreshold: Number(e.currentTarget.value),
+                      updatedAt: new Date().toISOString(),
+                    })}
+                  disabled={locked}
+                /></label
+              >
+              <p class="field-hint">
+                Engine scores guide review; they are not a guarantee of
+                accuracy. Regions without recognition scores always need a
+                visual check.
+              </p>
+            </div>
+            <details class="advanced-settings">
+              <summary>Models & advanced pipeline</summary>
+              <p class="field-hint">
+                Use installed model paths or CrispEmbed registry names. Model
+                availability is checked when the pipeline runs.
+              </p>
+              {#each [{ key: "det_model", label: "Detection model" }, { key: "rec_model", label: "Recognition model" }, { key: "vlm_ocr_model", label: "Escalation model" }, { key: "punct_model", label: "Punctuation restoration" }, { key: "truecase_model", label: "Truecase model" }, { key: "lid_model", label: "Language identification model" }] as field}<label
+                  class="field-label"
+                  >{field.label}<input
+                    value={String(config[field.key] ?? "")}
+                    placeholder="Use engine default"
+                    disabled={locked}
+                    onchange={(e) =>
+                      setConfig(
+                        field.key,
+                        e.currentTarget.value.trim() || null,
+                      )}
+                  /></label
+                >{/each}<label class="field-label"
+                >Pipeline configuration<textarea
+                  class="config-editor"
+                  bind:value={advancedConfig}
+                  placeholder={'{"stages": []}'}
+                  rows="5"
+                  spellcheck="false"
+                  disabled={locked}
+                ></textarea></label
+              >{#if configError}<p class="text-error">
+                  {configError}
+                </p>{/if}<button
+                class="button small"
+                onclick={() =>
+                  (advancedConfig = JSON.stringify(config, null, 2))}
+                disabled={locked}>Inspect current configuration</button
+              ><button
+                class="button small"
+                onclick={applyAdvanced}
+                disabled={locked || !advancedConfig.trim()}
+                >Apply configuration</button
+              >
+            </details>
+            <div class="settings-section">
+              <h3>Batch actions</h3>
+              <div class="button-grid">
+                <button
+                  class="button"
+                  onclick={() => recognize("all")}
+                  disabled={locked || !capabilities.ocr}
+                  ><Play size={14} /> Recognize all</button
+                ><button
+                  class="button"
+                  onclick={() => recognize("failed")}
+                  disabled={locked || !metrics.failed || !capabilities.ocr}
+                  ><RefreshCw size={14} /> Retry failed</button
+                >
+              </div>
+              <p class="field-hint">
+                Pause and Stop take effect after the current page. Completed
+                results are saved as the queue progresses.
+              </p>
+            </div>
+            {#if activePage?.provenance && Object.keys(activePage.provenance).length}<details
+                class="advanced-settings"
+              >
+                <summary>Current page provenance</summary>
+                <pre class="provenance">{JSON.stringify(
+                    activePage.provenance,
+                    null,
+                    2,
+                  )}</pre>
+              </details>{/if}
+          </div>
+        {:else if inspector === "extract"}
+          <div class="panel-scroll extraction-panel">
+            <div class="panel-intro">
+              <span class="eyebrow">STRUCTURED CONTENT</span>
+              <h2>Put the page to work</h2>
+              <p>
+                {region
+                  ? `Working with selected ${region.kind} region.`
+                  : "Working with the current page. Select a region to isolate a table, formula, or form."}
+              </p>
+            </div>
+            <div class="segmented">
+              <button
+                class:active={extractionKind === "fields"}
+                onclick={() => (extractionKind = "fields")}
+                ><Braces size={14} /> Fields</button
+              ><button
+                class:active={extractionKind === "table"}
+                onclick={() => (extractionKind = "table")}
+                ><Table2 size={14} /> Table</button
+              ><button
+                class:active={extractionKind === "formula"}
+                onclick={() => (extractionKind = "formula")}
+                ><Sigma size={14} /> Formula</button
+              >
+            </div>
+            {#if extractionKind === "fields"}<label class="field-label"
+                >Fields to extract<textarea
+                  bind:value={labels}
+                  rows="2"
+                  placeholder="vendor, date, total, invoice number"
+                  disabled={locked}
+                ></textarea><small
+                  >Separate field names with commas. Extracted values remain
+                  editable.</small
+                ></label
+              ><label class="setting-toggle"
+                ><span
+                  ><strong>Use page layout</strong><small
+                    >LiLT uses word positions; otherwise GLiNER reads your
+                    corrected text.</small
+                  ></span
+                ><input
+                  type="checkbox"
+                  bind:checked={useLayoutFields}
+                  disabled={locked || !capabilities.kie}
+                /></label
+              ><label class="field-label"
+                >Minimum field score<input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  bind:value={fieldThreshold}
+                  disabled={locked}
+                /></label
+              ><button
+                class="button primary full"
+                onclick={() => extract("fields")}
+                disabled={locked || !capabilities.kie || !labels.trim()}
+                ><Braces size={15} /> Extract fields</button
+              >{#if !capabilities.kie}<p class="field-hint">
+                  Field extraction is unavailable in this build.
+                </p>{/if}
+              {#if fields.length}<div class="extraction-result">
+                  <div class="section-heading">
+                    <strong>{fields.length} extracted fields</strong><button
+                      class="text-button"
+                      onclick={() => copy(JSON.stringify(fields, null, 2))}
+                      ><Copy size={13} /> JSON</button
+                    >
+                  </div>
+                  {#each fields as field, index}<div class="extracted-field">
+                      <label
+                        >{field.label}<input
+                          value={field.value}
+                          onchange={(e) => {
+                            fields = fields.map((f, i) =>
+                              i === index
+                                ? { ...f, value: e.currentTarget.value }
+                                : f,
+                            );
+                            persistExtraction();
+                          }}
+                        /></label
+                      ><span title="Model extraction score"
+                        >{Math.round(field.score * 100)}%</span
+                      >
+                    </div>{/each}
+                  <p class="field-hint">
+                    Check values against the source before using them.
+                  </p>
+                </div>{/if}
+            {:else if extractionKind === "table"}<div class="tool-explanation">
+                <Table2 size={32} />
+                <h3>Recover a table as editable cells</h3>
+                <p>
+                  Draw or select a table region for focused extraction. Review
+                  the resulting cells and export CSV.
+                </p>
+              </div>
+              <button
+                class="button primary full"
+                onclick={() => extract("table")}
+                disabled={locked || !capabilities.table}
+                ><Table2 size={15} /> Extract table</button
+              >{#if !capabilities.table}<p class="field-hint">
+                  Table recognition is unavailable in this build.
+                </p>{/if}{#if tableRows.length}<div class="extraction-result">
+                  <div class="section-heading">
+                    <strong>{tableRows.length} rows</strong><button
+                      class="text-button"
+                      onclick={() => copy(csv(tableRows))}
+                      ><Copy size={13} /> CSV</button
+                    >
+                  </div>
+                  <div class="editable-table">
+                    <table>
+                      <tbody
+                        >{#each tableRows as row, rowIndex}<tr
+                            >{#each row as cell, columnIndex}<td
+                                ><input
+                                  value={cell}
+                                  aria-label={`Row ${rowIndex + 1}, column ${columnIndex + 1}`}
+                                  onchange={(e) => {
+                                    tableRows = tableRows.map((r, i) =>
+                                      i === rowIndex
+                                        ? r.map((c, j) =>
+                                            j === columnIndex
+                                              ? e.currentTarget.value
+                                              : c,
+                                          )
+                                        : r,
+                                    );
+                                    persistExtraction();
+                                  }}
+                                /></td
+                              >{/each}</tr
+                          >{/each}</tbody
+                      >
+                    </table>
+                  </div>
+                  <p class="field-hint">
+                    CSV contains editable cell text. Check merged cells and
+                    headers against the page.
+                  </p>
+                </div>{/if}
+            {:else}<div class="tool-explanation">
+                <Sigma size={32} />
+                <h3>Turn formulas into LaTeX</h3>
+                <p>
+                  Select a formula region, recognize it, and refine the notation
+                  before saving.
+                </p>
+              </div>
+              <button
+                class="button primary full"
+                onclick={() => extract("formula")}
+                disabled={locked || !capabilities.math}
+                ><Sigma size={15} /> Recognize formula</button
+              >{#if !capabilities.math}<p class="field-hint">
+                  Formula recognition is unavailable in this build.
+                </p>{/if}{#if formula}<label class="field-label"
+                  >LaTeX<textarea
+                    class="latex-editor"
+                    value={formula}
+                    oninput={(e) => {
+                      formula = e.currentTarget.value;
+                      persistExtraction();
+                    }}
+                    rows="8"
+                    spellcheck="false"
+                  ></textarea></label
+                ><button class="button small" onclick={() => copy(formula)}
+                  ><Copy size={13} /> Copy LaTeX</button
+                >{/if}{/if}
+            {#if (extractionKind === "fields" && fields.length) || (extractionKind === "table" && tableRows.length) || (extractionKind === "formula" && formula)}<button
+                class="button full save-extraction"
+                onclick={saveExtraction}
+                disabled={locked}
+                ><Download size={15} /> Save {extractionKind === "fields"
+                  ? "fields as JSON"
+                  : extractionKind === "table"
+                    ? "table as CSV"
+                    : "formula as LaTeX"}</button
+              >{/if}
+            {#if extractionPageId && extractionPageId !== activePage?.id}<p
+                class="inline-warning"
+              >
+                These results came from another page. Run extraction again for
+                the current page.
+              </p>{/if}
+          </div>
+        {:else}
+          <div class="panel-scroll export-panel">
+            <div class="panel-intro">
+              <span class="eyebrow">FINAL DOCUMENT</span>
+              <h2>Ready for the next step</h2>
+              <p>
+                Your corrected text, reading order, and current page images are
+                used directly in the export.
+              </p>
+            </div>
+            <label class="field-label"
+              >Output format<select bind:value={exportFormat} disabled={locked}
+                >{#each capabilities.formats as format}<option value={format}
+                    >{formatNames[format] ?? format}</option
+                  >{/each}</select
+              ></label
+            >
+            <div class="format-card">
+              <FileText size={23} />
+              <div>
+                <strong>{formatNames[exportFormat] ?? exportFormat}</strong>
+                <p>
+                  {exportFormat === "pdf"
+                    ? "Page images with a searchable text layer, using your reviewed text."
+                    : exportFormat === "docx"
+                      ? "Editable text in page order. Complex page layout is converted to flowing text."
+                      : exportFormat === "alto" || exportFormat === "hocr"
+                        ? "Machine-readable text and page coordinates for downstream processing."
+                        : exportFormat === "json"
+                          ? "Structured page geometry, text regions, and confidence values."
+                          : "Corrected text in the reading order shown in the workspace."}
+                </p>
+              </div>
+            </div>
+            {#if exportFormat === "pdf"}<label
+                class="check-label archive-option"
+                ><input
+                  type="checkbox"
+                  bind:checked={exportPdfa}
+                  disabled={locked}
+                /> Archival PDF/A-2b output</label
+              >{/if}
+            <label class="field-label"
+              >Pages<select bind:value={exportScope} disabled={locked}
+                ><option value="all"
+                  >All included pages ({metrics.included})</option
+                ><option value="current">Current page</option><option
+                  value="selected"
+                  >Selected pages ({checkedPages.length})</option
+                ></select
+              ></label
+            >
+            <label class="setting-toggle"
+              ><span
+                ><strong>Require page approval</strong><small
+                  >Block export until every included page is approved.</small
+                ></span
+              ><input
+                type="checkbox"
+                bind:checked={requireReviewed}
+                disabled={locked}
+              /></label
+            >
+            <div class="preflight-card" class:ready={!preflight.errors.length}>
+              <div class="section-heading">
+                {#if preflight.errors.length}<AlertTriangle size={17} /><strong
+                    >{preflight.errors.length} checks need attention</strong
+                  >{:else}<CircleCheck size={17} /><strong
+                    >Ready to export {preflight.pages.length} pages</strong
+                  >{/if}
+              </div>
+              {#if preflight.errors.length}<ul>
+                  {#each preflight.errors.slice(0, 8) as problem}<li>
+                      {problem}
+                    </li>{/each}
+                </ul>
+                {#if preflight.errors.length > 8}<p>
+                    And {preflight.errors.length - 8} more pages need attention.
+                  </p>{/if}{:else}<div class="preflight-check">
+                  <Check size={14} /> Every selected page is accounted for
                 </div>
+                <div class="preflight-check">
+                  <Check size={14} /> Page geometry matches the working image
+                </div>
+                <div class="preflight-check">
+                  <Check size={14} /> Corrections and reading order included
+                </div>
+                {#if requireReviewed}<div class="preflight-check">
+                    <Check size={14} /> All selected pages approved
+                  </div>{/if}{/if}
+              {#if preflight.warnings.length}<details>
+                  <summary>{preflight.warnings.length} review notes</summary>
+                  <ul>
+                    {#each preflight.warnings as warning}<li>
+                        {warning}
+                      </li>{/each}
+                  </ul>
+                </details>{/if}
             </div>
-
-            <!-- Text pane -->
-            <div class="text-pane">
-                {#if !cur?.ocred}
-                    <div class="empty small">
-                        <p class="muted">{i18n.t.ocrwb.not_ocred}</p>
-                        <button class="btn" onclick={() => runOcr(pageIdx)} disabled={busy !== null}>{i18n.t.ocrwb.run_page}</button>
-                    </div>
-                {:else}
-                    {#each cur.regions as r, i}
-                        <div class="region-row" class:low={r.confidence < threshold} class:sel={selected === i}>
-                            <button class="conf" title={i18n.t.ocrwb.confidence} onclick={() => selected = i}>{(r.confidence * 100).toFixed(0)}</button>
-                            <div class="region-body">
-                                {#if r.char_conf.length > 0 && r.char_conf.length === [...r.orig].length}
-                                    <!-- Per-character confidence: tint chars the recognizer was unsure
-                                         about (aligned to the original OCR text, a "where to look" guide). -->
-                                    <div class="charview" title={i18n.t.ocrwb.charconf_hint}>
-                                        {#each [...r.orig] as ch, k}
-                                            <span class:low={(r.char_conf[k] ?? 1) < threshold}>{ch === ' ' ? ' ' : ch}</span>
-                                        {/each}
-                                    </div>
-                                {/if}
-                                <textarea
-                                    value={r.text}
-                                    oninput={(e) => editRegion(i, (e.target as HTMLTextAreaElement).value)}
-                                    onfocus={() => selected = i}
-                                    rows="1"></textarea>
-                            </div>
-                        </div>
-                    {/each}
-                {/if}
+            <button
+              class="button primary full large"
+              onclick={() => exportProject()}
+              disabled={locked || !!preflight.errors.length}
+              ><Download size={17} /> Save {formatNames[exportFormat] ??
+                exportFormat}</button
+            >
+            <p class="field-hint">
+              Choose the output filename and location. Original documents and
+              workspace images are protected from replacement.
+            </p>
+            <div class="settings-section">
+              <h3>Use the corrected text</h3>
+              <div class="button-grid">
+                <button
+                  class="button"
+                  onclick={() => copy(allText)}
+                  disabled={!metrics.regions}
+                  ><Copy size={14} /> Copy all text</button
+                ><button
+                  class="button"
+                  onclick={reindex}
+                  disabled={locked || !activePage}
+                  ><Search size={14} /> Update search index</button
+                >
+              </div>
+              <p class="field-hint">
+                Update search reindexes the current source document after every
+                included page of that document has been approved.
+              </p>
             </div>
-        </div>
+          </div>
+        {/if}
+      </aside>
+    </div>
+  {/if}
+  <footer class="workspace-status" aria-live="polite">
+    <span class="status-dot" class:working={!!busy || queueActive}></span><span
+      class="status-message">{busy || notice || "Ready"}</span
+    >
+    <div class="toolbar-spacer"></div>
+    {#if project.pages.length}<span
+        >{metrics.recognized}/{metrics.included} recognized</span
+      ><span class="status-divider"></span><span class="approved-stat"
+        ><CheckCheck size={12} />{metrics.approved} approved</span
+      ><span class="status-divider"></span><span
+        class:attention-stat={metrics.needsReview > 0}
+        >{metrics.needsReview} to review</span
+      >{/if}
+  </footer>
+</section>
 
-        <!-- Page bar -->
-        <div class="pagebar">
-            <button class="btn" onclick={() => goto(pageIdx - 1)} disabled={pageIdx === 0}>‹ {i18n.t.ocrwb.prev}</button>
-            <span class="pageno">{i18n.t.ocrwb.page} {pageIdx + 1} / {pages.length}</span>
-            <button class="btn" onclick={() => goto(pageIdx + 1)} disabled={pageIdx >= pages.length - 1}>{i18n.t.ocrwb.next} ›</button>
-            <span class="grow"></span>
-            {#if cur?.ocred}
-                <label class="chk"><input type="checkbox" checked={cur.proofread} onchange={toggleProofread} /> {i18n.t.ocrwb.proofread}</label>
-            {/if}
-        </div>
-
-        <!-- KIE extraction -->
-        <div class="tools-section">
-            <h4 class="tools-heading">KIE Field Extraction</h4>
-            <div class="tools-row">
-                <input type="text" class="tools-input" placeholder="total, date, vendor, invoice number"
-                    bind:value={kieLabelsInput} disabled={kieBusy || !locationUri} />
-                <button class="btn" onclick={runKie} disabled={kieBusy || !locationUri || !kieLabelsInput.trim()}>
-                    {kieBusy ? 'Extracting...' : 'Extract Fields'}
-                </button>
-            </div>
-            {#if kieError}<div class="bar err">{kieError}</div>{/if}
-            {#if kieResults.length > 0}
-                <table class="tools-table">
-                    <thead><tr><th>Label</th><th>Value</th><th>Score</th></tr></thead>
-                    <tbody>
-                        {#each kieResults as f}
-                            <tr>
-                                <td>{f.label}</td>
-                                <td>{f.value}</td>
-                                <td>{(f.score * 100).toFixed(1)}%</td>
-                            </tr>
-                        {/each}
-                    </tbody>
-                </table>
-            {/if}
-        </div>
-
-        <!-- Table extraction -->
-        <div class="tools-section">
-            <h4 class="tools-heading">Table Extraction</h4>
-            <div class="tools-row">
-                <button class="btn" onclick={runTable} disabled={tableBusy || !locationUri}>
-                    {tableBusy ? 'Extracting...' : 'Extract Table'}
-                </button>
-            </div>
-            {#if tableError}<div class="bar err">{tableError}</div>{/if}
-            {#if tableResult}
-                <div class="muted" style="margin:4px 0;">{tableResult.rows} rows x {tableResult.cols} cols</div>
-                <div class="table-rendered">{@html tableResult.html}</div>
-            {/if}
-        </div>
-
-        <!-- Math OCR -->
-        <div class="tools-section">
-            <h4 class="tools-heading">Math OCR (LaTeX)</h4>
-            <div class="tools-row">
-                <button class="btn" onclick={runMathOcr} disabled={!locationUri || mathLoading}>
-                    {mathLoading ? 'Recognizing...' : 'Recognize Formula'}
-                </button>
-            </div>
-            {#if mathError}<div class="bar err">{mathError}</div>{/if}
-            {#if mathResult !== null}
-                {#if mathResult}
-                    <pre class="math-result" style="margin-top:6px; padding:8px; background:#0f0f12; border:1px solid #27272a; border-radius:6px; font-size:0.8125rem; color:#e4e4e7; overflow:auto;">{mathResult}</pre>
-                {:else}
-                    <p class="hint">No formula recognized in image.</p>
-                {/if}
-            {/if}
-        </div>
-    {/if}
-</div>
+{#if confirm}<dialog
+    class="workspace-dialog"
+    bind:this={actionDialog}
+    onclose={() => (confirm = null)}
+    aria-labelledby="ocr-confirm-title"
+  >
+    <h2 id="ocr-confirm-title">{confirm.title}</h2>
+    <p>{confirm.message}</p>
+    <div class="dialog-actions">
+      <button class="button" onclick={() => (confirm = null)}>Cancel</button
+      ><button
+        class="button primary"
+        onclick={() => {
+          const action = confirm?.action;
+          confirm = null;
+          void action?.();
+        }}>{confirm.label}</button
+      >
+    </div>
+  </dialog>{/if}
+{#if helpOpen}<dialog
+    class="workspace-dialog"
+    bind:this={helpDialog}
+    onclose={() => (helpOpen = false)}
+    aria-labelledby="ocr-help-title"
+  >
+    <div class="section-heading">
+      <h2 id="ocr-help-title">Keyboard shortcuts</h2>
+      <button
+        class="icon-button"
+        onclick={() => (helpOpen = false)}
+        aria-label="Close shortcuts"><X size={18} /></button
+      >
+    </div>
+    <dl class="shortcuts">
+      <dt>Save project</dt>
+      <dd>Ctrl / ⌘ S</dd>
+      <dt>Find and replace</dt>
+      <dd>Ctrl / ⌘ F</dd>
+      <dt>Undo workspace change</dt>
+      <dd>Ctrl / ⌘ Z</dd>
+      <dt>Redo workspace change</dt>
+      <dd>Ctrl / ⌘ Shift Z</dd>
+      <dt>Next review issue</dt>
+      <dd>F8</dd>
+      <dt>Previous / next page</dt>
+      <dd>Alt ← / →</dd>
+      <dt>Exit drawing tool</dt>
+      <dd>Esc</dd>
+    </dl>
+    <p class="field-hint">
+      Inside text fields, native text editing shortcuts apply. Workspace Undo
+      remains available in the toolbar.
+    </p>
+  </dialog>{/if}
 
 <style>
-    .ocrwb { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-    .toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px; border-bottom: 1px solid #27272a; }
-    .sep { width: 1px; height: 20px; background: #27272a; margin: 0 2px; }
-    .grow { flex: 1; }
-    .btn { background: #1f1f23; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 6px; padding: 5px 10px; font-size: 0.8125rem; cursor: pointer; }
-    .btn:hover:not(:disabled) { background: #2a2a30; }
-    .btn:disabled { opacity: 0.5; cursor: default; }
-    .btn.active { background: #1d4ed8; border-color: #1d4ed8; }
-    .btn.big { padding: 8px 18px; font-size: 0.9rem; margin-top: 10px; }
-    .thr { font-size: 0.75rem; color: #a1a1aa; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-    .chk { font-size: 0.75rem; color: #a1a1aa; display: flex; align-items: center; gap: 4px; }
-    select { background: #1f1f23; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 6px; padding: 4px; font-size: 0.8125rem; }
-    .muted { color: #71717a; font-size: 0.8125rem; }
-    .bar { padding: 6px 10px; font-size: 0.8125rem; }
-    .bar.err { background: #3f1d1d; color: #fca5a5; }
-    .bar.info { background: #1c2333; color: #93c5fd; }
-    .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 4px; text-align: center; }
-    .empty.small { padding: 20px; flex: none; }
-    .split { display: flex; flex: 1; min-height: 0; }
-    .image-pane { flex: 1; min-width: 0; border-right: 1px solid #27272a; background: #0a0a0a; overflow: hidden; }
-    .canvas-scroll { width: 100%; height: 100%; overflow: auto; }
-    .canvas { position: relative; display: inline-block; }
-    .canvas img { display: block; max-width: none; user-select: none; }
-    .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-    .rgn { fill: rgba(59,130,246,0.08); stroke: rgba(59,130,246,0.6); stroke-width: 1; cursor: pointer; vector-effect: non-scaling-stroke; }
-    .rgn.low { fill: rgba(239,68,68,0.16); stroke: rgba(239,68,68,0.85); }
-    .rgn.sel { fill: rgba(234,179,8,0.22); stroke: rgba(234,179,8,1); stroke-width: 2; }
-    .text-pane { width: 42%; min-width: 280px; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
-    .region-row { display: flex; gap: 6px; align-items: flex-start; border-radius: 6px; padding: 2px; }
-    .region-row.low { background: rgba(239,68,68,0.08); }
-    .region-row.sel { background: rgba(234,179,8,0.12); outline: 1px solid rgba(234,179,8,0.5); }
-    .conf { flex: none; width: 30px; text-align: center; font-size: 0.7rem; color: #a1a1aa; background: #1f1f23; border: 1px solid #3f3f46; border-radius: 4px; cursor: pointer; padding: 2px 0; height: fit-content; }
-    .region-row.low .conf { color: #fca5a5; border-color: #7f1d1d; }
-    .region-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-    .charview { font-family: ui-monospace, monospace; font-size: 0.8rem; color: #71717a; white-space: pre-wrap; word-break: break-word; padding: 1px 4px; }
-    .charview span.low { background: rgba(239,68,68,0.35); color: #fecaca; border-radius: 2px; }
-    .region-body textarea { resize: vertical; background: #18181b; color: #e4e4e7; border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; font-size: 0.85rem; font-family: inherit; min-height: 1.6em; width: 100%; box-sizing: border-box; }
-    .pagebar { display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid #27272a; }
-    .pageno { font-size: 0.8125rem; color: #a1a1aa; }
-    .tools-section { padding: 8px; border-top: 1px solid #27272a; }
-    .tools-heading { font-size: 0.85rem; color: #a1a1aa; margin: 0 0 6px; font-weight: 600; }
-    .tools-row { display: flex; gap: 6px; align-items: center; }
-    .tools-input { flex: 1; background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 6px; padding: 5px 8px; font-size: 0.8125rem; }
-    .tools-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; margin-top: 6px; }
-    .tools-table th { text-align: left; color: #71717a; font-weight: 600; padding: 4px 8px; border-bottom: 1px solid #27272a; }
-    .tools-table td { padding: 4px 8px; border-bottom: 1px solid #1c1c1f; color: #e4e4e7; }
-    .table-rendered { margin-top: 6px; overflow: auto; max-height: 300px; background: #0f0f12; border: 1px solid #27272a; border-radius: 6px; padding: 8px; font-size: 0.8125rem; color: #e4e4e7; }
-    .table-rendered :global(table) { border-collapse: collapse; width: 100%; }
-    .table-rendered :global(td), .table-rendered :global(th) { border: 1px solid #3f3f46; padding: 4px 6px; }
+  .ocr-workspace {
+    --surface: #111821;
+    --panel: #151d28;
+    --line: #283240;
+    --muted: #92a1b5;
+    --text: #e4ebf5;
+    --blue: #6aa9ff;
+    --accent: #277be9;
+    --green: #5ad4ac;
+    --amber: #e8b361;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    position: relative;
+    color: var(--text);
+    background: var(--surface);
+    font-size: 12px;
+    font-family:
+      Inter,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+    overflow: hidden;
+  }
+  .ocr-workspace :global(button),
+  .ocr-workspace :global(input),
+  .ocr-workspace :global(select),
+  .ocr-workspace :global(textarea) {
+    font: inherit;
+    box-sizing: border-box;
+  }
+  .ocr-workspace :global(button) {
+    cursor: pointer;
+  }
+  .ocr-workspace :global(button:disabled) {
+    cursor: default;
+    opacity: 0.4;
+  }
+  .ocr-workspace :global(button:focus-visible),
+  .ocr-workspace :global(input:focus-visible),
+  .ocr-workspace :global(textarea:focus-visible),
+  .ocr-workspace :global(select:focus-visible) {
+    outline: 2px solid #78b3ff;
+    outline-offset: 2px;
+  }
+  .ocr-workspace :global(input:not([type="checkbox"]):not([type="range"])),
+  .ocr-workspace :global(select),
+  .ocr-workspace :global(textarea) {
+    background: #0f1620;
+    color: var(--text);
+    border: 1px solid #344052;
+    border-radius: 6px;
+    padding: 8px 10px;
+    min-width: 0;
+    line-height: 1.45;
+  }
+  .ocr-workspace :global(input::placeholder),
+  .ocr-workspace :global(textarea::placeholder) {
+    color: #6c7c92;
+  }
+  .ocr-workspace :global(input[type="checkbox"]) {
+    accent-color: #4a91f0;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    flex: none;
+  }
+  .ocr-workspace :global(input[type="range"]) {
+    accent-color: #4a91f0;
+    width: 100%;
+  }
+  .workspace-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 17px 22px 15px;
+    min-height: 75px;
+    border-bottom: 1px solid var(--line);
+    background: #131b26;
+    flex: none;
+  }
+  .workspace-mark {
+    height: 41px;
+    width: 41px;
+    display: grid;
+    place-items: center;
+    background: #233e63;
+    border: 1px solid #376294;
+    border-radius: 11px;
+    color: #9fc8ff;
+    flex: none;
+  }
+  .workspace-title {
+    min-width: 100px;
+    flex: 1;
+  }
+  .eyebrow {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    color: #8d9fb8;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .local-badge {
+    font-size: 8px;
+    letter-spacing: 0.7px;
+    padding: 2px 5px;
+    border: 1px solid #2c5c53;
+    border-radius: 3px;
+    color: #77c8af;
+    background: #15332c;
+  }
+  .workspace-title input {
+    font-size: 18px !important;
+    letter-spacing: -0.35px;
+    font-weight: 600 !important;
+    border: 0 !important;
+    background: transparent !important;
+    padding: 3px 0 0 !important;
+    width: min(100%, 510px);
+    text-overflow: ellipsis;
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: none;
+  }
+  .save-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #87b7a9;
+    font-size: 10px;
+    white-space: nowrap;
+    margin: 0 8px;
+  }
+  .save-state.save-error {
+    color: #f4b493;
+  }
+  .save-state button {
+    background: transparent;
+    color: #9bc6ff;
+    border: 0;
+    text-decoration: underline;
+  }
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid #354358;
+    border-radius: 6px;
+    background: #1b293c;
+    color: #dce8f7;
+    padding: 7px 11px;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 550;
+    min-height: 32px;
+    transition:
+      background 0.12s,
+      border-color 0.12s;
+  }
+  .button:hover:not(:disabled) {
+    background: #293b53;
+    border-color: #4e688a;
+  }
+  .button.primary {
+    background: #2c79df;
+    border-color: #4c91ec;
+    color: #fff;
+    box-shadow: 0 1px 2px #0003;
+  }
+  .button.primary:hover:not(:disabled) {
+    background: #3989ef;
+  }
+  .button.subtle {
+    background: transparent;
+    border-color: transparent;
+    color: #b8c6da;
+  }
+  .button.subtle:hover:not(:disabled),
+  .button.subtle.active {
+    background: #24364e;
+    border-color: #345172;
+    color: #c5ddff;
+  }
+  .button.small {
+    min-height: 27px;
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+  .button.large {
+    padding: 11px 17px;
+    min-height: 42px;
+    font-size: 12px;
+  }
+  .button.full {
+    width: 100%;
+  }
+  .button.export-button {
+    background: #203954;
+    border-color: #3b658c;
+    color: #b7d9ff;
+  }
+  .button.approved-button {
+    background: #153f35;
+    border-color: #2b6b58;
+    color: #8be2bf;
+  }
+  .icon-button {
+    border: 1px solid transparent;
+    background: transparent;
+    color: #a6b7cf;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    padding: 6px;
+    min-width: 28px;
+    min-height: 28px;
+    flex: none;
+  }
+  .icon-button:hover:not(:disabled),
+  .icon-button.active {
+    background: #2a3a50;
+    color: #dcecff;
+    border-color: #3a5575;
+  }
+  .text-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: 0;
+    color: #8ebcfa;
+    padding: 3px 0;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .danger {
+    color: #f39c9c !important;
+  }
+  .toolbar-spacer {
+    flex: 1;
+    min-width: 4px;
+  }
+  .command-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 20px;
+    border-bottom: 1px solid var(--line);
+    background: #121b27;
+    flex: none;
+    min-width: 0;
+  }
+  .command-separator {
+    height: 22px;
+    width: 1px;
+    background: var(--line);
+    margin: 0 4px;
+  }
+  .undo-group,
+  .tool-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .undo-group {
+    border-right: 1px solid var(--line);
+    padding-right: 9px;
+    margin-right: 2px;
+  }
+  .feedback {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 18px;
+    flex: none;
+    font-size: 11px;
+  }
+  .feedback > span {
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 110px;
+    overflow: auto;
+  }
+  .feedback.error {
+    background: #3a2426;
+    color: #f3b0ad;
+    border-bottom: 1px solid #66363c;
+  }
+  .feedback :global(svg) {
+    flex: none;
+  }
+  .queue-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 9px 20px;
+    background: #1a2c42;
+    border-bottom: 1px solid #315175;
+    font-size: 11px;
+    flex: none;
+  }
+  .queue-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: none;
+  }
+  .queue-label > span {
+    color: #a1b7d1;
+  }
+  .queue-bar progress {
+    height: 5px;
+    width: 100%;
+    max-width: 300px;
+    accent-color: #6ba6f4;
+    border: 0;
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .queue-bar progress::-webkit-progress-bar {
+    background: #304358;
+  }
+  .queue-bar progress::-webkit-progress-value {
+    background: #66a2ef;
+  }
+  .queue-actions {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+  }
+  .work-area {
+    display: grid;
+    grid-template-columns: 218px minmax(280px, 1fr) 390px;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .work-area.rail-hidden {
+    grid-template-columns: minmax(280px, 1fr) 390px;
+  }
+  .page-rail {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: #121b26;
+    border-right: 1px solid var(--line);
+  }
+  .rail-heading {
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 13px 0 17px;
+    flex: none;
+  }
+  .rail-heading strong {
+    font-size: 12px;
+  }
+  .rail-heading strong span {
+    font-size: 10px;
+    background: #2a3647;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #adbed4;
+    margin-left: 5px;
+    font-weight: 500;
+  }
+  .rail-controls {
+    padding: 0 12px 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .rail-controls select {
+    font-size: 10px;
+    padding: 6px 8px !important;
+  }
+  .search-input {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .search-input :global(svg) {
+    position: absolute;
+    left: 8px;
+    color: #7c8ba2;
+  }
+  .search-input input {
+    width: 100%;
+    padding-left: 27px !important;
+    font-size: 10px !important;
+    background: #0c141f !important;
+    border-color: #293747 !important;
+  }
+  .selection-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 14px;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .selection-row label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .page-list {
+    flex: 1;
+    overflow: auto;
+    padding: 8px 9px;
+    min-height: 0;
+  }
+  .page-card {
+    display: flex;
+    gap: 7px;
+    position: relative;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 9px 6px;
+    margin-bottom: 5px;
+    min-height: 100px;
+  }
+  .page-card:hover {
+    background: #1b293b;
+  }
+  .page-card.current {
+    background: #20334e;
+    border-color: #456f9f;
+    box-shadow: inset 3px 0 #71aaff;
+  }
+  .page-card.excluded {
+    opacity: 0.48;
+  }
+  .page-checkbox {
+    margin-top: 28px !important;
+  }
+  .page-card-main {
+    border: 0;
+    padding: 0;
+    background: none;
+    display: flex;
+    gap: 9px;
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    color: inherit;
+  }
+  .thumbnail {
+    height: 72px;
+    width: 50px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    filter: drop-shadow(0 2px 4px #0005);
+  }
+  .thumbnail img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border: 1px solid #adb8c6;
+    background: white;
+  }
+  .thumb-approved {
+    position: absolute;
+    right: -4px;
+    bottom: -3px;
+    background: #2e9b79;
+    border: 2px solid #17352d;
+    border-radius: 50%;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    color: white;
+  }
+  .page-card-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+    gap: 5px;
+    padding-top: 3px;
+  }
+  .page-card-info > strong {
+    font-size: 11px;
+    font-weight: 650;
+    color: #d3e2f5;
+  }
+  .page-filename {
+    font-size: 9px;
+    line-height: 1.4;
+    color: #8d9db3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+  .page-state {
+    font-size: 9px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #b5a588;
+    margin-top: auto;
+  }
+  .page-state.approved {
+    color: #6ccbb0;
+  }
+  .page-state.failed {
+    color: #ef9f98;
+  }
+  .amber-dot {
+    display: inline-block;
+    background: #d8aa62;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+  }
+  .rail-empty {
+    color: var(--muted);
+    padding: 20px 6px;
+    text-align: center;
+    font-size: 11px;
+  }
+  .range-control {
+    padding: 9px 12px;
+    border-top: 1px solid var(--line);
+    flex: none;
+  }
+  .range-control > label {
+    color: #8b9bb0;
+    font-size: 9px;
+    display: block;
+    margin-bottom: 5px;
+  }
+  .range-control > div {
+    display: flex;
+    gap: 4px;
+  }
+  .range-control input {
+    width: 100%;
+    padding: 5px 8px !important;
+    font-size: 10px !important;
+  }
+  .rail-footer {
+    display: flex;
+    gap: 3px;
+    padding: 7px 10px;
+    border-top: 1px solid var(--line);
+    flex: none;
+  }
+  .document-pane {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .document-pane :global(.canvas-shell) {
+    flex: 1;
+    min-height: 0;
+  }
+  .image-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 10px;
+    height: 47px;
+    background: #141e2b;
+    border-bottom: 1px solid var(--line);
+    flex: none;
+  }
+  .image-toolbar select {
+    font-size: 10px !important;
+    padding: 4px 18px 4px 5px !important;
+    background: transparent !important;
+    border-color: transparent !important;
+    max-width: 132px;
+  }
+  .image-toolbar .tool-group + .tool-group {
+    border-left: 1px solid var(--line);
+    padding-left: 7px;
+  }
+  .image-footer {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    height: 43px;
+    padding: 0 12px;
+    background: #141e2b;
+    border-top: 1px solid var(--line);
+  }
+  .image-footer select {
+    font-size: 10px !important;
+    padding: 4px 6px !important;
+    background: #1c2a3b !important;
+    border-color: #35465c !important;
+    min-width: 88px;
+  }
+  .page-counter {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    padding: 0 4px;
+  }
+  .page-counter > span {
+    color: #8294ad;
+    font-weight: 400;
+  }
+  .inspector {
+    border-left: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: #151d28;
+  }
+  .inspector-tabs {
+    display: flex;
+    border-bottom: 1px solid #334258;
+    padding: 0 8px;
+    background: #121b26;
+    height: 47px;
+    flex: none;
+    gap: 2px;
+  }
+  .inspector-tabs > button {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 1;
+    justify-content: center;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: #8c9fb9;
+    font-size: 10px;
+    padding: 0 5px;
+  }
+  .inspector-tabs > button.active {
+    color: #9ec7ff;
+    border-bottom-color: #639ef3;
+    background: linear-gradient(transparent, #243b563f);
+  }
+  .review-heading {
+    padding: 15px 16px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .review-heading h2 {
+    font-size: 14px;
+    font-weight: 650;
+    margin: 0 0 4px;
+    letter-spacing: -0.2px;
+  }
+  .review-heading span {
+    font-size: 10px;
+    color: #91a0b5;
+  }
+  .review-options {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 9px 16px;
+    border-top: 1px solid #253143;
+    font-size: 10px;
+  }
+  .check-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 10px;
+    color: #b4c2d6;
+    line-height: 1.5;
+  }
+  .review-view-tabs {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 0 16px;
+    border-top: 1px solid #253143;
+    border-bottom: 1px solid #253143;
+    height: 34px;
+  }
+  .review-view-tabs button {
+    border: 0;
+    background: none;
+    color: #7d8da4;
+    font-size: 10px;
+    padding: 8px 0;
+  }
+  .review-view-tabs button.active {
+    color: #c6dcfa;
+    border-bottom: 1px solid #6ea3eb;
+  }
+  .review-view-tabs > span {
+    margin-left: auto;
+    font-size: 9px;
+    color: #71829b;
+  }
+  .find-panel {
+    background: #101925;
+    padding: 10px 12px;
+    border-top: 1px solid #293b50;
+    border-bottom: 1px solid #293b50;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .find-row {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .find-row input {
+    width: 100%;
+    padding: 6px 8px !important;
+    font-size: 11px !important;
+  }
+  .find-row > span {
+    font-size: 10px;
+    color: #a6bad6;
+  }
+  .find-panel .check-label {
+    font-size: 9px;
+  }
+  .find-panel .muted {
+    font-size: 9px;
+  }
+  .source-loupe {
+    padding: 10px 14px 12px;
+    background: #101722;
+    border-bottom: 1px solid #2a384b;
+    flex: none;
+  }
+  .loupe-label {
+    font-size: 8px;
+    color: #7b94b3;
+    letter-spacing: 1.1px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 7px;
+  }
+  .loupe-label > span {
+    margin-left: auto;
+    letter-spacing: 0;
+    color: #a8bdd7;
+  }
+  .source-loupe > svg {
+    background: #fffef9;
+    width: 100%;
+    height: 60px;
+    display: block;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px #0003;
+  }
+  .region-list {
+    flex: 1;
+    min-height: 80px;
+    overflow: auto;
+    padding: 12px;
+  }
+  .region-card {
+    border: 1px solid #293547;
+    border-left: 3px solid #354b68;
+    border-radius: 6px;
+    background: #172230;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  .region-card.attention {
+    border-left-color: #c89649;
+  }
+  .region-card.selected {
+    border-color: #467eb8;
+    border-left-color: #78aff3;
+    box-shadow: 0 0 0 1px #32629433;
+    background: #192a40;
+  }
+  .region-card.excluded {
+    opacity: 0.45;
+  }
+  .region-card-heading {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 9px 6px;
+  }
+  .region-number {
+    border: 1px solid #3d4d63;
+    border-radius: 4px;
+    background: #24344b;
+    color: #bcd4f4;
+    min-width: 21px;
+    height: 20px;
+    font-size: 10px;
+  }
+  .region-kind {
+    background: none;
+    border: 0;
+    color: #a1b4cf;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    padding: 0 2px;
+  }
+  .confidence {
+    margin-left: auto;
+    font-size: 9px;
+    color: #e4bd78;
+    font-variant-numeric: tabular-nums;
+    border: 1px solid #80642e44;
+    background: #80642e22;
+    border-radius: 4px;
+    padding: 2px 5px;
+  }
+  .confidence.unknown {
+    color: #a1afc5;
+    border-color: #53627b44;
+    background: #53627b22;
+  }
+  .region-approved {
+    color: #6ddab3;
+    display: flex;
+  }
+  .edited-badge {
+    color: #95bded;
+    font-size: 9px;
+  }
+  .region-card textarea {
+    border: 0 !important;
+    border-top: 1px solid #2e3c5055 !important;
+    resize: vertical;
+    width: 100%;
+    display: block;
+    border-radius: 0 !important;
+    min-height: 56px;
+    background: transparent !important;
+    font-size: 12px !important;
+    line-height: 1.65 !important;
+    padding: 8px 10px !important;
+    color: #e4edf9 !important;
+  }
+  .region-card textarea:focus {
+    background: #122034 !important;
+  }
+  .character-evidence {
+    padding: 3px 10px 6px;
+    white-space: pre-wrap;
+    font-size: 10px;
+    line-height: 1.7;
+    color: #8194b1;
+    overflow-wrap: anywhere;
+  }
+  .evidence-label {
+    font-size: 8px;
+    letter-spacing: 0.5px;
+    margin-right: 7px;
+    color: #586e8d;
+  }
+  .character-evidence .uncertain {
+    background: #a9672d55;
+    color: #f3c583;
+    border-bottom: 1px solid #cc8a3d;
+  }
+  .region-actions {
+    padding: 6px 9px;
+    border-top: 1px solid #2d3c5144;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+  }
+  .region-actions .icon-button {
+    min-width: 23px;
+    min-height: 23px;
+    padding: 4px;
+  }
+  .region-actions .text-button {
+    font-size: 9px;
+  }
+  .region-properties {
+    border-top: 1px solid #3a526f;
+    padding: 10px 13px;
+    background: #111d2d;
+    max-height: 250px;
+    overflow: auto;
+    flex: none;
+  }
+  .region-properties .field-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  .region-properties .field-grid > label:first-child {
+    grid-column: 1/-1;
+  }
+  .region-properties label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 9px;
+    color: #93a7c2;
+  }
+  .region-properties label.check-label {
+    flex-direction: row;
+  }
+  .region-properties input,
+  .region-properties select {
+    width: 100%;
+    padding: 5px 6px !important;
+    font-size: 10px !important;
+  }
+  .region-properties .check-label input {
+    width: 13px;
+  }
+  .original-text {
+    font-size: 11px;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    color: #aebbd1;
+  }
+  .region-properties details {
+    font-size: 10px;
+    margin-top: 9px;
+    color: #8fa7c8;
+  }
+  .approval-bar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 11px 12px;
+    border-top: 1px solid #35465d;
+    background: #142236;
+    flex: none;
+  }
+  .approval-bar > span {
+    color: #5dd6aa;
+  }
+  .approval-bar .button {
+    font-size: 10px;
+    flex: 1;
+    padding: 8px;
+  }
+  .reading-order {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 100%;
+  }
+  .plain-text {
+    resize: vertical;
+    flex: 1;
+    min-height: 180px;
+    font-size: 12px !important;
+  }
+  .panel-message {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 10px;
+    padding: 40px 22px;
+    color: #91a7c3;
+  }
+  .panel-message :global(svg) {
+    color: #628bbb;
+  }
+  .panel-message h3 {
+    font-size: 13px;
+    color: #cfddf1;
+    margin: 4px 0 0;
+  }
+  .panel-message p {
+    font-size: 11px;
+    line-height: 1.75;
+    margin: 0 0 5px;
+    color: #8e9fb8;
+    overflow-wrap: anywhere;
+  }
+  .panel-message.warning :global(svg) {
+    color: #dfa768;
+  }
+  .panel-scroll {
+    overflow: auto;
+    padding: 18px;
+    flex: 1;
+    min-height: 0;
+  }
+  .panel-intro {
+    margin-bottom: 20px;
+  }
+  .panel-intro h2 {
+    font-size: 18px;
+    line-height: 1.35;
+    letter-spacing: -0.4px;
+    margin: 9px 0 8px;
+    color: #e1ebfa;
+  }
+  .panel-intro p {
+    font-size: 11px;
+    line-height: 1.7;
+    color: #91a4bf;
+    margin: 0;
+  }
+  .field-label {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    color: #b8c9e1;
+    font-size: 10px;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .field-label input,
+  .field-label textarea,
+  .field-label select {
+    width: 100%;
+    font-weight: 400 !important;
+  }
+  .field-label small {
+    color: #7e94b1;
+    font-size: 10px;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+  .field-hint {
+    font-size: 10px;
+    line-height: 1.7;
+    color: #8095b2;
+    margin: 9px 0 14px;
+  }
+  .field-grid {
+    display: grid;
+    gap: 10px;
+  }
+  .field-grid.two {
+    grid-template-columns: 1fr 1fr;
+  }
+  .field-grid.two .field-label {
+    min-width: 0;
+    margin-bottom: 4px;
+  }
+  .field-grid.two select {
+    font-size: 10px !important;
+    padding: 7px 5px !important;
+  }
+  .settings-section {
+    padding-top: 16px;
+    margin-top: 18px;
+    border-top: 1px solid #2b3a4f;
+  }
+  .settings-section h3 {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    font-size: 11px;
+    color: #bbd1ef;
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  .setting-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 9px 0;
+  }
+  .setting-toggle > span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .setting-toggle strong {
+    font-size: 11px;
+    font-weight: 500;
+    color: #c5d4e9;
+  }
+  .setting-toggle small {
+    font-size: 10px;
+    color: #7e94b0;
+    line-height: 1.5;
+  }
+  .settings-section > .button {
+    margin-top: 12px;
+  }
+  .threshold-label {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    font-size: 10px;
+    color: #8da6c6;
+  }
+  .threshold-label strong {
+    margin-left: auto;
+    color: #c4ddff;
+  }
+  .threshold-label input {
+    flex: 0 0 100%;
+    margin-top: 8px;
+  }
+  .advanced-settings {
+    border: 1px solid #2d3e54;
+    border-radius: 6px;
+    margin-top: 18px;
+    padding: 10px;
+    color: #91acd0;
+    font-size: 10px;
+  }
+  .advanced-settings summary {
+    cursor: pointer;
+    font-weight: 500;
+    list-style-position: inside;
+  }
+  .advanced-settings[open] summary {
+    margin-bottom: 12px;
+  }
+  .advanced-settings > .button {
+    margin-top: 6px;
+  }
+  .config-editor,
+  .provenance,
+  .latex-editor {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
+    font-size: 10px !important;
+  }
+  .provenance {
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #9ab0cf;
+    line-height: 1.7;
+    max-height: 350px;
+    overflow: auto;
+  }
+  .text-error {
+    color: #f1aaa2;
+    font-size: 10px;
+  }
+  .inline-warning {
+    font-size: 10px;
+    line-height: 1.7;
+    padding: 10px;
+    background: #65461c22;
+    border: 1px solid #8a642b55;
+    color: #d6b889;
+    border-radius: 6px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .inline-warning :global(svg) {
+    flex: none;
+  }
+  .button-grid {
+    display: flex;
+    gap: 7px;
+  }
+  .button-grid .button {
+    flex: 1;
+    font-size: 10px;
+    padding: 7px;
+  }
+  .segmented {
+    display: flex;
+    gap: 3px;
+    background: #0e1723;
+    border: 1px solid #283e59;
+    border-radius: 7px;
+    padding: 4px;
+    margin-bottom: 20px;
+  }
+  .segmented > button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    flex: 1;
+    background: none;
+    border: 0;
+    border-radius: 4px;
+    padding: 7px;
+    font-size: 10px;
+    color: #7f97b9;
+  }
+  .segmented > button.active {
+    background: #243a57;
+    color: #b9d6ff;
+  }
+  .tool-explanation {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 7px;
+    padding: 20px 12px;
+    color: #6f9dd9;
+  }
+  .tool-explanation h3 {
+    font-size: 13px;
+    color: #c1d5f2;
+    margin: 5px 0 0;
+  }
+  .tool-explanation p {
+    font-size: 11px;
+    line-height: 1.7;
+    color: #8b9fbd;
+    margin: 0 0 15px;
+  }
+  .extraction-result {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid #2e4059;
+  }
+  .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    margin-bottom: 11px;
+  }
+  .section-heading strong {
+    font-size: 11px;
+    color: #b6cbe8;
+  }
+  .extracted-field {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .extracted-field label {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 10px;
+    color: #8a9fbb;
+  }
+  .extracted-field input {
+    width: 100%;
+    font-size: 11px !important;
+  }
+  .extracted-field > span {
+    font-size: 10px;
+    color: #c5a26a;
+    padding-top: 18px;
+  }
+  .editable-table {
+    overflow: auto;
+  }
+  .editable-table table {
+    border-collapse: collapse;
+    min-width: 100%;
+  }
+  .editable-table td {
+    border: 1px solid #3a4a60;
+    padding: 0;
+    min-width: 100px;
+  }
+  .editable-table input {
+    border: 0 !important;
+    background: #152236 !important;
+    min-width: 100px;
+    width: 100%;
+    border-radius: 0 !important;
+    font-size: 10px !important;
+  }
+  .save-extraction {
+    margin-top: 18px;
+  }
+  .format-card {
+    display: flex;
+    gap: 13px;
+    padding: 14px;
+    border: 1px solid #2e496b;
+    border-radius: 7px;
+    background: #1a2c44;
+    margin: 3px 0 18px;
+  }
+  .format-card :global(svg) {
+    flex: none;
+    color: #82b5f4;
+  }
+  .format-card strong {
+    font-size: 11px;
+    color: #c5ddfc;
+  }
+  .format-card p {
+    font-size: 10px;
+    line-height: 1.65;
+    color: #8eabce;
+    margin: 5px 0 0;
+  }
+  .archive-option {
+    margin: -4px 0 20px;
+  }
+  .preflight-card {
+    border: 1px solid #755b3366;
+    background: #49331b1c;
+    border-radius: 7px;
+    padding: 13px;
+    margin: 18px 0;
+    color: #c5a06b;
+    font-size: 10px;
+    line-height: 1.6;
+  }
+  .preflight-card .section-heading {
+    justify-content: flex-start;
+  }
+  .preflight-card strong {
+    color: #dbb985;
+  }
+  .preflight-card ul {
+    padding-left: 16px;
+    margin: 8px 0;
+  }
+  .preflight-card li {
+    margin: 6px 0;
+  }
+  .preflight-card.ready {
+    background: #17433822;
+    border-color: #366553;
+    color: #8ac1ae;
+  }
+  .preflight-card.ready strong {
+    color: #93d7bd;
+  }
+  .preflight-card details {
+    margin-top: 10px;
+    font-size: 10px;
+    color: #c3ac83;
+  }
+  .preflight-check {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    padding: 4px 0;
+  }
+  .muted {
+    color: #8296b3;
+    font-size: 10px;
+    line-height: 1.6;
+  }
+  .workspace-status {
+    min-height: 30px;
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    padding: 5px 17px;
+    flex: none;
+    background: #101925;
+    border-top: 1px solid var(--line);
+    font-size: 9px;
+    color: #7f94b1;
+  }
+  .status-dot {
+    background: #4ab892;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .status-dot.working {
+    background: #6ca8ff;
+    box-shadow: 0 0 6px #6ca8ff66;
+  }
+  .status-message {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 60%;
+  }
+  .workspace-status > span:not(.status-message) {
+    white-space: nowrap;
+  }
+  .status-divider {
+    height: 10px;
+    width: 1px;
+    background: #354154;
+  }
+  .approved-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #6cad98;
+  }
+  .attention-stat {
+    color: #bc995f;
+  }
+  .loading-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #8ba8ce;
+    gap: 12px;
+  }
+  .loading-state h2 {
+    font-size: 17px;
+    font-weight: 500;
+  }
+  .loading-state p {
+    font-size: 12px;
+    color: #7e91ab;
+  }
+  .welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 44px 35px 22px;
+    background: radial-gradient(ellipse at 50% 15%, #223d5a33, transparent 65%);
+  }
+  .welcome-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    max-width: 620px;
+  }
+  .welcome-icon {
+    background: #1a2d45;
+    border: 1px solid #344f71;
+    border-radius: 17px;
+    width: 76px;
+    height: 76px;
+    display: grid;
+    place-items: center;
+    color: #7eb4fa;
+    margin-bottom: 26px;
+    box-shadow: 0 8px 35px #122d4f66;
+  }
+  .welcome .eyebrow {
+    font-size: 9px;
+    color: #6d96c8;
+    letter-spacing: 1.6px;
+  }
+  .welcome h1 {
+    font-size: 36px;
+    line-height: 1.2;
+    letter-spacing: -1.3px;
+    font-weight: 600;
+    color: #e3edfb;
+    margin: 16px 0 10px;
+  }
+  .welcome-main > p {
+    font-size: 12px;
+    line-height: 1.9;
+    color: #8ea3c0;
+    margin: 0 0 23px;
+  }
+  .supported {
+    font-size: 9px;
+    color: #58718f;
+    margin-top: 12px;
+    letter-spacing: 0.5px;
+  }
+  .welcome-steps {
+    width: 100%;
+    max-width: 850px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 15px;
+    margin-top: 42px;
+  }
+  .welcome-steps article {
+    position: relative;
+    padding: 22px 20px;
+    border: 1px solid #293b54;
+    background: #16243966;
+    border-radius: 9px;
+    color: #638fc6;
+  }
+  .welcome-steps h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: #bccfea;
+    margin: 15px 0 7px;
+  }
+  .welcome-steps p {
+    font-size: 10px;
+    line-height: 1.8;
+    color: #8097b6;
+    margin: 0;
+  }
+  .step-number {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    color: #385576;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .welcome-footer {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 26px;
+    font-size: 9px;
+    color: #566f8e;
+  }
+  .capability-note {
+    display: flex;
+    gap: 8px;
+    font-size: 10px;
+    line-height: 1.6;
+    color: #c5aa7c;
+    background: #523b1e44;
+    border: 1px solid #74572c66;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 20px;
+    text-align: left;
+  }
+  .capability-note :global(svg) {
+    flex: none;
+  }
+  .project-menu {
+    position: absolute;
+    z-index: 20;
+    right: 25px;
+    top: 68px;
+    width: 350px;
+    max-height: 500px;
+    overflow: auto;
+    padding: 15px;
+    background: #1b2a3e;
+    border: 1px solid #405777;
+    border-radius: 9px;
+    box-shadow: 0 14px 40px #0008;
+  }
+  .project-option {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    text-align: left;
+    background: #142137;
+    border: 1px solid #2c4260;
+    border-radius: 6px;
+    padding: 12px;
+    color: #92b4e4;
+    margin-top: 8px;
+  }
+  .project-option > span {
+    flex: 1;
+    min-width: 0;
+  }
+  .project-option strong {
+    display: block;
+    font-size: 11px;
+    color: #c2d7f4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .project-option small {
+    display: block;
+    font-size: 9px;
+    margin-top: 5px;
+    color: #7591b4;
+  }
+  .workspace-dialog::backdrop {
+    background: #030b15b8;
+    backdrop-filter: blur(3px);
+  }
+  .workspace-dialog {
+    width: 430px;
+    max-width: 100%;
+    background: #1a293d;
+    border: 1px solid #3b587c;
+    border-radius: 11px;
+    padding: 24px;
+    color: #d4e3f9;
+    box-shadow: 0 25px 80px #0009;
+    font-family: Inter, system-ui, sans-serif;
+  }
+  .workspace-dialog h2 {
+    font-size: 18px;
+    margin: 0 0 14px;
+  }
+  .workspace-dialog p {
+    font-size: 12px;
+    line-height: 1.8;
+    color: #9cb4d4;
+    margin: 0 0 20px;
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+  }
+  .shortcuts {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 13px 20px;
+    font-size: 11px;
+    margin: 20px 0;
+  }
+  .shortcuts dt {
+    color: #a0b8d8;
+  }
+  .shortcuts dd {
+    margin: 0;
+    color: #d0e1f7;
+    background: #112036;
+    padding: 3px 7px;
+    border: 1px solid #2e4868;
+    border-radius: 4px;
+    font-size: 10px;
+  }
+  :global(.spin) {
+    animation: ocr-spin 1.3s linear infinite;
+  }
+  @keyframes ocr-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (min-width: 1600px) {
+    .work-area {
+      grid-template-columns: 234px minmax(400px, 1fr) 430px;
+    }
+    .work-area.rail-hidden {
+      grid-template-columns: minmax(400px, 1fr) 430px;
+    }
+    .inspector-tabs > button {
+      font-size: 11px;
+    }
+    .region-card textarea {
+      font-size: 13px !important;
+    }
+  }
+  @media (max-width: 1200px) {
+    .work-area {
+      grid-template-columns: 185px minmax(240px, 1fr) 340px;
+    }
+    .work-area.rail-hidden {
+      grid-template-columns: minmax(240px, 1fr) 340px;
+    }
+    .save-state {
+      display: none;
+    }
+    .workspace-header {
+      padding: 13px 16px;
+    }
+    .command-bar {
+      padding: 9px 12px;
+      gap: 4px;
+    }
+    .command-bar .button {
+      font-size: 10px;
+      padding: 7px 8px;
+    }
+    .image-toolbar {
+      gap: 4px;
+      padding: 8px 5px;
+    }
+    .image-toolbar .icon-button {
+      padding: 4px;
+      min-width: 24px;
+    }
+    .image-toolbar select {
+      max-width: 105px;
+    }
+    .thumbnail {
+      width: 43px;
+      height: 65px;
+    }
+    .page-card {
+      gap: 5px;
+      padding: 8px 4px;
+    }
+    .page-card-main {
+      gap: 7px;
+    }
+    .page-filename {
+      font-size: 8px;
+    }
+    .region-card textarea {
+      font-size: 11px !important;
+    }
+  }
+  @media (max-width: 980px) {
+    .work-area {
+      grid-template-columns: 155px minmax(220px, 1fr) 310px;
+    }
+    .work-area.rail-hidden {
+      grid-template-columns: minmax(220px, 1fr) 310px;
+    }
+    .optional-label {
+      display: none;
+    }
+    .workspace-title input {
+      font-size: 16px !important;
+    }
+    .page-card {
+      padding: 7px 3px;
+      min-height: 85px;
+    }
+    .thumbnail {
+      width: 35px;
+      height: 55px;
+    }
+    .page-card-info > strong {
+      font-size: 10px;
+    }
+    .page-state {
+      font-size: 8px;
+    }
+    .page-card-main {
+      gap: 5px;
+    }
+    .page-checkbox {
+      margin-top: 20px !important;
+    }
+    .image-toolbar .tool-group + .tool-group {
+      padding-left: 2px;
+    }
+    .image-toolbar select {
+      max-width: 87px;
+      font-size: 9px !important;
+    }
+    .image-toolbar .button.small {
+      font-size: 9px;
+      padding: 4px 5px;
+    }
+    .inspector-tabs {
+      padding: 0 3px;
+    }
+    .inspector-tabs > button {
+      font-size: 9px;
+      gap: 3px;
+    }
+    .inspector-tabs :global(svg) {
+      width: 12px;
+    }
+    .panel-scroll {
+      padding: 14px;
+    }
+    .approval-bar {
+      padding: 9px 6px;
+    }
+    .approval-bar .button {
+      font-size: 9px;
+      padding: 7px;
+    }
+    .queue-label > span {
+      display: none;
+    }
+  }
+  @media (max-width: 780px) {
+    .workspace-header {
+      gap: 8px;
+      min-height: 66px;
+      padding: 11px 12px;
+    }
+    .workspace-mark {
+      width: 33px;
+      height: 33px;
+      border-radius: 8px;
+    }
+    .eyebrow {
+      font-size: 8px;
+      letter-spacing: 1px;
+    }
+    .workspace-title input {
+      font-size: 15px !important;
+    }
+    .header-actions {
+      gap: 2px;
+    }
+    .header-actions .button {
+      font-size: 10px;
+      padding: 5px 7px;
+    }
+    .header-actions > .icon-button {
+      display: none;
+    }
+    .command-bar {
+      flex-wrap: wrap;
+      row-gap: 6px;
+    }
+    .command-separator {
+      display: none;
+    }
+    .command-bar .toolbar-spacer {
+      min-width: 0;
+    }
+    .command-bar .button {
+      font-size: 9px;
+      min-height: 29px;
+    }
+    .command-bar > .button.subtle {
+      display: none;
+    }
+    .work-area,
+    .work-area.rail-hidden {
+      grid-template-columns: minmax(190px, 1fr) minmax(270px, 44%);
+    }
+    .page-rail {
+      display: none;
+    }
+    .document-pane .image-toolbar {
+      overflow-x: auto;
+    }
+    .image-toolbar .toolbar-spacer {
+      display: none;
+    }
+    .image-toolbar select {
+      max-width: 82px;
+    }
+    .work-area .document-pane .image-toolbar > .button {
+      display: none;
+    }
+    .image-toolbar {
+      justify-content: space-between;
+    }
+    .queue-bar {
+      padding: 8px 10px;
+      gap: 7px;
+      font-size: 9px;
+    }
+    .queue-bar progress {
+      max-width: 130px;
+    }
+    .queue-label strong {
+      font-size: 9px;
+    }
+    .workspace-status {
+      font-size: 8px;
+      padding: 6px 8px;
+      gap: 6px;
+    }
+    .status-message {
+      max-width: 42%;
+    }
+    .status-divider {
+      display: none;
+    }
+    .welcome {
+      padding: 30px 20px 20px;
+    }
+    .welcome h1 {
+      font-size: 28px;
+    }
+    .welcome-steps {
+      gap: 8px;
+    }
+    .welcome-steps article {
+      padding: 18px 13px;
+    }
+    .project-menu {
+      right: 12px;
+      width: min(350px, calc(100% - 24px));
+    }
+  }
+  @media (max-width: 560px) {
+    .work-area,
+    .work-area.rail-hidden {
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+    }
+    .document-pane {
+      min-height: 300px;
+      height: 42vh;
+      flex: none;
+    }
+    .inspector {
+      min-height: 390px;
+      flex: 1;
+      border-left: 0;
+      border-top: 1px solid #334b69;
+      overflow: visible;
+    }
+    .region-list {
+      min-height: 220px;
+      max-height: 45vh;
+    }
+    .inspector-tabs {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+    }
+    .panel-scroll {
+      overflow: visible;
+    }
+    .workspace-header .header-actions .button {
+      padding: 5px;
+      font-size: 9px;
+    }
+    .header-actions .button :global(svg) {
+      width: 13px;
+    }
+    .workspace-title input {
+      font-size: 13px !important;
+    }
+    .workspace-mark {
+      display: none;
+    }
+    .command-bar {
+      padding: 7px 8px;
+    }
+    .command-bar .button {
+      font-size: 9px;
+      padding: 6px;
+    }
+    .command-bar .undo-group {
+      padding-right: 3px;
+    }
+    .command-bar .undo-group .icon-button {
+      padding: 4px;
+      min-width: 24px;
+    }
+    .command-bar .button.export-button {
+      margin-left: auto;
+    }
+    .workspace-status .approved-stat {
+      display: none;
+    }
+    .welcome-steps {
+      grid-template-columns: 1fr;
+      margin-top: 24px;
+      max-width: 400px;
+    }
+    .welcome-steps article {
+      padding: 16px 18px;
+    }
+    .welcome-steps article :global(svg) {
+      float: left;
+      margin: 2px 13px 25px 0;
+    }
+    .welcome-steps h3 {
+      margin: 0 0 5px;
+    }
+    .welcome-icon {
+      width: 58px;
+      height: 58px;
+      margin-bottom: 20px;
+    }
+    .welcome h1 {
+      font-size: 26px;
+    }
+    .welcome-main > p {
+      font-size: 11px;
+    }
+    .welcome-footer {
+      font-size: 8px;
+      text-align: center;
+    }
+    .queue-bar progress {
+      display: none;
+    }
+    .queue-label {
+      flex: 1;
+    }
+    .queue-actions {
+      gap: 3px;
+    }
+    .queue-actions .button {
+      font-size: 9px;
+    }
+    .image-toolbar {
+      justify-content: flex-start;
+      gap: 10px;
+    }
+    .image-toolbar .tool-group + .tool-group {
+      padding-left: 7px;
+    }
+    .image-toolbar select {
+      max-width: 140px;
+    }
+    .image-footer {
+      height: 35px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .button {
+      transition: none;
+    }
+    :global(.spin) {
+      animation: none;
+    }
+  }
 </style>

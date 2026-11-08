@@ -1,0 +1,58 @@
+name: OCR workspace browser verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/ocr-production-workspace]
+    paths:
+      - src/lib/ocr/**
+      - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ocr/**
+      - tests/ocr-workspace/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/ocr-workspace-smoke.yml
+  pull_request:
+    paths:
+      - src/lib/ocr/**
+      - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ocr/**
+      - tests/ocr-workspace/**
+      - .github/workflows/ocr-workspace-smoke.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-workspace-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install browser verification tools
+        run: npm install --no-save --package-lock=false playwright@1.62.1
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test OCR model, queue, and durable save logic
+        run: npm test -- --run src/lib/ocr
+      - name: Verify production workspace interactions
+        run: node tests/ocr-workspace/smoke.mjs
+      - name: Save browser report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-workspace-browser-report
+          path: |
+            tests/ocr-workspace/artifacts/report.json
+            tests/ocr-workspace/artifacts/*.png
+          if-no-files-found: warn
+          retention-days: 14

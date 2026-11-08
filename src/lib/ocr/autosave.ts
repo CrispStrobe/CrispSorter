@@ -1,7 +1,7 @@
 /** Serializes autosaves so an older request can never overwrite a newer edit. */
-export interface SaveReceipt { revision: number; saved_at: string; path: string; }
+export interface SaveReceipt { revision: number; saved_at: number | string; path: string; }
 export type SaveState = 'saved' | 'pending' | 'saving' | 'error';
-export interface SaveStatus { state: SaveState; error?: string; savedAt?: string; }
+export interface SaveStatus { state: SaveState; error?: string; savedAt?: number | string; }
 
 export class ProjectAutosave<T> {
     private pending: T | undefined;
@@ -63,5 +63,12 @@ export class ProjectAutosave<T> {
     hasUnsavedChanges(): boolean { return this.pending !== undefined || this.active !== undefined; }
     getRevision(): number { return this.revision; }
     /** Flush before replacing the project or closing; callers surface a failure. */
-    async close(): Promise<void> { await this.flush(); this.closed = true; clearTimeout(this.timer); }
+    async close(): Promise<void> {
+        // A saved-status observer can enqueue an edit in a microtask after the
+        // current drain resolves. Recheck after each flush before closing so
+        // clearing the debounce timer never abandons that last snapshot.
+        while (this.hasUnsavedChanges()) await this.flush();
+        this.closed = true;
+        clearTimeout(this.timer);
+    }
 }
