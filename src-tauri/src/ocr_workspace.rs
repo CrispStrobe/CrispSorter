@@ -6,7 +6,7 @@
 //! exports use the reviewed pixels and text, never silently rerun recognition.
 
 use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
-use crate::index::tauri_commands::{KieFieldDto, OcrExportResult, OcrRegionDto};
+use crate::index::tauri_commands::{KieFieldDto, OcrExportResult};
 use crate::AppState;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
@@ -415,7 +415,15 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
         || !["pan", "esrgan", "safmn", "hat", "tbsrn", "dat", "swinir"].contains(&config.sr_engine.as_str()) {
         return Err("Unknown scan restoration engine.".into());
     }
+    if !["rtdetr", "cc"].contains(&config.layout_engine.as_str())
+        || !["got", "glm", "qwen2vl", "internvl2", "qwen3vl"].contains(&config.vlm_ocr_engine.as_str()) {
+        return Err("Unknown layout or escalation engine.".into());
+    }
     for stage in &config.stages {
+        if !["dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract", "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr"].contains(&stage.engine.as_str())
+            || !["auto", "screenshot", "scanned_doc", "photo"].contains(&stage.source_type.as_str()) {
+            return Err("Unknown OCR stage engine or source type.".into());
+        }
         if stage.vlm_prompt.len() > 32_768 || stage.vlm_prompt.contains('\0')
             || !stage.min_confidence.is_finite() || !(0.0..=1.0).contains(&stage.min_confidence)
             || !stage.det_prob_threshold.is_finite() || !(0.0..=1.0).contains(&stage.det_prob_threshold)
@@ -426,7 +434,8 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
             return Err("Invalid OCR stage settings.".into());
         }
         let cleanup = &stage.cleanup;
-        if !cleanup.sauvola_k.is_finite() || !(0.0..=1.0).contains(&cleanup.sauvola_k)
+        if !(0..=1).contains(&cleanup.binarize_method)
+            || !cleanup.sauvola_k.is_finite() || !(0.0..=1.0).contains(&cleanup.sauvola_k)
             || !(3..=501).contains(&cleanup.sauvola_window)
             || !(1..=501).contains(&cleanup.morph_kernel)
             || !cleanup.border_threshold.is_finite() || !(0.0..=1.0).contains(&cleanup.border_threshold)
@@ -558,7 +567,10 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, page.width, page.height)
             .map_err(|e| format!("Recognition returned invalid region geometry: {e}"))?;
     }
-    if let Some(zone) = zone { result.diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?; }
+    if let Some(zone) = zone {
+        result.diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?;
+        result.diagnostics["effective_zone"] = json!({"x":offset.0,"y":offset.1,"w":result.width,"h":result.height});
+    }
     result.diagnostics["requested_config"] = serde_json::to_value(config).map_err(|e| e.to_string())?;
     Ok(RecognizedPage { page, regions: result.regions, elapsed_ms: started.elapsed().as_millis() as u64, warnings, diagnostics: result.diagnostics })
 }
@@ -744,9 +756,41 @@ pub async fn ocr_workspace_list(app: tauri::AppHandle) -> Result<Vec<ProjectSumm
                 });
             }
         }
-        projects.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+        projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(projects)
     }).await.map_err(|e| format!("Project list worker: {e}"))?
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ExportRegion {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// Unknown is null in review JSON. It becomes the renderer's neutral zero
+    /// only at the native output boundary, never in the persisted evidence.
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub char_conf: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_basis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_conf_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_conf_aligned: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_char_conf: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_char_conf_aligned: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -754,7 +798,19 @@ pub struct ExportPage {
     pub image_path: String,
     pub width: i32,
     pub height: i32,
-    pub regions: Vec<OcrRegionDto>,
+    pub regions: Vec<ExportRegion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_page: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
 }
 
 fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
@@ -768,10 +824,12 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
         for (j, region) in page.regions.iter().enumerate() {
             checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, width, height)
                 .map_err(|e| format!("Page {}, region {}: {e}", i + 1, j + 1))?;
-            if !region.confidence.is_finite() || !(-1.0..=1.0).contains(&region.confidence) {
+            if region.confidence.is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score)) {
                 return Err(format!("Page {}, region {} has an invalid confidence.", i + 1, j + 1));
             }
-            if region.text.contains('\0') { return Err("OCR text contains a null character. Remove it before exporting.".into()); }
+            if let Some(ch) = region.text.chars().find(|ch| *ch < ' ' && !['\t', '\n', '\r'].contains(ch)) {
+                return Err(format!("Page {}, region {} contains unsupported control character U+{:04X}. Remove it before exporting.", i + 1, j + 1, ch as u32));
+            }
         }
     }
     Ok(())
@@ -827,7 +885,7 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
             let render_pages: Vec<_> = pages.iter().map(|p| RenderPage::from_regions(p.regions.iter().map(|r| OcrRegion {
-                text: r.text.clone(), x: r.x, y: r.y, w: r.w, h: r.h, confidence: r.confidence,
+                text: r.text.clone(), x: r.x, y: r.y, w: r.w, h: r.h, confidence: r.confidence.unwrap_or(0.0),
             }).collect(), p.width, p.height, p.image_path.clone())).collect();
             crate::extractors::ocr_render::render(&render_pages, format, pdfa).map_err(|e| format!("Render OCR document: {e:#}"))
         },
@@ -924,9 +982,12 @@ mod tests {
 
     fn export_page(root: &Path, text: &str) -> ExportPage {
         let asset = persist_image(root, &image()).unwrap();
-        ExportPage { image_path: asset.image_path, width: 8, height: 4, regions: vec![OcrRegionDto {
-            text: text.into(), x: 1.0, y: 1.0, w: 6.0, h: 2.0, confidence: 0.0, char_conf: vec![],
-        }] }
+        ExportPage { image_path: asset.image_path, width: 8, height: 4, regions: vec![ExportRegion {
+            text: text.into(), x: 1.0, y: 1.0, w: 6.0, h: 2.0, confidence: Some(0.0), char_conf: vec![],
+            id: None, original_text: None, confidence_basis: None, char_conf_unit: None,
+            char_conf_aligned: None, original_char_conf: None, original_char_conf_aligned: None,
+            review: None, kind: None,
+        }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None }
     }
 
     #[test]
@@ -1050,6 +1111,41 @@ mod tests {
     }
 
     #[test]
+    fn json_export_preserves_unknown_confidence_and_review_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "corrected amount");
+        page.id = Some("page-a".into());
+        page.source_uri = Some("/original/invoice.pdf".into());
+        page.source_page = Some(2);
+        page.approved = Some(true);
+        page.provenance = Some(json!({"engine":"tesseract", "confidence_calibrated":false}));
+        let region = &mut page.regions[0];
+        region.confidence = None;
+        region.id = Some("region-a".into());
+        region.original_text = Some("original amount".into());
+        region.confidence_basis = Some("unknown".into());
+        region.char_conf_unit = Some("token".into());
+        region.char_conf_aligned = Some(false);
+        region.original_char_conf = Some(vec![0.1, 0.9]);
+        region.original_char_conf_aligned = Some(false);
+        region.review = Some("verified".into());
+        let pages = vec![page, export_page(root.path(), "known zero")];
+        validate_export_pages(&pages).unwrap();
+        let output: Value = serde_json::from_slice(&export_bytes(&pages, "json", false).unwrap()).unwrap();
+        let first = &output["pages"][0];
+        assert_eq!(first["id"], "page-a");
+        assert_eq!(first["source_page"], 2);
+        assert_eq!(first["provenance"]["engine"], "tesseract");
+        assert!(first["regions"][0]["confidence"].is_null());
+        assert_eq!(first["regions"][0]["original_text"], "original amount");
+        assert_eq!(first["regions"][0]["confidence_basis"], "unknown");
+        assert_eq!(first["regions"][0]["char_conf_aligned"], false);
+        assert_eq!(first["regions"][0]["original_char_conf"].as_array().unwrap().len(), 2);
+        assert_eq!(first["regions"][0]["review"], "verified");
+        assert_eq!(output["pages"][1]["regions"][0]["confidence"], 0.0);
+    }
+
+    #[test]
     fn html_export_escapes_recognized_markup() {
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "<script>alert('x')</script>&")];
@@ -1126,6 +1222,12 @@ mod tests {
         config.min_confidence = f32::NAN;
         assert!(validate_config(&config).is_err());
         config.min_confidence = 0.5; config.sr_max_short_side = -100;
+        assert!(validate_config(&config).is_err());
+        let mut config = crate::extractors::OcrPipelineConfig::default();
+        config.stages = vec![serde_json::from_value(json!({"engine":"misspelled-engine"})).unwrap()];
+        assert!(validate_config(&config).is_err());
+        config.stages[0].engine = "tesseract".into();
+        config.stages[0].source_type = "misspelled-source".into();
         assert!(validate_config(&config).is_err());
     }
 }

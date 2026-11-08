@@ -10,6 +10,12 @@ and where the work happens (CrispSorter = thin Rust caller + settings surface;
 > `--features pdf-render` (PDFium, bound at runtime). Without those, OCR falls
 > back to the legacy Rust tier ladder (ocrs / PaddleOCR / Tesseract shell-out).
 
+## Interactive document review
+
+The **OCR** tab now provides a durable multi-document review workspace. See
+[OCR document workspace](ocr-workspace.md) for page preparation, region editing,
+confidence review, batch controls, structured extraction, and checked export.
+
 ## The pipeline, end to end
 
 ```

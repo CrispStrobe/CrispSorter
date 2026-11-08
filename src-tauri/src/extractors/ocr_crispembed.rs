@@ -909,6 +909,16 @@ fn review_pipeline_config(cfg: &super::OcrPipelineConfig) -> super::OcrPipelineC
     config
 }
 
+#[cfg(any(feature = "ocr-review-diagnostics", test))]
+fn parse_review_snapshot(payload: &str) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if value.get("schema").and_then(serde_json::Value::as_str) != Some("crispembed.ocr.review")
+        || value.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return None;
+    }
+    Some(value)
+}
+
 #[cfg(feature = "crispembed")]
 pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Result<OcrReviewResult> {
     let config = review_pipeline_config(cfg);
@@ -917,7 +927,7 @@ pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Re
     let (result, language, snapshot) = with_ocr_pipeline(&config, |pipeline| {
         let result = pipeline.run(path_str).map_err(|e| anyhow::anyhow!("OCR recognition failed: {e}"))?;
         #[cfg(feature = "ocr-review-diagnostics")]
-        let snapshot = pipeline.review_json().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let snapshot = pipeline.review_json().and_then(|s| parse_review_snapshot(&s));
         #[cfg(not(feature = "ocr-review-diagnostics"))]
         let snapshot: Option<serde_json::Value> = None;
         Ok((result, pipeline.detected_lang(), snapshot))
@@ -929,7 +939,7 @@ pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Re
     let mut warnings: Vec<String> = snapshot.as_ref().and_then(|s| s.get("warnings")).and_then(serde_json::Value::as_array)
         .map(|list| list.iter().filter_map(serde_json::Value::as_str).map(String::from).collect()).unwrap_or_default();
     if snapshot.is_none() {
-        warnings.push("Detailed engine provenance is unavailable in this build. Confidence scores are uncalibrated and character alignment is unverified.".into());
+        warnings.push("Detailed engine provenance is unavailable or its schema is unsupported in this build. Confidence scores are uncalibrated and character alignment is unverified.".into());
     }
     let diagnostics = serde_json::json!({
         "coordinate_space": "prepared_image_pixels", "internal_cleanup": false,
@@ -1187,6 +1197,15 @@ pub fn ocr_via_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_diagnostics_accept_only_the_versioned_contract() {
+        assert!(parse_review_snapshot(r#"{"schema":"crispembed.ocr.review","schema_version":1}"#).is_some());
+        assert!(parse_review_snapshot(r#"{"schema":"crispembed.ocr.review","schema_version":2}"#).is_none());
+        assert!(parse_review_snapshot(r#"{"schema":"unknown","schema_version":1}"#).is_none());
+        assert!(parse_review_snapshot(r#"{"geometry":{}}"#).is_none());
+        assert!(parse_review_snapshot("{interrupted").is_none());
+    }
 
     fn region(text: &str) -> super::super::ocr_render::OcrRegion {
         super::super::ocr_render::OcrRegion {

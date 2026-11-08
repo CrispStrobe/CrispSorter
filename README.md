@@ -79,6 +79,8 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 
 ## Features
 
+- **OCR document workspace** — multi-document projects with automatic recovery, page preparation, editable source regions, confidence review, batch pause/resume, structured field/table/formula extraction, and checked searchable/editable exports. See [the workspace guide](docs/ocr-workspace.md).
+
 - **Four-tier OCR** (in quality order):
   - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): Surya-OCR-2 text detection (91 languages) + Qwen2.5-VL recognition (German support) + DBNet/TrOCR lightweight alternative; all-GGUF, no ORT dependency
   - **Tier 3 — PaddleOCR** (`--features paddle-ocr`): multilingual incl. CJK, ONNXRuntime via the existing ort dep, ~60 MB models auto-download; CJK/Latin model selection per document
