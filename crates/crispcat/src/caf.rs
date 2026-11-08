@@ -1,9 +1,8 @@
 //! Reader/writer for the classic Cathy `.caf` (Catalog File) format.
 //!
-//! Backwards-compatible with versions 1 through 8. Round-trips byte-
-//! identically with Catfish (Python) and the original Cathy.exe (C++)
-//! for the v8 case the writer emits; legacy versions 1-7 are
-//! read-only.
+//! Reads versions 1 through 8 and writes v6 or v8. Round trips preserve
+//! supported metadata; entry ordering and reconstructed directory IDs need
+//! not be byte-identical. v7/v8 file sizes include genuine zero-byte files.
 //!
 //! ## Format reference
 //!
@@ -48,9 +47,10 @@
 //! encoded and NUL-terminated — that's how Cathy.exe wrote them on
 //! Win9x, and we preserve that for round-trip parity.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::index::{FileEntry, FileIndex};
 
@@ -92,6 +92,8 @@ pub enum CafError {
     UnsupportedVersion(u8),
     /// Body read hit EOF before the declared element count.
     Truncated,
+    /// Metadata cannot be represented faithfully by the selected CAF version.
+    InvalidData(String),
 }
 
 impl From<io::Error> for CafError {
@@ -109,6 +111,7 @@ impl std::fmt::Display for CafError {
                 write!(f, "unsupported .caf version {v} (supported: 1..=8)")
             }
             CafError::Truncated => write!(f, "truncated .caf file"),
+            CafError::InvalidData(message) => write!(f, "invalid .caf metadata: {message}"),
         }
     }
 }
@@ -168,7 +171,7 @@ fn read_cstr_latin1<R: Read>(r: &mut R) -> Result<String, CafError> {
     let mut byte = [0u8; 1];
     loop {
         match r.read(&mut byte)? {
-            0 => break, // EOF — return what we have
+            0 => return Err(CafError::Truncated),
             _ => {
                 if byte[0] == 0 {
                     break;
@@ -223,17 +226,138 @@ fn write_f64_le<W: Write>(w: &mut W, v: f64) -> Result<(), CafError> {
     Ok(())
 }
 
-/// Encode a string back to latin-1, NUL-terminated. Any codepoint outside
-/// 0x00-0xFF is replaced with `?` — same fallback Catfish uses.
+/// Encode an exact Latin-1 string. Replacing a filename with `?` would create
+/// a different path on reload, and an embedded NUL would corrupt later fields.
 fn write_cstr_latin1<W: Write>(w: &mut W, s: &str) -> Result<(), CafError> {
+    validate_latin1(s)?;
     let mut bytes = Vec::with_capacity(s.len() + 1);
     for ch in s.chars() {
-        let cp = ch as u32;
-        bytes.push(if cp <= 0xFF { cp as u8 } else { b'?' });
+        bytes.push(ch as u8);
     }
     bytes.push(0);
     w.write_all(&bytes)?;
     Ok(())
+}
+
+fn validate_latin1(value: &str) -> Result<(), CafError> {
+    if value.chars().any(|ch| ch == '\0' || ch as u32 > 0xff) {
+        return Err(CafError::InvalidData(
+            "classic CAF requires Latin-1 strings without embedded NUL characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_name(name: &str) -> Result<(), CafError> {
+    validate_latin1(name)?;
+    if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\']) {
+        return Err(CafError::InvalidData("a CAF entry needs one unambiguous path component".into()));
+    }
+    Ok(())
+}
+
+fn validate_export(index: &FileIndex, target_version: u8) -> Result<(), CafError> {
+    let root = index.root_path.to_str().ok_or_else(|| {
+        CafError::InvalidData("the root path is not valid Unicode".into())
+    })?;
+    validate_latin1(root)?;
+    if root.is_empty()
+        || index.root_path.components().any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(CafError::InvalidData("the root path must not contain '..'".into()));
+    }
+    for text in [&index.header.label, &index.header.alias, &index.header.comment] {
+        validate_latin1(text)?;
+    }
+    if index.all_files.len() > i32::MAX as usize {
+        return Err(CafError::InvalidData("too many file entries for CAF".into()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0u64;
+    for entry in &index.all_files {
+        let text = entry.path.to_str().ok_or_else(|| {
+            CafError::InvalidData("a file path is not valid Unicode".into())
+        })?;
+        validate_latin1(text)?;
+        let relative = entry.path.strip_prefix(&index.root_path).map_err(|_| {
+            CafError::InvalidData(format!("file is outside the catalog root: {}", entry.path.display()))
+        })?;
+        if relative.as_os_str().is_empty()
+            || relative.components().any(|part| !matches!(part, Component::Normal(_)))
+            || entry.path.file_name().is_none()
+        {
+            return Err(CafError::InvalidData(format!("invalid child path: {}", entry.path.display())));
+        }
+        for part in relative.components() {
+            validate_name(part.as_os_str().to_str().expect("path was validated above"))?;
+        }
+        if !seen.insert(entry.path.as_path()) {
+            return Err(CafError::InvalidData(format!("duplicate file path: {}", entry.path.display())));
+        }
+        let largest = if target_version <= 6 { i32::MAX as u64 } else { i64::MAX as u64 };
+        if entry.size > largest {
+            return Err(CafError::InvalidData(format!("file size exceeds CAF v{target_version}: {}", entry.path.display())));
+        }
+        total = total.checked_add(entry.size).ok_or_else(|| {
+            CafError::InvalidData("total file size exceeds the supported integer range".into())
+        })?;
+    }
+    for entry in &index.all_files {
+        for ancestor in entry.path.ancestors().skip(1) {
+            if ancestor == index.root_path {
+                break;
+            }
+            if seen.contains(ancestor) {
+                return Err(CafError::InvalidData(format!(
+                    "a path cannot be both a file and a directory: {}", ancestor.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes an unpublished sibling file after any serialization/flush/rename
+/// failure. The destination is never opened or truncated during staging.
+struct PendingCatalog {
+    path: PathBuf,
+    published: bool,
+}
+
+impl Drop for PendingCatalog {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn create_pending_catalog(destination: &Path) -> Result<(PendingCatalog, File), CafError> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let parent = destination.parent().filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if destination.file_name().is_none() {
+        return Err(CafError::InvalidData("the catalog destination needs a filename".into()));
+    }
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    for _ in 0..32 {
+        let number = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(".crispcat-{}-{epoch}-{number}.tmp", std::process::id()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((PendingCatalog { path, published: false }, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate a temporary catalog").into())
 }
 
 // ── High-level API ───────────────────────────────────────────────────────
@@ -250,7 +374,11 @@ pub fn read_metadata(path: &Path) -> Result<CafMetadata, CafError> {
     }
     let mut version = (magic / UL_MODUS) as u8;
     if version > 2 {
-        version = read_i16_le(&mut r)? as u8;
+        let stored_version = read_i16_le(&mut r)?;
+        if !(1..=8).contains(&stored_version) {
+            return Err(CafError::InvalidData(format!("unsupported CAF version {stored_version}")));
+        }
+        version = stored_version as u8;
     }
     if !(1..=8).contains(&version) {
         return Err(CafError::UnsupportedVersion(version));
@@ -270,6 +398,9 @@ pub fn read_metadata(path: &Path) -> Result<CafMetadata, CafError> {
     let archive = if version >= 6 { read_i16_le(&mut r)? } else { 0 };
 
     let dir_count = read_i32_le(&mut r)?;
+    if dir_count < 0 {
+        return Err(CafError::InvalidData("negative directory count".into()));
+    }
     let mut file_count = 0i32;
     let mut total_size = 0u64;
     if dir_count > 0 {
@@ -303,6 +434,7 @@ pub fn read_metadata(path: &Path) -> Result<CafMetadata, CafError> {
 /// decide whether the full read is worth it.
 pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
     let f = File::open(path)?;
+    let file_length = f.metadata()?.len();
     let mut r = BufReader::new(f);
 
     let magic = read_u32_le(&mut r)?;
@@ -311,7 +443,11 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
     }
     let mut version = (magic / UL_MODUS) as u8;
     if version > 2 {
-        version = read_i16_le(&mut r)? as u8;
+        let stored_version = read_i16_le(&mut r)?;
+        if !(1..=8).contains(&stored_version) {
+            return Err(CafError::InvalidData(format!("unsupported CAF version {stored_version}")));
+        }
+        version = stored_version as u8;
     }
     if !(1..=8).contains(&version) {
         return Err(CafError::UnsupportedVersion(version));
@@ -352,6 +488,9 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
 
     // Info block.
     let dir_count = read_i32_le(&mut r)?;
+    if dir_count < 0 || dir_count as u64 > file_length {
+        return Err(CafError::InvalidData("invalid directory count".into()));
+    }
     for i in 0..dir_count {
         if i == 0 || version <= 3 {
             read_cstr_latin1(&mut r)?; // dir name (or empty for root in v8)
@@ -363,6 +502,10 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
 
     // ELM block — the actual entries.
     let element_count = read_i32_le(&mut r)?;
+    let minimum_record_bytes = if version <= 6 { 11 } else if version == 7 { 15 } else { 17 };
+    if element_count < 0 || element_count as u64 > file_length / minimum_record_bytes {
+        return Err(CafError::InvalidData("invalid or truncated element count".into()));
+    }
     let mut raw_elements: Vec<(u32, i64, u32, String)> = Vec::with_capacity(element_count as usize);
     for _ in 0..element_count {
         let mtime = read_u32_le(&mut r).map_err(|_| CafError::Truncated)?;
@@ -377,65 +520,74 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
             read_u32_le(&mut r)?
         };
         let name = read_cstr_latin1(&mut r)?;
+        validate_name(&name)?;
         raw_elements.push((mtime, size, parent_id, name));
     }
 
-    // Reconstruct directory paths from the flat element list.
-    //
-    // For v > 6: a directory entry has `size < 0` and its ID is `-size`.
-    // For v <= 6: a directory is identified by being referenced as a
-    //             parent_id by some other entry; its ID is its 1-based
-    //             positional index. (Catfish quirk.)
-    let referenced_parent_ids: std::collections::HashSet<u32> =
+    // Modern CAF directory IDs are independent of entry order. Resolve the
+    // graph from root once, so forward references work and an orphan/cycle
+    // cannot silently turn a damaged catalog into an apparently complete one.
+    use std::collections::{HashMap, HashSet};
+    let referenced_parent_ids: HashSet<u32> =
         raw_elements.iter().map(|(_, _, pid, _)| *pid).collect();
-    let mut dir_path_map: std::collections::HashMap<u32, PathBuf> =
-        std::collections::HashMap::new();
-    dir_path_map.insert(0, root_path.clone());
-
-    for (i, (_mtime, size, pid, name)) in raw_elements.iter().enumerate() {
-        let is_dir = if version > 6 {
-            *size < 0
-        } else {
-            referenced_parent_ids.contains(&((i as u32) + 1))
-        };
-        if is_dir {
-            let dir_id: u32 = if version > 6 {
-                (-size) as u32
-            } else {
-                (i as u32) + 1
-            };
-            if let Some(parent_path) = dir_path_map.get(pid) {
-                if !name.is_empty() {
-                    let mut p = parent_path.clone();
-                    p.push(name);
-                    dir_path_map.insert(dir_id, p);
-                }
-            }
-        }
-    }
-
+    let mut directories: HashMap<u32, (u32, &str)> = HashMap::new();
+    let mut files = Vec::new();
     for (i, (mtime, size, pid, name)) in raw_elements.iter().enumerate() {
         let is_dir = if version > 6 {
             *size < 0
         } else {
             referenced_parent_ids.contains(&((i as u32) + 1))
         };
-        if !is_dir && !name.trim().is_empty() {
-            if let Some(parent_path) = dir_path_map.get(pid) {
-                let mut p = parent_path.clone();
-                p.push(name);
-                // v <= 6 stored no per-file size; clamp to 1 so the
-                // size_index bucket still works, matching Catfish.
-                let actual_size = if version > 6 {
-                    (*size as u64).max(1)
-                } else if *size == 0 {
-                    1024
-                } else {
-                    *size as u64
-                };
-                index.add(FileEntry::new(p, actual_size, *mtime));
+        if is_dir {
+            let id = if version > 6 {
+                size.checked_neg().and_then(|id| u32::try_from(id).ok())
+                    .ok_or_else(|| CafError::InvalidData("directory ID exceeds CAF range".into()))?
+            } else {
+                i as u32 + 1
+            };
+            if directories.insert(id, (*pid, name)).is_some() {
+                return Err(CafError::InvalidData("duplicate directory ID".into()));
             }
+        } else {
+            let actual_size = if version <= 6 && *size == 0 {
+                1024 // Preserve the legacy unknown-size convention only in v1-v6.
+            } else {
+                u64::try_from(*size).map_err(|_| CafError::InvalidData("negative file size".into()))?
+            };
+            files.push((*mtime, actual_size, *pid, name));
         }
+    }
+    let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
+    for (&id, &(parent, name)) in &directories {
+        if parent != 0 && !directories.contains_key(&parent) {
+            return Err(CafError::InvalidData("unknown directory parent".into()));
+        }
+        children.entry(parent).or_default().push((id, name));
+    }
+    let mut dir_paths = HashMap::from([(0, root_path.clone())]);
+    let mut seen_paths = HashSet::from([root_path]);
+    let mut pending = vec![0];
+    while let Some(parent) = pending.pop() {
+        for &(id, name) in children.get(&parent).into_iter().flatten() {
+            let path = dir_paths[&parent].join(name);
+            if !seen_paths.insert(path.clone()) {
+                return Err(CafError::InvalidData("duplicate catalog path".into()));
+            }
+            dir_paths.insert(id, path);
+            pending.push(id);
+        }
+    }
+    if dir_paths.len() != directories.len() + 1 {
+        return Err(CafError::InvalidData("cyclic directory hierarchy".into()));
+    }
+    for (mtime, size, parent, name) in files {
+        let directory = dir_paths.get(&parent)
+            .ok_or_else(|| CafError::InvalidData("unknown file parent".into()))?;
+        let path = directory.join(name);
+        if !seen_paths.insert(path.clone()) {
+            return Err(CafError::InvalidData("duplicate catalog path".into()));
+        }
+        index.add(FileEntry::new(path, size, mtime));
     }
 
     Ok(index)
@@ -449,20 +601,46 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
 /// "stamp this catalog with NOW" don't have to mutate the header
 /// first). Pass `index.header.date` to preserve the original value.
 ///
-/// **Round-trip semantics**: `read_file → write_file → read_file`
-/// produces a `FileIndex` whose entries (path/size/mtime), volume
-/// header (label/alias/serial/comment/freesize/archive/date), and
-/// `save_version` match the original. Byte-for-byte equality of the
-/// `.caf` files is **not** guaranteed — entry ordering, dir-tree
-/// reconstruction, and Cathy's quirks around the `next_dir_id`
-/// allocation can shuffle bytes without affecting semantics.
+/// Supported file paths, byte sizes and second-resolution mtimes survive
+/// modern CAF round trips. This file-only index does not retain empty folders
+/// or directory timestamps; v1-v6 keep their historical zero-size convention.
+/// Formats other than v6/v8 are upgraded to v8 on write. Empty labels/aliases
+/// are populated from the root name, as for a fresh scan.
+///
+/// Serialization is staged beside the destination, flushed, and renamed only
+/// after it succeeds. Invalid metadata or a failed write leaves the previous
+/// catalog untouched. Classic CAF requires NUL-free Latin-1 names.
 pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(), CafError> {
     let target_version: u8 = match index.save_version {
         6 | 8 => index.save_version,
         _ => 8,
     };
-    let f = File::create(path)?;
-    let mut w = BufWriter::new(f);
+    validate_export(index, target_version)?;
+    let (mut pending, mut file) = create_pending_catalog(path)?;
+    write_contents(&mut file, index, created_date, target_version)?;
+    // Retain an existing regular catalog's permissions when replacing it.
+    // Inspect the directory entry itself instead of following a destination link.
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => file.set_permissions(metadata.permissions())?,
+        Ok(_) => {},
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error.into()),
+    }
+    file.sync_all()?;
+    // Closing before rename also permits replacement on Windows.
+    drop(file);
+    std::fs::rename(&pending.path, path)?;
+    pending.published = true;
+    Ok(())
+}
+
+fn write_contents(
+    file: &mut File,
+    index: &FileIndex,
+    created_date: u32,
+    target_version: u8,
+) -> Result<(), CafError> {
+    let mut w = BufWriter::new(file);
 
     // Header. v ≥ 3 uses the magic-as-sentinel scheme: magic encodes
     // "version >= 3" (literally `3 * UL_MODUS + base`) and the actual
@@ -537,12 +715,17 @@ pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(
         }
     }
     let mut sorted_dirs: Vec<PathBuf> = all_dirs.into_iter().collect();
-    sorted_dirs.sort_by_key(|p| p.components().count());
+    sorted_dirs.sort_by(|a, b| a.components().count().cmp(&b.components().count()).then_with(|| a.cmp(b)));
     for d in sorted_dirs {
         if !dir_id_map.contains_key(&d) {
             dir_id_map.insert(d, next_dir_id);
             next_dir_id += 1;
         }
+    }
+    if next_dir_id > i32::MAX as u32
+        || (target_version <= 7 && next_dir_id > u16::MAX as u32 + 1)
+    {
+        return Err(CafError::InvalidData(format!("too many directories for CAF v{target_version}")));
     }
 
     // Per-dir running totals for the info block.
@@ -637,25 +820,26 @@ pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(
     //   * v = 7:  <L> mtime, <q> size64, <H> parent_id16
     //   * v = 8:  <L> mtime, <q> size64, <L> parent_id32
     //
-    // For v ≤ 6 we clamp size > i32::MAX and parent_id > u16::MAX
-    // rather than fail — out-of-range values would only show up for
-    // catalogs with > 4 GB single files OR > 65k directories, both
-    // edge cases for v6's intended Win9x-era use.
+    // Values have been checked before publication. Never clamp a large file
+    // or parent ID into different metadata; callers can explicitly choose v8.
+    if elm.len() > i32::MAX as usize {
+        return Err(CafError::InvalidData("too many total elements for CAF".into()));
+    }
     write_i32_le(&mut w, elm.len() as i32)?;
     for (mtime, size, pid, name) in elm {
         write_u32_le(&mut w, mtime)?;
         match target_version {
             v if v <= 6 => {
-                let size32: i32 = size.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                let size32: i32 = size as i32;
                 write_i32_le(&mut w, size32)?;
-                let pid16: u16 = pid.min(u16::MAX as u32) as u16;
+                let pid16: u16 = pid as u16;
                 let mut buf = [0u8; 2];
                 buf.copy_from_slice(&pid16.to_le_bytes());
                 w.write_all(&buf)?;
             }
             7 => {
                 write_i64_le(&mut w, size)?;
-                let pid16: u16 = pid.min(u16::MAX as u32) as u16;
+                let pid16: u16 = pid as u16;
                 let mut buf = [0u8; 2];
                 buf.copy_from_slice(&pid16.to_le_bytes());
                 w.write_all(&buf)?;
@@ -730,6 +914,68 @@ mod tests {
         assert_eq!(got, want);
         // Save version is v8 by default for fresh indexes.
         assert_eq!(loaded.save_version, 8);
+    }
+
+    #[test]
+    fn zero_byte_files_round_trip_with_full_paths_and_size_buckets() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("zero.caf");
+        let root = tmp.path().join("source");
+        let mut index = FileIndex::new(root.clone(), cfg!(windows));
+        for (relative, size) in [("empty.txt", 0), ("a/b/empty.txt", 0), ("a/data", 7)] {
+            index.add(FileEntry::new(root.join(relative), size, 1_700_000_000));
+        }
+        write_file(&path, &index, 1_700_000_001).unwrap();
+        let loaded = read_file(&path).unwrap();
+        let mut expected: Vec<_> = index.all_files.iter()
+            .map(|entry| (&entry.path, entry.size, entry.mtime)).collect();
+        let mut actual: Vec<_> = loaded.all_files.iter()
+            .map(|entry| (&entry.path, entry.size, entry.mtime)).collect();
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+        assert_eq!(loaded.by_size(0).count(), 2);
+        assert_eq!(loaded.total_size(), 7);
+        assert_eq!(read_metadata(&path).unwrap().total_size, 7);
+    }
+
+    #[test]
+    fn v7_zero_size_is_exact_and_v6_legacy_fallback_is_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        // A small hand-written fixture exercises the v7 reader independently
+        // of our writer, which intentionally only emits v6 and v8.
+        for (version, expected_size) in [(6, 1024), (7, 0)] {
+            let path = tmp.path().join(format!("v{version}.caf"));
+            let mut bytes = Vec::new();
+            write_u32_le(&mut bytes, 3 * UL_MODUS + UL_MAGIC_BASE).unwrap();
+            write_i16_le(&mut bytes, version).unwrap();
+            write_u32_le(&mut bytes, 1_700_000_000).unwrap();
+            write_cstr_latin1(&mut bytes, "/catalog-root").unwrap();
+            write_cstr_latin1(&mut bytes, "fixture").unwrap();
+            write_cstr_latin1(&mut bytes, "").unwrap();
+            write_u32_le(&mut bytes, 0).unwrap();
+            write_cstr_latin1(&mut bytes, "").unwrap();
+            write_f32_le(&mut bytes, 0.0).unwrap();
+            write_i16_le(&mut bytes, 0).unwrap();
+            write_i32_le(&mut bytes, 1).unwrap();
+            write_cstr_latin1(&mut bytes, "").unwrap();
+            write_i32_le(&mut bytes, 1).unwrap();
+            write_f64_le(&mut bytes, 0.0).unwrap();
+            write_i32_le(&mut bytes, 1).unwrap();
+            write_u32_le(&mut bytes, 1_700_000_000).unwrap();
+            if version <= 6 {
+                write_i32_le(&mut bytes, 0).unwrap();
+            } else {
+                write_i64_le(&mut bytes, 0).unwrap();
+            }
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            write_cstr_latin1(&mut bytes, "empty.txt").unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            let loaded = read_file(&path).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded.all_files[0].size, expected_size);
+            assert_eq!(loaded.all_files[0].path, PathBuf::from("/catalog-root/empty.txt"));
+        }
     }
 
     #[test]
@@ -911,5 +1157,179 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n.contains("a/b/c.txt") || n.contains("a\\b\\c.txt")));
         assert!(names.iter().any(|n| n.contains("a/d.txt") || n.contains("a\\d.txt")));
+    }
+
+    fn independent_v8(entries: &[(i64, u32, &str)]) -> (Vec<u8>, usize, usize) {
+        let mut bytes = 3_500_410_407u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&8i16.to_le_bytes());
+        bytes.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+        bytes.extend_from_slice(b"/offline/root\0Volume\0Alias\0");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(b"fixture\0");
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&0i16.to_le_bytes());
+        let dir_count_offset = bytes.len();
+        bytes.extend_from_slice(&1i32.to_le_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&(entries.len() as i32).to_le_bytes());
+        bytes.extend_from_slice(&0f64.to_le_bytes());
+        let element_count_offset = bytes.len();
+        bytes.extend_from_slice(&(entries.len() as i32).to_le_bytes());
+        for &(size, parent, name) in entries {
+            bytes.extend_from_slice(&1_700_000_001u32.to_le_bytes());
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&parent.to_le_bytes());
+            bytes.extend(name.chars().map(|character| character as u8));
+            bytes.push(0);
+        }
+        (bytes, dir_count_offset, element_count_offset)
+    }
+
+    fn assert_no_staged_catalogs(directory: &Path) {
+        assert!(!std::fs::read_dir(directory).unwrap().any(|entry| {
+            entry.unwrap().file_name().to_string_lossy().starts_with(".crispcat-")
+        }));
+    }
+
+    #[test]
+    fn invalid_exports_preserve_the_previous_catalog() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("previous.caf");
+        write_file(&destination, &fake_index(), 1_700_000_000).unwrap();
+        let original = std::fs::read(&destination).unwrap();
+        for case in 0..10 {
+            let mut index = fake_index();
+            match case {
+                0 => index.all_files[0].path = index.root_path.join("snow-雪"),
+                1 => index.header.comment = "bad\0comment".into(),
+                2 => index.all_files[0].path = index.root_path.join("../outside"),
+                3 => index.all_files[0].path = PathBuf::from("/somewhere-else/file"),
+                4 => index.all_files[0].size = i64::MAX as u64 + 1,
+                5 => index.add(index.all_files[0].clone()),
+                6 => {
+                    index.save_version = 6;
+                    index.all_files[0].size = i32::MAX as u64 + 1;
+                }
+                7 => index.header.label = "雪".into(),
+                8 => index.all_files[0].path = index.root_path.join("bad\0name"),
+                9 => {
+                    index.all_files[0].path = index.root_path.join("a");
+                    index.all_files[1].path = index.root_path.join("a/b");
+                }
+                _ => unreachable!(),
+            }
+            assert!(matches!(write_file(&destination, &index, 0), Err(CafError::InvalidData(_))), "case {case}");
+            assert_eq!(std::fs::read(&destination).unwrap(), original, "case {case}");
+            assert_no_staged_catalogs(tmp.path());
+        }
+        assert_eq!(read_file(&destination).unwrap().len(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_paths_are_rejected_without_lossy_replacement() {
+        use std::os::unix::ffi::OsStringExt;
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("previous.caf");
+        std::fs::write(&destination, b"previous").unwrap();
+        let mut index = fake_index();
+        index.all_files[0].path = index.root_path.join(std::ffi::OsString::from_vec(vec![0xff]));
+        assert!(matches!(write_file(&destination, &index, 0), Err(CafError::InvalidData(_))));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous");
+        assert_no_staged_catalogs(tmp.path());
+    }
+
+    #[test]
+    fn successful_replacement_publishes_a_complete_catalog() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("catalog.caf");
+        let mut index = fake_index();
+        write_file(&destination, &index, 10).unwrap();
+        index.add(FileEntry::new(index.root_path.join("extra/zero"), 0, 123));
+        write_file(&destination, &index, 20).unwrap();
+        let loaded = read_file(&destination).unwrap();
+        assert_eq!(loaded.all_files, index.all_files);
+        assert_eq!(loaded.header.date, 20);
+        assert_no_staged_catalogs(tmp.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_retains_existing_regular_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("catalog.caf");
+        write_file(&destination, &fake_index(), 10).unwrap();
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_file(&destination, &fake_index(), 20).unwrap();
+        assert_eq!(std::fs::metadata(&destination).unwrap().permissions().mode() & 0o777, 0o640);
+    }
+
+    #[test]
+    fn failed_rename_preserves_destination_and_removes_staged_file() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("existing-directory");
+        std::fs::create_dir(&destination).unwrap();
+        let sentinel = destination.join("keep");
+        std::fs::write(&sentinel, b"keep this").unwrap();
+        assert!(write_file(&destination, &fake_index(), 10).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep this");
+        assert_no_staged_catalogs(tmp.path());
+    }
+
+    #[test]
+    fn independent_forward_parents_and_whitespace_names_are_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("forward.caf");
+        let (bytes, _, _) = independent_v8(&[(-2, 1, "child"), (0, 2, " "), (-1, 0, "café")]);
+        std::fs::write(&destination, bytes).unwrap();
+        let loaded = read_file(&destination).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.all_files[0].path, PathBuf::from("/offline/root/café/child/ "));
+        assert_eq!(loaded.all_files[0].size, 0);
+        assert_eq!(loaded.all_files[0].mtime, 1_700_000_001);
+    }
+
+    #[test]
+    fn invalid_directory_graphs_and_names_are_rejected_as_a_whole() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("bad.caf");
+        let cases = [
+            vec![(1, 99, "orphan")],
+            vec![(-1, 99, "orphan-directory")],
+            vec![(-1, 2, "cycle-a"), (-2, 1, "cycle-b")],
+            vec![(-1, 0, "first"), (-1, 0, "duplicate-id")],
+            vec![(i64::MIN, 0, "overflow")],
+            vec![(-(u32::MAX as i64 + 1), 0, "large-id")],
+            vec![(1, 0, "../escape")],
+            vec![(1, 0, "back\\slash")],
+            vec![(1, 0, "same"), (2, 0, "same")],
+            vec![(-1, 0, "same"), (2, 0, "same")],
+        ];
+        for (case, entries) in cases.iter().enumerate() {
+            let (bytes, _, _) = independent_v8(entries);
+            std::fs::write(&destination, bytes).unwrap();
+            assert!(matches!(read_file(&destination), Err(CafError::InvalidData(_))), "case {case}");
+        }
+    }
+
+    #[test]
+    fn corrupt_counts_and_unterminated_names_fail_without_panicking() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("truncated.caf");
+        let (bytes, dirs_offset, entries_offset) = independent_v8(&[(0, 0, "last")]);
+        for offset in [dirs_offset, entries_offset] {
+            for count in [-1, i32::MAX] {
+                let mut corrupt = bytes.clone();
+                corrupt[offset..offset + 4].copy_from_slice(&count.to_le_bytes());
+                std::fs::write(&destination, corrupt).unwrap();
+                assert!(read_file(&destination).is_err());
+                if offset == dirs_offset && count < 0 {
+                    assert!(read_metadata(&destination).is_err());
+                }
+            }
+        }
+        std::fs::write(&destination, &bytes[..bytes.len() - 1]).unwrap();
+        assert!(matches!(read_file(&destination), Err(CafError::Truncated)));
     }
 }

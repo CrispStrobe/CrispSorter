@@ -478,6 +478,8 @@ async fn file_sha256(path: String) -> Result<String, String> {
 
 /// `hash_algo` is one of `"md5"`, `"sha1"`, `"sha256"`, or absent for
 /// no hashing (Cathy-classic behaviour).
+/// Observed scan failures return an error, so the UI does not silently save or
+/// overwrite a catalog from incomplete data. The FileIndex response is unchanged.
 #[tauri::command]
 async fn catalog_scan_dir(
     root: String,
@@ -486,14 +488,7 @@ async fn catalog_scan_dir(
 ) -> Result<catalog::index::FileIndex, String> {
     let p = std::path::PathBuf::from(root);
     let opts = catalog::scan::ScanOptions {
-        hash: hash_algo
-            .as_deref()
-            .and_then(|s| match s.to_ascii_lowercase().as_str() {
-                "md5" => Some(catalog::scan::HashAlgo::Md5),
-                "sha1" => Some(catalog::scan::HashAlgo::Sha1),
-                "sha256" => Some(catalog::scan::HashAlgo::Sha256),
-                _ => None,
-            }),
+        hash: hash_algo.as_deref().map(str::parse::<catalog::scan::HashAlgo>).transpose()?,
         max_size_bytes,
         follow_symlinks: false,
     };
