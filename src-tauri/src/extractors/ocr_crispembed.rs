@@ -1122,7 +1122,9 @@ fn vlm_default_model(engine: &str) -> &'static str {
         // an empty model_a makes the orchestrator report a missing model
         // instead of quietly loading something else.
         "unified" => "",
-        _ => "qwen2vl-3b",
+        // Apache-2.0 Qwen2-VL-2B fine-tune (CrispEmbed's recommended default);
+        // `qwen2vl-3b` is Qwen Research (non-commercial) and needs consent.
+        _ => "german-ocr-3.1",
     }
 }
 
@@ -1445,9 +1447,8 @@ mod tests {
         assert_eq!(super::vlm_default_model("lfm2_vl"), "lfm2-vl");
         // `unified` dispatches on metadata, so it must not inherit a default.
         assert_eq!(super::vlm_default_model("unified"), "");
-        // The registry name; the historical `qwen2vl-ocr` alias is absent from
-        // v0.17.12 and `resolve()` migrates it to this name.
-        assert_eq!(super::vlm_default_model("qwen2vl"), "qwen2vl-3b");
+        // A permissive default; the non-commercial `qwen2vl-3b` stays selectable.
+        assert_eq!(super::vlm_default_model("qwen2vl"), "german-ocr-3.1");
     }
 
     #[test]
