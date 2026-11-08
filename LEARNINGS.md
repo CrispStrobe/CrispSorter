@@ -4,6 +4,33 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## CAF catalog strings and incomplete scans (2026-11-08)
+
+### Non-Latin-1 names are written as UTF-8, never rejected or replaced
+
+Cathy's `.caf` stores NUL-terminated Latin-1. Rejecting anything outside
+Latin-1 made every catalog of a folder with CJK/emoji names fail to write, and
+on macOS also most German names: APFS/HFS+ commonly hold umlauts decomposed
+(`u` + U+0308), which is not Latin-1. Replacing with `?` is worse than it looks
+once the reader rejects duplicate paths: `日本.txt` and `中国.txt` both become
+`??.txt` and the catalog can no longer be read. The writer therefore emits
+Latin-1 bytes when the string fits, UTF-8 bytes otherwise; the reader decodes
+a string as UTF-8 when its high bytes are valid UTF-8, else as Latin-1. The one
+ambiguous input (a Latin-1 string whose bytes are valid UTF-8, i.e. already
+garbled text like `Ã¤`) is rejected on write so every written string reads
+back unchanged.
+
+### A partial scan is a user decision, not a silent default or a hard stop
+
+`scan_dir` is strict, `scan_dir_with_report` keeps readable files plus issues.
+Whole-drive and home-folder scans routinely hit unreadable folders
+(`.Trashes`, `.Spotlight-V100`, privacy-protected `~/Library` paths), so a
+strict-only GUI would refuse to catalogue most real drives. The CLI has
+`--allow-partial`; the GUI uses `catalog_scan_dir_report` and asks before
+saving, because CAF cannot record that it is incomplete.
+
+---
+
 ## Cloud-drive transfer and mutation boundaries (2026-08-02)
 
 ### Queue synchronous providers through owned handles

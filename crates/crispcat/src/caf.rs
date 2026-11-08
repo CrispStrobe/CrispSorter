@@ -162,10 +162,11 @@ fn read_f64_le<R: Read>(r: &mut R) -> Result<f64, CafError> {
     Ok(f64::from_le_bytes(buf))
 }
 
-/// Read a NUL-terminated latin-1 string (Cathy's on-disk encoding).
-/// latin-1's first 256 codepoints map 1:1 onto Unicode 0-255, so any
-/// byte sequence decodes losslessly — what Cathy.exe wrote on Win9x
-/// becomes valid UTF-8 strings here.
+/// Read a NUL-terminated string. Cathy writes Latin-1, whose first 256
+/// codepoints map 1:1 onto Unicode 0-255, so any byte sequence decodes
+/// losslessly. Strings that Latin-1 cannot represent (CJK, emoji, macOS
+/// decomposed umlauts) are written by [`write_cstr_latin1`] as UTF-8; a
+/// string whose high bytes form valid UTF-8 is therefore decoded as UTF-8.
 fn read_cstr_latin1<R: Read>(r: &mut R) -> Result<String, CafError> {
     let mut bytes = Vec::new();
     let mut byte = [0u8; 1];
@@ -180,7 +181,16 @@ fn read_cstr_latin1<R: Read>(r: &mut R) -> Result<String, CafError> {
             }
         }
     }
-    Ok(bytes.into_iter().map(|b| b as char).collect())
+    Ok(decode_cstr(bytes))
+}
+
+fn decode_cstr(bytes: Vec<u8>) -> String {
+    if bytes.iter().any(|byte| *byte >= 0x80) {
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            return text.to_owned();
+        }
+    }
+    bytes.into_iter().map(|b| b as char).collect()
 }
 
 fn skip<R: Read>(r: &mut R, n: usize) -> Result<(), CafError> {
@@ -226,24 +236,40 @@ fn write_f64_le<W: Write>(w: &mut W, v: f64) -> Result<(), CafError> {
     Ok(())
 }
 
-/// Encode an exact Latin-1 string. Replacing a filename with `?` would create
-/// a different path on reload, and an embedded NUL would corrupt later fields.
+/// Encode a string exactly. Latin-1-representable strings use Cathy's
+/// Latin-1 bytes. Anything else is written as UTF-8 rather than replaced
+/// with `?`: substitution would create a different path on reload and could
+/// collapse distinct names (`日本.txt`, `中国.txt`) into duplicates that the
+/// reader rejects. An embedded NUL would corrupt later fields.
 fn write_cstr_latin1<W: Write>(w: &mut W, s: &str) -> Result<(), CafError> {
     validate_latin1(s)?;
     let mut bytes = Vec::with_capacity(s.len() + 1);
-    for ch in s.chars() {
-        bytes.push(ch as u8);
+    if s.chars().all(|ch| (ch as u32) <= 0xff) {
+        bytes.extend(s.chars().map(|ch| ch as u8));
+    } else {
+        bytes.extend_from_slice(s.as_bytes());
     }
     bytes.push(0);
     w.write_all(&bytes)?;
     Ok(())
 }
 
+/// Every string must survive a write/read cycle unchanged: no embedded NUL,
+/// and no Latin-1 string whose bytes would be re-read as different UTF-8
+/// text (only possible for already-garbled names such as `Ã¤`).
 fn validate_latin1(value: &str) -> Result<(), CafError> {
-    if value.chars().any(|ch| ch == '\0' || ch as u32 > 0xff) {
+    if value.contains('\0') {
         return Err(CafError::InvalidData(
-            "classic CAF requires Latin-1 strings without embedded NUL characters".into(),
+            "CAF strings cannot contain embedded NUL characters".into(),
         ));
+    }
+    if value.chars().all(|ch| (ch as u32) <= 0xff) {
+        let bytes: Vec<u8> = value.chars().map(|ch| ch as u8).collect();
+        if decode_cstr(bytes) != value {
+            return Err(CafError::InvalidData(format!(
+                "Latin-1 string would be read back as different UTF-8 text: {value:?}"
+            )));
+        }
     }
     Ok(())
 }
@@ -1054,6 +1080,52 @@ mod tests {
     }
 
     #[test]
+    fn non_latin1_names_round_trip_exactly_as_utf8() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("unicode.caf");
+        let root = PathBuf::from("/tmp/Bücher-雪");
+        let mut idx = FileIndex::new(root.clone(), false);
+        idx.header.label = "Archiv 雪".into();
+        idx.header.comment = "Notiz 📚".into();
+        let names = [
+            "日本.txt",
+            "中国.txt",       // would collide with 日本.txt under `?` substitution
+            "emoji-📚.pdf",
+            "Bu\u{308}cher.pdf", // macOS NFD: "u" + COMBINING DIAERESIS
+            "Bücher.pdf",       // NFC twin stays distinct
+            "Ümläut.txt",       // Latin-1 representable
+        ];
+        for (i, name) in names.iter().enumerate() {
+            idx.add(FileEntry::new(root.join("sub-ü").join(name), i as u64, 1_700_000_000));
+        }
+        for version in [6u8, 7, 8] {
+            idx.save_version = version;
+            write_file(&path, &idx, 1_700_000_000).unwrap();
+            let loaded = read_file(&path).unwrap();
+            assert_eq!(loaded.root_path, root, "v{version}");
+            assert_eq!(loaded.header.label, "Archiv 雪", "v{version}");
+            assert_eq!(loaded.header.comment, "Notiz 📚", "v{version}");
+            let mut got: Vec<_> = loaded.all_files.iter().map(|f| f.path.clone()).collect();
+            let mut want: Vec<_> = names.iter().map(|n| root.join("sub-ü").join(n)).collect();
+            got.sort();
+            want.sort();
+            assert_eq!(got, want, "v{version}");
+        }
+    }
+
+    #[test]
+    fn latin1_strings_keep_cathy_single_byte_encoding() {
+        let mut bytes = Vec::new();
+        write_cstr_latin1(&mut bytes, "Ümläut").unwrap();
+        assert_eq!(bytes, b"\xdcml\xe4ut\0");
+        let mut bytes = Vec::new();
+        write_cstr_latin1(&mut bytes, "雪").unwrap();
+        assert_eq!(bytes, "雪\0".as_bytes());
+        // Arbitrary legacy bytes that are not UTF-8 still decode as Latin-1.
+        assert_eq!(read_cstr_latin1(&mut &b"\xe4\xff\0"[..]).unwrap(), "\u{e4}\u{ff}");
+    }
+
+    #[test]
     fn latin1_roundtrip_preserves_high_bytes() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("latin1.caf");
@@ -1200,7 +1272,8 @@ mod tests {
         for case in 0..10 {
             let mut index = fake_index();
             match case {
-                0 => index.all_files[0].path = index.root_path.join("snow-雪"),
+                // Latin-1 bytes C3 A4 would be re-read as UTF-8 "ä".
+                0 => index.all_files[0].path = index.root_path.join("garbled-\u{c3}\u{a4}"),
                 1 => index.header.comment = "bad\0comment".into(),
                 2 => index.all_files[0].path = index.root_path.join("../outside"),
                 3 => index.all_files[0].path = PathBuf::from("/somewhere-else/file"),
@@ -1210,7 +1283,7 @@ mod tests {
                     index.save_version = 6;
                     index.all_files[0].size = i32::MAX as u64 + 1;
                 }
-                7 => index.header.label = "雪".into(),
+                7 => index.header.label = "\u{c3}\u{a4}".into(),
                 8 => index.all_files[0].path = index.root_path.join("bad\0name"),
                 9 => {
                     index.all_files[0].path = index.root_path.join("a");

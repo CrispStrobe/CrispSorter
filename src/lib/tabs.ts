@@ -37,10 +37,12 @@ export interface TabDef {
 /**
  * CrispSorter's built-in tabs, in nav order (settings lives in nav-bottom).
  *
- * `requires` here names `build:*` capabilities from `capabilities.ts`,
- * the same mechanism the AIToolkit tabs below use for `service:*`.
- * The OCR workspace also supports project recovery, manual correction and
- * text export without a native OCR tier; recognition tools gate themselves.
+ * `requires` here names `build:*` capabilities from `capabilities.ts` —
+ * the same mechanism the AIToolkit tabs below use for `service:*`. PLAN
+ * P36.5: `ocr` carried no `requires` while the iOS release job passed no
+ * `--features`, so the tab rendered with no OCR tier behind it. App Review
+ * Guideline 2.1 (App Completeness) is the most common rejection there is,
+ * and a tab that opens onto nothing is exactly what it names.
  */
 export const CORE_TABS: TabDef[] = [
     { id: 'batch', icon: ListChecks, mobile: true },
@@ -52,9 +54,7 @@ export const CORE_TABS: TabDef[] = [
 	// and `translate-align` / `translate-nmt` only add offline and
 	// format-preserving modes that the view already gates individually.
 	{ id: 'translate', icon: Languages, mobile: true },
-	// Project editing and text export work without native recognition.
-	// The workspace gates engine actions using its explicit capability response.
-	{ id: 'ocr', icon: ScanText, mobile: true },
+	{ id: 'ocr', icon: ScanText, mobile: true, requires: ['build:ocr'] },
 	{ id: 'pdf', icon: FileText },
 	// PLAN P36.16 — the AIToolkit backend lives in a private repo, so for
 	// anyone outside the dev team this tab connects to nothing. Off in every

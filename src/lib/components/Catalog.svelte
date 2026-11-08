@@ -17,7 +17,8 @@
 
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
-    import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+    import { open as openDialog, save as saveDialog, ask } from '@tauri-apps/plugin-dialog';
+    import { scanForCatalog } from '$lib/catalogScan';
     import { getSetting, saveSetting } from '$lib/store';
     import { flog } from '$lib/log';
     import { i18n } from '$lib/i18n.svelte';
@@ -148,6 +149,15 @@
         await refreshMetadata(picked);
     }
 
+    function confirmPartial(message: string): Promise<boolean> {
+        return ask(message, {
+            title: i18n.t.caf_catalog.partial_title,
+            kind: 'warning',
+            okLabel: i18n.t.caf_catalog.partial_save,
+            cancelLabel: i18n.t.caf_catalog.partial_cancel,
+        });
+    }
+
     async function createFromFolder() {
         // Pick the folder to scan.
         const folder = await openDialog({ directory: true, multiple: false });
@@ -162,19 +172,18 @@
         loading = true;
         error = '';
         try {
-            // 1. Scan the folder (no inline hashing — dedup will hash later if needed)
-            const idx = await invoke<FileIndex>('catalog_scan_dir', {
-                root: folder,
-                hashAlgo: null,
-                maxSizeBytes: null,
-            });
+            // 1. Scan the folder (no inline hashing — dedup will hash later if needed).
+            //    Unreadable entries are listed and the user decides whether to save.
+            const scan = await scanForCatalog<FileIndex>(invoke, confirmPartial, folder, i18n.t.caf_catalog);
+            if (!scan) return;
+            const idx = scan.index;
             // 2. Save to .caf
             await invoke('catalog_save_caf', {
                 path: out,
                 index: idx,
                 createdDate: Math.floor(Date.now() / 1000),
             });
-            flog('info', `Created catalog: ${out} (${idx.all_files.length} files)`);
+            flog(scan.complete ? 'info' : 'warn', `Created catalog: ${out} (${idx.all_files.length} files${scan.complete ? '' : `, ${scan.issues} unreadable entries omitted`})`);
             // 3. Auto-register + capture volume UUID while the drive is still mounted
             const volumeId = await invoke<string | null>('index_volume_id_for_path', { path: folder }).catch(() => null);
             registered = [...registered, { path: out, active: false, added_at: Date.now(), volume_id: volumeId ?? undefined }];
@@ -197,18 +206,17 @@
         loading = true;
         error = '';
         try {
-            const idx = await invoke<FileIndex>('catalog_scan_dir', {
-                root: meta.device,
-                hashAlgo: null,
-                maxSizeBytes: null,
-            });
+            // A declined partial rescan leaves the existing catalog untouched.
+            const scan = await scanForCatalog<FileIndex>(invoke, confirmPartial, meta.device, i18n.t.caf_catalog);
+            if (!scan) return;
+            const idx = scan.index;
             await invoke('catalog_save_caf', {
                 path,
                 index: idx,
                 createdDate: Math.floor(Date.now() / 1000),
             });
             await refreshMetadata(path);
-            flog('info', `Refreshed catalog: ${path} (${idx.all_files.length} files)`);
+            flog(scan.complete ? 'info' : 'warn', `Refreshed catalog: ${path} (${idx.all_files.length} files${scan.complete ? '' : `, ${scan.issues} unreadable entries omitted`})`);
         } catch (e: any) {
             error = String(e);
         } finally {
