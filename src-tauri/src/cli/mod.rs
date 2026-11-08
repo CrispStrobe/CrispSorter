@@ -4266,6 +4266,7 @@ async fn cmd_index_async(
                     mtime_unix: meta.as_ref().and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs() as i64),
+                    images_indexed: false,
                     file_size: meta.map(|m| m.len() as i64),
                     volume_id: crate::volume::volume_id_for_path(p),
                     parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
@@ -4717,6 +4718,7 @@ async fn cmd_index_async(
                 mtime_unix:   p_meta.as_ref().and_then(|m| m.modified().ok())
                                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                     .map(|d| d.as_secs() as i64),
+                images_indexed: false,
                 file_size:    p_meta.as_ref().map(|m| m.len() as i64),
                 volume_id:    crate::volume::volume_id_for_path(&path),
                 parent_dir:   path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
@@ -4904,6 +4906,7 @@ async fn cmd_index_async(
                     owner_id: owner.clone(),
                     tags: Vec::new(),
                     mtime_unix,
+                    images_indexed: false,
                     file_size: Some(file_size),
                     volume_id: crate::volume::volume_id_for_path(fp.as_path()),
                     parent_dir: parent_dir.clone(),

@@ -263,6 +263,10 @@ impl EmbedderModel {
             }
             // EmbeddingGemma ships under Google's Gemma Terms of Use.
             EmbedderModel::EmbeddingGemma300M => Restricted("Gemma Terms of Use"),
+            // Same terms as EmbeddingGemma; the registry gate already treats
+            // `gemma3-embed-2b` as restricted, so the typed path must agree or
+            // loading it directly would skip consent.
+            EmbedderModel::Gemma3Embed2B => Restricted("Gemma Terms of Use"),
             _ => Permissive,
         }
     }
@@ -276,6 +280,7 @@ impl EmbedderModel {
             EmbedderModel::JinaV5Small => "jina-v5-small",
             EmbedderModel::JinaV5Nano => "jina-v5-nano",
             EmbedderModel::EmbeddingGemma300M => "embedding-gemma300-m",
+            EmbedderModel::Gemma3Embed2B => "gemma3-embed-2b",
             _ => "",
         }
     }

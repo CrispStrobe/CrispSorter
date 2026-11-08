@@ -261,12 +261,13 @@ pub struct OcrPipelineConfig {
     /// Detects semantic regions (text/title/caption/formula/figure/table/
     /// header/footer) with CrispEmbed's RT-DETRv2 (`layout.rs`), orders them
     /// top-to-bottom / left-to-right (column-aware), then OCRs each region in
-    /// reading order: text→engine, formula→math OCR, figure/table skipped.
+    /// reading order: text→engine, formula→math OCR, table→table parser with
+    /// plain OCR fallback, and figures skipped.
     /// Fixes multi-column reading order the bare line detector can't. Off by
     /// default (extra model load + per-region OCR). Needs `crispembed`.
     #[serde(default)]
     pub layout: bool,
-    /// Layout detection model registry name (`None` → `rt-detrv2-layout`).
+    /// Layout detection model registry name (`None` → `layout-heron`).
     #[serde(default)]
     pub layout_model: Option<String>,
     /// P20 #12 — region source for the layout pass: `rtdetr` (RT-DETRv2
@@ -538,6 +539,7 @@ impl Default for OcrPipelineConfig {
 #[cfg(any(feature = "crispembed", test))]
 fn engine_id(name: &str) -> i32 {
     match name {
+        "dbnet_trocr" => 0,
         "surya" => 1,
         "got" => 2,
         "glm" => 3,
@@ -557,7 +559,19 @@ fn engine_id(name: &str) -> i32 {
         // the gates the engine refuses to initialise; neither is a default.
         "unlimited_ocr2" => 13,
         "minicpm_ocr" => 23,
-        _ => 0, // dbnet_trocr
+        "unified" => 14,       // metadata-dispatched single GGUF
+        "tesseract_fraktur" => 15, // DBNet + Tesseract LSTM with fraktur line geometry
+        "ppocrv6" => 16,       // PP-OCRv6 det + rec (CJK line boxes)
+        "easyocr" => 17,       // DBNet + EasyOCR CRNN recogniser
+        "olmocr" => 18,        // olmOCR-2-7B (single-shot document VLM)
+        "lfm2_vl" => 19,       // LFM2.5-VL (SigLIP2 NaFlex multi-tile VLM)
+        other => {
+            // Falling back to DBNet+TrOCR used to be silent, so a typo (or a
+            // stale persisted config) quietly ran a different engine than the
+            // one the user picked. Keep the fallback for robustness but say so.
+            eprintln!("[ocr] unknown OCR engine {other:?}; falling back to dbnet_trocr");
+            0
+        }
     }
 }
 
@@ -868,9 +882,9 @@ fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocumen
 }
 
 /// Layout-aware OCR: detect semantic regions, order them in reading order, OCR
-/// each region by type (text→engine, formula→math OCR, figure/table skipped,
-/// header/footer optionally dropped), and concatenate. Falls back (via the
-/// caller) to whole-page OCR when no regions are found.
+/// each region by type (text→engine, formula→math OCR, table→table parser,
+/// figures skipped, header/footer optionally dropped), and concatenate. Falls
+/// back (via the caller) to whole-page OCR when no regions are found.
 fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
     use layout::RegionKind;
 
@@ -887,7 +901,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         });
         r
     } else {
-        let model = cfg.layout_model.as_deref().unwrap_or("rt-detrv2-layout");
+        let model = cfg.layout_model.as_deref().unwrap_or("layout-heron");
         let det_guard = cached_layout_detector(model)?;
         let det = det_guard
             .lock()
@@ -910,7 +924,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         match &r.kind {
             RegionKind::Header | RegionKind::Footer if cfg.drop_headers_footers => continue,
             // Non-text regions carry no body text to recognize.
-            RegionKind::Figure | RegionKind::Table | RegionKind::Other(_) => continue,
+            RegionKind::Figure | RegionKind::Other(_) => continue,
             _ => {}
         }
 
@@ -920,6 +934,9 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         let x2 = r.x2.max(0.0).min(pw as f32) as u32;
         let y2 = r.y2.max(0.0).min(ph as f32) as u32;
         if x2 <= x1 || y2 <= y1 {
+            if r.kind == RegionKind::Table {
+                anyhow::bail!("invalid table region crop");
+            }
             continue;
         }
         let crop = image::imageops::crop_imm(&page, x1, y1, x2 - x1, y2 - y1).to_image();
@@ -952,12 +969,28 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         image::DynamicImage::ImageRgb8(crop)
             .save(tmp.path())
             .context("saving layout region crop")?;
+        if r.kind == RegionKind::Table {
+            match ocr_crispembed::table_to_html(tmp.path(), cfg.rec_model.as_deref()) {
+                Ok(html) => {
+                    if let Some(text) = layout_table_text(&html) {
+                        parts.push(text);
+                        continue;
+                    }
+                }
+                Err(e) => eprintln!("[ocr] table parser failed ({e:#}); falling back to text OCR"),
+            }
+        }
         match ocr_one_image(tmp.path(), opts) {
             Ok(d) => {
                 let t = d.full_text.trim();
                 if !t.is_empty() {
                     parts.push(t.to_string());
+                } else if r.kind == RegionKind::Table {
+                    anyhow::bail!("table parser and region OCR produced no text");
                 }
+            }
+            Err(e) if r.kind == RegionKind::Table => {
+                anyhow::bail!("table region OCR failed: {e:#}");
             }
             Err(e) => eprintln!(
                 "[ocr] layout region {:?} OCR failed: {e:#}",
@@ -986,6 +1019,48 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         tags: vec![],
         audio_pcm: None,
     })
+}
+
+/// Convert the fixed HTML emitted by CrispTableParse into tab-separated cells
+/// and newline-separated rows. `full_text` is indexed as plain text, not HTML;
+/// keeping delimiters preserves the grid without merging cell tokens. Reject
+/// malformed/empty output so the caller can fall back to regular OCR.
+fn layout_table_text(html: &str) -> Option<String> {
+    let inner = html.trim().strip_prefix("<table>")?.strip_suffix("</table>")?;
+    let mut rest = inner.trim();
+    let mut rows = Vec::new();
+    let mut has_text = false;
+    while !rest.is_empty() {
+        rest = rest.strip_prefix("<tr>")?;
+        let end = rest.find("</tr>")?;
+        let mut row = rest[..end].trim();
+        let mut cells = Vec::new();
+        while !row.is_empty() {
+            let (tag, after_open) = if let Some(s) = row.strip_prefix("<th>") {
+                ("</th>", s)
+            } else {
+                ("</td>", row.strip_prefix("<td>")?)
+            };
+            let end = after_open.find(tag)?;
+            let cell = &after_open[..end];
+            if cell.contains('<') {
+                return None;
+            }
+            // The parser escapes these four characters. Decode ampersand last
+            // so an original literal `&lt;` is not decoded twice.
+            let text = cell.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", "\"").replace("&amp;", "&");
+            has_text |= !text.trim().is_empty();
+            cells.push(text);
+            row = after_open[end + tag.len()..].trim_start();
+        }
+        if cells.is_empty() {
+            return None;
+        }
+        rows.push(cells.join("\t"));
+        rest = rest[end + "</tr>".len()..].trim_start();
+    }
+    has_text.then(|| rows.join("\n"))
 }
 
 /// OCR a single image through the smart pipeline (when enabled) then the legacy
@@ -1534,8 +1609,30 @@ mod ocr_pipeline_tests {
         assert_eq!(engine_id("unlimited_ocr"), 13);
         assert_eq!(engine_id("unlimited_ocr2"), 13);
         assert_eq!(engine_id("minicpm_ocr"), 23);
-        // Unknown falls back to dbnet_trocr.
+        assert_eq!(engine_id("unified"), 14);
+        assert_eq!(engine_id("tesseract_fraktur"), 15);
+        assert_eq!(engine_id("ppocrv6"), 16);
+        assert_eq!(engine_id("easyocr"), 17);
+        assert_eq!(engine_id("olmocr"), 18);
+        assert_eq!(engine_id("lfm2_vl"), 19);
+        // Unknown still falls back to dbnet_trocr, but now says so on stderr.
         assert_eq!(engine_id("nonsense"), 0);
+    }
+
+    #[test]
+    fn engine_ids_are_unique_and_contiguous() {
+        // The ids are also the C enum values, so a duplicate or a gap silently
+        // swaps engines. Keep this list in step with `crispembed_ocr_stage`
+        // (`engine` field comment) in the pinned CrispEmbed header.
+        let names = [
+            "dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract",
+            "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr",
+            "qwen3vl", "unlimited_ocr", "unified", "tesseract_fraktur", "ppocrv6",
+            "easyocr", "olmocr", "lfm2_vl",
+        ];
+        let ids: Vec<i32> = names.iter().map(|n| engine_id(n)).collect();
+        let expected: Vec<i32> = (0..names.len() as i32).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]

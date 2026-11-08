@@ -20,10 +20,10 @@ use std::sync::Mutex;
 use super::ExtractedDocument;
 
 /// Default detector and recognizer are registered, compatible native models.
-#[cfg(feature = "crispembed")]
+#[cfg(any(feature = "crispembed", test))]
 const DEFAULT_DET_MODEL: &str = "dbnet-det";
 /// Printed-text recognizer paired with DBNet.
-#[cfg(feature = "crispembed")]
+#[cfg(any(feature = "crispembed", test))]
 const DEFAULT_REC_MODEL: &str = "trocr-printed";
 
 /// Process-global lazy-loaded OCR pipeline.  The CrispEmbed OcrPipeline
@@ -392,15 +392,44 @@ pub fn cc_detect_regions(_path: &Path) -> Vec<super::layout::LayoutRegion> {
     vec![]
 }
 
+/// Recogniser the table parser can actually drive.
+///
+/// `CrispTableParse` loads its cell recogniser as a **Tesseract LSTM** model,
+/// and the pinned parser treats a load failure as non-fatal: the grid is still
+/// detected, every cell just comes back empty. Passing the pipeline's default
+/// recogniser (`qwen2vl-ocr`, a VLM GGUF) therefore degrades table preservation
+/// into "parse, get nothing, throw the crop away, fall back to plain OCR".
+const TABLE_REC_MODEL: &str = "tesseract-eng";
+
+/// True for a Tesseract recogniser, given either a registry name
+/// (`tesseract-eng`, `tesseract-fraktur`) or a resolved path
+/// (`…/tesseract-eng.gguf`).
+fn is_tesseract_model(name: &str) -> bool {
+    let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    leaf.to_ascii_lowercase().starts_with("tesseract")
+}
+
+/// Pick the cell recogniser for [`table_to_html`]: honour an explicitly
+/// requested Tesseract model, otherwise use the known-good default. Any other
+/// recogniser is replaced rather than silently accepted, because the parser
+/// would accept the path and then emit empty cells.
+fn table_rec_model(ocr_model: Option<&str>) -> &str {
+    match ocr_model {
+        Some(m) if is_tesseract_model(m) => m,
+        _ => TABLE_REC_MODEL,
+    }
+}
+
 /// Parse a table image into an HTML `<table>` (rule-based structure + per-cell
-/// OCR via `ocr_model`, default the pipeline recogniser).
+/// OCR). `ocr_model` must be a Tesseract recogniser; anything else falls back to
+/// [`TABLE_REC_MODEL`] — see [`table_rec_model`].
 #[cfg(feature = "crispembed")]
 pub fn table_to_html(path: &Path, ocr_model: Option<&str>) -> Result<String> {
     let gray = image::open(path)
         .with_context(|| format!("opening {}", path.display()))?
         .to_luma8();
     let (w, h) = (gray.width(), gray.height());
-    let model = resolve(ocr_model.unwrap_or(DEFAULT_REC_MODEL));
+    let model = resolve(table_rec_model(ocr_model));
     let parser = crispembed::CrispTableParse::new(&model, 0)
         .map_err(|e| anyhow::anyhow!("table parser init: {e}"))?;
     parser
@@ -670,9 +699,20 @@ pub fn ocr_via_pipeline(
     // several releases while silently discarding a language the pipeline had
     // already computed.
 
-    // CrispEmbed v0.16.1 exposes the joined OCR body but not the later
-    // markdown/reading-order fields. Keep the body stable and leave heading
-    // extraction to the normal post-processing path.
+    // CrispEmbed v0.17.12 also exposes `markdown`, but it cannot give this
+    // extraction path trustworthy extra structure:
+    //   * the Rust wrapper copies the native UTF-8 byte buffer with `b as
+    //     char`, so every byte >= 0x80 becomes U+0080..U+00FF. German umlauts,
+    //     accents and non-Latin scripts arrive mojibaked;
+    //   * `build_markdown` only emits `#`/`##` from layout labels (`title` /
+    //     `section_header`). `CrispOcrPipeline::new` hardcodes
+    //     `layout_model: null`, and `from_stages` goes through
+    //     `..._init_stages`, which has no layout-model parameter at all. With
+    //     no layout pass the markdown path degenerates to region text with
+    //     blank lines — no headings, tables or formulas.
+    // Inferring headings from box geometry would fabricate structure for a
+    // boosted search field, so `full_text` (already joined upstream in reading
+    // order) stays the body and headings stay empty here.
     let headings = Vec::new();
 
     Ok(ExtractedDocument {
@@ -698,6 +738,11 @@ pub fn ocr_via_pipeline(
 /// confidence) instead of just the joined text. This is the input the
 /// `ocr_render` structured/searchable renderers need (hOCR / ALTO / PDF).
 /// Uses the same cached orchestrator as [`ocr_via_pipeline`].
+///
+/// Regions come back in the **pipeline's reading order** — the same order
+/// `full_text` is joined in — because the structured renderers emit text in
+/// the order they receive it. Without this a two-column scan interleaves its
+/// columns on select-and-copy, even though `full_text` reads correctly.
 #[cfg(feature = "crispembed")]
 pub fn ocr_regions_via_pipeline(
     path: &Path,
@@ -708,23 +753,7 @@ pub fn ocr_regions_via_pipeline(
         pipeline.run(path_str)
             .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))
     })?;
-    let regions: Vec<super::ocr_render::OcrRegion> = res
-        .regions
-        .into_iter()
-        .map(|r| {
-            let conf = effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
-            super::ocr_render::OcrRegion {
-                text: r.text,
-                x: r.x,
-                y: r.y,
-                w: r.w,
-                h: r.h,
-                confidence: conf,
-            }
-        })
-        .collect();
-
-    Ok(apply_reading_order(regions, &res.reading_order))
+    Ok(render_regions_from_pipeline(res))
 }
 
 /// Reorder regions into the pipeline's reading order.
@@ -771,6 +800,77 @@ fn apply_reading_order<T>(regions: Vec<T>, order: &[i32]) -> Vec<T> {
         }
     }
     out
+}
+
+/// One pipeline region reduced to the fields the renderer needs.
+///
+/// Deliberately independent of `crispembed`: the ordering + confidence policy
+/// is then compiled and unit-tested in builds without the native library,
+/// which is where most CI jobs run.
+#[derive(Debug, Clone)]
+struct RenderRegionInput {
+    text: String,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    detection_confidence: f32,
+    rec_confidence: f32,
+    char_conf_len: usize,
+}
+
+/// Map pipeline regions onto renderer regions and apply the pipeline's reading
+/// order. The index list refers to the pipeline's own region vector, which is
+/// exactly the order the [`RenderRegionInput`] values arrive in.
+#[cfg_attr(not(feature = "crispembed"), allow(dead_code))]
+fn render_regions_in_reading_order(
+    raw: Vec<RenderRegionInput>,
+    order: &[i32],
+) -> Vec<super::ocr_render::OcrRegion> {
+    let regions = raw
+        .into_iter()
+        .map(|r| super::ocr_render::OcrRegion {
+            confidence: effective_confidence(
+                r.detection_confidence,
+                r.rec_confidence,
+                r.char_conf_len,
+            ),
+            text: r.text,
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        })
+        .collect();
+    apply_reading_order(regions, order)
+}
+
+/// Adapt the native result (whose `reading_order` indexes `regions`) for the
+/// renderer. The wrapper's `markdown` field is deliberately not used: see
+/// [`ocr_via_pipeline`] for why it carries no trustworthy structure here.
+#[cfg(feature = "crispembed")]
+fn render_regions_from_pipeline(
+    res: crispembed::OcrPipelineResult,
+) -> Vec<super::ocr_render::OcrRegion> {
+    let crispembed::OcrPipelineResult {
+        regions,
+        reading_order,
+        ..
+    } = res;
+    let raw = regions
+        .into_iter()
+        .map(|r| RenderRegionInput {
+            text: r.text,
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            detection_confidence: r.confidence,
+            rec_confidence: r.rec_confidence,
+            char_conf_len: r.char_conf.len(),
+        })
+        .collect();
+    render_regions_in_reading_order(raw, &reading_order)
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -990,7 +1090,14 @@ fn vlm_engine_id(engine: &str) -> i32 {
         "glm" => 1,
         "internvl2" => 3,
         "qwen3vl" => 4,
-        _ => 2, // qwen2vl (german-ocr-3.1 family)
+        "qwen2vl" => 2,
+        other => {
+            // The single-shot API only understands 0..4. Document VLMs that
+            // only exist as pipeline stages (olmocr, lfm2_vl, unified …) used
+            // to land on qwen2vl without a word; say so instead.
+            eprintln!("[ocr] VLM engine {other:?} is not available in single-shot mode; using qwen2vl");
+            2
+        }
     }
 }
 
@@ -1009,6 +1116,12 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "unlimited_ocr" => "unlimited-ocr",
         "unlimited_ocr2" => "unlimited-ocr2", // experimental: CRISPEMBED_UNLIMITED_OCR2=1
         "minicpm_ocr" => "minicpm-ocr",       // experimental: CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1
+        "olmocr" => "olmocr-2-7b",
+        "lfm2_vl" => "lfm2-vl",
+        // `unified` dispatches on GGUF metadata, so it has no registry default:
+        // an empty model_a makes the orchestrator report a missing model
+        // instead of quietly loading something else.
+        "unified" => "",
         _ => "qwen2vl-3b",
     }
 }
@@ -1022,17 +1135,24 @@ fn resolve(name: &str) -> String {
         "internvl2-ocr" => "internvl2-2b",
         _ => name,
     };
+    // Restricted or unreviewed names must not be downloaded here: the load then
+    // fails (empty stage) instead of quietly fetching unlicensed weights.
+    if !crate::index::license_consent::may_download(name) {
+        return name.to_string();
+    }
     crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
 /// Interactive OCR must report missing models instead of treating the native
-/// engine's empty fallback as a successfully recognized blank page.
+/// engine's empty fallback as a successfully recognized blank page. Registry
+/// names pass the same licence gate as [`resolve`] before any download.
 #[cfg(feature = "crispembed")]
 fn resolve_checked(name: &str) -> Result<String> {
     anyhow::ensure!(!name.contains('\0'), "OCR model path contains a null character");
     let resolved = if Path::new(name).is_file() {
         name.to_string()
     } else {
+        crate::index::license_consent::ensure_registry_download_allowed(name)?;
         crispembed::CrispEmbed::resolve_model(name, Some(true))
             .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}"))?
     };
@@ -1043,6 +1163,31 @@ fn resolve_checked(name: &str) -> Result<String> {
         .with_context(|| format!("OCR model '{name}' is incomplete"))?;
     anyhow::ensure!(&magic == b"GGUF", "OCR model '{name}' is not a GGUF model");
     Ok(resolved)
+}
+
+/// Engine ids whose C stage takes a detector in `model_a` and a recogniser in
+/// `model_b`; every other engine is a single-model VLM/document model.
+#[cfg(any(feature = "crispembed", test))]
+fn needs_det_and_rec(eid: i32) -> bool {
+    matches!(eid, 0 | 1 | 6 | 7 | 15 | 16 | 17)
+}
+
+/// Default `(model_a, model_b)` registry names for a det+rec engine.
+///
+/// Names come from `k_registry` in the pinned CrispEmbed `model_mgr.cpp`.
+#[cfg(any(feature = "crispembed", test))]
+fn stage_model_defaults(eid: i32) -> (&'static str, &'static str) {
+    match eid {
+        6 => (DEFAULT_DET_MODEL, "tesseract-eng"),
+        7 => (DEFAULT_DET_MODEL, "parseq"),
+        // `auto` lets the orchestrator resolve `tesseract-{lang}` from the LID
+        // result + tess_model_dir, instead of forcing a Latin LSTM onto
+        // Fraktur pages.
+        15 => (DEFAULT_DET_MODEL, "auto"),
+        16 => ("ppocrv6-tiny-det", "ppocrv6-tiny-rec"),
+        17 => (DEFAULT_DET_MODEL, "easyocr-english-g2"),
+        _ => (DEFAULT_DET_MODEL, DEFAULT_REC_MODEL),
+    }
 }
 
 /// Build the orchestrator: the explicit per-stage builder when `cfg.stages` is
@@ -1113,17 +1258,10 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcr
         .iter()
         .map(|s| -> Result<crispembed::OcrStageSpec> {
             let eid = engine_id(&s.engine);
-            // dbnet_trocr(0) / surya(1) / tesseract(6) / parseq(7) need det+rec;
-            // VLMs use a single model. Tesseract recogniser defaults to a
-            // tesseract GGUF, PARSeq to the parseq scene-text GGUF.
-            let (model_a, model_b) = if eid == 0 || eid == 1 || eid == 6 || eid == 7 {
-                let rec_default = match eid {
-                    6 => "tesseract-eng",
-                    7 => "parseq",
-                    _ => DEFAULT_REC_MODEL,
-                };
+            let (model_a, model_b) = if needs_det_and_rec(eid) {
+                let (det_default, rec_default) = stage_model_defaults(eid);
                 (
-                    resolve_checked(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?,
+                    resolve_checked(s.det_model.as_deref().unwrap_or(det_default))?,
                     resolve_checked(s.rec_model.as_deref().unwrap_or(rec_default))?,
                 )
             } else {
@@ -1260,6 +1398,177 @@ mod tests {
         let out = apply_reading_order(regions, &[2, 99, -1, 2, 0]);
         assert_eq!(texts(&out), vec!["c", "a", "b"]);
         assert_eq!(out.len(), 3, "every region must survive");
+    }
+
+    // ── Pipeline → renderer mapping (model-free) ──
+
+    // ── Table cell recogniser selection (model-free) ──
+
+    // ── Stage engine wiring (model-free) ──
+
+    #[test]
+    fn stage_engines_split_into_det_rec_and_single_model() {
+        // det + rec stages: DBNet+TrOCR, Surya, Tesseract, PARSeq, Fraktur,
+        // PP-OCRv6, EasyOCR. Everything else is one GGUF.
+        for eid in [0, 1, 6, 7, 15, 16, 17] {
+            assert!(super::needs_det_and_rec(eid), "engine {eid} needs det+rec");
+        }
+        for eid in [2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 18, 19] {
+            assert!(!super::needs_det_and_rec(eid), "engine {eid} is single-model");
+        }
+    }
+
+    #[test]
+    fn stage_defaults_match_the_pinned_registry_names() {
+        // A recogniser that does not exist in the pinned registry silently
+        // fails to load, so the defaults are pinned here as literals.
+        assert_eq!(super::stage_model_defaults(6).1, "tesseract-eng");
+        assert_eq!(super::stage_model_defaults(7).1, "parseq");
+        // Fraktur resolves tesseract-{lang} from LID instead of a Latin LSTM.
+        assert_eq!(super::stage_model_defaults(15).1, "auto");
+        assert_eq!(
+            super::stage_model_defaults(16),
+            ("ppocrv6-tiny-det", "ppocrv6-tiny-rec")
+        );
+        assert_eq!(super::stage_model_defaults(17).1, "easyocr-english-g2");
+        // dbnet_trocr / surya keep the pipeline defaults.
+        assert_eq!(
+            super::stage_model_defaults(0),
+            (DEFAULT_DET_MODEL, DEFAULT_REC_MODEL)
+        );
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    fn vlm_defaults_cover_the_new_document_models() {
+        assert_eq!(super::vlm_default_model("olmocr"), "olmocr-2-7b");
+        assert_eq!(super::vlm_default_model("lfm2_vl"), "lfm2-vl");
+        // `unified` dispatches on metadata, so it must not inherit a default.
+        assert_eq!(super::vlm_default_model("unified"), "");
+        assert_eq!(super::vlm_default_model("qwen2vl"), "qwen2vl-ocr");
+    }
+
+    #[test]
+    fn table_parser_never_receives_a_vlm_recogniser() {
+        // The parser loads its cell model as a Tesseract LSTM and treats a load
+        // failure as non-fatal, so a VLM GGUF would silently yield empty cells
+        // and lose the table. The pipeline default must never leak through.
+        assert_eq!(super::table_rec_model(Some("qwen2vl-ocr")), "tesseract-eng");
+        assert_eq!(super::table_rec_model(None), "tesseract-eng");
+        assert_eq!(super::table_rec_model(Some("got-ocr2")), "tesseract-eng");
+    }
+
+    #[test]
+    fn table_parser_keeps_an_explicit_tesseract_recogniser() {
+        assert_eq!(super::table_rec_model(Some("tesseract-eng")), "tesseract-eng");
+        assert_eq!(
+            super::table_rec_model(Some("tesseract-fraktur")),
+            "tesseract-fraktur"
+        );
+        // Resolved paths: the leaf is what identifies the model.
+        assert_eq!(
+            super::table_rec_model(Some("/models/ocr/tesseract-eng.gguf")),
+            "/models/ocr/tesseract-eng.gguf"
+        );
+        assert_eq!(
+            super::table_rec_model(Some("C:\\models\\tesseract-deu.gguf")),
+            "C:\\models\\tesseract-deu.gguf"
+        );
+    }
+
+    fn raw_region(text: &str, det: f32, rec: f32, char_conf_len: usize) -> RenderRegionInput {
+        RenderRegionInput {
+            text: text.to_owned(),
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            detection_confidence: det,
+            rec_confidence: rec,
+            char_conf_len,
+        }
+    }
+
+    #[test]
+    fn render_regions_follow_the_pipelines_reading_order() {
+        // The detector emits both columns row by row; the pipeline's order is
+        // left column then right. hOCR/ALTO/PDF receive the regions in this
+        // order, so a select-and-copy of a two-column page stays readable.
+        let raw = vec![
+            raw_region("left-top", 0.99, 0.80, 4),
+            raw_region("right-top", 0.99, 0.70, 5),
+            raw_region("left-bottom", 0.99, 0.90, 6),
+        ];
+        let out = render_regions_in_reading_order(raw, &[0, 2, 1]);
+        assert_eq!(texts(&out), vec!["left-top", "left-bottom", "right-top"]);
+        // Recognition confidence wins over the (near-useless) detection score.
+        assert_eq!(out[0].confidence, 0.80);
+        assert_eq!(out[1].confidence, 0.90);
+    }
+
+    #[test]
+    fn render_regions_without_an_order_keep_detector_order() {
+        // Engines that do not compute a reading order hand back an empty list;
+        // the renderer must still get every region, unchanged.
+        let raw = vec![raw_region("a", 0.88, 0.0, 0), raw_region("b", 0.77, 0.0, 0)];
+        let out = render_regions_in_reading_order(raw, &[]);
+        assert_eq!(texts(&out), vec!["a", "b"]);
+        // No per-char confidence → fall back to the detection score.
+        assert_eq!(out[0].confidence, 0.88);
+    }
+
+    #[test]
+    fn render_regions_survive_a_malformed_order() {
+        // Same defensive contract as apply_reading_order: a bad index can
+        // reorder text, but it must never drop or duplicate it.
+        let raw = vec![
+            raw_region("a", 1.0, 0.0, 0),
+            raw_region("b", 1.0, 0.0, 0),
+            raw_region("c", 1.0, 0.0, 0),
+        ];
+        let out = render_regions_in_reading_order(raw, &[2, 99, -1, 2, 0]);
+        assert_eq!(texts(&out), vec!["c", "a", "b"]);
+        assert_eq!(out.len(), 3);
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    fn pipeline_result_glue_reads_reading_order_and_confidence() {
+        // Constructs the native result type directly: no models, no OCR run.
+        // Guards the field mapping that the live tests can only shape-check.
+        let res = crispembed::OcrPipelineResult {
+            regions: vec![
+                crispembed::OcrPipelineRegion {
+                    text: "first".into(),
+                    x: 10.0,
+                    y: 20.0,
+                    w: 30.0,
+                    h: 40.0,
+                    confidence: 0.99,
+                    rec_confidence: 0.42,
+                    char_conf: vec![0.4, 0.5],
+                },
+                crispembed::OcrPipelineRegion {
+                    text: "second".into(),
+                    x: 50.0,
+                    y: 60.0,
+                    w: 70.0,
+                    h: 80.0,
+                    confidence: 0.99,
+                    rec_confidence: 0.0,
+                    char_conf: Vec::new(),
+                },
+            ],
+            full_text: "second\nfirst".into(),
+            mean_confidence: 0.7,
+            reading_order: vec![1, 0],
+            markdown: String::new(),
+        };
+        let out = render_regions_from_pipeline(res);
+        assert_eq!(texts(&out), vec!["second", "first"]);
+        assert_eq!((out[0].x, out[0].y, out[0].w, out[0].h), (50.0, 60.0, 70.0, 80.0));
+        assert_eq!(out[0].confidence, 0.99, "no char_conf → detection score");
+        assert_eq!(out[1].confidence, 0.42, "char_conf present → recognition score");
     }
 
     #[test]

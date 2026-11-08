@@ -66,6 +66,13 @@ else
     tar -xzf "$PREBUILT_DIR/$ASSET" -C "$PREBUILT_DIR"
     rm -f "$PREBUILT_DIR/$ASSET"
 fi
+ARCHIVE="$CACHE_DIR/$ASSET"
+[[ -f "$ARCHIVE" ]] || { echo "Pinned archive missing; run without --skip-download" >&2; exit 1; }
+ACTUAL_SHA256=$(shasum -a 256 "$ARCHIVE" | cut -d ' ' -f1)
+[[ "$ACTUAL_SHA256" == "$SHA256" ]] || { echo "CrispEmbed archive SHA256 mismatch" >&2; exit 1; }
+PREBUILT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/crispembed.XXXXXXXX")
+trap 'rm -rf "$PREBUILT_DIR"' EXIT
+tar -xzf "$ARCHIVE" -C "$PREBUILT_DIR"
 
 # 3. Wire env var
 export CRISPEMBED_SYS_LIB_DIR="$PREBUILT_DIR"
