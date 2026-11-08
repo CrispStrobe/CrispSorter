@@ -23,6 +23,8 @@ pub mod kindle_clippings;
 pub mod kindle_import;
 pub mod kindle_match;
 pub mod migrations;
+pub mod ocr_workspace;
+mod ocr_reading_order;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;
@@ -478,6 +480,8 @@ async fn file_sha256(path: String) -> Result<String, String> {
 
 /// `hash_algo` is one of `"md5"`, `"sha1"`, `"sha256"`, or absent for
 /// no hashing (Cathy-classic behaviour).
+/// Observed scan failures return an error, so the UI does not silently save or
+/// overwrite a catalog from incomplete data. The FileIndex response is unchanged.
 #[tauri::command]
 async fn catalog_scan_dir(
     root: String,
@@ -486,14 +490,7 @@ async fn catalog_scan_dir(
 ) -> Result<catalog::index::FileIndex, String> {
     let p = std::path::PathBuf::from(root);
     let opts = catalog::scan::ScanOptions {
-        hash: hash_algo
-            .as_deref()
-            .and_then(|s| match s.to_ascii_lowercase().as_str() {
-                "md5" => Some(catalog::scan::HashAlgo::Md5),
-                "sha1" => Some(catalog::scan::HashAlgo::Sha1),
-                "sha256" => Some(catalog::scan::HashAlgo::Sha256),
-                _ => None,
-            }),
+        hash: hash_algo.as_deref().map(str::parse::<catalog::scan::HashAlgo>).transpose()?,
         max_size_bytes,
         follow_symlinks: false,
     };
@@ -502,6 +499,31 @@ async fn catalog_scan_dir(
     })
     .await
     .map_err(|e| format!("catalog_scan_dir join error: {e}"))?
+}
+
+/// Like [`catalog_scan_dir`], but returns the files that could be read plus
+/// a completeness report instead of failing on the first unreadable entry.
+/// Whole-drive and home-folder scans routinely meet a few unreadable folders
+/// (`.Trashes`, `.Spotlight-V100`, privacy-protected `~/Library` folders);
+/// the UI shows the issues and asks before saving a partial catalog, because
+/// the CAF format itself cannot record that it is incomplete.
+#[tauri::command]
+async fn catalog_scan_dir_report(
+    root: String,
+    hash_algo: Option<String>,
+    max_size_bytes: Option<u64>,
+) -> Result<catalog::scan::ScanReport, String> {
+    let p = std::path::PathBuf::from(root);
+    let opts = catalog::scan::ScanOptions {
+        hash: hash_algo.as_deref().map(str::parse::<catalog::scan::HashAlgo>).transpose()?,
+        max_size_bytes,
+        follow_symlinks: false,
+    };
+    tokio::task::spawn_blocking(move || {
+        catalog::scan::scan_dir_with_report(&p, opts).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("catalog_scan_dir_report join error: {e}"))?
 }
 
 /// Cheap header-only read for index-listing UIs. Avoids decoding the
@@ -3517,6 +3539,17 @@ pub fn run() {
             index::tauri_commands::template_apply,
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
+            ocr_workspace::ocr_workspace_capabilities,
+            ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_transform,
+            ocr_workspace::ocr_workspace_prepare,
+            ocr_workspace::ocr_workspace_recognize,
+            ocr_workspace::ocr_workspace_save,
+            ocr_workspace::ocr_workspace_load,
+            ocr_workspace::ocr_workspace_list,
+            ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_write_text,
+            ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,
@@ -3588,6 +3621,7 @@ pub fn run() {
             catalog_load_caf,
             catalog_save_caf,
             catalog_scan_dir,
+            catalog_scan_dir_report,
             catalog_metadata,
             catalog_find_duplicates,
             catalog_generate_deletion_script,
@@ -3939,6 +3973,17 @@ pub fn run() {
             index::tauri_commands::template_apply,
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
+            ocr_workspace::ocr_workspace_capabilities,
+            ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_transform,
+            ocr_workspace::ocr_workspace_prepare,
+            ocr_workspace::ocr_workspace_recognize,
+            ocr_workspace::ocr_workspace_save,
+            ocr_workspace::ocr_workspace_load,
+            ocr_workspace::ocr_workspace_list,
+            ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_write_text,
+            ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,
@@ -3989,6 +4034,7 @@ pub fn run() {
             catalog_load_caf,
             catalog_save_caf,
             catalog_scan_dir,
+            catalog_scan_dir_report,
             catalog_metadata,
             catalog_find_duplicates,
             catalog_generate_deletion_script,
