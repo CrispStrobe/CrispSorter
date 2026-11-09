@@ -1732,11 +1732,12 @@ mod tests {
         let count = write_export(&path, &pages, "pdf", false, false, MAX_STREAMED_PDF_BYTES).unwrap();
         let previous = fs::read(&path).unwrap();
         assert_eq!(previous.len(), count);
+        assert!(previous.len() > 4096, "fixture must exceed the native writer's minimum valid cap");
         let document = lopdf::Document::load_mem(&previous).unwrap();
         assert_eq!(document.get_pages().len(), 1);
         assert!(document.extract_text(&[1]).unwrap().contains("Reviewed résumé 東京"));
         let count_before = fs::read_dir(root.path()).unwrap().count();
-        let error = write_export(&path, &pages, "pdf", false, true, 32).unwrap_err();
+        let error = write_export(&path, &pages, "pdf", false, true, 4096).unwrap_err();
         assert!(!error.is_empty());
         assert_eq!(fs::read(&path).unwrap(), previous);
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), count_before);
