@@ -17,6 +17,14 @@ and requires it to equal the receipt and supplied APK. Simulator startup checks
 compare the supplied and installed iOS bundle manifests. These are reproducible
 build records, not independently signed supply-chain attestations.
 
+The same record identifies the pinned ONNX Runtime used by existing indexing
+features and verifies its packaged license/notices. Android compares packaged
+allocated native code/data with the qualified API-23 library. iOS records the
+qualified static framework, forced Cargo path and defined C API symbol in the
+app. A separate tiny Add-model target probe must execute against those inputs;
+see the [runtime qualification](../tools/mobile-ort-probe/README.md). This is
+separate from OCR model inference and does not establish embedding quality.
+
 Keep the APK or app bundle, build receipt, workflow URL, native runtime receipt,
 model input lock, and resulting evidence together. Record any manual rebuild
 as a new artifact. An unchanged filename or version label does not establish

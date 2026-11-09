@@ -16,6 +16,7 @@ import plistlib
 import re
 import struct
 import subprocess
+import tomllib
 import zipfile
 
 PACKAGE = 'com.crispstrobe.crispsorter'
@@ -125,7 +126,82 @@ def git(source, *args):
                           capture_output=True, timeout=30).stdout.strip()
 
 
-def record(source, platform, artifact, runtime_path):
+def ort_identity(source, platform, artifact, runtime_path, expected_target):
+    """Bind the extra indexing runtime to pinned inputs and packaged bytes."""
+    lock_path = source / 'scripts/ocr-mobile-ort-lock.json'
+    lock = json.loads(lock_path.read_text())
+    runtime = json.loads(runtime_path.read_text())
+    directory = runtime_path.parent.resolve()
+    if runtime.get('kind') != 'ocr-mobile-ort-runtime' or runtime.get('target') != expected_target:
+        raise ValueError('ONNX Runtime receipt target differs from the app target')
+    if runtime.get('lock_sha256') != digest(lock_path) or runtime.get('rust_binding') != lock['rust_binding'] or runtime.get('api_version') != lock['api_version']:
+        raise ValueError('ONNX Runtime receipt differs from the current binding/archive lock')
+    manifest = tomllib.loads((source / 'src-tauri/Cargo.toml').read_text())
+    if manifest['dependencies']['ort'] != '=' + lock['rust_binding']:
+        raise ValueError('Application ort binding changed; review the mobile native ABI pin')
+    pin = lock['android' if platform == 'android' else 'ios']
+    if runtime.get('archive') != {key: pin[key] for key in ('url', 'filename', 'bytes', 'sha256')} or runtime.get('version') != pin['version']:
+        raise ValueError('ONNX Runtime package identity differs from the committed pin')
+    env = tomllib.loads((source / '.cargo/config.toml').read_text()).get('env', {})
+    required = ({'ORT_LIB_LOCATION': str(directory / 'lib'), 'ORT_PREFER_DYNAMIC_LINK': '1'} if platform == 'android'
+                else {'ORT_IOS_XCFWK_LOCATION': str(directory / 'onnxruntime.xcframework')})
+    for name, value in required.items():
+        if env.get(name) != {'value': value, 'force': True}:
+            raise ValueError('Nested Cargo did not pin the qualified ONNX Runtime: ' + name)
+    for name, entry in runtime['files'].items():
+        item = directory / name
+        if item.is_symlink() or not item.is_file() or item.resolve() != item or not item.is_relative_to(directory):
+            raise ValueError('ONNX Runtime receipt names a missing or unsafe file')
+        if item.stat().st_size != entry['bytes'] or digest(item) != entry['sha256']:
+            raise ValueError('Qualified ONNX Runtime changed after extraction')
+    header = directory / 'include/onnxruntime_c_api.h'
+    if not header.is_file() or digest(header) != lock['header_sha256']:
+        raise ValueError('Qualified ONNX Runtime header differs from the API pin')
+    notices = {'onnxruntime-LICENSE.txt': lock['notices'][0], 'onnxruntime-ThirdPartyNotices.txt': lock['notices'][1]}
+    packaged_notices = {}
+    if platform == 'android':
+        abi = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64'}[expected_target]
+        native = directory / 'lib/libonnxruntime.so'
+        if digest(native) != pin['libraries'][abi]['sha256']:
+            raise ValueError('ONNX Runtime library differs from its immutable binary pin')
+        with zipfile.ZipFile(artifact) as archive:
+            name = f'lib/{abi}/libonnxruntime.so'
+            if name not in archive.namelist() or archive.getinfo(name).file_size > MAX_LIBRARY_BYTES:
+                raise ValueError('APK is missing its bounded ONNX Runtime library')
+            packaged = archive.read(name)
+            if elf_allocated_identity(packaged) != elf_allocated_identity(native.read_bytes()):
+                raise ValueError('Packaged ONNX Runtime code/data differs from the qualified library')
+            for basename, notice in notices.items():
+                candidates = [item for item in archive.namelist() if Path(item).name == basename]
+                if len(candidates) != 1 or archive.getinfo(candidates[0]).file_size != notice['bytes']:
+                    raise ValueError('APK does not contain the ONNX Runtime notice: ' + basename)
+                if hashlib.sha256(archive.read(candidates[0])).hexdigest() != notice['sha256']:
+                    raise ValueError('Packaged ONNX Runtime notice changed')
+                packaged_notices[basename] = {'path': candidates[0], 'sha256': notice['sha256']}
+        linkage = {'packaged_library': name, 'packaged_sha256': hashlib.sha256(packaged).hexdigest(), 'mapped_sections_match': True}
+    else:
+        identifier = 'ios-arm64_x86_64-simulator' if expected_target == 'ios-sim-arm64' else 'ios-arm64'
+        binary = directory / 'onnxruntime.xcframework' / identifier / 'onnxruntime.framework/onnxruntime'
+        if digest(binary) != pin['libraries'][identifier]['sha256']:
+            raise ValueError('iOS ONNX Runtime framework differs from its immutable binary pin')
+        info = plistlib.loads((artifact / 'Info.plist').read_bytes())
+        executable = info.get('CFBundleExecutable', '')
+        if not executable or Path(executable).name != executable:
+            raise ValueError('iOS application executable identity is invalid')
+        symbols = subprocess.run(['xcrun', 'nm', '-m', str(artifact / executable)], capture_output=True, text=True, check=True, timeout=60).stdout
+        if not any('_OrtGetApiBase' in line and '(undefined)' not in line for line in symbols.splitlines()):
+            raise ValueError('Built iOS app does not define the ONNX Runtime C API symbol')
+        for basename, notice in notices.items():
+            candidates = [item for item in artifact.rglob(basename) if item.is_file() and not item.is_symlink()]
+            if len(candidates) != 1 or candidates[0].stat().st_size != notice['bytes'] or digest(candidates[0]) != notice['sha256']:
+                raise ValueError('App does not contain the qualified ONNX Runtime notice: ' + basename)
+            packaged_notices[basename] = {'path': candidates[0].relative_to(artifact).as_posix(), 'sha256': notice['sha256']}
+        linkage = {'linked_c_api_symbol': 'OrtGetApiBase', 'qualified_static_framework_sha256': digest(binary),
+                   'interpretation': 'Qualified archive/config and defined app symbol; static linking transforms the archive, so this is not byte equality with the executable.'}
+    return {'receipt_sha256': digest(runtime_path), 'runtime': runtime, 'linkage': linkage, 'packaged_notices': packaged_notices}
+
+
+def record(source, platform, artifact, runtime_path, ort_runtime_path):
     source, artifact, runtime_path = source.resolve(), artifact.resolve(), runtime_path.resolve()
     modified = git(source, 'diff', '--name-only', 'HEAD', '--')
     untracked = git(source, 'ls-files', '--others', '--exclude-standard')
@@ -148,6 +224,7 @@ def record(source, platform, artifact, runtime_path):
             raise ValueError('App platform does not match the native runtime target')
         identity = bundle_identity(artifact, 'iphonesimulator' if platform == 'ios-simulator' else 'iphoneos')
     config = source / '.cargo/config.toml'
+    ort = ort_identity(source, platform, artifact, ort_runtime_path.resolve(), runtime['target'])
     return {'schema_version': 1, 'kind': 'ocr-mobile-app-build',
             'recorded_at': datetime.now(timezone.utc).isoformat(),
             'platform': platform, 'package': PACKAGE,
@@ -155,6 +232,7 @@ def record(source, platform, artifact, runtime_path):
             'crispembed_commit': runtime['source_commit'], 'ggml_commit': runtime['ggml_commit'],
             'runtime_receipt_sha256': digest(runtime_path), 'runtime': runtime,
             'cargo_config_sha256': digest(config) if config.is_file() else None,
+            'onnx_runtime': ort,
             'github': {key: os.environ.get('GITHUB_' + key.upper()) for key in ('run_id', 'run_attempt', 'job', 'sha', 'ref')},
             'artifact': identity, 'qualification': 'Build identity only; application behavior and OCR quality require executed tests.'}
 
@@ -165,9 +243,10 @@ def main():
     parser.add_argument('--platform', required=True, choices=('android', 'ios-simulator', 'ios-device'))
     parser.add_argument('--artifact', required=True, type=Path)
     parser.add_argument('--runtime-receipt', required=True, type=Path)
+    parser.add_argument('--ort-runtime-receipt', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
-    receipt = record(args.source, args.platform, args.artifact, args.runtime_receipt)
+    receipt = record(args.source, args.platform, args.artifact, args.runtime_receipt, args.ort_runtime_receipt)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x') as stream:
         json.dump(receipt, stream, indent=2)

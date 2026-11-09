@@ -1,0 +1,153 @@
+{
+  "synthetic_ui_only": true,
+  "tests": [
+    {
+      "name": "recover pages, correct text, undo, redo, and revoke page approval",
+      "status": "passed",
+      "duration_ms": 3271
+    },
+    {
+      "name": "a document sent from another tab is imported once and selected",
+      "status": "passed",
+      "duration_ms": 524
+    },
+    {
+      "name": "a document already in the project is selected instead of imported again",
+      "status": "passed",
+      "duration_ms": 496
+    },
+    {
+      "name": "next issue navigates from uncertain text to an unrecognized page",
+      "status": "passed",
+      "duration_ms": 613
+    },
+    {
+      "name": "unchanged preparation preserves corrections and approval while showing its warning",
+      "status": "passed",
+      "duration_ms": 871
+    },
+    {
+      "name": "the low-memory CPU profile is offered only for Qwen2 VL and reaches recognition",
+      "status": "passed",
+      "duration_ms": 793
+    },
+    {
+      "name": "export preflight blocks incomplete pages and exports explicit approved scope",
+      "status": "passed",
+      "duration_ms": 724
+    },
+    {
+      "name": "batch errors stay per page and retry only failed work",
+      "status": "passed",
+      "duration_ms": 658
+    },
+    {
+      "name": "pause, resume and stop preserve finished and pending pages without concurrent inference",
+      "status": "passed",
+      "duration_ms": 738
+    },
+    {
+      "name": "an interrupted batch resumes its saved selection and settings without rerunning completed pages",
+      "status": "passed",
+      "duration_ms": 576
+    },
+    {
+      "name": "a failed result save stops the batch and retry preserves completed recognition",
+      "status": "passed",
+      "duration_ms": 687
+    },
+    {
+      "name": "finishing a batch keeps project changes locked until the final checkpoint is durable",
+      "status": "passed",
+      "duration_ms": 594
+    },
+    {
+      "name": "stopping an already paused queue saves its stopped state without another native call",
+      "status": "passed",
+      "duration_ms": 641
+    },
+    {
+      "name": "table extraction renders cell text and strips active HTML",
+      "status": "passed",
+      "duration_ms": 628
+    },
+    {
+      "name": "delayed extraction follows its source page and undo restores visible and exported cells",
+      "status": "passed",
+      "duration_ms": 867
+    },
+    {
+      "name": "an invalid saved project leaves the current project and autosaver usable",
+      "status": "passed",
+      "duration_ms": 699
+    },
+    {
+      "name": "reopening the current project flushes pending edits without rollback or revision conflicts",
+      "status": "passed",
+      "duration_ms": 674
+    },
+    {
+      "name": "a confirmation blocks navigation shortcuts and removes only its captured page",
+      "status": "passed",
+      "duration_ms": 747
+    },
+    {
+      "name": "changing the search query cannot replace text at a stale match offset",
+      "status": "passed",
+      "duration_ms": 809
+    },
+    {
+      "name": "mobile storage cleanup is explicit, recovers from failure, and keeps models and reviewed pages",
+      "status": "passed",
+      "duration_ms": 919
+    },
+    {
+      "name": "model removal requires confirmation and the displayed exact generation, preserving cancellation and active models",
+      "status": "passed",
+      "duration_ms": 963
+    },
+    {
+      "name": "mobile model setup is explicit, reports progress, locks work, and recovers after failure",
+      "status": "passed",
+      "duration_ms": 848
+    },
+    {
+      "name": "phone import progress stays cancellable and saves only completed documents",
+      "status": "passed",
+      "duration_ms": 675
+    },
+    {
+      "name": "camera import validates the file and opens a preserved photo without starting recognition",
+      "status": "passed",
+      "duration_ms": 640
+    },
+    {
+      "name": "corner controls reject invalid selections and perspective undo restores review evidence",
+      "status": "passed",
+      "duration_ms": 935
+    },
+    {
+      "name": "measured tilt and lighting preparation preserve the original and remain undoable",
+      "status": "passed",
+      "duration_ms": 862
+    },
+    {
+      "name": "desktop and compact layouts remain usable",
+      "status": "passed",
+      "duration_ms": 1110
+    }
+  ],
+  "browserErrors": [],
+  "passed": 27,
+  "failed": 0,
+  "screenshots": [
+    "ocr-workspace-desktop.png",
+    "ocr-workspace-compact.png",
+    "ocr-phone-model-setup.png",
+    "ocr-phone-model-storage.png",
+    "ocr-phone-model-removal-confirmation.png",
+    "ocr-phone-photo-preparation.png",
+    "ocr-phone-text-review.png",
+    "ocr-phone-page-list.png"
+  ]
+}

@@ -29,7 +29,8 @@ VARIABLE = "CRISPEMBED_SYS_LIB_DIR"
 MARKER = "# Paired OCR runtime for this isolated CI checkout."
 
 
-def prepare(project: Path, runtime_lib_dir: Path, protoc: Path | None = None) -> Path:
+def prepare(project: Path, runtime_lib_dir: Path, protoc: Path | None = None,
+            ort_lib_dir: Path | None = None, ort_xcframework: Path | None = None) -> Path:
     """Append forced Cargo environment values without rewriting other TOML.
 
     An existing exact forced value is left byte-for-byte intact. Conflicting
@@ -46,14 +47,33 @@ def prepare(project: Path, runtime_lib_dir: Path, protoc: Path | None = None) ->
         raise ValueError("--runtime-lib-dir must be a directory")
     if not any((runtime_lib_dir / name).is_file() for name in ("libcrispembed.a", "libcrispembed.so")):
         raise ValueError("runtime directory must contain libcrispembed.a or libcrispembed.so")
-    requested_paths = {VARIABLE: runtime_lib_dir}
+    requested_values = {VARIABLE: str(runtime_lib_dir)}
     if protoc is not None:
         if not protoc.is_absolute():
             raise ValueError("--protoc must be an absolute host executable path")
         protoc = protoc.resolve(strict=True)
         if not protoc.is_file() or not os.access(protoc, os.X_OK):
             raise ValueError("--protoc must name an executable file")
-        requested_paths["PROTOC"] = protoc
+        requested_values["PROTOC"] = str(protoc)
+    if ort_lib_dir is not None and ort_xcframework is not None:
+        raise ValueError("select one Android library directory or iOS XCFramework, not both")
+    if ort_lib_dir is not None:
+        if not ort_lib_dir.is_absolute():
+            raise ValueError("--ort-lib-dir must be an absolute directory")
+        ort_lib_dir = ort_lib_dir.resolve(strict=True)
+        if not (ort_lib_dir / "libonnxruntime.so").is_file():
+            raise ValueError("--ort-lib-dir must contain the qualified libonnxruntime.so")
+        requested_values.update({"ORT_LIB_LOCATION": str(ort_lib_dir), "ORT_PREFER_DYNAMIC_LINK": "1"})
+    if ort_xcframework is not None:
+        if not ort_xcframework.is_absolute():
+            raise ValueError("--ort-xcframework must be an absolute directory")
+        ort_xcframework = ort_xcframework.resolve(strict=True)
+        if not (ort_xcframework / "Info.plist").is_file() or not any(
+            (ort_xcframework / target / "onnxruntime.framework/onnxruntime").is_file()
+            for target in ("ios-arm64", "ios-arm64_x86_64-simulator", "ios-arm64-simulator")
+        ):
+            raise ValueError("--ort-xcframework must contain the qualified iOS static framework")
+        requested_values["ORT_IOS_XCFWK_LOCATION"] = str(ort_xcframework)
 
     cargo_dir = project / ".cargo"
     if cargo_dir.is_symlink() or (cargo_dir.exists() and not cargo_dir.is_dir()):
@@ -73,8 +93,8 @@ def prepare(project: Path, runtime_lib_dir: Path, protoc: Path | None = None) ->
     if not isinstance(existing_env, dict):
         raise ValueError("existing Cargo env configuration is not a table")
     missing = {}
-    for variable, path in requested_paths.items():
-        requested = {"value": str(path), "force": True}
+    for variable, value in requested_values.items():
+        requested = {"value": value, "force": True}
         if variable in existing_env:
             existing = existing_env[variable]
             if isinstance(existing, dict) and existing == requested and existing.get("force") is True:
@@ -125,12 +145,17 @@ def main() -> None:
     parser.add_argument("--project", type=Path, required=True, help="Rust workspace root containing Cargo.toml; use . for the Tauri npm build")
     parser.add_argument("--runtime-lib-dir", type=Path, required=True, help="absolute directory of the qualified runtime")
     parser.add_argument("--protoc", type=Path, help="absolute host protoc executable for dependency build scripts")
+    ort = parser.add_mutually_exclusive_group()
+    ort.add_argument("--ort-lib-dir", type=Path, help="qualified Android ONNX Runtime library directory")
+    ort.add_argument("--ort-xcframework", type=Path, help="qualified iOS ONNX Runtime XCFramework directory")
     args = parser.parse_args()
     try:
-        config = prepare(args.project, args.runtime_lib_dir, args.protoc)
+        config = prepare(args.project, args.runtime_lib_dir, args.protoc, args.ort_lib_dir, args.ort_xcframework)
     except (OSError, UnicodeError, ValueError) as error:
         parser.error(str(error))
     variables = f"{VARIABLE} and PROTOC" if args.protoc else VARIABLE
+    if args.ort_lib_dir or args.ort_xcframework:
+        variables += " and the qualified mobile ONNX Runtime"
     print(f"Pinned {variables} in {config}")
 
 

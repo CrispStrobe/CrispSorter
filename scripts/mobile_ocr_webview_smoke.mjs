@@ -339,6 +339,8 @@ async function main() {
       assert.equal(build.tracked_source_clean, true);
       assert.equal(build.artifact.kind, 'apk');
       assert.equal(build.artifact.paired_runtime_mapped_sections_match, true);
+      assert.equal(build.onnx_runtime?.runtime?.api_version, 23);
+      assert.equal(build.onnx_runtime?.linkage?.mapped_sections_match, true);
       assert(build.artifact.abis.length === 1 && abis.includes(build.artifact.abis[0]), 'Installed APK ABI is unsupported by the selected device.');
       if (opt['device-kind'] === 'emulator') assert.equal(build.runtime.target, 'android-x86_64');
       await fs.writeFile(path.join(output, 'application-build-receipt.json'), buildBytes);
