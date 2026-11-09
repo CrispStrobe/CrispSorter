@@ -1,9 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate } from '../../scripts/mobile_ocr_probe_utils.mjs';
+import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource } from '../../scripts/mobile_ocr_probe_utils.mjs';
 
 const argumentsFor = serial => ['--serial', serial, '--apk', 'test.apk', '--inputs', 'inputs', '--output', 'evidence',
   '--source-commit', 'a'.repeat(40), '--embed-commit', 'b'.repeat(40), '--build-receipt', 'build.json'];
+
+const sourceProof = generated => ({ schema_version: 2, application_source_clean: true,
+  tracked_source_clean: !generated, cargo_lock_sha256: 'a'.repeat(64),
+  generated_tracked_files: generated ? [{ path: 'static/licenses.json', bytes: 100,
+    sha256: 'b'.repeat(64), committed_sha256: 'c'.repeat(64), generated_at: '2026-11-09T01:00:00Z',
+    counts: { frontend: 1, backend: 0, total: 1 } }] : [] });
+
+test('build source proof separates recorded generated data from immutable application code', () => {
+  assert.deepEqual(validateBuildSource(sourceProof(false)), []);
+  assert.equal(validateBuildSource(sourceProof(true))[0].path, 'static/licenses.json');
+  for (const change of [{ schema_version: 1 }, { application_source_clean: false },
+    { tracked_source_clean: true }, { cargo_lock_sha256: '' }, { generated_tracked_files: [] }]) {
+    assert.throws(() => validateBuildSource({ ...sourceProof(true), ...change }));
+  }
+});
+
+test('build source proof never extends the generated exception to code or dependency locks', () => {
+  for (const change of [{ path: 'Cargo.lock' }, { path: 'src-tauri/src/lib.rs' }, { sha256: '' },
+    { bytes: 0 }, { counts: { frontend: 1, backend: 0, total: 2 } }]) {
+    const proof = sourceProof(true);
+    Object.assign(proof.generated_tracked_files[0], change);
+    assert.throws(() => validateBuildSource(proof));
+  }
+});
 
 test('physical devices require explicit selection and cannot masquerade as emulators', () => {
   assert.equal(probeOptions(argumentsFor('emulator-5554'))['device-kind'], 'emulator');
