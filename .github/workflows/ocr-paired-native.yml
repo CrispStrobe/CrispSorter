@@ -6,6 +6,7 @@ on:
     branches: ['feat/ocr-document-studio']
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_text_export.rs
       - src-tauri/src/ocr_atomic_output.rs
       - src-tauri/src/ocr_export_control.rs
       - src-tauri/src/ocr_document_import.rs
@@ -34,6 +35,7 @@ on:
   pull_request:
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_text_export.rs
       - src-tauri/src/ocr_atomic_output.rs
       - src-tauri/src/ocr_export_control.rs
       - src-tauri/src/ocr_document_import.rs
@@ -185,6 +187,12 @@ jobs:
           cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_workspace:: -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_text_export::tests -- --list | rg '^ocr_text_export::tests::.*: test$'
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_text_export::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_photo::tests -- --test-threads=1

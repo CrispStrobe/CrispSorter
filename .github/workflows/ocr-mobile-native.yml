@@ -19,6 +19,7 @@ on:
       - 'scripts/mobile_ocr_webview_smoke.mjs'
       - 'scripts/mobile_ocr_probe_utils.mjs'
       - 'scripts/mobile_ocr_quality.mjs'
+      - 'scripts/verify_mobile_docx_export.py'
       - 'scripts/mobile_document_picker.py'
       - 'scripts/ocr_mobile_build_receipt.py'
       - 'scripts/mobile_simulator_smoke.py'
