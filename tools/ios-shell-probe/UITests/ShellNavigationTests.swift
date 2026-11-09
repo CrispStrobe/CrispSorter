@@ -24,16 +24,26 @@ final class ShellNavigationTests: XCTestCase {
     private func state(_ element: XCUIElement, screen: CGRect) -> [String: Any] {
         guard element.exists else { return ["exists": false] }
         let frame = element.frame
-        return [
+        let inside = !frame.isEmpty && screen.insetBy(dx: -0.5, dy: -0.5).contains(frame)
+        var result: [String: Any] = [
             "exists": true, "label": element.label, "identifier": element.identifier,
-            "enabled": element.isEnabled, "hittable": element.isHittable,
+            "enabled": element.isEnabled,
             "frame": rect(frame),
-            "inside_application_frame": !frame.isEmpty && screen.insetBy(dx: -0.5, dy: -0.5).contains(frame),
+            "inside_application_frame": inside,
+            "hittability_checked": inside,
         ]
+        // XCTest can fail the test itself when asked for the activation point
+        // of an offscreen WebKit element. Its frame is already a strict failure.
+        if inside { result["hittable"] = element.isHittable }
+        return result
     }
 
     private func record(_ app: XCUIApplication, _ name: String) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var snapshots = evidence["snapshots"] as? [[String: Any]] ?? []
+        snapshots.append(["name": name, "application_frame": rect(app.frame)])
+        evidence["snapshots"] = snapshots
+        writeReport()
         let screenshot = XCUIScreen.main.screenshot()
         try? screenshot.pngRepresentation.write(to: directory.appendingPathComponent(name + ".png"), options: .atomic)
         let screenAttachment = XCTAttachment(screenshot: screenshot)
@@ -46,19 +56,8 @@ final class ShellNavigationTests: XCTestCase {
         treeAttachment.name = name + "-accessibility"
         treeAttachment.lifetime = .keepAlways
         add(treeAttachment)
-        let buttons = app.descendants(matching: .button)
-        let buttonCount = buttons.count
-        let window = app.frame
-        var snapshots = evidence["snapshots"] as? [[String: Any]] ?? []
-        snapshots.append([
-            "name": name, "application_frame": rect(window),
-            "webview_count": app.webViews.count,
-            "webviews": app.webViews.allElementsBoundByIndex.prefix(8).map { state($0, screen: window) },
-            "button_count": buttonCount,
-            "buttons": buttons.allElementsBoundByIndex.prefix(128).map { state($0, screen: window) },
-            "button_snapshot_truncated": buttonCount > 128,
-        ])
-        evidence["snapshots"] = snapshots
+        // The raw tree preserves all frames without independently hit-testing
+        // unrelated, offscreen controls such as the Inbox's resize handles.
     }
 
     private func writeReport() {
@@ -92,22 +91,22 @@ final class ShellNavigationTests: XCTestCase {
         }
         let tools = app.buttons.matching(NSPredicate(format: "label == %@", "Tools")).firstMatch
         let toolsExists = tools.waitForExistence(timeout: 30)
-        record(app, "inbox")
         evidence["tools"] = state(tools, screen: app.frame)
+        record(app, "inbox")
         guard toolsExists else {
             fail(app, "Tools is absent from the accessibility tree after application startup.")
             return
         }
-        guard tools.isHittable && app.frame.insetBy(dx: -0.5, dy: -0.5).contains(tools.frame) else {
+        guard app.frame.insetBy(dx: -0.5, dy: -0.5).contains(tools.frame) && tools.isHittable && tools.isEnabled else {
             fail(app, "Tools exists but is not both onscreen and hittable. See its retained frame and hierarchy.")
             return
         }
         tools.tap()
         let ocr = app.buttons.matching(NSPredicate(format: "label == %@", "OCR")).firstMatch
         let ocrExists = ocr.waitForExistence(timeout: 15)
-        record(app, "tools-menu")
         evidence["ocr_menu_item"] = state(ocr, screen: app.frame)
-        guard ocrExists && ocr.isHittable else {
+        record(app, "tools-menu")
+        guard ocrExists && app.frame.insetBy(dx: -0.5, dy: -0.5).contains(ocr.frame) && ocr.isHittable && ocr.isEnabled else {
             fail(app, "The Tools menu did not expose a hittable OCR command.")
             return
         }
@@ -116,10 +115,14 @@ final class ShellNavigationTests: XCTestCase {
         let addDocuments = app.buttons.matching(NSPredicate(format: "label == %@", "Add documents")).firstMatch
         let projectExists = project.waitForExistence(timeout: 30)
         let addExists = addDocuments.waitForExistence(timeout: 15)
-        record(app, "ocr-workspace")
+        if addExists {
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in addDocuments.exists && addDocuments.isEnabled }, object: nil)
+            _ = XCTWaiter.wait(for: [ready], timeout: 15)
+        }
         evidence["project_name"] = state(project, screen: app.frame)
         evidence["add_documents"] = state(addDocuments, screen: app.frame)
-        guard projectExists && addExists && addDocuments.isHittable else {
+        record(app, "ocr-workspace")
+        guard projectExists && addExists && app.frame.insetBy(dx: -0.5, dy: -0.5).contains(addDocuments.frame) && addDocuments.isHittable && addDocuments.isEnabled else {
             fail(app, "OCR navigation did not reveal the project name and reachable Add documents control.")
             return
         }

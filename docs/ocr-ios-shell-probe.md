@@ -23,3 +23,39 @@ Run `42637514755` at probe source `61d1585f49d872502e7ca189815ecfb62a143c89` com
 The actual 402 × 874 point application contained Tools at `(268, 892, 67, 41)` and its navigation bar at `(0, 884, 402, 52)`. Both were below the screen. The document began at y = 62; its visible safe content was 778 points high, while the shell retained its 874-point `100vh` height. This diagnoses an offscreen geometry defect. The three shell source files were byte-identical between this application source and `b876fb43eb19cc7de44760400e50735aa27c2c78`; that comparison does not equate their complete binaries or later workspace features.
 
 The test did **not** pass navigation: its diagnostic enumeration asked XCTest to determine the hittability of an unrelated offscreen column-resize button, causing one test failure before the Tools assertion. The Inbox hierarchy and screenshot survived; `navigation.json` and the after-test bundle hash were not produced. Follow-up runners restrict hit-testing to relevant controls and preserve partial reports. The actual corrected iOS application still needs its own successful navigation result.
+
+## Probe an already compiled application
+
+The same small host and targeted UI test can be used by the native application
+workflow after it builds and starts its simulator application:
+
+```sh
+python3 tools/ios-shell-probe/run.py \
+  --app "$app" \
+  --build-receipt "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json" \
+  --output "$RUNNER_TEMP/ocr-mobile-evidence/app-navigation" \
+  --simulator "$simulator" \
+  --application-source "$GITHUB_SHA"
+```
+
+XcodeGen must be installed. The output directory must be new or empty. The
+runner checks the exact source revision and complete bundle inventory against
+the build receipt before starting UI work. It reuses a supplied simulator
+without shutting it down. Omitting `--simulator` creates a fresh iPhone 16 Pro
+on iOS 18.5. The historical artifact workflow keeps its existing `--staged`
+interface and pinned application input.
+
+Only the separate Swift host and UI-test target are compiled. The application
+is neither rebuilt nor modified. Installed bundle hashes are recorded before
+and after the test, including UI failure paths. A passed receipt requires
+successful Xcode tests, a successful navigation report, and unchanged installed
+application identity. The actual app must expose onscreen, enabled, hittable
+Tools, OCR, and Add documents controls. The raw accessibility tree retains all
+other frames without individually hit-testing unrelated controls.
+
+The UI test writes partial JSON reports before diagnostic work, and the Python
+runner writes phase receipts before potentially slow simulator/test commands.
+The native workflow retains navigation evidence separately from OCR/native
+probe and startup outcomes. `scripts/test_mobile_shell_probe.py` covers input
+identity, altered source/bundle rejection, symlinks, and existing-evidence
+preservation on any Python host; it is not an iOS execution test.
