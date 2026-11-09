@@ -2,6 +2,7 @@ import { applyRecognition, updatePage, type OcrPage, type OcrProject, type OcrRe
 import { effectiveRecognitionZone, expandRecognitionZone, mergeZoneRegions, regionsInRecognitionZone, zoneContains, type PixelRectangle } from './zones';
 import { collectSourceComponents, withSourceComponents, validatePageSourceComponents } from './passageData';
 import { joinRegionText } from './text';
+import { reconcilePageStructure } from './structureData';
 
 export interface ZoneReviewRequest {
     projectId: string;
@@ -86,7 +87,7 @@ export function prepareZoneReview(project: OcrProject, request: ZoneReviewReques
     return {
         request, regions: recognized.regions, provenance: recognized.provenance,
         replacementText: joinRegionText(recognized.regions.filter(region => !region.excluded && region.kind !== 'picture')),
-        warnings: warningStrings(result.warnings),
+        warnings: [...warningStrings(result.warnings),...reconcilePageStructure(page,candidatePage).notices],
     };
 }
 

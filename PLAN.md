@@ -9,10 +9,11 @@ committed and pushed incrementally to `feat/ocr-word-review` through
 [draft PR #36](https://github.com/CrispStrobe/CrispSorter/pull/36).
 
 Native word evidence and source inspection, project/personal vocabulary and
-reviewable correction rules, and passage split/merge/repair have implementation
-checkpoints. The roadmap records which unit, browser, and native checks actually
-passed. Document structure and formatting is the next package, followed by
-multiple extraction objects and structured exports. Hardware support, trained
+reviewable correction rules, passage split/merge/repair, and versioned document
+semantics with per-passage formatting have implementation checkpoints. The roadmap
+records which unit, browser, and native checks actually passed. Cross-block page
+text editing is the next structure increment, followed by multiple extraction
+objects and structured exports. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

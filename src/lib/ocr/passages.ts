@@ -2,6 +2,7 @@ import { editRegion, updatePage, type OcrPage, type OcrProject, type OcrRegion }
 import { joinRegionText } from './text';
 import { collectSourceComponents, readSharedSourceGroups, readSourceComponents, validatePageSourceComponents } from './passageData';
 import type { WordBounds } from './wordEvidence';
+import { reconcilePageStructure } from './structureData';
 export * from './passageData';
 
 export type PassageSeparator = '' | ' ' | '\n' | '\n\n';
@@ -155,7 +156,9 @@ function buildPassagePreview(project:OcrProject,pageId:string,request:PassageReq
         if(groups.some(group=>page.regions.some(region=>!selected.has(region.id) && region.sharedSourceGroups?.includes(group) && overlaps(bounds,region)))) warnings.push('Source coverage still overlaps another member of a shared source family. Spatial exports remain unavailable until coverage is resolved.');
     } else return fail('Unsupported passage operation.');
     ensureFreshIds(project,regions.map(region=>region.id));
-    validatePageSourceComponents({...page,regions:replaceRegions(page,regionIds,regions)});
+    const candidatePage={...page,regions:replaceRegions(page,regionIds,regions)};
+    validatePageSourceComponents(candidatePage);
+    warnings.push(...reconcilePageStructure(page,candidatePage).notices);
     const sources=regionIds.map(id=>page.regions.find(region=>region.id===id)!);
     return {projectId:project.id,page:clone(page),operationId:seed,request:clone(request),regions,regionIds,
         replacementIds:regions.map(region=>region.id),warnings,beforeText:joinRegionText(sources),afterText:joinRegionText(regions)};
@@ -272,6 +275,6 @@ export function applyPassageRepair(project:OcrProject,preview:RepairPreview,sele
     for(const region of regions) {
         if(region.text!==page.regions.find(source=>source.id===region.id)!.text) next=editRegion(next,page.id,region.id,region.text);
     }
-    const {extraction:_stale,...provenance}=page.provenance;
+    const {extraction:_stale,...provenance}=next.pages.find(candidate=>candidate.id===page.id)!.provenance;
     return updatePage(next,page.id,{approved:false,provenance:{...provenance,lastPassageRepair:{kind:preview.kind,changes:selectedChangeIds.length}}});
 }

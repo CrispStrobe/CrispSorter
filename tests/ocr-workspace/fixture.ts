@@ -6,6 +6,16 @@ const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
 const sourceUri = '/fixtures/northstar-statement.pdf';
 const repairText = 'Quarterly  equipment\ninspection\tand preven-\ntive maintenance.\n\nKeep Smith-Jones and NS-2026-1042.\n- Item -12.5 V';
+const structureBlocks: RecognitionResult['regions'] = [
+    {text:'Quarterly inspection report',x:80,y:90,w:840,h:48,kind:'text'},
+    {text:'😀 Equipment\nMaintenance interval: [1]',x:80,y:220,w:390,h:100,kind:'text'},
+    {text:'Inspect the safety valve.',x:80,y:390,w:390,h:60,kind:'text'},
+    {text:'Record pressure before operation.',x:530,y:220,w:390,h:100,kind:'text'},
+    {text:'Keep NS-2026-1042 unchanged.',x:530,y:390,w:390,h:60,kind:'text'},
+    {text:'',x:530,y:540,w:390,h:160,kind:'picture'},
+    {text:'Figure 1. Valve inspection points.',x:530,y:730,w:390,h:70,kind:'text'},
+    {text:'[1] Inspect every six months.',x:80,y:1150,w:840,h:60,kind:'text'},
+];
 const pagePath = (page:number) => `/fixtures/northstar-page-${page}.png`;
 const pageNumber = (path:string) => Number(path.match(/page-(\d+)/)?.[1] ?? 1);
 
@@ -27,7 +37,13 @@ function recognition(path:string):RecognitionResult {
     };
 }
 
-function documentSvg(page:number, wordReview=false, nativeWord=false, textRepair=false):string {
+function documentSvg(page:number, wordReview=false, nativeWord=false, textRepair=false, structure=false):string {
+    if(structure) return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
+      <rect width="1000" height="1400" fill="#fffefa"/>
+      <g fill="#263e50" font-family="Arial,sans-serif" font-size="21">${structureBlocks.map(block=>block.kind==='picture'
+          ? `<rect x="${block.x}" y="${block.y}" width="${block.w}" height="${block.h}" rx="8" fill="#e2eef3"/><path d="M590 620H850M720 560V680" stroke="#2e6a80" stroke-width="22"/><circle cx="720" cy="620" r="36" fill="#fffefa" stroke="#2e6a80" stroke-width="12"/>`
+          : block.text.split('\n').map((line,index)=>`<text x="${block.x}" y="${block.y+27+index*30}">${line}</text>`).join('')).join('')}</g>
+    </svg>`;
     if(textRepair) return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
       <rect width="1000" height="1400" fill="#fffefa"/>
       <g fill="#263e50" font-family="Arial,sans-serif" font-size="22" xml:space="preserve" style="white-space:pre">${repairText.split('\n').map((line,index)=>`<text x="80" y="${292+index*28}">${line}</text>`).join('')}</g>
@@ -140,6 +156,12 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 confidence_basis:'recognition',char_conf:Array.from(repairText,()=>0.99),
                 char_conf_unit:'unicode_codepoint',char_conf_aligned:true}];
         }
+        if(scenario==='structure') {
+            result.engine='fixture-verified-character-adapter';
+            result.regions=structureBlocks.map(block=>({...block,confidence:0.99,
+                confidence_basis:'recognition',char_conf:Array.from(block.text,()=>0.99),
+                char_conf_unit:'unicode_codepoint',char_conf_aligned:true}));
+        }
         project=applyRecognition(project,project.pages[0].id,result);
         project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
         project=approvePage(project,project.pages[2].id);
@@ -248,7 +270,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
             control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
         },
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,scenario==='structure'&&page===1))}`;},
     };
     return {client,initialProject:null};
 }

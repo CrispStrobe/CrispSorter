@@ -1150,6 +1150,16 @@ pub struct ExportPage {
     pub approved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<crate::ocr_document::DocumentStructure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_regions: Option<Vec<ExportRegion>>,
+}
+
+fn structure_sources(regions: &[ExportRegion]) -> Vec<crate::ocr_document::StructureSource<'_>> {
+    regions.iter().map(|region| crate::ocr_document::StructureSource {
+        id:region.id.as_deref().unwrap_or(""),text:region.text.as_str(),kind:region.kind.as_deref().unwrap_or("text"),
+    }).collect()
 }
 
 fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
@@ -1161,13 +1171,19 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
         }
         checked_physical_size(page.page_width_points, page.page_height_points)
             .map_err(|e| format!("Page {}: {e}", i + 1))?;
-        if page.regions.len() > MAX_REGIONS { return Err(format!("Page {} has too many regions.", i + 1)); }
+        let figures=page.figure_regions.as_deref().unwrap_or(&[]);
+        if page.regions.len() + figures.len() > MAX_REGIONS { return Err(format!("Page {} has too many regions.", i + 1)); }
+        if !figures.is_empty() && page.structure.is_none() { return Err("Figure source records require a document structure.".into()); }
+        if figures.iter().any(|region| region.kind.as_deref()!=Some("picture")) { return Err("Figure source records must describe picture regions.".into()); }
+        if let Some(structure)=&page.structure {
+            crate::ocr_document::validate_structure(structure,&structure_sources(&page.regions),&structure_sources(figures))?;
+        }
         let mut source_bytes = 0;
         if let Some(archived) = page.provenance.as_ref().and_then(|value| value.get("passageSources")) {
             let components: Vec<PassageSourceComponent> = serde_json::from_value(archived.clone()).map_err(|e| format!("Invalid archived passage sources: {e}"))?;
             source_bytes += validate_source_components(&components)?;
         }
-        for (j, region) in page.regions.iter().enumerate() {
+        for (j, region) in page.regions.iter().chain(figures).enumerate() {
             checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, width, height)
                 .map_err(|e| format!("Page {}, region {}: {e}", i + 1, j + 1))?;
             if region.confidence.is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score)) {
@@ -1400,7 +1416,7 @@ mod tests {
             word_evidence: None, original_word_evidence: None,
             source_components: None, separator_before: None, shared_source_groups: None,
             review: None, kind: None,
-        }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None }
+        }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None, structure:None, figure_regions:None }
     }
 
     #[test]
@@ -1494,6 +1510,32 @@ mod tests {
         assert!(!has_shared_source_overlap(&page));
         page.regions[1].separator_before = Some("malformed".into());
         assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("separator"));
+    }
+
+    #[test]
+    fn logical_structure_and_figure_sources_survive_json_without_changing_plain_text() {
+        let root=tempfile::tempdir().unwrap();
+        let mut page=export_page(root.path(),"Heading");
+        page.regions[0].id=Some("text-a".into()); page.regions[0].kind=Some("title".into());
+        let mut figure=export_page(root.path(),"Not transcription").regions.remove(0);
+        figure.id=Some("figure-a".into()); figure.kind=Some("picture".into());
+        page.figure_regions=Some(vec![figure]);
+        page.structure=Some(serde_json::from_value(json!({
+            "version":1,"sections":[{"id":"section-a","columns":1}],"blocks":[
+                {"id":"heading-a","sourceRegionId":"text-a","sectionId":"section-a","column":1,
+                    "role":"heading","headingLevel":1,"alignment":"center","breakBefore":"none","runs":[{"start":0,"end":7,"bold":true}]},
+                {"id":"image-a","sourceRegionId":"figure-a","sectionId":"section-a","column":1,
+                    "role":"figure","alignment":"start","breakBefore":"none","runs":[],"altText":"A diagram","decorative":false}
+            ]
+        })).unwrap());
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        assert_eq!(export_bytes(std::slice::from_ref(&page),"text",false).unwrap(),b"Heading");
+        let json:Value=serde_json::from_slice(&export_bytes(std::slice::from_ref(&page),"json",false).unwrap()).unwrap();
+        assert_eq!(json["pages"][0]["structure"]["blocks"][0]["runs"][0]["bold"],true);
+        assert_eq!(json["pages"][0]["figure_regions"][0]["id"],"figure-a");
+        assert_eq!(json["pages"][0]["regions"].as_array().unwrap().len(),1);
+        page.figure_regions=None;
+        assert!(validate_export_pages(&[page]).unwrap_err().contains("exactly one block"));
     }
 
     #[test]

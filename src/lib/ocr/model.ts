@@ -3,6 +3,8 @@ import { readWordEvidence, type WordEvidenceEnvelope } from './wordEvidence';
 import { readProofreadingData, type ProofreadingData } from './proofreadingData';
 import { readSourceComponents, readSharedSourceGroups, collectSourceComponents, mergeSourceComponents, withSourceComponents, validatePageSourceComponents, type SourceComponent } from './passageData';
 import { joinRegionText, hasUnresolvedSharedGeometry, type PassageSeparator } from './text';
+import { readPageStructure, reconcilePageStructure, projectStructureForRegions, type PageStructure } from './structureData';
+import { readStructureHistory, archiveReplacedStructure } from './structureHistory';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -33,6 +35,8 @@ export interface OcrPage {
     status: RecognitionStatus; regions: OcrRegion[]; excluded: boolean; approved: boolean;
     error: string | null; elapsedMs: number | null;
     provenance: Record<string, unknown>; profileId: string;
+    /** Logical roles and formatting reference current regions; text stays on the region. */
+    structure?: PageStructure;
 }
 export interface OcrDocument { id: string; sourceUri: string; name: string; }
 export interface OcrProject {
@@ -79,6 +83,9 @@ export interface ExportPage {
     page_width_points?: number; page_height_points?: number;
     id?: string; name?: string; source_uri?: string; source_page?: number;
     approved?: boolean; provenance?: Record<string, unknown>;
+    structure?: PageStructure;
+    /** Source geometry for included figures, separate from the plain-text projection. */
+    figure_regions?: ExportRegion[];
 }
 export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
@@ -143,7 +150,23 @@ export function addDocument(project: OcrProject, imported: ImportedDocument): Oc
 }
 
 export function updatePage(project: OcrProject, pageId: string, patch: Partial<OcrPage>): OcrProject {
-    return touch(project, project.pages.map((page) => page.id === pageId ? { ...page, ...patch, id: page.id, documentId: page.documentId } : page));
+    return touch(project, project.pages.map((page) => {
+        if(page.id !== pageId) return page;
+        const next={...page,...patch,id:page.id,documentId:page.documentId};
+        if('structure' in patch) next.structure=readPageStructure(patch.structure,next);
+        else if(patch.regions && page.structure) {
+            const reconciled=reconcilePageStructure(page,next);
+            next.structure=reconciled.structure;
+            if(reconciled.notices.length) next.provenance={...next.provenance,
+                structureNotices:reconciled.notices,structureChangedAt:now()};
+        }
+        if(patch.regions) {
+            const archive=archiveReplacedStructure(page,next);
+            if(archive.history) next.provenance={...next.provenance,structureHistory:archive.history,
+                ...(archive.notice?{structureNotices:[...(Array.isArray(next.provenance.structureNotices)?next.provenance.structureNotices:[]),archive.notice]}:{})};
+        }
+        return next;
+    }));
 }
 
 export function applyRecognition(project: OcrProject, pageId: string, result: RecognitionResult, profileId = project.profileId, options: {preserveSourceHistory?:boolean} = {}): OcrProject {
@@ -295,12 +318,16 @@ export function splitPage(project: OcrProject, pageId: string, images: ImportedP
     if (!source) return project;
     if (images.length < 2 || images.some((image) => !image.image_path || !validDimension(image.width) || !validDimension(image.height))) throw new Error('Page split must produce at least two valid images.');
     const priorSize = pagePhysicalSize(source);
-    const provenance = archivePassageSources(source);
+    const archive=archiveReplacedStructure(source,{...source,regions:[],structure:undefined});
+    const provenance = {...archivePassageSources(source),...(archive.history?{structureHistory:archive.history}:{}),
+        ...(source.structure?{structureNotices:['The spread was split into new pages. Previous logical structure is available in structure history. Rebuild roles and links for the new recognition.']}:{}),
+        ...(archive.notice?{structureHistoryNotice:archive.notice}:{})};
     const children = images.map((image, index): OcrPage => ({
         ...source, id: id('page'), name: `${source.name} · part ${index+1}`,
         imagePath: image.image_path, width: image.width, height: image.height,
         ...importedPhysicalSize(image,{widthPoints:priorSize.widthPoints * image.width / source.width,heightPoints:priorSize.heightPoints * image.height / source.height}),
         regions: [], status: 'pending', approved: false, error: null, elapsedMs: null,
+        structure:undefined,
         provenance: {...provenance, splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
     }));
     return touch(project, project.pages.flatMap((page) => page.id === pageId ? children : [page]));
@@ -363,17 +390,34 @@ export function replaceMatches(project: OcrProject, query: string, replacement: 
         targets.get(match.pageId)!.add(match.regionId);
     }
     if (!targets.size) return project;
-    return touch(project,project.pages.map((page) => targets.has(page.id) ? {
-        ...page, approved:false, regions:page.regions.map((region) => targets.get(page.id)!.has(region.id) ? {
+    let next=project;
+    for(const page of project.pages) if(targets.has(page.id)) next=updatePage(next,page.id,{
+        approved:false, regions:page.regions.map((region) => targets.get(page.id)!.has(region.id) ? {
             ...region, text:region.text.replace(literalPattern(query,options.caseSensitive),()=>replacement), review:'corrected',
         } : region),
-    } : page));
+    });
+    return next;
 }
 export function nextMatch(matches: TextMatch[], current: Pick<TextMatch,'pageId'|'regionId'|'start'> | null, direction: -1|1 = 1): TextMatch | null {
     if (!matches.length) return null;
     const index = current ? matches.findIndex((m) => m.pageId===current.pageId && m.regionId===current.regionId && m.start===current.start) : -1;
     if (index<0) return direction===1 ? matches[0] : matches[matches.length-1];
     return matches[(index+direction+matches.length)%matches.length];
+}
+
+function exportRegion(r:OcrRegion):ExportRegion {
+    const originalAligned=hasAlignedCharacterConfidence(r),currentAligned=originalAligned && r.text===r.originalText;
+    return {
+        id:r.id,text:r.text,original_text:r.originalText,x:r.x,y:r.y,w:r.w,h:r.h,
+        confidence:r.confidence,confidence_basis:r.confidenceBasis,
+        char_conf_unit:r.charConfidenceUnit,char_conf_aligned:currentAligned,
+        char_conf:currentAligned?[...r.char_conf]:[],original_char_conf:[...r.char_conf],original_char_conf_aligned:originalAligned,
+        ...(r.wordEvidence?{original_word_evidence:clone(r.wordEvidence),...(r.text===r.originalText?{word_evidence:clone(r.wordEvidence)}:{})}:{}),
+        ...(r.sourceComponents?.length?{source_components:clone(r.sourceComponents)}:{}),
+        ...(r.separatorBefore!==undefined?{separator_before:r.separatorBefore}:{}),
+        ...(r.sharedSourceGroups?.length?{shared_source_groups:[...r.sharedSourceGroups]}:{}),
+        review:r.review,kind:r.kind,
+    };
 }
 
 /** Preflight returns no payload on error. A mixed project can never silently lose pages. */
@@ -398,31 +442,21 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
         if (!regions.some((r)=>r.text.trim())) warnings.push(`${page.name}: this page contains no text and will be retained as an image page.`);
         if (!page.approved) warnings.push(`${page.name}: the page has not been approved.`);
+        const includedRegions=page.regions.filter(region=>!region.excluded);
+        const projectedStructure=page.structure?projectStructureForRegions(page.structure,includedRegions,page.id):undefined;
+        if(projectedStructure) warnings.push(...projectedStructure.notices.map(notice=>`${page.name}: ${notice}`));
+        if(page.structure && options.format && !['json'].includes(options.format.toLowerCase())) {
+            warnings.push(`${page.name}: this output currently uses the plain-text or source-image projection. Logical formatting is retained in the project and JSON; structured document export is a separate capability.`);
+        }
         payload.push({
             id:page.id, name:page.name, source_uri:sources.get(page.documentId),
             source_page:page.sourcePage, approved:page.approved, provenance:clone(page.provenance),
             image_path:page.imagePath, width:page.width, height:page.height,
             page_width_points:physicalSize.widthPoints, page_height_points:physicalSize.heightPoints,
-            regions:regions.map((r): ExportRegion => {
-            const originalAligned = hasAlignedCharacterConfidence(r);
-            const currentAligned = originalAligned && r.text === r.originalText;
-            return {
-                id:r.id, text:r.text, original_text:r.originalText,
-                x:r.x, y:r.y, w:r.w, h:r.h,
-                confidence:r.confidence, confidence_basis:r.confidenceBasis,
-                char_conf_unit:r.charConfidenceUnit, char_conf_aligned:currentAligned,
-                char_conf:currentAligned?[...r.char_conf]:[],
-                original_char_conf:[...r.char_conf], original_char_conf_aligned:originalAligned,
-                ...(r.wordEvidence ? {
-                    original_word_evidence: clone(r.wordEvidence),
-                    ...(r.text === r.originalText ? { word_evidence: clone(r.wordEvidence) } : {}),
-                } : {}),
-                ...(r.sourceComponents?.length ? {source_components:clone(r.sourceComponents)} : {}),
-                ...(r.separatorBefore !== undefined ? {separator_before:r.separatorBefore} : {}),
-                ...(r.sharedSourceGroups?.length ? {shared_source_groups:[...r.sharedSourceGroups]} : {}),
-                review:r.review, kind:r.kind,
-            };
-        })});
+            regions:regions.map(exportRegion),
+            ...(projectedStructure?.structure?{structure:projectedStructure.structure,
+                figure_regions:includedRegions.filter(region=>region.kind==='picture').map(exportRegion)}:{}),
+        });
     }
     return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>joinRegionText(activeRegions(p))).join('\f')};
 }
@@ -496,6 +530,8 @@ export function parseProject(input: unknown): OcrProject {
             region.sharedSourceGroups=readSharedSourceGroups(region.sharedSourceGroups);
         }
         validatePageSourceComponents(page);
+        page.structure=readPageStructure(page.structure,page);
+        if(page.provenance.structureHistory!==undefined) page.provenance.structureHistory=readStructureHistory(page.provenance.structureHistory);
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
     }
     return p;

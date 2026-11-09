@@ -42,7 +42,7 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 
 The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `?scenario=native-word`,
 `?scenario=proofreading`, `?scenario=proofreading-save-failure`, `?scenario=proofreading-load-failure`,
-`?scenario=text-repair`,
+`?scenario=text-repair`, `?scenario=structure`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
@@ -78,6 +78,14 @@ hyphenated name, an identifier, and a list item with a negative number. Repairs
 must preserve unselected content and original character evidence; the fixture
 does not imply semantic proofreading or model retraining.
 
+The structure scenario supplies eight synthetic source regions: a heading
+candidate, an emoji-prefixed multiline paragraph, a list candidate, two body
+passages, a picture, a caption, and a note. Their two-column source layout is
+independent of the logical structure authored in the UI. The `[1]` note marker
+is linked explicitly; proximity and marker text alone do not create a link.
+Formatting tests use the isolated browser's clipboard for a real plain-text
+paste and verify exact UTF-16 ranges before and after it.
+
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
 `diagnostics.effective_zone` identifies the exact crop. The zone-empty scenario
@@ -86,6 +94,16 @@ released, allowing page navigation before the result arrives.
 
 ## Assertions
 
+- Enabling versioned structure retains legacy passage text, geometry, source IDs,
+  and original OCR evidence. Roles, heading/list properties, alignment, and breaks
+  save separately from the text.
+- Formatting a selection after an emoji uses exact UTF-16 offsets. A plain-text
+  paste removes formatting on replaced text and preserves the provably unchanged
+  suffix; Ctrl/Cmd+I formats a selection, and Ctrl/Cmd+Z/Shift+Z restore text and
+  formatting together while the structure textarea has focus.
+- Reading-order changes undo independently. Explicit sections/column boundaries,
+  figure descriptions, caption anchors, and selected note references survive
+  save, undo/redo, and JSON export without moving source-image boxes.
 - A recovered three-page project retains page/source identities and revision leases.
 - Corrections preserve original recognition, undo/redo works, and editing invalidates
   page approval.
@@ -161,14 +179,15 @@ harness on feature-branch changes and attaches its JSON report and screenshots a
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.
 
-The [recorded browser run for commit `6330227f4483aa94a871b33a1464d6834594c6a0`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730/job/129393863561)
-completed on 2026-11-09 with **28 browser interactions passed, 0 failed** and
-**148 OCR unit tests passed**. It includes native word selection/source evidence,
-vocabulary decisions, scoped correction previews, and user-preference save/load
-failure recovery. Its report and screenshots are available in
-[artifact `13704873615`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730/artifacts/13704873615).
-This result is specific to that source revision; later passage-structure and
-repair assertions require their own browser run.
+The [recorded browser run for commit `f3984fdd27468cd0881664f4e0bf487010339be2`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807/job/129402687669)
+completed on 2026-11-09 with **30 browser interactions passed, 0 failed** and
+**175 OCR unit tests passed**. It includes native word selection/source evidence,
+vocabulary decisions, scoped correction previews, user-preference save/load
+failure recovery, repeated passage splits/merges, and text-repair previews. Its
+report and screenshots are available in
+[artifact `13707805599`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807/artifacts/13707805599).
+This result is specific to that source revision; later document-semantics
+assertions require their own browser run.
 
 These tests validate interaction and integration contracts. They do not measure
 recognition accuracy or substitute for native engine, PDF conformance, or installed

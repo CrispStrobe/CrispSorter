@@ -60,6 +60,8 @@
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import WordReview from "./ocr/WordReview.svelte";
   import PageTextEditor from "./ocr/PageTextEditor.svelte";
+  import StructurePanel from "./ocr/StructurePanel.svelte";
+  import PreviousStructure from "./ocr/PreviousStructure.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -78,7 +80,7 @@
   import type { WordEvidence } from "$lib/ocr/words";
   import { joinRegionText, sourceOffsetForTextarea } from "$lib/ocr/text";
   import {
-    passageEligibility, isPassageBoundary, applyPassagePreview, applyPassageRepair,
+    passageEligibility, isPassageBoundary, applyPassagePreview, applyPassageRepair, readSourceComponents,
     type PassagePreview, type RepairPreview,
   } from "$lib/ocr/passages";
   import {
@@ -193,7 +195,7 @@
   let overlays = $state(true);
   let showOriginal = $state(false);
   let onlyIssues = $state(false);
-  let textView = $state<"regions" | "text">("regions");
+  let textView = $state<"regions" | "text" | "structure">("regions");
   let searchOpen = $state(false);
   let query = $state(""),
     replacement = $state(""),
@@ -305,6 +307,7 @@
     activePage?.regions.find((r) => r.id === selectedRegionId),
   );
   const selectedPassageEligibility = $derived(activePage && region ? passageEligibility(activePage, region.id) : null);
+  const earlierSourceComponents = $derived(activePage ? readSourceComponents(activePage.provenance.passageSources) ?? [] : []);
   const inspectedWord = $derived.by(() => {
     const selection = wordInspection;
     if (
@@ -885,9 +888,9 @@
     splitPosition = Math.floor(page.width / 2);
     confirmation(
       "Split this spread?",
-      `Split ${page.name} at a vertical line. Each half becomes an independent page. Existing recognition is kept in Undo.`,
+      `Split ${page.name} at a vertical line. Each half becomes an independent page. Existing recognition is kept in Undo.${page.structure ? " Current formatting and links must be reviewed after recognizing the new pages. Previous document structure remains available in the saved history." : ""}`,
       "Split page",
-      () => transform("split", { splitX: Math.round(splitPosition) }, page.id),
+      () => transform("split", { splitX: Math.round(splitPosition) }, page.id, true),
       page.width,
     );
   }
@@ -1223,7 +1226,7 @@
       !confirmed &&
       pages.some(
         (p) =>
-          p.approved ||
+          p.approved || p.structure ||
           p.regions.some(
             (r) => r.text !== r.originalText || r.review === "approved",
           ),
@@ -1231,7 +1234,7 @@
     ) {
       confirmation(
         "Replace reviewed recognition?",
-        `${pages.length} pages will be recognized with the current profile. Existing corrections can be recovered with Undo.`,
+        `${pages.length} pages will be recognized with the current profile. Existing corrections can be recovered with Undo.${pages.some((page) => page.structure) ? " New recognition replaces the current block formatting and links. Previous document structure remains inspectable in saved history." : ""}`,
         "Recognize again",
         () =>
           recognize(
@@ -1346,10 +1349,20 @@
     operation: TransformOptions["operation"],
     options: Partial<TransformOptions> = {},
     pageId = activePage?.id,
+    confirmed = false,
   ) {
     if (!pageId || locked) return;
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) return;
+    if (!confirmed && page.structure?.blocks.length) {
+      confirmation(
+        "Change the source page image?",
+        `${page.name} has document structure. This image operation clears current recognition, formatting, and links until the new image is recognized and reviewed. Previous document structure remains inspectable in saved history; Undo restores this edit.`,
+        "Apply image operation",
+        () => transform(operation, options, page.id, true),
+      );
+      return;
+    }
     busy = "Preparing page";
     error = "";
     try {
@@ -1377,9 +1390,19 @@
       busy = "";
     }
   }
-  async function prepareImage() {
-    if (!activePage || locked || !capabilities.crispembed) return;
-    const page = activePage;
+  async function prepareImage(confirmed = false, pageId = activePage?.id) {
+    if (!pageId || locked || !capabilities.crispembed) return;
+    const page = project.pages.find((candidate) => candidate.id === pageId);
+    if (!page) return;
+    if (!confirmed && page.structure?.blocks.length) {
+      confirmation(
+        "Prepare this structured page?",
+        `${page.name} has document structure. If preparation changes the image, its current recognition, formatting, and links need to be rebuilt and reviewed. Previous document structure remains inspectable in saved history; Undo restores the prior page.`,
+        "Prepare page",
+        () => prepareImage(true, page.id),
+      );
+      return;
+    }
     busy = "Repairing scan";
     error = "";
     try {
@@ -1822,6 +1845,17 @@
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
     );
+    // Native textarea undo knows only the string. Structured text must restore
+    // its marks and note links from the same project-history snapshot.
+    if (!event.isComposing && activePage?.structure &&
+      target?.matches('textarea[data-region-text],textarea[data-passage-text],textarea[data-structure-text]') &&
+      (event.metaKey || event.ctrlKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase())) {
+      event.preventDefault();
+      const selectedId = selectedRegionId;
+      event.key.toLowerCase() === "y" || event.shiftKey ? redo() : undo();
+      if (selectedId && activePage?.regions.some((item) => item.id === selectedId)) selectedRegionId = selectedId;
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       void flush();
@@ -2746,8 +2780,8 @@
               >
             </div>{/if}
           <div class="review-options">
-            <label class="check-label" title="Filters the Regions view; Text editor shows all included passages"
-              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView === "text"} /> Needs attention</label
+            <label class="check-label" title="Filters the Regions view; Text editor and Structure follow the page's reading order"
+              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView !== "regions"} /> Needs attention</label
             >
             <div class="toolbar-spacer"></div>
             <button
@@ -2767,6 +2801,14 @@
                 currentMatch = null;
                 textView = "text";
               }}>Text editor</button
+            ><button
+              class:active={textView === "structure"}
+              onclick={() => {
+                currentMatch = null;
+                wordInspection = null;
+                editGroup = null;
+                textView = "structure";
+              }}>Structure</button
             ><span>{activePage?.width} × {activePage?.height} px</span>
           </div>
           {#if recognitionWarnings.length}
@@ -2802,6 +2844,12 @@
               >
             </div>{/if}
           <div class="region-list" bind:this={editorPane}>
+            {#if activePage?.provenance.structureHistory}<PreviousStructure value={activePage.provenance.structureHistory} imageUrl={client.imageUrl} />{/if}
+            {#if earlierSourceComponents.length}<details class="recognition-notes" data-earlier-source-components>
+                <summary>Earlier source components</summary>
+                <p class="muted">These records describe earlier page images and remain inspectable before recognizing the current image.</p>
+                <PassageSources components={earlierSourceComponents} imageUrl={client.imageUrl} />
+              </details>{/if}
             {#if activePage?.status === "failed"}<div
                 class="panel-message warning"
               >
@@ -2831,6 +2879,29 @@
                   ><ScanLine size={15} /> Recognize page</button
                 >
               </div>
+            {:else if textView === "structure"}
+              <StructurePanel
+                {project}
+                pageId={activePage.id}
+                selectedId={selectedRegionId}
+                disabled={locked}
+                imageUrl={client.imageUrl}
+                onselect={(id) => {
+                  currentMatch = null;
+                  wordInspection = null;
+                  editGroup = null;
+                  selectedRegionId = id;
+                }}
+                onchange={(next, message) => {
+                  change(next);
+                  currentMatch = null;
+                  wordInspection = null;
+                  error = "";
+                  notice = message;
+                }}
+                onedit={editText}
+                onblur={() => (editGroup = null)}
+              />
             {:else if textView === "text"}<div class="reading-order">
                 <PageTextEditor
                   page={activePage}
@@ -3315,7 +3386,7 @@
               {/if}
               <button
                 class="button full"
-                onclick={prepareImage}
+                onclick={() => prepareImage()}
                 disabled={locked || !activePage || !capabilities.crispembed}
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >

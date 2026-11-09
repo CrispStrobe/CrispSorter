@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -139,6 +139,17 @@ if (process.argv.includes('--serve')) {
             await page.mouse.move(paper.x + paper.width * 100 / 1000, paper.y + paper.height * 280 / 1400);
             await page.mouse.down();
             await page.mouse.move(paper.x + paper.width * 150 / 1000, paper.y + paper.height * 295 / 1400);
+        }
+        async function enableStructure(page) {
+            await page.getByRole('button', { name: 'Structure', exact: true }).click();
+            const panel = page.locator('[data-structure-panel]');
+            await panel.getByRole('button', { name: 'Enable document structure', exact: true }).click();
+            const saved = await saveSnapshot(page);
+            return { panel, saved, blocks: saved.pages[0].structure.blocks };
+        }
+        async function expandStructureDetail(panel, name) {
+            const summary = panel.getByText(name, { exact: true });
+            if (!await summary.evaluate(element => element.closest('details').open)) await summary.click();
         }
 
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
@@ -796,6 +807,167 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
         });
 
+        await test('structure roles and Unicode selection formatting survive plain paste, history and JSON export', 'structure', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+            assert.equal(initial.pages[0].structure, undefined);
+            const { panel, saved: enabled, blocks } = await enableStructure(page);
+            assert.equal(enabled.pages[0].structure.version, 1);
+            assert.deepEqual(enabled.pages[0].regions, initial.pages[0].regions);
+            assert.deepEqual(blocks.map(block => block.sourceRegionId), initial.pages[0].regions.map(region => region.id));
+            const choose = panel.getByRole('combobox', { name: 'Structure passage', exact: true });
+            await choose.selectOption(blocks[0].id);
+            await panel.getByRole('combobox', { name: 'Block role', exact: true }).selectOption('heading');
+            await panel.getByRole('combobox', { name: 'Heading level', exact: true }).selectOption('2');
+            await panel.getByRole('combobox', { name: 'Text alignment', exact: true }).selectOption('center');
+            await panel.getByRole('combobox', { name: 'Break before', exact: true }).selectOption('page');
+            await choose.selectOption(blocks[2].id);
+            await panel.getByRole('combobox', { name: 'Block role', exact: true }).selectOption('list-item');
+            await panel.getByRole('combobox', { name: 'List type', exact: true }).selectOption('number');
+            await panel.getByRole('spinbutton', { name: 'List level', exact: true }).fill('1');
+            await panel.getByRole('spinbutton', { name: 'List level', exact: true }).press('Tab');
+            await panel.getByRole('spinbutton', { name: 'List start', exact: true }).fill('3');
+            await panel.getByRole('spinbutton', { name: 'List start', exact: true }).press('Tab');
+            await choose.selectOption(blocks[1].id);
+            const editor = panel.getByRole('textbox', { name: 'Structure passage text', exact: true });
+            const original = initial.pages[0].regions[1];
+            const start = original.text.indexOf('Equipment'), end = start + 'Equipment'.length;
+            const italicStart = original.text.indexOf('Maintenance'), italicEnd = italicStart + 'Maintenance'.length;
+            assert.equal(start, 3, 'Selection offsets must account for the leading UTF-16 surrogate pair');
+            await editor.evaluate((input, range) => { input.focus(); input.setSelectionRange(...range); }, [start, end]);
+            await panel.getByRole('button', { name: 'Bold selection', exact: true }).click();
+            await editor.evaluate((input, range) => { input.focus(); input.setSelectionRange(...range); }, [italicStart, italicEnd]);
+            await page.keyboard.press(`${modifier}+i`);
+            const formatted = await saveSnapshot(page);
+            const block = project => project.pages[0].structure.blocks.find(item => item.id === blocks[1].id);
+            assert.deepEqual(block(formatted).runs, [{ start, end, bold: true }, { start: italicStart, end: italicEnd, italic: true }]);
+            const heading = formatted.pages[0].structure.blocks[0];
+            assert.deepEqual([heading.role, heading.headingLevel, heading.alignment, heading.breakBefore], ['heading', 2, 'center', 'page']);
+            assert.deepEqual(formatted.pages[0].structure.blocks[2].list, { kind: 'number', level: 1, start: 3 });
+            assert.equal(formatted.pages[0].regions[1].text, original.text);
+            assert.deepEqual(formatted.pages[0].regions[1].char_conf, original.char_conf);
+            const boldPreview = panel.locator('[data-selected-structure-preview] [data-structure-segment].bold');
+            assert.equal((await boldPreview.innerText()).trim(), 'Equipment');
+            assert.ok(await boldPreview.evaluate(element => Number(getComputedStyle(element).fontWeight) >= 600));
+
+            const inserted = 'Annual inspection\nSafety checks';
+            const expected = original.text.slice(0, start) + inserted + original.text.slice(end);
+            await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+            await page.evaluate(text => navigator.clipboard.writeText(text), inserted);
+            await editor.evaluate((input, range) => { input.focus(); input.setSelectionRange(...range); }, [start, end]);
+            await page.keyboard.press(`${modifier}+v`);
+            await page.waitForFunction(value => document.querySelector('[aria-label="Structure passage text"]')?.value === value, expected);
+            await editor.blur();
+            const pasted = await saveSnapshot(page);
+            const shift = inserted.length - (end - start);
+            assert.deepEqual(block(pasted).runs, [{ start: italicStart + shift, end: italicEnd + shift, italic: true }]);
+            assert.equal(pasted.pages[0].regions[1].text, expected);
+            assert.equal(pasted.pages[0].regions[1].originalText, original.originalText);
+            assert.deepEqual(pasted.pages[0].regions[1].char_conf, original.char_conf);
+            assert.deepEqual(pasted.pages[2], initial.pages[2]);
+            await editor.focus();
+            await page.keyboard.press(`${modifier}+z`);
+            const undone = await saveSnapshot(page);
+            assert.deepEqual(undone.pages[0].structure, formatted.pages[0].structure);
+            assert.deepEqual(undone.pages[0].regions, formatted.pages[0].regions);
+            await editor.focus();
+            await page.keyboard.press(`${modifier}+Shift+z`);
+            assert.deepEqual((await saveSnapshot(page)).pages[0].structure, pasted.pages[0].structure);
+            await choose.selectOption(blocks[1].id);
+            await expandStructureDetail(panel, 'Show structure preview');
+            await panel.locator('[data-structure-preview]').waitFor();
+            await page.screenshot({ path: path.join(output, 'ocr-structure-formatting.png'), fullPage: true });
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0]);
+            assert.deepEqual(exported.structure, pasted.pages[0].structure);
+            const exportedText = exported.regions.find(region => region.text === expected);
+            assert.ok(exportedText);
+            assert.equal(exportedText.original_text, original.originalText);
+            assert.deepEqual(exportedText.original_char_conf, original.char_conf);
+            assert.deepEqual(exportedText.char_conf, []);
+        });
+
+        await test('structure reading order, columns, figure captions and note links remain explicit through history and export', 'structure', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const { panel, blocks } = await enableStructure(page);
+            const choose = panel.getByRole('combobox', { name: 'Structure passage', exact: true });
+            const blockIn = (project, id) => project.pages[0].structure.blocks.find(block => block.id === id);
+            await choose.selectOption(blocks[2].id);
+            await panel.getByRole('button', { name: 'Move block earlier', exact: true }).click();
+            const moved = await saveSnapshot(page);
+            const order = [0, 2, 1, 3, 4, 5, 6, 7];
+            assert.deepEqual(moved.pages[0].regions.map(region => region.id), order.map(index => initial.pages[0].regions[index].id));
+            assert.deepEqual(moved.pages[0].structure.blocks.map(block => block.sourceRegionId), moved.pages[0].regions.map(region => region.id));
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].regions.map(region => region.id), initial.pages[0].regions.map(region => region.id));
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            await choose.selectOption(blocks[2].id);
+            await expandStructureDetail(panel, 'Sections and columns');
+            await panel.getByRole('button', { name: 'Start section here', exact: true }).click();
+            await panel.getByRole('combobox', { name: 'Section columns', exact: true }).selectOption('2');
+            await panel.getByRole('combobox', { name: 'Second column starts at', exact: true }).selectOption(blocks[3].id);
+            await panel.getByRole('button', { name: 'Apply section columns', exact: true }).click();
+            await choose.selectOption(blocks[7].id);
+            await panel.getByRole('button', { name: 'Start section here', exact: true }).click();
+            await panel.getByRole('combobox', { name: 'Block role', exact: true }).selectOption('footnote');
+            await choose.selectOption(blocks[5].id);
+            await expandStructureDetail(panel, 'Figure and note links');
+            await panel.getByRole('textbox', { name: 'Figure alternative text', exact: true }).fill('Valve diagram showing inspection points');
+            await panel.getByRole('button', { name: 'Apply figure description', exact: true }).click();
+            await choose.selectOption(blocks[6].id);
+            await panel.getByRole('combobox', { name: 'Block role', exact: true }).selectOption('caption');
+            await panel.getByRole('combobox', { name: 'Caption source', exact: true }).selectOption(blocks[5].id);
+            await choose.selectOption(blocks[1].id);
+            await panel.getByRole('combobox', { name: 'Footnote target', exact: true }).selectOption(blocks[7].id);
+            const sourceText = initial.pages[0].regions[1].text;
+            const noteStart = sourceText.indexOf('[1]');
+            await panel.getByRole('textbox', { name: 'Structure passage text', exact: true }).evaluate((input, start) => {
+                input.focus(); input.setSelectionRange(start, start + 3);
+            }, noteStart);
+            await panel.getByRole('button', { name: 'Link selected text to note', exact: true }).click();
+            const linked = await saveSnapshot(page);
+            assert.deepEqual(linked.pages[0].structure.sections.map(section => section.columns), [1, 2, 1]);
+            assert.deepEqual(linked.pages[0].structure.blocks.map(block => block.column), [1, 1, 1, 2, 2, 2, 2, 1]);
+            assert.equal(blockIn(linked, blocks[5].id).altText, 'Valve diagram showing inspection points');
+            assert.equal(blockIn(linked, blocks[6].id).anchorBlockId, blocks[5].id);
+            assert.deepEqual(blockIn(linked, blocks[1].id).noteReferences, [{ start: noteStart, end: noteStart + 3, targetBlockId: blocks[7].id }]);
+            for (const region of linked.pages[0].regions) {
+                const original = initial.pages[0].regions.find(source => source.id === region.id);
+                assert.deepEqual([region.text, region.originalText, region.x, region.y, region.w, region.h, region.char_conf],
+                    [original.text, original.originalText, original.x, original.y, original.w, original.h, original.char_conf]);
+            }
+            await expandStructureDetail(panel, 'Show structure preview');
+            const preview = panel.locator('[data-structure-preview]');
+            await preview.getByRole('button', { name: 'Follow note [1]', exact: true }).click();
+            assert.equal(await choose.inputValue(), blocks[7].id);
+            assert.equal(await panel.getByRole('textbox', { name: 'Structure passage text', exact: true }).inputValue(), initial.pages[0].regions[7].text);
+            await page.screenshot({ path: path.join(output, 'ocr-structure-links.png'), fullPage: true });
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            const unlinked = await saveSnapshot(page);
+            assert.equal(blockIn(unlinked, blocks[1].id).noteReferences, undefined);
+            assert.equal(blockIn(unlinked, blocks[6].id).anchorBlockId, blocks[5].id);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].structure, linked.pages[0].structure);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0]);
+            assert.deepEqual(exported.structure, linked.pages[0].structure);
+            assert.deepEqual(exported.regions.map(region => region.text), linked.pages[0].regions.filter(region => region.kind !== 'picture').map(region => region.text));
+            assert.equal(exported.figure_regions.length, 1);
+            const sourceFigure = initial.pages[0].regions[5], figure = exported.figure_regions[0];
+            assert.deepEqual([figure.x, figure.y, figure.w, figure.h], [sourceFigure.x, sourceFigure.y, sourceFigure.w, sourceFigure.h]);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
         await test('partial OCR previews replacements, preserves cancellation and expands drawn areas to full passages', 'review', async page => {
             const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
             const current = 'Manually checked invoice number';
@@ -1194,7 +1366,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

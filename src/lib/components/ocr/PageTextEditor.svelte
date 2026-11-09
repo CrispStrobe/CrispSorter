@@ -53,6 +53,7 @@
     breaks. Each passage stays linked to its source region, in export reading
     order. Changes save automatically and can be undone.
   </p>
+  {#if page.structure}<p class="editor-help">Inserted and replaced text uses plain formatting. Unchanged text retains its formatting where its range is certain. Use Structure to review styles, headings, lists, columns, and links.</p>{/if}
   {#each passages as { region, number } (region.id)}
     <article
       class="passage"

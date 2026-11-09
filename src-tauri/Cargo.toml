@@ -120,6 +120,8 @@ lopdf       = "0.38"
 feed-rs     = { version = "2", optional = true }
 # Word-level text diff — used for P25.7 document comparison.
 similar     = "2"
+# OCR styled ranges use the same complete-character boundary contract as the editor.
+unicode-segmentation = "1.13"
 # DOCX generation — used for P27.10 export to Word format.
 docx-rs     = { version = "0.4", optional = true }
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,

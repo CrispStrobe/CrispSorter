@@ -103,6 +103,55 @@ needing another OCR run. Undo/redo works through the toolbar, and edits revoke
 the affected approval. Use **Regions** for confidence-colored words, geometry,
 region types, or reading-order changes.
 
+### Assign document structure and formatting
+
+Open **Structure** in Review and choose **Enable document structure** for the
+current page. This starts a versioned set of logical blocks linked to the
+existing source regions. Text, image areas, and original OCR evidence stay with
+their source regions; the structure records how the passages should be read.
+Older projects can continue using Regions or Text editor without enabling it.
+
+Choose a **Structure passage** to assign its role: paragraph, heading, list
+item, caption, running header/footer, or footnote. Picture, table, and formula
+regions retain their corresponding specialized roles. Headings have levels;
+lists have a type, nesting level, and optional starting number. **Text alignment**
+and **Break before** record alignment and explicit page-break intent.
+
+Select text in **Structure passage text**, then use **Bold**, **Italic**,
+**Underline**, or **Clear**. Ctrl/Cmd+B, I, or U applies the corresponding mark
+to a selected range. The adjacent preview shows the formatting. Typing
+and pasted replacement text use plain formatting; the editor retains formatting
+only on unchanged ranges it can identify exactly. A replacement can remove an
+intersected note reference as well as formatting, so review the notices after
+editing. Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z restore text and metadata together while
+the editor has focus. This editor formats one
+passage at a time; selection and rich-text paste across multiple passages are a
+separate planned increment. Newlines inside a passage do not create new OCR
+regions or source-image boxes.
+
+Use **Move block earlier/later** to change reading order. In **Sections and
+columns**, choose **Start section here** to begin a section at the selected
+block. Choose one or two columns, identify where the second reading column
+starts, then apply the column settings. These are explicit reading-order
+choices, independent of the source geometry. A heading or note that spans the
+page can occupy its own one-column section. **Show structure preview** presents
+the chosen roles, formatting, section order, and columns.
+
+In **Figure and note links**, give a figure alternative text or mark it as
+decorative, then apply the description. A caption's **Caption source** selects
+the figure or table it describes. For a note, first give its passage the
+**Footnote** role; select the reference marker in another passage, choose the
+**Footnote target**, and link the selected text. Use **Follow note** in the
+preview to navigate to that note. Links are explicit and restricted to valid
+targets on the same page; nearby placement alone does not establish a link.
+
+Structure is saved with the project and retained in **Structured JSON**,
+including separate figure source geometry. Other output formats warn when they
+flatten these semantics until their structured exporters are implemented. The
+preview does not promise exact source typography, PDF tagging, or accessibility
+conformance. OCR scores continue to describe the original recognition rather
+than the chosen formatting or document roles.
+
 ### Split, merge, and repair passages
 
 Place the caret inside a passage and choose **Split passage**. The preview keeps
@@ -434,8 +483,10 @@ truncate an existing file.
 | Previous/next page | Alt + Left/Right |
 | Exit drawing mode / close dialog | Escape |
 
-Native editing shortcuts continue to work inside text inputs. Toolbar Undo is
-available for project-level changes while a text field has focus.
+Native editing shortcuts continue to work inside text inputs. When a page has
+document structure, Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z in its passage editors use
+project history so text, formatting, and note references restore together.
+Toolbar Undo remains available while a text field has focus.
 
 ## Development and verification
 
