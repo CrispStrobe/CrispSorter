@@ -5,6 +5,7 @@ import json
 import plistlib
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -81,6 +82,42 @@ class CompiledInputIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'new or empty'):
             PROBE.prepare_inputs(self.args)
         self.assertEqual(prior.read_bytes(), b'prior result')
+
+    def test_recovers_partial_runner_report_without_overwriting_it(self):
+        data = self.root / 'runner'
+        evidence = data / 'Documents/ocr-shell-probe'
+        evidence.mkdir(parents=True)
+        partial = b'{"status":"failed","snapshots":[{"name":"inbox"}]}'
+        (evidence / 'navigation.json').write_bytes(partial)
+        self.args.output.mkdir()
+        with patch.object(PROBE, 'output', return_value=str(data)) as resolve:
+            self.assertTrue(PROBE.collect_runner_evidence('simulator', self.args.output))
+            self.assertEqual((self.args.output / 'evidence/navigation.json').read_bytes(), partial)
+            resolve.assert_called_once()
+            self.assertEqual(resolve.call_args.kwargs['timeout'], 30)
+        (evidence / 'navigation.json').write_bytes(b'new unrelated runner result')
+        with patch.object(PROBE, 'output', side_effect=AssertionError('Do not reread existing evidence')):
+            self.assertFalse(PROBE.collect_runner_evidence('simulator', self.args.output))
+        self.assertEqual((self.args.output / 'evidence/navigation.json').read_bytes(), partial)
+
+    def test_recovery_rejects_symlinks_and_excessive_members(self):
+        data = self.root / 'runner'
+        evidence = data / 'Documents/ocr-shell-probe'
+        evidence.mkdir(parents=True)
+        self.args.output.mkdir()
+        link = evidence / 'escape'
+        link.symlink_to(self.receipt)
+        with patch.object(PROBE, 'output', return_value=str(data)):
+            with self.assertRaisesRegex(RuntimeError, 'size or member type'):
+                PROBE.collect_runner_evidence('simulator', self.args.output)
+        self.assertFalse((self.args.output / 'evidence').exists())
+        link.unlink()
+        for index in range(41):
+            (evidence / f'part-{index}').write_bytes(b'')
+        with patch.object(PROBE, 'output', return_value=str(data)):
+            with self.assertRaisesRegex(RuntimeError, 'size or member type'):
+                PROBE.collect_runner_evidence('simulator', self.args.output)
+        self.assertFalse((self.args.output / 'evidence').exists())
 
 
 if __name__ == '__main__':

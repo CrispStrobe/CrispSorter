@@ -139,6 +139,23 @@ def select_simulator(pin, receipt, requested):
     return simulator, needs_boot
 
 
+def collect_runner_evidence(simulator, staged):
+    """Recover Swift-written reports even when xcodebuild did not return normally."""
+    destination = staged / 'evidence'
+    if destination.exists():
+        return False
+    runner_data = Path(output(['xcrun', 'simctl', 'get_app_container', simulator, RUNNER_PACKAGE, 'data'], timeout=30))
+    evidence = runner_data / 'Documents/ocr-shell-probe'
+    if not evidence.is_dir() or evidence.is_symlink():
+        raise RuntimeError('The UI test did not preserve its navigation evidence')
+    files = list(evidence.rglob('*'))
+    if (len(files) > 40 or any(item.is_symlink() for item in files)
+            or sum(item.stat().st_size for item in files if item.is_file()) > 80 * 1024 * 1024):
+        raise RuntimeError('Unexpected UI-test evidence size or member type')
+    shutil.copytree(evidence, destination)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--staged', type=Path, help='Verified immutable artifact directory from stage.py')
@@ -210,15 +227,7 @@ def main():
         receipt['xcodebuild_exit_code'] = test_exit
         receipt['phase'] = 'collecting-evidence'
         save_receipt()
-        runner_data = Path(output(['xcrun', 'simctl', 'get_app_container', simulator, RUNNER_PACKAGE, 'data']))
-        evidence = runner_data / 'Documents/ocr-shell-probe'
-        if not evidence.is_dir() or evidence.is_symlink():
-            raise RuntimeError('The UI test did not preserve its navigation evidence')
-        files = list(evidence.rglob('*'))
-        if (len(files) > 40 or any(item.is_symlink() for item in files)
-                or sum(item.stat().st_size for item in files if item.is_file()) > 80 * 1024 * 1024):
-            raise RuntimeError('Unexpected UI-test evidence size or member type')
-        shutil.copytree(evidence, staged / 'evidence')
+        collect_runner_evidence(simulator, staged)
         report = staged / 'evidence/navigation.json'
         if not report.is_file():
             raise RuntimeError(f'UI test exited {test_exit} without navigation.json; inspect xcodebuild.log and retained attachments')
@@ -231,6 +240,11 @@ def main():
     except Exception as error:
         receipt['error'] = str(error)
     finally:
+        if simulator and not (staged / 'evidence').exists():
+            try:
+                receipt['recovered_runner_evidence'] = collect_runner_evidence(simulator, staged)
+            except Exception as error:
+                receipt['runner_evidence_recovery_error'] = str(error)
         if installed:
             try:
                 after_hash = bundle_identity(installed, 'iphonesimulator')['sha256']
