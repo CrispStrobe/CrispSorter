@@ -1142,7 +1142,7 @@ fn resolve(name: &str) -> String {
     if !crate::index::license_consent::may_download(name) {
         return name.to_string();
     }
-    crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
+    crate::index::license_consent::resolve_registry_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
 /// Interactive OCR must report missing models instead of treating the native
@@ -1155,7 +1155,7 @@ fn resolve_checked(name: &str) -> Result<String> {
         name.to_string()
     } else {
         crate::index::license_consent::ensure_registry_download_allowed(name)?;
-        crispembed::CrispEmbed::resolve_model(name, Some(true))
+        crate::index::license_consent::resolve_registry_model(name, Some(true))
             .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}"))?
     };
     let mut file = std::fs::File::open(&resolved)

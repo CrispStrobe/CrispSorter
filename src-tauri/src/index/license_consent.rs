@@ -477,6 +477,101 @@ pub fn may_download(name: &str) -> bool {
     ensure_registry_download_allowed(name).is_ok()
 }
 
+/// The licence tag CrispEmbed's own download gate must be told was accepted
+/// for `key`, or an error. Pure so it is testable without the native library:
+/// `native_spdx` looks a name up in CrispEmbed's registry.
+///
+/// Consent is per model key: the key itself must be accepted
+/// ([`is_accepted`]), and what is passed on is that one model's exact tag,
+/// never a blanket value. A model the app has not classified as restricted
+/// gets no acceptance at all.
+pub fn native_acceptance_for(
+    key: &str,
+    lic: ModelLicense,
+    native_spdx: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<Option<String>> {
+    if !lic.requires_consent() {
+        return Ok(None);
+    }
+    ensure(key, key, lic)?;
+    let spdx = native_spdx(key)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Model \"{key}\" has no licence tag in the CrispEmbed registry."))?;
+    if spdx == "all" || spdx == "*" {
+        anyhow::bail!("Refusing blanket licence acceptance for model \"{key}\".");
+    }
+    Ok(Some(spdx))
+}
+
+/// Licence facts for the GUI's consent dialog: the reviewed label from
+/// [`license_for_registry_name`], plus CrispEmbed's tag, model card URL and
+/// description when the native registry knows the name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct LicenseInfo {
+    pub name: String,
+    pub label: String,
+    pub spdx: String,
+    pub model_card_url: String,
+    pub description: String,
+    pub requires_consent: bool,
+}
+
+/// CrispEmbed registry row for an exact name (`spdx`, card URL, description).
+#[cfg(feature = "crispembed")]
+fn native_registry_row(name: &str) -> Option<(String, String, String)> {
+    crispembed::CrispEmbed::list_models()
+        .into_iter()
+        .find(|m| m.name == name)
+        .map(|m| (m.license, m.model_card_url, m.desc))
+}
+
+pub fn license_info(name: &str) -> LicenseInfo {
+    let lic = license_for_registry_name(name);
+    #[cfg(feature = "crispembed")]
+    let (spdx, model_card_url, description) = native_registry_row(name).unwrap_or_default();
+    #[cfg(not(feature = "crispembed"))]
+    let (spdx, model_card_url, description) = (String::new(), String::new(), String::new());
+    LicenseInfo {
+        name: name.to_string(),
+        label: lic.label().to_string(),
+        spdx,
+        model_card_url,
+        description,
+        requires_consent: lic.requires_consent(),
+    }
+}
+
+/// Resolve (and, if needed, download) a registry model, passing the user's
+/// per-model consent on to CrispEmbed's download gate.
+///
+/// The app gate runs first. For a restricted model with consent on record,
+/// CrispEmbed is told that one model's exact licence tag for this one call
+/// (`resolve_model_accepting`). `CRISPEMBED_ACCEPT_LICENSE` is never set: it
+/// is process-wide and would accept every model sharing the tag.
+#[cfg(feature = "crispembed")]
+pub fn resolve_registry_model(name: &str, auto_download: Option<bool>) -> anyhow::Result<String> {
+    if !is_registry_name(name) {
+        return crispembed::CrispEmbed::resolve_model(name, auto_download).map_err(anyhow::Error::msg);
+    }
+    let lic = license_for_registry_name(name);
+    let accepted = native_acceptance_for(name, lic, |n| native_registry_row(n).map(|r| r.0))?;
+    match accepted {
+        None => crispembed::CrispEmbed::resolve_model(name, auto_download).map_err(anyhow::Error::msg),
+        #[cfg(feature = "crispembed-license-api")]
+        Some(spdx) => crispembed::CrispEmbed::resolve_model_accepting(name, auto_download, &spdx)
+            .map_err(anyhow::Error::msg),
+        #[cfg(not(feature = "crispembed-license-api"))]
+        Some(spdx) => crispembed::CrispEmbed::resolve_model(name, auto_download).map_err(|e| {
+            anyhow::anyhow!(
+                "{e}. You accepted the {spdx} licence for \"{name}\", but this build's CrispEmbed \
+                 cannot take a per-model acceptance yet, so it only loads an already-downloaded \
+                 copy. Per-model downloads need the `crispembed-license-api` build feature \
+                 (a CrispEmbed release after v0.17.15)."
+            )
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,6 +655,36 @@ mod tests {
                 "{name} is an OCR/enhancement default, so it must stay downloadable"
             );
         }
+    }
+
+    #[test]
+    fn native_acceptance_is_per_key_and_never_blanket() {
+        std::env::remove_var(ENV);
+        let lic = ModelLicense::NonCommercial("Tongyi Qianwen Research License");
+        let lookup = |n: &str| match n {
+            "consent-test-got" => Some("tongyi-qianwen-research".to_string()),
+            "consent-test-other" => Some("cc-by-nc-4.0".to_string()),
+            "consent-test-blanket" => Some("all".to_string()),
+            _ => None,
+        };
+        // No consent for the key: refused, nothing passed on.
+        assert!(native_acceptance_for("consent-test-got", lic, lookup).is_err());
+        accept("consent-test-got");
+        // Consent for the key: exactly that model's tag, nothing broader.
+        assert_eq!(
+            native_acceptance_for("consent-test-got", lic, lookup).unwrap().as_deref(),
+            Some("tongyi-qianwen-research")
+        );
+        // Consent to one key does not extend to another model.
+        assert!(native_acceptance_for("consent-test-other", lic, lookup).is_err());
+        // A blanket tag is refused even with consent on record.
+        accept("consent-test-blanket");
+        assert!(native_acceptance_for("consent-test-blanket", lic, lookup).is_err());
+        // Permissive models get no acceptance at all.
+        assert_eq!(native_acceptance_for("bge-m3", ModelLicense::Permissive, lookup).unwrap(), None);
+        // Unknown registry tag: refused rather than guessed.
+        accept("consent-test-missing");
+        assert!(native_acceptance_for("consent-test-missing", lic, lookup).is_err());
     }
 
     #[test]

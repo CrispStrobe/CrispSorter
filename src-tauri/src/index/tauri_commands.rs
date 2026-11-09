@@ -2526,7 +2526,9 @@ pub async fn embedder_download_registry_model(
             if let Some(ref d) = cache_dir {
                 unsafe { std::env::set_var("CRISPEMBED_CACHE_DIR", d.as_os_str()) };
             }
-            crispembed::CrispEmbed::resolve_model(&name, Some(true))
+            // Passes the per-model consent recorded above on to CrispEmbed's
+            // download gate as that model's exact licence tag, for this call.
+            crate::index::license_consent::resolve_registry_model(&name, Some(true))
                 .map_err(|e| format!("crispembed resolve_model failed: {e}"))
         })
         .await
@@ -2558,6 +2560,13 @@ pub fn embedder_model_license(name: String) -> Option<String> {
 /// Record consent for one or more restrictive models (by registry/consent key).
 /// Called by the GUI after the user confirms the license dialog, and replayed
 /// on startup from the persisted accepted-list so search/ingest don't re-prompt.
+/// Licence facts for the GUI consent dialog: reviewed label, CrispEmbed's
+/// licence tag, model card URL and description for one registry model.
+#[tauri::command]
+pub fn embedder_model_license_info(name: String) -> crate::index::license_consent::LicenseInfo {
+    crate::index::license_consent::license_info(&name)
+}
+
 #[tauri::command]
 pub fn embedder_accept_model_license(keys: Vec<String>) {
     for k in keys {

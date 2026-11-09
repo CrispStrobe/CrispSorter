@@ -2013,7 +2013,16 @@ impl CrispEmbedBackend {
     /// library resolves the name to a cached path and downloads if needed.
     pub(crate) fn load_by_name(name: &str) -> Result<Self> {
         println!("[embedder] Loading GGUF by name via CrispEmbed: {name}");
-        let model = crispembed::CrispEmbed::new(name, crispembed_threads())
+        // Resolve registry names through the consent helper so a consented
+        // restricted model reaches CrispEmbed with its own licence tag; a
+        // bare `CrispEmbed::new(name)` would hit the native gate with none.
+        let resolved = if crate::index::license_consent::is_registry_name(name) {
+            crate::index::license_consent::resolve_registry_model(name, Some(true))
+                .map_err(|e| anyhow::anyhow!("crispembed resolve failed for '{name}': {e}"))?
+        } else {
+            name.to_string()
+        };
+        let model = crispembed::CrispEmbed::new(&resolved, crispembed_threads())
             .map_err(|e| anyhow::anyhow!("crispembed load failed for '{name}': {e}"))?;
         Ok(Self { model })
     }

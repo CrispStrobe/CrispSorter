@@ -677,6 +677,10 @@ export const translations = {
                 use_embedder_as_reranker: 'Use loaded embedder as bi-encoder reranker',
                 use_embedder_as_reranker_hint: 'Re-scores top-N hybrid hits by cosine similarity against the query, using the dense embedder you already loaded. Faster than a cross-encoder, less accurate per pair — good middle ground when you have not installed a dedicated reranker GGUF.',
                 non_commercial_confirm: 'This model (Jina-v5) is licensed under CC-BY-NC-4.0 for non-commercial use only. Do you confirm that you will use it non-commercially?',
+                registry_license_confirm: 'The model "{model}" is released under the {license}. Its terms restrict how you may use it (for example non-commercial or research-only use). Do you accept these terms for this model?',
+                registry_license_terms: 'Licence terms and model card: {url}',
+                registry_license_terms_unknown: 'No model card link is available; review the upstream licence before accepting.',
+                registry_license_title: 'License confirmation — {license}',
                 // P19 — GLiNER named-entity recognition
                 ner_enabled: 'Extract named entities (NER) at index time',
                 ner_enabled_hint: 'Runs a zero-shot GLiNER model over each document once and stores people / organizations / places / dates / … as searchable entity tags (e.g. "person:Barack Obama"). Opt-in — adds per-document latency.',
@@ -1896,6 +1900,10 @@ export const translations = {
                 model_e5_small: 'Multilingual E5 Small (384d, 100+ Sprachen, ~470 MB)',
                 model_e5_base: 'Multilingual E5 Base (768d, 100+ Sprachen, ~1,1 GB)',
                 non_commercial_confirm: 'Dieses Modell (Jina-v5) unterliegt der CC-BY-NC-4.0-Lizenz für ausschließlich nicht-kommerzielle Nutzung. Bestätigen Sie, dass Sie es nicht-kommerziell nutzen werden?',
+                registry_license_confirm: 'Das Modell „{model}" unterliegt der Lizenz {license}. Deren Bedingungen schränken die Nutzung ein (z. B. nur nicht-kommerziell oder nur zu Forschungszwecken). Akzeptieren Sie diese Bedingungen für dieses Modell?',
+                registry_license_terms: 'Lizenzbedingungen und Modellkarte: {url}',
+                registry_license_terms_unknown: 'Kein Link zur Modellkarte verfügbar; prüfen Sie die Lizenz beim Anbieter, bevor Sie zustimmen.',
+                registry_license_title: 'Lizenzbestätigung — {license}',
                 // P19 — GLiNER Eigennamen-Erkennung (NER)
                 ner_enabled: 'Eigennamen (NER) beim Indizieren extrahieren',
                 ner_enabled_hint: 'Wendet ein Zero-Shot-GLiNER-Modell einmal pro Dokument an und speichert Personen / Organisationen / Orte / Daten / … als durchsuchbare Entitäts-Tags (z. B. „person:Barack Obama"). Optional — erhöht die Verarbeitungszeit pro Dokument.',

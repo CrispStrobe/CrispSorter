@@ -393,6 +393,13 @@ pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]
 crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
+# Per-model native licence acceptance (`CrispEmbed::resolve_model_accepting`,
+# CrispEmbed PR #191). Requires a CrispEmbed release newer than v0.17.15; keep
+# it off until the pinned CrispEmbed carries the binding. Without it, a
+# consented restricted model still resolves from the cache, but a fresh
+# download is refused by CrispEmbed's own gate. CRISPEMBED_ACCEPT_LICENSE is
+# never set as a workaround.
+crispembed-license-api = ["crispembed"]
 # Additive review snapshots are supplied by the paired OCR feature branch of
 # CrispEmbed. Existing release pins still build and run the workbench without
 # this optional provenance extension.

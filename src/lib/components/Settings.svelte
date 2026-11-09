@@ -11,6 +11,7 @@
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { caps, currentCaps } from '../capabilities';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
+    import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
     import {
         resolveSecret,
         bulkSetSecrets,
@@ -922,8 +923,16 @@
             let lic: string | null = null;
             try { lic = await invoke<string | null>('embedder_model_license', { name }); } catch { lic = null; }
             if (lic) {
-                const ok = await ask(i18n.t.settings.index.non_commercial_confirm, {
-                    title: `License confirmation — ${lic}`,
+                // Generic dialog: built for this model — its name, its licence
+                // and its model card — not the Jina-specific text.
+                let info: Pick<ModelLicenseInfo, 'label' | 'spdx' | 'model_card_url'> = { label: lic, spdx: '', model_card_url: '' };
+                try {
+                    const got = await invoke<ModelLicenseInfo>('embedder_model_license_info', { name });
+                    info = { ...got, label: got.label || lic };
+                } catch { /* older backend: label only */ }
+                const dialog = buildLicenseConsentDialog(i18n.t.settings.index, name, info);
+                const ok = await ask(dialog.message, {
+                    title: dialog.title,
                     kind: 'warning'
                 });
                 if (!ok) { registryDownloadMsg = 'Download cancelled (license not accepted).'; return; }

@@ -107,7 +107,7 @@ impl LayoutDetector {
         // without consent. The default (`layout-heron`) is in the pinned
         // registry, so the strict gate is safe here.
         crate::index::license_consent::ensure_registry_download_allowed(model_path)?;
-        let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
+        let resolved = crate::index::license_consent::resolve_registry_model(model_path, Some(true))
             .unwrap_or_else(|_| model_path.to_string());
         let inner = crispembed::CrispLayout::new(&resolved, n_threads)
             .map_err(|e| anyhow::anyhow!("layout model load failed: {e}"))?;
