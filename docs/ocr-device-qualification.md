@@ -76,6 +76,15 @@ not an execution receipt. On iOS, use a normally provisioned device build and
 the observed cases below; the automated lane currently covers a simulator app
 and standalone native inference, not physical-device application commands.
 
+The emulator harness separately defines a real DocumentsUI cancellation and
+local PDF selection case. It records fresh system UI trees and screenshots,
+selects only its uniquely named pinned fixture, then verifies the actual
+provider grant, original archive and durable native page import. Unexpected
+packages, permission prompts or picker layouts fail the case. This automation
+never runs against a physical device and does not establish cloud-provider or
+post-restart grant behavior. Inspect its execution receipt before claiming the
+case passed; the existence of a script is not execution evidence.
+
 ## Observe the actual mobile workflows
 
 Use disposable fixtures and a new project. Record each case as **passed**,

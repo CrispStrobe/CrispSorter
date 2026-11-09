@@ -5,6 +5,7 @@
  * Run on a dedicated, fresh emulator or an explicitly selected physical Android
  * test device with the exact debug APK already installed and running. No fixture adapter, native mocks,
  * automatic consent, system save picker, data wipe, or physical-camera claim.
+ * The emulator-only DocumentsUI case selects its own pinned PDF fixture.
  *
  * Wry wry-v0.55.1 src/android/main_pipe.rs enables WebView debugging in debug
  * builds; Tauri tauri-v2.11.3 runtime defaults devtools to true in those builds.
@@ -34,6 +35,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { probeOptions, processMemory, summarizeMemory, textErrorRate } from './mobile_ocr_probe_utils.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -128,7 +130,8 @@ async function main() {
   const receipt = {
     schema_version: 1, kind: 'android-webview-native-ocr', started_at: stamp(), status: 'running',
     synthetic_only: true, physical_camera_tested: false, corpus_quality_qualified: false,
-    system_save_picker_tested: false, ui_interactions_tested: false, device_kind: opt['device-kind'],
+    system_save_picker_tested: false, system_document_picker_tested: false,
+    ui_interactions_tested: false, device_kind: opt['device-kind'],
     physical_device_qualified: false,
     source: { sorter_commit: opt['source-commit'], crispembed_commit: opt['embed-commit'],
       identity_basis: 'Clean checkout build receipt, matched packaged native code/data, and exact installed APK SHA-256',
@@ -138,6 +141,7 @@ async function main() {
   };
   const consoleLog = [];
   let browser, page, forwardPort, pid, privateRoot, appData, exportPath;
+  let pickerFixturePath, pickerDumpPath;
   let deadline = Infinity;
   function budget(limit, label) {
     const remaining = Math.floor(Math.min(limit, deadline - Date.now()));
@@ -265,6 +269,32 @@ async function main() {
       return window.__TAURI_INTERNALS__.invoke(command, bytes, { headers: { 'x-ocr-metadata': header } });
     }, { command, base64: bytes.toString('base64'), metadata }), budget(timeout, command), command);
   };
+  async function pickerSnapshot(label, filename, selected = false) {
+    assert.equal(opt['device-kind'], 'emulator', 'System picker automation is limited to the dedicated emulator.');
+    assert(/^[a-z0-9-]+$/.test(label));
+    assert(pickerDumpPath?.startsWith('/data/local/tmp/crisp-ocr-picker-'));
+    const directory = path.join(output, 'provider-ui');
+    await fs.mkdir(directory, { recursive: true });
+    // Remove only this run's named scratch file so a failed dump cannot reuse
+    // an earlier hierarchy. Every tap is chosen from the newly recorded tree.
+    await adb(['shell', 'rm', '-f', pickerDumpPath]);
+    await adb(['shell', 'uiautomator', 'dump', '--compressed', pickerDumpPath], { timeout: 20_000 });
+    const xml = (await adb(['exec-out', 'cat', pickerDumpPath], { encoding: null, maxBuffer: 2 * 1024 * 1024 })).stdout;
+    const xmlPath = path.join(directory, label + '.xml');
+    await fs.writeFile(xmlPath, xml, { flag: 'wx' });
+    const screenshot = (await adb(['exec-out', 'screencap', '-p'], { encoding: null, maxBuffer: 16 * 1024 * 1024 })).stdout;
+    assert.equal(screenshot.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    await fs.writeFile(path.join(directory, label + '.png'), screenshot, { flag: 'wx' });
+    const args = [fileURLToPath(new URL('./mobile_document_picker.py', import.meta.url)), '--xml', xmlPath, '--filename', filename];
+    if (selected) args.push('--selected');
+    const result = JSON.parse((await execFileAsync('python3', args, { timeout: budget(10_000, 'parse observed document picker'), maxBuffer: 128 * 1024 })).stdout);
+    if (result.action) {
+      assert(result.action.x >= 0 && result.action.x < screenshot.readUInt32BE(16)
+        && result.action.y >= 0 && result.action.y < screenshot.readUInt32BE(20), 'Observed picker target is outside the captured screen.');
+    }
+    receipt.document_picker.snapshots.push({ label, ...result });
+    return result;
+  }
 
   try {
     const prepared = await step('validate synthetic inputs and exact application build', async () => {
@@ -502,7 +532,8 @@ async function main() {
     const project = {
       version: capabilities.schema_version, id: 'project-' + randomUUID(), name: 'Synthetic mobile native OCR',
       createdAt: stamp(), updatedAt: stamp(), confidenceThreshold: 0.85, profileId: 'screenshot',
-      documents: [{ id: 'document-' + randomUUID(), sourceUri: imported.source_uri, name: imported.name }],
+      documents: [{ id: 'document-' + randomUUID(), sourceUri: imported.source_uri,
+        ...(imported.archive_uri ? { archiveUri: imported.archive_uri } : {}), name: imported.name }],
       pages: [], recognitionSettings: {
         engine: 'tesseract', language: 'eng',
         config: { enabled: true, router: false, cleanup_enabled: false, denoise: false, dewarp: false,
@@ -601,7 +632,7 @@ async function main() {
         return result;
       }, 150_000);
       const documentId = 'document-' + randomUUID();
-      saved.project.documents.push({ id: documentId, sourceUri: pdf.source_uri, name: pdf.name });
+      saved.project.documents.push({ id: documentId, sourceUri: pdf.source_uri, archiveUri: pdf.archive_uri, name: pdf.name });
       receipt.native_documents.recognized_pages = [];
       for (let index = 0; index < pdf.pages.length; index++) {
         await step('recognize and persist actual native PDF page ' + (index + 1), async () => {
@@ -758,6 +789,27 @@ async function main() {
         return section?.querySelector('input[aria-label="Project name"]')?.value === name
           && [...section.querySelectorAll('button')].some(button => button.textContent.includes('Capture photo') && !button.disabled);
       }, saved.project.name, { timeout: budget(30_000, 'restore current project in the UI') });
+      // Use a second real UI-created project. Reimporting the original into
+      // the native-command project correctly deduplicates by source/archive;
+      // that behavior must not be mistaken for a failed camera handoff.
+      const priorProject = saved;
+      await workspace.getByRole('button', { name: 'New', exact: true }).click({ timeout: budget(15_000, 'create UI project') });
+      const uiProjectName = 'Native UI workflow ' + randomUUID();
+      await workspace.getByLabel('Project name', { exact: true }).fill(uiProjectName);
+      await workspace.getByRole('button', { name: 'Save', exact: true }).click({ timeout: budget(15_000, 'save UI project') });
+      let uiProjectId;
+      while (Date.now() < deadline) {
+        const projects = await invoke('ocr_workspace_list');
+        const entry = projects.find(item => item.name === uiProjectName);
+        if (entry) { uiProjectId = entry.id; break; }
+        await delay(500);
+      }
+      assert(uiProjectId && uiProjectId !== project.id, 'New UI project did not persist with a distinct identity.');
+      saved = await invoke('ocr_workspace_load', { projectId: uiProjectId });
+      assert.equal(saved.project.pages.length, 0);
+      assert.deepEqual(await invoke('ocr_workspace_load', { projectId: project.id }), priorProject,
+        'Creating the UI project changed the native-command project.');
+      receipt.ui_project_id = uiProjectId;
       const before = saved.project.pages.length;
       const fileInput = workspace.getByLabel('Camera photo file', { exact: true });
       assert.equal(await fileInput.getAttribute('capture'), 'environment');
@@ -769,7 +821,7 @@ async function main() {
         { timeout: budget(30_000, 'capture file handoff') });
       let captured;
       while (Date.now() < deadline) {
-        const loaded = await invoke('ocr_workspace_load', { projectId: project.id });
+        const loaded = await invoke('ocr_workspace_load', { projectId: uiProjectId });
         if (loaded.project.pages.length === before + 1) { saved = loaded; captured = loaded.project.pages.at(-1); break; }
         assert.equal(loaded.project.pages.length, before, 'Capture UI unexpectedly replaced or duplicated the project.');
         await delay(500);
@@ -781,14 +833,14 @@ async function main() {
       assert.equal(captured.originalImagePath, captured.imagePath);
       const document = saved.project.documents.find(item => item.id === captured.documentId);
       assert(document && document.name === 'Capture handoff fixture.png');
-      assert.equal(await privateDigest(archivedPath({ source_uri: document.sourceUri })), prepared.inputs.fixture.png_sha256);
+      assert.equal(await privateDigest(archivedPath({ source_uri: document.sourceUri, archive_uri: document.archiveUri })), prepared.inputs.fixture.png_sha256);
       await page.screenshot({ path: path.join(output, 'actual-workspace-capture.png') });
       const capturedId = captured.id;
       const observed = await measuredRecognition('ui-capture', async () => {
         await workspace.getByRole('button', { name: 'Recognize page', exact: true })
           .click({ timeout: budget(15_000, 'recognize captured page from UI') });
         while (Date.now() < deadline) {
-          const loaded = await invoke('ocr_workspace_load', { projectId: project.id });
+          const loaded = await invoke('ocr_workspace_load', { projectId: uiProjectId });
           const target = loaded.project.pages.find(item => item.id === capturedId);
           assert(target, 'Captured page disappeared during UI recognition.');
           assert.notEqual(target.status, 'failed', 'UI recognition failed: ' + target.error);
@@ -812,6 +864,107 @@ async function main() {
         scope: 'Actual workspace file input, native import, autosave, preparation view and UI-triggered recognition with a supplied synthetic image.' };
     }, 300_000);
 
+    receipt.document_picker = { status: 'not_run', snapshots: [],
+      reason: opt['device-kind'] === 'physical' ? 'Physical provider interactions require an observed device run.' : 'Native PDF import is unavailable.',
+      scope: 'Dedicated Android emulator system DocumentsUI; local pinned PDF, cancellation, actual URI grant, native page import and durable project save. No cloud provider or physical-device claim.' };
+    if (opt['device-kind'] === 'emulator' && capabilities.pdf_import && capabilities.native_document_import) {
+      await step('cancel and select a pinned PDF through the real Android document picker', async () => {
+        const manifest = prepared.inputs.document_fixtures;
+        const filename = 'crisp-ocr-provider-' + randomUUID() + '.pdf';
+        const source = path.join(opt.inputs, manifest.filename);
+        assert.equal(await fileHash(source), manifest.sha256);
+        pickerFixturePath = remotePath('/sdcard/Download/' + filename);
+        pickerDumpPath = remotePath('/data/local/tmp/crisp-ocr-picker-' + randomUUID() + '.xml');
+        await adb(['shell', 'test', '!', '-e', pickerFixturePath]);
+        await adb(['shell', 'test', '!', '-e', pickerDumpPath]);
+        await adb(['push', source, pickerFixturePath]);
+        const stagedHash = (await adbText(['shell', 'sha256sum', pickerFixturePath])).match(/^([0-9a-f]{64})\s/i)?.[1];
+        assert.equal(stagedHash, manifest.sha256);
+        receipt.document_picker.filename = filename;
+        receipt.document_picker.fixture_sha256 = manifest.sha256;
+        receipt.document_picker.status = 'running';
+        delete receipt.document_picker.reason;
+        const workspace = page.getByRole('region', { name: 'OCR document workspace', exact: true });
+        const waitReady = () => page.waitForFunction(() => {
+          const section = document.querySelector('section[aria-label="OCR document workspace"]');
+          return section && [...section.querySelectorAll('button')].some(button => button.textContent.trim() === 'Add documents' && !button.disabled);
+        }, null, { timeout: budget(30_000, 'return from system document picker') });
+        await waitReady();
+        const beforeCancel = await invoke('ocr_workspace_load', { projectId: saved.project.id });
+        await workspace.getByRole('button', { name: 'Add documents', exact: true }).click();
+        let cancellationOpened = false;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const snapshot = await pickerSnapshot('cancel-' + attempt, filename);
+          if (snapshot.present) { cancellationOpened = true; break; }
+          await delay(500);
+        }
+        assert(cancellationOpened, 'Add documents did not open the actual system picker.');
+        await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
+        await waitReady();
+        assert.deepEqual(await invoke('ocr_workspace_load', { projectId: saved.project.id }), beforeCancel,
+          'Cancelling the real system picker mutated the saved project.');
+        receipt.document_picker.cancellation_preserved_project = true;
+
+        await workspace.getByRole('button', { name: 'Add documents', exact: true }).click();
+        let selected = false, returned = false;
+        const navigation = new Set();
+        for (let attempt = 0; attempt < 12; attempt++) {
+          const snapshot = await pickerSnapshot('select-' + attempt, filename, selected);
+          if (!snapshot.present) {
+            if (selected) { returned = true; break; }
+            await delay(500);
+            continue;
+          }
+          const action = snapshot.action;
+          if (!action) { await delay(500); continue; }
+          if (action.kind === 'select-fixture') selected = true;
+          else {
+            assert(!navigation.has(action.kind), 'System picker repeated a navigation action without reaching the exact fixture.');
+            navigation.add(action.kind);
+          }
+          await adb(['shell', 'input', 'tap', String(action.x), String(action.y)]);
+          await delay(750);
+        }
+        assert(selected && returned, 'The observed picker did not return the selected fixture.');
+        await waitReady();
+        let importedDocument;
+        while (Date.now() < deadline) {
+          const loaded = await invoke('ocr_workspace_load', { projectId: saved.project.id });
+          const found = loaded.project.documents.find(item => item.name === filename);
+          if (found) { saved = loaded; importedDocument = found; break; }
+          assert.equal(loaded.project.pages.length, beforeCancel.project.pages.length, 'Provider import partially committed pages.');
+          await delay(500);
+        }
+        assert(importedDocument, 'Selected provider PDF was not durably imported.');
+        const uri = new URL(importedDocument.sourceUri);
+        assert.equal(uri.protocol, 'content:');
+        assert(uri.host.endsWith('.downloads.documents') || uri.host.endsWith('.externalstorage.documents'),
+          'System picker returned an unexpected local provider authority.');
+        assert.equal(await privateDigest(archivedPath({ archive_uri: importedDocument.archiveUri })), manifest.sha256);
+        const providerCopy = await invoke('plugin:mobile-provider|read_file', { uri: importedDocument.sourceUri });
+        assert.equal(digest(Buffer.from(providerCopy.data, 'base64')), manifest.sha256, 'Actual provider grant did not read the selected original.');
+        const pages = saved.project.pages.filter(item => item.documentId === importedDocument.id);
+        assert.equal(pages.length, manifest.pages.length);
+        assert.equal(saved.project.pages.length, beforeCancel.project.pages.length + manifest.pages.length);
+        for (const [index, item] of pages.entries()) {
+          const expected = manifest.pages[index];
+          assert.equal(item.widthPoints, expected.width_points);
+          assert.equal(item.heightPoints, expected.height_points);
+          assert(Math.abs(item.width - expected.width_points * 200 / 72) <= 1);
+          assert(Math.abs(item.height - expected.height_points * 200 / 72) <= 1);
+          assert.equal(item.status, 'pending');
+          validateAsset({ image_path: item.imagePath, width: item.width, height: item.height }, appData);
+          await fs.writeFile(path.join(output, 'provider-ui', 'imported-page-' + (index + 1) + '.png'), await privateBytes(item.imagePath));
+        }
+        await page.screenshot({ path: path.join(output, 'provider-ui', 'imported-workspace.png') });
+        receipt.document_picker = { ...receipt.document_picker, status: 'passed',
+          source_uri: importedDocument.sourceUri, archive_uri: importedDocument.archiveUri,
+          original_sha256: manifest.sha256, page_ids: pages.map(item => item.id), saved_revision: saved.revision,
+          provider_read_after_picker: true, provider_read_after_restart: false, cloud_provider_tested: false };
+        receipt.system_document_picker_tested = true;
+      }, 240_000);
+    }
+
     await step('verify originals remain unchanged and the app process survives', async () => {
       assert.equal(await privateDigest(archivedPath(imported)), prepared.inputs.fixture.png_sha256);
       assert.equal(await privateDigest(original.image_path), receipt.original_asset_sha256);
@@ -828,6 +981,13 @@ async function main() {
     console.error(receipt.error);
     process.exitCode = 1;
   } finally {
+    for (const value of [pickerDumpPath, pickerFixturePath].filter(Boolean)) {
+      try {
+        assert.equal(opt['device-kind'], 'emulator');
+        assert(/^\/data\/local\/tmp\/crisp-ocr-picker-[0-9a-f-]{36}\.xml$|^\/sdcard\/Download\/crisp-ocr-provider-[0-9a-f-]{36}\.pdf$/.test(value));
+        await adb(['shell', 'rm', '-f', value]);
+      } catch (error) { receipt.cleanup_errors.push('Remove named emulator picker fixture: ' + String(error)); }
+    }
     if (exportPath && page) {
       try { await invoke('ocr_workspace_discard_export', { path: exportPath }, 10_000); }
       catch (error) { receipt.cleanup_errors.push('Export staging: ' + String(error)); }
