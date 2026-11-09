@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: ocr-workspace-browser-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation", "feat/ocr-studio-integration"]'), github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation", "feat/ocr-studio-integration", "feat/ocr-export-controls"]'), github.head_ref || github.ref_name) }}
 
 jobs:
   browser:
