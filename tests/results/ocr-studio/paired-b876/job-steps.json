@@ -1,0 +1,268 @@
+{
+  "id": 129219334906,
+  "run_id": 42634608358,
+  "workflow_name": "OCR paired native integration",
+  "head_branch": "feat/ocr-document-studio",
+  "run_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/actions/runs/42634608358",
+  "run_attempt": 1,
+  "node_id": "CR_kwDORmMbys8AAAAeFhKS-g",
+  "head_sha": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+  "url": "https://api.github.com/repos/CrispStrobe/CrispSorter/actions/jobs/129219334906",
+  "html_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608358/job/129219334906",
+  "status": "completed",
+  "conclusion": "failure",
+  "created_at": "2026-11-09T14:25:56Z",
+  "started_at": "2026-11-09T14:53:27Z",
+  "completed_at": "2026-11-09T15:30:11Z",
+  "name": "paired",
+  "steps": [
+    {
+      "name": "Set up job",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 1,
+      "started_at": "2026-11-09T14:53:27Z",
+      "completed_at": "2026-11-09T14:53:29Z"
+    },
+    {
+      "name": "Set native license metadata path on the runner",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 2,
+      "started_at": "2026-11-09T14:53:29Z",
+      "completed_at": "2026-11-09T14:53:29Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 3,
+      "started_at": "2026-11-09T14:53:29Z",
+      "completed_at": "2026-11-09T14:53:31Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 4,
+      "started_at": "2026-11-09T14:53:31Z",
+      "completed_at": "2026-11-09T14:53:39Z"
+    },
+    {
+      "name": "Run dtolnay/rust-toolchain@stable",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 5,
+      "started_at": "2026-11-09T14:53:39Z",
+      "completed_at": "2026-11-09T14:53:40Z"
+    },
+    {
+      "name": "Run actions/setup-python@v5",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 6,
+      "started_at": "2026-11-09T14:53:40Z",
+      "completed_at": "2026-11-09T14:53:40Z"
+    },
+    {
+      "name": "Run actions/setup-node@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 7,
+      "started_at": "2026-11-09T14:53:40Z",
+      "completed_at": "2026-11-09T14:53:42Z"
+    },
+    {
+      "name": "Verify desktop evidence rejection controls",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 8,
+      "started_at": "2026-11-09T14:53:42Z",
+      "completed_at": "2026-11-09T14:53:42Z"
+    },
+    {
+      "name": "Verify locked native license inventory controls",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 9,
+      "started_at": "2026-11-09T14:53:42Z",
+      "completed_at": "2026-11-09T14:53:43Z"
+    },
+    {
+      "name": "Verify conservative reading-order permutations",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 10,
+      "started_at": "2026-11-09T14:53:43Z",
+      "completed_at": "2026-11-09T14:53:43Z"
+    },
+    {
+      "name": "Install build dependencies",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 11,
+      "started_at": "2026-11-09T14:53:43Z",
+      "completed_at": "2026-11-09T14:54:17Z"
+    },
+    {
+      "name": "Build matching native OCR library and serialization/export tests",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 12,
+      "started_at": "2026-11-09T14:54:17Z",
+      "completed_at": "2026-11-09T15:00:56Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 13,
+      "started_at": "2026-11-09T15:00:56Z",
+      "completed_at": "2026-11-09T15:01:01Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 14,
+      "started_at": "2026-11-09T15:01:01Z",
+      "completed_at": "2026-11-09T15:01:02Z"
+    },
+    {
+      "name": "Run Swatinem/rust-cache@v2",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 15,
+      "started_at": "2026-11-09T15:01:02Z",
+      "completed_at": "2026-11-09T15:01:03Z"
+    },
+    {
+      "name": "Build the production desktop frontend",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 16,
+      "started_at": "2026-11-09T15:01:03Z",
+      "completed_at": "2026-11-09T15:02:33Z"
+    },
+    {
+      "name": "Execute paired native Rust writer contracts",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 17,
+      "started_at": "2026-11-09T15:02:33Z",
+      "completed_at": "2026-11-09T15:02:35Z"
+    },
+    {
+      "name": "Verify application against paired native source",
+      "status": "completed",
+      "conclusion": "failure",
+      "number": 18,
+      "started_at": "2026-11-09T15:02:35Z",
+      "completed_at": "2026-11-09T15:29:44Z"
+    },
+    {
+      "name": "Link the complete Linux desktop OCR executable",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 19,
+      "started_at": "2026-11-09T15:29:44Z",
+      "completed_at": "2026-11-09T15:29:44Z"
+    },
+    {
+      "name": "Execute desktop CLI and observe the production application startup",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 20,
+      "started_at": "2026-11-09T15:29:44Z",
+      "completed_at": "2026-11-09T15:29:44Z"
+    },
+    {
+      "name": "Save desktop execution evidence, including failures",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 21,
+      "started_at": "2026-11-09T15:29:44Z",
+      "completed_at": "2026-11-09T15:29:44Z"
+    },
+    {
+      "name": "Save native diagnostics library",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 22,
+      "started_at": "2026-11-09T15:29:44Z",
+      "completed_at": "2026-11-09T15:29:47Z"
+    },
+    {
+      "name": "Post Run Swatinem/rust-cache@v2",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 38,
+      "started_at": "2026-11-09T15:29:47Z",
+      "completed_at": "2026-11-09T15:30:08Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 39,
+      "started_at": "2026-11-09T15:30:08Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 40,
+      "started_at": "2026-11-09T15:30:09Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    },
+    {
+      "name": "Post Run actions/setup-node@v4",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 41,
+      "started_at": "2026-11-09T15:30:09Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    },
+    {
+      "name": "Post Run actions/setup-python@v5",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 42,
+      "started_at": "2026-11-09T15:30:09Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 43,
+      "started_at": "2026-11-09T15:30:09Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 44,
+      "started_at": "2026-11-09T15:30:09Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    },
+    {
+      "name": "Complete job",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 45,
+      "started_at": "2026-11-09T15:30:09Z",
+      "completed_at": "2026-11-09T15:30:09Z"
+    }
+  ],
+  "check_run_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/check-runs/129219334906",
+  "labels": [
+    "ubuntu-latest"
+  ],
+  "runner_id": 1000448827,
+  "runner_name": "GitHub Actions 1000448827",
+  "runner_group_id": 0,
+  "runner_group_name": "GitHub Actions"
+}
