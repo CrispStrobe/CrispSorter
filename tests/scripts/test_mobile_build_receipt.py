@@ -17,13 +17,15 @@ receipt = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(receipt)
 
 
-def elf(text=b'\x90\x90\xc3\0', debug=b'debug', machine=62):
+def elf(text=b'\x90\x90\xc3\0', debug=b'debug', machine=62, alignment=16384):
     """Small structural ELF fixture; never executed or treated as native code."""
     names = b'\0.shstrtab\0.text\0.debug\0'
     count = 4 if debug else 3
-    data = bytearray(192 + count * 64)
+    program_offset = 192 + count * 64
+    data = bytearray(program_offset + 56)
     struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
-                     b'\x7fELF\x02\x01\x01' + b'\0' * 9, 3, machine, 1, 0, 0, 192, 0, 64, 0, 0, 64, count, 1)
+                     b'\x7fELF\x02\x01\x01' + b'\0' * 9, 3, machine, 1, 0, program_offset, 192, 0, 64, 56, 1, 64, count, 1)
+    struct.pack_into('<IIQQQQQQ', data, program_offset, 1, 5, 0, 0, 0, 160, 160, alignment)
     data[64:64 + len(names)] = names
     data[128:128 + len(text)] = text
     data[144:144 + len(debug)] = debug
@@ -100,12 +102,13 @@ class BuildReceiptTests(unittest.TestCase):
             root = Path(directory)
             (root / 'identity.c').write_text('int identity_control(void) { return 42; }\n')
             library = root / 'identity.so'
-            subprocess.run(['cc', '-shared', '-fPIC', '-g', str(root / 'identity.c'), '-o', str(library)], check=True, timeout=30, capture_output=True)
+            subprocess.run(['cc', '-shared', '-fPIC', '-g', '-Wl,-z,max-page-size=16384', str(root / 'identity.c'), '-o', str(library)], check=True, timeout=30, capture_output=True)
             before = library.read_bytes()
             subprocess.run(['strip', '--strip-unneeded', str(library)], check=True, timeout=30, capture_output=True)
             after = library.read_bytes()
             self.assertNotEqual(before, after)
             self.assertEqual(receipt.elf_allocated_identity(before), receipt.elf_allocated_identity(after))
+            self.assertEqual(receipt.android_load_identity(before, 'x86_64'), receipt.android_load_identity(after, 'x86_64'))
 
     def test_stripped_debug_preserves_allocated_identity(self):
         self.assertNotEqual(elf(), elf(debug=b''))
@@ -127,7 +130,7 @@ class BuildReceiptTests(unittest.TestCase):
         artifact = root / 'app.apk'
         with zipfile.ZipFile(artifact, 'w') as archive:
             archive.writestr(f'lib/{abi}/libcrispembed.so', elf(debug=b'') if packaged is None else packaged)
-            archive.writestr(f'lib/{abi}/libcrispsorter.so', b'fake application library; identity fixture only')
+            archive.writestr(f'lib/{abi}/libcrispsorter.so', elf(text=b'app!'))
         return runtime, artifact
 
     def test_apk_binds_actual_native_code_to_runtime_receipt(self):
@@ -138,6 +141,25 @@ class BuildReceiptTests(unittest.TestCase):
             self.assertTrue(value['paired_runtime_mapped_sections_match'])
             self.assertEqual(value['sha256'], receipt.digest(artifact))
             self.assertEqual(value['abis'], ['x86_64'])
+            self.assertEqual(value['native_elf']['lib/x86_64/libcrispsorter.so']['minimum_load_alignment'], 16384)
+
+    def test_final_apk_application_library_must_support_16_kib_loads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime, artifact = self.make_android(root)
+            with zipfile.ZipFile(artifact, 'w') as archive:
+                archive.writestr('lib/x86_64/libcrispembed.so', elf(debug=b''))
+                archive.writestr('lib/x86_64/libcrispsorter.so', elf(text=b'app!', alignment=4096))
+            with self.assertRaisesRegex(ValueError, 'non-16-KiB'):
+                receipt.android_identity(artifact, root, runtime)
+
+    def test_packaged_elf_rejects_wrong_abi_bad_headers_and_incongruent_loads(self):
+        bad_address = bytearray(elf())
+        offset = struct.unpack_from('<Q', bad_address, 32)[0]
+        struct.pack_into('<Q', bad_address, offset + 16, 1)
+        for data in (elf(machine=183), elf()[:-1], bytes(bad_address), elf(alignment=24576)):
+            with self.subTest(size=len(data)), self.assertRaises(ValueError):
+                receipt.android_load_identity(data, 'x86_64')
 
     def test_apk_with_old_runtime_or_wrong_abi_fails(self):
         for packaged, abi in ((elf(text=b'old!'), 'x86_64'), (None, 'arm64-v8a')):
