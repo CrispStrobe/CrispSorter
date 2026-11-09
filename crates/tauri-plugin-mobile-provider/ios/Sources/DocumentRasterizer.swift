@@ -40,9 +40,11 @@ struct DocumentRasterizer {
   static let maxPages = 10_000
   static let pdfDpi = 200.0
   let home: URL
+  let onProgress: ((Int, Int) -> Void)?
 
-  init(home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)) {
+  init(home: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true), onProgress: ((Int, Int) -> Void)? = nil) {
     self.home = home.resolvingSymlinksInPath().standardizedFileURL
+    self.onProgress = onProgress
   }
 
   static func capabilities() -> DocumentCapabilities {
@@ -96,6 +98,7 @@ struct DocumentRasterizer {
     try checkCancelled(output)
     let data = try JSONSerialization.data(withJSONObject: ["phase": "rendering", "completed": completed, "total": total])
     try data.write(to: output.appendingPathComponent("progress.json"), options: .atomic)
+    onProgress?(completed, total)
   }
 
   private func context(width: Int, height: Int) throws -> CGContext {

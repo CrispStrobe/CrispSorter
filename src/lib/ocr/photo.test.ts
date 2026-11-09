@@ -23,4 +23,14 @@ describe("phone photo geometry", () => {
     expect(captureFileError({ name: "photo.HEIC", size: 10, type: "" })).toMatch(/JPEG or PNG/);
     expect(captureFileError({ name: "photo.png", size: 0, type: "image/png" })).toMatch(/empty/);
   });
+  it("accepts phone formats only when this device advertises their decoder", () => {
+    for (const format of ["heic", "heif", "avif"]) {
+      const file = { name: `photo.${format.toUpperCase()}`, size: 1024, type: "" };
+      expect(captureFileError(file, [format])).toBeNull();
+      expect(captureFileError(file, [])).toContain(format.toUpperCase());
+      expect(captureFileError({ ...file, name: "camera", type: `image/${format}` }, [format])).toBeNull();
+    }
+    expect(captureFileError({ name: "camera", size: 42, type: "image/heif-sequence" }, ["heif"])).toBeNull();
+    expect(captureFileError({ name: "camera", size: 42, type: "application/pdf" }, ["heic"])).toMatch(/photo or page image/);
+  });
 });

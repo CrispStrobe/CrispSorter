@@ -21,7 +21,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /** Converts only archived, private OCR inputs. No provider URI or webview path is opened here. */
-internal class DocumentRasterizer(private val context: Context) {
+internal class DocumentRasterizer(private val context: Context, private val onProgress: ((Int, Int) -> Unit)? = null) {
     companion object {
         const val MAX_SOURCE_BYTES = 32L * 1024 * 1024
         const val MAX_PAGE_PIXELS = 16_000_000L
@@ -87,6 +87,7 @@ internal class DocumentRasterizer(private val context: Context) {
         val pending = File(output, "progress.tmp")
         pending.writeText(JSObject().put("phase", "rendering").put("completed", completed).put("total", total).toString())
         check(pending.renameTo(File(output, "progress.json"))) { "Could not update import progress" }
+        onProgress?.invoke(completed, total)
     }
 
     private class LimitedOutput(private val target: OutputStream, private val remaining: Long, private val output: File) : OutputStream() {

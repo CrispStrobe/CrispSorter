@@ -34,11 +34,13 @@ export function movePhotoCorner(quad: PhotoQuad, index: number, point: PhotoPoin
   } : { ...p }) as PhotoQuad;
 }
 
-export function captureFileError(file: Pick<File, "name" | "size" | "type">): string | null {
+export function captureFileError(file: Pick<File, "name" | "size" | "type">, deviceFormats: readonly string[] = []): string | null {
   if (file.size === 0) return "The selected photo is empty. Take another photo or select a different image.";
   if (file.size > MAX_CAPTURE_BYTES) return "This photo exceeds 32 MiB. Export a smaller JPEG or PNG and try again.";
-  if (/\.(heic|heif|avif)$/i.test(file.name) || /image\/(heic|heif|avif)/i.test(file.type))
-    return "Export this photo as JPEG or PNG first. This build cannot decode HEIC, HEIF, or AVIF images.";
+  const phoneFormat = /\.(heic|heif|avif)$/i.exec(file.name)?.[1]?.toLowerCase()
+    ?? /^image\/(heic|heif|avif)(?:-sequence)?$/i.exec(file.type)?.[1]?.toLowerCase();
+  if (phoneFormat && !deviceFormats.includes(phoneFormat))
+    return `This device cannot decode ${phoneFormat.toUpperCase()} images. Export this photo as JPEG or PNG first.`;
   if (file.type && !file.type.startsWith("image/")) return "Select a photo or page image.";
   return null;
 }

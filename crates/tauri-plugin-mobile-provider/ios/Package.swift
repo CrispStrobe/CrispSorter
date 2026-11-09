@@ -8,6 +8,6 @@ let package = Package(
   dependencies: [.package(name: "Tauri", path: "../.tauri/tauri-api")],
   targets: [
     .target(name: "tauri-plugin-mobile-provider", dependencies: [.byName(name: "Tauri")], path: "Sources"),
-    .testTarget(name: "MobileProviderTests", dependencies: ["tauri-plugin-mobile-provider"], path: "Tests")
+    .testTarget(name: "MobileProviderTests", dependencies: ["tauri-plugin-mobile-provider"], path: "Tests", resources: [.copy("Fixtures")])
   ]
 )

@@ -64,6 +64,7 @@
   import {
     workspaceClient,
     modelDownloadLabel,
+    importProgressLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
@@ -182,6 +183,8 @@
     error = $state(""),
     notice = $state("");
   let saveStatus = $state<SaveStatus>({ state: "saved" });
+  let importController = $state<AbortController | null>(null);
+  let importStopping = $state(false);
   let capabilities = $state<WorkspaceCapabilities>({
     ocr: false,
     crispembed: false,
@@ -570,10 +573,14 @@
     try {
       const selected = paths ?? (await client.pickDocuments());
       if (!selected.length) return;
+      const controller = new AbortController();
+      importController = controller;
+      importStopping = false;
       busy = "Importing documents";
       let added = 0;
       const errors: string[] = [];
       for (const path of selected) {
+        if (controller.signal.aborted) break;
         try {
           if (project.documents.some((d) => d.sourceUri === path)) {
             errors.push(
@@ -582,7 +589,8 @@
             continue;
           }
           busy = `Importing ${path.split(/[\\/]/).pop()}`;
-          const imported = await client.importDocument(path);
+          const imported = await client.importDocument(path, { signal: controller.signal,
+            onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); } });
           const next = addDocument(project, imported);
           if (!project.pages.length) {
             next.name = imported.name.replace(/\.[^.]+$/, "") || "OCR project";
@@ -592,14 +600,17 @@
           added += imported.pages.length;
           await autosave?.flush();
         } catch (e) {
+          if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) break;
           errors.push(`${path.split(/[\\/]/).pop()}: ${message(e)}`);
         }
       }
-      notice = `${added} ${added === 1 ? "page" : "pages"} added`;
+      notice = `${added} ${added === 1 ? "page" : "pages"} added${controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
     } catch (e) {
       fail(e);
     } finally {
+      importController = null;
+      importStopping = false;
       busy = "";
     }
   }
@@ -609,11 +620,16 @@
     input.value = "";
     if (!file || locked || !client.importImage) return;
     error = "";
-    const invalid = captureFileError(file);
+    const invalid = captureFileError(file, capabilities.image_import_formats);
     if (invalid) { error = invalid; return; }
     busy = "Importing photo";
+    const controller = new AbortController();
+    importController = controller;
+    importStopping = false;
     try {
-      const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()));
+      const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()), {
+        signal: controller.signal, onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); },
+      });
       const before = project.pages.length;
       const next = addDocument(project, imported);
       if (!before) next.name = imported.name.replace(/\.[^.]+$/, "") || "Photo project";
@@ -623,8 +639,17 @@
       mobileView = "image";
       await autosave?.flush();
       notice = "Photo added. Check its edges, tilt and lighting before recognition.";
-    } catch (failure) { fail(failure); }
-    finally { busy = ""; }
+    } catch (failure) {
+      if (controller.signal.aborted || (failure instanceof DOMException && failure.name === "AbortError")) notice = "Photo import cancelled.";
+      else fail(failure);
+    }
+    finally { busy = ""; importController = null; importStopping = false; }
+  }
+  function cancelImport() {
+    if (!importController || importStopping) return;
+    importStopping = true;
+    busy = "Stopping import after the current step…";
+    importController.abort();
   }
   async function assessPhoto() {
     const page = activePage;
@@ -1954,7 +1979,7 @@
           onclick={() => importFiles()}
           disabled={locked}><Plus size={18} /> Add documents</button
         >
-        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP</div>
+        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP{#each capabilities.image_import_formats ?? [] as format} · {format.toUpperCase()}{/each}</div>
         {@render mobileModelSetup()}
         {#if !capabilities.ocr}<div class="capability-note">
             <AlertTriangle size={16} /><span
@@ -3435,6 +3460,7 @@
     <span class="status-dot" class:working={!!busy || queueActive}></span><span
       class="status-message">{busy || notice || "Ready"}</span
     >
+    {#if importController}<button class="cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
     <div class="toolbar-spacer"></div>
     {#if project.pages.length}<span
         >{metrics.recognized}/{metrics.included} recognized</span
@@ -4936,6 +4962,11 @@
     border-top: 1px solid var(--line);
     font-size: 9px;
     color: #7f94b1;
+  }
+  .cancel-import {
+    min-height: 44px;
+    padding: 0 12px;
+    white-space: nowrap;
   }
   .status-dot {
     background: #4ab892;

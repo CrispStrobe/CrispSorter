@@ -14,6 +14,17 @@ function recognize(p:OcrProject, index=0, text='Original text', confidence:numbe
 }
 
 describe('OCR project and recognition',()=>{
+    it('retains provider identity and the immutable archive separately across save and restore',()=>{
+        const source='content://provider/Case%3AA%2FB';
+        const archive='/private/ocr-workspace/sources/123.heic';
+        const p=addDocument(createProject(),{...imported('Phone.HEIC',1),source_uri:source,archive_uri:archive});
+        const restored=parseProject(serializeProject(p));
+        expect(restored.documents[0].sourceUri).toBe(source);
+        expect(restored.documents[0].archiveUri).toBe(archive);
+        const malformed=structuredClone(restored);
+        malformed.documents[0].archiveUri=42 as never;
+        expect(()=>parseProject(malformed)).toThrow(/archive metadata/);
+    });
     it('rejects malformed native payloads and dimension drift while preserving reviewed work',()=>{
         const recognized=recognize(project(1));
         const p=approvePage(recognized,recognized.pages[0].id);
