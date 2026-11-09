@@ -16,7 +16,7 @@ class MobileDocumentFixtures(unittest.TestCase):
     def test_declared_binary_inputs_match_their_pinned_hashes_and_formats(self):
         manifest = json.loads((FIXTURES / "manifest.json").read_text())
         entries = [manifest, *manifest["images"], *manifest["pdf_variants"]]
-        self.assertEqual(len(entries), 5)
+        self.assertEqual(len(entries), 6)
         for entry in entries:
             with self.subTest(filename=entry["filename"]):
                 filename = entry.get("fixture", entry["filename"])
@@ -30,6 +30,10 @@ class MobileDocumentFixtures(unittest.TestCase):
                     self.assertEqual(b"/Encrypt" in data, entry.get("password_protected", False))
                 elif entry["filename"].endswith(".avif"):
                     self.assertEqual(data[4:12], b"ftypavif")
+                elif entry["filename"].endswith(".heic"):
+                    self.assertEqual(data[4:12], b"ftypheic")
+                    self.assertIn(b"hvcC", data)
+                    self.assertIn(b"ispe", data)
                 elif entry["filename"].endswith(".jpg"):
                     self.assertTrue(data.startswith(b"\xff\xd8"))
                     self.assertTrue(data.endswith(b"\xff\xd9"))
