@@ -996,7 +996,7 @@ if (process.argv.includes('--serve')) {
             await corner.focus();
             await page.keyboard.press('ArrowRight');
             await page.keyboard.press('Shift+ArrowDown');
-            await page.getByText('Exact corner positions', { exact: true }).click();
+            await page.getByRole('region', { name: 'Photo preparation', exact: true }).getByText('Exact corner positions', { exact: true }).click();
             const x = page.getByRole('spinbutton', { name: 'Top left corner X', exact: true });
             const y = page.getByRole('spinbutton', { name: 'Top left corner Y', exact: true });
             assert.equal(await x.inputValue(), '1');

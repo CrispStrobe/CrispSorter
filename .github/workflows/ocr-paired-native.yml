@@ -95,8 +95,10 @@ jobs:
       LICENSES_REQUIRE: '1'
       LICENSES_CARGO_TARGET: x86_64-unknown-linux-gnu
       LICENSES_CARGO_FEATURES: desktop,ocr-workspace
-      LICENSES_CARGO_METADATA: ${{ runner.temp }}/ocr-desktop-licenses/cargo-metadata.json
     steps:
+      - name: Set native license metadata path on the runner
+        shell: bash
+        run: echo "LICENSES_CARGO_METADATA=$RUNNER_TEMP/ocr-desktop-licenses/cargo-metadata.json" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           path: repos/CrispSorter
