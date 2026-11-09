@@ -10,6 +10,7 @@ on:
       - 'scripts/generate-licenses.js'
       - 'scripts/native_license_inventory.mjs'
       - 'tests/scripts/test_native_license_inventory.mjs'
+      - 'scripts/test_mobile_shell_probe.py'
       - 'scripts/mobile_native_provenance.py'
       - 'scripts/ocr-mobile-runtime-lock.json'
       - 'scripts/ocr-mobile-ort-lock.json'
@@ -115,6 +116,7 @@ jobs:
           node --test tests/scripts/test_mobile_ocr_*.mjs
           node --test tests/scripts/test_native_license_inventory.mjs
           python3 -m py_compile tools/ios-shell-probe/run.py
+          python3 scripts/test_mobile_shell_probe.py
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
@@ -438,5 +440,6 @@ jobs:
             ${{ runner.temp }}/ocr-mobile-inputs/inputs.json
             ${{ runner.temp }}/ocr-mobile-evidence/
             ${{ runner.temp }}/ocr-mobile-app/
+            !${{ runner.temp }}/ocr-mobile-evidence/app-navigation/DerivedData/**
           if-no-files-found: warn
           retention-days: 14
