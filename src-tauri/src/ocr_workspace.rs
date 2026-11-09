@@ -1156,7 +1156,7 @@ fn transcription_confidence(region: &ExportRegion) -> f32 {
     } else { unknown }
 }
 
-fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
+fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
     if pdfa && format != "pdf" { return Err("PDF/A applies only to PDF output.".into()); }
     if pdfa && !crate::extractors::ocr_render::reviewed_archival_pdf_available() {
         return Err("PDF/A-2b requires a matching archival-capable native renderer.".into());
@@ -1164,6 +1164,21 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
         return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
     }
+    Ok(())
+}
+
+fn reviewed_render_pages(pages: &[ExportPage]) -> Vec<RenderPage> {
+    pages.iter().map(|page| RenderPage::from_regions(page.regions.iter().map(|region| OcrRegion {
+        text: region.text.clone(), x: region.x, y: region.y, w: region.w, h: region.h,
+        confidence: transcription_confidence(region),
+    }).collect(), page.width, page.height, page.image_path.clone()).with_physical_size(
+        page.page_width_points.unwrap_or(f64::from(page.width) * 72.0 / 300.0) as f32,
+        page.page_height_points.unwrap_or(f64::from(page.height) * 72.0 / 300.0) as f32,
+    )).collect()
+}
+
+fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
+    validate_export_format(format, pdfa)?;
     match format {
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
         "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
@@ -1184,15 +1199,57 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
         },
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
-            let render_pages: Vec<_> = pages.iter().map(|p| RenderPage::from_regions(p.regions.iter().map(|r| OcrRegion {
-                text: r.text.clone(), x: r.x, y: r.y, w: r.w, h: r.h, confidence: transcription_confidence(r),
-            }).collect(), p.width, p.height, p.image_path.clone()).with_physical_size(
-                p.page_width_points.unwrap_or(f64::from(p.width) * 72.0 / 300.0) as f32,
-                p.page_height_points.unwrap_or(f64::from(p.height) * 72.0 / 300.0) as f32,
-            )).collect();
+            let render_pages = reviewed_render_pages(pages);
             crate::extractors::ocr_render::render(&render_pages, format, pdfa).map_err(|e| format!("Render OCR document: {e:#}"))
         },
     }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+const MAX_STREAMED_PDF_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_STREAMED_PDF_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Stream PDFs into the same atomic output transaction used by other exports.
+/// The limit bounds file size, not process memory; page decoding still needs
+/// working memory. Mobile matches the native document-provider copy limit.
+fn write_export(
+    path: &Path,
+    pages: &[ExportPage],
+    format: &str,
+    pdfa: bool,
+    overwrite: bool,
+    max_pdf_bytes: u64,
+) -> Result<usize, String> {
+    validate_export_format(format, pdfa)?;
+    if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
+        && crate::extractors::ocr_render::reviewed_streaming_pdf_available() {
+        let render_pages = reviewed_render_pages(pages);
+        return atomic_write_with(path, overwrite, |file| {
+            let written = {
+                let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut *file);
+                let count = crate::extractors::ocr_render::render_pdf_to_writer(
+                    &render_pages, pdfa, max_pdf_bytes, &mut writer,
+                ).map_err(|error| format!("Render OCR PDF: {error:#}"))?;
+                writer.flush().map_err(|error| format!("Flush OCR PDF: {error}"))?;
+                count
+            };
+            if written == 0 {
+                return Err("The renderer produced an empty document.".into());
+            }
+            let actual = file.metadata().map_err(|error| format!("Check rendered PDF: {error}"))?.len();
+            if actual != written {
+                return Err("The renderer byte count does not match the staged PDF. No output was published.".into());
+            }
+            usize::try_from(written).map_err(|_| "The rendered PDF is too large for this device.".into())
+        });
+    }
+    let bytes = export_bytes(pages, format, pdfa)?;
+    if bytes.is_empty() && !["text", "txt", "plain"].contains(&format) {
+        return Err("The renderer produced an empty document.".into());
+    }
+    atomic_write(path, &bytes, overwrite)?;
+    Ok(bytes.len())
 }
 
 #[tauri::command]
@@ -1210,11 +1267,9 @@ pub async fn ocr_workspace_export(
         for page in &pages { managed_page(&root, &page.image_path)?; }
         validate_export_pages(&pages)?;
         let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-        let bytes = export_bytes(&pages, &format, pdfa)?;
-        if bytes.is_empty() && !["text", "txt", "plain"].contains(&format.as_str()) { return Err("The renderer produced an empty document.".into()); }
-        atomic_write(&path, &bytes, overwrite.unwrap_or(false))?;
+        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false), MAX_STREAMED_PDF_BYTES)?;
         Ok(OcrExportResult {
-            saved_path: path.to_string_lossy().into_owned(), bytes: bytes.len(), pages: pages.len(),
+            saved_path: path.to_string_lossy().into_owned(), bytes, pages: pages.len(),
             format: if pdfa { "pdfa".into() } else { format },
         })
     }).await.map_err(|e| format!("Export worker: {e}"))?
@@ -1665,6 +1720,26 @@ mod tests {
         assert!(output_path(&pages[0].image_path, &pages, &[], &workspace).is_err());
         assert!(output_path("relative.txt", &pages, &[], &workspace).is_err());
         assert!(output_path(root.path().join("reviewed.txt").to_str().unwrap(), &pages, &[], &workspace).is_ok());
+    }
+
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    #[test]
+    fn streamed_pdf_is_atomic_and_a_native_limit_failure_preserves_the_previous_file() {
+        let root = tempfile::tempdir().unwrap();
+        let pages = vec![export_page(root.path(), "Reviewed résumé 東京")];
+        let path = root.path().join("reviewed.pdf");
+        assert!(crate::extractors::ocr_render::reviewed_streaming_pdf_available());
+        let count = write_export(&path, &pages, "pdf", false, false, MAX_STREAMED_PDF_BYTES).unwrap();
+        let previous = fs::read(&path).unwrap();
+        assert_eq!(previous.len(), count);
+        let document = lopdf::Document::load_mem(&previous).unwrap();
+        assert_eq!(document.get_pages().len(), 1);
+        assert!(document.extract_text(&[1]).unwrap().contains("Reviewed résumé 東京"));
+        let count_before = fs::read_dir(root.path()).unwrap().count();
+        let error = write_export(&path, &pages, "pdf", false, true, 32).unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), count_before);
     }
 
     #[test]

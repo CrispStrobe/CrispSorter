@@ -25,8 +25,8 @@ fn already_exists(path: &Path) -> String {
 }
 
 /// Write and publish one complete output. The closure must finish and flush any
-/// buffer it creates before returning. A returned error or panic drops staging
-/// without replacing the destination. The no-clobber commit also protects a
+/// buffer it creates before returning. An error or panic from that closure drops
+/// staging without replacing the destination. The no-clobber commit also protects a
 /// destination created by another writer after the initial existence check.
 pub(super) fn atomic_write_with<T>(
     path: &Path,

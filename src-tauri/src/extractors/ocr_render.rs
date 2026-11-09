@@ -181,6 +181,42 @@ pub fn reviewed_bidi_pdf_available() -> bool {
     { false }
 }
 
+pub fn reviewed_streaming_pdf_available() -> bool {
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    { crispembed::ocr_render_capabilities() & 39 == 39 }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    { false }
+}
+
+/// Render directly to the caller's staged file instead of returning a complete
+/// PDF buffer. The native writer is synchronous and flushes before success;
+/// callers must publish their destination only after this function succeeds.
+pub fn render_pdf_to_writer<W: std::io::Write>(
+    pages: &[RenderPage],
+    pdfa: bool,
+    max_bytes: u64,
+    writer: &mut W,
+) -> Result<u64> {
+    anyhow::ensure!(reviewed_streaming_pdf_available(),
+        "Streaming PDF requires a matching native renderer with file-writer support");
+    anyhow::ensure!(!pdfa || reviewed_archival_pdf_available(),
+        "PDF/A-2b requires a matching archival-capable native renderer");
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    {
+        let regions = native_page_regions(pages)?;
+        let inputs = native_page_inputs(pages, &regions);
+        let sizes = native_page_sizes(pages);
+        crispembed::ocr_render_pdf_to_writer_checked(
+            &inputs, pdfa, Some(&sizes), reviewed_bidi_pdf_available(), max_bytes, writer,
+        ).map_err(anyhow::Error::from)
+    }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    {
+        let _ = (pages, max_bytes, writer);
+        anyhow::bail!("Streaming PDF requires the ocr-reviewed-pdf feature")
+    }
+}
+
 /// Whether structured (hOCR/ALTO) rendering is wired up. True when the
 /// `crispembed` feature is compiled in (the renderer binding is then linked).
 /// The CLI uses this to fail fast (before running OCR) on an unavailable format.
@@ -258,51 +294,11 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> 
         OcrOutputFormat::Pdf => "pdf",
         OcrOutputFormat::Text => "text", // (render() routes Text away; total for safety)
     };
-    // Convert to crispembed regions, keeping the per-page Vecs alive for the
-    // duration of the `ocr_render_pages` call (the inputs borrow them).
-    let page_regions: Vec<Vec<crispembed::OcrRegion>> = pages
-        .iter()
-        .map(|p| {
-            p.regions
-                .iter()
-                .map(|r| {
-                    let r = render_region(r, p.page_width, p.page_height)?;
-                    Ok(crispembed::OcrRegion {
-                    text: r.text.clone(),
-                    x: r.x,
-                    y: r.y,
-                    w: r.w,
-                    h: r.h,
-                    confidence: r.confidence,
-                    // Added to `OcrResult` upstream after v0.16.1. These
-                    // regions come from our own detector, which does not
-                    // rotate anything, so the honest value is `false` — the
-                    // renderer only reads it to decide whether a box's
-                    // coordinates were already de-skewed.
-                    orientation_corrected: false,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let inputs: Vec<crispembed::OcrRenderPageInput> = pages
-        .iter()
-        .enumerate()
-        .map(|(i, p)| crispembed::OcrRenderPageInput {
-            regions: &page_regions[i],
-            page_width: p.page_width,
-            page_height: p.page_height,
-            image_path: if p.image_path.is_empty() {
-                None
-            } else {
-                Some(p.image_path.as_str())
-            },
-        })
-        .collect();
+    let page_regions = native_page_regions(pages)?;
+    let inputs = native_page_inputs(pages, &page_regions);
     #[cfg(feature = "ocr-reviewed-pdf")]
     let bytes = {
-        let sizes: Vec<_> = pages.iter().map(|p| p.physical_size_points
-            .unwrap_or((p.page_width as f32 * 72.0 / 300.0, p.page_height as f32 * 72.0 / 300.0))).collect();
+        let sizes = native_page_sizes(pages);
         let rendered = if crispembed::ocr_render_capabilities() & 16 != 0 {
             crispembed::ocr_render_pages_checked_with_options(&inputs, fmt_str, pdfa, Some(&sizes), true)
         } else {
@@ -316,6 +312,62 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> 
         .ok_or_else(|| anyhow::anyhow!("crispembed::ocr_render_pages returned None ({fmt_str})"))?;
     if fmt == OcrOutputFormat::Alto { validate_alto_output(pages, &bytes)?; }
     Ok(bytes)
+}
+
+/// Both byte and writer APIs use the same reviewed text and enclosing geometry.
+#[cfg(feature = "crispembed")]
+fn native_page_regions(pages: &[RenderPage]) -> Result<Vec<Vec<crispembed::OcrRegion>>> {
+    pages
+        .iter()
+        .map(|p| {
+            p.regions
+                .iter()
+                .map(|r| {
+                    let r = render_region(r, p.page_width, p.page_height)?;
+                    Ok(crispembed::OcrRegion {
+                        text: r.text.clone(),
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
+                        confidence: r.confidence,
+                        // These regions use the supplied page coordinates.
+                        // No separate detector-side rotation was applied.
+                        orientation_corrected: false,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+#[cfg(feature = "crispembed")]
+fn native_page_inputs<'a>(
+    pages: &'a [RenderPage],
+    page_regions: &'a [Vec<crispembed::OcrRegion>],
+) -> Vec<crispembed::OcrRenderPageInput<'a>> {
+    pages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| crispembed::OcrRenderPageInput {
+            regions: &page_regions[i],
+            page_width: p.page_width,
+            page_height: p.page_height,
+            image_path: if p.image_path.is_empty() {
+                None
+            } else {
+                Some(p.image_path.as_str())
+            },
+        })
+        .collect()
+}
+
+#[cfg(feature = "ocr-reviewed-pdf")]
+fn native_page_sizes(pages: &[RenderPage]) -> Vec<(f32, f32)> {
+    pages.iter().map(|page| page.physical_size_points.unwrap_or((
+        page.page_width as f32 * 72.0 / 300.0,
+        page.page_height as f32 * 72.0 / 300.0,
+    ))).collect()
 }
 
 /// Older linked renderers used a fixed text buffer for ALTO. Validate both
