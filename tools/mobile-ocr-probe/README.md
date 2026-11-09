@@ -31,14 +31,39 @@ The x86_64 emulator lane also connects to the installed debug application's own
 WebView socket and invokes the real Tauri commands. This separately exercises
 the private HTTPS model installer, independent artifact hash checks, raw image
 import, native photo transforms, persisted recognition settings, real OCR, and
-reviewed PDF staging and cleanup. The installed APK hash must match the built
-artifact. Its fresh model store must begin empty; no fixture adapter supplies
+reviewed PDF staging and cleanup. The installed APK hash must match the clean
+source build receipt and the supplied artifact. Allocated native code/data in
+the APK must match the paired runtime even if packaging strips debug symbols.
+Its fresh model store must begin empty; no fixture adapter supplies
 recognition or pretends to install weights.
 
 The command receipt preserves raw recognition output before assertions and
-records input, model, APK, and runtime-build hashes. This is a synthetic command
-integration test, not interaction coverage for the mobile UI or a physical
-camera, system document picker, performance budget, or representative document
-corpus. PDF signature checks do not establish the accuracy of its text layer.
+records input, model, APK, and runtime-build hashes. It samples application RSS,
+kernel high-water RSS and PSS around each native recognition, repeats eight
+actual recognitions with durable per-page saves, and enforces a declared process
+RSS budget. The repeat case alternates two synthetic rasters; it does not
+establish diverse-corpus or large-document performance.
+
+When the app advertises native document import, the same harness imports the
+hash-pinned two-page PDF through actual raw IPC and native rasterization. It
+checks physical dimensions, UTF-8 metadata, source/archive identity, real OCR
+on both page rasters, malformed PDF rejection, and the advertised AVIF/EXIF
+orientation fixtures. The fixtures are supplied by
+`tests/fixtures/mobile-documents/manifest.json`; no host PDF renderer can satisfy
+these app assertions.
+
+The final UI case opens the real OCR workspace, supplies a synthetic image to
+its camera file input, verifies native import/autosave and the preparation
+view, then starts recognition from the actual workspace button. This is a
+capture **file handoff**, not a claim that the system camera opened or produced
+the fixture. Actual system picker/camera and representative corpus qualification
+remain separate. PDF signature checks do not establish text-layer accuracy.
 The iOS lane currently executes the standalone native probe and app startup;
 it does not claim the Android application's command coverage.
+
+The driver also accepts `--device-kind physical` with an explicit authorized
+serial and exact already-installed debug APK. It does not install, erase data,
+or select hardware automatically. See the
+[device protocol](../../docs/ocr-device-qualification.md) for commands, evidence
+boundaries and observed camera/provider cases. Read actual receipts before
+treating a defined check as executed or passed.

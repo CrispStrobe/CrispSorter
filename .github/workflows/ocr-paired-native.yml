@@ -8,6 +8,9 @@ on:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_photo.rs
       - src-tauri/src/model_provisioning.rs
+      - src-tauri/src/model_storage.rs
+      - src-tauri/src/model_storage_types.rs
+      - src-tauri/src/model_provisioning/**
       - src-tauri/src/lib.rs
       - src-tauri/Cargo.toml
       - .github/workflows/ocr-paired-native.yml
@@ -16,6 +19,9 @@ on:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_photo.rs
       - src-tauri/src/model_provisioning.rs
+      - src-tauri/src/model_storage.rs
+      - src-tauri/src/model_storage_types.rs
+      - src-tauri/src/model_provisioning/**
       - src-tauri/src/lib.rs
       - src-tauri/src/ocr_reading_order.rs
       - Cargo.lock
@@ -32,7 +38,7 @@ concurrency:
   group: ocr-paired-native-${{ github.ref }}
   # Superseded checkpoints on this recovery branch must not block its current
   # validation. Other branches retain the original build/cache policy.
-  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
+  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation"]'), github.head_ref || github.ref_name) }}
 
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
@@ -107,7 +113,7 @@ jobs:
             ocr_photo::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
-            model_provisioning::mobile::tests -- --test-threads=1
+            model_provisioning -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_crispembed::tests -- --test-threads=1

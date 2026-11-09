@@ -5,6 +5,7 @@ Weights are test inputs, not bundled app resources. The application installer
 uses the paired registry independently. No API token or private source is used.
 """
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -75,6 +76,45 @@ def make_text_fixture(output, font_path):
             'rgb_sha256': digest(output / 'page.rgb'), 'png_sha256': digest(output / 'page.png')}
 
 
+def prepare_document_fixtures(output, source=None):
+    """Copy reviewed native document fixtures only after checking their pins."""
+    source = source or Path(__file__).resolve().parents[2] / 'tests/fixtures/mobile-documents'
+    manifest_path = source / 'manifest.json'
+    if not manifest_path.is_file():
+        return {'available': False, 'reason': 'Native document fixtures are not present in this source revision.'}
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get('schema_version') != 1:
+        raise ValueError('Unsupported native document fixture manifest')
+    candidates = [manifest, *manifest.get('images', [])]
+    prepared = []
+    for item in candidates:
+        filename = item['filename']
+        if not filename or Path(filename).name != filename:
+            raise ValueError('Unsafe native document fixture filename')
+        fixture = item.get('fixture', filename)
+        if not fixture or Path(fixture).name != fixture:
+            raise ValueError('Unsafe native document fixture source')
+        source_file = source / fixture
+        if source_file.is_symlink() or source_file.stat().st_size > 48 * 1024 * 1024:
+            raise ValueError('Unsafe or oversized native document fixture source')
+        encoded = source_file.read_bytes()
+        data = base64.b64decode(b''.join(encoded.split()), validate=True) if fixture.endswith('.b64') else encoded
+        if not 0 < len(data) <= 32 * 1024 * 1024 or len(data) != item['bytes']:
+            raise ValueError('Native document fixture size mismatch')
+        if hashlib.sha256(data).hexdigest() != item['sha256']:
+            raise ValueError('Native document fixture SHA-256 mismatch')
+        prepared.append((filename, data))
+    # Verify the complete set before writing. Preparation never decodes images
+    # or PDF; the actual app/plugin must perform that decoding in CI.
+    for filename, data in prepared:
+        destination = output / filename
+        if destination.is_symlink() or (destination.exists() and destination.read_bytes() != data):
+            raise ValueError('Existing native document fixture differs from the pinned input')
+    for filename, data in prepared:
+        (output / filename).write_bytes(data)
+    return {'available': True, 'manifest_sha256': digest(manifest_path), **manifest}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -85,7 +125,8 @@ def main():
     for model in models:
         fetch_model(model, args.output)
     receipt = {'schema_version': 1, 'synthetic_only': True, 'models': models,
-               'fixture': make_text_fixture(args.output, args.font)}
+               'fixture': make_text_fixture(args.output, args.font),
+               'document_fixtures': prepare_document_fixtures(args.output)}
     (args.output / 'inputs.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt, indent=2))
 

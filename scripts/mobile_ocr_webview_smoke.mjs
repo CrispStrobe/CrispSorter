@@ -66,6 +66,16 @@ function remotePath(value) {
   return value;
 }
 
+function archivedPath(document) {
+  let value = document.archive_uri ?? document.source_uri;
+  if (typeof value === 'string' && value.startsWith('file://')) {
+    const uri = new URL(value);
+    assert(['', 'localhost'].includes(uri.hostname) && !uri.search && !uri.hash, 'Unexpected private archive URI.');
+    value = decodeURIComponent(uri.pathname);
+  }
+  return remotePath(value);
+}
+
 function validateAsset(asset, appData) {
   assert(asset && Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Missing raster dimensions.');
   assert(asset.width > 0 && asset.height > 0 && asset.width * asset.height <= 100_000_000, 'Invalid raster size.');
@@ -244,6 +254,16 @@ async function main() {
     return bounded(page.evaluate(
       ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args },
     ), milliseconds, command);
+  };
+  const importBytes = (command, bytes, metadata, timeout = 90_000) => {
+    assert(['ocr_workspace_import_bytes', 'ocr_workspace_import_image'].includes(command));
+    return bounded(page.evaluate(async ({ command, base64, metadata }) => {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const header = btoa(Array.from(new TextEncoder().encode(JSON.stringify(metadata)), byte => String.fromCharCode(byte)).join(''));
+      return window.__TAURI_INTERNALS__.invoke(command, bytes, { headers: { 'x-ocr-metadata': header } });
+    }, { command, base64: bytes.toString('base64'), metadata }), budget(timeout, command), command);
   };
 
   try {
@@ -433,20 +453,13 @@ async function main() {
     }, 150_000);
 
     const imported = await step('import the synthetic PNG through the real raw binary IPC', async () => {
-      const importBudget = budget(60_000, 'raw image import');
-      const result = await bounded(page.evaluate(async ({ base64, name }) => {
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const metadata = btoa(JSON.stringify({ name })); // Fixed ASCII test name only.
-        return window.__TAURI_INTERNALS__.invoke('ocr_workspace_import_image', bytes, { headers: { 'x-ocr-metadata': metadata } });
-      }, { base64: prepared.bytes.toString('base64'), name: 'Synthetic mobile OCR.png' }), importBudget, 'raw image import');
+      const result = await importBytes('ocr_workspace_import_image', prepared.bytes, { name: 'Synthetic mobile OCR.png', requestId: randomUUID() }, 60_000);
       assert.equal(result.pages.length, 1);
       const asset = validateAsset(result.pages[0], appData);
       assert.equal(asset.width, prepared.inputs.fixture.width);
       assert.equal(asset.height, prepared.inputs.fixture.height);
-      assert(remotePath(result.source_uri).startsWith(appData + '/ocr-workspace/sources/'));
-      assert.equal(await privateDigest(result.source_uri), prepared.inputs.fixture.png_sha256, 'The archived original bytes changed during import.');
+      assert(archivedPath(result).startsWith(appData + '/ocr-workspace/sources/'));
+      assert.equal(await privateDigest(archivedPath(result)), prepared.inputs.fixture.png_sha256, 'The archived original bytes changed during import.');
       receipt.imported = result;
       receipt.original_asset_sha256 = await privateDigest(asset.image_path);
       return result;
@@ -550,6 +563,111 @@ async function main() {
       }, 220_000);
     }
 
+    receipt.native_documents = { status: 'not_supported', pdf_import: capabilities.pdf_import,
+      qualification: 'Actual app raw IPC and native document rasterizer; source-URI preservation here uses synthetic metadata and does not exercise a system provider grant.' };
+    if (capabilities.pdf_import && capabilities.native_document_import) {
+      const manifest = prepared.inputs.document_fixtures;
+      assert(manifest?.available === true, 'This native document profile requires the checked-in document fixture set.');
+      const nativeCapabilities = await invoke('plugin:mobile-provider|document_capabilities');
+      assert.equal(nativeCapabilities.pdf, true);
+      assert.equal(nativeCapabilities.max_source_bytes, 32 * 1024 * 1024);
+      assert.equal(nativeCapabilities.max_page_pixels, 16_000_000);
+      assert.equal(nativeCapabilities.max_pages, 10_000);
+      receipt.native_documents.capabilities = nativeCapabilities;
+      const pdf = await step('import the pinned multipage PDF through actual mobile rasterization', async () => {
+        assert.equal(manifest.filename, 'two-pages.pdf');
+        const bytes = await fs.readFile(path.join(opt.inputs, manifest.filename));
+        assert.equal(bytes.length, manifest.bytes);
+        assert.equal(digest(bytes), manifest.sha256);
+        const sourceUri = 'content://com.crispstrobe.native-ocr-fixture/Case%3APDF%2Ftwo-pages.pdf';
+        const result = await importBytes('ocr_workspace_import_bytes', bytes,
+          { name: 'Überblick-日本語.pdf', sourceUri, requestId: randomUUID() });
+        assert.equal(result.source_uri, sourceUri, 'Native import changed the supplied provider identity.');
+        assert.equal(result.name, 'Überblick-日本語.pdf', 'UTF-8 import metadata did not survive raw IPC.');
+        assert.equal(result.pages.length, manifest.pages.length);
+        assert.equal(await privateDigest(archivedPath(result)), manifest.sha256, 'Native PDF import rewrote original bytes.');
+        for (const [index, asset] of result.pages.entries()) {
+          validateAsset(asset, appData);
+          const expected = manifest.pages[index];
+          assert.equal(asset.page_width_points, expected.width_points);
+          assert.equal(asset.page_height_points, expected.height_points);
+          assert(Math.abs(asset.width - expected.width_points * 200 / 72) <= 1);
+          assert(Math.abs(asset.height - expected.height_points * 200 / 72) <= 1);
+          assert(asset.width * asset.height <= nativeCapabilities.max_page_pixels);
+          await fs.writeFile(path.join(output, 'native-pdf-page-' + (index + 1) + '.png'), await privateBytes(asset.image_path));
+        }
+        receipt.native_documents.imported_pdf = result;
+        receipt.native_documents.original_sha256 = manifest.sha256;
+        return result;
+      }, 150_000);
+      const documentId = 'document-' + randomUUID();
+      saved.project.documents.push({ id: documentId, sourceUri: pdf.source_uri, name: pdf.name });
+      receipt.native_documents.recognized_pages = [];
+      for (let index = 0; index < pdf.pages.length; index++) {
+        await step('recognize and persist actual native PDF page ' + (index + 1), async () => {
+          const asset = pdf.pages[index], settings = saved.project.recognitionSettings;
+          const result = await measuredRecognition('pdf-page-' + (index + 1), () => invoke('ocr_workspace_recognize', {
+            pagePath: asset.image_path, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
+            pageWidthPoints: asset.page_width_points, pageHeightPoints: asset.page_height_points,
+          }, 180_000));
+          const expected = manifest.pages[index].text.join('\n');
+          const text = validateRecognition(result, appData, expected);
+          const target = { ...saved.project.pages[0], id: 'page-' + randomUUID(), documentId, sourcePage: index + 1,
+            name: 'Native PDF page ' + (index + 1), imagePath: result.image_path, originalImagePath: asset.image_path,
+            width: result.width, height: result.height, widthPoints: asset.page_width_points, heightPoints: asset.page_height_points,
+            regions: result.regions.map(projectRegion), status: 'recognized', approved: false, elapsedMs: result.elapsed_ms,
+            contentRevision: randomUUID(), provenance: { syntheticNativeSmoke: true, nativePdfImport: true, diagnostics: result.diagnostics } };
+          saved.project.pages.push(target);
+          const committed = await invoke('ocr_workspace_save', { project: saved.project, expectedRevision: saved.revision });
+          assert.equal(committed.revision, saved.revision + 1);
+          saved = await invoke('ocr_workspace_load', { projectId: project.id });
+          assert.equal(saved.revision, committed.revision);
+          assert.equal(saved.project.pages.at(-1).id, target.id);
+          assert.equal(saved.project.pages.at(-1).regions.map(region => region.text).join('\n'), text);
+          receipt.native_documents.recognized_pages.push({ page: index + 1, text, expected,
+            unicode_cer: textErrorRate(expected, text), regions: result.regions.length, elapsed_ms: result.elapsed_ms });
+        }, 220_000);
+      }
+      receipt.native_documents.images = [];
+      for (const fixture of manifest.images ?? []) {
+        const extension = fixture.filename.split('.').at(-1);
+        if (!['jpg', 'jpeg'].includes(extension) && !nativeCapabilities.image_formats.includes(extension)) {
+          receipt.native_documents.images.push({ filename: fixture.filename, status: 'not_supported', advertised_formats: nativeCapabilities.image_formats });
+          continue;
+        }
+        await step('decode actual native image fixture ' + fixture.filename, async () => {
+          assert(/^[a-z0-9.-]+$/.test(fixture.filename));
+          const bytes = await fs.readFile(path.join(opt.inputs, fixture.filename));
+          assert.equal(bytes.length, fixture.bytes);
+          assert.equal(digest(bytes), fixture.sha256);
+          const sourceUri = 'content://com.crispstrobe.native-ocr-fixture/Photo%3A' + fixture.filename;
+          const result = await importBytes('ocr_workspace_import_bytes', bytes,
+            { name: fixture.filename, sourceUri, requestId: randomUUID() });
+          assert.equal(result.source_uri, sourceUri);
+          assert.equal(result.pages.length, 1);
+          const asset = validateAsset(result.pages[0], appData);
+          assert.equal(asset.width, fixture.display_width);
+          assert.equal(asset.height, fixture.display_height);
+          assert.equal(await privateDigest(archivedPath(result)), fixture.sha256);
+          await fs.writeFile(path.join(output, 'native-' + fixture.filename + '.png'), await privateBytes(asset.image_path));
+          receipt.native_documents.images.push({ filename: fixture.filename, status: 'passed', original_sha256: fixture.sha256,
+            orientation: fixture.orientation, asset });
+        }, 120_000);
+      }
+      await step('reject a malformed PDF through the native importer', async () => {
+        let rejection;
+        try {
+          await importBytes('ocr_workspace_import_bytes', Buffer.from('%PDF-1.7\ninvalid cross-reference and page tree\n'),
+            { name: 'malformed.pdf', requestId: randomUUID() }, 45_000);
+        } catch (error) { rejection = String(error); }
+        assert(rejection && !/timed out|Target closed|Session closed|Connection closed/i.test(rejection),
+          'A timeout or disconnected driver cannot establish malformed-document rejection.');
+        receipt.native_documents.malformed_pdf_rejection = rejection;
+      }, 60_000);
+      receipt.native_documents.status = 'passed';
+    }
+
+    const repeatStartPages = saved.project.pages.length;
     receipt.repeated_inference = { requested_pages: opt['repeat-pages'], completed_pages: 0,
       unique_source_rasters: 2, saved_page_ids: [],
       qualification: 'Sequential actual native recognition and durable page saves, alternating two synthetic rasters. This does not establish diverse corpus accuracy or large-document capacity.' };
@@ -573,7 +691,7 @@ async function main() {
         assert.equal(committed.revision, saved.revision + 1);
         saved = await invoke('ocr_workspace_load', { projectId: project.id });
         assert.equal(saved.revision, committed.revision);
-        assert.equal(saved.project.pages.length, index + 3);
+        assert.equal(saved.project.pages.length, repeatStartPages + index + 1);
         assert.equal(saved.project.pages.at(-1).id, pageId);
         assert.equal(saved.project.pages.at(-1).regions.map(region => region.text).join('\n'), text);
         assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid, 'Application restarted during repeated native recognition.');
@@ -623,8 +741,79 @@ async function main() {
       exportPath = undefined;
     }, 130_000);
 
+    await step('hand a capture fixture through the actual workspace file input and recognize from its UI', async () => {
+      let opened = false;
+      for (const candidate of await page.getByRole('button', { name: 'OCR', exact: true }).all()) {
+        if (await candidate.isVisible()) { await candidate.click({ timeout: budget(15_000, 'open OCR workspace') }); opened = true; break; }
+      }
+      if (!opened) {
+        await page.getByRole('button', { name: 'Tools', exact: true }).click({ timeout: budget(15_000, 'open mobile tools') });
+        await page.locator('#mobile-tools-menu').getByRole('button', { name: 'OCR', exact: true })
+          .click({ timeout: budget(15_000, 'open mobile OCR workspace') });
+      }
+      const workspace = page.getByRole('region', { name: 'OCR document workspace', exact: true });
+      await workspace.waitFor({ state: 'visible', timeout: budget(30_000, 'workspace visible') });
+      await page.waitForFunction(name => {
+        const section = document.querySelector('section[aria-label="OCR document workspace"]');
+        return section?.querySelector('input[aria-label="Project name"]')?.value === name
+          && [...section.querySelectorAll('button')].some(button => button.textContent.includes('Capture photo') && !button.disabled);
+      }, saved.project.name, { timeout: budget(30_000, 'restore current project in the UI') });
+      const before = saved.project.pages.length;
+      const fileInput = workspace.getByLabel('Camera photo file', { exact: true });
+      assert.equal(await fileInput.getAttribute('capture'), 'environment');
+      assert.equal(await fileInput.getAttribute('accept'), 'image/*');
+      // This reaches the real capture handler, native image importer, project
+      // autosave and preparation UI. It deliberately does not claim that a
+      // system camera opened or produced the supplied synthetic PNG.
+      await fileInput.setInputFiles({ name: 'Capture handoff fixture.png', mimeType: 'image/png', buffer: prepared.bytes },
+        { timeout: budget(30_000, 'capture file handoff') });
+      let captured;
+      while (Date.now() < deadline) {
+        const loaded = await invoke('ocr_workspace_load', { projectId: project.id });
+        if (loaded.project.pages.length === before + 1) { saved = loaded; captured = loaded.project.pages.at(-1); break; }
+        assert.equal(loaded.project.pages.length, before, 'Capture UI unexpectedly replaced or duplicated the project.');
+        await delay(500);
+      }
+      assert(captured, 'Capture file handoff did not durably add a page.');
+      assert.equal(captured.status, 'pending');
+      assert.equal(captured.width, prepared.inputs.fixture.width);
+      assert.equal(captured.height, prepared.inputs.fixture.height);
+      assert.equal(captured.originalImagePath, captured.imagePath);
+      const document = saved.project.documents.find(item => item.id === captured.documentId);
+      assert(document && document.name === 'Capture handoff fixture.png');
+      assert.equal(await privateDigest(archivedPath({ source_uri: document.sourceUri })), prepared.inputs.fixture.png_sha256);
+      await page.screenshot({ path: path.join(output, 'actual-workspace-capture.png') });
+      const capturedId = captured.id;
+      const observed = await measuredRecognition('ui-capture', async () => {
+        await workspace.getByRole('button', { name: 'Recognize page', exact: true })
+          .click({ timeout: budget(15_000, 'recognize captured page from UI') });
+        while (Date.now() < deadline) {
+          const loaded = await invoke('ocr_workspace_load', { projectId: project.id });
+          const target = loaded.project.pages.find(item => item.id === capturedId);
+          assert(target, 'Captured page disappeared during UI recognition.');
+          assert.notEqual(target.status, 'failed', 'UI recognition failed: ' + target.error);
+          if (target.status === 'recognized') {
+            saved = loaded;
+            return { elapsed_ms: target.elapsedMs, page: target };
+          }
+          await delay(750);
+        }
+        throw new Error('UI recognition did not durably complete before its deadline.');
+      });
+      const text = observed.page.regions.map(region => region.text).join('\n');
+      const cer = textErrorRate(prepared.inputs.fixture.text, text);
+      assert(cer <= 0.25, 'Actual capture UI recognition exceeded the fixture Unicode CER limit: ' + cer);
+      assert.equal(observed.page.approved, false);
+      await page.screenshot({ path: path.join(output, 'actual-workspace-capture-recognized.png') });
+      receipt.ui_interactions_tested = true;
+      receipt.capture_handoff = { status: 'passed', supplied_fixture_sha256: prepared.inputs.fixture.png_sha256,
+        page_id: capturedId, saved_revision: saved.revision, text, unicode_cer: cer,
+        physical_camera_tested: false, system_camera_opened: false,
+        scope: 'Actual workspace file input, native import, autosave, preparation view and UI-triggered recognition with a supplied synthetic image.' };
+    }, 300_000);
+
     await step('verify originals remain unchanged and the app process survives', async () => {
-      assert.equal(await privateDigest(imported.source_uri), prepared.inputs.fixture.png_sha256);
+      assert.equal(await privateDigest(archivedPath(imported)), prepared.inputs.fixture.png_sha256);
       assert.equal(await privateDigest(original.image_path), receipt.original_asset_sha256);
       assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid, 'The app restarted or crashed during native OCR.');
       receipt.originals_preserved = true;
