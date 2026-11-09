@@ -87,6 +87,11 @@ static recognition recognize(void * context, const std::string & path) {
     require(regions && count > 0 && full_text, "Mobile OCR produced no regions");
     recognition result{full_text, 0, count, ms};
     result.normalized_cer = error_rate(result.text);
+    // Preserve negative evidence before any assertion aborts this case.
+    std::cerr << "{\"event\":\"native_ocr_observation\",\"path\":" << quote(path)
+              << ",\"text\":" << quote(result.text) << ",\"normalized_cer\":"
+              << result.normalized_cer << ",\"regions\":" << count
+              << ",\"milliseconds\":" << ms << "}\n";
     require(result.text.find("2048") != std::string::npos, "Mobile OCR lost the synthetic document number");
     require(result.normalized_cer <= 0.25, "Mobile OCR exceeded the synthetic smoke error threshold");
     int review_length = 0;
@@ -145,6 +150,7 @@ int main(int argc, char ** argv) {
         require(crispembed_scan_photo_angle(tilted.get(), size_t(out_width) * out_height * 3,
                                             out_width, out_height, 3, 15, &correction) == 0,
                 "Mobile angle analysis failed");
+        std::cerr << "Known clockwise rotation: 5; measured correction: " << correction << '\n';
         require(std::isfinite(correction) && std::abs(correction + 5) <= 1.0,
                 "Mobile tilt estimate missed the known clockwise rotation");
         int fixed_width = 0, fixed_height = 0;

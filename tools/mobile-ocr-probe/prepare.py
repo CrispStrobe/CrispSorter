@@ -71,7 +71,8 @@ def make_text_fixture(output, font_path):
     image.save(output / 'page.png')
     (output / 'page.rgb').write_bytes(image.tobytes())
     return {'width': WIDTH, 'height': HEIGHT, 'text': '\n'.join(LINES),
-            'font_sha256': digest(font_path), 'image_sha256': digest(output / 'page.ppm')}
+            'font_sha256': digest(font_path), 'image_sha256': digest(output / 'page.ppm'),
+            'rgb_sha256': digest(output / 'page.rgb'), 'png_sha256': digest(output / 'page.png')}
 
 
 def main():
