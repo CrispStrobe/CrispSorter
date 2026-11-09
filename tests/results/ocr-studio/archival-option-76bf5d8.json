@@ -1,0 +1,53 @@
+{
+  "source_sha": "76bf5d8d9f388f93b7109558b8bcaf834d8e0c14",
+  "run_id": 42633072468,
+  "job_id": 129214042721,
+  "job_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42633072468/job/129214042721",
+  "conclusion": "success",
+  "scope": "Production Svelte browser fixture and frontend checks; no native OCR or PDF artifact claim.",
+  "frontend_tests": {
+    "passed": 233,
+    "failed": 0
+  },
+  "browser": {
+    "passed": 32,
+    "failed": 0,
+    "errors": [],
+    "synthetic_ui_only": true
+  },
+  "archival_cases": [
+    {
+      "name": "archival export keeps approved page geometry and sends an explicit PDF/A request",
+      "status": "passed",
+      "duration_ms": 661
+    },
+    {
+      "name": "unsupported archival output is disabled with its native capability reason",
+      "status": "passed",
+      "duration_ms": 564
+    }
+  ],
+  "artifact": {
+    "id": 13683867835,
+    "bytes": 657422,
+    "sha256": "9bb7195afc321a981c1dcadd08b4c3cb429f27239fbc02a804e37ef2997e4081",
+    "download_digest_verified": true
+  },
+  "report_sha256": "9735e681bc9c21798cb502e51eb685a202414a2630f633129fe60d657d9bd14a",
+  "historical_failure": {
+    "source_sha": "d0f9baa9d424a4aaa3d439ae08965191de715cc8",
+    "run_id": 42625583821,
+    "passed": 31,
+    "failed": 1,
+    "cause": "Playwright1.62.1 isDisabled retargets OPTION through the enclosing label to the enabled SELECT; the unavailable native OPTION itself was disabled."
+  },
+  "assertions": [
+    "native OPTION.disabled is true",
+    "OPTION.matches(:disabled) is true",
+    "parent SELECT remains enabled",
+    "native capability reason is visible",
+    "keyboard navigation enters supported alto/docx and skips unavailable pdfa",
+    "zero export calls while checking unsupported availability"
+  ],
+  "receipt_limit": "This historical workflow uploaded report.json/screenshots but omitted the extra archival-option-state.json file. The assertion results are retained; the combined b876 workflow adds that diagnostic file to its artifact manifest."
+}
