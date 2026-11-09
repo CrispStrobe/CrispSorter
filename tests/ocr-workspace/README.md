@@ -42,7 +42,7 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 
 The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=batch-recovery`, `?scenario=extraction-delay`,
-`?scenario=project-recovery`, `?scenario=prepare-unchanged`, or `?scenario=mobile-models`. The queue and
+`?scenario=project-recovery`, `?scenario=prepare-unchanged`, `?scenario=import-control`, or `?scenario=mobile-models`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
@@ -80,6 +80,9 @@ retry, and recognition readiness without network requests or real model weights.
   language. The phone progress screen is captured as `ocr-phone-model-setup.png`.
 - Camera import rejects unsupported image formats before transferring bytes,
   preserves a valid photo, and opens preparation without starting recognition.
+- Held document imports expose correlated progress and a reachable phone Cancel
+  control, stay locked until the current native step finishes, and save completed
+  documents while rejecting the cancelled document without starting later files.
 - Four-corner correction exposes touch-sized keyboard-operable handles, rejects
   invalid geometry, invalidates stale text after correction, and restores the
   original review evidence with Undo.

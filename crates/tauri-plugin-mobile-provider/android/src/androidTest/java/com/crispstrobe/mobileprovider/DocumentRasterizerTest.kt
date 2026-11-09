@@ -115,6 +115,13 @@ class DocumentRasterizerTest {
         assertArrayEquals(original, source.readBytes())
     }
 
+    @Test fun rejectsIncompleteImagePayloadsInsteadOfImportingPartialPixels() = isolated { wrapped, home ->
+        assumeTrue(Build.VERSION.SDK_INT >= 28)
+        val complete = fixture("oriented.jpg.b64")
+        val source = archive(home, complete.copyOf(complete.size - 100), "jpg")
+        rejects { DocumentRasterizer(wrapped).rasterize(source.path, staging(home).path, "image") }
+    }
+
     @Test fun cancelsBeforeOpeningAndBetweenPagesWithoutReturningAPartialDocument() = isolated { wrapped, home ->
         val original = fixture("two-pages.pdf"); val source = archive(home, original, "pdf"); val cancelled = staging(home)
         File(cancelled, "cancel").writeText("")

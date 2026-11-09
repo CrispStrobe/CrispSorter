@@ -36,6 +36,13 @@ export interface OcrProject {
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
 export interface ImportedDocument { source_uri: string; archive_uri?: string; name: string; pages: ImportedPage[]; }
+
+/** Provider identities stay opaque; immutable archives identify a repeated file
+ * selected from another provider without changing its original source identity. */
+export function findSourceDocument(project: OcrProject, sourceUri: string, archiveUri?: string): OcrDocument | undefined {
+    return project.documents.find(document => document.sourceUri === sourceUri || document.archiveUri === sourceUri
+        || (!!archiveUri && document.archiveUri === archiveUri));
+}
 export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
     confidence?: number | null; char_conf?: number[];

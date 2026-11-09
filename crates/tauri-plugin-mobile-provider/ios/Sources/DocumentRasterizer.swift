@@ -107,7 +107,7 @@ struct DocumentRasterizer {
         space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
       throw RasterizerError(message: "This page needs more memory than is available. Reduce the photo resolution and retry.")
     }
-    context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
     return context
   }
 
@@ -117,10 +117,10 @@ struct DocumentRasterizer {
     let writer = try BoundedRasterWriter(url: target, output: output, limit: Self.maxOutputBytes - bytesWritten)
     defer { try? writer.handle.close() }
     var callbacks = CGDataConsumerCallbacks(putBytes: { pointer, bytes, count in
-      guard let pointer, let bytes else { return 0 }
+      guard let pointer else { return 0 }
       return Unmanaged<BoundedRasterWriter>.fromOpaque(pointer).takeUnretainedValue().write(bytes, count: count)
     }, releaseConsumer: nil)
-    guard let consumer = CGDataConsumer(info: Unmanaged.passUnretained(writer).toOpaque(), callbacks: &callbacks),
+    guard let consumer = CGDataConsumer(info: Unmanaged.passUnretained(writer).toOpaque(), cbks: &callbacks),
       let destination = CGImageDestinationCreateWithDataConsumer(consumer, UTType.png.identifier as CFString, 1, nil) else {
       throw RasterizerError(message: "Could not create the page encoder.")
     }
@@ -163,7 +163,7 @@ struct DocumentRasterizer {
         }
         let (width, height) = try Self.boundedSize(width: pointsWidth, height: pointsHeight, preferredScale: Self.pdfDpi / 72)
         let canvas = try context(width: width, height: height)
-        canvas.concatenate(sourcePage.getDrawingTransform(.cropBox, rect: CGRect(x: 0, y: 0, width: width, height: height), rotate: 0, preserveAspectRatio: true))
+        canvas.concatenate(sourcePage.getDrawingTransform(.cropBox, rect: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)), rotate: 0, preserveAspectRatio: true))
         canvas.drawPDFPage(sourcePage)
         guard let raster = canvas.makeImage() else { throw RasterizerError(message: "PDF page \(index + 1) could not be rendered.") }
         let (path, count) = try write(raster, output: output, index: index, bytesWritten: bytes); bytes += count
@@ -197,9 +197,12 @@ struct DocumentRasterizer {
       thumbnail.width > 0, thumbnail.height > 0, thumbnail.width <= Self.maxPagePixels / thumbnail.height else {
       throw RasterizerError(message: "The primary image could not be decoded within the raster limit.")
     }
+    guard CGImageSourceGetStatusAtIndex(imageSource, index) == .statusComplete else {
+      throw RasterizerError(message: "This image is incomplete or damaged. Import a complete JPEG, PNG, or supported phone image.")
+    }
     try checkCancelled(output)
     let canvas = try context(width: thumbnail.width, height: thumbnail.height)
-    canvas.draw(thumbnail, in: CGRect(x: 0, y: 0, width: thumbnail.width, height: thumbnail.height))
+    canvas.draw(thumbnail, in: CGRect(x: 0, y: 0, width: CGFloat(thumbnail.width), height: CGFloat(thumbnail.height)))
     guard let raster = canvas.makeImage() else { throw RasterizerError(message: "The image could not be prepared for recognition.") }
     let (path, count) = try write(raster, output: output, index: 0, bytesWritten: 0)
     var warnings = ["Imported the primary still image. Auxiliary images and animation frames are not included."]
@@ -225,9 +228,10 @@ private final class BoundedRasterWriter {
     self.handle = try FileHandle(forWritingTo: url); self.output = output; self.limit = limit
   }
 
-  func write(_ bytes: UnsafeRawPointer, count length: Int) -> Int {
+  func write(_ bytes: UnsafeRawPointer?, count length: Int) -> Int {
     guard failure == nil else { return 0 }
     do {
+      guard let bytes else { throw RasterizerError(message: "The page encoder returned an empty buffer.") }
       if FileManager.default.fileExists(atPath: output.appendingPathComponent("cancel").path) { throw RasterizerError(message: "OCR_IMPORT_CANCELLED") }
       guard length >= 0, count <= limit - length else { throw RasterizerError(message: "Rendered document exceeds the 512 MiB import limit.") }
       try handle.write(contentsOf: Data(bytes: bytes, count: length)); count += length

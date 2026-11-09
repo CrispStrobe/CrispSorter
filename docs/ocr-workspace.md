@@ -7,8 +7,9 @@ rerunning completed recognition.
 
 ## Work through a document
 
-1. **Add documents.** Select one or more PDFs, TIFFs, or page images. PDFs require
-   the PDF rendering build feature and PDFium. JPEG orientation is baked into the
+1. **Add documents.** Select one or more PDFs, TIFFs, or page images. Desktop PDFs require
+   the PDF rendering build feature and PDFium. Mobile PDFs use the registered
+   Android or iOS document reader. JPEG orientation is baked into the
    working pixels. TIFF frames are imported in order; unsupported frames stop the
    import with an error rather than silently disappearing.
 2. **Arrange and prepare.** Use the page rail to select pages, filter by status,
@@ -108,11 +109,25 @@ side-by-side workspace.
 
 **Capture photo** uses the camera/photo selection supplied by the system webview.
 Available choices depend on the platform. It accepts JPEG, PNG, WebP, and BMP
-images up to 32 MiB. Convert HEIC, HEIF, or AVIF to JPEG/PNG before import. The
+images up to 32 MiB. HEIC, HEIF, and AVIF are offered only when the device reports
+the matching native decoder; unsupported formats require a JPEG/PNG copy. The
 native import archives original bytes, applies image orientation, and creates
 an immutable working page before returning. An imported photo opens **Prepare
 photo** where the paired photo tools are available; recognition is a separate
 explicit action.
+
+On mobile, PDFs render one page at a time at 200 DPI, with a 16 megapixel raster
+cap. Their physical page dimensions are retained when a large page must be
+reduced. A document must fit the 32 MiB native input limit, 10,000 page limit,
+and 512 MiB rendered-output limit; the document-provider bridge currently has
+a stricter 16 MiB transfer limit. Oversized, damaged, and password-protected
+PDFs produce an actionable error. No partial document is added on failure.
+**Cancel import** stops after the current native step; earlier completed
+documents in the selection remain saved. The original provider URI and private
+source archive are stored separately, and repeated selections of the same
+archived original are detected even when their provider identifiers differ.
+See [mobile document import](ocr-mobile-import.md) for the native contracts,
+limits, fixtures, and qualification scope.
 
 The capture input requests `image/*` with `capture="environment"`, which is
 required by the locked Android webview's delegated camera path. Android declares

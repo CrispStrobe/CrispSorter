@@ -83,7 +83,9 @@ pub async fn rasterize_ocr_document<R: Runtime>(
     kind: &str,
 ) -> Result<serde_json::Value, String> {
     use tauri::Manager;
-    app.state::<mobile::Provider<R>>().0.run_mobile_plugin_async(
+    let provider = app.try_state::<mobile::Provider<R>>()
+        .ok_or_else(|| "The mobile document reader is unavailable. Restart the app and retry.".to_string())?;
+    provider.0.run_mobile_plugin_async(
         "rasterizeDocument",
         serde_json::json!({ "sourcePath": source_path, "outputDir": output_dir, "kind": kind }),
     ).await.map_err(|e| e.to_string())

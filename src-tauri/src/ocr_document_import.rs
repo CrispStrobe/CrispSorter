@@ -154,7 +154,7 @@ pub(super) fn archive(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, so
             if !metadata.file_type().is_file() || metadata.len() != bytes.len() as u64 || fs::canonicalize(&path).map_err(|e| e.to_string())? != path {
                 return Err("The archived source does not match this import. Restore the OCR workspace before retrying.".into());
             }
-            let mut existing = File::open(&path).map_err(|e| e.to_string())?;
+            let mut existing = File::open(&path).map_err(|e| e.to_string())?.take(bytes.len() as u64 + 1);
             let mut hash = Sha256::new(); let mut buffer = [0u8; 64 * 1024];
             loop { let count = existing.read(&mut buffer).map_err(|e| e.to_string())?; if count == 0 { break; } hash.update(&buffer[..count]); }
             if hash.finalize() != digest { return Err("The archived source failed its content hash check.".into()); }
@@ -284,12 +284,18 @@ fn adopt_pages(root: &Path, staging: &Path, native: NativeDocument, job: Option<
         }
         if copied != length { return Err("A rendered page changed while it was being imported.".into()); }
         target.as_file().sync_all().map_err(|e| e.to_string())?;
-        let committed = assets.join(format!("{:x}.png", hash.finalize()));
+        let digest = hash.finalize();
+        let committed = assets.join(format!("{digest:x}.png"));
         match target.persist_noclobber(&committed) {
             Ok(_) => sync_directory(&assets)?,
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 if fs::canonicalize(&committed).map_err(|e| e.to_string())? != committed ||
-                    !fs::symlink_metadata(&committed).map_err(|e| e.to_string())?.file_type().is_file() { return Err("Invalid existing OCR page asset.".into()); }
+                    !fs::symlink_metadata(&committed).map_err(|e| e.to_string())?.file_type().is_file() ||
+                    fs::metadata(&committed).map_err(|e| e.to_string())?.len() != length { return Err("Invalid existing OCR page asset.".into()); }
+                let mut existing = File::open(&committed).map_err(|e| e.to_string())?.take(length + 1);
+                let mut existing_hash = Sha256::new();
+                loop { let count = existing.read(&mut buffer).map_err(|e| e.to_string())?; if count == 0 { break; } existing_hash.update(&buffer[..count]); }
+                if existing_hash.finalize() != digest { return Err("The existing OCR page failed its content hash check. Restore the page cache before retrying.".into()); }
             }
             Err(error) => return Err(format!("Commit imported page: {}", error.error)),
         }
@@ -340,6 +346,10 @@ mod tests {
             width_points: 200.0, height_points: 300.0, warnings: vec!["Source retained".into()] }] };
         let valid = adopt_pages(root.path(), &staging, make(), None).unwrap();
         assert_eq!(valid[0].page_width_points, Some(200.0)); assert_eq!(valid[0].warnings, vec!["Source retained"]);
+        let asset = fs::read(&valid[0].image_path).unwrap();
+        fs::write(&valid[0].image_path, vec![0u8; asset.len()]).unwrap();
+        assert!(adopt_pages(root.path(), &staging, make(), None).unwrap_err().contains("hash check"));
+        fs::write(&valid[0].image_path, asset).unwrap();
         let mut escaped = make(); escaped.pages[0].path = root.path().join("outside.png").to_string_lossy().into_owned();
         assert!(adopt_pages(root.path(), &staging, escaped, None).is_err());
         let mut wrong = make(); wrong.bytes += 1; assert!(adopt_pages(root.path(), &staging, wrong, None).is_err());

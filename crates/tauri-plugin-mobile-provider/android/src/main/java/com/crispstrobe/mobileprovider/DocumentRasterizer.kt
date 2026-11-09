@@ -93,13 +93,17 @@ internal class DocumentRasterizer(private val context: Context, private val onPr
     private class LimitedOutput(private val target: OutputStream, private val remaining: Long, private val output: File) : OutputStream() {
         var count = 0L
             private set
+        var failure: IOException? = null
+            private set
         override fun write(value: Int) { reserve(1); target.write(value); count++ }
         override fun write(bytes: ByteArray, offset: Int, length: Int) {
             reserve(length); target.write(bytes, offset, length); count += length
         }
         private fun reserve(length: Int) {
-            if (File(output, "cancel").exists()) throw IOException("OCR_IMPORT_CANCELLED")
-            if (length < 0 || count > remaining - length) throw IOException("Rendered document exceeds the 512 MiB import limit")
+            val error = if (File(output, "cancel").exists()) IOException("OCR_IMPORT_CANCELLED")
+                else if (length < 0 || count > remaining - length) IOException("Rendered document exceeds the 512 MiB import limit")
+                else null
+            if (error != null) { failure = error; throw error }
         }
         override fun flush() = target.flush()
     }
@@ -111,7 +115,9 @@ internal class DocumentRasterizer(private val context: Context, private val onPr
         var size = 0L
         FileOutputStream(target).use { stream ->
             val limited = LimitedOutput(stream, MAX_OUTPUT_BYTES - bytesWritten, output)
-            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, limited)) { "Could not encode the rendered page" }
+            val encoded = bitmap.compress(Bitmap.CompressFormat.PNG, 100, limited)
+            limited.failure?.let { throw it }
+            check(encoded) { "Could not encode the rendered page" }
             limited.flush(); stream.fd.sync(); size = limited.count
         }
         checkCancelled(output)

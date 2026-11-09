@@ -1,5 +1,5 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
-import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress } from '../../src/lib/ocr/client';
+import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ImportOptions, ImportProgress } from '../../src/lib/ocr/client';
 import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
 import { photoQuadError } from '../../src/lib/ocr/photo';
 
@@ -74,6 +74,10 @@ export interface SmokeControl {
     failModelInstall: boolean;
     releaseModelInstall(): boolean;
     emitModelProgress(progress: ModelDownloadProgress): boolean;
+    pendingImports: number;
+    cancelledImports: number;
+    releaseImport(): boolean;
+    emitImportProgress(progress: ImportProgress): boolean;
     released: string[];
     releaseNext():boolean;
     releaseExtraction():boolean;
@@ -126,11 +130,15 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pendingExtractions:Array<()=>void>=[];
     const pendingSaves:Array<()=>void>=[];
     const pendingModelInstalls:Array<{release:()=>void;onProgress?:(progress:ModelDownloadProgress)=>void}>=[];
+    const pendingImports:Array<{release:()=>void;options?:ImportOptions}>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
+        pendingImports:0,cancelledImports:0,
+        releaseImport(){const item=pendingImports.shift();if(!item)return false;control.pendingImports=pendingImports.length;item.release();return true;},
+        emitImportProgress(progress){const item=pendingImports[0];if(!item)return false;item.options?.onProgress?.(copy(progress));return true;},
         releaseModelInstall(){const item=pendingModelInstalls.shift();if(!item)return false;control.pendingModelInstalls=pendingModelInstalls.length;item.release();return true;},
         emitModelProgress(progress){const item=pendingModelInstalls[0];if(!item)return false;item.onProgress?.(copy(progress));return true;},
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
@@ -159,7 +167,21 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             const saved={project:copy(snapshot),revision:previous+1,saved_at:Date.now(),path:'/fixtures/project.json'};
             savedById.set(snapshot.id,saved);control.saves.push(copy(saved));control.lastSaved=copy(snapshot);return copy(saved);
         },
-        async importDocument(locationUri){note('importDocument',{locationUri});return {source_uri:locationUri,name:locationUri.split('/').pop()!,pages:[{image_path:pagePath(4),width:1000,height:1400}]};},
+        async importDocument(locationUri,options){
+            note('importDocument',{locationUri});
+            if(scenario==='import-control'){
+                const onAbort=()=>{control.cancelledImports++;};
+                options?.signal?.addEventListener('abort',onAbort,{once:true});
+                control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
+                try{
+                    await new Promise<void>(release=>{pendingImports.push({release,options});control.pendingImports=pendingImports.length;});
+                    if(options?.signal?.aborted)throw new DOMException('Document import cancelled.','AbortError');
+                }finally{control.activeNative--;options?.signal?.removeEventListener('abort',onAbort);}
+                return {source_uri:locationUri,archive_uri:`/fixtures/archive/${locationUri.split('/').pop()}`,name:locationUri.split('/').pop()!,
+                    pages:[4,5].map(page=>({image_path:pagePath(page),width:1000,height:1400}))};
+            }
+            return {source_uri:locationUri,name:locationUri.split('/').pop()!,pages:[{image_path:pagePath(4),width:1000,height:1400}]};
+        },
         async importImage(name,bytes){note('importImage',{name,byteLength:bytes.length});return {source_uri:'/fixtures/captured-photo.png',name,pages:[{image_path:'/fixtures/captured-photo.png',width:1000,height:1400}]};},
         async assessPhoto(path){
             note('assessPhoto',{pagePath:path});
@@ -211,7 +233,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async table(path){note('table',{path});await waitForExtraction();return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
         async math(path){note('math',{path});await waitForExtraction();return String.raw`E = mc^2`;},
         async reindex(sourceUri,text){note('reindex',{sourceUri,text});return {documents:1};},
-        async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
+        async pickDocuments(){note('pickDocuments');return scenario==='import-control'?['/fixtures/first.pdf','/fixtures/second.pdf','/fixtures/third.pdf']:['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
         async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
         imageUrl(path){return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(pageNumber(path)))}`;},

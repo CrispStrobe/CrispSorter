@@ -102,6 +102,7 @@
     updateRegion,
     addRegion,
     deleteRegion,
+    findSourceDocument,
     moveRegion,
     movePage,
     removePage,
@@ -582,7 +583,7 @@
       for (const path of selected) {
         if (controller.signal.aborted) break;
         try {
-          if (project.documents.some((d) => d.sourceUri === path)) {
+          if (findSourceDocument(project, path)) {
             errors.push(
               `${path.split(/[\\/]/).pop()}: already in this project`,
             );
@@ -591,6 +592,10 @@
           busy = `Importing ${path.split(/[\\/]/).pop()}`;
           const imported = await client.importDocument(path, { signal: controller.signal,
             onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); } });
+          if (findSourceDocument(project, imported.source_uri, imported.archive_uri)) {
+            errors.push(`${imported.name}: this original document is already in the project`);
+            continue;
+          }
           const next = addDocument(project, imported);
           if (!project.pages.length) {
             next.name = imported.name.replace(/\.[^.]+$/, "") || "OCR project";
@@ -630,6 +635,13 @@
       const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()), {
         signal: controller.signal, onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); },
       });
+      const existing = findSourceDocument(project, imported.source_uri, imported.archive_uri);
+      if (existing) {
+        const first = project.pages.find(page => page.documentId === existing.id);
+        if (first) selectPage(first.id);
+        notice = "This original photo is already in the project.";
+        return;
+      }
       const before = project.pages.length;
       const next = addDocument(project, imported);
       if (!before) next.name = imported.name.replace(/\.[^.]+$/, "") || "Photo project";
@@ -706,7 +718,7 @@
     untrack(() => void openRequestedDocument(uri));
   });
   async function openRequestedDocument(uri: string) {
-    const existing = project.documents.find((d) => d.sourceUri === uri);
+    const existing = findSourceDocument(project, uri);
     const firstPage =
       existing && project.pages.find((p) => p.documentId === existing.id);
     if (firstPage) {
@@ -1707,6 +1719,7 @@
         .catch(fail);
     return () => {
       mounted = false;
+      importController?.abort();
       unlisten?.();
       unlistenClose?.();
       queue.cancel();
@@ -3460,9 +3473,9 @@
     <span class="status-dot" class:working={!!busy || queueActive}></span><span
       class="status-message">{busy || notice || "Ready"}</span
     >
-    {#if importController}<button class="cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
+    {#if importController}<button class="button cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
     <div class="toolbar-spacer"></div>
-    {#if project.pages.length}<span
+    {#if project.pages.length && !importController}<span
         >{metrics.recognized}/{metrics.included} recognized</span
       ><span class="status-divider"></span><span class="approved-stat"
         ><CheckCheck size={12} />{metrics.approved} approved</span

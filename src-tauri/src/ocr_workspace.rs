@@ -287,8 +287,10 @@ pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String, r
             file.take(MAX_CAPTURE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
             Ok(bytes)
         }).await.map_err(|e| format!("Read import worker: {e}"))??;
-        let metadata = ImportMetadata { name, source_uri: location_uri.starts_with("file://").then_some(location_uri), request_id };
-        document_import::from_bytes(app, root, metadata, bytes, true).await
+        let metadata = ImportMetadata { name, source_uri: None, request_id };
+        let mut document = document_import::from_bytes(app, root, metadata, bytes, true).await?;
+        document.source_uri = location_uri;
+        Ok(document)
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {

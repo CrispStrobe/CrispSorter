@@ -18,7 +18,7 @@ on:
 
 concurrency:
   group: mobile-provider-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' || github.ref == 'refs/heads/feat/ocr-mobile-documents' || github.head_ref == 'feat/ocr-mobile-documents' }}
 
 jobs:
   android-provider:

@@ -39,7 +39,7 @@ final class DocumentRasterizerTests: XCTestCase {
       let context = try XCTUnwrap(CGContext(data: pointer.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
         bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
-      context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+      context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
     }
     return bytes
   }
@@ -137,6 +137,14 @@ final class DocumentRasterizerTests: XCTestCase {
       let page = try XCTUnwrap(result.pages.first)
       XCTAssertEqual(page.width, 80); XCTAssertEqual(page.height, 120)
       XCTAssertEqual(try Data(contentsOf: archived), original)
+    }
+  }
+
+  func testRejectsIncompleteImagesInsteadOfImportingPartialPixels() throws {
+    try isolated { home in
+      let complete = try fixture("oriented.jpg.b64")
+      let source = try archive(home, bytes: Data(complete.dropLast(100)), fileExtension: "jpg")
+      XCTAssertThrowsError(try DocumentRasterizer(home: home).rasterize(sourcePath: source.path, outputDir: staging(home).path, kind: "image"))
     }
   }
 
