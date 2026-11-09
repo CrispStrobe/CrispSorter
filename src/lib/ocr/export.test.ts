@@ -24,4 +24,9 @@ describe("reviewed archival export selection", () => {
     }
     expect(() => resolveExportFormat("pdf", { formats: ["text"] })).toThrow(/unavailable/);
   });
+
+  it("preserves ordinary PDF when an older native renderer lacks archival support", () => {
+    expect(resolveExportFormat("pdf", { formats: ["text", "pdf"], archival_pdf_export: false }))
+      .toEqual({ format: "pdf", pdfa: false });
+  });
 });

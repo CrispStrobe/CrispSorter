@@ -291,8 +291,9 @@ existing chunking and semantic/full-text indexing pipeline.
 
 Searchable PDF export requires the matching updated native renderer and the
 `ocr-reviewed-pdf` feature (included in `ocr-workspace`). Its native capability
-mask must include decoded images, Unicode mappings and bidirectional layout.
-Older native builds retain the other export formats. The PDF/A-2b option also
+mask must include decoded images and Unicode mappings. Bidirectional layout is
+advertised independently, so older capable builds retain ordinary searchable
+PDF with their existing script limits. The PDF/A-2b option also
 requires the archival capability; unsupported builds show a disabled option and
 the native capability reason. Both PDF choices retain source page dimensions or
 the explicitly selected scan resolution and save with a `.pdf` extension.

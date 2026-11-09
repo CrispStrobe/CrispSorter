@@ -146,7 +146,8 @@ fn render_region(region: &OcrRegion, width: i32, height: i32) -> Result<OcrRegio
 ///
 /// `Text` is produced in Rust; structured formats use the native renderer.
 /// PDF requires a matching renderer with decoded images and Unicode support.
-/// PDF/A requests require the native PDF/A-2b and Unicode bidi capability bits.
+/// PDF/A requests require the native PDF/A-2b capability. Bidirectional text
+/// remains a separate capability, so older renderers retain valid Latin PDF.
 pub fn render(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> Result<Vec<u8>> {
     anyhow::ensure!(!pdfa || fmt == OcrOutputFormat::Pdf, "PDF/A applies only to PDF output");
     anyhow::ensure!(!pdfa || reviewed_archival_pdf_available(), "PDF/A-2b requires a matching archival-capable native renderer");
@@ -161,14 +162,21 @@ pub fn render(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> Result<
 
 pub fn reviewed_pdf_render_available() -> bool {
     #[cfg(feature = "ocr-reviewed-pdf")]
-    { crispembed::ocr_render_capabilities() & 23 == 23 }
+    { crispembed::ocr_render_capabilities() & 7 == 7 }
     #[cfg(not(feature = "ocr-reviewed-pdf"))]
     { false }
 }
 
 pub fn reviewed_archival_pdf_available() -> bool {
     #[cfg(feature = "ocr-reviewed-pdf")]
-    { crispembed::ocr_render_capabilities() & 31 == 31 }
+    { crispembed::ocr_render_capabilities() & 15 == 15 }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    { false }
+}
+
+pub fn reviewed_bidi_pdf_available() -> bool {
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    { crispembed::ocr_render_capabilities() & 23 == 23 }
     #[cfg(not(feature = "ocr-reviewed-pdf"))]
     { false }
 }
