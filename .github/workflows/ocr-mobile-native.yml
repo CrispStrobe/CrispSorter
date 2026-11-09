@@ -35,6 +35,8 @@ on:
       - 'tests/fixtures/mobile-documents/**'
       - 'src-tauri/src/ocr_workspace.rs'
       - 'src-tauri/src/ocr_document_import.rs'
+      - 'src-tauri/src/ocr_atomic_output.rs'
+      - 'src-tauri/src/ocr_asset_store.rs'
       - 'src-tauri/src/ocr_photo.rs'
       - 'src-tauri/src/lib.rs'
       - 'src/lib/ocr/**'
