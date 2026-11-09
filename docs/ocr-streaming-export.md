@@ -72,3 +72,14 @@ test requires the matching native writer and has not yet run at this checkpoint.
 Native writer callback, limit, flush, and PDF conformance cases are qualified in
 CrispEmbed separately. Bidirectional reader compatibility remains a separate
 gate; streaming does not repair a reader's text-order behavior.
+
+## Cancellation contract evidence
+
+Hosted [run 42622751482](https://github.com/CrispStrobe/CrispSorter/actions/runs/42622751482)
+at `d90c4612dbbd53c938737ef42501b8bd68f09385` passed all 22 portable native
+contracts: ten storage, six atomic-output and six cancellation cases, with no
+failures or ignored tests. The [retained receipt](../tests/results/ocr-studio/storage-cancel-d90c/receipt.json)
+records the exact source hashes, verified 8,179-byte artifact ZIP and raw log.
+This exercises the production Rust modules independently of Tauri and the
+native renderer. The full application and a late post-completion stop regression
+remain separate qualification gates.

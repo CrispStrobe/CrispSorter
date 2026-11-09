@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "repository": "CrispStrobe/CrispSorter",
+  "source_commit": "d90c4612dbbd53c938737ef42501b8bd68f09385",
+  "run_id": 42622751482,
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42622751482",
+  "job_id": 129178764881,
+  "conclusion": "success",
+  "tests": {
+    "passed": 22,
+    "failed": 0,
+    "ignored": 0,
+    "groups": {
+      "storage": 10,
+      "atomic_output": 6,
+      "export_control": 6
+    },
+    "nested_process_probe_included_in_parent_count": true
+  },
+  "artifact": {
+    "id": 13677753253,
+    "bytes": 8179,
+    "sha256": "e8df8aee17cf5fc0949054e6c1b397937d6b32e42f6db7a9345fd8154a596bf8",
+    "zip_crc_verified": true
+  },
+  "sources_sha256": {
+    "src-tauri/src/model_storage.rs": "8892972fd17d4b14c44a22e504dfcd6dfa638e19f98017c8225f50a2fc5e53dc",
+    "src-tauri/src/model_storage_types.rs": "028056dfcd04cd3c323c8223d1e292602241e692c121291a6484bbf6dc611578",
+    "src-tauri/src/ocr_atomic_output.rs": "8c69717575ed7b50a4ee59c444680d17ede336d84ec66be61c60ca54d3036de8",
+    "src-tauri/src/ocr_export_control.rs": "5ff2640fa478e2a0a9000c6d6c10efdafbc217f57a2b74d262850ffc76ec6996",
+    "tests/model-storage-contract/Cargo.lock": "354070e4d613280977c4f1181ce4902590ac9beddf3ade18eb1c82370e4e213b"
+  },
+  "scope": "Actual production storage, atomic output and export control modules in a portable Rust crate. Does not compile Tauri, call the native renderer, or qualify the destination provider."
+}

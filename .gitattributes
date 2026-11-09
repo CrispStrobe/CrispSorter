@@ -4,3 +4,4 @@
 # Preserve the downloaded native test log byte for byte, including terminal spacing.
 /tests/results/ocr-studio/storage-f3cd96af/native.log -whitespace
 /tests/results/ocr-studio/storage-atomic-7688c8/native.log -whitespace
+tests/results/ocr-studio/storage-cancel-d90c/native.log -whitespace
