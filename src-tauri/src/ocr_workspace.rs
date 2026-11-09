@@ -655,7 +655,16 @@ pub async fn ocr_workspace_recognize(
         check_cpu_budget(&config)?;
     }
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
-    tokio::task::spawn_blocking(move || recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget)).await
+    tokio::task::spawn_blocking(move || {
+        let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget)?;
+        if zone.is_some() {
+            // managed_page validated the canonical path used for all I/O.
+            // A zone leaves the working image unchanged, so retain its exact
+            // project identity even with Windows extended paths or symlinks.
+            result.page.image_path = page_path;
+        }
+        Ok(result)
+    }).await
         .map_err(|e| format!("Recognition worker: {e}"))?
 }
 
