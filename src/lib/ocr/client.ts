@@ -19,6 +19,9 @@ export interface WorkspaceCapabilities {
   kie: boolean;
   table: boolean;
   math: boolean;
+  /** Isolated low-memory Qwen2-VL worker is available in this build. */
+  cpu_budget?: boolean;
+  cpu_budget_pixels?: number;
   reason?: string;
   pdf_export_reason?: string;
   reasons?: Record<string, string>;
@@ -42,6 +45,8 @@ export interface RecognitionOptions {
   engine?: string;
   language?: string;
   zone?: { x: number; y: number; w: number; h: number };
+  /** Run Qwen2-VL in the isolated low-memory CPU worker. */
+  cpuPixelBudget?: boolean;
 }
 export interface TransformOptions {
   pagePath: string;
@@ -131,6 +136,7 @@ export const workspaceClient: WorkspaceClient = {
       engine: options.engine ?? null,
       language: options.language ?? null,
       zone: options.zone ?? null,
+      cpuPixelBudget: options.cpuPixelBudget ?? null,
     }),
   transform: (options) =>
     invoke("ocr_workspace_transform", {
