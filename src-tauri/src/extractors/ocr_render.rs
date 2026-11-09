@@ -497,6 +497,15 @@ mod tests {
         let rtl = RenderPage::from_regions(vec![OcrRegion {
             text:"العربية 123 ABC".into(), x:0.0, y:0.0, w:100.0, h:20.0, confidence:0.9,
         }], 100, 120, path.to_string_lossy()).with_physical_size(600.0, 720.0);
+        // Right-to-left PDF text depends on the native BIDI capability. A
+        // renderer without it (CrispEmbed withdrew it until its logical-order
+        // qualification passes) must refuse safely rather than write a
+        // reversed text layer; with it, the logical text must round-trip.
+        if !reviewed_bidi_pdf_available() {
+            let refused = render(&[rtl], OcrOutputFormat::Pdf, false).unwrap_err().to_string();
+            assert!(refused.contains("bidirectional"), "RTL PDF without BIDI must be refused: {refused}");
+            return;
+        }
         let rtl_bytes = render(&[rtl], OcrOutputFormat::Pdf, false).unwrap();
         let rtl_document = lopdf::Document::load_mem(&rtl_bytes).unwrap();
         let page_id = *rtl_document.get_pages().get(&1).unwrap();
