@@ -3,6 +3,8 @@
   import type { OcrRegion } from "$lib/ocr/model";
   import {
     getWordEvidence,
+    getWordConfidenceBand,
+    LOW_WORD_CONFIDENCE,
     wordNeedsReview,
     type WordEvidence,
   } from "$lib/ocr/words";
@@ -20,13 +22,17 @@
   } = $props();
 
   let original = $state(false);
+  let showScores = $state(false);
   let selectedStart = $state<number | null>(null);
   const edited = $derived(region.text !== region.originalText);
   const source = $derived(original && edited ? "original" : "current");
+  const evidenceText = $derived(source === "original" ? region.originalText : region.text);
   const words = $derived(getWordEvidence(region, source));
+  const selectedWord = $derived(words.find((word) => word.start === selectedStart));
   const flagged = $derived(words.filter((word) => wordNeedsReview(word, threshold)));
   const scored = $derived(words.some((word) => word.confidence !== null));
   const canSelect = $derived(!disabled && source === "current");
+  const lowThreshold = $derived(Math.min(LOW_WORD_CONFIDENCE, threshold));
 
   // Offsets belong to one exact text version. Do not carry an active word over
   // a correction, an undo, or a switch between current and original evidence.
@@ -50,7 +56,7 @@
   function description(word: WordEvidence): string {
     const evidence =
       word.confidence !== null && word.minConfidence !== null
-        ? `Mean original character score: ${percent(word.confidence)}. Lowest character score: ${percent(word.minConfidence)}. A review signal, not a probability of accuracy.`
+        ? `${getWordConfidenceBand(word, threshold) === "high" ? "High confidence" : getWordConfidenceBand(word, threshold) === "low" ? "Low confidence" : "Needs review"}. Mean original character score: ${percent(word.confidence)}. Lowest character score: ${percent(word.minConfidence)}. Color follows the lowest score. A review signal, not a probability of accuracy.`
         : word.basis === "edited"
           ? "The text was edited. Original OCR scores do not measure the corrected text."
           : "Word confidence is unavailable: this result has no aligned character recognition scores.";
@@ -83,6 +89,14 @@
       title="Select the next uncertain, unscored, or edited word in this region"
     >Next word to check <ChevronRight size={12} /></button>
   </div>
+  <div class="color-legend" role="list" aria-label="Confidence color legend">
+    <span class="legend-item high" role="listitem"><span class="swatch" aria-hidden="true"></span>High ≥{percent(threshold)}</span>
+    {#if lowThreshold < threshold}<span class="legend-item medium" role="listitem"><span class="swatch" aria-hidden="true"></span>Review {percent(lowThreshold)}–&lt;{percent(threshold)}</span>{/if}
+    {#if lowThreshold > 0}<span class="legend-item low" role="listitem"><span class="swatch" aria-hidden="true"></span>Low &lt;{percent(lowThreshold)}</span>{/if}
+    <span class="legend-item unscored" role="listitem"><span class="swatch" aria-hidden="true"></span>Unscored</span>
+    <span class="legend-item edited" role="listitem"><span class="swatch" aria-hidden="true"></span>Edited</span>
+  </div>
+  <label class="show-scores"><input type="checkbox" bind:checked={showScores} />Show scores</label>
   {#if edited}
     <div class="evidence-source" aria-label="Word evidence source">
       <button type="button" aria-pressed={source === "current"} onclick={() => (original = false)}>Current text</button>
@@ -94,49 +108,49 @@
       This text was edited. Original OCR scores do not apply to corrections.
       Select Original OCR to inspect the saved evidence.
     {:else if scored}
-      Scores average the original character scores. A word is highlighted when
-      any character is below {percent(threshold)}. Scores guide review; they are
-      not probabilities of accuracy.
+      Word colors follow the lowest character score; optional percentages show
+      the word average. Hover or select a word for both scores. Scores guide
+      review; they are not probabilities of accuracy.
     {:else}
       This OCR result has no aligned character scores, so word confidence is
       unavailable. Inspect the source before accepting the text.
     {/if}
   </p>
   {#if words.length}
-    <div class="word-list" dir="auto">
-      {#each words as word, index (word.start)}
-        {#if source === "current"}
-          <button
+    <div class="word-list" dir="auto" aria-label="OCR words in reading order">{#each words as word, index (word.start)}<span class="word-separator">{evidenceText.slice(index === 0 ? 0 : words[index - 1].end, word.start)}</span>{#if source === "current"}<button
             type="button"
             class="word"
             class:uncertain={wordNeedsReview(word, threshold)}
             class:selected={selectedStart === word.start}
-            class:unscored={word.confidence === null}
+            data-word-confidence-band={getWordConfidenceBand(word, threshold)}
             data-word-start={word.start}
             data-word-end={word.end}
             data-word-basis={word.basis}
             data-word-confidence={word.confidence ?? undefined}
             data-word-flagged={wordNeedsReview(word, threshold)}
             aria-label={`Select word ${index + 1}: ${word.text}`}
+            aria-describedby={`ocr-word-${region.id}-${source}-${word.start}`}
             title={description(word)}
             disabled={!canSelect}
             onclick={() => selectWord(word)}
-          ><span class="word-text">{word.text}</span><span class="word-score">{scoreLabel(word)}</span></button>
-        {:else}
-          <span
+          ><span class="word-text">{word.text}</span>{#if showScores}<span class="word-score">{scoreLabel(word)}</span>{/if}</button>{:else}<button
+            type="button"
             class="word original-word"
             class:uncertain={wordNeedsReview(word, threshold)}
-            class:unscored={word.confidence === null}
+            class:selected={selectedStart === word.start}
+            data-word-confidence-band={getWordConfidenceBand(word, threshold)}
             data-word-start={word.start}
             data-word-end={word.end}
             data-word-basis={word.basis}
             data-word-confidence={word.confidence ?? undefined}
             data-word-flagged={wordNeedsReview(word, threshold)}
+            aria-label={`Inspect original word ${index + 1}: ${word.text}`}
+            aria-describedby={`ocr-word-${region.id}-${source}-${word.start}`}
             title={description(word)}
-          ><span class="word-text">{word.text}</span><span class="word-score">{scoreLabel(word)}</span></span>
-        {/if}
-      {/each}
-    </div>
+            onclick={() => (selectedStart = word.start)}
+          ><span class="word-text">{word.text}</span>{#if showScores}<span class="word-score">{scoreLabel(word)}</span>{/if}</button>{/if}{/each}<span class="word-separator">{evidenceText.slice(words[words.length - 1].end)}</span></div>
+    <div hidden>{#each words as word (word.start)}<span id={`ocr-word-${region.id}-${source}-${word.start}`}>{description(word)}</span>{/each}</div>
+    {#if selectedWord}<p class="word-detail" role="status">{description(selectedWord)}</p>{/if}
     <p class="word-instruction">
       {source === "current"
         ? "Select a word, then type your correction in the text editor."
@@ -188,7 +202,8 @@
     cursor: default;
   }
   .word-help,
-  .word-instruction {
+  .word-instruction,
+  .word-detail {
     margin: 7px 0;
     color: #a6b9ce;
     font-size: 11px;
@@ -218,26 +233,32 @@
     background: #1e3a55;
   }
   .word-list {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: stretch;
-    gap: 5px;
+    padding: 9px;
+    border: 1px solid #34465c;
+    border-radius: 5px;
+    background: #101b2b;
+    color: #d1deef;
+    font-size: 14px;
+    line-height: 2.2;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 4;
   }
   .word {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 6px;
+    display: inline-block;
+    vertical-align: baseline;
     min-width: 0;
     max-width: 100%;
-    padding: 5px 7px;
-    border: 1px solid #39576b;
-    border-radius: 5px;
-    background: #163142;
-    color: #d0e8ee;
+    padding: 1px 3px;
+    border: 0;
+    border-radius: 3px;
+    background: var(--word-bg);
+    color: var(--word-fg);
     font: inherit;
-    font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.7;
     text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
     cursor: pointer;
   }
   .word-text {
@@ -245,26 +266,71 @@
     min-width: 0;
   }
   .word-score {
-    color: #a3cad6;
+    margin-inline-start: 0.5em;
+    color: inherit;
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .word.uncertain {
-    border-color: #8a682d;
-    background: #49361d;
-    color: #ffe0a9;
+  .word[data-word-confidence-band="high"], .legend-item.high {
+    --word-fg: #a7f3c7;
+    --word-bg: #153b2c;
   }
-  .word.uncertain .word-score {
-    color: #e7c487;
+  .word[data-word-confidence-band="medium"], .legend-item.medium {
+    --word-fg: #fde68a;
+    --word-bg: #493719;
   }
-  .word.unscored {
-    background: #233247;
-    border-color: #60748e;
-    color: #d1deef;
+  .word[data-word-confidence-band="low"], .legend-item.low {
+    --word-fg: #fecaca;
+    --word-bg: #501f2a;
   }
-  .word.unscored .word-score {
-    color: #b1c4db;
+  .word[data-word-confidence-band="unscored"], .legend-item.unscored {
+    --word-fg: #cbd5e1;
+    --word-bg: #273448;
+  }
+  .word[data-word-confidence-band="edited"], .legend-item.edited {
+    --word-fg: #bfdbfe;
+    --word-bg: #163964;
+  }
+  .word[data-word-confidence-band="medium"] .word-text {
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
+  .word[data-word-confidence-band="low"] .word-text {
+    text-decoration: underline double;
+    text-underline-offset: 3px;
+  }
+  .color-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin-top: 8px;
+    font-size: 10px;
+    color: #c0d0e2;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--word-fg);
+  }
+  .show-scores {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: #b7c9dd;
+    cursor: pointer;
+  }
+  .show-scores input {
+    accent-color: #93c4ff;
+    margin: 0;
   }
   .word.selected {
     outline: 2px solid #93c4ff;
@@ -274,8 +340,7 @@
     outline: 2px solid #b8d9ff;
     outline-offset: 2px;
   }
-  .word:disabled,
-  .original-word {
+  .word:disabled {
     cursor: default;
   }
 </style>

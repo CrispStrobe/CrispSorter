@@ -51,17 +51,22 @@ The word-review scenario supplies synthetic, explicitly aligned Unicode characte
 recognition scores, plus contradictory token metadata and detector-only evidence.
 It verifies the UI contract for capable adapters; it does not assert that current
 native engines supply verified per-word confidence. Its uncertain word has a high
-mean score but one low character score, and a leading emoji exercises UTF-16 text
-selection offsets.
+mean score but one low character score; other words cover medium and high scores.
+A leading emoji exercises UTF-16 text selection offsets, and punctuation and
+whitespace must survive the flowing colored-text display unchanged.
 
 ## Assertions
 
 - A recovered three-page project retains page/source identities and revision leases.
 - Corrections preserve original recognition, undo/redo works, and editing invalidates
   page approval.
-- Word chips show numeric scores only for verified character recognition evidence.
+- Words show numeric scores only for verified character recognition evidence.
   Token, detector-only, and unaligned results remain unscored. The weakest
   character flags a word even when its mean and region score exceed the threshold.
+- Green/high, amber/medium, red/low, gray/unscored, and blue/edited words have
+  distinct text and background colors. Bands follow the weakest character;
+  changing the project threshold updates colors and flags consistently. The
+  optional score labels leave source punctuation, spacing, and text intact.
 - Clicking a word or using Next word to check selects its exact Unicode text in
   the editor. Corrections clear scores for current text, preserve read-only
   original evidence, and survive save, undo/redo, and export without rerunning OCR.

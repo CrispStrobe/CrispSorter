@@ -91,10 +91,12 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             result.engine='fixture-verified-character-adapter';
             const invoice=result.regions[2];
             invoice.text='😀 Inv0ice NS-2026-1042';invoice.confidence=0.99;
-            invoice.char_conf=Array.from(invoice.text,(_,index)=>index===5?0.20:0.98);
+            const mediumIndex=Array.from(invoice.text.slice(0,invoice.text.indexOf('NS'))).length;
+            invoice.char_conf=Array.from(invoice.text,(_,index)=>index===5?0.20:index===mediumIndex?0.70:0.98);
             invoice.char_conf_unit='unicode_codepoint';invoice.char_conf_aligned=true;
             // A seven-character word averages 87%, but its 20% weakest
-            // character must still flag it at the project's 85% threshold.
+            // character must still flag it red at the project's 85% threshold.
+            // 'NS' has a 70% weakest character (amber); '2026' stays high (green).
             const tokens=result.regions[3];
             tokens.char_conf=Array.from(tokens.text,()=>0.30);
             tokens.char_conf_unit='token';tokens.char_conf_aligned=true;

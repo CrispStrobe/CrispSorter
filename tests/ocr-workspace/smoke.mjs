@@ -111,6 +111,19 @@ if (process.argv.includes('--serve')) {
             try { await page.waitForFunction(canvasFitState, false); }
             catch { assert.fail(`${label} Fit page did not fill and remain inside its viewport: ${JSON.stringify(await page.evaluate(canvasFitState, true))}`); }
         }
+        async function wordColors(word) {
+            return word.evaluate(element => ({
+                text: getComputedStyle(element.querySelector('.word-text') ?? element).color,
+                background: getComputedStyle(element).backgroundColor,
+            }));
+        }
+        async function wordReadingText(words) {
+            return words.locator('[aria-label="OCR words in reading order"]').evaluate(element => {
+                const copy = element.cloneNode(true);
+                copy.querySelectorAll('.word-score').forEach(score => score.remove());
+                return copy.textContent;
+            });
+        }
 
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
             assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
@@ -144,11 +157,25 @@ if (process.argv.includes('--serve')) {
             const words = page.locator('[aria-label="Word confidence for selected region"]');
             const invoice = words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ });
             await invoice.waitFor();
+            assert.equal(await words.getByRole('checkbox', { name: 'Show scores', exact: true }).isChecked(), false);
+            assert.equal(await wordReadingText(words), original);
+            await words.getByRole('checkbox', { name: 'Show scores', exact: true }).check();
+            assert.equal(await wordReadingText(words), original);
             assert.equal(await invoice.getAttribute('data-word-basis'), 'characters');
             assert.equal(Math.round(Number(await invoice.getAttribute('data-word-confidence')) * 100), 87);
             assert.equal(await invoice.getAttribute('data-word-flagged'), 'true');
+            assert.equal(await invoice.getAttribute('data-word-confidence-band'), 'low');
             assert.match(await invoice.innerText(), /87%/);
             assert.match(await invoice.getAttribute('title'), /20%/);
+            const medium = words.getByRole('button', { name: /^Select word \d+: NS$/ });
+            const high = words.getByRole('button', { name: /^Select word \d+: 2026$/ });
+            assert.equal(await medium.getAttribute('data-word-confidence-band'), 'medium');
+            assert.equal(await medium.getAttribute('data-word-flagged'), 'true');
+            assert.equal(await high.getAttribute('data-word-confidence-band'), 'high');
+            assert.equal(await high.getAttribute('data-word-flagged'), 'false');
+            const bandColors = await Promise.all([invoice, medium, high].map(wordColors));
+            assert.equal(new Set(bandColors.map(color => color.text)).size, 3, 'Low, medium and high words must have different text colors');
+            assert.equal(new Set(bandColors.map(color => color.background)).size, 3, 'Low, medium and high words must have different background colors');
             // A high mean must not hide an uncertain character on the source image.
             assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
             await words.getByRole('button', { name: 'Next word to check', exact: true }).click();
@@ -166,11 +193,33 @@ if (process.argv.includes('--serve')) {
             assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
             assert.ok(await words.locator('button[data-word-basis="edited"]').count() > 0);
             assert.equal(await words.locator('button[data-word-basis="characters"]').count(), 0);
+            const editedWord = words.getByRole('button', { name: /^Select word \d+: Invoice$/ });
+            assert.equal(await editedWord.getAttribute('data-word-confidence-band'), 'edited');
+            const editedColors = await wordColors(editedWord);
+            assert.ok(bandColors.every(color => color.text !== editedColors.text && color.background !== editedColors.background), 'Edited words need a distinct color from recognition scores');
+            assert.equal(await wordReadingText(words), corrected);
+            await page.getByRole('button', { name: 'Select region 4', exact: true }).click();
+            const unavailableColors = await wordColors(words.locator('button[data-word-confidence-band="unscored"]').first());
+            assert.notEqual(unavailableColors.text, editedColors.text, 'Unscored text must differ from manually edited text');
+            assert.notEqual(unavailableColors.background, editedColors.background, 'Unscored background must differ from manually edited text');
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
 
             await words.getByRole('button', { name: 'Original OCR', exact: true }).click();
             assert.equal(await words.getByRole('button', { name: /^Select word / }).count(), 0);
-            const originalWord = words.locator('[data-word-basis="characters"]').filter({ hasText: 'Inv0ice' });
+            const originalWord = words.getByRole('button', { name: /^Inspect original word \d+: Inv0ice$/ });
             assert.equal(Math.round(Number(await originalWord.getAttribute('data-word-confidence')) * 100), 87);
+            assert.equal(await originalWord.getAttribute('data-word-confidence-band'), 'low');
+            assert.deepEqual(await wordColors(originalWord), bandColors[0]);
+            assert.equal(await wordReadingText(words), original);
+            const priorSelection = await editor.evaluate(input => [input.selectionStart, input.selectionEnd]);
+            assert.ok(await originalWord.evaluate(element => element.tabIndex >= 0));
+            await originalWord.press('Enter');
+            const originalDetail = words.getByRole('status');
+            await originalDetail.waitFor();
+            assert.match(await originalDetail.innerText(), /Low confidence.*Mean original character score: 87%.*Lowest character score: 20%/);
+            assert.equal(await originalWord.evaluate(element => document.activeElement === element), true);
+            assert.equal(await editor.inputValue(), corrected);
+            assert.deepEqual(await editor.evaluate(input => [input.selectionStart, input.selectionEnd]), priorSelection);
             await words.getByRole('button', { name: 'Current text', exact: true }).click();
             await page.getByRole('button', { name: 'Save', exact: true }).click();
             await page.waitForFunction(value => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === value, corrected);
@@ -209,15 +258,49 @@ if (process.argv.includes('--serve')) {
 
         await test('word review leaves token and detector evidence unscored and fits compact screens', 'word-review', async page => {
             const words = page.locator('[aria-label="Word confidence for selected region"]');
+            let unscoredColors;
             for (const region of [4, 5, 6]) {
                 await page.getByRole('button', { name: `Select region ${region}`, exact: true }).click();
                 await words.waitFor();
                 assert.ok(await words.locator('button[data-word-basis="unavailable"]').count() > 0);
                 assert.equal(await words.locator('[data-word-basis="characters"]').count(), 0);
+                assert.ok(await words.locator('button[data-word-confidence-band="unscored"]').count() > 0);
+                const currentColors = await wordColors(words.locator('button[data-word-basis="unavailable"]').first());
+                if (unscoredColors) assert.deepEqual(currentColors, unscoredColors);
+                unscoredColors = currentColors;
+                assert.equal(await wordReadingText(words), await page.getByRole('textbox', { name: `Text for region ${region}`, exact: true }).inputValue());
+                await words.getByRole('checkbox', { name: 'Show scores', exact: true }).check();
                 assert.ok(await words.getByText('Unscored', { exact: true }).count() > 0);
                 assert.equal(await page.locator('.region-card.selected [aria-label="Original text with character confidence"]').count(), 0);
             }
             await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            const medium = words.getByRole('button', { name: /^Select word \d+: NS$/ });
+            const high = words.getByRole('button', { name: /^Select word \d+: 2026$/ });
+            const highColors = await wordColors(high);
+            for (const band of ['low', 'medium', 'high']) {
+                const colors = await wordColors(words.locator(`[data-word-confidence-band="${band}"]`).first());
+                assert.notEqual(colors.text, unscoredColors.text, `${band} text must differ from unavailable confidence`);
+                assert.notEqual(colors.background, unscoredColors.background, `${band} background must differ from unavailable confidence`);
+            }
+            // Changing the project threshold updates both colors and review flags.
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('slider', { name: /^Flag recognition scores below/ }).evaluate(input => {
+                input.value = '0.65';
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            await page.getByRole('tab', { name: 'Review', exact: true }).click();
+            assert.equal(await medium.getAttribute('data-word-confidence-band'), 'high');
+            assert.equal(await medium.getAttribute('data-word-flagged'), 'false');
+            assert.deepEqual(await wordColors(medium), highColors);
+            assert.equal(await words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ }).getAttribute('data-word-confidence-band'), 'low');
+            // Restore the usual threshold before saving representative screenshots.
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('slider', { name: /^Flag recognition scores below/ }).evaluate(input => {
+                input.value = '0.85';
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            await page.getByRole('tab', { name: 'Review', exact: true }).click();
+            assert.equal(await medium.getAttribute('data-word-confidence-band'), 'medium');
             await page.screenshot({ path: path.join(output, 'ocr-word-review-desktop.png'), fullPage: true });
             await page.setViewportSize({ width: 390, height: 844 });
             await words.scrollIntoViewIfNeeded();
