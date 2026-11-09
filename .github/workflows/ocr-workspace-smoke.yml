@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: ocr-workspace-browser-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
 
 jobs:
   browser:

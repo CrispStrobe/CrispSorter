@@ -26,14 +26,14 @@ permissions:
 
 concurrency:
   group: ocr-paired-native-${{ github.ref }}
-  # Finish the running source build so incremental branch saves retain its
-  # test evidence and dependency cache; GitHub keeps only the latest pending run.
-  cancel-in-progress: false
+  # Superseded checkpoints on this recovery branch must not block its current
+  # validation. Other branches retain the original build/cache policy.
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
 
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: 1f2cb26461961dc446ae172648531ccde0b3a607  # Explicit photo C ABI, safe Rust bindings and reviewed OCR renderer.
+  OCR_CRISPEMBED_REF: 5a52dbfbc2739cb8490f5b847a6445311c589124  # Explicit photo C ABI, fallible Rust allocation and reviewed OCR renderer.
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'

@@ -172,7 +172,9 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
         .map_err(|e| format!("Create page snapshot: {e}"))?;
     // A recognizer that asks for RGB drops alpha, whereas the preview browser
     // composites it. Flatten onto white paper once so both see identical pixels.
-    let canonical = opaque_page(image);
+    let canonical = if image.color().has_alpha() {
+        std::borrow::Cow::Owned(opaque_page(image))
+    } else { std::borrow::Cow::Borrowed(image) };
     canonical.write_to(staging.as_file_mut(), image::ImageFormat::Png)
         .map_err(|e| format!("Encode page snapshot: {e}"))?;
     staging.as_file_mut().flush().map_err(|e| e.to_string())?;
@@ -306,7 +308,10 @@ fn import_request(request: &tauri::ipc::Request<'_>) -> Result<(ImportMetadata, 
     let json = base64::engine::general_purpose::STANDARD.decode(header.as_bytes())
         .map_err(|_| "Photo import metadata is invalid.")?;
     let metadata = serde_json::from_slice(&json).map_err(|_| "Photo import metadata is invalid.")?;
-    Ok((metadata, bytes.clone()))
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(bytes.len()).map_err(|_| "Not enough memory to import this photo. Try a smaller capture.")?;
+    owned.extend_from_slice(bytes);
+    Ok((metadata, owned))
 }
 
 fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_uri: Option<&str>) -> Result<ImportedDocument, String> {
@@ -349,7 +354,11 @@ fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_u
 pub async fn ocr_workspace_assess_photo(app: tauri::AppHandle, page_path: String) -> Result<PhotoAssessment, String> {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
-    tokio::task::spawn_blocking(move || crate::ocr_photo::assess(&opaque_page(&decode_page(&path)?))).await
+    tokio::task::spawn_blocking(move || {
+        let image = decode_page(&path)?;
+        if image.color().has_alpha() { crate::ocr_photo::assess(&opaque_page(&image)) }
+        else { crate::ocr_photo::assess(&image) }
+    }).await
         .map_err(|e| format!("Photo assessment worker: {e}"))?
 }
 

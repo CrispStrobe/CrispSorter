@@ -97,7 +97,8 @@ fn measurements(sample: &GrayImage) -> (f64, f64, f64, f64) {
 
 #[cfg(feature = "ocr-photo-tools")]
 fn correction_angle(image: &DynamicImage) -> Result<Option<f64>, String> {
-    let rgb = image.to_rgb8();
+    let rgb = image.as_rgb8().map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|| std::borrow::Cow::Owned(image.to_rgb8()));
     let angle = crispembed::CrispScanPhoto::correction_angle(
         rgb.as_raw(), rgb.width() as i32, rgb.height() as i32, 3, 20.0,
     ).map_err(|e| format!("Measure photo tilt: {e}"))?;
@@ -110,7 +111,8 @@ fn correction_angle(_image: &DynamicImage) -> Result<Option<f64>, String> { Ok(N
 
 #[cfg(feature = "ocr-photo-tools")]
 pub fn transform(image: &DynamicImage, operation: &str, quad: Option<Vec<PhotoPoint>>, angle: Option<f64>) -> Result<DynamicImage, String> {
-    let rgb = image.to_rgb8();
+    let rgb = image.as_rgb8().map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|| std::borrow::Cow::Owned(image.to_rgb8()));
     let output = match operation {
         "deskew" => {
             let angle = angle.ok_or("Choose a correction angle.")?;

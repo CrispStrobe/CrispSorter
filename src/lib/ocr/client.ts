@@ -274,7 +274,15 @@ export const workspaceClient: WorkspaceClient = {
   },
   pickExport: async (name, extension) => {
     if ((await loadCapabilities()).mobile) {
-      const filename = `${name.replace(/[\\/\u0000-\u001f]/g, "_").slice(0, 180) || "document"}.${extension}`;
+      if (!/^[a-z0-9]{1,12}$/i.test(extension)) throw new Error("Choose a supported export format.");
+      const cleaned = name.replace(/[\\/\p{Cc}]/gu, "_");
+      let base = "";
+      const utf8 = new TextEncoder();
+      for (const character of cleaned) {
+        if (utf8.encode(base + character).byteLength > 200) break;
+        base += character;
+      }
+      const filename = `${base.trim() || "document"}.${extension}`;
       const path = await invoke<string>("ocr_workspace_export_target", { name: filename });
       mobileExports.set(path, filename);
       return path;

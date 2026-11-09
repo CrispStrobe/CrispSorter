@@ -119,6 +119,32 @@ describe('OCR workspace platform transport', () => {
         expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_discard_export', { path: stagedPath });
     });
 
+    it('bounds long multilingual export names by UTF-8 bytes and rejects invalid extensions before invoking native code', async () => {
+        const path = '/app/cache/ocr-exports/multilingual.pdf';
+        invoke.mockImplementation(async command => {
+            if (command === 'ocr_workspace_export_target') return path;
+            if (command === 'ocr_workspace_export') return { ...exported, saved_path: path, format: 'pdf' };
+            if (command === 'plugin:mobile-provider|export_file') return { cancelled: true };
+            if (command === 'ocr_workspace_discard_export') return null;
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        expect(await workspaceClient.pickExport('報告📄'.repeat(200), 'pdf')).toBe(path);
+        const filename = invoke.mock.calls[0][1].name as string;
+        const bytes = new TextEncoder().encode(filename);
+        expect(filename.endsWith('.pdf')).toBe(true);
+        expect(bytes.byteLength).toBeLessThanOrEqual(240);
+        expect(new TextEncoder().encode(filename.slice(0, -4)).byteLength).toBeLessThanOrEqual(200);
+        expect(new TextDecoder().decode(bytes)).toBe(filename); // No truncated surrogate pair.
+        expect(filename.startsWith('報告📄')).toBe(true);
+        await workspaceClient.exportDocument({ ...exportRequest(path), format: 'pdf' });
+        expect(invoke).toHaveBeenCalledWith('plugin:mobile-provider|export_file', { path, name: filename });
+        invoke.mockClear();
+        for (const extension of ['../pdf', '.pdf', 'pdf!', 'abcdefghijklmnop']) {
+            await expect(workspaceClient.pickExport('Inspection', extension)).rejects.toThrow(/supported export format/);
+        }
+        expect(invoke).not.toHaveBeenCalled();
+    });
+
     it.each(['render', 'provider'])('cleans private staging on %s failure without hiding the original error', async failure => {
         invoke.mockImplementation(async command => {
             if (command === 'ocr_workspace_export_target') return stagedPath;
