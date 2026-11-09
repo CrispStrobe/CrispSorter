@@ -194,6 +194,30 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
         });
 
+        await test('the low-memory CPU profile is offered only for Qwen2 VL and reaches recognition', 'review', async page => {
+            await page.getByRole('button', { name: /^Page 2:/ }).click();
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            const toggle = page.getByRole('checkbox', { name: /Low-memory CPU profile/ });
+            assert.equal(await toggle.count(), 0);
+            const engine = page.getByRole('combobox', { name: 'Recognition engine' });
+            await engine.selectOption('qwen2vl');
+            await toggle.check();
+            await page.getByRole('button', { name: 'Recognize page', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.calls.some(call => call.method === 'recognize'));
+            let calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'recognize').map(call => call.data));
+            assert.equal(calls.at(-1).engine, 'qwen2vl');
+            assert.equal(calls.at(-1).cpuPixelBudget, true);
+            // Switching away hides the option and stops sending it, even though
+            // the saved preference stays on for when Qwen2 VL is chosen again.
+            await engine.selectOption('tesseract');
+            assert.equal(await toggle.count(), 0);
+            await page.getByRole('button', { name: 'Recognize page', exact: true }).click();
+            await page.waitForFunction(n => window.ocrSmoke.calls.filter(call => call.method === 'recognize').length > n, calls.length);
+            calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'recognize').map(call => call.data));
+            assert.equal(calls.at(-1).engine, 'tesseract');
+            assert.equal(calls.at(-1).cpuPixelBudget, false);
+        });
+
         await test('export preflight blocks incomplete pages and exports explicit approved scope', 'review', async page => {
             await page.getByRole('tab', { name: 'Export', exact: true }).click();
             await page.getByText(/recognition is pending/).waitFor();

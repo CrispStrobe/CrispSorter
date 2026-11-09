@@ -325,6 +325,12 @@
   const language = $derived(
     typeof settings.language === "string" ? settings.language : "auto",
   );
+  // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
+  const cpuBudget = $derived(
+    settings.cpuPixelBudget === true &&
+      engine === "qwen2vl" &&
+      !!capabilities.cpu_budget,
+  );
   const profile = $derived(
     PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0],
   );
@@ -379,9 +385,14 @@
     parseq: "PARSeq scene text",
     surya: "Surya multilingual",
     tesseract: "Tesseract LSTM",
-    got: "GOT OCR",
+    tesseract_fraktur: "Tesseract LSTM · Fraktur",
+    ppocrv6: "PP-OCRv6 (CJK lines)",
+    easyocr: "EasyOCR",
+    olmocr: "olmOCR 2 (7B)",
+    lfm2_vl: "LFM2.5 VL",
+    got: "GOT OCR (non-commercial)",
     glm: "GLM OCR",
-    qwen2vl: "Qwen2.5 VL",
+    qwen2vl: "Qwen2 VL",
     qwen3vl: "Qwen3 VL",
     internvl2: "InternVL2",
     deepseek_ocr2: "DeepSeek OCR 2",
@@ -840,6 +851,7 @@
     const configSnapshot = JSON.parse(JSON.stringify(config)),
       engineSnapshot = engine,
       languageSnapshot = language,
+      cpuBudgetSnapshot = cpuBudget,
       projectId = project.id;
     // One undo boundary covers the entire batch. Each page result is still autosaved.
     change(
@@ -861,6 +873,7 @@
               config: configSnapshot,
               engine: engineSnapshot,
               language: languageSnapshot,
+              cpuPixelBudget: cpuBudgetSnapshot,
             });
           },
         })),
@@ -1047,6 +1060,7 @@
           engine,
           language,
           zone,
+          cpuPixelBudget: cpuBudget,
         });
         const recognized = applyRecognition(
           project,
@@ -2671,6 +2685,23 @@
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
             </p>
+            {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
+                class="setting-toggle"
+                ><span
+                  ><strong>Low-memory CPU profile</strong><small
+                    >Runs Qwen2 VL in an isolated CPU process with the vision
+                    input limited to {(capabilities.cpu_budget_pixels ?? 262144).toLocaleString()}
+                    pixels. Uses several GB of RAM and reloads the model on each
+                    run; fine print may be missed, so review the result.</small
+                  ></span
+                ><input
+                  type="checkbox"
+                  checked={settings.cpuPixelBudget === true}
+                  onchange={(e) =>
+                    setSetting("cpuPixelBudget", e.currentTarget.checked)}
+                  disabled={locked}
+                /></label
+              >{/if}
             <div class="settings-section">
               <h3><WandSparkles size={15} /> Scan preparation</h3>
               {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Image restoration", hint: "Repair the scan with the selected model and task." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label

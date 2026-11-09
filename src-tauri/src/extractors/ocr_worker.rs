@@ -9,6 +9,10 @@ use super::{OcrPipelineConfig, ocr_crispembed::{self, RegionConf}};
 
 pub const CPU_PIXEL_BUDGET: u32 = 262_144;
 
+/// Whether this build can spawn the isolated CPU OCR worker.
+pub const CPU_BUDGET_AVAILABLE: bool =
+    cfg!(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas"))));
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Request { path: PathBuf, config: OcrPipelineConfig }
 
