@@ -1,5 +1,7 @@
 //! Reviewed OCR text exports. Input is already in the user's reading order.
 //! No trimming, Unicode reordering, normalization, or generated text is applied.
+//! Word represents CR, LF and CRLF line endings as one paragraph boundary each;
+//! plain text retains the original line-ending characters.
 
 pub const PDF_BIDI_UNAVAILABLE: &str = "PDF export for right-to-left text or directional formatting is unavailable in this build. Choose a text format to preserve the reviewed reading order.";
 pub const MAX_DOCX_TEXT_BYTES: usize = 16 * 1024 * 1024;
@@ -23,30 +25,67 @@ fn escape_html(text: &str) -> String {
         .replace('"', "&quot;").replace('\'', "&#39;").replace('\r', "&#13;")
 }
 
-pub fn html(pages: &[Vec<&str>]) -> String {
+pub fn validate_xml_text(pages: &[Vec<&str>]) -> Result<(), String> {
+    for (index, page) in pages.iter().enumerate() {
+        for text in page {
+            if let Some(ch) = text.chars().find(|ch| !matches!(*ch as u32,
+                0x9 | 0xa | 0xd | 0x20..=0xd7ff | 0xe000..=0xfffd | 0x10000..=0x10ffff)) {
+                return Err(format!("Page {} contains character U+{:04X}, which this format cannot represent. Choose Plain text or JSON to preserve the reviewed text unchanged.", index + 1, ch as u32));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn html(pages: &[Vec<&str>]) -> Result<String, String> {
+    validate_xml_text(pages)?;
     let body = pages.iter().enumerate().map(|(i, page)| format!(
         "<section aria-label=\"Page {}\"><h2>Page {}</h2>{}</section>", i + 1, i + 1,
         page.iter().map(|text| format!("<p dir=\"auto\">{}</p>", escape_html(text))).collect::<Vec<_>>().join("\n"),
     )).collect::<Vec<_>>().join("\n");
-    format!("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Reviewed OCR document</title><style>body{{font:16px/1.6 system-ui,sans-serif;max-width:72ch;margin:3rem auto;padding:0 1rem}}p{{white-space:pre-wrap;unicode-bidi:plaintext;overflow-wrap:anywhere}}section{{break-after:page}}section:last-child{{break-after:auto}}h2{{font-size:1rem;color:#555}}</style></head><body>{body}</body></html>")
+    Ok(format!("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Reviewed OCR document</title><style>body{{font:16px/1.6 system-ui,sans-serif;max-width:72ch;margin:3rem auto;padding:0 1rem}}p{{white-space:pre-wrap;unicode-bidi:plaintext;overflow-wrap:anywhere}}section{{break-after:page}}section:last-child{{break-after:auto}}h2{{font-size:1rem;color:#555}}</style></head><body>{body}</body></html>"))
 }
 
 /// Bound source text and OOXML node growth before building the document.
 /// These are input bounds, not a process peak-memory guarantee.
 pub fn validate_docx(pages: &[Vec<&str>]) -> Result<(), String> {
+    validate_xml_text(pages)?;
     let mut bytes = 0usize;
     let mut items = 0usize;
     for page in pages {
         items = items.saturating_add(page.len().max(1));
         for text in page {
             bytes = bytes.saturating_add(text.len());
-            items = items.saturating_add(text.bytes().filter(|ch| matches!(ch, b'\n' | b'\r' | b'\t')).count());
+            let mut previous_cr = false;
+            for ch in text.bytes() {
+                if ch == b'\t' || ch == b'\r' || (ch == b'\n' && !previous_cr) { items = items.saturating_add(1); }
+                previous_cr = ch == b'\r';
+            }
         }
     }
     if bytes > MAX_DOCX_TEXT_BYTES || items > MAX_DOCX_STRUCTURAL_ITEMS {
         return Err("Word export supports at most 16 MiB of reviewed text and 100,000 paragraphs, tabs, and line breaks per export. Select fewer pages or choose Plain text or HTML document.".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "ocr-text-export")]
+fn word_paragraphs(text: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut characters = text.char_indices().peekable();
+    while let Some((index, ch)) = characters.next() {
+        if ch == '\r' || ch == '\n' {
+            result.push(&text[start..index]);
+            start = index + 1;
+            if ch == '\r' && characters.peek().is_some_and(|(_, next)| *next == '\n') {
+                characters.next();
+                start += 1;
+            }
+        }
+    }
+    result.push(&text[start..]);
+    result
 }
 
 #[cfg(feature = "ocr-text-export")]
@@ -62,16 +101,16 @@ pub fn docx(pages: &[Vec<&str>]) -> Result<Vec<u8>, String> {
         let regions: &[&str] = if page.is_empty() { &empty } else { page };
         let mut first = true;
         for region in regions {
-            // split() keeps empty/trailing paragraphs; lines() would lose them.
-            for line in region.split('\n') {
+            // Keep empty/trailing paragraphs and treat CRLF as one break.
+            for line in word_paragraphs(region) {
                 let mut paragraph = Paragraph::new().page_break_before(page_index > 0 && first);
                 paragraph.property = paragraph.property.bidi(get_base_direction(line) == Direction::Rtl);
                 let mut run = Run::new();
                 let mut start = 0;
                 for (index, ch) in line.char_indices() {
-                    if ch == '\t' || ch == '\r' {
+                    if ch == '\t' {
                         run = run.add_text(&line[start..index]);
-                        run = if ch == '\t' { run.add_tab() } else { run.add_carriage_return() };
+                        run = run.add_tab();
                         start = index + ch.len_utf8();
                     }
                 }
@@ -98,7 +137,7 @@ mod tests {
 
     #[test]
     fn html_keeps_text_escapes_and_mobile_paragraph_direction() {
-        let output = html(&[vec!["  العربية <script>&\r\n\tשלום  "]]);
+        let output = html(&[vec!["  العربية <script>&\r\n\tשלום  "]]).unwrap();
         assert!(output.contains("<meta name=\"viewport\""));
         assert!(output.contains("<p dir=\"auto\">  العربية &lt;script&gt;&amp;&#13;\n\tשלום  </p>"));
         assert!(output.contains("unicode-bidi:plaintext"));
@@ -120,5 +159,22 @@ mod tests {
         assert!(validate_docx(&[vec![&text]]).unwrap_err().contains("16 MiB"));
         let tabs = "\t".repeat(MAX_DOCX_STRUCTURAL_ITEMS);
         assert!(validate_docx(&[vec![&tabs]]).unwrap_err().contains("100,000"));
+    }
+
+    #[test]
+    fn invalid_xml_characters_require_a_lossless_text_alternative() {
+        for ch in ['\0', '\u{c}', '\u{fffe}', '\u{ffff}'] {
+            let value = format!("Reviewed {ch} العربية");
+            let pages = [vec![value.as_str()]];
+            assert!(html(&pages).unwrap_err().contains("Plain text or JSON"));
+            assert!(validate_docx(&pages).unwrap_err().contains("Plain text or JSON"));
+            assert_eq!(text(&pages), value);
+        }
+    }
+
+    #[cfg(feature = "ocr-text-export")]
+    #[test]
+    fn word_newline_semantics_keep_single_and_blank_lines() {
+        assert_eq!(word_paragraphs("one\r\ntwo\rthree\nfour\r\n\r\n"), ["one", "two", "three", "four", "", ""]);
     }
 }

@@ -426,6 +426,23 @@ if (process.argv.includes('--serve')) {
             await recordTextExport({ scenario: 'supplementary-pdf', advisory: await advisory.innerText(), request });
         });
 
+        await test('invalid rich-text characters are blocked before the picker and preserved through plain text', 'export-invalid-text', async page => {
+            await selectedExport(page);
+            for (const [format, name] of [['docx', 'Word document'], ['html', 'HTML document']]) {
+                await page.getByRole('combobox', { name: /^Output format/ }).selectOption(format);
+                await page.getByText(/contains character U\+0000, which this format cannot represent/).waitFor();
+                assert.equal(await page.getByRole('button', { name: `Save ${name}`, exact: true }).isDisabled(), true);
+                assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'pickExport').length), 0);
+                assert.equal(await page.getByRole('button', { name: 'Use HTML document', exact: true }).count(), 0);
+            }
+            await page.getByRole('button', { name: 'Use Plain text', exact: true }).click();
+            await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.pages[0].regions[2].text, 'Reviewed\u0000 العربية\fשלום');
+            await recordTextExport({ scenario: 'invalid-rich-text-plain-fallback', request });
+        });
+
         await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
             await page.getByRole('button', { name: 'Process pending', exact: true }).click();
             await page.getByText('Batch complete', { exact: true }).waitFor();

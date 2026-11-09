@@ -103,7 +103,7 @@ declare global {
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
     const rtlExport = scenario.startsWith('export-rtl');
-    const archivalExport = scenario === 'export-archive' || rtlExport || scenario === 'export-unicode';
+    const archivalExport = scenario === 'export-archive' || rtlExport || scenario === 'export-unicode' || scenario === 'export-invalid-text';
     const wordExport = scenario !== 'export-rtl-limited';
     let project=scenario==='mobile-models'?createProject('New mobile scan'):addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
@@ -117,6 +117,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         const last = recognition(project.pages[2].imagePath);
         if (rtlExport) last.regions[2].text = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
         if (scenario === 'export-unicode') last.regions[2].text = 'Reviewed café 中文 😀 é';
+        if (scenario === 'export-invalid-text') last.regions[2].text = 'Reviewed\u0000 العربية\fשלום';
         project=applyRecognition(project,project.pages[2].id,last);
         project=approvePage(project,project.pages[2].id);
     }

@@ -20,6 +20,24 @@ export function checkExportText(
   pages: readonly { name?: string; regions: readonly { text: string }[] }[],
 ): { errors: string[]; warnings: string[]; alternatives: string[]; affectedPages: string[] } {
   const result = { errors: [] as string[], warnings: [] as string[], alternatives: [] as string[], affectedPages: [] as string[] };
+  for (const page of pages) for (const region of page.regions) {
+    if (/[\ud800-\udfff]/u.test(region.text)) {
+      result.errors.push("The reviewed text contains an incomplete Unicode character. Correct that character before exporting.");
+      return result;
+    }
+  }
+  if (["pdf", "pdfa", "html", "hocr", "alto", "docx"].includes(selection)) {
+    for (const [index, page] of pages.entries()) for (const region of page.regions) {
+      const invalid = region.text.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/u)?.[0];
+      if (invalid !== undefined) {
+        const code = invalid.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+        result.errors.push(`Page ${index + 1} contains character U+${code}, which this format cannot represent. Choose Plain text or JSON to preserve the reviewed text unchanged.`);
+        result.alternatives = ["text", "json"].filter(format => capabilities.formats.includes(format));
+        result.affectedPages = [page.name ?? `Page ${index + 1}`];
+        return result;
+      }
+    }
+  }
   if (selection === "docx") {
     if (capabilities.docx_export === false || !capabilities.formats.includes("docx")) {
       result.errors.push(capabilities.docx_export_reason ?? "Word export is unavailable in this build. Choose Plain text or HTML document.");
@@ -30,10 +48,12 @@ export function checkExportText(
     count: for (const page of pages) {
       items += Math.max(page.regions.length, 1);
       for (const region of page.regions) {
+        let previousCR = false;
         for (const char of region.text) {
           const cp = char.codePointAt(0)!;
           bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
-          if (char === "\n" || char === "\r" || char === "\t") items++;
+          if (char === "\r" || char === "\t" || (char === "\n" && !previousCR)) items++;
+          previousCR = char === "\r";
           if (bytes > MAX_DOCX_TEXT_BYTES || items > MAX_DOCX_STRUCTURAL_ITEMS) break count;
         }
       }
@@ -50,7 +70,7 @@ export function checkExportText(
       page.regions.some(region => needsBidirectionalPdf(region.text)) ? [page.name ?? `Page ${index + 1}`] : []);
     if (result.affectedPages.length) {
       result.errors.push(capabilities.pdf_bidi_export_reason ?? PDF_BIDI_UNAVAILABLE);
-      result.alternatives = ["text", "html", "docx"].filter(format => capabilities.formats.includes(format));
+      result.alternatives = ["text", "html", "docx"].filter(format => capabilities.formats.includes(format) && (format !== "docx" || capabilities.docx_export !== false));
       return result;
     }
   }
