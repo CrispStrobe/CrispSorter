@@ -1,4 +1,4 @@
-import { hasAlignedCharacterConfidence } from './confidence';
+import { hasAlignedCharacterConfidence, isConfidenceScore } from './confidence';
 import type { OcrRegion } from './model';
 
 export interface WordEvidence {
@@ -11,6 +11,18 @@ export interface WordEvidence {
     /** Lowest character score keeps a single uncertain glyph visible. */
     minConfidence: number | null;
     basis: 'characters' | 'unavailable' | 'edited';
+}
+
+export type WordConfidenceBand = 'high' | 'medium' | 'low' | 'unscored' | 'edited';
+export const LOW_WORD_CONFIDENCE = 0.6;
+
+/** Colors use the weakest character, matching the review queue's caution. */
+export function getWordConfidenceBand(word: WordEvidence, threshold: number): WordConfidenceBand {
+    if (word.basis === 'edited') return 'edited';
+    if (word.basis !== 'characters' || !isConfidenceScore(word.minConfidence) || !isConfidenceScore(word.confidence)) return 'unscored';
+    const high = isConfidenceScore(threshold) ? threshold : 0.85;
+    if (word.minConfidence >= high) return 'high';
+    return word.minConfidence < Math.min(LOW_WORD_CONFIDENCE, high) ? 'low' : 'medium';
 }
 
 interface WordSpan { text: string; start: number; end: number; }
@@ -71,5 +83,5 @@ export function getWordEvidence(region: OcrRegion, source: 'current' | 'original
 }
 
 export function wordNeedsReview(word: WordEvidence, threshold: number): boolean {
-    return word.minConfidence === null || word.minConfidence < threshold;
+    return getWordConfidenceBand(word, threshold) !== 'high';
 }

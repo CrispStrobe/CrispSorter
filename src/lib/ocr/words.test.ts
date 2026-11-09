@@ -4,7 +4,7 @@ import {
     addDocument, applyRecognition, approvePage, createProject, editRegion,
     getReviewIssues, parseProject, prepareExport, serializeProject, type OcrRegion,
 } from './model';
-import { getWordEvidence, wordNeedsReview } from './words';
+import { getWordConfidenceBand, getWordEvidence, wordNeedsReview } from './words';
 
 function region(text = 'Invoice total', patch: Partial<OcrRegion> = {}): OcrRegion {
     return {
@@ -122,6 +122,37 @@ describe('word confidence and selection', () => {
 });
 
 describe('review evidence consistency', () => {
+    it('colors words by their weakest character so a high average cannot hide an error', () => {
+        const source = region('Invoice NS total');
+        source.char_conf[3] = 0.2;
+        source.char_conf[8] = 0.7;
+        const words = getWordEvidence(source);
+        expect(words[0].confidence).toBeGreaterThan(0.85);
+        expect(words.map(word => getWordConfidenceBand(word, 0.85))).toEqual(['low', 'medium', 'high']);
+        expect(words.map(word => wordNeedsReview(word, 0.85))).toEqual([true, true, false]);
+        expect(words.map(word => getWordConfidenceBand(word, 0.65))).toEqual(['low', 'high', 'high']);
+    });
+
+    it('keeps color boundaries in order when the review threshold changes', () => {
+        const word = (score: number) => getWordEvidence(region('A', { char_conf: [score] }))[0];
+        expect([0, 0.599, 0.6, 0.849, 0.85, 1].map(score => getWordConfidenceBand(word(score), 0.85)))
+            .toEqual(['low', 'low', 'medium', 'medium', 'high', 'high']);
+        expect(getWordConfidenceBand(word(0.5), 0.5)).toBe('high');
+        expect(getWordConfidenceBand(word(0.49), 0.5)).toBe('low');
+        expect(getWordConfidenceBand(word(0), 0)).toBe('high');
+    });
+
+    it('keeps unscored and edited colors distinct from measured confidence', () => {
+        const source = region('Inv0ice', { text: 'Invoice', review: 'corrected' });
+        expect(getWordConfidenceBand(getWordEvidence(source)[0], 0.85)).toBe('edited');
+        expect(getWordConfidenceBand(getWordEvidence(source, 'original')[0], 0.85)).toBe('high');
+        const unscored = getWordEvidence(region('A', { confidenceBasis: 'detection' }))[0];
+        expect(getWordConfidenceBand(unscored, 0.85)).toBe('unscored');
+        const measured = getWordEvidence(region('A'))[0];
+        expect(getWordConfidenceBand({ ...measured, minConfidence: NaN }, 0.85)).toBe('unscored');
+        expect(getWordConfidenceBand({ ...measured, confidence: null }, 0.85)).toBe('unscored');
+    });
+
     it('shares corrected, unknown and low-character decisions with the review queue', () => {
         const source = region('A B', { char_conf: [0.98, 0.98, 0.2] });
         expect(regionReviewReason(source, 0.85)).toBe('low-confidence');
