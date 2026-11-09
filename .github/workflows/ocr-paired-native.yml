@@ -26,6 +26,9 @@ on:
       - src-tauri/src/cli/mod.rs
       - src-tauri/tauri.conf.json
       - scripts/desktop_ocr_startup_smoke.py
+      - scripts/generate-licenses.js
+      - scripts/native_license_inventory.mjs
+      - tests/scripts/test_native_license_inventory.mjs
       - tests/scripts/test_desktop_startup.py
       - .github/workflows/ocr-paired-native.yml
   pull_request:
@@ -55,6 +58,9 @@ on:
       - src-tauri/src/cli/mod.rs
       - src-tauri/tauri.conf.json
       - scripts/desktop_ocr_startup_smoke.py
+      - scripts/generate-licenses.js
+      - scripts/native_license_inventory.mjs
+      - tests/scripts/test_native_license_inventory.mjs
       - tests/scripts/test_desktop_startup.py
       - .github/workflows/ocr-paired-native.yml
 
@@ -85,6 +91,11 @@ jobs:
     # Cold desktop code generation/linking includes mistralrs; checking its Rust
     # metadata alone does not prove the executable links or starts.
     timeout-minutes: 120
+    env:
+      LICENSES_REQUIRE: '1'
+      LICENSES_CARGO_TARGET: x86_64-unknown-linux-gnu
+      LICENSES_CARGO_FEATURES: desktop,ocr-workspace
+      LICENSES_CARGO_METADATA: ${{ runner.temp }}/ocr-desktop-licenses/cargo-metadata.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,6 +118,9 @@ jobs:
       - name: Verify desktop evidence rejection controls
         working-directory: repos/CrispSorter
         run: python3 -m unittest discover -s tests/scripts -p test_desktop_startup.py -v
+      - name: Verify locked native license inventory controls
+        working-directory: repos/CrispSorter
+        run: node --test tests/scripts/test_native_license_inventory.mjs
       - name: Verify conservative reading-order permutations
         working-directory: repos/CrispSorter
         run: |
@@ -146,7 +160,10 @@ jobs:
         working-directory: repos/CrispSorter
         run: |
           npm ci
+          node scripts/native_license_inventory.mjs prepare --output "$LICENSES_CARGO_METADATA"
           npm run build
+          node scripts/native_license_inventory.mjs verify
+          cp static/licenses.json "$RUNNER_TEMP/ocr-desktop-licenses/licenses.json"
       - name: Execute paired native Rust writer contracts
         working-directory: repos/CrispEmbed
         env:
@@ -229,5 +246,6 @@ jobs:
             repos/CrispEmbed/build/libcrispembed*.so*
             repos/CrispEmbed/build/ggml/src/libggml*.so*
             ${{ runner.temp }}/ocr-paired-writer/
+            ${{ runner.temp }}/ocr-desktop-licenses/
           if-no-files-found: warn
           retention-days: 14

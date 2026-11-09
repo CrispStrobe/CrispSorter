@@ -7,6 +7,9 @@ on:
     paths:
       - '.github/workflows/ocr-mobile-native.yml'
       - 'scripts/build_mobile_crispembed.py'
+      - 'scripts/generate-licenses.js'
+      - 'scripts/native_license_inventory.mjs'
+      - 'tests/scripts/test_native_license_inventory.mjs'
       - 'scripts/mobile_native_provenance.py'
       - 'scripts/ocr-mobile-runtime-lock.json'
       - 'scripts/ocr-mobile-ort-lock.json'
@@ -104,6 +107,7 @@ jobs:
           node --check scripts/mobile_ocr_webview_smoke.mjs
           node --check scripts/mobile_ocr_quality.mjs
           node --test tests/scripts/test_mobile_ocr_*.mjs
+          node --test tests/scripts/test_native_license_inventory.mjs
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
@@ -138,6 +142,10 @@ jobs:
     timeout-minutes: 120
     env:
       IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+      LICENSES_REQUIRE: '1'
+      LICENSES_CARGO_TARGET: ${{ matrix.rust }}
+      LICENSES_CARGO_FEATURES: ocr-mobile
+      LICENSES_CARGO_METADATA: ${{ runner.temp }}/ocr-mobile-licenses/cargo-metadata.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -268,6 +276,10 @@ jobs:
             font=/System/Library/Fonts/Supplemental/Arial.ttf
           fi
           python3 tools/mobile-ocr-probe/prepare.py --output "$RUNNER_TEMP/ocr-mobile-inputs" --font "$font"
+      - name: Record exact native backend license metadata
+        working-directory: repos/CrispSorter
+        run: |
+          node scripts/native_license_inventory.mjs prepare --output "$LICENSES_CARGO_METADATA"
       - name: Link actual target photo and inference probe
         working-directory: repos/CrispSorter
         shell: bash
@@ -317,6 +329,7 @@ jobs:
           cp "$OCR_ORT_ROOT/lib/libonnxruntime.so" 'src-tauri/gen/android/app/src/main/jniLibs/${{ matrix.abi }}/libonnxruntime.so'
           npx tauri android build --target '${{ matrix.cli }}' --features ocr-mobile \
             --debug --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json
+          node scripts/native_license_inventory.mjs verify
           mkdir -p "$RUNNER_TEMP/ocr-mobile-app"
           python3 - <<'PY'
           import os, pathlib, shutil, subprocess
@@ -350,6 +363,13 @@ jobs:
             --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime"
           npx tauri ios build --target aarch64-sim --features ocr-mobile \
             --debug --ci --config src-tauri/tauri.ocr-mobile.conf.json
+          node scripts/native_license_inventory.mjs verify
+      - name: Retain generated native license inventory
+        if: always()
+        working-directory: repos/CrispSorter
+        run: |
+          mkdir -p "$RUNNER_TEMP/ocr-mobile-licenses"
+          if [[ -f static/licenses.json ]]; then cp static/licenses.json "$RUNNER_TEMP/ocr-mobile-licenses/licenses.json"; fi
       - name: Install pinned Android WebView test driver
         if: matrix.runtime == 'android-x86_64'
         shell: bash
@@ -384,6 +404,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ocr-mobile-runtime/runtime-build.json
             ${{ runner.temp }}/ocr-mobile-runtime/notices/
+            ${{ runner.temp }}/ocr-mobile-licenses/
             ${{ runner.temp }}/ocr-mobile-ort/ort-runtime.json
             ${{ runner.temp }}/mobile-ort-probe
             ${{ runner.temp }}/ocr-mobile-inputs/inputs.json

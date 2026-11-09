@@ -283,14 +283,16 @@ def source_tree_identity(source):
         generated_at = datetime.fromisoformat(value['generatedAt'].replace('Z', '+00:00'))
         counts, licenses = value['counts'], value['licenses']
         if (generated_at.tzinfo is None or not isinstance(counts, dict)
-                or set(counts) != {'frontend', 'backend', 'total'}
+                or set(counts) not in ({'frontend', 'backend', 'total'}, {'frontend', 'backend', 'native', 'total'})
                 or any(type(count) is not int or count < 0 for count in counts.values())
                 or not isinstance(licenses, list) or len(licenses) > 20_000
                 or any(not isinstance(item, dict) or not isinstance(item.get('name'), str)
-                       or item.get('source') not in ('Frontend', 'Backend') for item in licenses)
-                or counts != {'frontend': sum(item['source'] == 'Frontend' for item in licenses),
-                              'backend': sum(item['source'] == 'Backend' for item in licenses),
-                              'total': len(licenses)}):
+                       or item.get('source') not in ('Frontend', 'Backend', 'Native') for item in licenses)
+                or counts != {**{'frontend': sum(item['source'] == 'Frontend' for item in licenses),
+                                 'backend': sum(item['source'] == 'Backend' for item in licenses),
+                                 'total': len(licenses)},
+                              **({'native': sum(item['source'] == 'Native' for item in licenses)} if 'native' in counts else {})}
+                or ('native' not in counts and any(item['source'] == 'Native' for item in licenses))):
             raise ValueError('Generated license inventory counts/content are inconsistent')
         committed = subprocess.run(['git', '-C', str(source), 'show', 'HEAD:' + generated_path],
                                    check=True, capture_output=True, timeout=30).stdout

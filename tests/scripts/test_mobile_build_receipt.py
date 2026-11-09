@@ -149,6 +149,23 @@ class BuildReceiptTests(unittest.TestCase):
             self.assertEqual(entry['sha256'], receipt.digest(source / entry['path']))
             self.assertNotEqual(entry['sha256'], entry['committed_sha256'])
 
+    def test_source_receipt_accepts_explicit_native_notices_without_losing_count_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, inventory = self.source_fixture(Path(directory))
+            inventory['licenses'].append({'name': 'SheenBidi fixture', 'source': 'Native'})
+            inventory['counts'].update(native=1, total=2)
+            (source / 'static/licenses.json').write_text(json.dumps(inventory))
+            value = receipt.source_tree_identity(source)
+            self.assertEqual(value['generated_tracked_files'][0]['counts']['native'], 1)
+            inventory['counts']['native'] = 0
+            (source / 'static/licenses.json').write_text(json.dumps(inventory))
+            with self.assertRaisesRegex(ValueError, 'counts/content'):
+                receipt.source_tree_identity(source)
+            del inventory['counts']['native']
+            (source / 'static/licenses.json').write_text(json.dumps(inventory))
+            with self.assertRaisesRegex(ValueError, 'counts/content'):
+                receipt.source_tree_identity(source)
+
     def test_source_receipt_still_rejects_changed_code_lock_and_untracked_files(self):
         for name in ('app.rs', 'Cargo.lock', 'untracked.rs'):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
