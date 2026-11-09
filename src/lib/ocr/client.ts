@@ -160,6 +160,23 @@ export interface ExportRequest {
   overwrite: boolean;
   sourceUris: string[];
 }
+export interface ExportProgress {
+  request_id: string;
+  phase: "rendering" | "writing" | "committing" | "destination";
+  bytes: number;
+}
+export interface ExportOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: ExportProgress) => void;
+}
+export function exportProgressLabel(progress: ExportProgress): string {
+  const bytes = Number.isFinite(progress.bytes) ? Math.max(0, progress.bytes) : 0;
+  const size = bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+    : bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${Math.floor(bytes)} B`;
+  const action = { rendering: "Rendering document", writing: "Writing export",
+    committing: "Finishing export", destination: "Saving to a destination" }[progress.phase];
+  return `${action} · ${size}`;
+}
 
 /** Explicit adapter makes the complete review workflow testable without model downloads. */
 export interface WorkspaceClient {
@@ -182,7 +199,7 @@ export interface WorkspaceClient {
     pageWidthPoints?: number,
     pageHeightPoints?: number,
   ): Promise<ImportedPage>;
-  exportDocument(request: ExportRequest): Promise<ExportResult>;
+  exportDocument(request: ExportRequest, options?: ExportOptions): Promise<ExportResult>;
   extractFields(
     text: string,
     labels: string[],
@@ -261,6 +278,56 @@ async function trackedImport(options: ImportOptions | undefined, run: (requestId
   }
 }
 
+function exportAborted(): DOMException { return new DOMException("Document export cancelled.", "AbortError"); }
+function exportFailure(error: unknown): unknown {
+  return String(error).includes("OCR_EXPORT_CANCELLED") ? exportAborted() : error;
+}
+
+/** A stop request can lose to atomic publication. Only the native cancellation
+ * marker means the export stopped; a completed result remains a success. */
+async function trackedExport(request: ExportRequest, options?: ExportOptions, requestId?: string): Promise<ExportResult> {
+  if (!options) return invoke<ExportResult>("ocr_workspace_export", { ...request })
+    .catch(error => { throw exportFailure(error); });
+  if (options.signal?.aborted) throw exportAborted();
+  const id = requestId ?? crypto.randomUUID();
+  let active = true;
+  let started = false;
+  let committing = false;
+  let lastBytes = 0;
+  const cancel = () => {
+    if (!started || !active || committing) return;
+    void invoke<boolean>("ocr_workspace_cancel_export", { requestId: id }).then(accepted => {
+      if (accepted === false && active && !committing) {
+        committing = true;
+        options.onProgress?.({ request_id: id, phase: "committing", bytes: lastBytes });
+      }
+    }).catch(() => { /* The export's eventual result retains its original error. */ });
+  };
+  const unlisten = await listen<ExportProgress>("ocr-workspace-export", event => {
+    const progress = event.payload;
+    if (!active || !progress || progress.request_id !== id ||
+      !["rendering", "writing", "committing"].includes(progress.phase) ||
+      !Number.isSafeInteger(progress.bytes) || progress.bytes < 0 ||
+      (committing && progress.phase !== "committing")) return;
+    lastBytes = progress.bytes;
+    if (progress.phase === "committing") committing = true;
+    options.onProgress?.(progress);
+  });
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    if (options.signal?.aborted) throw exportAborted();
+    started = true;
+    return await invoke<ExportResult>("ocr_workspace_export", { ...request, requestId: id });
+  } catch (error) {
+    throw exportFailure(error);
+  } finally {
+    // Keep the listener and any mobile staging alive until the worker stops.
+    active = false;
+    options.signal?.removeEventListener("abort", cancel);
+    try { unlisten(); } catch { /* Preserve the native export result. */ }
+  }
+}
+
 /** Raw IPC avoids expanding a camera JPEG into millions of JavaScript numbers.
  * Header metadata is UTF-8 encoded so provider identities stay byte-exact. */
 function importPayload(command: string, name: string, bytes: Uint8Array, sourceUri?: string, requestId?: string): Promise<ImportedDocument> {
@@ -273,11 +340,18 @@ function importPayload(command: string, name: string, bytes: Uint8Array, sourceU
 
 /** The native picker owns destination access; the rendered file stays private
  * until the user chooses where to save it. Completion means the copy finished. */
-async function completeMobileExport<T extends { saved_path: string; bytes: number; cancelled?: boolean }>(path: string, render: () => Promise<T>): Promise<T> {
+async function completeMobileExport<T extends { saved_path: string; bytes: number; cancelled?: boolean }>(
+  path: string, render: () => Promise<T>, options?: ExportOptions, onDestination?: (bytes: number) => void,
+): Promise<T> {
   const name = mobileExports.get(path);
   if (!name) return render();
   try {
     const result = await render();
+    if (options?.signal?.aborted) return { ...result, cancelled: true, saved_path: "" };
+    onDestination?.(result.bytes);
+    // Unmount or another caller can abort during the progress callback, before
+    // the OS owns the destination picker and copy operation.
+    if (options?.signal?.aborted) return { ...result, cancelled: true, saved_path: "" };
     const saved = await invoke<{ cancelled: boolean; saved_path?: string }>("plugin:mobile-provider|export_file", { path: result.saved_path, name });
     return { ...result, cancelled: saved.cancelled, saved_path: saved.saved_path ?? "" };
   } finally {
@@ -346,7 +420,12 @@ export const workspaceClient: WorkspaceClient = {
       pageWidthPoints,
       pageHeightPoints,
     }),
-  exportDocument: (request) => completeMobileExport(request.outputPath, () => invoke<ExportResult>("ocr_workspace_export", { ...request })),
+  exportDocument: (request, options) => {
+    const requestId = options ? crypto.randomUUID() : undefined;
+    return completeMobileExport(request.outputPath, () => trackedExport(request, options, requestId), options, bytes => {
+      if (requestId) options?.onProgress?.({ request_id: requestId, phase: "destination", bytes });
+    });
+  },
   extractFields: (text, labels, threshold) =>
     invoke("ocr_workspace_extract_fields", { text, labels, threshold }),
   layoutFields: (pagePath, labels, threshold) =>

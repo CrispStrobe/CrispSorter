@@ -3,7 +3,7 @@ name: OCR workspace browser verification
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls']
     paths:
       - src/lib/ocr/**
       - src/lib/tabs.ts
