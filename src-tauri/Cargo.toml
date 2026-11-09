@@ -407,9 +407,9 @@ ocr-reviewed-pdf = ["ocr-review-diagnostics"]
 # Keep ordinary released-library builds independent of the additive ABI.
 ocr-photo-tools = ["crispembed"]
 ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools"]
-# Paired mobile OCR includes app-private model provisioning and image/TIFF import.
-# Searchable PDF export uses CrispEmbed's writer; PDF import requires a separately
-# packaged mobile PDF rasterizer and is deliberately not advertised here.
+# Paired mobile OCR includes app-private model provisioning and native document
+# import through mobile-provider. PDF/phone-format capabilities come from the
+# actual platform decoder; searchable PDF export uses CrispEmbed's writer.
 ocr-mobile = ["crispembed", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools", "dep:webpki-root-certs"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]

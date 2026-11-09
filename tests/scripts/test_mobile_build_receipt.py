@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import plistlib
 import shutil
@@ -94,6 +95,62 @@ class BuildReceiptTests(unittest.TestCase):
             (root / 'lib/libcrispembed.so').write_bytes(elf(text=b'evil'))
             with self.assertRaisesRegex(ValueError, 'Built runtime bytes'):
                 receipt.android_identity(artifact, root, runtime)
+
+    def make_ort(self, root, packaged=None, include_notice=True):
+        source, runtime = root / 'source', root / 'ort'
+        (source / 'scripts').mkdir(parents=True)
+        (source / 'src-tauri').mkdir()
+        (source / '.cargo').mkdir()
+        (runtime / 'lib').mkdir(parents=True)
+        (runtime / 'include').mkdir()
+        native, header = elf(), b'#define ORT_API_VERSION 23\n'
+        (runtime / 'lib/libonnxruntime.so').write_bytes(native)
+        (runtime / 'include/onnxruntime_c_api.h').write_bytes(header)
+        notices = [dict(filename=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+                   for name, data in [('LICENSE', b'license fixture'), ('ThirdPartyNotices.txt', b'notice fixture')]]
+        pin = dict(version='1.23.2', url='https://invalid/fixture.aar', filename='fixture.aar', bytes=1, sha256='0' * 64,
+                   libraries={'x86_64': {'sha256': hashlib.sha256(native).hexdigest()}})
+        lock = dict(rust_binding='2.0.0-rc.11', api_version=23, android=pin, header_sha256=hashlib.sha256(header).hexdigest(), notices=notices)
+        lock_path = source / 'scripts/ocr-mobile-ort-lock.json'
+        lock_path.write_text(json.dumps(lock))
+        (source / 'src-tauri/Cargo.toml').write_text('[dependencies]\nort = "=2.0.0-rc.11"\n')
+        (source / '.cargo/config.toml').write_text('[env]\nORT_LIB_LOCATION = { value = ' + json.dumps(str(runtime / 'lib')) + ', force = true }\nORT_PREFER_DYNAMIC_LINK = { value = "1", force = true }\n')
+        value = dict(kind='ocr-mobile-ort-runtime', target='android-x86_64', version=pin['version'], api_version=23,
+                     rust_binding=lock['rust_binding'], lock_sha256=receipt.digest(lock_path),
+                     archive={key: pin[key] for key in ('url', 'filename', 'bytes', 'sha256')},
+                     files={name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()} for name, data
+                            in [('lib/libonnxruntime.so', native), ('include/onnxruntime_c_api.h', header)]})
+        runtime_path = runtime / 'ort-runtime.json'
+        runtime_path.write_text(json.dumps(value))
+        artifact = root / 'app.apk'
+        with zipfile.ZipFile(artifact, 'w') as archive:
+            archive.writestr('lib/x86_64/libonnxruntime.so', packaged if packaged is not None else elf(debug=b''))
+            if include_notice:
+                archive.writestr('assets/bin/onnxruntime-LICENSE.txt', b'license fixture')
+            archive.writestr('assets/bin/onnxruntime-ThirdPartyNotices.txt', b'notice fixture')
+        return source, artifact, runtime_path
+
+    def test_ort_identity_binds_stripped_packaged_code_and_notices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.make_ort(Path(directory))
+            value = receipt.ort_identity(args[0], 'android', args[1], args[2], 'android-x86_64')
+            self.assertTrue(value['linkage']['mapped_sections_match'])
+            self.assertEqual(len(value['packaged_notices']), 2)
+
+    def test_old_packaged_ort_and_missing_license_cannot_pass_identity(self):
+        for settings in ({'packaged': elf(text=b'old!')}, {'include_notice': False}):
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory() as directory:
+                args = self.make_ort(Path(directory), **settings)
+                with self.assertRaises(ValueError):
+                    receipt.ort_identity(args[0], 'android', args[1], args[2], 'android-x86_64')
+
+    def test_ort_binding_and_nested_cargo_path_must_match_receipt(self):
+        for filename, replacement in [('src-tauri/Cargo.toml', '[dependencies]\nort = "=2.0.0-rc.12"\n'), ('.cargo/config.toml', '[env]\n')]:
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                args = self.make_ort(Path(directory))
+                (args[0] / filename).write_text(replacement)
+                with self.assertRaises(ValueError):
+                    receipt.ort_identity(args[0], 'android', args[1], args[2], 'android-x86_64')
 
     def test_ios_bundle_identity_detects_binary_changes_and_platform(self):
         with tempfile.TemporaryDirectory() as directory:

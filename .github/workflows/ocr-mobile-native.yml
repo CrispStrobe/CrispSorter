@@ -8,6 +8,8 @@ on:
       - '.github/workflows/ocr-mobile-native.yml'
       - 'scripts/build_mobile_crispembed.py'
       - 'scripts/ocr-mobile-runtime-lock.json'
+      - 'scripts/ocr-mobile-ort-lock.json'
+      - 'scripts/prepare_mobile_ort.py'
       - 'scripts/prepare_ocr_ios_project.py'
       - 'scripts/prepare_ocr_cargo_env.py'
       - 'scripts/mobile_ocr_webview_smoke.mjs'
@@ -17,6 +19,7 @@ on:
       - 'scripts/mobile_simulator_smoke.py'
       - 'scripts/validate_android_native_libs.py'
       - 'tools/mobile-ocr-probe/**'
+      - 'tools/mobile-ort-probe/**'
       - 'tests/scripts/test_*mobile*'
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/tauri.ocr-mobile.conf.json'
@@ -81,7 +84,13 @@ jobs:
         working-directory: repos/CrispSorter
         run: |
           python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v
-          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py scripts/prepare_ocr_cargo_env.py scripts/ocr_mobile_build_receipt.py scripts/mobile_simulator_smoke.py scripts/mobile_document_picker.py tools/mobile-ocr-probe/prepare.py
+          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py scripts/prepare_ocr_cargo_env.py scripts/prepare_mobile_ort.py scripts/ocr_mobile_build_receipt.py scripts/mobile_simulator_smoke.py scripts/mobile_document_picker.py tools/mobile-ocr-probe/prepare.py tools/mobile-ort-probe/make_fixture.py
+          python3 - <<'PY'
+          import pathlib, runpy
+          source = pathlib.Path('tools/mobile-ort-probe')
+          fixture = runpy.run_path(str(source / 'make_fixture.py'))
+          assert (source / 'add_model.h').read_text() == fixture['generated_header']()
+          PY
           node --check scripts/mobile_ocr_webview_smoke.mjs
           node --test tests/scripts/test_mobile_ocr_probe_utils.mjs
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
@@ -215,12 +224,25 @@ jobs:
             --lock scripts/ocr-mobile-runtime-lock.json \
             --target '${{ matrix.runtime }}' --jobs 2
           echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
-      - name: Preserve runtime and host compiler paths through nested mobile Cargo calls
+      - name: Stage pinned mobile ONNX runtime for existing indexing support
         working-directory: repos/CrispSorter
         run: |
+          python3 scripts/prepare_mobile_ort.py --target '${{ matrix.runtime }}' \
+            --output "$RUNNER_TEMP/ocr-mobile-ort"
+          echo "OCR_ORT_ROOT=$RUNNER_TEMP/ocr-mobile-ort" >> "$GITHUB_ENV"
+      - name: Preserve runtime and host compiler paths through nested mobile Cargo calls
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            ort=(--ort-lib-dir "$OCR_ORT_ROOT/lib")
+          else
+            ort=(--ort-xcframework "$OCR_ORT_ROOT/onnxruntime.xcframework")
+          fi
           python3 scripts/prepare_ocr_cargo_env.py --project . \
             --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR" \
-            --protoc "$(command -v protoc)"
+            --protoc "$(command -v protoc)" "${ort[@]}"
       - name: Prepare immutable synthetic probe inputs
         if: matrix.probe
         working-directory: repos/CrispSorter
@@ -245,6 +267,11 @@ jobs:
               -L "$CRISPEMBED_SYS_LIB_DIR" -lcrispembed \
               -Wl,--no-undefined -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 \
               -o "$RUNNER_TEMP/ocr-mobile-probe"
+            "$OCR_NDK_BIN/${{ matrix.rust }}24-clang++" -std=c++17 -static-libstdc++ \
+              -I "$OCR_ORT_ROOT/include" tools/mobile-ort-probe/probe.cpp \
+              -L "$OCR_ORT_ROOT/lib" -lonnxruntime -Wl,--no-undefined \
+              -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 \
+              -o "$RUNNER_TEMP/mobile-ort-probe"
           else
             sdk_path=$(xcrun --sdk iphonesimulator --show-sdk-path)
             xcrun --sdk iphonesimulator clang++ -std=c++17 \
@@ -253,6 +280,12 @@ jobs:
               "$CRISPEMBED_SYS_LIB_DIR/libcrispembed.a" -lc++ \
               -framework Foundation -framework Metal -framework MetalKit -framework Accelerate \
               -o "$RUNNER_TEMP/ocr-mobile-probe"
+            xcrun --sdk iphonesimulator clang++ -std=c++17 \
+              -target arm64-apple-ios16.0-simulator -isysroot "$sdk_path" \
+              -I "$OCR_ORT_ROOT/include" tools/mobile-ort-probe/probe.cpp \
+              "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime" \
+              -lc++ -framework Foundation -framework CoreML -framework Accelerate \
+              -o "$RUNNER_TEMP/mobile-ort-probe"
           fi
       - name: Build Android OCR application
         if: runner.os == 'Linux'
@@ -263,9 +296,12 @@ jobs:
           npm ci
           mkdir -p src-tauri/bin
           cp "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" src-tauri/bin/ocr-mobile-runtime.json
+          cp "$OCR_ORT_ROOT/notices/LICENSE" src-tauri/bin/onnxruntime-LICENSE.txt
+          cp "$OCR_ORT_ROOT/notices/ThirdPartyNotices.txt" src-tauri/bin/onnxruntime-ThirdPartyNotices.txt
           npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
           CRISPEMBED_BUILD_DIR="$CRISPEMBED_SYS_LIB_DIR" \
             bash scripts/bundle_android_native_libs.sh --abi '${{ matrix.abi }}' --require-crispembed
+          cp "$OCR_ORT_ROOT/lib/libonnxruntime.so" 'src-tauri/gen/android/app/src/main/jniLibs/${{ matrix.abi }}/libonnxruntime.so'
           npx tauri android build --target '${{ matrix.cli }}' --features ocr-mobile \
             --debug --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json
           mkdir -p "$RUNNER_TEMP/ocr-mobile-app"
@@ -282,6 +318,7 @@ jobs:
           python3 scripts/ocr_mobile_build_receipt.py --platform android \
             --artifact "$RUNNER_TEMP/ocr-mobile-app/CrispSorter-ocr.apk" \
             --runtime-receipt "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" \
+            --ort-runtime-receipt "$OCR_ORT_ROOT/ort-runtime.json" \
             --output "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json"
       - name: Build iOS OCR simulator application
         if: runner.os == 'macOS'
@@ -292,8 +329,11 @@ jobs:
           npm ci
           mkdir -p src-tauri/bin
           cp "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" src-tauri/bin/ocr-mobile-runtime.json
+          cp "$OCR_ORT_ROOT/notices/LICENSE" src-tauri/bin/onnxruntime-LICENSE.txt
+          cp "$OCR_ORT_ROOT/notices/ThirdPartyNotices.txt" src-tauri/bin/onnxruntime-ThirdPartyNotices.txt
           npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
-          python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml
+          python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml \
+            --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime"
           npx tauri ios build --target aarch64-sim --features ocr-mobile \
             --debug --ci --config src-tauri/tauri.ocr-mobile.conf.json
       - name: Install pinned Android WebView test driver
@@ -329,6 +369,8 @@ jobs:
           name: ocr-mobile-${{ matrix.runtime }}
           path: |
             ${{ runner.temp }}/ocr-mobile-runtime/runtime-build.json
+            ${{ runner.temp }}/ocr-mobile-ort/ort-runtime.json
+            ${{ runner.temp }}/mobile-ort-probe
             ${{ runner.temp }}/ocr-mobile-inputs/inputs.json
             ${{ runner.temp }}/ocr-mobile-evidence/
             ${{ runner.temp }}/ocr-mobile-app/
