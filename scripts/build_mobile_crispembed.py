@@ -48,7 +48,7 @@ def configure_args(target, source, build, ndk=None):
             '-DBUILD_SHARED_LIBS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON',
             '-DGGML_NATIVE=OFF', '-DCRISPEMBED_NATIVE=OFF',
             '-DGGML_BLAS=OFF', '-DGGML_LLAMAFILE=OFF',
-            '-DGGML_CUDA=OFF', '-DGGML_VULKAN=OFF']
+            '-DGGML_CUDA=OFF', '-DGGML_VULKAN=OFF', '-DGGML_OPENMP=OFF']
     # The pinned CMake file auto-discovers optional CrispASR siblings. Keep
     # this build's provenance limited to the two verified source commits.
     for component in ('AUDIO', 'PUNC', 'LID', 'TRUECASE'):
@@ -63,6 +63,7 @@ def configure_args(target, source, build, ndk=None):
         args += [f'-DCMAKE_TOOLCHAIN_FILE={toolchain}', f'-DANDROID_ABI={ANDROID_TARGETS[target]}',
                  '-DANDROID_NATIVE_API_LEVEL=24', '-DANDROID_STL=c++_static',
                  '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
+                 '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384',
                  '-DCRISPEMBED_BUILD_SHARED=ON', '-DGGML_METAL=OFF']
     else:
         sdk = 'iphonesimulator' if target == 'ios-sim-arm64' else 'iphoneos'

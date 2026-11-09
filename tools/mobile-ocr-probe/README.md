@@ -1,7 +1,9 @@
 # Native mobile OCR probe
 
 This program executes the paired public photo API and real DBNet + Tesseract
-inference on a synthetic three-line page. It checks blank captures, byte-exact
+inference on a synthetic three-line page. The standalone probe disables the
+Tesseract segmentation router so its detector actually runs; application defaults
+are not changed. It checks blank captures, byte-exact
 identity perspective, a known five-degree rotation and its measured correction,
 recognized text, and native review snapshot availability. Both the original and
 prepared page must retain the document number and stay below the declared

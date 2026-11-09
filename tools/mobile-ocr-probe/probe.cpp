@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -157,6 +158,10 @@ int main(int argc, char ** argv) {
 
         const std::string detector = input + "/dbnet-ic15-q8_0.gguf";
         const std::string recognizer = input + "/tesseract-eng-q8_0.gguf";
+        // Exercise the model detector instead of the default segmentation router.
+        // This affects this disposable probe process only, never the app's defaults.
+        require(setenv("CRISPEMBED_TESSERACT_SEG_ROUTER", "0", 1) == 0,
+                "Cannot select the probe's explicit detector path");
         crispembed_ocr_stage stage{};
         stage.source_type = 0;
         stage.engine = 6; // Public ABI: native Tesseract with DBNet detection.
@@ -175,7 +180,7 @@ int main(int argc, char ** argv) {
         std::ofstream out(receipt);
         out << "{\"schema_version\":1,\"status\":\"passed\",\"synthetic_only\":true,"
             << "\"scope\":\"Executed native photo API and baseline OCR; not physical-camera or corpus qualification\","
-            << "\"known_clockwise_degrees\":5,\"correction_clockwise_degrees\":" << correction
+            << "\"segmentation_router\":\"disabled_for_probe\",\"known_clockwise_degrees\":5,\"correction_clockwise_degrees\":" << correction
             << ",\"clean\":" << recognition_json(clean)
             << ",\"prepared\":" << recognition_json(prepared) << "}\n";
         require(bool(out), "Cannot write native probe receipt");

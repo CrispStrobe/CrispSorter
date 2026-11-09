@@ -68,6 +68,7 @@ def make_text_fixture(output, font_path):
     for line, y in zip(LINES, (50, 180, 310)):
         draw.text((70, y), line, font=font, fill='black')
     image.save(output / 'page.ppm')
+    image.save(output / 'page.png')
     (output / 'page.rgb').write_bytes(image.tobytes())
     return {'width': WIDTH, 'height': HEIGHT, 'text': '\n'.join(LINES),
             'font_sha256': digest(font_path), 'image_sha256': digest(output / 'page.ppm')}
