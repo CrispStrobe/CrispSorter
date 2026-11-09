@@ -1,4 +1,5 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   ExportPage,
@@ -24,9 +25,28 @@ export interface WorkspaceCapabilities {
   math: boolean;
   photo_tools?: boolean;
   camera_import?: boolean;
+  mobile_model_store?: boolean;
+  default_engine?: string;
+  default_language?: string;
   reason?: string;
   pdf_export_reason?: string;
   reasons?: Record<string, string>;
+}
+export interface ModelDownloadProgress {
+  name: string;
+  filename: string;
+  phase: "checking" | "downloading" | "verified" | "complete";
+  downloaded: number;
+  total: number | null;
+  request_id?: string;
+}
+export function modelDownloadLabel(progress: ModelDownloadProgress): string {
+  if (progress.phase === "checking") return `Checking ${progress.name}…`;
+  if (progress.phase === "verified") return `Verified ${progress.filename}`;
+  if (progress.phase === "complete") return `${progress.name} is installed`;
+  const done = (progress.downloaded / (1024 * 1024)).toFixed(1);
+  const total = progress.total ? ` / ${(progress.total / (1024 * 1024)).toFixed(1)} MiB` : " MiB";
+  return `${progress.filename}: ${done}${total}`;
 }
 export interface ProjectEnvelope extends SaveReceipt {
   project: OcrProject;
@@ -104,6 +124,7 @@ export interface WorkspaceClient {
   importDocument(locationUri: string): Promise<ImportedDocument>;
   importImage?(name: string, bytes: Uint8Array): Promise<ImportedDocument>;
   assessPhoto?(pagePath: string): Promise<PhotoAssessment>;
+  installMobileModels?(language: string, onProgress?: (progress: ModelDownloadProgress) => void): Promise<string[]>;
   recognize(options: RecognitionOptions): Promise<RecognitionResult>;
   transform(options: TransformOptions): Promise<{ pages: ImportedPage[] }>;
   prepare(
@@ -187,6 +208,17 @@ export const workspaceClient: WorkspaceClient = {
   },
   importImage: (name, bytes) => importPayload("ocr_workspace_import_image", name, bytes),
   assessPhoto: (pagePath) => invoke("ocr_workspace_assess_photo", { pagePath }),
+  installMobileModels: async (language, onProgress) => {
+    const requestId = crypto.randomUUID();
+    const unlisten = await listen<ModelDownloadProgress>("crispembed-model-download", (event) => {
+      if (event.payload.request_id === requestId) onProgress?.(event.payload);
+    });
+    try {
+      return await invoke<string[]>("ocr_workspace_install_mobile_models", { language, requestId });
+    } finally {
+      try { unlisten(); } catch { /* Preserve the install result if the event bridge has closed. */ }
+    }
+  },
   recognize: (options) =>
     invoke("ocr_workspace_recognize", {
       ...options,

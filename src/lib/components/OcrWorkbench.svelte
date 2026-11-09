@@ -63,6 +63,7 @@
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import {
     workspaceClient,
+    modelDownloadLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
@@ -154,6 +155,7 @@
   let photoQuad = $state<PhotoQuad>(initialPhotoQuad(100, 100));
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
+  let modelProgress = $state("");
   let cameraInput = $state<HTMLInputElement>();
   let lastPhotoSource = "";
   let inspector = $state<"review" | "recognition" | "extract" | "export">(
@@ -347,10 +349,10 @@
   const locked = $derived(booting || closing || !!busy || queueActive || queuePromise !== null);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
-    typeof settings.engine === "string" ? settings.engine : "auto",
+    typeof settings.engine === "string" ? settings.engine : (capabilities.default_engine ?? "auto"),
   );
   const language = $derived(
-    typeof settings.language === "string" ? settings.language : "auto",
+    typeof settings.language === "string" ? settings.language : (capabilities.default_language ?? "auto"),
   );
   const profile = $derived(
     PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0],
@@ -853,6 +855,21 @@
       recognitionSettings: { ...settings, [key]: value },
       updatedAt: new Date().toISOString(),
     });
+  }
+  async function installBasicModels() {
+    if (locked || !capabilities.mobile_model_store || !client.installMobileModels) return;
+    busy = "Installing OCR models";
+    error = ""; notice = ""; modelProgress = "Checking model installation…";
+    try {
+      const names = await client.installMobileModels(language === "auto" ? "eng" : language, (progress) => {
+        if (mounted) modelProgress = modelDownloadLabel(progress);
+      });
+      if (mounted) notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+    } catch (value) {
+      if (mounted) fail(value);
+    } finally {
+      if (mounted) { busy = ""; modelProgress = ""; }
+    }
   }
   function setConfig(key: string, value: unknown) {
     setSetting("config", {
@@ -1742,6 +1759,7 @@
       disabled={locked}><Plus size={16} /> Add documents</button
     >
     {#if capabilities.camera_import && client.importImage}<button class="button" onclick={() => cameraInput?.click()} disabled={locked}><Camera size={16} /> Capture photo</button>{/if}
+    {#if capabilities.mobile_model_store && client.installMobileModels}<button class="button" onclick={() => openInspector("recognition")} disabled={locked}><Download size={16} /> OCR models</button>{/if}
     <div class="command-separator"></div>
     <button
       class="button"
@@ -2820,6 +2838,17 @@
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
             </p>
+            {#if capabilities.mobile_model_store && client.installMobileModels}
+              <section class="model-install" aria-label="On-device OCR models">
+                <h3>On-device OCR models</h3>
+                <p class="field-hint">Install the text detector and selected Tesseract language before recognition. English is used for Model default. Downloads are verified and stored on this device.</p>
+                <button class="button" onclick={installBasicModels} disabled={locked}>
+                  <Download size={16} /> Install basic OCR models
+                </button>
+                {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
+                <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
+              </section>
+            {/if}
             <div class="settings-section">
               <h3><WandSparkles size={15} /> Scan preparation</h3>
               {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Image restoration", hint: "Repair the scan with the selected model and task." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label
@@ -4672,6 +4701,15 @@
     color: #f1aaa2;
     font-size: 10px;
   }
+  .model-install {
+    margin: 14px 0;
+    padding: 14px;
+    border: 1px solid var(--ocr-border, #3b414b);
+    border-radius: 8px;
+  }
+  .model-install h3 { margin: 0 0 8px; font-size: 13px; }
+  .model-install .button { min-height: 44px; white-space: normal; width: 100%; justify-content: center; }
+  .model-progress { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
   .inline-warning {
     font-size: 10px;
     line-height: 1.7;

@@ -45,6 +45,8 @@ pub struct DownloadProgress {
     pub phase: &'static str,
     pub downloaded: u64,
     pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 pub const PROGRESS_EVENT: &str = "crispembed-model-download";
 
@@ -56,11 +58,12 @@ pub fn download(name: &str, progress: impl Fn(DownloadProgress)) -> Result<Strin
 /// Small, explicit first-run setup. Other engines use the Settings model picker.
 #[tauri::command]
 pub async fn ocr_workspace_install_mobile_models(
-    app: tauri::AppHandle, language: Option<String>,
+    app: tauri::AppHandle, language: Option<String>, request_id: String,
 ) -> Result<Vec<String>, String> {
     #[cfg(feature = "ocr-mobile")]
     {
         use tauri::Emitter;
+        uuid::Uuid::parse_str(&request_id).map_err(|_| "The model installation request ID is invalid.")?;
         let (config, _) = crate::ocr_workspace::recognition_config(
             Default::default(), Some("tesseract"),
             language.as_deref().filter(|value| *value != "auto"),
@@ -70,14 +73,17 @@ pub async fn ocr_workspace_install_mobile_models(
         tokio::task::spawn_blocking(move || {
             let names = vec!["dbnet-det".to_string(), recognizer];
             for name in &names {
-                download(name, |update| { let _ = app.emit(PROGRESS_EVENT, update); })?;
+                download(name, |mut update| {
+                    update.request_id = Some(request_id.clone());
+                    let _ = app.emit(PROGRESS_EVENT, update);
+                })?;
             }
             Ok(names)
         }).await.map_err(|error| format!("Model installer: {error}"))?
     }
     #[cfg(not(feature = "ocr-mobile"))]
     {
-        let _ = (app, language);
+        let _ = (app, language, request_id);
         Err("The mobile model installer is unavailable in this build.".into())
     }
 }
@@ -281,7 +287,7 @@ mod mobile {
         let files = artifacts(name)?;
         let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
         installed(root()?, name, &files)?.map(|path| path.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("Model '{name}' is not installed or failed its integrity check. Use Install basic OCR models for Tesseract, or Settings → Models → Download for other engines. Mobile recognition does not download models automatically."))
+            .ok_or_else(|| format!("Model '{name}' is not installed or failed its integrity check. Use Install basic OCR models for Tesseract, or the CrispEmbed model registry in Settings for other engines. Mobile recognition does not download models automatically."))
     }
 
     /// Writes only inside a fresh staging directory. The published model set is
@@ -366,9 +372,9 @@ mod mobile {
         let files = artifacts(name)?;
         let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
         let root = root()?;
-        progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "checking", downloaded: 0, total: None });
+        progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "checking", downloaded: 0, total: None, request_id: None });
         if let Some(path) = installed(root, name, &files)? {
-            progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None });
+            progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None, request_id: None });
             return Ok(path.to_string_lossy().into_owned());
         }
         if offline() { return Err(format!("Offline mode is enabled and '{name}' is not installed. Turn off offline mode to download, or use an existing local GGUF file.")); }
@@ -381,7 +387,7 @@ mod mobile {
             .build().map_err(|error| format!("Initialize model download: {error}"))?;
         for file in &files {
             let emit = |phase, downloaded, total| progress(DownloadProgress {
-                name: name.to_owned(), filename: file.filename.clone(), phase, downloaded, total,
+                name: name.to_owned(), filename: file.filename.clone(), phase, downloaded, total, request_id: None,
             });
             let response = client.get(&file.url).header(reqwest::header::ACCEPT_ENCODING, "identity")
                 .send().and_then(reqwest::blocking::Response::error_for_status)
@@ -397,7 +403,7 @@ mod mobile {
             emit("verified", bytes, Some(bytes));
         }
         let path = commit_set(root, name, &files, staging)?;
-        progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None });
+        progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None, request_id: None });
         Ok(path.to_string_lossy().into_owned())
     }
 
