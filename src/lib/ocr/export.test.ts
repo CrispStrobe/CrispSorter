@@ -120,4 +120,32 @@ describe("reviewed text PDF availability", () => {
     expect(checkExportText("text", capabilities, [page("\ud800")]).errors[0]).toContain("incomplete Unicode");
     expect(checkExportText("text", capabilities, [page("𞤀😀")]).errors).toEqual([]);
   });
+
+  it("advises at the per-page scalar boundary and follows selected pages and included regions", () => {
+    const denseWarning = (selection: string, pages: Parameters<typeof checkExportText>[2]) =>
+      checkExportText(selection, capabilities, pages).warnings.filter(warning => warning.includes("very dense pages"));
+    // Astral Unicode uses two UTF-16 units but one scalar. Do not warn early.
+    expect(denseWarning("pdf", [page("😀".repeat(49_999))])).toEqual([]);
+    expect(denseWarning("pdf", [page("x".repeat(30_000)), page("x".repeat(30_000))])).toEqual([]);
+    let project = addDocument(createProject("Dense review"), { source_uri: "/dense.pdf", name: "Dense source", pages: [
+      { image_path: "/one.png", width: 100, height: 100 }, { image_path: "/two.png", width: 100, height: 100 },
+    ] });
+    for (const [index, text] of ["Ordinary page", "😀".repeat(50_000)].entries()) {
+      project = applyRecognition(project, project.pages[index].id, { width: 100, height: 100,
+        regions: [{ text, x: 1, y: 1, w: 80, h: 10, confidence: 0.9 }] });
+    }
+    const all = prepareExport(project).pages;
+    for (const selection of ["pdf", "pdfa"]) {
+      const check = checkExportText(selection, capabilities, all);
+      expect(denseWarning(selection, all)).toHaveLength(1);
+      expect(check.errors).toEqual([]);
+      expect(check.alternatives).toEqual(["text", "html", "docx"]);
+      expect(check.warnings.some(warning => warning.includes("supplementary characters"))).toBe(true);
+    }
+    expect(denseWarning("text", all)).toEqual([]);
+    expect(denseWarning("pdf", prepareExport(project, { pageIds: [project.pages[0].id] }).pages)).toEqual([]);
+    const second = project.pages[1];
+    project = updateRegion(project, second.id, second.regions[0].id, { excluded: true });
+    expect(denseWarning("pdf", prepareExport(project).pages)).toEqual([]);
+  });
 });

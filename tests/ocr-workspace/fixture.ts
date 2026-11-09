@@ -116,7 +116,10 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         project=applyRecognition(project,project.pages[0].id,result);
         const last = recognition(project.pages[2].imagePath);
         if (rtlExport) last.regions[2].text = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
-        if (scenario === 'export-unicode') last.regions[2].text = 'Reviewed café 中文 😀 é';
+        if (scenario === 'export-unicode') {
+            last.regions[2].text = 'Reviewed café 中文 😀 é';
+            last.regions[4].text = 'x'.repeat(50_000);
+        }
         if (scenario === 'export-invalid-text') last.regions[2].text = 'Reviewed\u0000 العربية\fשלום';
         project=applyRecognition(project,project.pages[2].id,last);
         project=approvePage(project,project.pages[2].id);

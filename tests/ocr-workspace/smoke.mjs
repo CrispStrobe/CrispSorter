@@ -413,17 +413,39 @@ if (process.argv.includes('--serve')) {
             await recordTextExport({ scenario: 'limited-mobile-rtl-html', request });
         });
 
-        await test('supplementary PDF text retains export with a visible reader search limitation', 'export-unicode', async page => {
+        await test('supplementary and dense PDF text retain export with reader advisories and usable alternatives', 'export-unicode', async page => {
             await selectedExport(page);
-            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdf');
+            const selector = page.getByRole('combobox', { name: /^Output format/ });
             const advisory = page.getByText(/Some PDF readers cannot find supplementary characters/);
-            await advisory.waitFor();
-            assert.equal(await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).isDisabled(), false);
-            await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
-            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
-            assert.equal(request.pages[0].regions[2].text, 'Reviewed café 中文 😀 é');
-            await recordTextExport({ scenario: 'supplementary-pdf', advisory: await advisory.innerText(), request });
+            const density = page.getByText(/Some PDF readers limit copying or searching text on very dense pages/);
+            const requests = [];
+            for (const [index, [format, name]] of [['pdf', 'Searchable PDF'], ['pdfa', 'Archival PDF/A-2b']].entries()) {
+                await selector.selectOption(format);
+                await advisory.waitFor();
+                await density.waitFor();
+                assert.equal(await page.getByRole('button', { name: `Save ${name}`, exact: true }).isDisabled(), false);
+                for (const alternative of ['Plain text', 'HTML document', 'Word document']) {
+                    assert.equal(await page.getByRole('button', { name: `Use ${alternative}`, exact: true }).count(), 1);
+                }
+                await page.getByRole('button', { name: `Save ${name}`, exact: true }).click();
+                await page.waitForFunction(count => window.ocrSmoke.exports.length === count, index + 1);
+                const request = await page.evaluate(() => window.ocrSmoke.exports.at(-1));
+                assert.equal(request.format, 'pdf');
+                assert.equal(request.pdfa, format === 'pdfa');
+                assert.equal(request.pages[0].regions[2].text, 'Reviewed café 中文 😀 é');
+                assert.equal(request.pages[0].regions[4].text, 'x'.repeat(50_000));
+                requests.push(request);
+            }
+            const warnings = [await advisory.innerText(), await density.innerText()];
+            await page.getByRole('button', { name: 'Use HTML document', exact: true }).click();
+            assert.equal(await advisory.count(), 0);
+            assert.equal(await density.count(), 0);
+            await page.getByRole('button', { name: 'Save HTML document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 3);
+            const html = await page.evaluate(() => window.ocrSmoke.exports.at(-1));
+            assert.equal(html.format, 'html');
+            assert.deepEqual(html.pages, requests[0].pages);
+            await recordTextExport({ scenario: 'supplementary-dense-pdf', advisories: warnings, requests, html });
         });
 
         await test('invalid rich-text characters are blocked before the picker and preserved through plain text', 'export-invalid-text', async page => {
