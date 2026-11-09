@@ -8,3 +8,5 @@ pub use storage_types::{ModelStorageCleanup, ModelStorageEntry, ModelStorageRepo
 mod storage;
 #[path = "../../../src-tauri/src/ocr_atomic_output.rs"]
 mod atomic_output;
+#[path = "../../../src-tauri/src/ocr_export_control.rs"]
+mod export_control;
