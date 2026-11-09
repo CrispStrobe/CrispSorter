@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -134,6 +134,104 @@ if (process.argv.includes('--serve')) {
             assert.equal(saved.pages[0].regions[2].originalText, 'Inv0ice NS-2026-1042');
             assert.equal(saved.pages[0].approved, false);
             assert.ok(await page.evaluate(() => window.ocrSmoke.saves.every(save => save.revision > 7)));
+        });
+
+        await test('word review selects Unicode ranges and preserves corrections through history, save and export', 'word-review', async page => {
+            const original = '😀 Inv0ice NS-2026-1042';
+            const corrected = '😀 Invoice NS-2026-1042';
+            const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            const invoice = words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ });
+            await invoice.waitFor();
+            assert.equal(await invoice.getAttribute('data-word-basis'), 'characters');
+            assert.equal(Math.round(Number(await invoice.getAttribute('data-word-confidence')) * 100), 87);
+            assert.equal(await invoice.getAttribute('data-word-flagged'), 'true');
+            assert.match(await invoice.innerText(), /87%/);
+            assert.match(await invoice.getAttribute('title'), /20%/);
+            // A high mean must not hide an uncertain character on the source image.
+            assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
+            await words.getByRole('button', { name: 'Next word to check', exact: true }).click();
+            assert.deepEqual(await editor.evaluate(input => ({
+                start: input.selectionStart, end: input.selectionEnd,
+                text: input.value.slice(input.selectionStart, input.selectionEnd), focused: document.activeElement === input,
+            })), { start: 3, end: 10, text: 'Inv0ice', focused: true });
+
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await invoice.click();
+            await page.keyboard.type('Invoice');
+            await editor.blur();
+            assert.equal(await editor.inputValue(), corrected);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).waitFor();
+            assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
+            assert.ok(await words.locator('button[data-word-basis="edited"]').count() > 0);
+            assert.equal(await words.locator('button[data-word-basis="characters"]').count(), 0);
+
+            await words.getByRole('button', { name: 'Original OCR', exact: true }).click();
+            assert.equal(await words.getByRole('button', { name: /^Select word / }).count(), 0);
+            const originalWord = words.locator('[data-word-basis="characters"]').filter({ hasText: 'Inv0ice' });
+            assert.equal(Math.round(Number(await originalWord.getAttribute('data-word-confidence')) * 100), 87);
+            await words.getByRole('button', { name: 'Current text', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(value => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === value, corrected);
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(saved.approved, false);
+            assert.equal(saved.regions[2].review, 'corrected');
+            assert.equal(saved.regions[2].originalText, original);
+            assert.equal(saved.regions[2].confidence, 0.99);
+            assert.equal(saved.regions[2].char_conf[5], 0.20);
+            assert.equal(saved.regions[2].char_conf.length, Array.from(original).length);
+
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.equal(await editor.inputValue(), original);
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            assert.equal(await invoice.getAttribute('data-word-basis'), 'characters');
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.equal(await editor.inputValue(), corrected);
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            assert.ok(await words.locator('button[data-word-basis="edited"]').count() > 0);
+
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('text');
+            await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0].regions[2]);
+            assert.equal(exported.text, corrected);
+            assert.equal(exported.original_text, original);
+            assert.equal(exported.char_conf_aligned, false);
+            assert.deepEqual(exported.char_conf, []);
+            assert.equal(exported.original_char_conf_aligned, true);
+            assert.deepEqual(exported.original_char_conf, saved.regions[2].char_conf);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
+        await test('word review leaves token and detector evidence unscored and fits compact screens', 'word-review', async page => {
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            for (const region of [4, 5, 6]) {
+                await page.getByRole('button', { name: `Select region ${region}`, exact: true }).click();
+                await words.waitFor();
+                assert.ok(await words.locator('button[data-word-basis="unavailable"]').count() > 0);
+                assert.equal(await words.locator('[data-word-basis="characters"]').count(), 0);
+                assert.ok(await words.getByText('Unscored', { exact: true }).count() > 0);
+                assert.equal(await page.locator('.region-card.selected [aria-label="Original text with character confidence"]').count(), 0);
+            }
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            await page.screenshot({ path: path.join(output, 'ocr-word-review-desktop.png'), fullPage: true });
+            await page.setViewportSize({ width: 390, height: 844 });
+            await words.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: path.join(output, 'ocr-word-review-compact.png'), fullPage: true });
+            const sizes = await words.evaluate(element => ({
+                viewportWidth: innerWidth, documentWidth: document.documentElement.scrollWidth,
+                contentWidth: element.scrollWidth, width: element.clientWidth,
+            }));
+            assert.ok(sizes.documentWidth <= sizes.viewportWidth + 2, `Compact word review overflows the page: ${JSON.stringify(sizes)}`);
+            assert.ok(sizes.contentWidth <= sizes.width + 2, `Word controls overflow their panel: ${JSON.stringify(sizes)}`);
+            const invoice = words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ });
+            assert.ok(await invoice.isVisible());
+            await invoice.click();
+            assert.equal(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).evaluate(input => input.value.slice(input.selectionStart, input.selectionEnd)), 'Inv0ice');
         });
 
         await test('a document sent from another tab is imported once and selected', `review&open=${encodeURIComponent('/fixtures/sent-from-library.png')}`, async page => {
@@ -419,7 +517,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

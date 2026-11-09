@@ -40,18 +40,34 @@ For interactive inspection:
 node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
-The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
+The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
 
+The word-review scenario supplies synthetic, explicitly aligned Unicode character
+recognition scores, plus contradictory token metadata and detector-only evidence.
+It verifies the UI contract for capable adapters; it does not assert that current
+native engines supply verified per-word confidence. Its uncertain word has a high
+mean score but one low character score, and a leading emoji exercises UTF-16 text
+selection offsets.
+
 ## Assertions
 
 - A recovered three-page project retains page/source identities and revision leases.
 - Corrections preserve original recognition, undo/redo works, and editing invalidates
   page approval.
+- Word chips show numeric scores only for verified character recognition evidence.
+  Token, detector-only, and unaligned results remain unscored. The weakest
+  character flags a word even when its mean and region score exceed the threshold.
+- Clicking a word or using Next word to check selects its exact Unicode text in
+  the editor. Corrections clear scores for current text, preserve read-only
+  original evidence, and survive save, undo/redo, and export without rerunning OCR.
+- Source overlays flag low character evidence and unapproved corrections
+  consistently with the review queue. Word controls fit desktop and compact
+  layouts, with dedicated screenshots for both.
 - The review queue traverses uncertain text and pending pages.
 - Preparation that returns the same image preserves corrections, recognition
   evidence, physical dimensions, and approval while showing its returned warning.

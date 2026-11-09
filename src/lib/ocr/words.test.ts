@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
 import {
     addDocument, applyRecognition, approvePage, createProject, editRegion,
@@ -98,6 +98,26 @@ describe('word confidence and selection', () => {
 
     it('handles empty, whitespace-only and punctuation-only regions without fake words', () => {
         for (const text of ['', ' \t\n', '… — 😀']) expect(getWordEvidence(region(text))).toEqual([]);
+    });
+
+    it('keeps exact selection and scoring in webviews without Intl.Segmenter', async () => {
+        const olderIntl = Object.create(Intl) as typeof Intl;
+        Object.defineProperty(olderIntl, 'Segmenter', { value: undefined });
+        vi.stubGlobal('Intl', olderIntl);
+        vi.resetModules();
+        try {
+            const { getWordEvidence: fallbackWords } = await import('./words');
+            const source = region('😀\tInv0ice  total\n中文文本 —');
+            source.char_conf[5] = 0.2;
+            const words = fallbackWords(source);
+            expect(words.map(word => word.text)).toEqual(['Inv0ice', 'total', '中文文本']);
+            expect(words[0]).toMatchObject({ start: 3, end: 10, minConfidence: 0.2 });
+            for (const word of words) expect(source.text.slice(word.start, word.end)).toBe(word.text);
+            expect(fallbackWords(region('… — 😀'))).toEqual([]);
+        } finally {
+            vi.unstubAllGlobals();
+            vi.resetModules();
+        }
     });
 });
 
