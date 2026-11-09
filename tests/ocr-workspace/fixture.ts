@@ -27,14 +27,14 @@ function recognition(path:string):RecognitionResult {
     };
 }
 
-function documentSvg(page:number):string {
+function documentSvg(page:number, wordReview=false):string {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
       <rect width="1000" height="1400" fill="#fffefa"/>
       <rect x="78" y="58" width="66" height="7" fill="#2e6a80"/>
       <g fill="#263e50" font-family="Arial,sans-serif">
         <text x="80" y="122" font-size="31" font-weight="700" letter-spacing="2">NORTHSTAR SUPPLY CO.</text>
         <text x="80" y="204" font-size="37" font-weight="700">Service statement · page ${page}</text>
-        <text x="80" y="299" font-size="28">Invoice NS-2026-1042</text>
+        <text x="80" y="299" font-size="28">${wordReview ? '😀 ' : ''}Invoice NS-2026-1042</text>
         <text x="80" y="354" font-size="25">Issued 08 November 2026</text>
         <text x="80" y="430" font-size="20" fill="#657485">BILL TO</text>
         <text x="80" y="470" font-size="26">Orchard Research Group</text>
@@ -114,6 +114,26 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     if(project.pages.length && !scenario.startsWith('queue')) {
         const result=recognition(project.pages[0].imagePath);
         result.regions[2].text='Inv0ice NS-2026-1042';result.regions[2].confidence=0.42;
+        if(scenario==='word-review') {
+            // This adapter explicitly proves codepoint alignment. Current native
+            // engines do not; it is a UI contract fixture, not an accuracy claim.
+            result.engine='fixture-verified-character-adapter';
+            const invoice=result.regions[2];
+            invoice.text='😀 Inv0ice NS-2026-1042';invoice.confidence=0.99;
+            const mediumIndex=Array.from(invoice.text.slice(0,invoice.text.indexOf('NS'))).length;
+            invoice.char_conf=Array.from(invoice.text,(_,index)=>index===5?0.20:index===mediumIndex?0.70:0.98);
+            invoice.char_conf_unit='unicode_codepoint';invoice.char_conf_aligned=true;
+            // A seven-character word averages 87%, but its 20% weakest
+            // character must still flag it red at the project's 85% threshold.
+            // 'NS' has a 70% weakest character (amber); '2026' stays high (green).
+            const tokens=result.regions[3];
+            tokens.char_conf=Array.from(tokens.text,()=>0.30);
+            tokens.char_conf_unit='token';tokens.char_conf_aligned=true;
+            const detection=result.regions[4];
+            detection.confidence_basis='detection';detection.confidence=0.99;
+            detection.char_conf=Array.from(detection.text,()=>0.99);
+            detection.char_conf_unit='unicode_codepoint';detection.char_conf_aligned=true;
+        }
         project=applyRecognition(project,project.pages[0].id,result);
         const last = recognition(project.pages[2].imagePath);
         if (rtlExport) last.regions[2].text = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
@@ -321,7 +341,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async pickDocuments(){note('pickDocuments');return scenario==='import-control'?['/fixtures/first.pdf','/fixtures/second.pdf','/fixtures/third.pdf']:['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
         async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
-        imageUrl(path){return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(pageNumber(path)))}`;},
+        imageUrl(path){return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(pageNumber(path),scenario==='word-review'))}`;},
     };
     return {client,initialProject:null};
 }

@@ -12,7 +12,7 @@ const intersects = (a: PixelRectangle, b: PixelRectangle) =>
 // Match the model and native geometry boundary tolerance. Floating point boxes
 // at a page edge must still be replaced by a crop of that complete page.
 const edgeTolerance = 0.01;
-const contains = (outer: PixelRectangle, inner: PixelRectangle) =>
+export const zoneContains = (outer: PixelRectangle, inner: PixelRectangle) =>
   inner.x >= outer.x - edgeTolerance &&
   inner.y >= outer.y - edgeTolerance &&
   inner.x + inner.w <= outer.x + outer.w + edgeTolerance &&
@@ -80,7 +80,7 @@ export function expandRecognitionZone(
       if (
         !replaceable(region) ||
         !intersects(zone, region) ||
-        contains(zone, region)
+        zoneContains(zone, region)
       )
         continue;
       const left = Math.max(0, Math.floor(Math.min(zone.x, region.x)));
@@ -106,15 +106,17 @@ export function expandRecognitionZone(
   return zone;
 }
 
+export function regionsInRecognitionZone(page: OcrPage, zone: PixelRectangle): OcrRegion[] {
+  return page.regions.filter((region) => replaceable(region) && zoneContains(zone, region));
+}
+
 /** Preserve unaffected IDs and their reading order, including excluded content. */
 export function mergeZoneRegions(
   page: OcrPage,
   zone: PixelRectangle,
   recognized: OcrRegion[],
 ): OcrRegion[] {
-  const replaced = page.regions.filter(
-    (r) => replaceable(r) && contains(zone, r),
-  );
+  const replaced = regionsInRecognitionZone(page, zone);
   const replacedIds = new Set(replaced.map((r) => r.id));
   let insertion = page.regions.findIndex((r) => replacedIds.has(r.id));
   if (insertion < 0)

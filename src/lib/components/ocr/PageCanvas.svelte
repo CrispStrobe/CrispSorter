@@ -7,6 +7,7 @@
     type OcrPage,
     type OcrRegion,
   } from "$lib/ocr/model";
+  import { regionReviewReason } from "$lib/ocr/confidence";
 
   type Rectangle = { x: number; y: number; w: number; h: number };
   type DrawMode =
@@ -230,12 +231,7 @@
     onphotoquad?.(movePhotoCorner(photoQuad, index, { x: point.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), y: point.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0) }, page.width, page.height));
   }
   function low(region: OcrRegion) {
-    return (
-      region.review !== "approved" &&
-      (region.confidenceBasis !== "recognition" ||
-        region.confidence === null ||
-        region.confidence < threshold)
-    );
+    return !page.approved && regionReviewReason(region, threshold) !== null;
   }
 </script>
 

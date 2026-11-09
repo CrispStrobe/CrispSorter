@@ -31,7 +31,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage, import-control, export-control');
+    console.log('Scenarios: ?scenario=review, word-review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage, import-control, export-control');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -114,6 +114,19 @@ if (process.argv.includes('--serve')) {
             try { await page.waitForFunction(canvasFitState, false); }
             catch { assert.fail(`${label} Fit page did not fill and remain inside its viewport: ${JSON.stringify(await page.evaluate(canvasFitState, true))}`); }
         }
+        async function wordColors(word) {
+            return word.evaluate(element => ({
+                text: getComputedStyle(element.querySelector('.word-text') ?? element).color,
+                background: getComputedStyle(element).backgroundColor,
+            }));
+        }
+        async function wordReadingText(words) {
+            return words.locator('[aria-label="OCR words in reading order"]').evaluate(element => {
+                const copy = element.cloneNode(true);
+                copy.querySelectorAll('.word-score').forEach(score => score.remove());
+                return copy.textContent;
+            });
+        }
 
         await test('OCR overlays keep long content and actions reachable inside asymmetric safe areas', 'safe-overlays',
             page => verifySafeOverlays(page, output, repo));
@@ -140,6 +153,174 @@ if (process.argv.includes('--serve')) {
             assert.equal(saved.pages[0].regions[2].originalText, 'Inv0ice NS-2026-1042');
             assert.equal(saved.pages[0].approved, false);
             assert.ok(await page.evaluate(() => window.ocrSmoke.saves.every(save => save.revision > 7)));
+        });
+
+        await test('word review selects Unicode ranges and preserves corrections through history, save and export', 'word-review', async page => {
+            const original = '😀 Inv0ice NS-2026-1042';
+            const corrected = '😀 Invoice NS-2026-1042';
+            const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            const invoice = words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ });
+            await invoice.waitFor();
+            assert.equal(await words.getByRole('checkbox', { name: 'Show scores', exact: true }).isChecked(), false);
+            assert.equal(await wordReadingText(words), original);
+            await words.getByRole('checkbox', { name: 'Show scores', exact: true }).check();
+            assert.equal(await wordReadingText(words), original);
+            assert.equal(await invoice.getAttribute('data-word-basis'), 'characters');
+            assert.equal(Math.round(Number(await invoice.getAttribute('data-word-confidence')) * 100), 87);
+            assert.equal(await invoice.getAttribute('data-word-flagged'), 'true');
+            assert.equal(await invoice.getAttribute('data-word-confidence-band'), 'low');
+            assert.match(await invoice.innerText(), /87%/);
+            assert.match(await invoice.getAttribute('title'), /20%/);
+            const medium = words.getByRole('button', { name: /^Select word \d+: NS$/ });
+            const high = words.getByRole('button', { name: /^Select word \d+: 2026$/ });
+            assert.equal(await medium.getAttribute('data-word-confidence-band'), 'medium');
+            assert.equal(await medium.getAttribute('data-word-flagged'), 'true');
+            assert.equal(await high.getAttribute('data-word-confidence-band'), 'high');
+            assert.equal(await high.getAttribute('data-word-flagged'), 'false');
+            const bandColors = await Promise.all([invoice, medium, high].map(wordColors));
+            assert.equal(new Set(bandColors.map(color => color.text)).size, 3, 'Low, medium and high words must have different text colors');
+            assert.equal(new Set(bandColors.map(color => color.background)).size, 3, 'Low, medium and high words must have different background colors');
+            // A high mean must not hide an uncertain character on the source image.
+            assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
+            await words.getByRole('button', { name: 'Next word to check', exact: true }).click();
+            assert.deepEqual(await editor.evaluate(input => ({
+                start: input.selectionStart, end: input.selectionEnd,
+                text: input.value.slice(input.selectionStart, input.selectionEnd), focused: document.activeElement === input,
+            })), { start: 3, end: 10, text: 'Inv0ice', focused: true });
+
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await invoice.click();
+            await page.keyboard.type('Invoice');
+            await editor.blur();
+            assert.equal(await editor.inputValue(), corrected);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).waitFor();
+            assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
+            assert.ok(await words.locator('button[data-word-basis="edited"]').count() > 0);
+            assert.equal(await words.locator('button[data-word-basis="characters"]').count(), 0);
+            const editedWord = words.getByRole('button', { name: /^Select word \d+: Invoice$/ });
+            assert.equal(await editedWord.getAttribute('data-word-confidence-band'), 'edited');
+            const editedColors = await wordColors(editedWord);
+            assert.ok(bandColors.every(color => color.text !== editedColors.text && color.background !== editedColors.background), 'Edited words need a distinct color from recognition scores');
+            assert.equal(await wordReadingText(words), corrected);
+            await page.getByRole('button', { name: 'Select region 4', exact: true }).click();
+            const unavailableColors = await wordColors(words.locator('button[data-word-confidence-band="unscored"]').first());
+            assert.notEqual(unavailableColors.text, editedColors.text, 'Unscored text must differ from manually edited text');
+            assert.notEqual(unavailableColors.background, editedColors.background, 'Unscored background must differ from manually edited text');
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+
+            await words.getByRole('button', { name: 'Original OCR', exact: true }).click();
+            assert.equal(await words.getByRole('button', { name: /^Select word / }).count(), 0);
+            const originalWord = words.getByRole('button', { name: /^Inspect original word \d+: Inv0ice$/ });
+            assert.equal(Math.round(Number(await originalWord.getAttribute('data-word-confidence')) * 100), 87);
+            assert.equal(await originalWord.getAttribute('data-word-confidence-band'), 'low');
+            assert.deepEqual(await wordColors(originalWord), bandColors[0]);
+            assert.equal(await wordReadingText(words), original);
+            const priorSelection = await editor.evaluate(input => [input.selectionStart, input.selectionEnd]);
+            assert.ok(await originalWord.evaluate(element => element.tabIndex >= 0));
+            await originalWord.press('Enter');
+            const originalDetail = words.getByRole('status');
+            await originalDetail.waitFor();
+            assert.match(await originalDetail.innerText(), /Low confidence.*Mean original character score: 87%.*Lowest character score: 20%/);
+            assert.equal(await originalWord.evaluate(element => document.activeElement === element), true);
+            assert.equal(await editor.inputValue(), corrected);
+            assert.deepEqual(await editor.evaluate(input => [input.selectionStart, input.selectionEnd]), priorSelection);
+            await words.getByRole('button', { name: 'Current text', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(value => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === value, corrected);
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(saved.approved, false);
+            assert.equal(saved.regions[2].review, 'corrected');
+            assert.equal(saved.regions[2].originalText, original);
+            assert.equal(saved.regions[2].confidence, 0.99);
+            assert.equal(saved.regions[2].char_conf[5], 0.20);
+            assert.equal(saved.regions[2].char_conf.length, Array.from(original).length);
+
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.equal(await editor.inputValue(), original);
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            assert.equal(await invoice.getAttribute('data-word-basis'), 'characters');
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.equal(await editor.inputValue(), corrected);
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            assert.ok(await words.locator('button[data-word-basis="edited"]').count() > 0);
+
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('text');
+            await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0].regions[2]);
+            assert.equal(exported.text, corrected);
+            assert.equal(exported.original_text, original);
+            assert.equal(exported.char_conf_aligned, false);
+            assert.deepEqual(exported.char_conf, []);
+            assert.equal(exported.original_char_conf_aligned, true);
+            assert.deepEqual(exported.original_char_conf, saved.regions[2].char_conf);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
+        await test('word review leaves token and detector evidence unscored and fits compact screens', 'word-review', async page => {
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            let unscoredColors;
+            for (const region of [4, 5, 6]) {
+                await page.getByRole('button', { name: `Select region ${region}`, exact: true }).click();
+                await words.waitFor();
+                assert.ok(await words.locator('button[data-word-basis="unavailable"]').count() > 0);
+                assert.equal(await words.locator('[data-word-basis="characters"]').count(), 0);
+                assert.ok(await words.locator('button[data-word-confidence-band="unscored"]').count() > 0);
+                const currentColors = await wordColors(words.locator('button[data-word-basis="unavailable"]').first());
+                if (unscoredColors) assert.deepEqual(currentColors, unscoredColors);
+                unscoredColors = currentColors;
+                assert.equal(await wordReadingText(words), await page.getByRole('textbox', { name: `Text for region ${region}`, exact: true }).inputValue());
+                await words.getByRole('checkbox', { name: 'Show scores', exact: true }).check();
+                assert.ok(await words.getByText('Unscored', { exact: true }).count() > 0);
+                assert.equal(await page.locator('.region-card.selected [aria-label="Original text with character confidence"]').count(), 0);
+            }
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            const medium = words.getByRole('button', { name: /^Select word \d+: NS$/ });
+            const high = words.getByRole('button', { name: /^Select word \d+: 2026$/ });
+            const highColors = await wordColors(high);
+            for (const band of ['low', 'medium', 'high']) {
+                const colors = await wordColors(words.locator(`[data-word-confidence-band="${band}"]`).first());
+                assert.notEqual(colors.text, unscoredColors.text, `${band} text must differ from unavailable confidence`);
+                assert.notEqual(colors.background, unscoredColors.background, `${band} background must differ from unavailable confidence`);
+            }
+            // Changing the project threshold updates both colors and review flags.
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('slider', { name: /^Flag recognition scores below/ }).evaluate(input => {
+                input.value = '0.65';
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            await page.getByRole('tab', { name: 'Review', exact: true }).click();
+            assert.equal(await medium.getAttribute('data-word-confidence-band'), 'high');
+            assert.equal(await medium.getAttribute('data-word-flagged'), 'false');
+            assert.deepEqual(await wordColors(medium), highColors);
+            assert.equal(await words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ }).getAttribute('data-word-confidence-band'), 'low');
+            // Restore the usual threshold before saving representative screenshots.
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('slider', { name: /^Flag recognition scores below/ }).evaluate(input => {
+                input.value = '0.85';
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            await page.getByRole('tab', { name: 'Review', exact: true }).click();
+            assert.equal(await medium.getAttribute('data-word-confidence-band'), 'medium');
+            await page.screenshot({ path: path.join(output, 'ocr-word-review-desktop.png'), fullPage: true });
+            await page.setViewportSize({ width: 390, height: 844 });
+            await words.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: path.join(output, 'ocr-word-review-compact.png'), fullPage: true });
+            const sizes = await words.evaluate(element => ({
+                viewportWidth: innerWidth, documentWidth: document.documentElement.scrollWidth,
+                contentWidth: element.scrollWidth, width: element.clientWidth,
+            }));
+            assert.ok(sizes.documentWidth <= sizes.viewportWidth + 2, `Compact word review overflows the page: ${JSON.stringify(sizes)}`);
+            assert.ok(sizes.contentWidth <= sizes.width + 2, `Word controls overflow their panel: ${JSON.stringify(sizes)}`);
+            const invoice = words.getByRole('button', { name: /^Select word \d+: Inv0ice$/ });
+            assert.ok(await invoice.isVisible());
+            await invoice.click();
+            assert.equal(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).evaluate(input => input.value.slice(input.selectionStart, input.selectionEnd)), 'Inv0ice');
         });
 
         await test('a document sent from another tab is imported once and selected', `review&open=${encodeURIComponent('/fixtures/sent-from-library.png')}`, async page => {

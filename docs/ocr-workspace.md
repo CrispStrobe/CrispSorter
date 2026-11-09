@@ -272,6 +272,63 @@ exact codepoint count. Some native engines expose token likelihoods in the same
 legacy sequence buffer; those are never treated as character offsets just
 because the array length happens to match the text.
 
+### Inspect and correct individual words
+
+Select a region in the page image or its numbered review card to open **Word
+confidence** beneath the text editor. Words are colored in flowing text that
+preserves the source punctuation, whitespace, and line breaks. Turn on **Show
+scores** to display percentages beside the words, or **Unscored** when the
+recognizer did not supply evidence that can be aligned to a word. The separate
+**Region** badge describes the whole original OCR region; it is never copied onto
+individual words.
+
+Click a word to select its exact text in the region editor, then type the
+correction. **Next word to check** cycles through words with missing scores or
+characters below the review threshold within the selected region. Use **Next
+issue** or **F8** to continue through regions and pages. The source magnifier shows
+the selected region; word boxes are not inferred from a line's dimensions.
+
+When verified Unicode-codepoint recognition scores are available, the displayed
+word score is their **mean**, and the tooltip also reports the **lowest character
+score**. The word's color follows its weakest character, so a high mean cannot
+hide an uncertain glyph:
+
+| Color | Meaning |
+| --- | --- |
+| Green · High | Every character meets the project's review threshold, 85% by default. |
+| Amber · Medium | The weakest character is below the review threshold but at least 60%. |
+| Red · Low | The weakest character is below both 60% and the review threshold. |
+| Gray · Unscored | Verified word confidence is unavailable. |
+| Blue · Edited | The text was manually changed; original scores do not measure the correction. |
+
+A word with an 87% mean and one 20% character is therefore red, even at the
+default 85% review threshold. Changing the threshold in **Recognize → Review
+threshold** updates the colors and review flags together. The legend, optional
+score labels, and tooltips explain the colors. These are review signals, not
+calibrated word accuracy probabilities. Token scores, detector scores, invalid
+arrays, and contradictory alignment metadata cannot produce word scores.
+
+The currently pinned native CrispEmbed integration does not supply verified word
+offsets or Unicode character alignment, so its words normally appear
+**Unscored**. Its region scores remain useful separately. Word scoring is available
+for recognition adapters that explicitly provide verified character alignment;
+the browser verification fixture exercises that contract. Providing scores for
+the deployed native engines requires matching native bindings and a library
+release that exports that alignment.
+
+After any text correction, the current region's words turn blue for **Edited**.
+**Original OCR** retains the original text and its available scores for
+comparison; its words are read-only because their offsets may no longer
+match the corrected text. Use **Tab** to focus an original word and **Enter** to
+inspect its available scores without selecting or changing the corrected text.
+**Current text** returns to the editable word view.
+Corrections use the existing autosave, undo/redo, approval, and export workflow.
+Editing an approved region revokes approval, and source-image warnings follow the
+same review rules as the issue queue, including low character scores and
+unapproved corrections.
+
+### Physical page sizes
+
 Physical page sizes are kept separately from raster dimensions. PDF import
 retains the source page size. Raster import reads per-frame TIFF resolution,
 PNG pixel density, and JPEG EXIF/JFIF density; orientation swaps the paper axes
