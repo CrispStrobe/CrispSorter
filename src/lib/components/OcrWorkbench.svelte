@@ -1708,7 +1708,7 @@
     </button>
     {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
     <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
-    <ModelStorage {client} disabled={locked} revision={modelStorageRevision} onerror={fail} onnotice={(value) => { notice = value; }} />
+    <ModelStorage {client} disabled={locked} revision={modelStorageRevision} onerror={fail} onnotice={(value) => { notice = value; error = ""; }} />
   </section>
 {/if}
 {/snippet}

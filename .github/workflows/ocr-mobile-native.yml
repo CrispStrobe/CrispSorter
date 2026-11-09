@@ -22,6 +22,7 @@ on:
       - 'src-tauri/src/model_provisioning.rs'
       - 'src-tauri/src/model_storage.rs'
       - 'src-tauri/src/model_storage_types.rs'
+      - 'src-tauri/src/index/tauri_commands.rs'
       - 'src-tauri/src/model_provisioning/**'
       - 'tests/fixtures/mobile-documents/**'
       - 'src-tauri/src/ocr_workspace.rs'

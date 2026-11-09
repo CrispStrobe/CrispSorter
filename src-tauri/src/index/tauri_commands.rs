@@ -2452,7 +2452,7 @@ pub struct EmbedderRegistryEntry {
 /// "Select" button for already-downloaded models and a "Download" button
 /// for the rest, without a separate round-trip.
 #[tauri::command]
-pub async fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
+pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<EmbedderRegistryEntry>, String> {
     #[cfg(feature = "crispembed")]
     {
         use std::path::PathBuf;
@@ -2487,12 +2487,12 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderR
                 }
             })
             .collect::<Vec<_>>()
-        }).await.unwrap_or_default()
+        }).await.map_err(|error| format!("Read model registry: {error}"))
     }
     #[cfg(not(feature = "crispembed"))]
     {
         let _ = state;
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
