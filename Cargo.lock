@@ -3781,7 +3781,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed73cbf5e1c37baa23f4132569ac1187829f03922c206bd68fe109e3001a343d"
 dependencies = [
  "base64 0.22.1",
- "image",
  "quick-xml 0.36.2",
  "serde",
  "serde_json",
