@@ -195,6 +195,17 @@ released, allowing page navigation before the result arrives.
   data. CSV preserves multiline text and merged covered positions; field JSON
   includes the complete object's original output, baseline, and source captures.
   Document JSON preserves the entire versioned object collection.
+- Table-structure previews expose the complete text of fully removed cells;
+  cancellation leaves the current object unchanged. Inserting and deleting rows
+  and columns preserves leading zeros, cell strings, and unaffected source data.
+- A rectangular merge previews its explicit separator and exact row-order text.
+  One Undo/Redo restores the complete object. Splitting retains all merged text
+  in the top-left cell and creates empty neighboring cells, without interpreting
+  a line break as a cell boundary.
+- Table repairs survive save and actual project reload with original output and
+  structured data unchanged. The selected CSV uses the repaired current grid.
+  The repair dialog works with keyboard activation at 390px width without
+  horizontal page overflow.
 - Changing page pixels retains earlier extraction objects as historical source
   records with their corrections and captured images still inspectable.
 - Delayed extraction remains attached to its captured page after navigation;
@@ -219,21 +230,32 @@ vocabulary and correction workflows, passage splits/merges and repairs, document
 roles and inline formatting, clipboard/keyboard history, columns, and caption/note
 links. Its report and screenshots are available in
 [artifact 13709565396](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197/artifacts/13709565396).
-This result is specific to that source revision. The later full-page draft
-revision `ed0480a7e7bfab6f0c7b92bb5fb802689fa6fbe5` passed a clean local
-run of **343 unit tests in 38 files**, with **0 Svelte errors and 54 existing
-warnings**. Its [34-flow browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/job/129428191684)
-was still queued when these extraction assertions were added. The harness now
-contains **35 browser flows**; the saved-extraction-object flow requires execution
-against its own source revision before it can be reported as passing.
+This result is specific to that source revision.
 
-These tests validate interaction and integration contracts. They do not measure
-recognition accuracy or substitute for native engine, PDF conformance, or installed
-application testing.
+The later full-page draft revision `ed0480a7e7bfab6f0c7b92bb5fb802689fa6fbe5`
+also completed its [browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/job/129428191684)
+on 2026-11-09: **34 browser interactions passed, 0 failed**, **343 unit tests in
+38 files passed**, and **0 Svelte errors with 54 existing warnings**. Both
+page-draft flows passed, including native draft Undo, durable reload and stale
+recovery, hidden-source barriers, and explicit combined-source application.
+Its report and screenshots are in
+[artifact 13711038096](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/artifacts/13711038096).
 
-The OCR-05a candidate passed **379 unit tests in 41 files** and the Svelte
-typecheck with **0 errors and 54 existing warnings** in the restored root
-checkout. `node --check tests/ocr-workspace/smoke.mjs` and `git diff --check`
-also passed. Local Chromium still cannot create its required Unix socket; no
-interaction pass is claimed from that launch attempt. The 35-flow harness needs
-its CI execution before browser qualification.
+The OCR-05a candidate at `4904354fb21d32cd7a73d8ca6a7192603da8c772` passed
+**379 unit tests in 41 files** and the Svelte typecheck with **0 errors and 54
+existing warnings** in the restored root checkout. The export-dispatch
+correction at `5ecd539612465e47831b17757ffbe28a29cde2c5` passed **382 unit tests
+in 42 files**, with the same typecheck result. The script syntax and whitespace
+checks passed. Local Chromium still cannot create its required Unix socket; no
+interaction pass is claimed from that launch attempt.
+
+The OCR-05b table-repair checkpoint passed **405 unit tests in 43 files**, including
+23 new operation cases, and the Svelte typecheck with **0 errors and the same 54
+existing warnings**. The browser harness passes the JavaScript syntax check;
+its new interaction has not yet run in CI.
+
+The harness now contains **36 browser flows**. The saved-extraction-object and
+table-repair flows require execution against their own source revision before
+they can be reported as passing. These tests validate interaction and integration
+contracts; they do not measure recognition accuracy or substitute for native
+engine, PDF conformance, or installed application testing.

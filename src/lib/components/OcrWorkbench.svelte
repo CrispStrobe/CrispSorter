@@ -64,6 +64,7 @@
   import PreviousStructure from "./ocr/PreviousStructure.svelte";
   import PageTextDraftDialog from "./ocr/PageTextDraftDialog.svelte";
   import ExtractionObjectsPanel from "./ocr/ExtractionObjectsPanel.svelte";
+  import TableRepairDialog from "./ocr/TableRepairDialog.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -107,6 +108,7 @@
   } from "$lib/ocr/zoneReview";
   import type { PixelRectangle } from "$lib/ocr/zones";
   import type { ExtractionSource } from "$lib/ocr/extraction";
+  import { applyTableOperation, type TableOperationPreview, type TableExtractionObject } from "$lib/ocr/tableOperations";
   import {
     captureExtractionRequest, appendExtractionObject, getExtractionObjects,
     extractionObjectFreshness, type ExtractionObject,
@@ -212,6 +214,7 @@
     mode: "split" | "merge" | "repair";
     offset?: number;
   } | null>(null);
+  let tableRepair = $state<{ projectId: string; pageId: string; object: TableExtractionObject; cellId: string | null } | null>(null);
   let pageTextDraftOpen = $state(false);
   let pageTextDraftLocalUnsaved = $state(false);
   let proofreadingOpen = $state(false);
@@ -283,6 +286,7 @@
     if (!active) {
       confirm = null;
       passageAction = null;
+      tableRepair = null;
       if (!pageTextDraftLocalUnsaved) pageTextDraftOpen = false;
       helpOpen = false;
       recentOpen = false;
@@ -744,6 +748,7 @@
     selectedRegionId = null;
     pageTextDraftOpen = false;
     pageTextDraftLocalUnsaved = false;
+    tableRepair = null;
     proofreadingOpen = false;
     correctionDraft = null;
     checkedPages = [];
@@ -1000,7 +1005,7 @@
     caret: { start: number; end: number; text: string } | null = null,
   ) {
     const page = activePage;
-    if (!page || locked || confirm || passageAction || pageTextDraftOpen) return;
+    if (!page || locked || confirm || passageAction || pageTextDraftOpen || tableRepair) return;
     const current = page.regions.find((item) => item.id === target.id);
     if (!current) return;
     try {
@@ -1062,14 +1067,14 @@
     } catch (failure) { return message(failure); }
   }
   function openPageTextDraft() {
-    if (!activePage || locked || confirm || passageAction || pageTextDraftOpen) return;
+    if (!activePage || locked || confirm || passageAction || pageTextDraftOpen || tableRepair) return;
     try {
       change(createPageTextDraft(project, activePage.id), false);
       resumePageTextDraft();
     } catch (failure) { fail(failure); }
   }
   function resumePageTextDraft() {
-    if (!project.pageTextDraft || locked || confirm || passageAction) return;
+    if (!project.pageTextDraft || locked || confirm || passageAction || tableRepair) return;
     currentMatch = null;
     wordInspection = null;
     editGroup = null;
@@ -1395,6 +1400,37 @@
     if (!activePage) return;
     editGroup = null;
     extractionSelection = { ...extractionSelection, [activePage.id + ":" + extractionKind]: id };
+  }
+  function openTableRepair(object: ExtractionObject, cellId: string | null) {
+    if (!activePage || locked || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair) return;
+    const current = currentExtraction(object);
+    if (!current || current.kind !== "table") {
+      error = "Select a saved table on the current page.";
+      return;
+    }
+    currentMatch = null;
+    wordInspection = null;
+    editGroup = null;
+    error = "";
+    tableRepair = {
+      projectId: project.id, pageId: activePage.id, object: current,
+      cellId: current.currentData.cells.some((cell) => cell.id === cellId) ? cellId : null,
+    };
+  }
+  function applyTableRepair(preview: TableOperationPreview): string | null {
+    if (locked) return "Wait for the current document operation to finish before applying table changes.";
+    if (!tableRepair || tableRepair.projectId !== project.id || tableRepair.pageId !== preview.pageId || tableRepair.object.id !== preview.objectId) {
+      return "The source table changed. Your repair choices have been kept; review them again before applying.";
+    }
+    try {
+      change(applyTableOperation(project, preview));
+      selectedPageId = preview.pageId;
+      extractionKind = "table";
+      extractionSelection = { ...extractionSelection, [preview.pageId + ":table"]: preview.objectId };
+      inspector = "extract";
+      notice = "Table structure updated. Review the changed table before page approval; Undo restores the previous table in one step.";
+      return null;
+    } catch (failure) { return message(failure); }
   }
   let lastExtractionPageKey = "";
   $effect(() => {
@@ -1852,7 +1888,7 @@
     }
   }
   function keydown(event: KeyboardEvent) {
-    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen) return;
+    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair) return;
     const target = event.target as HTMLElement;
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
@@ -1959,7 +1995,7 @@
     // Native drag/drop supplies real filesystem paths; web File names are not paths.
     if (client === workspaceClient)
       void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
-        if (active && !locked && !passageAction && !pageTextDraftOpen) void importFiles(event.payload.paths);
+        if (active && !locked && !passageAction && !pageTextDraftOpen && !tableRepair) void importFiles(event.payload.paths);
       })
         .then((fn) => {
           if (mounted) unlisten = fn;
@@ -3596,7 +3632,7 @@
             {#if activePage}<ExtractionObjectsPanel {project} page={activePage} kind={extractionKind}
               selectedId={extractionSelection[activePage.id + ":" + extractionKind]} disabled={locked} imageUrl={client.imageUrl}
               onselect={selectExtraction} onchange={changeExtraction} onendedit={() => (editGroup = null)}
-              oncopy={copyExtraction} onsave={saveExtraction} />{/if}
+              oncopy={copyExtraction} onsave={saveExtraction} onrepair={openTableRepair} />{/if}
           </div>
         {:else}
           <div class="panel-scroll export-panel">
@@ -3769,6 +3805,12 @@
       >{/if}
   </footer>
 </section>
+
+{#if tableRepair}
+  <TableRepairDialog {project} projectId={tableRepair.projectId} pageId={tableRepair.pageId}
+    initialObject={tableRepair.object} initialCellId={tableRepair.cellId}
+    disabled={locked} imageUrl={client.imageUrl} onapply={applyTableRepair} onclose={() => (tableRepair = null)} />
+{/if}
 
 {#if pageTextDraftOpen && project.pageTextDraft}
   {#key project.pageTextDraft.id}

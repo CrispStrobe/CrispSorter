@@ -13,11 +13,12 @@ reviewable correction rules, passage split/merge/repair, and versioned document
 semantics with per-passage formatting have implementation checkpoints. A separate
 whole-page text draft editor adds cross-passage selection and previewed changes,
 with durable unapplied drafts and guarded Undo/Redo. The roadmap records which
-unit, browser, and native checks actually passed; the recovered page-draft
-checkpoint passed local unit/type checks and still awaits browser CI. Independent
+unit, browser, and native checks actually passed; the page-draft checkpoint
+passed 343 unit tests and all 34 browser interactions. Independent
 table/formula/field objects now retain original output, spans, source captures,
-and historical results across edits. Table structural repair and continuation
-joining are next, followed by structured exports. Hardware support, trained
+and historical results across edits. Previewed row/column insertion and deletion,
+cell merge/split, and header repair preserve original evidence and use one-step
+Undo. Continuation joining is next, followed by structured exports. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

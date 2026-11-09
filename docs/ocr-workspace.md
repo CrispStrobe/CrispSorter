@@ -513,6 +513,37 @@ page image.
 document, feeding CrispSorter's existing chunking and semantic/full-text indexing
 pipeline.
 
+### Repairing table structure
+
+Choose **Repair table structure** for the selected saved table. Select the
+**Table operation** and its rows, columns, or cells; positions in these controls
+start at 1. Use **Review table changes** to compare the current and proposed grids
+before applying the operation. The preview shows fully removed
+cell text and any consequences for merged cells. Cancel leaves the table
+unchanged; Apply creates one project-history step.
+
+Inserting a row or column inside a merged cell expands that cell's span. Deleting
+part of a merged cell retains its entire text in the surviving cell; deleting
+the whole cell removes it from the current grid while its original evidence
+remains available. Cell strings, including leading zeros and line breaks, are
+preserved during shifts.
+
+Merging requires a complete rectangle of cells. Choose the separator explicitly:
+none, a space, a line break, or a blank line. Values are joined in row order,
+including empty values; the preview shows the exact resulting text. Splitting a
+merged cell keeps all its text in the top-left cell and creates empty cells in
+the remaining positions. It does not infer how a multiline value should be
+distributed. Header changes are explicit, and merging mixed header/body cells
+warns that the result becomes a body cell.
+
+Structural repairs preserve the original model response, original structured
+table, source captures, and other saved objects. Changed spans, merges, and splits
+clear current cell boxes whose geometry no longer describes the edited cell;
+original evidence remains inspectable. A preview made before its source or
+selected object changes must be reviewed again before it can be applied.
+Historical-source tables can still be repaired with their provenance warning
+visible.
+
 ## Output formats
 
 | Format | Contents | Availability |

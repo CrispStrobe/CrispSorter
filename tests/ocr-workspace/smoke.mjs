@@ -1559,6 +1559,150 @@ if (process.argv.includes('--serve')) {
             await page.screenshot({ path: path.join(output, 'ocr-extraction-objects.png'), fullPage: true });
         });
 
+        await test('table repairs preview exact strings and survive history, reload and compact keyboard use', 'extraction-objects', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const objectsOf = snapshot => snapshot.pages[0].provenance.extractionObjects.objects;
+            const cellAt = (table, row, column) => table.cells.find(cell => cell.row === row && cell.column === column);
+            for (const number of [2, 3]) {
+                await page.getByRole('tab', { name: 'Review', exact: true }).click();
+                await page.getByRole('button', { name: 'Regions', exact: true }).click();
+                await page.getByRole('checkbox', { name: 'Needs attention', exact: true }).uncheck();
+                await page.getByRole('button', { name: 'Select region ' + number, exact: true }).click();
+                await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+                await page.getByRole('button', { name: 'Table', exact: true }).click();
+                const extract = page.getByRole('button', { name: 'Extract table', exact: true });
+                await extract.click();
+                await extract.click({ trial: true });
+            }
+            const original = await saveSnapshot(page);
+            const [otherTable, originalTable] = objectsOf(original);
+            assert.equal(objectsOf(original).length, 2);
+            const dialog = page.getByRole('dialog', { name: 'Repair table structure', exact: true });
+            async function reviewOperation(operation, coordinates, separator) {
+                await page.getByRole('button', { name: 'Repair table structure', exact: true }).click();
+                await dialog.getByRole('combobox', { name: 'Table operation', exact: true }).selectOption(operation);
+                for (const [label, value] of Object.entries(coordinates)) {
+                    await dialog.getByRole('spinbutton', { name: label, exact: true }).fill(String(value));
+                }
+                if (separator) await dialog.getByRole('combobox', { name: 'Merge separator', exact: true }).selectOption(separator);
+                await dialog.getByRole('button', { name: 'Review table changes', exact: true }).click();
+                await dialog.locator('[data-table-before]').waitFor();
+                await dialog.locator('[data-table-after]').waitFor();
+            }
+            async function applyOperation() {
+                await dialog.getByRole('button', { name: 'Apply table changes', exact: true }).click();
+                await dialog.waitFor({ state: 'hidden' });
+                const snapshot = await saveSnapshot(page);
+                const objects = objectsOf(snapshot);
+                assert.deepEqual(objects[0], otherTable);
+                assert.deepEqual(objects[1].originalOutput, originalTable.originalOutput);
+                assert.deepEqual(objects[1].originalData, originalTable.originalData);
+                assert.deepEqual(objects[1].captures, originalTable.captures);
+                assert.deepEqual(snapshot.pages[0].regions, initial.pages[0].regions);
+                return snapshot;
+            }
+
+            // A destructive preview exposes the complete removed strings before
+            // the user decides, and Cancel must preserve the current object.
+            await reviewOperation('delete-row', { 'Row to delete': 2 });
+            assert.deepEqual(await dialog.locator('[data-table-deleted-cells]').getByRole('textbox').evaluateAll(inputs => inputs.map(input => input.value)), ['0012', 'EUR 1,250.00']);
+            await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            assert.deepEqual(objectsOf(await saveSnapshot(page)), objectsOf(original));
+
+            await reviewOperation('insert-row', { 'Row position': 2 });
+            let current = objectsOf(await applyOperation())[1].currentData;
+            assert.equal(current.rows, 3);
+            assert.equal(current.columns, 2);
+            assert.equal(cellAt(current, 1, 0).text, '');
+            assert.equal(cellAt(current, 2, 0).text, '0012');
+            assert.equal(cellAt(current, 2, 1).text, 'EUR 1,250.00');
+            await reviewOperation('insert-column', { 'Column position': 2 });
+            current = objectsOf(await applyOperation())[1].currentData;
+            assert.equal(current.columns, 3);
+            assert.equal(cellAt(current, 0, 2).text, 'Amount');
+            assert.equal(cellAt(current, 2, 1).text, '');
+            assert.equal(cellAt(current, 2, 2).text, 'EUR 1,250.00');
+            await reviewOperation('delete-row', { 'Row to delete': 2 });
+            current = objectsOf(await applyOperation())[1].currentData;
+            assert.equal(current.rows, 2);
+            assert.equal(cellAt(current, 1, 0).text, '0012');
+            await reviewOperation('delete-column', { 'Column to delete': 2 });
+            const beforeMerge = await applyOperation();
+            assert.deepEqual(objectsOf(beforeMerge)[1].currentData, originalTable.currentData);
+
+            const mergeRange = { 'First row': 2, 'Last row': 2, 'First column': 1, 'Last column': 2 };
+            const mergedText = '0012\nEUR 1,250.00';
+            await reviewOperation('merge', mergeRange, 'newline');
+            assert.equal(await dialog.getByRole('textbox', { name: 'Merged cell text', exact: true }).inputValue(), mergedText);
+            await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            assert.deepEqual(objectsOf(await saveSnapshot(page)), objectsOf(beforeMerge));
+            await reviewOperation('merge', mergeRange, 'newline');
+            const merged = await applyOperation();
+            const mergedTable = objectsOf(merged)[1].currentData;
+            const mergedCell = cellAt(mergedTable, 1, 0);
+            assert.equal(mergedTable.cells.length, 3);
+            assert.equal(mergedCell.columnSpan, 2);
+            assert.equal(mergedCell.text, mergedText);
+            assert.equal(cellAt(mergedTable, 0, 0).text, 'Code');
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).waitFor();
+            assert.deepEqual(objectsOf(await saveSnapshot(page)), objectsOf(beforeMerge));
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            await page.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).waitFor({ state: 'detached' });
+            assert.deepEqual(objectsOf(await saveSnapshot(page)), objectsOf(merged));
+
+            // The dialog remains operable without a pointer at a phone width.
+            // Split keeps the entire value in its top-left cell; it never
+            // interprets the embedded newline as a second cell value.
+            await page.setViewportSize({ width: 390, height: 844 });
+            const repair = page.getByRole('button', { name: 'Repair table structure', exact: true });
+            await repair.focus();
+            await repair.press('Enter');
+            await dialog.getByRole('combobox', { name: 'Table operation', exact: true }).selectOption('split');
+            await dialog.getByRole('spinbutton', { name: 'Cell row', exact: true }).fill('2');
+            await dialog.getByRole('spinbutton', { name: 'Cell column', exact: true }).fill('1');
+            const review = dialog.getByRole('button', { name: 'Review table changes', exact: true });
+            await review.focus();
+            await review.press('Enter');
+            await dialog.locator('[data-table-after]').waitFor();
+            const sizes = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
+            assert.ok(sizes.documentWidth <= sizes.width + 2, 'Compact table repair overflows the page horizontally');
+            const rectangle = await dialog.boundingBox();
+            assert.ok(rectangle && rectangle.x >= -1 && rectangle.width <= 392);
+            await page.screenshot({ path: path.join(output, 'ocr-table-repair-compact.png'), fullPage: true });
+            const apply = dialog.getByRole('button', { name: 'Apply table changes', exact: true });
+            await apply.focus();
+            await apply.press('Enter');
+            await dialog.waitFor({ state: 'hidden' });
+            const split = await saveSnapshot(page);
+            const splitTable = objectsOf(split)[1].currentData;
+            assert.equal(splitTable.cells.length, 4);
+            assert.equal(cellAt(splitTable, 1, 0).id, mergedCell.id);
+            assert.equal(cellAt(splitTable, 1, 0).text, mergedText);
+            assert.equal(cellAt(splitTable, 1, 0).columnSpan, 1);
+            assert.equal(cellAt(splitTable, 1, 1).text, '');
+            assert.deepEqual(objectsOf(split)[0], otherTable);
+            assert.deepEqual(objectsOf(split)[1].originalData, originalTable.originalData);
+            assert.deepEqual(objectsOf(split)[1].originalOutput, originalTable.originalOutput);
+
+            await reopenFixtureProject(page);
+            await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+            await page.getByRole('button', { name: 'Table', exact: true }).click();
+            await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).selectOption(originalTable.id);
+            assert.equal(await page.getByRole('textbox', { name: 'Row 2, column 1', exact: true }).inputValue(), mergedText);
+            assert.equal(await page.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).inputValue(), '');
+            const panel = page.locator('[data-extraction-objects]');
+            await expandStructureDetail(panel, 'Original model output');
+            assert.deepEqual(JSON.parse(await panel.getByRole('textbox', { name: 'Original structured data', exact: true }).inputValue()), originalTable.originalData);
+            await page.getByRole('button', { name: 'Save table as CSV', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.writes.length === 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.writes[0].text), '"Code","Amount"\r\n"0012\nEUR 1,250.00",""');
+            const restored = await saveSnapshot(page);
+            assert.deepEqual(objectsOf(restored), objectsOf(split));
+        });
+
         await test('delayed extraction follows its source page and undo restores visible and exported cells', 'extraction-delay', async page => {
             await page.getByRole('tab', { name: 'Extract', exact: true }).click();
             await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -1703,7 +1847,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

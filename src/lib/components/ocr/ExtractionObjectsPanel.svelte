@@ -8,7 +8,7 @@
   import FormulaPreview from "./FormulaPreview.svelte";
   import TableEditor from "./TableEditor.svelte";
 
-  let { project, page, kind, selectedId, disabled = false, imageUrl, onselect, onchange, onendedit, oncopy, onsave }: {
+  let { project, page, kind, selectedId, disabled = false, imageUrl, onselect, onchange, onendedit, oncopy, onsave, onrepair }: {
     project: OcrProject;
     page: OcrPage;
     kind: ExtractionObject["kind"];
@@ -20,9 +20,11 @@
     onendedit: () => void;
     oncopy: (object: ExtractionObject) => void;
     onsave: (object: ExtractionObject) => void;
+    onrepair: (object: ExtractionObject, cellId: string | null) => void;
   } = $props();
 
   let localError = $state("");
+  let selectedCellId = $state("");
   let sourceId = $state("");
   let originalOpen = $state(false);
   let sourceTextOpen = $state(false);
@@ -33,6 +35,8 @@
   const saved = $derived(getExtractionObjects(page));
   const objects = $derived(saved.collection.objects.filter((object) => object.kind === kind));
   const selected = $derived(objects.find((object) => object.id === selectedId) ?? objects[objects.length - 1]);
+  const selectedCell = $derived(selected?.kind === "table" ? selected.currentData.cells.find((cell) => cell.id === selectedCellId)
+    ?? selected.currentData.cells.slice().sort((a, b) => a.row - b.row || a.column - b.column)[0] : undefined);
   const freshness = $derived(selected ? extractionObjectFreshness(project, selected) : null);
   const capture = $derived(selected?.captures.find((item) => item.id === sourceId) ?? selected?.captures[0]);
   const sourcePage = $derived(capture ? project.pages.find((item) => item.id === capture.pageId) : undefined);
@@ -51,6 +55,7 @@
     if (id !== lastObjectId) {
       lastObjectId = id;
       sourceId = "";
+      selectedCellId = "";
       originalOpen = false;
       sourceTextOpen = false;
       localError = "";
@@ -137,7 +142,12 @@
       {:else if object.kind === "table"}
         <div class="result-heading"><strong>Editable table</strong><button type="button" onclick={() => oncopy(object)} disabled={disabled} title="Copy selected table as CSV">CSV</button></div>
         <TableEditor rows={object.currentData.rows} columns={object.currentData.columns} cells={object.currentData.cells} {disabled}
+          selectedCellId={selectedCell?.id} onselect={(cellId) => (selectedCellId = cellId)}
           onedit={(cellId, text) => mutate(() => editExtractionCell(project, page.id, object.id, cellId, text), "extraction:" + page.id + ":" + object.id + ":cell:" + cellId)} {onendedit} />
+        <div class="table-repair-tools">
+          <p class="object-help">{selectedCell ? "Selected cell: row " + (selectedCell.row + 1) + ", column " + (selectedCell.column + 1) + ". Focus a cell to choose a starting position." : "This table is empty. Inserting a row or column starts a one-cell table."}</p>
+          <button type="button" onclick={() => { onendedit(); onrepair(object, selectedCell?.id ?? null); }} disabled={disabled || !!localError}>Repair table structure</button>
+        </div>
       {:else}
         <FormulaPreview latex={object.currentData.latex} />
         <label class="object-field">LaTeX<textarea class="latex-editor" aria-label="LaTeX" value={object.currentData.latex} maxlength="1000000" disabled={disabled}
@@ -196,6 +206,8 @@
   .source-text textarea, .legacy-record textarea { margin-top: 10px; }
   button { padding: 7px 10px; border: 1px solid #536f91; border-radius: 5px; background: #203c5e; color: #dcecff; font: inherit; font-size: 11px; cursor: pointer; }
   .save-object { margin-top: 10px; width: 100%; }
+  .table-repair-tools { margin-top: 12px; }
+  .table-repair-tools > button { width: 100%; }
   button:disabled, input:disabled, textarea:disabled, select:disabled { opacity: .5; cursor: default; }
   button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #a5d1ff; outline-offset: 2px; }
 </style>

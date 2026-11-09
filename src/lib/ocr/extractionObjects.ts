@@ -325,6 +325,16 @@ export function editExtractionCell(project:OcrProject,pageId:string,objectId:str
     });
 }
 
+/** Structural repair replaces current grid data; captured originals stay immutable. */
+export function replaceExtractionTableData(project:OcrProject,pageId:string,objectId:string,data:TableData):OcrProject {
+    const checked=readTableData(data);
+    return mutateObject(project,pageId,objectId,entry=>{
+        if(entry.kind!=='table')return fail('the selected object is not a table');
+        if(JSON.stringify(entry.currentData)===JSON.stringify(checked))return entry;
+        entry.currentData=checked;entry.review='corrected';return entry;
+    });
+}
+
 export function editExtractionFormula(project:OcrProject,pageId:string,objectId:string,latex:string):OcrProject {
     return mutateObject(project,pageId,objectId,entry=>{
         if(entry.kind!=='formula')return fail('the selected object is not a formula');
