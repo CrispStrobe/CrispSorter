@@ -20,8 +20,10 @@ pub fn resolve_model(name: &str, auto_download: Option<bool>) -> Result<String, 
     if Path::new(name).is_file() { return Ok(name.to_owned()); }
     #[cfg(feature = "ocr-mobile")]
     { let _ = auto_download; mobile::resolve_installed(name) }
+    // Desktop: registry downloads pass the app's licence gate, and a consented
+    // restricted model is accepted for this one call (license_consent).
     #[cfg(not(feature = "ocr-mobile"))]
-    { crispembed::CrispEmbed::resolve_model(name, auto_download) }
+    { crate::index::license_consent::resolve_registry_model(name, auto_download).map_err(|e| format!("{e:#}")) }
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
