@@ -1,0 +1,61 @@
+{
+  "scope": "Local frontend and syntax verification of the merged production source; no native compile, mobile runtime, browser execution or document-reader qualification is inferred.",
+  "verified_utc": "2026-11-09T15:17:00Z",
+  "base_commit": "ebcc9b5a3eb443388f0079aad71b65421ee81480",
+  "merged_commit": "5382ccc5ca70c983c7e8c963e1de7ab00e5501cb",
+  "tested_index_tree_before_this_receipt": "7674a5d3ae41a2827ab60c0b69ce08634a43ffe4",
+  "commands": [
+    {
+      "command": "TMPDIR=<workspace>/ocr-verify-temp npm test -- --run",
+      "exit_status": 0,
+      "passed": 250,
+      "failed": 0,
+      "files": 29
+    },
+    {
+      "command": "TMPDIR=<workspace>/ocr-verify-temp npm run check",
+      "exit_status": 0,
+      "errors": 0,
+      "warnings": 54,
+      "warning_files": 8
+    },
+    {
+      "command": "node --check tests/ocr-workspace/smoke.mjs",
+      "exit_status": 0
+    },
+    {
+      "command": "node --check tests/ocr-text-export-contract/check-html.mjs",
+      "exit_status": 0
+    }
+  ],
+  "node": "v24.22.1",
+  "logs": {
+    "frontend.log": {
+      "bytes": 3152,
+      "sha256": "efeca5d5243dccb28e79b1de8d48ad084f2a7b3c59d99151b9d2d55f9f1970f6"
+    },
+    "svelte-check.log": {
+      "bytes": 25615,
+      "sha256": "d006a53f2b41f944e5e951c4c7c7b923459b747322493fa4bc7921a0846345f0"
+    }
+  },
+  "source_sha256": {
+    "src/lib/ocr/export.ts": "ba8e8511e40c61ba930ffc9e4817a235e0085adc0e600afbf93d40311c2f43ba",
+    "src/lib/ocr/export.test.ts": "f6bdaacbf1aee5d0b4304f17d8249e7bd88cf77117554db1709187cd72ef8633",
+    "src/lib/ocr/client.ts": "6e0c9fde5c3ed836b3bfd8f08f6e74f9546d6a5142fa2cdbbbfc147440dc5ca4",
+    "src/lib/ocr/client.test.ts": "d212ff0f84a54e0a64ed75d972e8cdba01285d701ba8928d4c9ad948ba49de15",
+    "src/lib/components/OcrWorkbench.svelte": "6bb7d297f985917e4d9a44eae967ee4dea029dd42c3703baebae9882c2672475",
+    "src-tauri/src/ocr_text_export.rs": "c4f2a8a850f4ba206381d5cb18509a97fba2c18c3a2bb07801246b36ab024500",
+    "src-tauri/src/ocr_workspace.rs": "ddbbc1ae583d9be83c2f77462558bef64f9df9fed456253c283154428a81c1ae",
+    "src-tauri/Cargo.toml": "ee15fde5b45382fa604df527a14144c01491fd1d5e62cfa84e423c9ba0e83836",
+    "Cargo.lock": "b10e1c3678ce099827eab8436e97b94ddea140a86bdbcaaff81625244cf9e481",
+    "tests/ocr-workspace/smoke.mjs": "fef9af1f825a533112422b9f6285be9329e2fd0d545b193d43649bf3b91dd65d",
+    "tests/ocr-text-export-contract/check-html.mjs": "79e9740ce0f55b4889ee6add2d1ae5201c27f29a8504234fc821e25e180c2d72"
+  },
+  "notes": [
+    "The workspace TMPDIR is required by this sandbox.",
+    "Existing Svelte warnings remain in eight other application files.",
+    "The Vitest log start time uses the process timezone; verified_utc records the tool clock approximately after completion.",
+    "Hosted text/Word, Android/iOS module and browser gates remain separate."
+  ]
+}

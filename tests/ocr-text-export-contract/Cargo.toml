@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "ocr-text-export-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = ["ocr-text-export"]
+ocr-text-export = ["dep:docx-rs", "dep:unicode-bidi"]
+
+[dependencies]
+docx-rs = { version = "=0.4.20", default-features = false, optional = true }
+unicode-bidi = { version = "=0.3.18", optional = true }
+
+[dev-dependencies]
+serde_json = { version = "=1.0.150", features = ["preserve_order"] }

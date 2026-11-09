@@ -1,5 +1,17 @@
 # CrispSorter — Development Plan
 
+## OCR text export compatibility — 9 November 2026
+
+- [x] Save selection-aware PDF script preflight and direct available text alternatives.
+- [x] Preserve reviewed whitespace and paragraph direction in the OCR-only text writers.
+- [x] Include bounded, text-only Word generation in the mobile OCR feature graph.
+- [ ] Qualify actual TXT/HTML/DOCX artifacts with independent readers and the portable Android/iOS targets.
+- [ ] Qualify the integrated application and native mobile document-provider export paths.
+
+See [format semantics and evidence scope](docs/ocr-text-export-compatibility.md).
+The qualified native PDF renderer still withholds general bidirectional support;
+the text alternatives do not change that capability decision.
+
 ## Follow-up improvement programme — 29 October 2026
 
 **Handoff:** [exact open tasks, run links, evidence and next steps](docs/HANDOFF_2026-10-29.md).

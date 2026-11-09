@@ -104,4 +104,20 @@ describe("reviewed text PDF availability", () => {
     const unavailable = { formats: ["text", "docx"], docx_export: false, docx_export_reason: "Word requires the OCR text export feature." };
     expect(() => resolveExportFormat("docx", unavailable)).toThrow(unavailable.docx_export_reason);
   });
+
+  it("blocks XML-invalid characters before a destination while retaining exact text and JSON alternatives", () => {
+    for (const char of ["\0", "\f", "\ufffe", "\uffff"]) {
+      const pages = [page(`Reviewed ${char} العربية`)];
+      const available = { ...capabilities, formats: [...capabilities.formats, "json", "hocr", "alto"] };
+      for (const format of ["docx", "html", "pdf", "pdfa", "hocr", "alto"]) {
+        const check = checkExportText(format, available, pages);
+        expect(check.errors[0]).toContain("cannot represent");
+        expect(check.alternatives).toEqual(["text", "json"]);
+      }
+      for (const format of ["text", "json"]) expect(checkExportText(format, available, pages).errors).toEqual([]);
+      expect(pages[0].regions[0].text).toBe(`Reviewed ${char} العربية`);
+    }
+    expect(checkExportText("text", capabilities, [page("\ud800")]).errors[0]).toContain("incomplete Unicode");
+    expect(checkExportText("text", capabilities, [page("𞤀😀")]).errors).toEqual([]);
+  });
 });

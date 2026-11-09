@@ -3475,7 +3475,7 @@
                     : exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
                     : exportFormat === "docx"
-                      ? "Editable text in page order. Complex page layout is converted to flowing text."
+                      ? "Editable paragraphs in page order, with text direction and blank lines preserved. Line endings become paragraph breaks; Plain text keeps the original line-ending characters. Complex page layout becomes flowing text."
                       : exportFormat === "alto" || exportFormat === "hocr"
                         ? "Machine-readable text and page coordinates for downstream processing."
                         : exportFormat === "json"
@@ -3489,6 +3489,9 @@
               </p>{/if}
             {#if !capabilities.archival_pdf_export}<p class="field-hint">
                 {capabilities.pdfa_export_reason ?? "PDF/A-2b export requires the matching archival renderer."}
+              </p>{/if}
+            {#if !capabilities.formats.includes("docx") && capabilities.docx_export_reason}<p class="field-hint">
+                {capabilities.docx_export_reason}
               </p>{/if}
             {#if pdfExportSelected}
               <label class="field-label"

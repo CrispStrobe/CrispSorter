@@ -1125,9 +1125,6 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
             if region.confidence.is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score)) {
                 return Err(format!("Page {}, region {} has an invalid confidence.", i + 1, j + 1));
             }
-            if let Some(ch) = region.text.chars().find(|ch| *ch < ' ' && !['\t', '\n', '\r'].contains(ch)) {
-                return Err(format!("Page {}, region {} contains unsupported control character U+{:04X}. Remove it before exporting.", i + 1, j + 1, ch as u32));
-            }
         }
     }
     Ok(())
@@ -1179,6 +1176,9 @@ fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
 }
 
 fn validate_export_text(pages: &[ExportPage], format: &str) -> Result<(), String> {
+    if ["pdf", "html", "hocr", "alto"].contains(&format) {
+        crate::ocr_text_export::validate_xml_text(&export_text_pages(pages))?;
+    }
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
         && !crate::extractors::ocr_render::reviewed_bidi_pdf_available()
         && pages.iter().any(|page| page.regions.iter().any(|region| crate::ocr_text_export::needs_bidirectional_pdf(&region.text))) {
@@ -1206,7 +1206,7 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
         "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
         "html" => {
-            Ok(crate::ocr_text_export::html(&export_text_pages(pages)).into_bytes())
+            crate::ocr_text_export::html(&export_text_pages(pages)).map(String::into_bytes)
         },
         "docx" => {
             #[cfg(feature = "ocr-text-export")]

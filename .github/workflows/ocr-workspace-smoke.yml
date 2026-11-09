@@ -3,7 +3,7 @@ name: OCR workspace browser verification
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls', 'feat/ocr-phone-corner-focus', 'feat/ocr-archival-option-semantics']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls', 'feat/ocr-phone-corner-focus', 'feat/ocr-archival-option-semantics', 'feat/ocr-pdf-text-alternatives']
     paths:
       - src/lib/ocr/**
       - src/lib/tabs.ts
@@ -66,6 +66,7 @@ jobs:
           path: |
             tests/ocr-workspace/artifacts/report.json
             tests/ocr-workspace/artifacts/archival-option-state.json
+            tests/ocr-workspace/artifacts/text-alternatives.json
             tests/ocr-workspace/artifacts/*.png
             test-results/ocr-history-benchmark.json
           if-no-files-found: warn
