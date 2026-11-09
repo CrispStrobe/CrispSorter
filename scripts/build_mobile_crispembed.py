@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 from validate_android_native_libs import closure
+from mobile_native_provenance import collect as collect_native_provenance
 
 LOCK = Path(__file__).with_name('crispembed-runtime-lock.json')
 ANDROID_TARGETS = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64'}
@@ -122,9 +123,12 @@ def build_runtime(source, output, target, jobs, ndk, lock_path=LOCK):
         artifacts = [libdir / binary.name]
     else:
         artifacts = package_ios(output / 'build', libdir)
+    check_source(source, lock)
+    provenance = collect_native_provenance(source, output, target, artifacts, lock, ndk)
     receipt = {'target': target, 'source_commit': lock['source_commit'],
                'ggml_commit': lock['ggml_commit'],
-               'artifacts': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in artifacts}}
+               'artifacts': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in artifacts},
+               'native_provenance': provenance}
     (output / 'runtime-build.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt, indent=2))
 

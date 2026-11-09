@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "kind": "native-workflow-scheduling-audit",
+  "failed_workflow_events": [
+    {
+      "run_id": 42634005534,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634005534",
+      "event": "push",
+      "branch": "feat/ocr-streaming-export",
+      "source_commit": "e37fa4372b20a681234e4b5b66b0ada3e568d908",
+      "workflow": ".github/workflows/ocr-mobile-native.yml",
+      "status": "completed",
+      "conclusion": "failure",
+      "jobs": 0
+    },
+    {
+      "run_id": 42634003230,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634003230",
+      "event": "push",
+      "branch": "feat/ocr-streaming-export",
+      "source_commit": "e37fa4372b20a681234e4b5b66b0ada3e568d908",
+      "workflow": ".github/workflows/ocr-paired-native.yml",
+      "status": "completed",
+      "conclusion": "failure",
+      "jobs": 0
+    }
+  ],
+  "diagnosis": {
+    "source": "https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability",
+    "unsupported_location": "jobs.<job_id>.env",
+    "unsupported_context": "runner",
+    "expressions": [
+      "${{ runner.temp }}/ocr-mobile-licenses/cargo-metadata.json",
+      "${{ runner.temp }}/ocr-desktop-licenses/cargo-metadata.json"
+    ],
+    "evidence": "Exact-source workflow events failed with zero jobs; GitHub context availability excludes runner at this location. This is the audited diagnosis, not a copied server error message."
+  },
+  "fix": {
+    "commit": "17bd2c7f04efd16dc54ac99f840f48881054f8d1",
+    "behavior": "Set LICENSES_CARGO_METADATA from RUNNER_TEMP through GITHUB_ENV in the first runner step.",
+    "scope": "Two workflow files only; native pins, features, gates and concurrency remain unchanged."
+  },
+  "accepted_workflow_events": [
+    {
+      "run_id": 42634608358,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608358",
+      "event": "push",
+      "branch": "feat/ocr-document-studio",
+      "source_commit": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+      "workflow": ".github/workflows/ocr-paired-native.yml",
+      "name": "OCR paired native integration",
+      "status_when_observed": "queued"
+    },
+    {
+      "run_id": 42634608233,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608233",
+      "event": "push",
+      "branch": "feat/ocr-document-studio",
+      "source_commit": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+      "workflow": ".github/workflows/ocr-mobile-native.yml",
+      "name": "OCR mobile native integration",
+      "status_when_observed": "queued"
+    }
+  ],
+  "qualification": "Scheduling evidence only. Queued workflow jobs do not establish compilation, native inference, application behavior, or test success."
+}

@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "kind": "audited-ios-simulator-native-execution",
+  "audit_utc": "2026-11-09T13:58:32.744929+00:00",
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388",
+  "job_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/job/129170291385",
+  "job_conclusion": "success",
+  "sorter_commit": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "crispembed_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+  "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "target": "aarch64-apple-ios-sim",
+  "simulator": {
+    "name": "iPhone 16 Pro",
+    "os": "iOS 18.5",
+    "udid": "4A57FB15-6E7C-49CC-BE93-450B18BD286E",
+    "physical_device": false
+  },
+  "artifact": {
+    "id": 13680296839,
+    "bytes": 136772217,
+    "sha256": "14fe385e2b72d1c56ee56d077835471b3e2dd50234a64a464577c3205d907772",
+    "downloaded_digest_and_archive_crc_verified": true,
+    "all_member_hashes": "artifact-identity.json",
+    "nested_app_archive_and_all_13_bundle_file_hashes_independently_verified": true
+  },
+  "native_ocr": {
+    "pipeline": "Native DBNet detector and Tesseract English recognizer; segmentation router disabled in this disposable probe process",
+    "fixture": "One self-authored 1400 x 480, three-line English page",
+    "model_and_raster_pins": "inputs.json",
+    "raw_text_matches_reference_exactly": true,
+    "clean": {
+      "text": "CRISP MOBILE OCR\nDocument 2048\nTotal 125.00",
+      "normalized_cer": 0,
+      "regions": 3,
+      "milliseconds": 30895.5
+    },
+    "prepared": {
+      "text": "CRISP MOBILE OCR\nDocument 2048\nTotal 125.00",
+      "normalized_cer": 0,
+      "regions": 3,
+      "milliseconds": 5224.57
+    },
+    "cer_definition": "Uppercase ASCII alphanumeric characters; whitespace and punctuation are removed by this smoke metric. The raw retained text independently matches the complete reference, including line order and punctuation.",
+    "photo_api": {
+      "blank_no_angle_controls": 12,
+      "full_frame_perspective_identity": true,
+      "known_clockwise_degrees": 5,
+      "measured_correction_clockwise_degrees": -5
+    },
+    "cold_metal_library_initialization_seconds": 26.207,
+    "timing_scope": "First inference includes Metal library initialization; second reuses the pipeline. Two observations are not a steady-state performance or phone capacity benchmark.",
+    "german_or_two_column_inference_executed": false,
+    "quality_inputs_generated_but_unexecuted": [
+      "german-accents",
+      "english-two-columns"
+    ],
+    "application_reviewed_export_executed": false
+  },
+  "onnx_runtime": {
+    "version": "1.23.0",
+    "api_version": 23,
+    "actual_inference_iterations": 3,
+    "model_bytes": 139,
+    "output_shape": [
+      2,
+      2
+    ],
+    "output": [
+      11,
+      22,
+      33,
+      44
+    ],
+    "elapsed_ms": 239.9,
+    "wrong_version_negative_control": "failed as expected",
+    "scope": "Separate target-compiled native Add probe using the pinned official static framework; not a real embedding model or application indexing test."
+  },
+  "application_startup": {
+    "actual_bundle_installed": true,
+    "source_and_installed_bundle_sha256": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+    "process_survived_seconds": 10,
+    "screenshot": "startup.png",
+    "screenshot_sha256": "b85ba50258e3a89f206e42dfd52f41d43ef06a1174a16efc4842b2ad846631ed",
+    "visually_inspected": true,
+    "observation": "The application visibly rendered its Inbox, toolbar and mobile provider notice. No OCR workspace navigation or editing flow was exercised."
+  },
+  "source_inventory": {
+    "application_source_clean": true,
+    "tracked_source_clean": false,
+    "only_generated_tracked_change": "static/licenses.json",
+    "generated_frontend_entries": 19,
+    "generated_backend_entries": 0,
+    "explanation": "The existing generator continued without cargo-license, which was absent on the runner. The source receipt records this generated inventory accurately; a complete backend inventory is not qualified."
+  },
+  "limitations": [
+    "Synthetic native inference and app startup on a simulator do not qualify physical camera images or devices.",
+    "German/two-column inputs in the artifact are preparation evidence only; this iOS lane did not execute those cases.",
+    "No application model-installer, document-picker, persistence/review/export, or repeated-memory workflow was exercised on iOS.",
+    "This source predates the final renderer, native notices, JPEG/asset guards and export controls; final integrated source requires new gates."
+  ]
+}

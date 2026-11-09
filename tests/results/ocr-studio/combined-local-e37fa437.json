@@ -1,0 +1,45 @@
+{
+  "source_sha": "e37fa4372b20a681234e4b5b66b0ada3e568d908",
+  "scope": "Local frontend and build-helper checks; no native build, browser or device execution.",
+  "commands": [
+    {
+      "command": "npm test -- --run",
+      "exit_code": 0,
+      "tests_passed": 239,
+      "test_files_passed": 29
+    },
+    {
+      "command": "npm run check",
+      "exit_code": 0,
+      "errors": 0,
+      "warnings": 54,
+      "files_with_warnings": 8
+    },
+    {
+      "command": "python -m unittest discover -s tests/scripts -p 'test_*.py'",
+      "exit_code": 0,
+      "tests_passed": 89
+    },
+    {
+      "command": "node --test tests/scripts/test_*.mjs",
+      "exit_code": 0,
+      "tests_passed": 17
+    }
+  ],
+  "node": "24.22.1",
+  "python": "3.12.14",
+  "source_files": {
+    "src/lib/ocr/client.ts": "e41fcbe5a6ab00706a4e1a3ccc3283e04aece08e32f3bad3ee15f6ca26d41c25",
+    "src/lib/ocr/client.test.ts": "f9e808058ad4534384022aa8405a0d3bbcf7b8e1dca5f64777902a6dd2d97ee4",
+    "src/lib/components/OcrWorkbench.svelte": "f5c2e977bbd73fbe30d6eaa6c64944dc30c2d9d9c11806c2688d6ae0a98a45d4",
+    "src/lib/components/ocr/PhotoPreparation.svelte": "b447cde65d6b47c316789c2e3efa792dc378869967718a7e8f8f1027497b2cd7",
+    "src/lib/components/ocr/PageCanvas.svelte": "157adf29a933074f61d3439c73a758bcf130c6bc5cd3622c7dc10c267eb10958",
+    "scripts/native_license_inventory.mjs": "aefdd6bc3d770a60fed8415620f25593f6366b5cf573ebfa97acf494df8b4c5b",
+    "tests/scripts/test_native_license_inventory.mjs": "16a98ce4a11be87202b22bb2873d7c5399f23be2e5c4f7caef766fb95869cac1",
+    "scripts/ocr_mobile_build_receipt.py": "c50297497ad7aa687227fd8cc53a392d7ece4a6dcbc3377e801822b6d7f7e47b",
+    "scripts/mobile_ocr_probe_utils.mjs": "57717b2d47bdb97ede2359873bfd5ffd15d08f43109a7fa74130a417b5ac01cc"
+  },
+  "environment_note": "An initial five-case license-helper invocation could not create its default temporary directory. Re-running with an explicit writable TMPDIR passed all five; the complete 17-case helper run used the same writable directory.",
+  "complete_console_logs_retained": false,
+  "native_or_browser_qualification": false
+}

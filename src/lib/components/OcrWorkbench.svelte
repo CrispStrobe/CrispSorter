@@ -60,21 +60,24 @@
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
   import ModelStorage from "./ocr/ModelStorage.svelte";
-  import { captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
+  import { CORNER_NAMES, captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import {
     workspaceClient,
     modelDownloadLabel,
     importProgressLabel,
+    exportProgressLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
     type ExtractionField,
     type TransformOptions,
     type ExportRequest,
+    type ExportProgress,
     type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
+  import { checkExportText, resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
     expandRecognitionZone,
@@ -155,6 +158,9 @@
   let mobileView = $state<"pages" | "image" | "tools">("image");
   let photoOpen = $state(false);
   let perspective = $state(false);
+  let photoToolsButton = $state<HTMLButtonElement>();
+  let photoFocusBack = $state<HTMLButtonElement>();
+  let photoFocusCoordinatesOpen = $state(false);
   let photoQuad = $state<PhotoQuad>(initialPhotoQuad(100, 100));
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
@@ -188,6 +194,10 @@
   let saveStatus = $state<SaveStatus>({ state: "saved" });
   let importController = $state<AbortController | null>(null);
   let importStopping = $state(false);
+  let exportController = $state<AbortController | null>(null);
+  let exportStopping = $state(false);
+  let exportPhase = $state<ExportProgress["phase"] | null>(null);
+  const exportCancellable = $derived(!!exportController && (exportPhase === "rendering" || exportPhase === "writing"));
   let capabilities = $state<WorkspaceCapabilities>({
     ocr: false,
     crispembed: false,
@@ -245,6 +255,7 @@
     requireReviewed = $state(true);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
+  const pdfExportSelected = $derived(exportFormat === "pdf" || exportFormat === "pdfa");
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
@@ -388,6 +399,8 @@
   const preflight = $derived(
     prepareExport(project, { pageIds: exportIds, requireReviewed }),
   );
+  const exportTextCheck = $derived(checkExportText(exportFormat, capabilities, preflight.pages));
+  const exportErrors = $derived([...preflight.errors, ...exportTextCheck.errors]);
   const pageText = $derived(
     activePage?.regions
       .filter((r) => !r.excluded && r.kind !== "picture")
@@ -407,6 +420,7 @@
   );
   const formatNames: Record<string, string> = {
     pdf: "Searchable PDF",
+    pdfa: "Archival PDF/A-2b",
     hocr: "hOCR",
     alto: "ALTO XML",
     text: "Plain text",
@@ -585,6 +599,8 @@
     error = "";
     busy = "Choosing documents";
     try {
+      // Resolve an earlier save failure before adding more source documents.
+      await autosave?.flush();
       const selected = paths ?? (await client.pickDocuments());
       if (!selected.length) return;
       const controller = new AbortController();
@@ -592,6 +608,7 @@
       importStopping = false;
       busy = "Importing documents";
       let added = 0;
+      let importSaveFailed = false;
       const errors: string[] = [];
       for (const path of selected) {
         if (controller.signal.aborted) break;
@@ -616,13 +633,23 @@
           }
           change(next);
           added += imported.pages.length;
-          await autosave?.flush();
+          try {
+            await autosave?.flush();
+          } catch (e) {
+            // The autosaver retains this snapshot for Retry. Stop the import
+            // before accepting another document into an unsaved project.
+            importSaveFailed = true;
+            errors.push(`${imported.name}: project save failed: ${message(e)}`);
+            break;
+          }
         } catch (e) {
           if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) break;
           errors.push(`${path.split(/[\\/]/).pop()}: ${message(e)}`);
         }
       }
-      notice = `${added} ${added === 1 ? "page" : "pages"} added${controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
+      notice = `${added} ${added === 1 ? "page" : "pages"} added${importSaveFailed
+        ? ". Import stopped because saving failed. Use Save to retry; keep this workspace open."
+        : controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
     } catch (e) {
       fail(e);
@@ -698,10 +725,25 @@
     if (!photoOpen) perspective = false;
   }
   function setPerspective(enabled: boolean) {
+    const leavingPhoneFocus = !enabled && !!photoFocusBack?.getClientRects().length;
     perspective = enabled;
     showOriginal = false;
     drawMode = "select";
     mobileView = "image";
+    if (enabled) {
+      fit = "page";
+      photoFocusCoordinatesOpen = false;
+    }
+    void tick().then(() => {
+      if (enabled && perspective && photoFocusBack?.getClientRects().length) {
+        photoFocusBack.focus({ preventScroll: true });
+      } else if (leavingPhoneFocus) {
+        photoToolsButton?.focus({ preventScroll: true });
+      }
+    });
+  }
+  function setPhotoCoordinate(index: number, axis: "x" | "y", value: number) {
+    photoQuad = photoQuad.map((point, i) => i === index ? { ...point, [axis]: value } : { ...point }) as PhotoQuad;
   }
   async function applyPerspective() {
     if (!activePage) return;
@@ -1342,13 +1384,22 @@
   ) {
     if (locked) return;
     error = "";
-    if (!snapshot && preflight.errors.length) {
-      error = preflight.errors.join("\n");
+    let exportMode = { format: exportFormat, pdfa: false };
+    if (!snapshot) {
+      try { exportMode = resolveExportFormat(exportFormat, capabilities); }
+      catch (cause) { error = cause instanceof Error ? cause.message : String(cause); return; }
+    }
+    const textCheck = snapshot
+      ? checkExportText(snapshot.pdfa ? "pdfa" : snapshot.format, capabilities, snapshot.pages)
+      : exportTextCheck;
+    const errors = [...(!snapshot ? preflight.errors : []), ...textCheck.errors];
+    if (errors.length) {
+      error = errors.join("\n");
       return;
     }
     if (
       !snapshot &&
-      exportFormat === "pdf" &&
+      pdfExportSelected &&
       pdfScale === "dpi" &&
       (!Number.isFinite(pdfDpi) || pdfDpi < 36 || pdfDpi > 2400)
     ) {
@@ -1359,10 +1410,9 @@
       snapshot ??
       (JSON.parse(
         JSON.stringify({
-          format: exportFormat,
-          pdfa: false,
+          ...exportMode,
           pages:
-            exportFormat === "pdf" && pdfScale === "dpi"
+            pdfExportSelected && pdfScale === "dpi"
               ? preflight.pages.map((p) => ({
                   ...p,
                   page_width_points: (p.width * 72) / pdfDpi,
@@ -1377,8 +1427,16 @@
         request.format
       ] ?? request.format;
     let target = path;
-    busy = "Choosing export destination";
+    const controller = new AbortController();
+    exportController = controller;
+    exportStopping = false;
+    exportPhase = null;
+    busy = "Saving project before export";
     try {
+      // Finish saving before allocating a mobile staging destination.
+      await autosave?.flush();
+      if (controller.signal.aborted) throw new DOMException("Document export cancelled.", "AbortError");
+      busy = "Choosing export destination";
       target =
         path ??
         (await client.pickExport(
@@ -1387,16 +1445,26 @@
         )) ??
         undefined;
       if (!target) return;
-      busy = "Exporting reviewed document";
-      await autosave?.flush();
+      exportPhase = "rendering";
+      busy = exportProgressLabel({ request_id: "", phase: "rendering", bytes: 0 });
       const result = await client.exportDocument({
         ...request,
         outputPath: target,
         overwrite,
+      }, {
+        signal: controller.signal,
+        onProgress: progress => {
+          if (exportController !== controller) return;
+          exportPhase = progress.phase;
+          if (progress.phase === "committing" || progress.phase === "destination") exportStopping = false;
+          busy = exportStopping ? "Stopping export after the current step…" : exportProgressLabel(progress);
+        },
       });
       notice = result.cancelled ? "Export cancelled" : `Exported ${result.pages} pages · ${result.saved_path}`;
     } catch (e) {
-      if (
+      if (e instanceof DOMException && e.name === "AbortError") {
+        notice = "Export cancelled";
+      } else if (
         !overwrite &&
         target &&
         /already exists|file exists/i.test(message(e))
@@ -1410,8 +1478,17 @@
         );
       } else fail(e);
     } finally {
+      exportController = null;
+      exportStopping = false;
+      exportPhase = null;
       busy = "";
     }
+  }
+  function cancelExport() {
+    if (!exportController || !exportCancellable || exportStopping) return;
+    exportStopping = true;
+    busy = "Stopping export after the current step…";
+    exportController.abort();
   }
   function tableFromHtml(html: string): string[][] {
     // Parse into an inert template; only cell text reaches the live document.
@@ -1635,7 +1712,7 @@
     }
     if (event.key === "Escape") {
       drawMode = "select";
-      perspective = false;
+      if (perspective) setPerspective(false);
       confirm = null;
       helpOpen = false;
       recentOpen = false;
@@ -1737,6 +1814,7 @@
     return () => {
       mounted = false;
       importController?.abort();
+      exportController?.abort();
       unlisten?.();
       unlistenClose?.();
       queue.cancel();
@@ -1765,7 +1843,7 @@
 
 <svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
 
-<section class="ocr-workspace" aria-label="OCR document workspace">
+<section class="ocr-workspace" class:photo-focusing={photoOpen && perspective && mobileView === "image"} aria-label="OCR document workspace">
   <!-- Android's native chooser requires the image/* token to enter camera capture.
        Unsupported image formats are checked after selection, before import. -->
   <input class="camera-input" bind:this={cameraInput} type="file" accept="image/*" capture="environment" aria-label="Camera photo file" onchange={capturePhoto} />
@@ -2337,11 +2415,33 @@
           >
         </div>
         {#if activePage && capabilities.photo_tools}
-          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
+          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} bind:this={photoToolsButton} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
           {#if photoOpen}<PhotoPreparation width={activePage.width} height={activePage.height} assessment={photoAssessment} assessing={busy === "Checking photo quality"} disabled={locked}
             {perspective} quad={photoQuad} angle={photoAngle} canWhiten={capabilities.ocr} onassess={assessPhoto} onperspective={setPerspective} onquad={(quad) => (photoQuad = quad)}
             onangle={(angle) => (photoAngle = angle)} onapplyperspective={applyPerspective} onapplyangle={() => transform("deskew", { angle: photoAngle })} onwhiten={flattenShadows}
             onclose={() => { photoOpen = false; perspective = false; }} />{/if}
+          {#if photoOpen && perspective}
+            {@const cornerError = photoQuadError(photoQuad, activePage.width, activePage.height)}
+            <div class="photo-focus-controls" role="region" aria-label="Photo corner editing">
+              <div class="photo-focus-actions">
+                <button class="button" bind:this={photoFocusBack} onclick={() => setPerspective(false)}><ChevronLeft size={16} />Back to photo tools</button>
+                <button class="button primary" onclick={applyPerspective} disabled={locked || !!cornerError}><Check size={16} />Apply perspective</button>
+              </div>
+              {#if cornerError}<p class="photo-focus-error" role="status">{cornerError}</p>{/if}
+              <details class="photo-focus-coordinates" bind:open={photoFocusCoordinatesOpen}>
+                <summary>Exact corner positions</summary>
+                <div class="photo-focus-coordinate-grid">
+                  {#each photoQuad as point, index}
+                    <fieldset>
+                      <legend>{CORNER_NAMES[index]}</legend>
+                      <label>X<input type="number" min="0" max={activePage.width - 1} step="1" value={point.x} aria-label={`${CORNER_NAMES[index]} corner X`} oninput={(event) => setPhotoCoordinate(index, "x", event.currentTarget.valueAsNumber)} disabled={locked} /></label>
+                      <label>Y<input type="number" min="0" max={activePage.height - 1} step="1" value={point.y} aria-label={`${CORNER_NAMES[index]} corner Y`} oninput={(event) => setPhotoCoordinate(index, "y", event.currentTarget.valueAsNumber)} disabled={locked} /></label>
+                    </fieldset>
+                  {/each}
+                </div>
+              </details>
+            </div>
+          {/if}
         {/if}
         {#if activePage}
           <PageCanvas
@@ -2367,14 +2467,14 @@
         {/if}
         <div class="image-footer">
           <button
-            class="icon-button"
+            class="icon-button page-navigation"
             onclick={() => gotoPage(-1)}
             disabled={pageIndex <= 0}
             aria-label="Previous page"><ChevronLeft size={17} /></button
-          ><span class="page-counter"
+          ><span class="page-counter page-navigation"
             >{pageIndex + 1} <span>/ {project.pages.length}</span></span
           ><button
-            class="icon-button"
+            class="icon-button page-navigation"
             onclick={() => gotoPage(1)}
             disabled={pageIndex >= project.pages.length - 1}
             aria-label="Next page"><ChevronRight size={17} /></button
@@ -3362,7 +3462,7 @@
               >Output format<select bind:value={exportFormat} disabled={locked}
                 >{#each capabilities.formats as format}<option value={format}
                     >{formatNames[format] ?? format}</option
-                  >{/each}</select
+                  >{/each}{#if !capabilities.formats.includes("pdfa")}<option value="pdfa" disabled>Archival PDF/A-2b — unavailable</option>{/if}</select
               ></label
             >
             <div class="format-card">
@@ -3370,10 +3470,12 @@
               <div>
                 <strong>{formatNames[exportFormat] ?? exportFormat}</strong>
                 <p>
-                  {exportFormat === "pdf"
+                  {exportFormat === "pdfa"
+                    ? "Archival PDF/A-2b with embedded fonts, an sRGB color profile, and your searchable reviewed text."
+                    : exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
                     : exportFormat === "docx"
-                      ? "Editable text in page order. Complex page layout is converted to flowing text."
+                      ? "Editable paragraphs in page order, with text direction and blank lines preserved. Line endings become paragraph breaks; Plain text keeps the original line-ending characters. Complex page layout becomes flowing text."
                       : exportFormat === "alto" || exportFormat === "hocr"
                         ? "Machine-readable text and page coordinates for downstream processing."
                         : exportFormat === "json"
@@ -3385,7 +3487,13 @@
             {#if capabilities.pdf_export_reason}<p class="field-hint">
                 {capabilities.pdf_export_reason}
               </p>{/if}
-            {#if exportFormat === "pdf"}
+            {#if !capabilities.archival_pdf_export}<p class="field-hint">
+                {capabilities.pdfa_export_reason ?? "PDF/A-2b export requires the matching archival renderer."}
+              </p>{/if}
+            {#if !capabilities.formats.includes("docx") && capabilities.docx_export_reason}<p class="field-hint">
+                {capabilities.docx_export_reason}
+              </p>{/if}
+            {#if pdfExportSelected}
               <label class="field-label"
                 >Page sizes
                 <select bind:value={pdfScale} disabled={locked}>
@@ -3432,21 +3540,21 @@
                 disabled={locked}
               /></label
             >
-            <div class="preflight-card" class:ready={!preflight.errors.length}>
+            <div class="preflight-card" class:ready={!exportErrors.length}>
               <div class="section-heading">
-                {#if preflight.errors.length}<AlertTriangle size={17} /><strong
-                    >{preflight.errors.length} checks need attention</strong
+                {#if exportErrors.length}<AlertTriangle size={17} /><strong
+                    >{exportErrors.length} checks need attention</strong
                   >{:else}<CircleCheck size={17} /><strong
                     >Ready to export {preflight.pages.length} pages</strong
                   >{/if}
               </div>
-              {#if preflight.errors.length}<ul>
-                  {#each preflight.errors.slice(0, 8) as problem}<li>
+              {#if exportErrors.length}<ul>
+                  {#each exportErrors.slice(0, 8) as problem}<li>
                       {problem}
                     </li>{/each}
                 </ul>
-                {#if preflight.errors.length > 8}<p>
-                    And {preflight.errors.length - 8} more pages need attention.
+                {#if exportErrors.length > 8}<p>
+                    And {exportErrors.length - 8} more checks need attention.
                   </p>{/if}{:else}<div class="preflight-check">
                   <Check size={14} /> Every selected page is accounted for
                 </div>
@@ -3459,6 +3567,17 @@
                 {#if requireReviewed}<div class="preflight-check">
                     <Check size={14} /> All selected pages approved
                   </div>{/if}{/if}
+              {#if exportTextCheck.affectedPages.length}<p class="field-hint">
+                  Affected pages: {exportTextCheck.affectedPages.slice(0, 5).join(", ")}{exportTextCheck.affectedPages.length > 5 ? ` and ${exportTextCheck.affectedPages.length - 5} more` : ""}.
+                </p>{/if}
+              {#if exportTextCheck.alternatives.length}<div class="export-alternatives">
+                  <p>Your page selection and reviewed text stay the same. Choose an available text format:</p>
+                  <div class="button-grid">
+                    {#each exportTextCheck.alternatives as format}<button class="button" disabled={locked}
+                        onclick={() => { exportFormat = format; error = ""; }}>Use {formatNames[format] ?? format}</button>{/each}
+                  </div>
+                </div>{/if}
+              {#each exportTextCheck.warnings as warning}<p class="inline-warning" role="status">{warning}</p>{/each}
               {#if preflight.warnings.length}<details>
                   <summary>{preflight.warnings.length} review notes</summary>
                   <ul>
@@ -3471,7 +3590,7 @@
             <button
               class="button primary full large"
               onclick={() => exportProject()}
-              disabled={locked || !!preflight.errors.length}
+              disabled={locked || !!exportErrors.length}
               ><Download size={17} /> Save {formatNames[exportFormat] ??
                 exportFormat}</button
             >
@@ -3509,8 +3628,11 @@
       class="status-message">{busy || notice || "Ready"}</span
     >
     {#if importController}<button class="button cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
+    {#if exportController && exportPhase}<button class="button cancel-export" onclick={cancelExport} disabled={!exportCancellable || exportStopping}
+        title={exportPhase === "destination" ? "Use the system save dialog to finish or cancel" : exportPhase === "committing" ? "The export is finishing" : "Stop the export before it is saved"}
+      >{exportStopping ? "Stopping…" : "Cancel export"}</button>{/if}
     <div class="toolbar-spacer"></div>
-    {#if project.pages.length && !importController}<span
+    {#if project.pages.length && !importController && !exportController}<span
         >{metrics.recognized}/{metrics.included} recognized</span
       ><span class="status-divider"></span><span class="approved-stat"
         ><CheckCheck size={12} />{metrics.approved} approved</span
@@ -4994,6 +5116,14 @@
     align-items: center;
     padding: 4px 0;
   }
+  .export-alternatives .button-grid {
+    flex-wrap: wrap;
+  }
+  .export-alternatives .button {
+    min-height: 44px;
+    flex-basis: 130px;
+    white-space: normal;
+  }
   .muted {
     color: #8296b3;
     font-size: 10px;
@@ -5011,7 +5141,7 @@
     font-size: 9px;
     color: #7f94b1;
   }
-  .cancel-import {
+  .cancel-import, .cancel-export {
     min-height: 44px;
     padding: 0 12px;
     white-space: nowrap;
@@ -5187,8 +5317,9 @@
     right: 25px;
     top: 68px;
     width: 350px;
-    max-height: 500px;
+    max-height: min(500px, calc(100% - 80px));
     overflow: auto;
+    overscroll-behavior: contain;
     padding: 15px;
     background: #1b2a3e;
     border: 1px solid #405777;
@@ -5231,8 +5362,23 @@
     backdrop-filter: blur(3px);
   }
   .workspace-dialog {
+    /* Top-layer dialogs are positioned against the viewport, outside the
+       padded workspace. Inset all four edges before centering the dialog. */
+    position: fixed;
+    inset: calc(12px + env(safe-area-inset-top, 0px))
+      calc(12px + env(safe-area-inset-right, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-left, 0px));
+    margin: auto;
     width: 430px;
-    max-width: 100%;
+    height: fit-content;
+    max-width: calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    max-height: calc(100vh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+    overflow: auto;
+    overscroll-behavior: contain;
+    overflow-wrap: anywhere;
     background: #1a293d;
     border: 1px solid #3b587c;
     border-radius: 11px;
@@ -5253,10 +5399,13 @@
   }
   .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 24px;
   }
+  .workspace-dialog button { min-height: 44px; }
+  .workspace-dialog .icon-button { min-width: 44px; }
   .shortcuts {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -5646,6 +5795,7 @@
   .mobile-workspace-nav { display: none; }
   .photo-tool-toggle { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #152030; flex: none; }
   .photo-tool-toggle > span { font-size: 10px; color: var(--muted); }
+  .photo-focus-controls { display: none; }
   .batch-recovery { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: #1d2d3e; border-bottom: 1px solid #3a526c; flex: none; }
   .batch-recovery > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .batch-recovery span { color: #adbed2; font-size: 10px; }
@@ -5697,6 +5847,28 @@
     .ocr-workspace :global(textarea), .ocr-workspace :global(input:not([type="checkbox"]):not([type="range"])), .ocr-workspace :global(select) { font-size: 16px; }
     .workspace-title input { font-size: 14px !important; }
     .photo-tool-toggle > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ocr-workspace.photo-focusing .workspace-header,
+    .ocr-workspace.photo-focusing .command-bar,
+    .ocr-workspace.photo-focusing .mobile-workspace-nav,
+    .ocr-workspace.photo-focusing .image-toolbar,
+    .ocr-workspace.photo-focusing .photo-tool-toggle,
+    .ocr-workspace.photo-focusing .document-pane :global(.photo-preparation) { display: none; }
+    .photo-focusing .photo-focus-controls { display: block; flex: none; background: #172435; border-bottom: 1px solid #35516e; padding: 8px; }
+    .photo-focus-actions { display: flex; gap: 8px; }
+    .photo-focus-actions .button { flex: 1; min-width: 0; min-height: 44px; padding: 8px 5px; font-size: 11px; white-space: normal; }
+    .photo-focus-error { margin: 7px 4px 0; color: #efc58b; line-height: 1.4; font-size: 11px; }
+    .photo-focus-coordinates { margin-top: 4px; }
+    .photo-focus-coordinates summary { min-height: 44px; padding: 12px 5px; color: #bfdcff; cursor: pointer; font-size: 11px; }
+    .photo-focus-coordinate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: clamp(132px, 30dvh, 250px); overflow: auto; overscroll-behavior: contain; padding: 2px 2px 8px; }
+    .photo-focus-coordinate-grid fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; padding: 5px 7px 8px; border: 1px solid #44607c; border-radius: 6px; min-width: 0; }
+    .photo-focus-coordinate-grid legend { padding: 0 4px; color: #bfdcff; font-size: 11px; }
+    .photo-focus-coordinate-grid label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 10px; min-width: 0; }
+    .photo-focus-coordinate-grid input { width: 100%; min-height: 44px; padding: 6px !important; font-size: 16px !important; }
+    .photo-focusing .image-footer .page-navigation,
+    .photo-focusing .image-footer .toolbar-spacer { display: none; }
+    .photo-focusing .image-footer { justify-content: center; gap: 8px; }
+    .ocr-workspace.photo-focusing .image-footer .icon-button { min-width: 44px; }
+    .photo-focusing .image-footer select { min-height: 44px; min-width: 120px; max-width: 140px; font-size: 14px !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     .button {

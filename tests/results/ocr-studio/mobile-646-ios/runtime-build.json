@@ -1,0 +1,8 @@
+{
+  "target": "ios-sim-arm64",
+  "source_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+  "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "artifacts": {
+    "libcrispembed.a": "6c3dbd9e002d95ea5a3c8a744cd4974e6e8afecafa18e4be1107cc8b07400b95"
+  }
+}

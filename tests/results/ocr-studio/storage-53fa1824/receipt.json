@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_commit": "53fa1824d2e78971903a005ecee802b91dce1b8e",
+  "run": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42605533260",
+  "job_id": 129120444662,
+  "artifact_id": 13668622794,
+  "artifact_zip_sha256": "a5ab74ac4e41d8c68501984fba60b2ae11e0f5611c1c577ad6e04a1823607e59",
+  "tests": 8,
+  "failed": 0,
+  "ignored": 0,
+  "duration_seconds": 2.06,
+  "includes_subprocess_usage_lease": true,
+  "limits": "Actual production storage module and response types; application command registration, mobile packaging and physical devices are separate gates."
+}

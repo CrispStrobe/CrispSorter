@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "kind": "ios-shell-geometry-qualification",
+  "status": "failed",
+  "probe_source": "61d1585f49d872502e7ca189815ecfb62a143c89",
+  "application_source": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "run_id": 42637514755,
+  "job_id": 129229520135,
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42637514755",
+  "artifact": {
+    "id": 13686169363,
+    "bytes": 59681970,
+    "sha256": "23ddb79185e5d2f85f5d75a3fb290e7b3afef5d61c92e4007fc15cf27d7a5d64",
+    "verified_after_download": true
+  },
+  "simulator": {
+    "device": "iPhone 16 Pro",
+    "runtime": "18.5",
+    "udid": "B7848B28-0848-4CEC-9780-FCED453E24E4"
+  },
+  "observed": {
+    "application_frame": {
+      "x": 0,
+      "y": 0,
+      "width": 402,
+      "height": 874
+    },
+    "safe_content_frame": {
+      "x": 0,
+      "y": 62,
+      "width": 402,
+      "height": 778
+    },
+    "shell_frame": {
+      "x": 0,
+      "y": 62,
+      "width": 402,
+      "height": 874
+    },
+    "navigation_frame": {
+      "x": 0,
+      "y": 884,
+      "width": 402,
+      "height": 52
+    },
+    "tools_frame": {
+      "x": 268,
+      "y": 892,
+      "width": 67,
+      "height": 41
+    },
+    "tools_in_accessibility_tree": true,
+    "tools_inside_application_frame": false,
+    "installed_bundle_sha256_before_test": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+    "installed_bundle_sha256_after_test": null,
+    "navigation_attempted": false
+  },
+  "test_failure": {
+    "xcodebuild_exit_code": 65,
+    "tests": 1,
+    "failures": 1,
+    "message": "Failed to determine hittability of \"Resize column\" Button: Activation point invalid and no suggested hit points based on element frame",
+    "location": "tools/ios-shell-probe/UITests/ShellNavigationTests.swift:29",
+    "explanation": "The diagnostic enumerated unrelated buttons and asked XCTest to hit-test an offscreen resize handle before it reached the Tools assertion. The Inbox screenshot and full accessibility hierarchy were already saved; navigation.json was not produced."
+  },
+  "inference": "The 874-point shell begins after WebKit\u2019s 62-point top inset, while its visible safe content is 778 points high. Its normal-flow 52-point navigation is consequently below the application frame. Source inspection identifies 100vh with automatic viewport insetting; this is an offscreen geometry defect, not evidence of an absent mount or OCR capability.",
+  "qualification_limits": [
+    "No successful Tools, OCR, or Add documents navigation occurred.",
+    "No corrected application binary was tested in this run.",
+    "The before-test installed bundle identity was verified; the harness failed before its after-test hash.",
+    "The raw accessibility tree establishes frames; the Tools hittability query was not reached.",
+    "No OCR recognition, external provider, camera, or physical-device qualification."
+  ],
+  "files": {
+    "inbox.png": {
+      "bytes": 133585,
+      "sha256": "625f005ddc9a0ea8e355619201e502d25deb683b1f984095c120c901053c62ff"
+    },
+    "xcodebuild.log": {
+      "bytes": 115581,
+      "sha256": "565b81f6a3fb0a9e101238e730037ba5e6f1137105abad4d59181a4a8f21c367"
+    },
+    "inbox-accessibility.txt": {
+      "bytes": 8223,
+      "sha256": "dfef6159f42699998ca7253e1d6866f1bb04dc5c2e48d909daa80bfa107d5e17"
+    },
+    "shell-source-comparison.json": {
+      "bytes": 1435,
+      "sha256": "042518392df2c794de7446ed5d71244da510618b3ac8f22e36192a1528cefd66"
+    },
+    "input-receipt.json": {
+      "bytes": 1344,
+      "sha256": "e8f358f868c4ca36e927550d70349b90a619281918bfda0a041c6e049c8845ea"
+    },
+    "probe-receipt.json": {
+      "bytes": 20567,
+      "sha256": "5b004681c3580a217e82c98cf7d773c3cb097ce546947e5946c3661205145168"
+    }
+  }
+}

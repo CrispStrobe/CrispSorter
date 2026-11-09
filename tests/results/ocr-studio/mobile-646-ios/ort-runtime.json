@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "ocr-mobile-ort-runtime",
+  "target": "ios-sim-arm64",
+  "version": "1.23.0",
+  "api_version": 23,
+  "rust_binding": "2.0.0-rc.11",
+  "archive": {
+    "url": "https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.23.0.zip",
+    "filename": "pod-archive-onnxruntime-c-1.23.0.zip",
+    "bytes": 49207123,
+    "sha256": "756a78e0168f29840bc614b43aeb03e63673f44022e0221d21698a2c8ed747ef"
+  },
+  "details": {
+    "framework_identifier": "ios-arm64_x86_64-simulator",
+    "architectures": [
+      "x86_64",
+      "arm64"
+    ],
+    "static": true,
+    "minimum_os_version": "15.1"
+  },
+  "files": {
+    "include/onnxruntime_session_options_config_keys.h": {
+      "bytes": 26215,
+      "sha256": "e1da2487d0c1e9c549a37fa1454bd694b8fb51138fbfb366f2d53def28b011a0"
+    },
+    "include/coreml_provider_factory.h": {
+      "bytes": 5247,
+      "sha256": "d6430c47d2b076d4a40ba6523e78d75cc4c4b0e5604fb280168891331b057ade"
+    },
+    "include/cpu_provider_factory.h": {
+      "bytes": 397,
+      "sha256": "0de52d129c718c07ee71a16b4953d8d483df019746a11caad77a0650a2f4ed47"
+    },
+    "include/onnxruntime_lite_custom_op.h": {
+      "bytes": 62226,
+      "sha256": "890f4918c1cdb5f8d1180b0c732c263d646d73d947ed69ce96b8047d85ede4c4"
+    },
+    "include/onnxruntime_run_options_config_keys.h": {
+      "bytes": 2952,
+      "sha256": "973037c14b0f1af0854ae25cd676776f79dbcfd2a6791f6ee17a5374c2a62550"
+    },
+    "include/onnxruntime_float16.h": {
+      "bytes": 17860,
+      "sha256": "6c4db3d1954b266c4febe413351af86cac922e3448538e7e452e51d646e56a4a"
+    },
+    "include/onnxruntime_ep_device_ep_metadata_keys.h": {
+      "bytes": 889,
+      "sha256": "8054d3696514dfda8fcd93d4ec1257837e8ebb43e14d3f7012222d53e66be438"
+    },
+    "include/onnxruntime_cxx_inline.h": {
+      "bytes": 130780,
+      "sha256": "8d5288770de9ccd58ef009cd89eaed4a339325e8babf485fc5dc8ad77c5ea7ae"
+    },
+    "include/onnxruntime_cxx_api.h": {
+      "bytes": 143882,
+      "sha256": "01dffb0dcb7c735f9243780db33b8458ca881e4c5f0d919ddfbd5f0c861543d4"
+    },
+    "include/onnxruntime_ep_c_api.h": {
+      "bytes": 45129,
+      "sha256": "b92778f50c36ecdf53d0344e0129a78b306afed653f81bba8a9597e3e6e9546f"
+    },
+    "include/onnxruntime_c_api.h": {
+      "bytes": 332350,
+      "sha256": "71125e66180a991d65c9bdbad4aa20daaa1f7a48c7a5c0fa5f18f250ac839a02"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime": {
+      "bytes": 83004696,
+      "sha256": "08842f65bce8c305e6848ce1fd838437a01801829b5139c54af7f97f8ecfebd3"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_session_options_config_keys.h": {
+      "bytes": 26215,
+      "sha256": "e1da2487d0c1e9c549a37fa1454bd694b8fb51138fbfb366f2d53def28b011a0"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/coreml_provider_factory.h": {
+      "bytes": 5247,
+      "sha256": "d6430c47d2b076d4a40ba6523e78d75cc4c4b0e5604fb280168891331b057ade"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/cpu_provider_factory.h": {
+      "bytes": 397,
+      "sha256": "0de52d129c718c07ee71a16b4953d8d483df019746a11caad77a0650a2f4ed47"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_lite_custom_op.h": {
+      "bytes": 62226,
+      "sha256": "890f4918c1cdb5f8d1180b0c732c263d646d73d947ed69ce96b8047d85ede4c4"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_run_options_config_keys.h": {
+      "bytes": 2952,
+      "sha256": "973037c14b0f1af0854ae25cd676776f79dbcfd2a6791f6ee17a5374c2a62550"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_float16.h": {
+      "bytes": 17860,
+      "sha256": "6c4db3d1954b266c4febe413351af86cac922e3448538e7e452e51d646e56a4a"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_ep_device_ep_metadata_keys.h": {
+      "bytes": 889,
+      "sha256": "8054d3696514dfda8fcd93d4ec1257837e8ebb43e14d3f7012222d53e66be438"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_cxx_inline.h": {
+      "bytes": 130780,
+      "sha256": "8d5288770de9ccd58ef009cd89eaed4a339325e8babf485fc5dc8ad77c5ea7ae"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_cxx_api.h": {
+      "bytes": 143882,
+      "sha256": "01dffb0dcb7c735f9243780db33b8458ca881e4c5f0d919ddfbd5f0c861543d4"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_ep_c_api.h": {
+      "bytes": 45129,
+      "sha256": "b92778f50c36ecdf53d0344e0129a78b306afed653f81bba8a9597e3e6e9546f"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Headers/onnxruntime_c_api.h": {
+      "bytes": 332350,
+      "sha256": "71125e66180a991d65c9bdbad4aa20daaa1f7a48c7a5c0fa5f18f250ac839a02"
+    },
+    "onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/Info.plist": {
+      "bytes": 670,
+      "sha256": "371bae7fe2a4f2eb5f96e4d640d9c8d409c0c49ee87fbfdca5c87424d955c3d1"
+    },
+    "onnxruntime.xcframework/Info.plist": {
+      "bytes": 837,
+      "sha256": "ce4fa26305a758ee1f2f752729e9632bade9aa21a93a6fd7a483accb9c4a9fc6"
+    },
+    "notices/LICENSE": {
+      "bytes": 1073,
+      "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+    },
+    "notices/ThirdPartyNotices.txt": {
+      "bytes": 326866,
+      "sha256": "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc"
+    }
+  },
+  "lock_sha256": "81a67ed6f170e57a5aff5ce8f4497d8a277797413dd04d31ac5113506de35ad8",
+  "recorded_at": "2026-11-09T13:03:31.854868+00:00"
+}

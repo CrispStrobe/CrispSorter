@@ -5,6 +5,7 @@ Xcode must link the C++ runtime used by the static native library. Simulator
 signing is disabled only for the simulator SDK; normal device signing remains.
 """
 import argparse
+import json
 from pathlib import Path
 import subprocess
 
@@ -15,13 +16,22 @@ SETTINGS = (MARKER +
             '        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO\n')
 
 
-def prepare(project):
+def prepare(project, ort_framework=None):
+    settings = SETTINGS
+    if ort_framework is not None:
+        if not ort_framework.is_absolute() or not ort_framework.is_file() or ort_framework.name != 'onnxruntime':
+            raise ValueError('Choose the qualified absolute ONNX Runtime static framework binary')
+        # Rust staticlib metadata does not carry framework linkage into the
+        # final Xcode link. Link the same qualified universal static archive.
+        flags = '$(inherited) -lc++ -framework CoreML ' + json.dumps(str(ort_framework.resolve()))
+        settings = settings.replace('        OTHER_LDFLAGS: "$(inherited) -lc++"\n',
+                                    '        OTHER_LDFLAGS: ' + json.dumps(flags) + '\n')
     source = project.read_text()
     if MARKER not in source:
         if source.count(ANCHOR) != 1:
             raise ValueError('Unexpected generated iOS template; review native link settings before building')
-        project.write_text(source.replace(ANCHOR, ANCHOR + SETTINGS))
-    elif SETTINGS not in source:
+        project.write_text(source.replace(ANCHOR, ANCHOR + settings))
+    elif settings not in source:
         raise ValueError('Existing OCR iOS settings differ; review them before rebuilding')
     subprocess.run(['xcodegen', 'generate', '--spec', str(project.resolve())],
                    cwd=project.parent, check=True)
@@ -38,4 +48,6 @@ def prepare(project):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('project', type=Path)
-    prepare(parser.parse_args().project)
+    parser.add_argument('--ort-framework', type=Path)
+    args = parser.parse_args()
+    prepare(args.project, args.ort_framework)

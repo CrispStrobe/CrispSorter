@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "source_commit": "8dad704c604708415fdc20fb0eb475c720d34cee",
+  "source_branch": "feat/ocr-mobile-source-validation",
+  "workflow_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42616849573",
+  "workflow_run_id": 42616849573,
+  "workflow_job_id": 129158722590,
+  "conclusion": "success",
+  "runner": "Ubuntu 24.04.5 x86_64",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "tests": {
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0
+  },
+  "artifact": {
+    "id": 13676195121,
+    "name": "ocr-image-input-contracts",
+    "bytes": 2742,
+    "sha256": "6897138d992592c356195c5405cba4c9f2137730a6944db74935f315ab04c4db",
+    "downloaded_and_sha256_verified": true
+  },
+  "application_dependency_pins": {
+    "image": {
+      "version": "0.25.10",
+      "registry_checksum": "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+    },
+    "zune-jpeg": {
+      "version": "0.5.15",
+      "registry_checksum": "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+    }
+  },
+  "tested_source_sha256": {
+    "src-tauri/src/extractors/image_input.rs": "4ee028379d258636cd98fbe37e95467e61644a819c4adfd92f58fabe773364bd",
+    "tests/image-input-contract/Cargo.lock": "8ed78e82e730374b325dd9d487fdbf1e7c52549cd6039ba17ff3c987c3a86c70",
+    "tests/fixtures/mobile-documents/oriented.jpg.b64": "f81abbb9d86d69c58f6f5155757bbbda157e9b85a2d8ef3fdb1f0950e1c29d5d"
+  },
+  "fixture": {
+    "path": "tests/fixtures/mobile-documents/oriented.jpg.b64",
+    "decoded_bytes": 1421,
+    "decoded_sha256": "f2c4db841258621ec9ab96da989980ef729ea72750a2e20df0a561eaef32daec",
+    "encoded_width": 120,
+    "encoded_height": 80,
+    "exif_orientation": 6
+  },
+  "decoder_observations": [
+    {
+      "case": "complete",
+      "bytes": 1421,
+      "decoder_accepted": true,
+      "source_guard_accepted": true
+    },
+    {
+      "case": "legal-trailing-data",
+      "bytes": 1445,
+      "decoder_accepted": true,
+      "source_guard_accepted": true
+    },
+    {
+      "case": "legal-metadata-end-marker",
+      "bytes": 1427,
+      "decoder_accepted": true,
+      "source_guard_accepted": true
+    },
+    {
+      "case": "missing-end-marker",
+      "bytes": 1419,
+      "decoder_accepted": true,
+      "source_guard_accepted": false
+    },
+    {
+      "case": "truncated-scan",
+      "bytes": 1321,
+      "decoder_accepted": true,
+      "source_guard_accepted": false
+    },
+    {
+      "case": "metadata-end-marker-with-truncated-scan",
+      "bytes": 1327,
+      "decoder_accepted": true,
+      "source_guard_accepted": false
+    }
+  ],
+  "executed_scope": [
+    "The contract crate includes the exact production image_input.rs module, verified by source hash.",
+    "All registry versions and checksums in the focused crate were checked against the repository Cargo.lock before execution.",
+    "Three real damaged JPEG inputs were accepted by the pinned raw decoder and rejected by the production source guard.",
+    "The complete fixture and controls containing legal trailing bytes or metadata with an end-marker byte sequence remained accepted and unchanged.",
+    "Marker grammar controls cover entropy stuffing, restart markers, DNL, multiple scans, invalid lengths, and truncated prefixes."
+  ],
+  "pending_scope": [
+    "Full application workspace file and raw-provider import regressions, including asset publication, archive identity and EXIF orientation.",
+    "The general extractor fallback regression inside the complete application test binary.",
+    "Physical device camera/provider execution. This focused host probe is not a device qualification."
+  ]
+}

@@ -176,29 +176,9 @@ struct DocumentRasterizer {
     return RasterizedDocument(pages: pages, bytes: bytes, decoder: "ios-core-graphics")
   }
 
-  /// JPEG must end with the EOI marker (trailing padding tolerated) and PNG with
-  /// the IEND chunk. Other formats rely on ImageIO's own status.
-  static func hasCompleteTrailer(_ url: URL, type: String?) -> Bool {
-    guard let type else { return true }
-    let isJPEG = type == "public.jpeg", isPNG = type == "public.png"
-    guard isJPEG || isPNG else { return true }
-    guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-    defer { try? handle.close() }
-    guard let size = try? handle.seekToEnd(), size >= 12 else { return false }
-    let window = UInt64(min(size, 4096))
-    guard (try? handle.seek(toOffset: size - window)) != nil,
-      let tail = try? handle.read(upToCount: Int(window)) else { return false }
-    let bytes = [UInt8](tail)
-    if isPNG {
-      return Array(bytes.suffix(12)) == [0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]
-    }
-    var end = bytes.count
-    while end > 0 && (bytes[end - 1] == 0 || bytes[end - 1] == 0x0A || bytes[end - 1] == 0x0D || bytes[end - 1] == 0x20) { end -= 1 }
-    return end >= 2 && bytes[end - 2] == 0xFF && bytes[end - 1] == 0xD9
-  }
-
   private func image(source: URL, output: URL) throws -> RasterizedDocument {
     try progress(output, completed: 0, total: 1)
+    try validateImageContainer(source)
     guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
       CGImageSourceGetCount(imageSource) > 0 else { throw RasterizerError(message: "This device cannot decode this image. Export a JPEG or PNG copy.") }
     let index = CGImageSourceGetPrimaryImageIndex(imageSource)
@@ -218,10 +198,7 @@ struct DocumentRasterizer {
       thumbnail.width > 0, thumbnail.height > 0, thumbnail.width <= Self.maxPagePixels / thumbnail.height else {
       throw RasterizerError(message: "The primary image could not be decoded within the raster limit.")
     }
-    // ImageIO reports a fully present but truncated file as complete and
-    // returns partially decoded pixels, so also check the container's trailer.
-    guard CGImageSourceGetStatusAtIndex(imageSource, index) == .statusComplete,
-      Self.hasCompleteTrailer(source, type: CGImageSourceGetType(imageSource) as String?) else {
+    guard CGImageSourceGetStatusAtIndex(imageSource, index) == .statusComplete else {
       throw RasterizerError(message: "This image is incomplete or damaged. Import a complete JPEG, PNG, or supported phone image.")
     }
     try checkCancelled(output)
@@ -235,6 +212,63 @@ struct DocumentRasterizer {
       width_points: Double(sourceWidth) * 72 / 300, height_points: Double(sourceHeight) * 72 / 300, warnings: warnings)
     try progress(output, completed: 1, total: 1)
     return RasterizedDocument(pages: [page], bytes: count, decoder: "ios-image-io")
+  }
+
+  /// ImageIO may report a complete JPEG after synthesizing missing scan data.
+  /// Validate structural boundaries before asking it for pixels. The source
+  /// already has a 32 MiB bound; mapping avoids another eager image-sized copy.
+  private func validateImageContainer(_ source: URL) throws {
+    let data = try Data(contentsOf: source, options: .mappedIfSafe)
+    let incomplete = RasterizerError(message: "This image is incomplete or damaged. Import a complete JPEG, PNG, or supported phone image.")
+    try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) throws -> Void in
+      func number(_ offset: Int, _ length: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for index in offset..<(offset + length) { value = (value << 8) | UInt64(bytes[index]) }
+        return value
+      }
+      if bytes.count >= 2, bytes[0] == 0xff, bytes[1] == 0xd8 {
+        var offset = 2
+        while offset < bytes.count {
+          guard bytes[offset] == 0xff else { throw incomplete }
+          while offset < bytes.count && bytes[offset] == 0xff { offset += 1 }
+          guard offset < bytes.count else { throw incomplete }
+          let marker = bytes[offset]; offset += 1
+          if marker == 0xd9 { return }
+          if marker == 0x01 { continue } // TEM has no segment length.
+          guard marker != 0x00, marker != 0xd8, !(0xd0...0xd7).contains(marker),
+            offset <= bytes.count - 2 else { throw incomplete }
+          let length = Int(number(offset, 2))
+          guard length >= 2, length <= bytes.count - offset else { throw incomplete }
+          offset += length
+          if marker == 0xda { // Entropy-coded scan; escaped FF and restart markers are data.
+            while offset < bytes.count {
+              if bytes[offset] != 0xff { offset += 1; continue }
+              let markerStart = offset
+              while offset < bytes.count && bytes[offset] == 0xff { offset += 1 }
+              guard offset < bytes.count else { throw incomplete }
+              let next = bytes[offset]
+              if next == 0x00 || (0xd0...0xd7).contains(next) { offset += 1; continue }
+              offset = markerStart
+              break
+            }
+          }
+        }
+        throw incomplete // No actual EOI marker; a marker inside metadata is not sufficient.
+      }
+      if bytes.count >= 8, number(4, 4) == 0x66747970 { // HEIF/AVIF ISO BMFF ftyp.
+        var offset = 0
+        while offset < bytes.count {
+          guard offset <= bytes.count - 8 else { throw incomplete }
+          var length = number(offset, 4), header: UInt64 = 8
+          if length == 1 {
+            guard offset <= bytes.count - 16 else { throw incomplete }
+            length = number(offset + 8, 8); header = 16
+          } else if length == 0 { length = UInt64(bytes.count - offset) }
+          guard length >= header, length <= UInt64(bytes.count - offset) else { throw incomplete }
+          offset += Int(length)
+        }
+      }
+    }
   }
 }
 

@@ -5,6 +5,26 @@ This harness mounts the production `OcrWorkbench.svelte` component with its type
 fixtures. It exercises the actual UI, project model, queue and autosave code without
 native model downloads, user files, or a desktop runtime.
 
+## Safe-area overlays
+
+The `safe-overlays` scenario mounts the actual workspace, model-removal dialog,
+and third-party disclosure component. It uses Chromium's
+[`Emulation.setSafeAreaInsetsOverride`](https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setSafeAreaInsetsOverride)
+to supply asymmetric CSS `env()` insets at 740×360 and 390×844. The harness
+asserts the computed insets, without replacing production overlay CSS, then
+measures the real rectangles, centering, scroll ranges and hit-testable actions.
+Long saved-project lists, filenames, model names and disclosed endpoints force
+the scrolling cases. A method missing from the pinned browser fails the test.
+
+The consent test runs the production gate and UI with only persistent-store IPC
+mocked: declining does not save permission; approving saves exactly the chosen
+provider. It never issues a model/network request. Native modal state, contained
+focus, cancellation and Escape remain checked. `safe-overlay-state.json` records
+component hashes, browser version, every measured rectangle and outcomes; it is
+written on failure too. These are synthetic browser insets and fixture content,
+not physical-device or complete application-shell qualification. The separate
+native WKWebView geometry lane has its own source and platform scope.
+
 ## Run
 
 Install the repository's normal npm dependencies, run `npx svelte-kit sync`, and
@@ -96,6 +116,8 @@ are exercised separately in the native model-storage contract lane.
 - Held document imports expose correlated progress and a reachable phone Cancel
   control, stay locked until the current native step finishes, and save completed
   documents while rejecting the cancelled document without starting later files.
+- A failed import checkpoint stops later documents, keeps the imported pages in
+  the pending project, and allows Save to retry them without importing duplicates.
 - Four-corner correction exposes touch-sized keyboard-operable handles, rejects
   invalid geometry, invalidates stale text after correction, and restores the
   original review evidence with Undo.
@@ -117,8 +139,8 @@ are exercised separately in the native model-storage contract lane.
   and requires no scrolling; this catches duplicate padding deductions.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same
-harness on OCR changes pushed to `feat/ocr-document-studio` or the dedicated
-`feat/ocr-native-validation` branch and on relevant pull
+harness on OCR changes pushed to `feat/ocr-document-studio`,
+`feat/ocr-native-validation`, or `feat/ocr-studio-integration` and on relevant pull
 requests, and attaches its JSON report and screenshots as
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.

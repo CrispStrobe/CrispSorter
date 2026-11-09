@@ -1,13 +1,13 @@
 import { execSync } from 'child_process';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import path from 'path';
+import { loadBackendMetadata } from './native_license_inventory.mjs';
 
 const STATIC_DIR = path.resolve('static');
 const OUTPUT_FILE = path.join(STATIC_DIR, 'licenses.json');
-// Default to permissive: a missing dev tool (cargo-license, license-report)
-// should not break a production build. CI / release pipelines that *want*
-// the build to fail when license metadata is incomplete can set
-// LICENSES_REQUIRE=1.
+// Standalone frontend builds remain permissive. Native qualification supplies
+// source/lock/target-bound Cargo metadata and LICENSES_REQUIRE=1, so missing
+// backend metadata cannot silently produce an empty application inventory.
 const REQUIRE_ALL = process.env.LICENSES_REQUIRE === '1';
 
 console.log('Generating license reports...');
@@ -69,35 +69,41 @@ if (npmOutput) {
 // 2. Get Rust licenses
 console.log('- Scanning Rust dependencies...');
 let rustLicenses = [];
-const rustOutput = runOrFail(
-    'cargo-license',
-    'cargo-license --json',
-    { cwd: path.resolve('src-tauri') }
-);
-if (rustOutput) {
-    const rustData = JSON.parse(rustOutput);
-    rustLicenses = rustData.map((dep) => {
-        let author = 'Various';
-        if (typeof dep.authors === 'string') {
-            author = dep.authors.replace(/\|/g, ', ');
-        } else if (Array.isArray(dep.authors)) {
-            author = dep.authors.join(', ');
-        }
-
-        return {
-            name: dep.name,
-            version: dep.version,
-            license: dep.license || 'Unknown',
-            author: author,
-            link: dep.repository || `https://crates.io/crates/${dep.name}`,
-            source: 'Backend',
-        };
-    });
+if (process.env.LICENSES_CARGO_METADATA) {
+    rustLicenses = loadBackendMetadata(process.env.LICENSES_CARGO_METADATA, process.cwd(),
+        process.env.LICENSES_CARGO_TARGET, process.env.LICENSES_CARGO_FEATURES).entries;
+} else {
+    const rustOutput = runOrFail('cargo-license', 'cargo-license --json', { cwd: path.resolve('src-tauri') });
+    if (rustOutput) {
+        const rustData = JSON.parse(rustOutput);
+        rustLicenses = rustData.map((dep) => {
+            let author = 'Various';
+            if (typeof dep.authors === 'string') {
+                author = dep.authors.replace(/\|/g, ', ');
+            } else if (Array.isArray(dep.authors)) {
+                author = dep.authors.join(', ');
+            }
+            return { name: dep.name, version: dep.version, license: dep.license || 'Unknown',
+                author, link: dep.repository || `https://crates.io/crates/${dep.name}`, source: 'Backend' };
+        });
+    }
 }
+if (REQUIRE_ALL && (npmLicenses.length === 0 || rustLicenses.length === 0)) {
+    throw new Error('Native builds require nonempty frontend and backend license inventories.');
+}
+
+// Native OCR text layout is linked into matching CrispEmbed builds. Its full
+// Apache-2.0 license and provenance ship in static/native-licenses on every platform.
+const nativeLicenses = [{
+    name: 'SheenBidi (CrispEmbed OCR text layout)',
+    version: '3.0.0', license: 'Apache-2.0',
+    author: 'Muhammad Tayyab Akram', source: 'Native',
+    link: 'https://github.com/Tehreer/SheenBidi',
+}];
 
 // 3. Combine and save. Include a generatedAt footer entry so the UI can
 //    surface how fresh this list is without anyone having to stat the file.
-const combined = [...npmLicenses, ...rustLicenses].sort((a, b) =>
+const combined = [...npmLicenses, ...rustLicenses, ...nativeLicenses].sort((a, b) =>
     a.name.localeCompare(b.name)
 );
 
@@ -106,6 +112,7 @@ const payload = {
     counts: {
         frontend: npmLicenses.length,
         backend: rustLicenses.length,
+        native: nativeLicenses.length,
         total: combined.length,
     },
     licenses: combined,

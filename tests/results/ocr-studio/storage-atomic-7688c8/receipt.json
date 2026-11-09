@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "source_commit": "7688c8db61020bcc7e87c7cc7a0260dcd6f1bc37",
+  "run": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42618020194",
+  "job_id": 129162668312,
+  "artifact_id": 13675200265,
+  "artifact_zip_bytes": 7727,
+  "artifact_zip_sha256": "1e79916c610b67eaec17da69753c56dba3d60167f3f6d248080ec2df4bb53498",
+  "source_hashes_verified_against_commit": "7688c8db61020bcc7e87c7cc7a0260dcd6f1bc37",
+  "dependency_lock_sha256": "354070e4d613280977c4f1181ce4902590ac9beddf3ade18eb1c82370e4e213b",
+  "tests": 16,
+  "failed": 0,
+  "ignored": 0,
+  "duration_seconds": 2.07,
+  "groups": {
+    "production_model_storage": 10,
+    "production_atomic_output": 6
+  },
+  "includes_subprocess_usage_lease": true,
+  "scope": [
+    "Actual production storage and atomic output modules",
+    "Cross-process usage leases and guarded model cleanup",
+    "Explicit replacement and no-clobber race protection",
+    "Partial-write failure and renderer-panic cleanup",
+    "Destination published only after writer completion"
+  ],
+  "limits": "The nested child-process case is included in the sixteen-test total. This portable Linux suite does not execute the new native PDF writer, complete application, mobile provider, or physical devices. Later atomic-output changes at 75e8d7a affect documentation only."
+}

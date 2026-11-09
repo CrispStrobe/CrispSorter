@@ -1,0 +1,181 @@
+{
+  "synthetic_ui_only": true,
+  "tests": [
+    {
+      "name": "recover pages, correct text, undo, redo, and revoke page approval",
+      "status": "passed",
+      "duration_ms": 4026
+    },
+    {
+      "name": "a document sent from another tab is imported once and selected",
+      "status": "passed",
+      "duration_ms": 516
+    },
+    {
+      "name": "a document already in the project is selected instead of imported again",
+      "status": "passed",
+      "duration_ms": 512
+    },
+    {
+      "name": "next issue navigates from uncertain text to an unrecognized page",
+      "status": "passed",
+      "duration_ms": 605
+    },
+    {
+      "name": "unchanged preparation preserves corrections and approval while showing its warning",
+      "status": "passed",
+      "duration_ms": 854
+    },
+    {
+      "name": "the low-memory CPU profile is offered only for Qwen2 VL and reaches recognition",
+      "status": "passed",
+      "duration_ms": 811
+    },
+    {
+      "name": "export preflight blocks incomplete pages and exports explicit approved scope",
+      "status": "passed",
+      "duration_ms": 692
+    },
+    {
+      "name": "archival export keeps approved page geometry and sends an explicit PDF/A request",
+      "status": "passed",
+      "duration_ms": 659
+    },
+    {
+      "name": "unsupported archival output is disabled with its native capability reason",
+      "status": "failed",
+      "duration_ms": 610,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n\n    at file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:279:20\n    at async test (file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:80:17)\n    at async file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:275:9"
+    },
+    {
+      "name": "batch errors stay per page and retry only failed work",
+      "status": "passed",
+      "duration_ms": 646
+    },
+    {
+      "name": "pause, resume and stop preserve finished and pending pages without concurrent inference",
+      "status": "passed",
+      "duration_ms": 754
+    },
+    {
+      "name": "an interrupted batch resumes its saved selection and settings without rerunning completed pages",
+      "status": "passed",
+      "duration_ms": 594
+    },
+    {
+      "name": "a failed result save stops the batch and retry preserves completed recognition",
+      "status": "passed",
+      "duration_ms": 680
+    },
+    {
+      "name": "finishing a batch keeps project changes locked until the final checkpoint is durable",
+      "status": "passed",
+      "duration_ms": 592
+    },
+    {
+      "name": "stopping an already paused queue saves its stopped state without another native call",
+      "status": "passed",
+      "duration_ms": 645
+    },
+    {
+      "name": "table extraction renders cell text and strips active HTML",
+      "status": "passed",
+      "duration_ms": 598
+    },
+    {
+      "name": "delayed extraction follows its source page and undo restores visible and exported cells",
+      "status": "passed",
+      "duration_ms": 871
+    },
+    {
+      "name": "an invalid saved project leaves the current project and autosaver usable",
+      "status": "passed",
+      "duration_ms": 696
+    },
+    {
+      "name": "reopening the current project flushes pending edits without rollback or revision conflicts",
+      "status": "passed",
+      "duration_ms": 660
+    },
+    {
+      "name": "a confirmation blocks navigation shortcuts and removes only its captured page",
+      "status": "passed",
+      "duration_ms": 715
+    },
+    {
+      "name": "changing the search query cannot replace text at a stale match offset",
+      "status": "passed",
+      "duration_ms": 790
+    },
+    {
+      "name": "mobile storage cleanup is explicit, recovers from failure, and keeps models and reviewed pages",
+      "status": "passed",
+      "duration_ms": 901
+    },
+    {
+      "name": "model removal requires confirmation and the displayed exact generation, preserving cancellation and active models",
+      "status": "passed",
+      "duration_ms": 963
+    },
+    {
+      "name": "mobile model setup is explicit, reports progress, locks work, and recovers after failure",
+      "status": "passed",
+      "duration_ms": 920
+    },
+    {
+      "name": "phone import progress stays cancellable and saves only completed documents",
+      "status": "passed",
+      "duration_ms": 679
+    },
+    {
+      "name": "a failed import checkpoint stops further documents and Save retries the retained pages",
+      "status": "passed",
+      "duration_ms": 624
+    },
+    {
+      "name": "phone export progress waits for cancellation and a retry preserves the committed result",
+      "status": "passed",
+      "duration_ms": 896
+    },
+    {
+      "name": "phone export failures unlock retry and destination transfer belongs to the system dialog",
+      "status": "passed",
+      "duration_ms": 810
+    },
+    {
+      "name": "camera import validates the file and opens a preserved photo without starting recognition",
+      "status": "passed",
+      "duration_ms": 630
+    },
+    {
+      "name": "corner controls reject invalid selections and perspective undo restores review evidence",
+      "status": "passed",
+      "duration_ms": 895
+    },
+    {
+      "name": "measured tilt and lighting preparation preserve the original and remain undoable",
+      "status": "passed",
+      "duration_ms": 863
+    },
+    {
+      "name": "desktop and compact layouts remain usable",
+      "status": "passed",
+      "duration_ms": 1074
+    }
+  ],
+  "browserErrors": [],
+  "passed": 31,
+  "failed": 1,
+  "screenshots": [
+    "ocr-workspace-desktop.png",
+    "ocr-workspace-compact.png",
+    "ocr-phone-model-setup.png",
+    "ocr-phone-model-storage.png",
+    "ocr-phone-model-removal-confirmation.png",
+    "ocr-phone-photo-preparation.png",
+    "ocr-phone-import-progress.png",
+    "ocr-phone-export-progress.png",
+    "ocr-phone-text-review.png",
+    "ocr-phone-page-list.png"
+  ]
+}

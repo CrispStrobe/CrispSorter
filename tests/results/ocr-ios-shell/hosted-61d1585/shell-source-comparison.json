@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "kind": "retained-ios-shell-source-comparison",
+  "retained_application_source": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "compared_application_source": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+  "scope": "These three shell source files only. This does not equate the application binaries, all dependencies, or later OCR workspace features.",
+  "files": [
+    {
+      "path": "src/routes/+page.svelte",
+      "sha256_by_source": {
+        "646dbc486438d0e8955af193b30e6382632cdf45": "bc57cd324afbe81bf69987a8866d77ae2251a03990a80b01cccab383399e1ae5",
+        "b876fb43eb19cc7de44760400e50735aa27c2c78": "bc57cd324afbe81bf69987a8866d77ae2251a03990a80b01cccab383399e1ae5"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/app.css",
+      "sha256_by_source": {
+        "646dbc486438d0e8955af193b30e6382632cdf45": "e5da9bf966ebf899f7280ef40e5e57640d25c4f477bcacbcf6cd21402006fa4f",
+        "b876fb43eb19cc7de44760400e50735aa27c2c78": "e5da9bf966ebf899f7280ef40e5e57640d25c4f477bcacbcf6cd21402006fa4f"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/app.html",
+      "sha256_by_source": {
+        "646dbc486438d0e8955af193b30e6382632cdf45": "e8875c2bd9bb4e394a0e5c2054fdc67ec34d7f2e83180d5d5904ddf5097afcab",
+        "b876fb43eb19cc7de44760400e50735aa27c2c78": "e8875c2bd9bb4e394a0e5c2054fdc67ec34d7f2e83180d5d5904ddf5097afcab"
+      },
+      "identical": true
+    }
+  ]
+}

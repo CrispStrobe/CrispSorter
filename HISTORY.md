@@ -7,6 +7,18 @@ of the codebase look the way they do.
 For active development plans, see [PLAN.md](PLAN.md).
 For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
+## Reviewed OCR text alternatives (2026-11-09, feature branch)
+
+Saved capability-aware PDF preflight and direct text/HTML/Word alternatives,
+with selection and reviewed Unicode preserved before opening a destination.
+The OCR-only text writers keep whitespace and blank pages; Word records proper
+paragraph direction and interprets CR/LF/CRLF as one paragraph boundary each.
+The portable Word feature is included by mobile OCR without desktop
+integrations. Invalid rich-text characters lead to plain text/JSON alternatives
+instead of removal or corrupt output. General bidirectional PDF remains gated.
+Independent document and browser qualification is pending at this checkpoint;
+see [scope and exact format semantics](docs/ocr-text-export-compatibility.md).
+
 ## Cloud provider integration pass (2026-08-02)
 
 The registered-drive/file-manager pass shipped bounded provider search,

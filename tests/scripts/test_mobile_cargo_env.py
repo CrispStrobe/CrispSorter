@@ -153,6 +153,39 @@ class CargoEnvironmentTests(unittest.TestCase):
                     MODULE.prepare(self.project, self.runtime, path)
                 self.assertFalse(self.config.parent.exists())
 
+    def test_android_and_ios_ort_paths_survive_nested_cargo(self) -> None:
+        ort = self.root / 'onnx runtime'
+        ort.mkdir()
+        (ort / 'libonnxruntime.so').write_bytes(b'config fixture, not a native runtime')
+        MODULE.prepare(self.project, self.runtime, ort_lib_dir=ort)
+        env = tomllib.loads(self.config.read_text())['env']
+        self.assertEqual(env['ORT_LIB_LOCATION'], {'value': str(ort), 'force': True})
+        self.assertEqual(env['ORT_PREFER_DYNAMIC_LINK'], {'value': '1', 'force': True})
+        self.config.unlink()
+        (ort / 'Info.plist').write_bytes(b'config fixture')
+        framework = ort / 'ios-arm64_x86_64-simulator/onnxruntime.framework'
+        framework.mkdir(parents=True)
+        (framework / 'onnxruntime').write_bytes(b'config fixture')
+        MODULE.prepare(self.project, self.runtime, ort_xcframework=ort)
+        env = tomllib.loads(self.config.read_text())['env']
+        self.assertEqual(env['ORT_IOS_XCFWK_LOCATION'], {'value': str(ort), 'force': True})
+        self.assertNotIn('ORT_PREFER_DYNAMIC_LINK', env)
+
+    def test_incomplete_or_conflicting_ort_selection_does_not_write_config(self) -> None:
+        ort = self.root / 'ort'
+        ort.mkdir()
+        with self.assertRaisesRegex(ValueError, 'must contain'):
+            MODULE.prepare(self.project, self.runtime, ort_lib_dir=ort)
+        with self.assertRaisesRegex(ValueError, 'not both'):
+            MODULE.prepare(self.project, self.runtime, ort_lib_dir=ort, ort_xcframework=ort)
+        self.assertFalse(self.config.exists())
+        (ort / 'libonnxruntime.so').write_bytes(b'config fixture')
+        original = '[env]\nORT_PREFER_DYNAMIC_LINK = "0"\n'
+        self.write_config(original)
+        with self.assertRaisesRegex(ValueError, 'ORT_PREFER_DYNAMIC_LINK conflicts'):
+            MODULE.prepare(self.project, self.runtime, ort_lib_dir=ort)
+        self.assertEqual(self.config.read_text(), original)
+
     def test_symlink_config_is_not_followed(self) -> None:
         self.config.parent.mkdir()
         outside = self.root / "external.toml"

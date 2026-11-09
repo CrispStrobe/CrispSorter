@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "recorded_date_utc": "2026-11-09",
+  "scope": "Verified downloaded model bytes and generated/inspected synthetic input images only. Native recognition has not executed.",
+  "native_execution_status": "not_run",
+  "quality_spec_sha256": "7d76bb157f4ccb350f0c9cb8e42aae87f323cc4323203c010c0ca76cf9d9232e",
+  "font_sha256": "57f73e11f51999432bf7ab22ce55b6f945d5eca1bf824404cfa9ec2e3718c84e",
+  "model": {
+    "name": "tesseract-deu",
+    "filename": "tesseract-deu-q8_0.gguf",
+    "url": "https://huggingface.co/cstr/tesseract-lstm-GGUF/resolve/main/tesseract-deu-q8_0.gguf",
+    "sha256": "7d41b26510033db7118ecc4f5b3b0b9d7fa91a5467695d552086a6b6a98b5a23",
+    "bytes": 513952,
+    "license": "Apache-2.0"
+  },
+  "cases": [
+    {
+      "id": "german-accents",
+      "filename": "quality-german-accents.png",
+      "width": 1600,
+      "height": 1000,
+      "sha256": "81eee8f848f838072da0e549cd5b4505cfd310215b48a0f35199794aa1dcdb4e",
+      "bytes": 60035
+    },
+    {
+      "id": "english-two-columns",
+      "filename": "quality-english-two-columns.png",
+      "width": 1800,
+      "height": 1000,
+      "sha256": "f404697c7cd511545be60b64a66e62687b281078661d0c6387fa79f0acbb4be4",
+      "bytes": 56497
+    }
+  ]
+}

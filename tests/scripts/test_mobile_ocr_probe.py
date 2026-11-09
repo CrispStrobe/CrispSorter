@@ -23,6 +23,24 @@ class Response(io.BytesIO):
 
 
 class FixtureTests(unittest.TestCase):
+    def test_quality_fixture_scope_keeps_small_language_and_layout_inputs(self):
+        spec = probe.quality_spec()
+        self.assertEqual([model['name'] for model in spec['models']], ['tesseract-deu'])
+        self.assertEqual({case['language'] for case in spec['cases']}, {'eng', 'deu'})
+        self.assertEqual({case['layout_engine'] for case in spec['cases']}, {None, 'cc'})
+        german = next(case for case in spec['cases'] if case['language'] == 'deu')
+        self.assertTrue({'Prüfung', 'Größe', 'Straße', 'München'}.issubset(german['required_tokens']))
+
+    def test_quality_fixture_rejects_unsafe_names_and_relaxed_error_limits(self):
+        for change in ({'filename': '../escape.png'}, {'max_unicode_cer': 1}, {'width': 100_000}):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / 'quality.json'
+                spec = probe.quality_spec()
+                spec['cases'][0].update(change)
+                source.write_text(json.dumps(spec))
+                with self.assertRaises(ValueError):
+                    probe.quality_spec(source)
+
     def document_manifest(self, root):
         data = b'%PDF-1.7\nfixture identity only; not a rendered document\n'
         (root / 'two-pages.pdf').write_bytes(data)

@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "kind": "ocr-browser-mobile-ui-qualification",
+  "source_commit": "9e0f0fe19a7aa5dd6c536b1e1283aedc9f0f1171",
+  "workflow_run": 42634301391,
+  "job_id": 129218283331,
+  "artifact_id": 13683927873,
+  "artifact_sha256": "2a09fb6e89efb02438e8c602650232bd526e6f569904cbae24cc9af41c8225b1",
+  "artifact_download_sha256_verified": true,
+  "overall_job_conclusion": "failure",
+  "frontend_tests": {
+    "passed": 233,
+    "failed": 0
+  },
+  "svelte": {
+    "errors": 0,
+    "warnings": 54
+  },
+  "browser": {
+    "passed": 32,
+    "failed": 1,
+    "browser_errors": []
+  },
+  "case_results": [
+    {
+      "name": "phone corner editing fits a usable page, accepts touch drags, and changes pixels only on Apply",
+      "status": "passed",
+      "duration_ms": 1292
+    },
+    {
+      "name": "corner controls reject invalid selections and perspective undo restores review evidence",
+      "status": "passed",
+      "duration_ms": 726
+    }
+  ],
+  "original_failures": [
+    {
+      "name": "unsupported archival output is disabled with its native capability reason",
+      "status": "failed",
+      "duration_ms": 466,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n\n    at file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:280:20\n    at async test (file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:81:17)\n    at async file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:276:9"
+    }
+  ],
+  "phone_corner_evidence": {
+    "screen": {
+      "width": 390,
+      "height": 844
+    },
+    "viewport": {
+      "x": 0,
+      "y": 143,
+      "width": 390,
+      "height": 620
+    },
+    "paper": {
+      "x": 24,
+      "y": 213.59375,
+      "width": 342,
+      "height": 478.796875
+    },
+    "handles": [
+      {
+        "x": 2,
+        "y": 191.59375,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 343.65625,
+        "y": 191.59375,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 343.65625,
+        "y": 670.046875,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 2,
+        "y": 670.046875,
+        "width": 44,
+        "height": 44
+      }
+    ],
+    "drag": {
+      "screenDelta": {
+        "x": 36,
+        "y": 42
+      },
+      "imagePoint": {
+        "x": 105,
+        "y": 123
+      },
+      "events": [
+        {
+          "pointerType": "touch",
+          "trusted": true
+        }
+      ]
+    },
+    "transformsBeforeApply": 0
+  },
+  "report_sha256": "8afcb0af5d41554d2afe52ab29d5ac7776309afd0a452db21667f4b6b52e84a3",
+  "corner_screenshot": {
+    "path": "../hosted-fbc03f74/ocr-phone-corner-focus.png",
+    "sha256": "195a9306d743d0213a0896058fbb951c380ebfac9ca7a3d8873158f577967613",
+    "identical_to_retained_fbc_screenshot": true
+  },
+  "source_smoke_sha256": "a54d9160798f192b284941785d31fc9c72c8f274056be2ef6af1a7126a814547",
+  "scope": "Production component browser interactions with a synthetic client. No native or physical-device qualification. The isolated source predates archival assertion fix 76bf5d8d; it retains that sole known historical failure."
+}

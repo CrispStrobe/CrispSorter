@@ -1,0 +1,434 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> tauri-app@0.15.0 check
+> svelte-kit sync && svelte-check --tsconfig ./tsconfig.json
+
+Loading svelte-check in workspace: /workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export
+Getting Svelte diagnostics...
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/AIToolkitCapability.svelte:189:14
+Warn: Screenreaders already announce `<img>` elements as an image
+https://svelte.dev/e/a11y_img_redundant_alt (svelte)
+	{#if out}<pre>{out}</pre>{/if}
+	{#if imgUrl}<img src={imgUrl} alt="AI-generated image" class="result-img" />{/if}
+	{#if audioUrl}<audio controls src={audioUrl}></audio>{/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1595:49
+Warn: Visible, non-interactive element `<span>` with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events (svelte)
+                                            {#if item.isDuplicatePrimary === false}
+                                                <span class="inline-badge dupe-badge"
+                                                      title="Inhaltsidentisches Duplikat (Gruppe {item.duplicateGroupId}). Wird beim Sortieren übersprungen wenn 'Duplikate überspringen' aktiv ist."
+                                                      onclick={(e) => { e.stopPropagation(); showDuplicates = true; }}>= dup</span>
+                                            {:else if item.isDuplicatePrimary === true && item.duplicateGroupId}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1595:49
+Warn: `<span>` with a click handler must have an ARIA role
+https://svelte.dev/e/a11y_no_static_element_interactions (svelte)
+                                            {#if item.isDuplicatePrimary === false}
+                                                <span class="inline-badge dupe-badge"
+                                                      title="Inhaltsidentisches Duplikat (Gruppe {item.duplicateGroupId}). Wird beim Sortieren übersprungen wenn 'Duplikate überspringen' aktiv ist."
+                                                      onclick={(e) => { e.stopPropagation(); showDuplicates = true; }}>= dup</span>
+                                            {:else if item.isDuplicatePrimary === true && item.duplicateGroupId}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1600:49
+Warn: Visible, non-interactive element `<span>` with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events (svelte)
+                                                {@const nDupes = batchManager.items.filter(i => i.duplicateGroupId === item.duplicateGroupId && i.isDuplicatePrimary === false).length}
+                                                <span class="inline-badge dupe-primary-badge"
+                                                      title="{nDupes} identische Kopie(n) in der Liste (Gruppe {item.duplicateGroupId})"
+                                                      onclick={(e) => { e.stopPropagation(); showDuplicates = true; }}>+{nDupes} dup</span>
+                                            {/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1600:49
+Warn: `<span>` with a click handler must have an ARIA role
+https://svelte.dev/e/a11y_no_static_element_interactions (svelte)
+                                                {@const nDupes = batchManager.items.filter(i => i.duplicateGroupId === item.duplicateGroupId && i.isDuplicatePrimary === false).length}
+                                                <span class="inline-badge dupe-primary-badge"
+                                                      title="{nDupes} identische Kopie(n) in der Liste (Gruppe {item.duplicateGroupId})"
+                                                      onclick={(e) => { e.stopPropagation(); showDuplicates = true; }}>+{nDupes} dup</span>
+                                            {/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1607:49
+Warn: Visible, non-interactive element `<span>` with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events (svelte)
+                                                {@const isEV = !!item.chapterIsEditedVolume}
+                                                <span class="inline-badge chapter-badge"
+                                                      class:chapter-edited-vol={isEV}
+                                                      title="{isEV ? 'Sammelband (Autor pro Kapitel)' : 'Monographie (Autor vererbt)'} — {item.chapterGroupId} ({n} Kap.){item.isChapterRepresentative ? ' · Repräsentant' : ` · ${item.chapterSuffix ?? ''}`}. Klick: Sammelband-Modus umschalten"
+                                                      onclick={(e) => { e.stopPropagation(); batchManager.toggleChapterEditedVolume(item.chapterGroupId!); }}>
+                                                    {isEV ? '📖' : '📚'}{item.isChapterRepresentative ? ` ${n}` : ` ${item.chapterSuffix ?? ''}`}
+                                                </span>
+                                            {/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1607:49
+Warn: `<span>` with a click handler must have an ARIA role
+https://svelte.dev/e/a11y_no_static_element_interactions (svelte)
+                                                {@const isEV = !!item.chapterIsEditedVolume}
+                                                <span class="inline-badge chapter-badge"
+                                                      class:chapter-edited-vol={isEV}
+                                                      title="{isEV ? 'Sammelband (Autor pro Kapitel)' : 'Monographie (Autor vererbt)'} — {item.chapterGroupId} ({n} Kap.){item.isChapterRepresentative ? ' · Repräsentant' : ` · ${item.chapterSuffix ?? ''}`}. Klick: Sammelband-Modus umschalten"
+                                                      onclick={(e) => { e.stopPropagation(); batchManager.toggleChapterEditedVolume(item.chapterGroupId!); }}>
+                                                    {isEV ? '📖' : '📚'}{item.isChapterRepresentative ? ` ${n}` : ` ${item.chapterSuffix ?? ''}`}
+                                                </span>
+                                            {/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1615:49
+Warn: Visible, non-interactive element `<span>` with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events (svelte)
+                                            {#if item.historyMatch}
+                                                <span class="inline-badge history-badge"
+                                                      title="Already sorted on {new Date(item.historyMatch.processedAt).toLocaleDateString()} — click to re-process from scratch"
+                                                      onclick={(e) => { e.stopPropagation(); item.historyMatch = undefined; item.skipHistoryCheck = true; item.status = 'queued'; item.suggestedTitle = undefined; item.suggestedAuthor = undefined; item.suggestedYear = undefined; item.targetPath = undefined; upsertItem(item); }}>
+                                                    ✓ sorted
+                                                </span>
+                                            {/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/BatchReview.svelte:1615:49
+Warn: `<span>` with a click handler must have an ARIA role
+https://svelte.dev/e/a11y_no_static_element_interactions (svelte)
+                                            {#if item.historyMatch}
+                                                <span class="inline-badge history-badge"
+                                                      title="Already sorted on {new Date(item.historyMatch.processedAt).toLocaleDateString()} — click to re-process from scratch"
+                                                      onclick={(e) => { e.stopPropagation(); item.historyMatch = undefined; item.skipHistoryCheck = true; item.status = 'queued'; item.suggestedTitle = undefined; item.suggestedAuthor = undefined; item.suggestedYear = undefined; item.targetPath = undefined; upsertItem(item); }}>
+                                                    ✓ sorted
+                                                </span>
+                                            {/if}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:553:5
+Warn: Unused CSS selector ".catalog-tab"
+https://svelte.dev/e/css_unused_selector (svelte)
+<style>
+    .catalog-tab {
+        padding: 16px 24px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:557:5
+Warn: Unused CSS selector ".catalog-header h1"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .catalog-header h1 {
+        margin: 0 0 4px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:561:5
+Warn: Unused CSS selector ".subtitle"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .subtitle {
+        color: var(--text-muted, #666);
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:566:5
+Warn: Unused CSS selector ".actions"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .actions {
+        display: flex;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:588:5
+Warn: Unused CSS selector ".loading-inline"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .loading-inline {
+        display: inline-flex;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:598:5
+Warn: Unused CSS selector ".error"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .error {
+        padding: 8px 12px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:608:5
+Warn: Unused CSS selector ".empty"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .empty {
+        padding: 48px 24px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:613:5
+Warn: Unused CSS selector ".empty p"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .empty p { margin: 4px 0; }
+    .empty .hint { font-size: 0.85rem; max-width: 480px; margin: 8px auto 0; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:614:5
+Warn: Unused CSS selector ".empty .hint"
+https://svelte.dev/e/css_unused_selector (svelte)
+    .empty p { margin: 4px 0; }
+    .empty .hint { font-size: 0.85rem; max-width: 480px; margin: 8px auto 0; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:616:5
+Warn: Unused CSS selector ".catalog-table"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .catalog-table {
+        width: 100%;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:621:5
+Warn: Unused CSS selector ".catalog-table th"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .catalog-table th, .catalog-table td {
+        padding: 6px 8px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:621:24
+Warn: Unused CSS selector ".catalog-table td"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .catalog-table th, .catalog-table td {
+        padding: 6px 8px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:626:5
+Warn: Unused CSS selector ".catalog-table th"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .catalog-table th {
+        background: var(--surface, #fafafa);
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:633:5
+Warn: Unused CSS selector ".catalog-table tr.active"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .catalog-table tr.active {
+        background: rgba(0, 102, 204, 0.05);
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:636:5
+Warn: Unused CSS selector ".path-cell"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .path-cell {
+        max-width: 320px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:642:5
+Warn: Unused CSS selector ".actions-cell"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .actions-cell {
+        white-space: nowrap;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:658:5
+Warn: Unused CSS selector ".muted"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .muted { color: var(--text-muted, #666); }
+    .warn { color: #cc6600; font-style: italic; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:659:5
+Warn: Unused CSS selector ".warn"
+https://svelte.dev/e/css_unused_selector (svelte)
+    .muted { color: var(--text-muted, #666); }
+    .warn { color: #cc6600; font-style: italic; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:661:5
+Warn: Unused CSS selector ".mount-dot"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .mount-dot {
+        display: inline-block;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:671:5
+Warn: Unused CSS selector ".mount-dot.mounted"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .mount-dot.mounted   { background: #22aa44; }
+    .mount-dot.unmounted { background: #cc4444; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:672:5
+Warn: Unused CSS selector ".mount-dot.unmounted"
+https://svelte.dev/e/css_unused_selector (svelte)
+    .mount-dot.mounted   { background: #22aa44; }
+    .mount-dot.unmounted { background: #cc4444; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:674:5
+Warn: Unused CSS selector ".browse-pane"
+https://svelte.dev/e/css_unused_selector (svelte)
+
+    .browse-pane {
+        margin-top: 24px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:679:5
+Warn: Unused CSS selector ".browse-pane header"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .browse-pane header {
+        display: flex;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:685:5
+Warn: Unused CSS selector ".browse-pane h2"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .browse-pane h2 {
+        margin: 0;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:692:5
+Warn: Unused CSS selector ".browse-pane input[type="text"]"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .browse-pane input[type="text"] {
+        flex: 1;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:700:5
+Warn: Unused CSS selector ".entries-table"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .entries-table {
+        width: 100%;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:705:5
+Warn: Unused CSS selector ".entries-table th"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .entries-table th, .entries-table td {
+        padding: 4px 6px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:705:24
+Warn: Unused CSS selector ".entries-table td"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .entries-table th, .entries-table td {
+        padding: 4px 6px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:710:5
+Warn: Unused CSS selector ".entries-table th"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .entries-table th {
+        background: var(--surface, #fafafa);
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Catalog.svelte:716:5
+Warn: Unused CSS selector ".loading"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .loading {
+        padding: 24px;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/viewer/PdfViewer.svelte:25:9
+Warn: `canvasEl` is updated, but is not declared with `$state(...)`. Changing its value will not correctly trigger updates
+https://svelte.dev/e/non_reactive_update (svelte)
+
+    let canvasEl: HTMLCanvasElement;
+    let textLayerEl: HTMLDivElement;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/viewer/PdfViewer.svelte:26:9
+Warn: `textLayerEl` is updated, but is not declared with `$state(...)`. Changing its value will not correctly trigger updates
+https://svelte.dev/e/non_reactive_update (svelte)
+    let canvasEl: HTMLCanvasElement;
+    let textLayerEl: HTMLDivElement;
+    let containerEl: HTMLDivElement;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/viewer/PdfViewer.svelte:27:9
+Warn: `containerEl` is updated, but is not declared with `$state(...)`. Changing its value will not correctly trigger updates
+https://svelte.dev/e/non_reactive_update (svelte)
+    let textLayerEl: HTMLDivElement;
+    let containerEl: HTMLDivElement;
+    let pageInputEl: HTMLInputElement;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/viewer/PdfViewer.svelte:28:9
+Warn: `pageInputEl` is updated, but is not declared with `$state(...)`. Changing its value will not correctly trigger updates
+https://svelte.dev/e/non_reactive_update (svelte)
+    let containerEl: HTMLDivElement;
+    let pageInputEl: HTMLInputElement;
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/viewer/PdfViewer.svelte:285:9
+Warn: Also define the standard property 'appearance' for compatibility (css)
+        font-variant-numeric: tabular-nums;
+        -moz-appearance: textfield;
+    }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/IndexSearch.svelte:2633:5
+Warn: Unused CSS selector ".preview-body object"
+https://svelte.dev/e/css_unused_selector (svelte)
+    }
+    .preview-body object { display: block; width: 100%; height: 100%; border: 0; }
+    .preview-image {
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/IndexIngest.svelte:3391:25
+Warn: Visible, non-interactive element `<div>` with a click event must be accompanied by a keyboard event handler. Consider whether an interactive element such as `<button type="button">` or `<a>` might be more appropriate
+https://svelte.dev/e/a11y_click_events_have_key_events (svelte)
+                        {@const isCbArchive = doc.location_uri?.startsWith('crisp+cb-archive://')}
+                        <div class="catalog-row cidx-row" class:cidx-sel={cidxSelected.has(doc.doc_id)} role="row" tabindex="0"
+                             onclick={() => { if (cidxSelected.has(doc.doc_id)) { cidxSelected.delete(doc.doc_id); cidxSelected = new Set(cidxSelected); } else { cidxSelected = new Set([...cidxSelected, doc.doc_id]); } }}>
+                            <div class="cell" style="width:20px;flex-shrink:0;">
+                                <input type="checkbox" checked={cidxSelected.has(doc.doc_id)}
+                                       onclick={(e) => e.stopPropagation()}
+                                       onchange={() => { if (cidxSelected.has(doc.doc_id)) { cidxSelected.delete(doc.doc_id); cidxSelected = new Set(cidxSelected); } else { cidxSelected = new Set([...cidxSelected, doc.doc_id]); } }} />
+                            </div>
+                            <div class="cell col-title">{doc.title ?? doc.filename ?? ''}</div>
+                            <div class="cell col-author">{doc.author ?? ''}</div>
+                            <div class="cell col-year">{doc.year ?? ''}</div>
+                            <div class="cell col-level">
+                                <span class="level-badge" class:l1={lvl===1} class:l2={lvl===2} class:l3={lvl===3}>L{lvl}</span>
+                                {#if failure}
+                                    <span class="fail-badge fail-{failure.reason}" title={FAIL_HINTS[failure.reason] ?? failure.msg}>{FAIL_LABELS[failure.reason] ?? failure.reason}</span>
+                                {/if}
+                                {#if isCbArchive && lvl === 1}
+                                    <span class="inline-badge" style="background:#1e3a5f55;color:#93c5fd;" title="Aus cloud-backup-Archiv — klick zum Hochstufen">archiv</span>
+                                {/if}
+                            </div>
+                            <div class="cell col-ext">{doc.ext ?? ''}</div>
+                        </div>
+                    {/each}
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/IndexIngest.svelte:4748:5
+Warn: Unused CSS selector ".preview-body object"
+https://svelte.dev/e/css_unused_selector (svelte)
+    .preview-body { flex: 1; overflow: auto; background: #0a0a0c; }
+    .preview-body object { display: block; width: 100%; height: 100%; border: 0; }
+    .preview-image { max-width: 100%; max-height: 100%; display: block; margin: 0 auto; }
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/IndexIngest.svelte:4812:5
+Warn: Unused CSS selector ".drm-popover a"
+https://svelte.dev/e/css_unused_selector (svelte)
+    .drm-popover p { margin: 0 0 4px; }
+    .drm-popover a { color: #fbbf24; text-decoration: underline; }
+    .drm-close {
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/WallabagImport.svelte:65:5
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+<div class="section-card">
+    <label><strong>Wallabag</strong></label>
+    <p class="hint">Import your saved articles into the local search index. No cloud-backup server is needed. Enable and initialise the local index first; turn off vector embeddings for faster full-text indexing.</p>
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Settings.svelte:4797:21
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+                    <p class="hint">{i18n.t.settings.index.admin_panel_hint}</p>
+                    <label class="cb-admin-label">{i18n.t.settings.index.admin_token_label}</label>
+                    <input type="password" class="cb-admin-input"
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Settings.svelte:4806:29
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+                            <strong>{i18n.t.settings.index.admin_mint_title}</strong>
+                            <label class="cb-admin-label">{i18n.t.settings.index.admin_key_name_label}</label>
+                            <input type="text" class="cb-admin-input"
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Settings.svelte:4810:29
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+                                   placeholder="my-laptop" />
+                            <label class="cb-admin-label">{i18n.t.settings.index.owner_id_optional}</label>
+                            <input type="text" class="cb-admin-input"
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Settings.svelte:4829:29
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+                            <strong>{i18n.t.settings.index.admin_revoke_title}</strong>
+                            <label class="cb-admin-label">{i18n.t.settings.index.admin_revoke_name_label}</label>
+                            <input type="text" class="cb-admin-input"
+
+/workspace/scratch/02a5c0f236f0/CrispSorter-streaming-export/src/lib/components/Settings.svelte:6321:9
+Warn: Unused CSS selector ".info-grid"
+https://svelte.dev/e/css_unused_selector (svelte)
+        .input-with-action { flex-direction: column; }
+        .info-grid { grid-template-columns: 1fr; gap: 8px; }
+    }
+
+====================================
+svelte-check found 0 errors and 54 warnings in 8 files
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.2
+npm notice To update run: npm install -g npm@12.2.2
+npm notice

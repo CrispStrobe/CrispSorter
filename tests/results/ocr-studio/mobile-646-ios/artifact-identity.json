@@ -1,0 +1,72 @@
+{
+  "artifact_id": 13680296839,
+  "bytes": 136772217,
+  "sha256": "14fe385e2b72d1c56ee56d077835471b3e2dd50234a64a464577c3205d907772",
+  "files": [
+    {
+      "path": "ocr-mobile-runtime/runtime-build.json",
+      "bytes": 268,
+      "sha256": "f066ba335c2ef33cce9ec5d5126ef4da800382b298a15a01a5d0dceb1cd35740"
+    },
+    {
+      "path": "ocr-mobile-ort/ort-runtime.json",
+      "bytes": 5888,
+      "sha256": "74532dde2521bdd35505b39136a568c655ff574552fe0ddd438c46c8e1bf3f32"
+    },
+    {
+      "path": "mobile-ort-probe",
+      "bytes": 29745392,
+      "sha256": "787bf05b1bc79d7946f51d879eed8ffe6dec04353c039402b5c62cbfb94ac764"
+    },
+    {
+      "path": "ocr-mobile-inputs/inputs.json",
+      "bytes": 7208,
+      "sha256": "c2fe3839afb58e51c6835410cf96a2d803ba203bcb4e4efbf70c03a5222ae1ba"
+    },
+    {
+      "path": "ocr-mobile-evidence/app-startup/receipt.json",
+      "bytes": 612,
+      "sha256": "f3ccebfb0e2ecb68838ef4a4eed085943c5adcd80f2ef3ec3496f7ab3112aae7"
+    },
+    {
+      "path": "ocr-mobile-evidence/app-startup/screen.png",
+      "bytes": 188433,
+      "sha256": "b85ba50258e3a89f206e42dfd52f41d43ef06a1174a16efc4842b2ad846631ed"
+    },
+    {
+      "path": "ocr-mobile-evidence/native.json",
+      "bytes": 521,
+      "sha256": "3a6a65e20327b5f5d6df312613aba34e61ff36fbb6f45e16fa9832dc5b444581"
+    },
+    {
+      "path": "ocr-mobile-evidence/native.log",
+      "bytes": 1651,
+      "sha256": "ffc9e615a8bed1cb5a5809dc1f936fb7781b4c84aa6d20b8d3feea1749da9b2a"
+    },
+    {
+      "path": "ocr-mobile-evidence/onnx-runtime.json",
+      "bytes": 179,
+      "sha256": "66bba031d5e4a8db3d67e1afc235b7ffe44b96b640a294069e14ca7995be006b"
+    },
+    {
+      "path": "ocr-mobile-evidence/onnx-runtime.log",
+      "bytes": 143,
+      "sha256": "1d4f0fb1701769a1909240fa19b10747502d1f244855fc5404c36d9f6cced940"
+    },
+    {
+      "path": "ocr-mobile-evidence/onnx-wrong-version.json",
+      "bytes": 154,
+      "sha256": "74eaa3dae1193fa1cdec6f9f8b010b2423c305ec9060b42ca46476e7ed62da25"
+    },
+    {
+      "path": "ocr-mobile-app/CrispSorter-ocr-simulator.zip",
+      "bytes": 129093114,
+      "sha256": "db9cd7227fe0afb44e09777bac5994325afa5b416ebd2a7dcfb7682f9b512ce8"
+    },
+    {
+      "path": "ocr-mobile-app/build-receipt.json",
+      "bytes": 11613,
+      "sha256": "82ecbd31ef43e1f0c99e40da36e161728ff66e16a1cf0d2e4e7a0f3b558cd913"
+    }
+  ]
+}

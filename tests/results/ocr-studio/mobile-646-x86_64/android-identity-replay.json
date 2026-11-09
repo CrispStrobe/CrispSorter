@@ -1,0 +1,152 @@
+{
+  "kind": "apk",
+  "sha256": "d0132b290d6cfaca099cf4f65e2b5fafa3c23590449552340bb18d58f24e81cb",
+  "bytes": 480126508,
+  "abis": [
+    "x86_64"
+  ],
+  "native_libraries": {
+    "lib/x86_64/libcrispembed.so": "6cfcefa7836433a1e77a218724efe0a7a74778d84dde9b0a80d8fa636747a315",
+    "lib/x86_64/libonnxruntime.so": "972c17c056eaae946a415d9efdd8018b729639974df075e495f0092441478fb7",
+    "lib/x86_64/libtauri_app_lib.so": "d7bfdb05316b78d724ffad2832cbbe55d7ea15f03089c6f09a460943bc24d8f6"
+  },
+  "native_elf": {
+    "lib/x86_64/libcrispembed.so": {
+      "abi": "x86_64",
+      "minimum_load_alignment": 16384,
+      "load_segments": [
+        {
+          "offset": 0,
+          "address": 0,
+          "file_bytes": 12457264,
+          "memory_bytes": 12457264,
+          "flags": 5,
+          "alignment": 16384
+        },
+        {
+          "offset": 12457264,
+          "address": 12473648,
+          "file_bytes": 125664,
+          "memory_bytes": 142032,
+          "flags": 6,
+          "alignment": 16384
+        },
+        {
+          "offset": 12582928,
+          "address": 12615696,
+          "file_bytes": 4264,
+          "memory_bytes": 610016,
+          "flags": 6,
+          "alignment": 16384
+        }
+      ]
+    },
+    "lib/x86_64/libonnxruntime.so": {
+      "abi": "x86_64",
+      "minimum_load_alignment": 16384,
+      "load_segments": [
+        {
+          "offset": 0,
+          "address": 0,
+          "file_bytes": 22739792,
+          "memory_bytes": 22739792,
+          "flags": 5,
+          "alignment": 16384
+        },
+        {
+          "offset": 22739792,
+          "address": 22756176,
+          "file_bytes": 431896,
+          "memory_bytes": 435376,
+          "flags": 6,
+          "alignment": 16384
+        },
+        {
+          "offset": 23171696,
+          "address": 23204464,
+          "file_bytes": 7392,
+          "memory_bytes": 45824,
+          "flags": 6,
+          "alignment": 16384
+        }
+      ]
+    },
+    "lib/x86_64/libtauri_app_lib.so": {
+      "abi": "x86_64",
+      "minimum_load_alignment": 16384,
+      "load_segments": [
+        {
+          "offset": 0,
+          "address": 0,
+          "file_bytes": 68577164,
+          "memory_bytes": 68577164,
+          "flags": 4,
+          "alignment": 16384
+        },
+        {
+          "offset": 68577216,
+          "address": 68593600,
+          "file_bytes": 141214832,
+          "memory_bytes": 141214832,
+          "flags": 5,
+          "alignment": 16384
+        },
+        {
+          "offset": 209792064,
+          "address": 209824832,
+          "file_bytes": 8410552,
+          "memory_bytes": 8426432,
+          "flags": 6,
+          "alignment": 16384
+        },
+        {
+          "offset": 218202624,
+          "address": 218251776,
+          "file_bytes": 138160,
+          "memory_bytes": 169696,
+          "flags": 6,
+          "alignment": 16384
+        }
+      ]
+    }
+  },
+  "native_library_bytes": {
+    "lib/x86_64/libcrispembed.so": 125417408,
+    "lib/x86_64/libonnxruntime.so": 23181616,
+    "lib/x86_64/libtauri_app_lib.so": 324170112
+  },
+  "inspection_budget": {
+    "member_bytes": 536870912,
+    "paired_runtime_bytes": 268435456,
+    "aggregate_uncompressed_bytes": 2147483648,
+    "maximum_elf_metadata_read_bytes": 8388608,
+    "stream_chunk_bytes": 1048576
+  },
+  "paired_runtime_mapped_sections_match": true,
+  "native_identity_sha256": "9ad7ffeaf434b008446297ca7819291c73ba4b3ba2640f8017b5112fd8ae4cf3",
+  "inspection_replay_elapsed_seconds": 1.211,
+  "inspection_replay_process_maxrss_kib": 18592,
+  "needed_libraries": {
+    "libcrispembed.so": [
+      "libdl.so",
+      "libm.so",
+      "libc.so"
+    ],
+    "libonnxruntime.so": [
+      "libdl.so",
+      "liblog.so",
+      "libm.so",
+      "libc.so"
+    ],
+    "libtauri_app_lib.so": [
+      "libcrispembed.so",
+      "libonnxruntime.so",
+      "libandroid.so",
+      "libdl.so",
+      "liblog.so",
+      "libm.so",
+      "libc.so"
+    ]
+  },
+  "interpretation": "Static replay of a retained debug APK; no native code executed. Original runtime bytes were recovered only after matching the independent source-build receipt hash. Max RSS belongs to this archive-inspection process."
+}

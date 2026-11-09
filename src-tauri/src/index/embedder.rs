@@ -1422,7 +1422,13 @@ fn ep_auto() -> Vec<ExecutionProviderDispatch> {
     {
         ep_metal()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        // The packaged mobile runtime provides CPU inference. Do not ask it
+        // to register desktop CUDA/CoreML providers, including on simulators.
+        vec![]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "android", target_os = "ios")))]
     {
         ep_cuda()
     }
@@ -1441,12 +1447,12 @@ fn ep_metal() -> Vec<ExecutionProviderDispatch> {
 }
 
 fn ep_cuda() -> Vec<ExecutionProviderDispatch> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android", target_os = "ios")))]
     {
         use ort::execution_providers::CUDAExecutionProvider;
         vec![CUDAExecutionProvider::default().build()]
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "android", target_os = "ios"))]
     {
         vec![]
     }
@@ -2266,11 +2272,17 @@ impl Embedder {
         let eps = config.device.execution_providers();
         crate::app_log!(
             "info",
-            "Embedder: init model={:?} device={:?} backend={:?} cache={}",
+            "Embedder: init model={:?} requested_device={:?} backend={:?} cache={}",
             config.model,
             config.device,
             config.backend,
             config.cache_dir.display()
+        );
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        crate::app_log!(
+            "info",
+            "Embedder: ONNX sessions use the CPU execution provider on this mobile build (requested {:?}).",
+            config.device
         );
 
         // Try the GGUF path first — only produces Some when the `crispembed`
@@ -3156,6 +3168,16 @@ mod tests {
     #[test]
     fn cpu_device_empty_eps() {
         assert!(EmbedderDevice::Cpu.execution_providers().is_empty());
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[test]
+    fn mobile_onnx_sessions_use_cpu_for_default_and_imported_desktop_settings() {
+        for device in [EmbedderDevice::Auto, EmbedderDevice::Cpu,
+                       EmbedderDevice::Metal, EmbedderDevice::Cuda] {
+            assert!(device.execution_providers().is_empty(),
+                "{device:?} must not register an unsupported mobile execution provider");
+        }
     }
 
     #[test]

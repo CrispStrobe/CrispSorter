@@ -3,12 +3,15 @@ name: OCR workspace browser verification
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls', 'feat/ocr-phone-corner-focus', 'feat/ocr-archival-option-semantics', 'feat/ocr-pdf-text-alternatives', 'feat/ocr-safe-overlays']
     paths:
       - src/lib/ocr/**
       - src/lib/tabs.ts
       - src/routes/+page.svelte
+      - src/app.html
+      - src/app.css
       - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ThirdPartyAiConsent.svelte
       - src/lib/components/ocr/**
       - tests/ocr-workspace/**
       - .github/workflows/ocr-workspace-smoke.yml
@@ -17,7 +20,10 @@ on:
       - src/lib/ocr/**
       - src/lib/tabs.ts
       - src/routes/+page.svelte
+      - src/app.html
+      - src/app.css
       - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ThirdPartyAiConsent.svelte
       - src/lib/components/ocr/**
       - tests/ocr-workspace/**
       - .github/workflows/ocr-workspace-smoke.yml
@@ -26,8 +32,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ocr-workspace-browser-${{ github.ref }}
-  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation"]'), github.head_ref || github.ref_name) }}
+  group: ocr-workspace-browser-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation", "feat/ocr-studio-integration", "feat/ocr-export-controls", "feat/ocr-phone-corner-focus"]'), github.head_ref || github.ref_name) }}
 
 jobs:
   browser:
@@ -65,6 +71,9 @@ jobs:
           name: ocr-workspace-browser-report
           path: |
             tests/ocr-workspace/artifacts/report.json
+            tests/ocr-workspace/artifacts/archival-option-state.json
+            tests/ocr-workspace/artifacts/text-alternatives.json
+            tests/ocr-workspace/artifacts/safe-overlay-state.json
             tests/ocr-workspace/artifacts/*.png
             test-results/ocr-history-benchmark.json
           if-no-files-found: warn

@@ -1,0 +1,1591 @@
+{
+  "source_commit": "5382ccc5ca70c983c7e8c963e1de7ab00e5501cb",
+  "source_branch": "feat/ocr-pdf-text-alternatives",
+  "native_pdf_source": "9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a",
+  "native_bidi_pdf_capability": false,
+  "portable": {
+    "run_id": 42640418541,
+    "job_id": 129239727086,
+    "conclusion": "success",
+    "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42640418541",
+    "artifact": {
+      "id": 13686223941,
+      "bytes": 52843,
+      "sha256": "e853139912df8b29f3adcd92474dbb659f1c05785fd077604efa237acaea4057"
+    },
+    "plain_contracts": {
+      "passed": 5,
+      "failed": 0
+    },
+    "word_contracts_and_artifact": {
+      "passed": 7,
+      "failed": 0
+    },
+    "android_target_check": {
+      "target": "aarch64-linux-android",
+      "conclusion": "success",
+      "scope": "Actual portable production module, not the complete application"
+    },
+    "ios_target_check": {
+      "target": "aarch64-apple-ios",
+      "job_id": 129256617896,
+      "status_at_receipt": "queued",
+      "latest_observation": {
+        "observed_at": "2026-11-09T15:48:17Z",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "steps": null,
+        "qualification": "No succeeding iOS-target check recorded; cancellation cause is not established by this job response."
+      }
+    },
+    "independent_readers": [
+      {
+        "id": "reviewed-mixed-whitespace",
+        "pages": 4,
+        "paragraphs": 17,
+        "text_utf8_exact": true,
+        "html_dom_source_exact": true,
+        "ooxml_logical_text_and_semantic_breaks_match": true,
+        "python_docx_paragraphs_match": true,
+        "word_line_endings": "CR, LF and CRLF each become one paragraph boundary; no byte-exact line-ending claim",
+        "paragraph_rtl": [
+          [
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false
+          ],
+          [
+            true,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ]
+        ],
+        "files": {
+          "txt": {
+            "bytes": 213,
+            "sha256": "0da25f5ca9fc1720599e0042f81998e825b4fe35df9356b098ac2685290c7cde"
+          },
+          "html": {
+            "bytes": 1059,
+            "sha256": "087013c76a41d2cc18f0b8e1778ad9bc8fdf998046b1e2b26a719f016d361aef"
+          },
+          "docx": {
+            "bytes": 20236,
+            "sha256": "245ec7903285cac4a43f6e6b730bca2ec25a68e89b5082f628b6ad38aa674bba"
+          }
+        }
+      }
+    ],
+    "html_browser": [
+      {
+        "fixture": "reviewed-mixed-whitespace",
+        "browser": "151.0.7922.34",
+        "errors": [],
+        "pages": [
+          [
+            "  123 مَرْحَبًا ABC\t  \n\nLatin العربية é <script>alert('x')</script> & \"  ",
+            "\tשָׁלוֹם 42 / XYZ\r  ",
+            "⁧العربية⁩ Latin 7",
+            "CRLF one\r\nCRLF two\r\n"
+          ],
+          [],
+          [
+            "𞤀𞤢 123 ABC  ",
+            "Neutral 42 😀\n",
+            ""
+          ],
+          [
+            "\n \t\r\n"
+          ]
+        ],
+        "directions": [
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          }
+        ],
+        "width": 390,
+        "scrollWidth": 390,
+        "viewport": "width=device-width, initial-scale=1",
+        "scripts": 0
+      },
+      {
+        "fixture": "reviewed-mixed-whitespace",
+        "browser": "151.0.7922.34",
+        "errors": [],
+        "pages": [
+          [
+            "  123 مَرْحَبًا ABC\t  \n\nLatin العربية é <script>alert('x')</script> & \"  ",
+            "\tשָׁלוֹם 42 / XYZ\r  ",
+            "⁧العربية⁩ Latin 7",
+            "CRLF one\r\nCRLF two\r\n"
+          ],
+          [],
+          [
+            "𞤀𞤢 123 ABC  ",
+            "Neutral 42 😀\n",
+            ""
+          ],
+          [
+            "\n \t\r\n"
+          ]
+        ],
+        "directions": [
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "rtl",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          },
+          {
+            "attribute": "auto",
+            "computed": "ltr",
+            "bidi": "plaintext"
+          }
+        ],
+        "width": 1440,
+        "scrollWidth": 1440,
+        "viewport": "width=device-width, initial-scale=1",
+        "scripts": 0
+      }
+    ],
+    "dependency_pins": {
+      "packages": [
+        {
+          "name": "adler2",
+          "version": "2.0.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+        },
+        {
+          "name": "base64",
+          "version": "0.22.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+        },
+        {
+          "name": "byteorder",
+          "version": "1.5.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+        },
+        {
+          "name": "cfg-if",
+          "version": "1.0.4",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+        },
+        {
+          "name": "crc32fast",
+          "version": "1.5.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+        },
+        {
+          "name": "crossbeam-utils",
+          "version": "0.8.21",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+        },
+        {
+          "name": "docx-rs",
+          "version": "0.4.20",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "ed73cbf5e1c37baa23f4132569ac1187829f03922c206bd68fe109e3001a343d"
+        },
+        {
+          "name": "encoding_rs",
+          "version": "0.8.35",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+        },
+        {
+          "name": "equivalent",
+          "version": "1.0.2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+        },
+        {
+          "name": "flate2",
+          "version": "1.1.9",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
+        },
+        {
+          "name": "hashbrown",
+          "version": "0.17.1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+        },
+        {
+          "name": "indexmap",
+          "version": "2.14.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
+        },
+        {
+          "name": "itoa",
+          "version": "1.0.18",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+        },
+        {
+          "name": "memchr",
+          "version": "2.8.2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+        },
+        {
+          "name": "miniz_oxide",
+          "version": "0.8.9",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+        },
+        {
+          "name": "proc-macro2",
+          "version": "1.0.106",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
+        },
+        {
+          "name": "quick-xml",
+          "version": "0.36.2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+        },
+        {
+          "name": "quote",
+          "version": "1.0.45",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
+        },
+        {
+          "name": "serde",
+          "version": "1.0.228",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+        },
+        {
+          "name": "serde_core",
+          "version": "1.0.228",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+        },
+        {
+          "name": "serde_derive",
+          "version": "1.0.228",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+        },
+        {
+          "name": "serde_json",
+          "version": "1.0.150",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+        },
+        {
+          "name": "simd-adler32",
+          "version": "0.3.9",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+        },
+        {
+          "name": "syn",
+          "version": "2.0.118",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+        },
+        {
+          "name": "thiserror",
+          "version": "2.0.18",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+        },
+        {
+          "name": "thiserror-impl",
+          "version": "2.0.18",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+        },
+        {
+          "name": "unicode-bidi",
+          "version": "0.3.18",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
+        },
+        {
+          "name": "unicode-ident",
+          "version": "1.0.24",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+        },
+        {
+          "name": "zip",
+          "version": "0.6.6",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "760394e246e4c28189f19d488c058bf16f564016aefac5d32bb1f3b51d5e9261"
+        },
+        {
+          "name": "zmij",
+          "version": "1.0.21",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+        }
+      ],
+      "image_decoder_enabled": false,
+      "native_library_dependencies": [],
+      "source_sha256": "c4f2a8a850f4ba206381d5cb18509a97fba2c18c3a2bb07801246b36ab024500",
+      "application_lock_sha256": "b10e1c3678ce099827eab8436e97b94ddea140a86bdbcaaff81625244cf9e481",
+      "contract_lock_sha256": "4a40f40d4d0f66e1c02cbbc844f78ec37142510d0d81375217dbc69c4df9d0d9"
+    },
+    "source_pins": {
+      "src-tauri/src/ocr_text_export.rs": "c4f2a8a850f4ba206381d5cb18509a97fba2c18c3a2bb07801246b36ab024500",
+      "src-tauri/src/ocr_workspace.rs": "ddbbc1ae583d9be83c2f77462558bef64f9df9fed456253c283154428a81c1ae",
+      "src-tauri/Cargo.toml": "ee15fde5b45382fa604df527a14144c01491fd1d5e62cfa84e423c9ba0e83836",
+      "Cargo.lock": "b10e1c3678ce099827eab8436e97b94ddea140a86bdbcaaff81625244cf9e481",
+      "tests/ocr-text-export-contract/Cargo.lock": "4a40f40d4d0f66e1c02cbbc844f78ec37142510d0d81375217dbc69c4df9d0d9"
+    }
+  },
+  "workspace_browser": {
+    "run_id": 42640418500,
+    "job_id": 129239725844,
+    "conclusion": "success",
+    "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42640418500",
+    "artifact": {
+      "id": 13686623347,
+      "bytes": 775570,
+      "sha256": "1bc3ec00c64e083088ebf0a96ab0da3340f1183bb62b91a4b757275b17c714ac"
+    },
+    "frontend": {
+      "files_passed": 29,
+      "tests_passed": 246,
+      "tests_failed": 0,
+      "svelte_errors": 0,
+      "svelte_existing_warnings": 54
+    },
+    "synthetic_ui_only": true,
+    "scenarios_passed": 38,
+    "scenarios_failed": 0,
+    "browser_errors": [],
+    "export_scenarios": [
+      {
+        "name": "RTL PDF preflight offers lossless text alternatives before any destination picker",
+        "status": "passed",
+        "duration_ms": 719
+      },
+      {
+        "name": "phone can choose Word for reviewed RTL text without changing its source or selection",
+        "status": "passed",
+        "duration_ms": 665
+      },
+      {
+        "name": "older phone builds offer only their available RTL text alternatives",
+        "status": "passed",
+        "duration_ms": 543
+      },
+      {
+        "name": "supplementary PDF text retains export with a visible reader search limitation",
+        "status": "passed",
+        "duration_ms": 432
+      },
+      {
+        "name": "invalid rich-text characters are blocked before the picker and preserved through plain text",
+        "status": "passed",
+        "duration_ms": 511
+      }
+    ],
+    "export_request_evidence": [
+      {
+        "scenario": "desktop-rtl",
+        "picker_calls": 3,
+        "requests": [
+          {
+            "format": "text",
+            "pdfa": false,
+            "pages": [
+              {
+                "id": "page-9c7cfeae-0f32-441b-b47f-a2dffa182c9d",
+                "name": "Northstar service statement.pdf · 3",
+                "source_uri": "/fixtures/northstar-statement.pdf",
+                "source_page": 3,
+                "approved": true,
+                "provenance": {
+                  "image_path": "/fixtures/northstar-page-3.png",
+                  "width": 1000,
+                  "height": 1400,
+                  "elapsed_ms": 80,
+                  "engine": "surya",
+                  "source_type": "scanned_doc",
+                  "accepted": true,
+                  "coordinate_space": "image_pixels",
+                  "recognizedAt": "2026-11-09T15:30:58.862Z",
+                  "profileId": "balanced"
+                },
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "page_width_points": 240,
+                "page_height_points": 336,
+                "regions": [
+                  {
+                    "id": "region-e82317ba-1af9-47f9-8488-47694e51d66e",
+                    "text": "NORTHSTAR SUPPLY CO.",
+                    "original_text": "NORTHSTAR SUPPLY CO.",
+                    "x": 80,
+                    "y": 90,
+                    "w": 540,
+                    "h": 40,
+                    "confidence": 0.99,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-27e43fe3-b474-4b2f-ae5b-4262ca81907b",
+                    "text": "Service statement · page 3",
+                    "original_text": "Service statement · page 3",
+                    "x": 80,
+                    "y": 165,
+                    "w": 750,
+                    "h": 52,
+                    "confidence": 0.97,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-9ad00b62-200f-4f6d-be8c-7f6fbab590ea",
+                    "text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                    "original_text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                    "x": 80,
+                    "y": 270,
+                    "w": 640,
+                    "h": 40,
+                    "confidence": 0.96,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-5bf89b8f-b266-4154-b0c4-a57941dea850",
+                    "text": "Issued 08 November 2026",
+                    "original_text": "Issued 08 November 2026",
+                    "x": 80,
+                    "y": 325,
+                    "w": 640,
+                    "h": 38,
+                    "confidence": 0.95,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-80cfc041-e0ef-4fe0-b7ff-2c302f9436aa",
+                    "text": "Quarterly equipment inspection and preventive maintenance.",
+                    "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                    "x": 80,
+                    "y": 525,
+                    "w": 840,
+                    "h": 75,
+                    "confidence": 0.97,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-bd30460e-6b25-4351-a540-030655000bb5",
+                    "text": "Total due EUR 1,250.00",
+                    "original_text": "Total due EUR 1,250.00",
+                    "x": 80,
+                    "y": 955,
+                    "w": 650,
+                    "h": 50,
+                    "confidence": 0.92,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  }
+                ]
+              }
+            ],
+            "sourceUris": [
+              "/fixtures/northstar-statement.pdf"
+            ],
+            "outputPath": "/fixtures/Northstar _ quarterly statement.txt",
+            "overwrite": false
+          },
+          {
+            "format": "html",
+            "pdfa": false,
+            "pages": [
+              {
+                "id": "page-9c7cfeae-0f32-441b-b47f-a2dffa182c9d",
+                "name": "Northstar service statement.pdf · 3",
+                "source_uri": "/fixtures/northstar-statement.pdf",
+                "source_page": 3,
+                "approved": true,
+                "provenance": {
+                  "image_path": "/fixtures/northstar-page-3.png",
+                  "width": 1000,
+                  "height": 1400,
+                  "elapsed_ms": 80,
+                  "engine": "surya",
+                  "source_type": "scanned_doc",
+                  "accepted": true,
+                  "coordinate_space": "image_pixels",
+                  "recognizedAt": "2026-11-09T15:30:58.862Z",
+                  "profileId": "balanced"
+                },
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "page_width_points": 240,
+                "page_height_points": 336,
+                "regions": [
+                  {
+                    "id": "region-e82317ba-1af9-47f9-8488-47694e51d66e",
+                    "text": "NORTHSTAR SUPPLY CO.",
+                    "original_text": "NORTHSTAR SUPPLY CO.",
+                    "x": 80,
+                    "y": 90,
+                    "w": 540,
+                    "h": 40,
+                    "confidence": 0.99,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-27e43fe3-b474-4b2f-ae5b-4262ca81907b",
+                    "text": "Service statement · page 3",
+                    "original_text": "Service statement · page 3",
+                    "x": 80,
+                    "y": 165,
+                    "w": 750,
+                    "h": 52,
+                    "confidence": 0.97,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-9ad00b62-200f-4f6d-be8c-7f6fbab590ea",
+                    "text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                    "original_text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                    "x": 80,
+                    "y": 270,
+                    "w": 640,
+                    "h": 40,
+                    "confidence": 0.96,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-5bf89b8f-b266-4154-b0c4-a57941dea850",
+                    "text": "Issued 08 November 2026",
+                    "original_text": "Issued 08 November 2026",
+                    "x": 80,
+                    "y": 325,
+                    "w": 640,
+                    "h": 38,
+                    "confidence": 0.95,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-80cfc041-e0ef-4fe0-b7ff-2c302f9436aa",
+                    "text": "Quarterly equipment inspection and preventive maintenance.",
+                    "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                    "x": 80,
+                    "y": 525,
+                    "w": 840,
+                    "h": 75,
+                    "confidence": 0.97,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-bd30460e-6b25-4351-a540-030655000bb5",
+                    "text": "Total due EUR 1,250.00",
+                    "original_text": "Total due EUR 1,250.00",
+                    "x": 80,
+                    "y": 955,
+                    "w": 650,
+                    "h": 50,
+                    "confidence": 0.92,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  }
+                ]
+              }
+            ],
+            "sourceUris": [
+              "/fixtures/northstar-statement.pdf"
+            ],
+            "outputPath": "/fixtures/Northstar _ quarterly statement.html",
+            "overwrite": false
+          },
+          {
+            "format": "docx",
+            "pdfa": false,
+            "pages": [
+              {
+                "id": "page-9c7cfeae-0f32-441b-b47f-a2dffa182c9d",
+                "name": "Northstar service statement.pdf · 3",
+                "source_uri": "/fixtures/northstar-statement.pdf",
+                "source_page": 3,
+                "approved": true,
+                "provenance": {
+                  "image_path": "/fixtures/northstar-page-3.png",
+                  "width": 1000,
+                  "height": 1400,
+                  "elapsed_ms": 80,
+                  "engine": "surya",
+                  "source_type": "scanned_doc",
+                  "accepted": true,
+                  "coordinate_space": "image_pixels",
+                  "recognizedAt": "2026-11-09T15:30:58.862Z",
+                  "profileId": "balanced"
+                },
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "page_width_points": 240,
+                "page_height_points": 336,
+                "regions": [
+                  {
+                    "id": "region-e82317ba-1af9-47f9-8488-47694e51d66e",
+                    "text": "NORTHSTAR SUPPLY CO.",
+                    "original_text": "NORTHSTAR SUPPLY CO.",
+                    "x": 80,
+                    "y": 90,
+                    "w": 540,
+                    "h": 40,
+                    "confidence": 0.99,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-27e43fe3-b474-4b2f-ae5b-4262ca81907b",
+                    "text": "Service statement · page 3",
+                    "original_text": "Service statement · page 3",
+                    "x": 80,
+                    "y": 165,
+                    "w": 750,
+                    "h": 52,
+                    "confidence": 0.97,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-9ad00b62-200f-4f6d-be8c-7f6fbab590ea",
+                    "text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                    "original_text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                    "x": 80,
+                    "y": 270,
+                    "w": 640,
+                    "h": 40,
+                    "confidence": 0.96,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-5bf89b8f-b266-4154-b0c4-a57941dea850",
+                    "text": "Issued 08 November 2026",
+                    "original_text": "Issued 08 November 2026",
+                    "x": 80,
+                    "y": 325,
+                    "w": 640,
+                    "h": 38,
+                    "confidence": 0.95,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-80cfc041-e0ef-4fe0-b7ff-2c302f9436aa",
+                    "text": "Quarterly equipment inspection and preventive maintenance.",
+                    "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                    "x": 80,
+                    "y": 525,
+                    "w": 840,
+                    "h": 75,
+                    "confidence": 0.97,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  },
+                  {
+                    "id": "region-bd30460e-6b25-4351-a540-030655000bb5",
+                    "text": "Total due EUR 1,250.00",
+                    "original_text": "Total due EUR 1,250.00",
+                    "x": 80,
+                    "y": 955,
+                    "w": 650,
+                    "h": 50,
+                    "confidence": 0.92,
+                    "confidence_basis": "recognition",
+                    "char_conf_unit": "unknown",
+                    "char_conf_aligned": false,
+                    "char_conf": [],
+                    "original_char_conf": [],
+                    "original_char_conf_aligned": false,
+                    "review": "approved",
+                    "kind": "text"
+                  }
+                ]
+              }
+            ],
+            "sourceUris": [
+              "/fixtures/northstar-statement.pdf"
+            ],
+            "outputPath": "/fixtures/Northstar _ quarterly statement.docx",
+            "overwrite": false
+          }
+        ],
+        "latin_scope_available": true
+      },
+      {
+        "scenario": "mobile-rtl-word",
+        "targets": [
+          {
+            "name": "Plain text",
+            "bounds": {
+              "x": 28,
+              "y": 518.265625,
+              "width": 163.5,
+              "height": 44
+            }
+          },
+          {
+            "name": "HTML document",
+            "bounds": {
+              "x": 198.5,
+              "y": 518.265625,
+              "width": 163.5,
+              "height": 44
+            }
+          },
+          {
+            "name": "Word document",
+            "bounds": {
+              "x": 28,
+              "y": 569.265625,
+              "width": 334,
+              "height": 44
+            }
+          }
+        ],
+        "request": {
+          "format": "docx",
+          "pdfa": false,
+          "pages": [
+            {
+              "id": "page-bc89a6d3-753e-430e-a63d-71ff1c75448f",
+              "name": "Northstar service statement.pdf · 3",
+              "source_uri": "/fixtures/northstar-statement.pdf",
+              "source_page": 3,
+              "approved": true,
+              "provenance": {
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "elapsed_ms": 80,
+                "engine": "surya",
+                "source_type": "scanned_doc",
+                "accepted": true,
+                "coordinate_space": "image_pixels",
+                "recognizedAt": "2026-11-09T15:30:59.585Z",
+                "profileId": "balanced"
+              },
+              "image_path": "/fixtures/northstar-page-3.png",
+              "width": 1000,
+              "height": 1400,
+              "page_width_points": 240,
+              "page_height_points": 336,
+              "regions": [
+                {
+                  "id": "region-2b5f3d7f-8b9a-4fd1-8900-cb2331ab4a0d",
+                  "text": "NORTHSTAR SUPPLY CO.",
+                  "original_text": "NORTHSTAR SUPPLY CO.",
+                  "x": 80,
+                  "y": 90,
+                  "w": 540,
+                  "h": 40,
+                  "confidence": 0.99,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-5da814cd-733d-488b-9808-5dbfddfe3837",
+                  "text": "Service statement · page 3",
+                  "original_text": "Service statement · page 3",
+                  "x": 80,
+                  "y": 165,
+                  "w": 750,
+                  "h": 52,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-94f75abd-149f-403b-ba5f-52548fb0cade",
+                  "text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                  "original_text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                  "x": 80,
+                  "y": 270,
+                  "w": 640,
+                  "h": 40,
+                  "confidence": 0.96,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-d05c4009-1bcd-4811-b0e0-bd4d0ad9fbf0",
+                  "text": "Issued 08 November 2026",
+                  "original_text": "Issued 08 November 2026",
+                  "x": 80,
+                  "y": 325,
+                  "w": 640,
+                  "h": 38,
+                  "confidence": 0.95,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-0a471c1f-925b-40fb-90b3-96dff311bb3c",
+                  "text": "Quarterly equipment inspection and preventive maintenance.",
+                  "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                  "x": 80,
+                  "y": 525,
+                  "w": 840,
+                  "h": 75,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-f99aa2f2-1685-47e1-8ef5-62510e1d916e",
+                  "text": "Total due EUR 1,250.00",
+                  "original_text": "Total due EUR 1,250.00",
+                  "x": 80,
+                  "y": 955,
+                  "w": 650,
+                  "h": 50,
+                  "confidence": 0.92,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                }
+              ]
+            }
+          ],
+          "sourceUris": [
+            "/fixtures/northstar-statement.pdf"
+          ],
+          "outputPath": "/fixtures/Northstar _ quarterly statement.docx",
+          "overwrite": false
+        }
+      },
+      {
+        "scenario": "limited-mobile-rtl-html",
+        "request": {
+          "format": "html",
+          "pdfa": false,
+          "pages": [
+            {
+              "id": "page-f784075b-5a0f-4adc-a14f-1e13c40210fd",
+              "name": "Northstar service statement.pdf · 3",
+              "source_uri": "/fixtures/northstar-statement.pdf",
+              "source_page": 3,
+              "approved": true,
+              "provenance": {
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "elapsed_ms": 80,
+                "engine": "surya",
+                "source_type": "scanned_doc",
+                "accepted": true,
+                "coordinate_space": "image_pixels",
+                "recognizedAt": "2026-11-09T15:31:00.262Z",
+                "profileId": "balanced"
+              },
+              "image_path": "/fixtures/northstar-page-3.png",
+              "width": 1000,
+              "height": 1400,
+              "page_width_points": 240,
+              "page_height_points": 336,
+              "regions": [
+                {
+                  "id": "region-9d21702f-bce2-4308-a920-47f7f21079d6",
+                  "text": "NORTHSTAR SUPPLY CO.",
+                  "original_text": "NORTHSTAR SUPPLY CO.",
+                  "x": 80,
+                  "y": 90,
+                  "w": 540,
+                  "h": 40,
+                  "confidence": 0.99,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-bdef8fba-7838-4e32-bb47-bb52cc16473d",
+                  "text": "Service statement · page 3",
+                  "original_text": "Service statement · page 3",
+                  "x": 80,
+                  "y": 165,
+                  "w": 750,
+                  "h": 52,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-03b75cfb-2d16-495a-8d19-9b562a345261",
+                  "text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                  "original_text": "  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ",
+                  "x": 80,
+                  "y": 270,
+                  "w": 640,
+                  "h": 40,
+                  "confidence": 0.96,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-243fbd91-4b4f-465f-9896-213a9bbde355",
+                  "text": "Issued 08 November 2026",
+                  "original_text": "Issued 08 November 2026",
+                  "x": 80,
+                  "y": 325,
+                  "w": 640,
+                  "h": 38,
+                  "confidence": 0.95,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-2da51333-bcca-46b9-8dfb-980823023c5f",
+                  "text": "Quarterly equipment inspection and preventive maintenance.",
+                  "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                  "x": 80,
+                  "y": 525,
+                  "w": 840,
+                  "h": 75,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-eab0ccea-23cc-4565-81e5-00e51daff89e",
+                  "text": "Total due EUR 1,250.00",
+                  "original_text": "Total due EUR 1,250.00",
+                  "x": 80,
+                  "y": 955,
+                  "w": 650,
+                  "h": 50,
+                  "confidence": 0.92,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                }
+              ]
+            }
+          ],
+          "sourceUris": [
+            "/fixtures/northstar-statement.pdf"
+          ],
+          "outputPath": "/fixtures/Northstar _ quarterly statement.html",
+          "overwrite": false
+        }
+      },
+      {
+        "scenario": "supplementary-pdf",
+        "advisory": "Some PDF readers cannot find supplementary characters, such as emoji, with text search. The characters remain in the PDF. Choose Plain text or HTML document when exact text search is required.",
+        "request": {
+          "format": "pdf",
+          "pdfa": false,
+          "pages": [
+            {
+              "id": "page-04d9912e-9139-4795-a2fc-4d8ca481d71a",
+              "name": "Northstar service statement.pdf · 3",
+              "source_uri": "/fixtures/northstar-statement.pdf",
+              "source_page": 3,
+              "approved": true,
+              "provenance": {
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "elapsed_ms": 80,
+                "engine": "surya",
+                "source_type": "scanned_doc",
+                "accepted": true,
+                "coordinate_space": "image_pixels",
+                "recognizedAt": "2026-11-09T15:31:00.794Z",
+                "profileId": "balanced"
+              },
+              "image_path": "/fixtures/northstar-page-3.png",
+              "width": 1000,
+              "height": 1400,
+              "page_width_points": 240,
+              "page_height_points": 336,
+              "regions": [
+                {
+                  "id": "region-fe4b63dc-70a4-4fd4-93db-9c592a26ccb3",
+                  "text": "NORTHSTAR SUPPLY CO.",
+                  "original_text": "NORTHSTAR SUPPLY CO.",
+                  "x": 80,
+                  "y": 90,
+                  "w": 540,
+                  "h": 40,
+                  "confidence": 0.99,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-d7d1f418-bcfc-4e09-8544-a779127aea37",
+                  "text": "Service statement · page 3",
+                  "original_text": "Service statement · page 3",
+                  "x": 80,
+                  "y": 165,
+                  "w": 750,
+                  "h": 52,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-4a9bcebb-475e-4b24-b084-5a1dfdbd2aeb",
+                  "text": "Reviewed café 中文 😀 é",
+                  "original_text": "Reviewed café 中文 😀 é",
+                  "x": 80,
+                  "y": 270,
+                  "w": 640,
+                  "h": 40,
+                  "confidence": 0.96,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-1b28ea09-44d1-464d-98d2-329688eb9b07",
+                  "text": "Issued 08 November 2026",
+                  "original_text": "Issued 08 November 2026",
+                  "x": 80,
+                  "y": 325,
+                  "w": 640,
+                  "h": 38,
+                  "confidence": 0.95,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-eb42d690-3908-49a0-aadd-fd3b680778bd",
+                  "text": "Quarterly equipment inspection and preventive maintenance.",
+                  "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                  "x": 80,
+                  "y": 525,
+                  "w": 840,
+                  "h": 75,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-c9c6cd28-c036-4a9f-970f-532d62b57f5c",
+                  "text": "Total due EUR 1,250.00",
+                  "original_text": "Total due EUR 1,250.00",
+                  "x": 80,
+                  "y": 955,
+                  "w": 650,
+                  "h": 50,
+                  "confidence": 0.92,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                }
+              ]
+            }
+          ],
+          "sourceUris": [
+            "/fixtures/northstar-statement.pdf"
+          ],
+          "outputPath": "/fixtures/Northstar _ quarterly statement.pdf",
+          "overwrite": false
+        }
+      },
+      {
+        "scenario": "invalid-rich-text-plain-fallback",
+        "request": {
+          "format": "text",
+          "pdfa": false,
+          "pages": [
+            {
+              "id": "page-4c69880d-6263-48e9-b921-245ace262a03",
+              "name": "Northstar service statement.pdf · 3",
+              "source_uri": "/fixtures/northstar-statement.pdf",
+              "source_page": 3,
+              "approved": true,
+              "provenance": {
+                "image_path": "/fixtures/northstar-page-3.png",
+                "width": 1000,
+                "height": 1400,
+                "elapsed_ms": 80,
+                "engine": "surya",
+                "source_type": "scanned_doc",
+                "accepted": true,
+                "coordinate_space": "image_pixels",
+                "recognizedAt": "2026-11-09T15:31:01.239Z",
+                "profileId": "balanced"
+              },
+              "image_path": "/fixtures/northstar-page-3.png",
+              "width": 1000,
+              "height": 1400,
+              "page_width_points": 240,
+              "page_height_points": 336,
+              "regions": [
+                {
+                  "id": "region-8c95d4d6-93b9-470a-9b60-72f7803285f2",
+                  "text": "NORTHSTAR SUPPLY CO.",
+                  "original_text": "NORTHSTAR SUPPLY CO.",
+                  "x": 80,
+                  "y": 90,
+                  "w": 540,
+                  "h": 40,
+                  "confidence": 0.99,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-e09d0712-b550-4fcf-950a-e71e3a46427b",
+                  "text": "Service statement · page 3",
+                  "original_text": "Service statement · page 3",
+                  "x": 80,
+                  "y": 165,
+                  "w": 750,
+                  "h": 52,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-3afa1d30-ac99-47b2-a61b-0f885c1007a4",
+                  "text": "Reviewed\u0000 العربية\fשלום",
+                  "original_text": "Reviewed\u0000 العربية\fשלום",
+                  "x": 80,
+                  "y": 270,
+                  "w": 640,
+                  "h": 40,
+                  "confidence": 0.96,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-fd7ba3f2-94b5-4a63-a951-7ad558ce503b",
+                  "text": "Issued 08 November 2026",
+                  "original_text": "Issued 08 November 2026",
+                  "x": 80,
+                  "y": 325,
+                  "w": 640,
+                  "h": 38,
+                  "confidence": 0.95,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-1397fa23-3f87-4582-a9f9-6b4086a4c509",
+                  "text": "Quarterly equipment inspection and preventive maintenance.",
+                  "original_text": "Quarterly equipment inspection and preventive maintenance.",
+                  "x": 80,
+                  "y": 525,
+                  "w": 840,
+                  "h": 75,
+                  "confidence": 0.97,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                },
+                {
+                  "id": "region-ef9b69b8-5e98-4f93-85f5-ec4cb7357244",
+                  "text": "Total due EUR 1,250.00",
+                  "original_text": "Total due EUR 1,250.00",
+                  "x": 80,
+                  "y": 955,
+                  "w": 650,
+                  "h": 50,
+                  "confidence": 0.92,
+                  "confidence_basis": "recognition",
+                  "char_conf_unit": "unknown",
+                  "char_conf_aligned": false,
+                  "char_conf": [],
+                  "original_char_conf": [],
+                  "original_char_conf_aligned": false,
+                  "review": "approved",
+                  "kind": "text"
+                }
+              ]
+            }
+          ],
+          "sourceUris": [
+            "/fixtures/northstar-statement.pdf"
+          ],
+          "outputPath": "/fixtures/Northstar _ quarterly statement.txt",
+          "overwrite": false
+        }
+      }
+    ],
+    "archival_option_evidence": {
+      "browser": "151.0.7922.34",
+      "playwright_is_disabled": false,
+      "native": {
+        "option_disabled": true,
+        "matches_disabled": true,
+        "select_disabled": false,
+        "label_targets_select": true,
+        "value": "pdfa"
+      },
+      "keyboard": [
+        {
+          "key": "ArrowUp",
+          "expected": "alto",
+          "selected": "alto"
+        },
+        {
+          "key": "ArrowDown",
+          "expected": "docx",
+          "selected": "docx"
+        },
+        {
+          "key": "ArrowDown",
+          "expected": "docx",
+          "selected": "docx"
+        }
+      ],
+      "native_reason": "PDF/A-2b requires the archival-capable native renderer in this build.",
+      "export_calls": 0
+    }
+  },
+  "later_lock_reconciliation": {
+    "application_lock_commit": "58b23df22f32b659b40e4a22e93c121622bf9900",
+    "change": "Remove only disabled docx-rs image dependency; no package versions, checksums or other edges changed",
+    "contract_lock_sha256": "4a40f40d4d0f66e1c02cbbc844f78ec37142510d0d81375217dbc69c4df9d0d9",
+    "contract_registry_packages": 30,
+    "all_versions_and_checksums_match_app": true,
+    "workspace_docx_reverse_consumers": [
+      "crispsorter"
+    ]
+  },
+  "scope_limits": [
+    "The dense-page advisory in 9e0fda is later source and is not included in these 5382 test counts.",
+    "Word CR, LF and CRLF each become one paragraph boundary; raw line-ending byte identity is claimed only for plain text.",
+    "ZIP/XML and python-docx readback establish text and paragraph semantics, not rendering in a Word application.",
+    "This portable module and synthetic UI evidence does not establish complete app builds, mobile provider transfer or physical-device behavior.",
+    "General bidirectional PDF capability remains withheld. Retained PDF reader search/order failures remain visible in the native evidence."
+  ]
+}

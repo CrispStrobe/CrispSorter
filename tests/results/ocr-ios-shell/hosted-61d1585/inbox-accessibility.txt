@@ -1,0 +1,83 @@
+Attributes: Application, 0x10404afa0, pid: 9654, label: 'CrispSorter'
+Element subtree:
+ →Application, 0x10404afa0, pid: 9654, label: 'CrispSorter'
+    Window (Main), 0x1041383f0, {{0.0, 0.0}, {402.0, 874.0}}
+      Other, 0x10404b680, {{0.0, 0.0}, {402.0, 874.0}}
+        Other, 0x1037371a0, {{0.0, 0.0}, {402.0, 874.0}}
+          Other, 0x10374d7f0, {{0.0, 0.0}, {402.0, 874.0}}
+            WebView, 0x1037590d0, {{0.0, 0.0}, {402.0, 874.0}}
+              WebView, 0x10374e740, {{0.0, 0.0}, {402.0, 874.0}}
+                WebView, 0x10374dc10, {{0.0, 0.0}, {402.0, 874.0}}
+                  Other, 0x10374dd30, {{0.0, 0.0}, {402.0, 874.0}}
+                    Other, 0x10373f020, {{0.0, 0.0}, {402.0, 874.0}}
+                      Other, 0x10373f140, {{0.0, 62.0}, {402.0, 874.0}}
+                        Other, 0x10374ed80, {{0.0, 62.0}, {402.0, 778.0}}, label: 'Tauri + SvelteKit + Typescript App', Focused
+                          Other, 0x10374eea0, {{0.0, 62.0}, {402.0, 874.0}}, Focused
+                            Other, 0x10374efc0, {{0.0, 62.0}, {402.0, 822.0}}, label: 'main', Focused
+                              Other, 0x1041344f0, {{0.0, 62.0}, {402.0, 46.0}}, label: 'Work remaining', Focused
+                                Button, 0x104139120, {{12.0, 70.0}, {72.0, 29.0}}, label: 'Inbox · 0', Focused
+                                Button, 0x104134b20, {{91.0, 70.0}, {133.0, 29.0}}, label: '0 files need review', Focused
+                              Other, 0x104138d00, {{0.0, 108.0}, {402.0, 776.0}}, label: 'File drop zone, region', Focused
+                                Other, 0x1041388e0, {{12.0, 116.0}, {43.0, 20.0}}, Focused
+                                  StaticText, 0x104134f40, {{12.0, 116.0}, {43.0, 20.0}}, label: 'Inbox', value: Inbox, Focused
+                                Other, 0x104139bd0, {{64.0, 116.0}, {81.0, 20.0}}, label: 'Processing', Focused
+                                  StaticText, 0x104139cf0, {{64.0, 116.0}, {81.0, 20.0}}, label: 'Processing', value: Processing, Focused
+                                Other, 0x104139540, {{154.0, 116.0}, {123.0, 20.0}}, label: 'Processing preset', value: Balanced, Focused
+                                Button, 0x104139660, {{9.0, 188.0}, {38.0, 26.0}}, label: 'Add', Focused
+                                Button, 0x10413a4c0, {{48.0, 188.0}, {38.0, 26.0}}, label: 'Add Folder', Focused
+                                Button, 0x10413a5e0, {{87.0, 188.0}, {38.0, 26.0}}, label: 'Clear All', Focused
+                                Button, 0x10413a700, {{134.0, 187.0}, {32.0, 28.0}}, label: 'Update Sources', Focused, Disabled
+                                Button, 0x10374f0e0, {{174.0, 187.0}, {32.0, 28.0}}, label: 'Export BibTeX (.bib)', Focused, Disabled
+                                Button, 0x10374f200, {{214.0, 187.0}, {32.0, 28.0}}, label: 'Export current batch as Cathy/Catfish .caf catalog', Focused, Disabled
+                                Button, 0x10374f320, {{254.0, 188.0}, {58.0, 26.0}}, label: 'Extraction Mode', Focused
+                                TextField, 0x10374f440, {{40.0, 152.0}, {343.0, 25.0}}, label: 'Search items', placeholderValue: 'Search...', value: Search..., Focused
+                                Button, 0x103756cc0, {{320.0, 186.0}, {34.0, 30.0}}, label: 'Show Filters', Focused
+                                Button, 0x103756de0, {{8.0, 224.0}, {34.0, 30.0}}, label: 'Select Columns', Focused
+                                Button, 0x103756f00, {{8.0, 261.0}, {32.0, 29.0}}, label: 'Duplicates', Focused
+                                Button, 0x103757020, {{48.0, 260.0}, {70.0, 31.0}}, label: 'Start', Focused, Disabled
+                                Button, 0x103757140, {{126.0, 261.0}, {53.0, 29.0}}, label: 'all', Focused
+                                Button, 0x103757260, {{179.0, 261.0}, {68.0, 29.0}}, label: 'none', Focused
+                                Button, 0x103757380, {{255.0, 260.0}, {66.0, 31.0}}, label: 'Sort', Focused
+                                Button, 0x1037574a0, {{321.0, 260.0}, {26.0, 31.0}}, label: 'Sort Options', Focused
+                                Other, 0x1037575c0, {{0.0, 306.0}, {402.0, 51.0}}, Focused
+                                  StaticText, 0x1037576e0, {{0.0, 306.0}, {387.0, 51.0}}, label: 'Provider documents are read-only (PDF, DOCX, EPUB, TXT, Markdown, HTML; up to 16 MiB). Moving and copying are not yet supported.', value: Provider documents..., Focused
+                                Other, 0x103757800, {{0.0, 365.0}, {920.0, 65.0}}, Focused
+                                  Other, 0x103757920, {{0.0, 365.0}, {920.0, 32.0}}, Focused
+                                    Other, 0x103757a40, {{0.0, 365.0}, {35.0, 32.0}}, Focused
+                                      Switch, 0x103757b60, {{9.0, 372.0}, {17.0, 17.0}}, label: 'Select all visible', value: 0, Focused
+                                    Other, 0x103757c80, {{35.0, 365.0}, {90.0, 32.0}}, Focused
+                                      Button, 0x103757da0, {{41.0, 369.0}, {78.0, 23.0}}, label: 'STATUS', Focused
+                                      Button, 0x103757ec0, {{121.0, 365.0}, {4.0, 31.0}}, label: 'Resize column', Focused
+                                    Other, 0x103757fe0, {{125.0, 365.0}, {45.0, 32.0}}, Focused
+                                      Button, 0x103758100, {{131.0, 369.0}, {33.0, 23.0}}, label: 'OK', Focused
+                                      Button, 0x103758220, {{166.0, 365.0}, {4.0, 31.0}}, label: 'Resize column', Focused
+                                    Other, 0x103758340, {{170.0, 365.0}, {250.0, 32.0}}, Focused
+                                      Button, 0x103758460, {{176.0, 369.0}, {238.0, 23.0}}, label: 'FILE NAME', Focused
+                                      Button, 0x103758580, {{416.0, 365.0}, {4.0, 31.0}}, label: 'Resize column', Focused
+                                  Other, 0x1037586a0, {{0.0, 397.0}, {920.0, 32.0}}, Focused
+                                    Other, 0x1037587c0, {{0.0, 397.0}, {920.0, 32.0}}, Focused
+                                      StaticText, 0x1037588e0, {{6.0, 405.0}, {397.0, 16.0}}, label: 'No files. Drop documents, images, audio or video files — or use "Add".', value: No files. Drop doc..., Focused
+                                StaticText, 0x103758a00, {{28.0, 866.0}, {31.0, 14.0}}, label: '0 files', value: 0 files, Focused
+                            Other, 0x103758b20, {{0.0, 884.0}, {402.0, 52.0}}, label: 'navigation', Focused
+                              Button, 0x103758c40, {{0.0, 889.0}, {67.0, 47.0}}, label: 'Inbox', Focused
+                              Button, 0x103758d60, {{67.0, 889.0}, {67.0, 47.0}}, label: 'Review', Focused
+                              Button, 0x1037594f0, {{134.0, 889.0}, {67.0, 47.0}}, label: 'Library', Focused
+                              Button, 0x103759610, {{201.0, 889.0}, {67.0, 47.0}}, label: 'Chat', Focused
+                              Button, 0x103759730, {{268.0, 892.0}, {67.0, 41.0}}, label: 'Tools', Focused
+                              Button, 0x103759850, {{335.0, 889.0}, {67.0, 47.0}}, label: 'Settings', Focused
+                            Other, 0x103759970, {{0.0, 62.0}, {1.0, 1.0}}, Focused
+                Other, 0x103759a90, {{369.0, 55.7}, {30.0, 762.3}}, label: 'Vertical scroll bar, 1 page', value: 0%
+                  Other, 0x103759bb0, {{396.0, 58.7}, {3.0, 756.3}}
+                Other, 0x103759cd0, {{56.0, 841.0}, {290.0, 30.0}}, label: 'Horizontal scroll bar, 1 page', value: 0%
+                  Other, 0x103759df0, {{59.0, 868.0}, {284.0, 3.0}}
+                Other, 0x103759f10, {{369.0, 55.7}, {30.0, 762.3}}, label: 'Vertical scroll bar, 1 page', value: 0%
+                  Other, 0x10375a030, {{396.0, 58.7}, {3.0, 756.3}}
+                Other, 0x10375a150, {{56.0, 841.0}, {290.0, 30.0}}, label: 'Horizontal scroll bar, 1 page', value: 0%
+                  Other, 0x10375a270, {{59.0, 868.0}, {284.0, 3.0}}
+Path to element:
+ →Application, 0x10404afa0, pid: 9654, label: 'CrispSorter'
+Query chain:
+ →Find: Application 'com.crispstrobe.crispsorter'
+  Output: {
+    Application, 0x10375abf0, pid: 9654, label: 'CrispSorter'
+  }

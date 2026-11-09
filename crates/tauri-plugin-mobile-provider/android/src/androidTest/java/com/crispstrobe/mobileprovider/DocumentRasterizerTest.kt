@@ -71,10 +71,12 @@ class DocumentRasterizerTest {
             try {
                 assertEquals(sizes[index].first, raster.width); assertEquals(sizes[index].second, raster.height)
                 var ink = 0
-                for (y in 0 until raster.height step 8) for (x in 0 until raster.width step 8) {
-                    if (Color.red(raster.getPixel(x, y)) < 120) ink++
+                val row = IntArray(raster.width)
+                for (y in 0 until raster.height) {
+                    raster.getPixels(row, 0, raster.width, 0, y, raster.width, 1)
+                    for (pixel in row) if (Color.red(pixel) < 120) ink++
                 }
-                assertTrue("Rendered text must not be a blank success", ink > 30)
+                assertTrue("Rendered text must not be a blank success", ink > 500)
                 assertEquals(Color.WHITE, raster.getPixel(raster.width - 2, raster.height - 2))
             } finally { raster.recycle() }
         }
@@ -100,6 +102,21 @@ class DocumentRasterizerTest {
         val image = BitmapFactory.decodeFile(page.getString("path"))
         try { val topLeft = image.getPixel(10, 10); assertTrue(Color.blue(topLeft) > 180 && Color.red(topLeft) < 70) }
         finally { image.recycle() }
+        assertArrayEquals(original, source.readBytes())
+    }
+
+    @Test fun decodesPinnedHeicWhenTheRuntimeAdvertisesIt() = isolated { wrapped, home ->
+        val formats = DocumentRasterizer.capabilities().getJSONArray("image_formats")
+        assumeTrue((0 until formats.length()).any { formats.getString(it) == "heic" })
+        val original = fixture("colors.heic.b64"); val source = archive(home, original, "heic")
+        val page = DocumentRasterizer(wrapped).rasterize(source.path, staging(home).path, "image").getJSONArray("pages").getJSONObject(0)
+        assertEquals(120, page.getInt("width")); assertEquals(80, page.getInt("height"))
+        val image = BitmapFactory.decodeFile(page.getString("path"))
+        try {
+            val red = image.getPixel(10, 10); val blue = image.getPixel(10, 70)
+            assertTrue(Color.red(red) > 180 && Color.blue(red) < 70)
+            assertTrue(Color.blue(blue) > 180 && Color.red(blue) < 70)
+        } finally { image.recycle() }
         assertArrayEquals(original, source.readBytes())
     }
 

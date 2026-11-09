@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "synthetic_only": true,
+  "models": [
+    {
+      "name": "dbnet-det",
+      "filename": "dbnet-ic15-q8_0.gguf",
+      "url": "https://huggingface.co/cstr/dbnet-ic15-GGUF/resolve/main/dbnet-ic15-q8_0.gguf",
+      "sha256": "163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tesseract-eng",
+      "filename": "tesseract-eng-q8_0.gguf",
+      "url": "https://huggingface.co/cstr/tesseract-lstm-GGUF/resolve/main/tesseract-eng-q8_0.gguf",
+      "sha256": "dffd3f05d23d3eed979d1c4dd3b7555192c2b0e16c494e6146a9a232e9fe7e74",
+      "license": "Apache-2.0"
+    }
+  ],
+  "fixture": {
+    "width": 1400,
+    "height": 480,
+    "text": "CRISP MOBILE OCR\nDocument 2048\nTotal 125.00",
+    "font_sha256": "525979822591a3447cfc49d943d6f7683508e25543407871c0ed8fed05fd2bd9",
+    "image_sha256": "01e1daf0a5606629120d232e2e4b26938ab71743f218cec5def67b2894a080aa",
+    "rgb_sha256": "f26d5214152d593d70da9a2152f15ea6649bea6ae8d6668b4556072caf594231",
+    "png_sha256": "a0f16919c48cf6308a071f233dbae51217857a8afa654b0cc0ff3c59f918b1ac"
+  },
+  "quality_fixtures": {
+    "spec_sha256": "7d76bb157f4ccb350f0c9cb8e42aae87f323cc4323203c010c0ca76cf9d9232e",
+    "font_sha256": "525979822591a3447cfc49d943d6f7683508e25543407871c0ed8fed05fd2bd9",
+    "models": [
+      {
+        "name": "tesseract-deu",
+        "filename": "tesseract-deu-q8_0.gguf",
+        "url": "https://huggingface.co/cstr/tesseract-lstm-GGUF/resolve/main/tesseract-deu-q8_0.gguf",
+        "sha256": "7d41b26510033db7118ecc4f5b3b0b9d7fa91a5467695d552086a6b6a98b5a23",
+        "bytes": 513952,
+        "license": "Apache-2.0"
+      }
+    ],
+    "cases": [
+      {
+        "id": "german-accents",
+        "filename": "quality-german-accents.png",
+        "language": "deu",
+        "width": 1600,
+        "height": 1000,
+        "font_size": 64,
+        "max_unicode_cer": 0.25,
+        "required_tokens": [
+          "Pr\u00fcfung",
+          "Gr\u00f6\u00dfe",
+          "Stra\u00dfe",
+          "M\u00fcnchen"
+        ],
+        "layout_engine": null,
+        "lines": [
+          {
+            "text": "Pr\u00fcfung der Ger\u00e4te",
+            "x": 80,
+            "y": 80
+          },
+          {
+            "text": "Gr\u00f6\u00dfe und Qualit\u00e4t",
+            "x": 80,
+            "y": 240
+          },
+          {
+            "text": "Stra\u00dfe 17, M\u00fcnchen",
+            "x": 80,
+            "y": 400
+          },
+          {
+            "text": "\u00dcberweisung: 125,50 EUR",
+            "x": 80,
+            "y": 560
+          },
+          {
+            "text": "R\u00fcckfragen f\u00fcr B\u00fcro S\u00fcd",
+            "x": 80,
+            "y": 720
+          }
+        ],
+        "text": "Pr\u00fcfung der Ger\u00e4te\nGr\u00f6\u00dfe und Qualit\u00e4t\nStra\u00dfe 17, M\u00fcnchen\n\u00dcberweisung: 125,50 EUR\nR\u00fcckfragen f\u00fcr B\u00fcro S\u00fcd",
+        "png_sha256": "4fffb96b376eac509119feffb2f49bad33367be0f5c14e32be155185ee8f8e8f",
+        "bytes": 59541
+      },
+      {
+        "id": "english-two-columns",
+        "filename": "quality-english-two-columns.png",
+        "language": "eng",
+        "width": 1800,
+        "height": 1000,
+        "font_size": 50,
+        "max_unicode_cer": 0.25,
+        "required_tokens": [
+          "ALPHA",
+          "OMEGA"
+        ],
+        "layout_engine": "cc",
+        "columns": {
+          "body_top": 200,
+          "gutter_left": 810,
+          "gutter_right": 990,
+          "minimum_regions_each": 3
+        },
+        "lines": [
+          {
+            "text": "TECHNICAL INSPECTION RECORD",
+            "x": 300,
+            "y": 60,
+            "font_size": 72
+          },
+          {
+            "text": "ALPHA REPORT",
+            "x": 80,
+            "y": 250
+          },
+          {
+            "text": "Inspection complete.",
+            "x": 80,
+            "y": 400
+          },
+          {
+            "text": "Three valves checked.",
+            "x": 80,
+            "y": 550
+          },
+          {
+            "text": "Total 125.00 EUR",
+            "x": 80,
+            "y": 700
+          },
+          {
+            "text": "OMEGA NOTES",
+            "x": 1040,
+            "y": 250
+          },
+          {
+            "text": "Second floor ready.",
+            "x": 1040,
+            "y": 400
+          },
+          {
+            "text": "Four seals replaced.",
+            "x": 1040,
+            "y": 550
+          },
+          {
+            "text": "Next visit 2026-12-01",
+            "x": 1040,
+            "y": 700
+          }
+        ],
+        "text": "TECHNICAL INSPECTION RECORD\nALPHA REPORT\nInspection complete.\nThree valves checked.\nTotal 125.00 EUR\nOMEGA NOTES\nSecond floor ready.\nFour seals replaced.\nNext visit 2026-12-01",
+        "png_sha256": "709795dae31df26d24b0ba55b384ecd32e1418b7f6600874fd0edffbbfbda205",
+        "bytes": 56879
+      }
+    ],
+    "scope": "Self-authored synthetic German and English native app fixtures; not a corpus or physical-camera qualification."
+  },
+  "document_fixtures": {
+    "available": true,
+    "manifest_sha256": "7974336712a363ca67b67328a0225591b13ba7234949801c358985b675457776",
+    "schema_version": 1,
+    "source": "Self-authored deterministic PDF fixture; no external document data.",
+    "filename": "two-pages.pdf",
+    "sha256": "5544f89e6c4ce670715f4e1585906915bf27bfa311710800242e7d5c7d3a26ae",
+    "bytes": 1064,
+    "pages": [
+      {
+        "width_points": 612,
+        "height_points": 792,
+        "text": [
+          "CRISP OCR MOBILE DOCUMENT ONE",
+          "Invoice 1278",
+          "Total 123.45"
+        ]
+      },
+      {
+        "width_points": 432,
+        "height_points": 648,
+        "text": [
+          "CRISP OCR MOBILE DOCUMENT TWO",
+          "Phone photo workflow",
+          "Archive original bytes"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "filename": "colors.avif",
+        "fixture": "colors.avif.b64",
+        "bytes": 374,
+        "sha256": "d0a9389fd028c976acec56e4495a9d20e71a7f3c929ff91ab559e2d2f5cb3941",
+        "encoded_width": 120,
+        "encoded_height": 80,
+        "display_width": 120,
+        "display_height": 80,
+        "orientation": 1
+      },
+      {
+        "filename": "oriented.jpg",
+        "fixture": "oriented.jpg.b64",
+        "bytes": 1421,
+        "sha256": "f2c4db841258621ec9ab96da989980ef729ea72750a2e20df0a561eaef32daec",
+        "encoded_width": 120,
+        "encoded_height": 80,
+        "display_width": 80,
+        "display_height": 120,
+        "orientation": 6
+      }
+    ],
+    "image_generator": "Self-authored four-color image, Pillow 13.0.0",
+    "pdf_variants": [
+      {
+        "filename": "locked.pdf",
+        "fixture": "locked.pdf.b64",
+        "bytes": 1701,
+        "sha256": "12855b7bfc621049227f45365cb665312fc252de21e12be1c84ac18d9957270e",
+        "password_protected": true,
+        "pages": 2
+      },
+      {
+        "filename": "rotated.pdf",
+        "fixture": "rotated.pdf.b64",
+        "bytes": 1110,
+        "sha256": "d3b007d8edbf50a98cfad705527a1680f7525b80a27a3b131cad651207a09a2d",
+        "password_protected": false,
+        "pages": 2
+      }
+    ]
+  }
+}

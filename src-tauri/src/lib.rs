@@ -28,6 +28,7 @@ pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_photo;
 mod ocr_reading_order;
+mod ocr_text_export;
 pub mod model_provisioning;
 pub mod pdf_annots;
 pub mod pdf_base14;
@@ -3460,6 +3461,7 @@ pub fn run() {
             ocr_workspace::ocr_workspace_load,
             ocr_workspace::ocr_workspace_list,
             ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_cancel_export,
             ocr_workspace::ocr_workspace_export_target,
             ocr_workspace::ocr_workspace_discard_export,
             ocr_workspace::ocr_workspace_write_text,
@@ -3914,6 +3916,7 @@ pub fn run() {
             ocr_workspace::ocr_workspace_load,
             ocr_workspace::ocr_workspace_list,
             ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_cancel_export,
             ocr_workspace::ocr_workspace_export_target,
             ocr_workspace::ocr_workspace_discard_export,
             ocr_workspace::ocr_workspace_write_text,

@@ -1,0 +1,60 @@
+name: Retained iOS OCR shell navigation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-ios-shell-probe']
+    paths:
+      - tools/ios-shell-probe/**
+      - .github/workflows/ocr-ios-shell-probe.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ocr-ios-shell-probe-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  retained-app-navigation:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the independent UI-test host
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          xcodebuild -version
+          xcodegen --version
+          python3 -m py_compile tools/ios-shell-probe/stage.py tools/ios-shell-probe/run.py
+      - name: Download and validate the immutable application artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_id=$(python3 -c 'import json; print(json.load(open("tools/ios-shell-probe/artifact.json"))["artifact_id"])')
+          gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id" > "$RUNNER_TEMP/ocr-ios-shell-artifact.json"
+          gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/ocr-ios-shell-artifact.zip"
+          python3 tools/ios-shell-probe/stage.py \
+            --archive "$RUNNER_TEMP/ocr-ios-shell-artifact.zip" \
+            --metadata "$RUNNER_TEMP/ocr-ios-shell-artifact.json" \
+            --output "$RUNNER_TEMP/ocr-ios-shell-probe"
+      - name: Probe accessibility frames and Tools to OCR navigation
+        run: python3 tools/ios-shell-probe/run.py --staged "$RUNNER_TEMP/ocr-ios-shell-probe"
+      - name: Preserve navigation evidence and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-ios-shell-navigation
+          path: |
+            ${{ runner.temp }}/ocr-ios-shell-artifact.json
+            ${{ runner.temp }}/ocr-ios-shell-probe/*.json
+            ${{ runner.temp }}/ocr-ios-shell-probe/*.log
+            ${{ runner.temp }}/ocr-ios-shell-probe/*.png
+            ${{ runner.temp }}/ocr-ios-shell-probe/evidence/
+            ${{ runner.temp }}/ocr-ios-shell-probe/attachments/
+            ${{ runner.temp }}/ocr-ios-shell-probe/ShellProbe.xcresult/
+          if-no-files-found: warn
+          retention-days: 14

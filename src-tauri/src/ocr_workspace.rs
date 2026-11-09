@@ -19,10 +19,18 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
+#[path = "ocr_atomic_output.rs"]
+mod atomic_output;
+use atomic_output::{atomic_write, atomic_write_with, sync_directory};
+#[path = "ocr_export_control.rs"]
+mod export_control;
+use export_control::{ControlledWriter, ExportControl, ExportJob};
+#[path = "ocr_asset_store.rs"]
+mod asset_store;
 
 const PROJECT_VERSION: u64 = 1;
 const MAX_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
@@ -146,6 +154,8 @@ fn checked_dimensions(path: &Path) -> Result<(u32, u32), String> {
 }
 
 fn decode_page(path: &Path) -> Result<DynamicImage, String> {
+    crate::extractors::image_input::validate_file(path)
+        .map_err(|e| format!("Validate page source ({}): {e}", path.display()))?;
     checked_dimensions(path)?;
     image::open(path).map_err(|e| format!("Decode page ({}): {e}", path.display()))
 }
@@ -173,8 +183,7 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PAGE_PIXELS {
         return Err("Transformed page exceeds the 100 megapixel limit.".into());
     }
-    let assets = root.join("assets");
-    fs::create_dir_all(&assets).map_err(|e| format!("Create page cache: {e}"))?;
+    let assets = asset_store::directory(root).map_err(|e| format!("Open private page cache: {e}"))?;
     let mut staging = tempfile::NamedTempFile::new_in(&assets)
         .map_err(|e| format!("Create page snapshot: {e}"))?;
     // A recognizer that asks for RGB drops alpha, whereas the preview browser
@@ -197,7 +206,10 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
     let path = assets.join(format!("{:x}.png", hash.finalize()));
     match staging.persist_noclobber(&path) {
         Ok(_) => sync_directory(&assets)?,
-        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(mut e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            asset_store::verify_existing(&path, e.file.as_file_mut())
+                .map_err(|error| format!("Verify existing page snapshot: {error} The existing asset was retained; restore the page cache before retrying."))?;
+        },
         Err(e) => return Err(format!("Save page snapshot: {}", e.error)),
     }
     Ok(PageAsset { image_path: path.to_string_lossy().into_owned(), width, height,
@@ -216,32 +228,6 @@ fn opaque_page(image: &DynamicImage) -> DynamicImage {
     }))
 }
 
-fn sync_directory(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    File::open(path).and_then(|f| f.sync_all()).map_err(|e| format!("Sync directory: {e}"))?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
-}
-
-fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| "Choose a file in an existing output directory.".to_string())?;
-    if !parent.is_dir() { return Err("The output directory does not exist.".into()); }
-    let mut staging = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("Create output staging file: {e}"))?;
-    staging.write_all(bytes).map_err(|e| format!("Write output: {e}"))?;
-    staging.flush().map_err(|e| format!("Flush output: {e}"))?;
-    staging.as_file().sync_all().map_err(|e| format!("Sync output: {e}"))?;
-    let persisted = if overwrite { staging.persist(path) } else { staging.persist_noclobber(path) };
-    persisted.map_err(|e| {
-        if e.error.kind() == std::io::ErrorKind::AlreadyExists {
-            format!("Output already exists: {}. Choose another name or explicitly confirm replacement.", path.display())
-        } else { format!("Commit output ({}): {}", path.display(), e.error) }
-    })?;
-    sync_directory(parent)
-}
-
 /// Engines the workspace offers and accepts. All exist in the pinned CrispEmbed
 /// runtime and have registry defaults, so a stage needs no explicit model.
 /// `unified` (needs an explicit GGUF) and the env-gated experimental engines
@@ -258,7 +244,8 @@ pub fn ocr_workspace_capabilities() -> Value {
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
-    if cfg!(feature = "desktop") { formats.push("docx"); }
+    if crate::extractors::ocr_render::reviewed_archival_pdf_available() { formats.push("pdfa"); }
+    if cfg!(feature = "ocr-text-export") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
         "ocr": native, "crispembed": native,
@@ -269,6 +256,13 @@ pub fn ocr_workspace_capabilities() -> Value {
         "pdf_import": cfg!(any(feature = "pdf-render", target_os = "android", target_os = "ios")),
         "native_document_import": cfg!(any(target_os = "android", target_os = "ios")),
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
+        "archival_pdf_export": crate::extractors::ocr_render::reviewed_archival_pdf_available(),
+        "pdf_bidi_export": crate::extractors::ocr_render::reviewed_bidi_pdf_available(),
+        "pdf_bidi_export_reason": if crate::extractors::ocr_render::reviewed_bidi_pdf_available() { None } else { Some(crate::ocr_text_export::PDF_BIDI_UNAVAILABLE) },
+        "docx_export": cfg!(feature = "ocr-text-export"),
+        "docx_export_reason": if cfg!(feature = "ocr-text-export") { None } else { Some("Word export requires the OCR text export feature in this build. Plain text and HTML document remain available.") },
+        "pdfa_conformance": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { Some("PDF/A-2b") } else { None },
+        "pdfa_export_reason": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { None } else { Some("PDF/A-2b export requires a matching native renderer with archival resources. Choose another available output format with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
@@ -1131,9 +1125,6 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
             if region.confidence.is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score)) {
                 return Err(format!("Page {}, region {} has an invalid confidence.", i + 1, j + 1));
             }
-            if let Some(ch) = region.text.chars().find(|ch| *ch < ' ' && !['\t', '\n', '\r'].contains(ch)) {
-                return Err(format!("Page {}, region {} contains unsupported control character U+{:04X}. Remove it before exporting.", i + 1, j + 1, ch as u32));
-            }
         }
     }
     Ok(())
@@ -1158,12 +1149,8 @@ fn output_path(path: &str, pages: &[ExportPage], source_uris: &[String], root: &
     Ok(resolved)
 }
 
-fn joined_text(pages: &[ExportPage]) -> String {
-    pages.iter().map(|p| p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n")).collect::<Vec<_>>().join("\u{000c}")
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+fn export_text_pages(pages: &[ExportPage]) -> Vec<Vec<&str>> {
+    pages.iter().map(|page| page.regions.iter().map(|region| region.text.as_str()).collect()).collect()
 }
 
 fn transcription_confidence(region: &ExportRegion) -> f32 {
@@ -1174,40 +1161,133 @@ fn transcription_confidence(region: &ExportRegion) -> f32 {
     } else { unknown }
 }
 
-fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
-    if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
+fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
+    if pdfa && format != "pdf" { return Err("PDF/A applies only to PDF output.".into()); }
+    if pdfa && !crate::extractors::ocr_render::reviewed_archival_pdf_available() {
+        return Err("PDF/A-2b requires a matching archival-capable native renderer.".into());
+    }
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
         return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
     }
+    if format == "docx" && !cfg!(feature = "ocr-text-export") {
+        return Err("Word export requires the OCR text export feature in this build. Choose Plain text or HTML document.".into());
+    }
+    Ok(())
+}
+
+fn validate_export_text(pages: &[ExportPage], format: &str) -> Result<(), String> {
+    if ["pdf", "html", "hocr", "alto"].contains(&format) {
+        crate::ocr_text_export::validate_xml_text(&export_text_pages(pages))?;
+    }
+    if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
+        && !crate::extractors::ocr_render::reviewed_bidi_pdf_available()
+        && pages.iter().any(|page| page.regions.iter().any(|region| crate::ocr_text_export::needs_bidirectional_pdf(&region.text))) {
+        return Err(crate::ocr_text_export::PDF_BIDI_UNAVAILABLE.into());
+    }
+    if format == "docx" { crate::ocr_text_export::validate_docx(&export_text_pages(pages))?; }
+    Ok(())
+}
+
+fn reviewed_render_pages(pages: &[ExportPage]) -> Vec<RenderPage> {
+    pages.iter().map(|page| RenderPage::from_regions(page.regions.iter().map(|region| OcrRegion {
+        text: region.text.clone(), x: region.x, y: region.y, w: region.w, h: region.h,
+        confidence: transcription_confidence(region),
+    }).collect(), page.width, page.height, page.image_path.clone()).with_physical_size(
+        page.page_width_points.unwrap_or(f64::from(page.width) * 72.0 / 300.0) as f32,
+        page.page_height_points.unwrap_or(f64::from(page.height) * 72.0 / 300.0) as f32,
+    )).collect()
+}
+
+fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
+    validate_export_format(format, pdfa)?;
+    validate_export_text(pages, format)?;
     match format {
+        "text" | "txt" | "plain" => Ok(crate::ocr_text_export::text(&export_text_pages(pages)).into_bytes()),
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
         "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
         "html" => {
-            let body = pages.iter().enumerate().map(|(i, page)| format!("<section aria-label=\"Page {}\"><h2>Page {}</h2>{}</section>", i + 1, i + 1, page.regions.iter().map(|r| format!("<p>{}</p>", escape_html(&r.text))).collect::<Vec<_>>().join("\n"))).collect::<Vec<_>>().join("\n");
-            Ok(format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>Reviewed OCR document</title><style>body{{font:16px/1.6 system-ui,sans-serif;max-width:72ch;margin:3rem auto;padding:0 1rem}}p{{white-space:pre-wrap}}section{{break-after:page}}section:last-child{{break-after:auto}}h2{{font-size:1rem;color:#555}}</style></head><body>{body}</body></html>").into_bytes())
+            crate::ocr_text_export::html(&export_text_pages(pages)).map(String::into_bytes)
         },
         "docx" => {
-            #[cfg(feature = "desktop")]
-            {
-                let file = tempfile::Builder::new().suffix(".docx").tempfile().map_err(|e| e.to_string())?;
-                let body = joined_text(pages).replace('\u{000c}', "\n\n");
-                crate::extractors::export::export_to_docx("", &body, file.path())?;
-                fs::read(file.path()).map_err(|e| format!("Read generated Word document: {e}"))
-            }
-            #[cfg(not(feature = "desktop"))]
-            { Err("Word export requires a desktop build.".into()) }
+            #[cfg(feature = "ocr-text-export")]
+            { crate::ocr_text_export::docx(&export_text_pages(pages)) }
+            #[cfg(not(feature = "ocr-text-export"))]
+            { Err("Word export requires the OCR text export feature in this build.".into()) }
         },
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
-            let render_pages: Vec<_> = pages.iter().map(|p| RenderPage::from_regions(p.regions.iter().map(|r| OcrRegion {
-                text: r.text.clone(), x: r.x, y: r.y, w: r.w, h: r.h, confidence: transcription_confidence(r),
-            }).collect(), p.width, p.height, p.image_path.clone()).with_physical_size(
-                p.page_width_points.unwrap_or(f64::from(p.width) * 72.0 / 300.0) as f32,
-                p.page_height_points.unwrap_or(f64::from(p.height) * 72.0 / 300.0) as f32,
-            )).collect();
+            let render_pages = reviewed_render_pages(pages);
             crate::extractors::ocr_render::render(&render_pages, format, pdfa).map_err(|e| format!("Render OCR document: {e:#}"))
         },
     }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+const MAX_STREAMED_PDF_BYTES: u64 = 256 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_STREAMED_PDF_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Stream PDFs into the same atomic output transaction used by other exports.
+/// The limit bounds file size, not process memory; page decoding still needs
+/// working memory. Mobile matches the native document-provider copy limit.
+fn write_export(
+    path: &Path,
+    pages: &[ExportPage],
+    format: &str,
+    pdfa: bool,
+    overwrite: bool,
+    max_pdf_bytes: u64,
+    control: &ExportControl,
+    mut progress: impl FnMut(&str, u64),
+) -> Result<usize, String> {
+    control.check().map_err(|error| error.to_string())?;
+    validate_export_format(format, pdfa)?;
+    validate_export_text(pages, format)?;
+    let streaming_pdf = OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
+        && crate::extractors::ocr_render::reviewed_streaming_pdf_available();
+    atomic_write_with(path, overwrite, |file| {
+        control.check().map_err(|error| error.to_string())?;
+        progress("rendering", 0);
+        let written = {
+            let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, &mut *file);
+            let mut last_update = std::time::Instant::now();
+            // Cancellation is outside BufWriter so Interrupted reaches the
+            // native callback instead of being retried by its flush loop.
+            let mut writer = ControlledWriter::new(&mut buffered, control, |bytes| {
+                if last_update.elapsed() >= std::time::Duration::from_millis(100) {
+                    progress("writing", bytes);
+                    last_update = std::time::Instant::now();
+                }
+            });
+            let count = if streaming_pdf {
+                crate::extractors::ocr_render::render_pdf_to_writer(
+                    &reviewed_render_pages(pages), pdfa, max_pdf_bytes, &mut writer,
+                ).map_err(|error| format!("Render OCR PDF: {error:#}"))?
+            } else {
+                let bytes = export_bytes(pages, format, pdfa)?;
+                writer.write_all_checked(&bytes).map_err(|error| format!("Write OCR export: {error}"))?;
+                bytes.len() as u64
+            };
+            writer.flush().map_err(|error| format!("Flush OCR export: {error}"))?;
+            count
+        };
+        if written == 0 && !["text", "txt", "plain"].contains(&format) {
+            return Err("The renderer produced an empty document.".into());
+        }
+        let actual = file.metadata().map_err(|error| format!("Check rendered document: {error}"))?.len();
+        if actual != written {
+            return Err("The renderer byte count does not match the staged document. No output was published.".into());
+        }
+        let count = usize::try_from(written).map_err(|_| "The rendered document is too large for this device.")?;
+        control.begin_commit().map_err(|error| error.to_string())?;
+        progress("committing", written);
+        Ok(count)
+    })
+}
+
+#[tauri::command]
+pub fn ocr_workspace_cancel_export(request_id: String) -> Result<bool, String> {
+    export_control::cancel(&request_id)
 }
 
 #[tauri::command]
@@ -1219,17 +1299,22 @@ pub async fn ocr_workspace_export(
     pages: Vec<ExportPage>,
     overwrite: Option<bool>,
     source_uris: Option<Vec<String>>,
+    request_id: Option<String>,
 ) -> Result<OcrExportResult, String> {
+    let job = ExportJob::begin(request_id)?;
     let root = workspace_root(&app)?;
     tokio::task::spawn_blocking(move || {
         for page in &pages { managed_page(&root, &page.image_path)?; }
         validate_export_pages(&pages)?;
         let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-        let bytes = export_bytes(&pages, &format, pdfa)?;
-        if bytes.is_empty() && !["text", "txt", "plain"].contains(&format.as_str()) { return Err("The renderer produced an empty document.".into()); }
-        atomic_write(&path, &bytes, overwrite.unwrap_or(false))?;
+        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
+            MAX_STREAMED_PDF_BYTES, job.control(), |phase, bytes| {
+                let _ = app.emit("ocr-workspace-export", json!({
+                    "request_id": job.id(), "phase": phase, "bytes": bytes,
+                }));
+            })?;
         Ok(OcrExportResult {
-            saved_path: path.to_string_lossy().into_owned(), bytes: bytes.len(), pages: pages.len(),
+            saved_path: path.to_string_lossy().into_owned(), bytes, pages: pages.len(),
             format: if pdfa { "pdfa".into() } else { format },
         })
     }).await.map_err(|e| format!("Export worker: {e}"))?
@@ -1361,6 +1446,124 @@ mod tests {
         assert!(import_bytes(root.path(), "page.jpg", b"%PDF-1.7", false, None).is_err());
         assert!(import_bytes(root.path(), "page.jpg", b"invalid", true, Some("https://example.com/page")).is_err());
         assert!(!root.path().join("sources").exists());
+    }
+
+    fn pinned_oriented_jpeg() -> Vec<u8> {
+        use base64::Engine;
+        let encoded = include_str!("../../tests/fixtures/mobile-documents/oriented.jpg.b64")
+            .split_whitespace().collect::<String>();
+        base64::engine::general_purpose::STANDARD.decode(encoded).unwrap()
+    }
+
+    #[test]
+    fn jpeg_file_and_camera_imports_reject_incomplete_sources_before_persisting_pixels() {
+        let complete = pinned_oriented_jpeg();
+        let missing_end = complete[..complete.len() - 2].to_vec();
+        let truncated_scan = complete[..complete.len() - 100].to_vec();
+        let mut metadata_end = vec![0xff, 0xd8, 0xff, 0xef, 0, 4, 0xff, 0xd9];
+        metadata_end.extend_from_slice(&complete[2..complete.len() - 100]);
+        for broken in [missing_end, truncated_scan, metadata_end] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("phone.jpg");
+            fs::write(&source, &broken).unwrap();
+            let error = import_document(root.path(), &source).unwrap_err();
+            assert!(error.contains("JPEG source is incomplete or malformed"), "{error}");
+            let error = import_bytes(root.path(), "phone.jpg", &broken, false, None).unwrap_err();
+            assert!(error.contains("JPEG source is incomplete or malformed"), "{error}");
+            assert_eq!(fs::read(&source).unwrap(), broken);
+            let archives: Vec<_> = fs::read_dir(root.path().join("sources")).unwrap().collect();
+            assert_eq!(archives.len(), 1);
+            assert_eq!(fs::read(archives[0].as_ref().unwrap().path()).unwrap(), broken);
+            let assets = root.path().join("assets");
+            assert!(!assets.exists() || fs::read_dir(assets).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn complete_jpeg_metadata_and_trailing_bytes_keep_archive_identity_and_orientation() {
+        let complete = pinned_oriented_jpeg();
+        let mut trailing = complete.clone();
+        trailing.extend_from_slice(b"trailing camera metadata");
+        let mut metadata_end = vec![0xff, 0xd8, 0xff, 0xef, 0, 4, 0xff, 0xd9];
+        metadata_end.extend_from_slice(&complete[2..]);
+        for bytes in [complete, trailing, metadata_end] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("phone.jpg");
+            fs::write(&source, &bytes).unwrap();
+            let local = import_document(root.path(), &source).unwrap();
+            let imported = import_bytes(root.path(), "phone.jpg", &bytes, true,
+                Some("content://provider/Photo%3ACase.jpg")).unwrap();
+            assert_eq!(imported.source_uri, "content://provider/Photo%3ACase.jpg");
+            assert_eq!(imported.pages.len(), 1);
+            assert_eq!((imported.pages[0].width, imported.pages[0].height), (80, 120));
+            assert_eq!(local.pages[0].image_path, imported.pages[0].image_path);
+            let pixels = decode_page(Path::new(&imported.pages[0].image_path)).unwrap().to_rgb8();
+            let top_left = pixels.get_pixel(10, 10);
+            assert!(top_left[2] > 180 && top_left[0] < 70);
+            assert_eq!(fs::read(imported.archive_uri.unwrap()).unwrap(), bytes);
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn camera_reimport_rejects_damaged_existing_pixels_and_preserves_originals() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = pinned_oriented_jpeg();
+        let source = root.path().join("phone.jpg");
+        fs::write(&source, &bytes).unwrap();
+        let first = import_bytes(root.path(), "phone.jpg", &bytes, true,
+            Some("content://provider/Photo%3ACase.jpg")).unwrap();
+        let asset = Path::new(&first.pages[0].image_path);
+        let complete = fs::read(asset).unwrap();
+        let mut changed = complete.clone();
+        changed[complete.len() / 2] ^= 1;
+        for damaged in [&complete[..complete.len() - 1], changed.as_slice()] {
+            fs::write(asset, damaged).unwrap();
+            let error = import_document(root.path(), &source).unwrap_err();
+            assert!(error.contains("Verify existing page snapshot"), "{error}");
+            let error = import_bytes(root.path(), "phone.jpg", &bytes, true,
+                Some("content://provider/Photo%3ACase.jpg")).unwrap_err();
+            assert!(error.contains("Verify existing page snapshot"), "{error}");
+            assert_eq!(fs::read(asset).unwrap(), damaged);
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_eq!(fs::read(first.archive_uri.as_ref().unwrap()).unwrap(), bytes);
+            assert_eq!(fs::read_dir(root.path().join("assets")).unwrap().count(), 1);
+        }
+        fs::write(asset, &complete).unwrap();
+        let restored = import_bytes(root.path(), "phone.jpg", &bytes, false, None).unwrap();
+        assert_eq!(restored.pages[0].image_path, first.pages[0].image_path);
+        assert_eq!((restored.pages[0].width, restored.pages[0].height), (80, 120));
+        assert_eq!(fs::read(asset).unwrap(), complete);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn camera_import_cannot_reuse_an_asset_symlink_or_write_through_a_cache_alias() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let bytes = pinned_oriented_jpeg();
+        let first = import_bytes(root.path(), "phone.jpg", &bytes, false, None).unwrap();
+        let asset = Path::new(&first.pages[0].image_path);
+        let complete = fs::read(asset).unwrap();
+        let external = outside.path().join("unchanged.png");
+        fs::write(&external, &complete).unwrap();
+        fs::remove_file(asset).unwrap();
+        symlink(&external, asset).unwrap();
+        let error = import_bytes(root.path(), "phone.jpg", &bytes, false, None).unwrap_err();
+        assert!(error.contains("Verify existing page snapshot"), "{error}");
+        assert!(fs::symlink_metadata(asset).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(first.archive_uri.unwrap()).unwrap(), bytes);
+
+        let aliased_root = tempfile::tempdir().unwrap();
+        symlink(outside.path(), aliased_root.path().join("assets")).unwrap();
+        let error = import_bytes(aliased_root.path(), "phone.jpg", &bytes, false, None).unwrap_err();
+        assert!(error.contains("page directory must not be a symbolic link"), "{error}");
+        assert_eq!(fs::read(&external).unwrap(), complete);
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+        let archives: Vec<_> = fs::read_dir(aliased_root.path().join("sources")).unwrap().collect();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(fs::read(archives[0].as_ref().unwrap().path()).unwrap(), bytes);
     }
 
     #[test]
@@ -1575,7 +1778,17 @@ mod tests {
         if !reviewed_pdf_available() { assert!(capabilities["pdf_export_reason"].as_str().is_some()); }
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "reviewed")];
-        assert!(export_bytes(&pages, "pdf", true).unwrap_err().contains("PDF/A"));
+        let archival = crate::extractors::ocr_render::reviewed_archival_pdf_available();
+        assert_eq!(formats.iter().any(|format| format == "pdfa"), archival);
+        assert_eq!(capabilities["archival_pdf_export"], archival);
+        if archival {
+            let bytes = export_bytes(&pages, "pdf", true).unwrap();
+            assert_eq!(lopdf::Document::load_mem(&bytes).unwrap().get_pages().len(), 1);
+        } else {
+            assert!(capabilities["pdfa_export_reason"].as_str().is_some());
+            assert!(export_bytes(&pages, "pdf", true).unwrap_err().contains("PDF/A"));
+        }
+        assert!(export_bytes(&pages, "text", true).unwrap_err().contains("only to PDF"));
         if !reviewed_pdf_available() {
             assert!(export_bytes(&pages, "pdf", false).unwrap_err().contains("matching updated CrispEmbed renderer"));
         }
@@ -1657,6 +1870,22 @@ mod tests {
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&amp;"));
+        assert!(html.contains("<p dir=\"auto\">"));
+        assert!(html.contains("name=\"viewport\""));
+    }
+
+    #[test]
+    fn text_export_keeps_reviewed_newlines_spaces_and_logical_unicode() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "  مَرْحَبًا ABC 123\t\r\n\nשָׁלוֹם e\u{301}  \n";
+        let pages = vec![export_page(root.path(), text)];
+        for format in ["text", "txt", "plain"] {
+            assert_eq!(export_bytes(&pages, format, false).unwrap(), text.as_bytes());
+        }
+        if !crate::extractors::ocr_render::reviewed_bidi_pdf_available() {
+            assert_eq!(validate_export_text(&pages, "pdf").unwrap_err(), crate::ocr_text_export::PDF_BIDI_UNAVAILABLE);
+        }
+        for format in ["text", "html", "docx"] { assert!(validate_export_text(&pages, format).is_ok()); }
     }
 
     #[test]
@@ -1672,16 +1901,53 @@ mod tests {
         assert!(output_path(root.path().join("reviewed.txt").to_str().unwrap(), &pages, &[], &workspace).is_ok());
     }
 
+    #[cfg(feature = "ocr-reviewed-pdf")]
     #[test]
-    fn atomic_output_requires_explicit_replacement_and_leaves_no_partial_file() {
+    fn streamed_pdf_is_atomic_and_a_native_limit_failure_preserves_the_previous_file() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("out.txt");
-        atomic_write(&path, b"first", false).unwrap();
-        assert!(atomic_write(&path, b"second", false).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"first");
-        atomic_write(&path, b"second", true).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"second");
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        let pages = vec![export_page(root.path(), "Reviewed résumé 東京")];
+        let path = root.path().join("reviewed.pdf");
+        assert!(crate::extractors::ocr_render::reviewed_streaming_pdf_available());
+        let count = write_export(&path, &pages, "pdf", false, false, MAX_STREAMED_PDF_BYTES,
+            &ExportControl::default(), |_, _| {}).unwrap();
+        let previous = fs::read(&path).unwrap();
+        assert_eq!(previous.len(), count);
+        assert!(previous.len() > 4096, "fixture must exceed the native writer's minimum valid cap");
+        let document = lopdf::Document::load_mem(&previous).unwrap();
+        assert_eq!(document.get_pages().len(), 1);
+        assert!(document.extract_text(&[1]).unwrap().contains("Reviewed résumé 東京"));
+        let count_before = fs::read_dir(root.path()).unwrap().count();
+        let error = write_export(&path, &pages, "pdf", false, true, 4096,
+            &ExportControl::default(), |_, _| {}).unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), count_before);
+    }
+
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    #[test]
+    fn cancelling_the_native_pdf_writer_after_output_starts_preserves_the_previous_export() {
+        let root = tempfile::tempdir().unwrap();
+        let pages = vec![export_page(root.path(), "Reviewed résumé 東京")];
+        let render_pages = reviewed_render_pages(&pages);
+        let path = root.path().join("reviewed.pdf");
+        fs::write(&path, b"previous complete export").unwrap();
+        let count_before = fs::read_dir(root.path()).unwrap().count();
+        let job = ExportJob::begin(None).unwrap();
+        let mut first_bytes = 0;
+        let result = atomic_write_with(&path, true, |file| {
+            let mut writer = ControlledWriter::new(file, job.control(), |bytes| {
+                first_bytes = bytes;
+                assert!(ocr_workspace_cancel_export(job.id().to_owned()).unwrap());
+            });
+            crate::extractors::ocr_render::render_pdf_to_writer(
+                &render_pages, false, MAX_STREAMED_PDF_BYTES, &mut writer,
+            ).map_err(|error| format!("{error:#}"))
+        });
+        assert!(result.unwrap_err().contains(export_control::CANCELLED));
+        assert!(first_bytes > 0, "the native writer must have emitted actual PDF bytes before cancellation");
+        assert_eq!(fs::read(&path).unwrap(), b"previous complete export");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), count_before);
     }
 
     #[test]
@@ -1700,6 +1966,9 @@ mod tests {
         let source = root.path().join("scan.png"); image().save(&source).unwrap();
         let before = fs::read(&source).unwrap();
         let workspace = root.path().join("workspace");
+        // Production commands create the workspace before entering the importer.
+        // Keep assets absent here so the cold page-cache creation is still tested.
+        fs::create_dir(&workspace).unwrap();
         let imported = import_document(&workspace, &source).unwrap();
         assert_eq!(imported.pages.len(), 1);
         assert_eq!(imported.pages[0].page_width_points, Some(8.0 * 72.0 / 300.0));

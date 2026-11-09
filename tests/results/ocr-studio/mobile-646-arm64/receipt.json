@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "kind": "audited-mobile-build-with-replayed-static-inspection",
+  "audit_utc": "2026-11-09T13:51:50.443884+00:00",
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388",
+  "job_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/job/129170291396",
+  "sorter_commit": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "crispembed_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+  "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "target": "aarch64-linux-android",
+  "profile": "debug, ocr-mobile",
+  "hosted_result": {
+    "conclusion": "failure",
+    "native_runtime_build": "passed",
+    "application_compile_and_link": "passed",
+    "apk_packaging": "passed",
+    "apk_zipalign_16k": "passed",
+    "build_receipt": "failed: APK native library exceeds the evidence size bound",
+    "installed_or_executed": false,
+    "cache_on_failure": false
+  },
+  "original_failure": {
+    "member": "lib/arm64-v8a/libtauri_app_lib.so",
+    "bytes": 317517760,
+    "old_member_bound_bytes": 268435456,
+    "classification": "Inspection harness bound rejected a successfully built debug application; not a compiler or native runtime link failure."
+  },
+  "artifact": {
+    "id": 13679616016,
+    "name": "ocr-mobile-android-arm64",
+    "bytes": 133508429,
+    "sha256": "051df39b8677cca2eaaf0884f525dfd8310d96bcee4c7022f25ad7ac53481358",
+    "downloaded_digest_and_zip_crc_verified": true,
+    "apk_bytes": 473916533,
+    "apk_sha256": "ef850c37cb5d7b1d40aca8e164f2bee040a92b7a6f5a7b989d14ac28128d4795"
+  },
+  "inspection_replay": {
+    "result": "passed",
+    "identity": "android-identity-replay.json",
+    "source_parent": "64426a4db3ef88864fdc3704304e0d2a881656b0",
+    "helper_git_blob": "bde45670730c6e7ccf3f1f2b1ead7ffe6b7ea5f3",
+    "helper_sha256": "f67a3d4586522fc08404aecdf0ab507d5d55c52c857d7cc2737090b822b19b77",
+    "focused_helper_tests_passed": 22,
+    "native_library_hashes_match_build_and_official_ort_pins": true,
+    "all_packaged_native_load_alignments": 16384,
+    "dynamic_library_closure": "The actual DT_NEEDED entries name only the two packaged runtimes and Android system libraries.",
+    "scope": "Static inspection only. Original runtime bytes were recovered from the APK only after exact hash equality with the independently retained source-build receipt. No native code executed."
+  },
+  "limitations": [
+    "The hosted job remains failed; the separate local replay does not rewrite that result.",
+    "This ARM64 lane was build-only and never installed or executed the app.",
+    "The archive inspector process memory measurements do not describe application memory or performance.",
+    "This debug APK is not a release package size qualification.",
+    "The final integrated source needs its own corrected receipt and actual target execution gates."
+  ]
+}

@@ -1,0 +1,42 @@
+Original hosted result: application compilation and APK packaging succeeded; build-receipt inspection then failed on its old 256 MiB member bound.
+Source: https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/job/129170291396
+The job did not install or execute the ARM64 app.
+
+2026-11-09T13:04:52.4364145Z 646dbc486438d0e8955af193b30e6382632cdf45
+2026-11-09T13:05:00.3981218Z d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T13:05:07.8168535Z   stable-x86_64-unknown-linux-gnu updated - rustc 1.99.1 (58cf8f9c3 2026-10-13) (from rustc 1.99.1 (58cf8f9c3 2026-10-13))
+2026-11-09T13:05:07.8395825Z   stable-x86_64-unknown-linux-gnu unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T13:05:07.9451723Z rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T13:05:09.1723128Z   CACHE_ON_FAILURE: false
+2026-11-09T13:05:12.4314868Z   CACHE_ON_FAILURE: false
+2026-11-09T13:05:12.5434088Z   CACHE_ON_FAILURE: false
+2026-11-09T13:05:12.6795479Z   CACHE_ON_FAILURE: false
+2026-11-09T13:05:16.8489011Z   CACHE_ON_FAILURE: false
+2026-11-09T13:05:49.4465472Z   CACHE_ON_FAILURE: false
+2026-11-09T13:08:04.1354741Z     "libcrispembed.so": "76baa1f9f83e1c571318c5ab9250adb19089b11f3688e5e5184966265587da5d"
+2026-11-09T13:08:04.1479968Z   CACHE_ON_FAILURE: false
+2026-11-09T13:08:05.1871325Z   CACHE_ON_FAILURE: false
+2026-11-09T13:08:05.2312933Z   CACHE_ON_FAILURE: false
+2026-11-09T13:08:06.0076441Z   CACHE_ON_FAILURE: false
+2026-11-09T13:26:26.8442191Z     Finished `dev` profile [unoptimized] target(s) in 17m 34s
+2026-11-09T13:26:27.4855699Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libcrispembed.so"
+2026-11-09T13:26:27.4856453Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libonnxruntime.so"
+2026-11-09T13:26:27.4857305Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libandroid.so"
+2026-11-09T13:26:27.4857998Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libdl.so"
+2026-11-09T13:26:27.4858660Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "liblog.so"
+2026-11-09T13:26:27.4859329Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libm.so"
+2026-11-09T13:26:27.4859988Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libc.so"
+2026-11-09T13:41:24.8489976Z     Finished `dev` profile [unoptimized] target(s) in 13m 35s
+2026-11-09T13:41:25.1489445Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libcrispembed.so"
+2026-11-09T13:41:25.1490843Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libonnxruntime.so"
+2026-11-09T13:41:25.1492318Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libandroid.so"
+2026-11-09T13:41:25.1493669Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libdl.so"
+2026-11-09T13:41:25.1494977Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "liblog.so"
+2026-11-09T13:41:25.1496283Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libm.so"
+2026-11-09T13:41:25.1497582Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/aarch64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libc.so"
+2026-11-09T13:42:02.0566217Z     Finished 1 APK at:
+2026-11-09T13:42:02.0566798Z         /home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+2026-11-09T13:42:05.7847902Z ##[error]    raise ValueError('APK native library exceeds the evidence size bound')
+2026-11-09T13:42:05.7848730Z ValueError: APK native library exceeds the evidence size bound
+2026-11-09T13:42:05.7995046Z ##[error]Process completed with exit code 1.
+2026-11-09T13:42:05.8054392Z   CACHE_ON_FAILURE: false

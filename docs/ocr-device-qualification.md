@@ -17,6 +17,14 @@ and requires it to equal the receipt and supplied APK. Simulator startup checks
 compare the supplied and installed iOS bundle manifests. These are reproducible
 build records, not independently signed supply-chain attestations.
 
+The same record identifies the pinned ONNX Runtime used by existing indexing
+features and verifies its packaged license/notices. Android compares packaged
+allocated native code/data with the qualified API-23 library. iOS records the
+qualified static framework, forced Cargo path and defined C API symbol in the
+app. A separate tiny Add-model target probe must execute against those inputs;
+see the [runtime qualification](../tools/mobile-ort-probe/README.md). This is
+separate from OCR model inference and does not establish embedding quality.
+
 Keep the APK or app bundle, build receipt, workflow URL, native runtime receipt,
 model input lock, and resulting evidence together. Record any manual rebuild
 as a new artifact. An unchanged filename or version label does not establish
@@ -70,11 +78,31 @@ peaks; `VmHWM` reports the process RSS high-water mark. The bounded repeat case
 alternates two synthetic rasters and durably saves each recognition result. Its
 page count is not a diverse-corpus or large-document capacity claim.
 
+The defined native quality cases add German diacritics and an English page with
+two columns under a spanning heading. Their source spec, rendered bytes, font,
+installed model and application/native commits are recorded. The German model
+adds 513,952 pinned bytes; the column case uses native connected components
+without another layout model. A 0.25 Unicode CER ceiling is supplemented by
+required accented words and observed column geometry, so a tolerant text score
+cannot hide lost diacritics or interleaved columns. Exact native results are
+saved and reloaded without test-side text repair. These checks remain defined
+until an actual application execution receipt passes; even then they cover
+only the named synthetic cases.
+
 No connected Android tools/device or Apple toolchain/device was available in
 the recovery workspace when this protocol was added. The protocol itself is
 not an execution receipt. On iOS, use a normally provisioned device build and
 the observed cases below; the automated lane currently covers a simulator app
 and standalone native inference, not physical-device application commands.
+
+The emulator harness separately defines a real DocumentsUI cancellation and
+local PDF selection case. It records fresh system UI trees and screenshots,
+selects only its uniquely named pinned fixture, then verifies the actual
+provider grant, original archive and durable native page import. Unexpected
+packages, permission prompts or picker layouts fail the case. This automation
+never runs against a physical device and does not establish cloud-provider or
+post-restart grant behavior. Inspect its execution receipt before claiming the
+case passed; the existence of a script is not execution evidence.
 
 ## Observe the actual mobile workflows
 

@@ -638,7 +638,7 @@
     <ThirdPartyAiConsent />
 
     <!-- Mobile bottom tab bar — visible only on small screens -->
-    <nav class="mobile-nav">
+    <nav class="mobile-nav" aria-label="Application navigation">
         {#each visibleTabs(MOBILE_TABS, allCaps).slice(0, 4) as tab (tab.id)}
             {@const Icon = tab.icon}
             <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
@@ -665,13 +665,47 @@
 </div>
 
 <style>
-    .mobile-tools-menu { position: fixed; bottom: 75px; right: 12px; background: #18181b; border: 1px solid #52525b; border-radius: 8px; padding: 8px; z-index: 100; display: flex; flex-direction: column; }
-    .mobile-tools-menu button { background: transparent; border: 0; color: #eee; padding: 10px 20px; text-align: left; cursor: pointer; }
+    .mobile-tools-menu {
+        position: absolute;
+        /* The containing navigation already sits inside all four safe edges.
+           Its actual height can grow with text; anchor above that height. */
+        bottom: calc(100% + 8px);
+        right: 12px;
+        max-width: calc(100% - 24px);
+        max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 100% - 16px);
+        max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 100% - 16px);
+        overflow-y: auto;
+        background: #18181b;
+        border: 1px solid #52525b;
+        border-radius: 8px;
+        padding: 8px;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+    }
+    .mobile-tools-menu button {
+        background: transparent;
+        border: 0;
+        color: #eee;
+        padding: 10px 20px;
+        min-height: 44px;
+        font-size: 16px;
+        text-align: left;
+        cursor: pointer;
+    }
 
     .app-shell {
         display: flex;
         width: 100vw;
         height: 100vh;
+        height: 100dvh;
+        /* app.html opts out of WebKit's automatic content inset. Keep the
+           entire flex shell inside the safe area exactly once, including
+           landscape cutouts and the home indicator below its navigation. */
+        box-sizing: border-box;
+        padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+                 env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+        overflow: hidden;
         background: #09090b;
         color: #fafafa;
     }
@@ -869,6 +903,7 @@
 
     /* ── Mobile bottom tab bar ─────────────────────────────────────── */
     .mobile-nav {
+        position: relative;
         display: none;
     }
 
@@ -886,6 +921,7 @@
         font-weight: 500;
         flex: 1;
         min-width: 0;
+        min-height: 44px;
     }
     .mobile-tab.active {
         color: #3b82f6;
@@ -906,7 +942,6 @@
             background: #18181b;
             border-top: 1px solid #27272a;
             padding: 4px 0;
-            padding-bottom: env(safe-area-inset-bottom, 4px);
             flex-shrink: 0;
         }
         .main-content {

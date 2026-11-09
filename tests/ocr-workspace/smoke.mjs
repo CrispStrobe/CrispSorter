@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { verifySafeOverlays } from './overlays.mjs';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -30,7 +31,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage, import-control, export-control');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -57,6 +58,8 @@ if (process.argv.includes('--serve')) {
     const browserPath = process.env.OCR_SMOKE_CHROMIUM ?? [chromium.executablePath(), '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
     const results = [];
     const browserErrors = [];
+    const textExportEvidence = [];
+    let phoneCornerEvidence = null;
     let browser;
     try {
         browser = await chromium.launch({ headless: true, ...(browserPath ? { executablePath: browserPath } : {}) });
@@ -111,6 +114,9 @@ if (process.argv.includes('--serve')) {
             try { await page.waitForFunction(canvasFitState, false); }
             catch { assert.fail(`${label} Fit page did not fill and remain inside its viewport: ${JSON.stringify(await page.evaluate(canvasFitState, true))}`); }
         }
+
+        await test('OCR overlays keep long content and actions reachable inside asymmetric safe areas', 'safe-overlays',
+            page => verifySafeOverlays(page, output, repo));
 
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
             assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
@@ -249,6 +255,218 @@ if (process.argv.includes('--serve')) {
             assert.equal(pdf.pages[0].page_width_points, pdf.pages[0].width * 72 / 150);
             assert.equal(pdf.pages[0].page_height_points, pdf.pages[0].height * 72 / 150);
             assert.deepEqual(pdf.pages[0].regions, request.pages[0].regions);
+        });
+
+        await test('archival export keeps approved page geometry and sends an explicit PDF/A request', 'export-archive', async page => {
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdfa');
+            await page.getByRole('combobox', { name: /^Page sizes/ }).selectOption('dpi');
+            await page.getByRole('spinbutton', { name: /^Scan resolution \(DPI\)/ }).fill('150');
+            await page.getByRole('button', { name: 'Save Archival PDF/A-2b', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'pdf');
+            assert.equal(request.pdfa, true);
+            assert.ok(request.outputPath.endsWith('.pdf'));
+            assert.equal(request.pages.length, 1);
+            assert.equal(request.pages[0].image_path, '/fixtures/northstar-page-3.png');
+            assert.equal(request.pages[0].page_width_points, 480);
+            assert.equal(request.pages[0].page_height_points, 672);
+            assert.equal(request.pages[0].regions[2].text, 'Invoice NS-2026-1042');
+            assert.equal(request.overwrite, false);
+        });
+
+        await test('unsupported archival output is disabled with its native capability reason', 'review', async page => {
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            const unavailable = page.locator('select option[value="pdfa"]');
+            assert.equal(await unavailable.count(), 1);
+            // Playwright 1.62.1 follows the enclosing label for this query and
+            // retargets OPTION to its enabled SELECT. Retain that observation,
+            // then verify the actual native option state and keyboard behavior.
+            // https://github.com/microsoft/playwright/blob/v1.62.1/packages/injected/src/injectedScript.ts
+            const evidence = {
+                browser: browser.version(),
+                playwright_is_disabled: await unavailable.isDisabled(),
+                native: await unavailable.evaluate(option => {
+                    if (!(option instanceof HTMLOptionElement)) throw new Error('Expected a native OPTION');
+                    const select = option.closest('select');
+                    return {
+                        option_disabled: option.disabled,
+                        matches_disabled: option.matches(':disabled'),
+                        select_disabled: select?.disabled,
+                        label_targets_select: option.closest('label')?.control === select,
+                        value: option.value,
+                    };
+                }),
+                keyboard: [],
+            };
+            const receipt = path.join(output, 'archival-option-state.json');
+            await writeFile(receipt, JSON.stringify(evidence, null, 2));
+            assert.equal(evidence.native.option_disabled, true);
+            assert.equal(evidence.native.matches_disabled, true);
+            assert.equal(evidence.native.select_disabled, false);
+            assert.equal(evidence.native.value, 'pdfa');
+            const reason = page.getByText('PDF/A-2b requires the archival-capable native renderer in this build.', { exact: true });
+            await reason.waitFor();
+            evidence.native_reason = await reason.innerText();
+            const format = page.getByRole('combobox', { name: /^Output format/ });
+            await format.selectOption('docx');
+            await format.focus();
+            // First prove native keyboard navigation works, then prove it
+            // cannot enter the unavailable option after the last supported one.
+            for (const [key, expected] of [['ArrowUp', 'alto'], ['ArrowDown', 'docx'], ['ArrowDown', 'docx']]) {
+                await page.keyboard.press(key);
+                const selected = await format.inputValue();
+                evidence.keyboard.push({ key, expected, selected });
+                await writeFile(receipt, JSON.stringify(evidence, null, 2));
+                assert.equal(selected, expected);
+            }
+            evidence.export_calls = await page.evaluate(() => window.ocrSmoke.exports.length);
+            await writeFile(receipt, JSON.stringify(evidence, null, 2));
+            assert.equal(evidence.export_calls, 0);
+        });
+
+        const rtlReviewedText = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
+        const bidiUnavailable = 'PDF export for right-to-left text or directional formatting is unavailable in this build. Choose a text format to preserve the reviewed reading order.';
+        async function recordTextExport(evidence) {
+            textExportEvidence.push(evidence);
+            await writeFile(path.join(output, 'text-alternatives.json'), JSON.stringify(textExportEvidence, null, 2));
+        }
+        async function selectedExport(page, mobile = false) {
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            if (mobile) {
+                await page.setViewportSize({ width: 390, height: 844 });
+                await page.getByRole('navigation', { name: 'Workspace views', exact: true }).getByRole('button', { name: 'Text & tools', exact: true }).click();
+            }
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+        }
+        await test('RTL PDF preflight offers lossless text alternatives before any destination picker', 'export-rtl', async page => {
+            await selectedExport(page);
+            const selector = page.getByRole('combobox', { name: /^Output format/ });
+            const requests = [];
+            for (const [index, [format, name]] of [['text', 'Plain text'], ['html', 'HTML document'], ['docx', 'Word document']].entries()) {
+                await selector.selectOption(index === 1 ? 'pdfa' : 'pdf');
+                await page.getByText(bidiUnavailable, { exact: true }).waitFor();
+                assert.equal(await page.getByText(/^Ready to export/).count(), 0);
+                assert.equal(await page.getByRole('button', { name: /^Save (Searchable PDF|Archival PDF\/A-2b)$/ }).isDisabled(), true);
+                assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'pickExport').length), index);
+                await page.getByRole('button', { name: `Use ${name}`, exact: true }).click();
+                assert.equal(await selector.inputValue(), format);
+                await page.getByRole('button', { name: `Save ${name}`, exact: true }).click();
+                await page.waitForFunction(count => window.ocrSmoke.exports.length === count, index + 1);
+                const request = await page.evaluate(() => window.ocrSmoke.exports.at(-1));
+                requests.push(request);
+                assert.equal(request.format, format);
+                assert.equal(request.pdfa, false);
+                assert.equal(request.pages.length, 1);
+                assert.equal(request.pages[0].regions[2].text, rtlReviewedText);
+                assert.equal(request.pages[0].regions[2].original_text, rtlReviewedText);
+                assert.equal(request.pages[0].approved, true);
+                assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
+                if (index) assert.deepEqual(request.pages, requests[0].pages);
+            }
+            await selector.selectOption('pdf');
+            await page.getByRole('button', { name: /^Page 1:/ }).click();
+            await page.getByRole('checkbox', { name: /^Require page approval/ }).uncheck();
+            assert.equal(await page.getByText(bidiUnavailable, { exact: true }).count(), 0);
+            assert.equal(await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).isDisabled(), false);
+            await recordTextExport({ scenario: 'desktop-rtl', picker_calls: 3, requests, latin_scope_available: true });
+        });
+
+        await test('phone can choose Word for reviewed RTL text without changing its source or selection', 'export-rtl-mobile', async page => {
+            await selectedExport(page, true);
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdfa');
+            await page.getByText(bidiUnavailable, { exact: true }).waitFor();
+            const targets = [];
+            for (const name of ['Plain text', 'HTML document', 'Word document']) {
+                const button = page.getByRole('button', { name: `Use ${name}`, exact: true });
+                await button.scrollIntoViewIfNeeded();
+                const bounds = await button.boundingBox();
+                assert.ok(bounds && bounds.height >= 44 && bounds.x >= 0 && bounds.x + bounds.width <= 391);
+                targets.push({ name, bounds });
+            }
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'pickExport').length), 0);
+            await page.screenshot({ path: path.join(output, 'ocr-phone-rtl-alternatives.png'), fullPage: true });
+            await page.getByRole('button', { name: 'Use Word document', exact: true }).click();
+            await page.getByRole('button', { name: 'Save Word document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'docx');
+            assert.equal(request.pages[0].regions[2].text, rtlReviewedText);
+            assert.equal(request.pages[0].image_path, '/fixtures/northstar-page-3.png');
+            assert.deepEqual([request.pages[0].width, request.pages[0].height], [1000, 1400]);
+            assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
+            await recordTextExport({ scenario: 'mobile-rtl-word', targets, request });
+        });
+
+        await test('older phone builds offer only their available RTL text alternatives', 'export-rtl-limited', async page => {
+            await selectedExport(page, true);
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdf');
+            await page.getByText(bidiUnavailable, { exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Use Word document', exact: true }).count(), 0);
+            assert.equal(await page.locator('select option[value="docx"]').count(), 0);
+            await page.getByRole('button', { name: 'Use HTML document', exact: true }).click();
+            await page.getByRole('button', { name: 'Save HTML document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'html');
+            assert.equal(request.pages[0].regions[2].text, rtlReviewedText);
+            await recordTextExport({ scenario: 'limited-mobile-rtl-html', request });
+        });
+
+        await test('supplementary and dense PDF text retain export with reader advisories and usable alternatives', 'export-unicode', async page => {
+            await selectedExport(page);
+            const selector = page.getByRole('combobox', { name: /^Output format/ });
+            const advisory = page.getByText(/Some PDF readers cannot find supplementary characters/);
+            const density = page.getByText(/Some PDF readers limit copying or searching text on very dense pages/);
+            const requests = [];
+            for (const [index, [format, name]] of [['pdf', 'Searchable PDF'], ['pdfa', 'Archival PDF/A-2b']].entries()) {
+                await selector.selectOption(format);
+                await advisory.waitFor();
+                await density.waitFor();
+                assert.equal(await page.getByRole('button', { name: `Save ${name}`, exact: true }).isDisabled(), false);
+                for (const alternative of ['Plain text', 'HTML document', 'Word document']) {
+                    assert.equal(await page.getByRole('button', { name: `Use ${alternative}`, exact: true }).count(), 1);
+                }
+                await page.getByRole('button', { name: `Save ${name}`, exact: true }).click();
+                await page.waitForFunction(count => window.ocrSmoke.exports.length === count, index + 1);
+                const request = await page.evaluate(() => window.ocrSmoke.exports.at(-1));
+                assert.equal(request.format, 'pdf');
+                assert.equal(request.pdfa, format === 'pdfa');
+                assert.equal(request.pages[0].regions[2].text, 'Reviewed café 中文 😀 é');
+                assert.equal(request.pages[0].regions[4].text, 'x'.repeat(50_000));
+                requests.push(request);
+            }
+            const warnings = [await advisory.innerText(), await density.innerText()];
+            await page.getByRole('button', { name: 'Use HTML document', exact: true }).click();
+            assert.equal(await advisory.count(), 0);
+            assert.equal(await density.count(), 0);
+            await page.getByRole('button', { name: 'Save HTML document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 3);
+            const html = await page.evaluate(() => window.ocrSmoke.exports.at(-1));
+            assert.equal(html.format, 'html');
+            assert.deepEqual(html.pages, requests[0].pages);
+            await recordTextExport({ scenario: 'supplementary-dense-pdf', advisories: warnings, requests, html });
+        });
+
+        await test('invalid rich-text characters are blocked before the picker and preserved through plain text', 'export-invalid-text', async page => {
+            await selectedExport(page);
+            for (const [format, name] of [['docx', 'Word document'], ['html', 'HTML document']]) {
+                await page.getByRole('combobox', { name: /^Output format/ }).selectOption(format);
+                await page.getByText(/contains character U\+0000, which this format cannot represent/).waitFor();
+                assert.equal(await page.getByRole('button', { name: `Save ${name}`, exact: true }).isDisabled(), true);
+                assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'pickExport').length), 0);
+                assert.equal(await page.getByRole('button', { name: 'Use HTML document', exact: true }).count(), 0);
+            }
+            await page.getByRole('button', { name: 'Use Plain text', exact: true }).click();
+            await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.pages[0].regions[2].text, 'Reviewed\u0000 العربية\fשלום');
+            await recordTextExport({ scenario: 'invalid-rich-text-plain-fallback', request });
         });
 
         await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
@@ -644,6 +862,110 @@ if (process.argv.includes('--serve')) {
             assert.equal(await cancel.count(), 0);
         });
 
+        await test('a failed import checkpoint stops further documents and Save retries the retained pages', 'import-control', async page => {
+            await page.getByRole('button', { name: 'Add documents', exact: true }).first().click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingImports === 1);
+            await page.evaluate(() => { window.ocrSmoke.failSaves = true; window.ocrSmoke.releaseImport(); });
+            await page.getByText('2 pages added. Import stopped because saving failed. Use Save to retry; keep this workspace open.', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importDocument').length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.pendingImports), 0);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.activeNative), 0);
+            assert.equal(await page.getByRole('button', { name: 'Cancel import', exact: true }).count(), 0);
+            await page.getByText('Save failed', { exact: true }).waitFor();
+            await page.evaluate(() => { window.ocrSmoke.failSaves = false; });
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 5);
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
+            assert.equal(saved.documents.at(-1).sourceUri, '/fixtures/first.pdf');
+            assert.equal(saved.documents.at(-1).archiveUri, '/fixtures/archive/first.pdf');
+            assert.equal(saved.pages.filter(item => item.documentId === saved.documents.at(-1).id).length, 2);
+            await page.getByText('All changes saved', { exact: true }).waitFor();
+        });
+
+        await test('phone export progress waits for cancellation and a retry preserves the committed result', 'export-control', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const nav = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await nav.getByRole('button', { name: /^Pages\b/ }).click();
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await nav.getByRole('button', { name: 'Text & tools', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            const save = page.getByRole('button', { name: 'Save Searchable PDF', exact: true });
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'writing', bytes: 2621440 }));
+            await page.getByText('Writing export · 2.5 MiB', { exact: true }).waitFor();
+            const cancel = page.getByRole('button', { name: 'Cancel export', exact: true });
+            const bounds = await cancel.boundingBox();
+            assert.ok(bounds && bounds.height >= 44 && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y + bounds.height <= 844, 'Phone export cancel target must stay fully reachable');
+            assert.equal(await save.isDisabled(), true);
+            assert.equal(await page.getByRole('combobox', { name: /^Output format/ }).isDisabled(), true);
+            assert.equal(await page.getByRole('button', { name: 'Add documents', exact: true }).first().isDisabled(), true);
+            await page.screenshot({ path: path.join(output, 'ocr-phone-export-progress.png'), fullPage: true });
+            await cancel.click();
+            const stopping = page.getByRole('button', { name: 'Stopping…', exact: true });
+            await stopping.waitFor(); assert.equal(await stopping.isDisabled(), true);
+            assert.deepEqual(await page.evaluate(() => [window.ocrSmoke.cancelledExports, window.ocrSmoke.activeNative, window.ocrSmoke.completedExports]), [1, 1, 0]);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'writing', bytes: 3145728 }));
+            await page.getByText('Stopping export after the current step…', { exact: true }).waitFor();
+            assert.equal(await save.isDisabled(), true);
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText('Export cancelled', { exact: true }).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            assert.deepEqual(await page.evaluate(() => [window.ocrSmoke.activeNative, window.ocrSmoke.completedExports]), [0, 0]);
+
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            assert.equal(await cancel.isEnabled(), true);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'committing', bytes: 4194304 }));
+            await page.getByText('Finishing export · 4.0 MiB', { exact: true }).waitFor();
+            assert.equal(await cancel.isDisabled(), true);
+            assert.equal(await cancel.getAttribute('title'), 'The export is finishing');
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText(/^Exported 1 pages ·/).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            const state = await page.evaluate(() => ({ completed: window.ocrSmoke.completedExports, cancelled: window.ocrSmoke.cancelledExports, max: window.ocrSmoke.maxNative, requests: window.ocrSmoke.exports }));
+            assert.deepEqual([state.completed, state.cancelled, state.max], [1, 1, 1]);
+            assert.equal(state.requests.length, 2);
+            assert.deepEqual(state.requests[1], state.requests[0]);
+            assert.equal(state.requests[1].pages[0].image_path, '/fixtures/northstar-page-3.png');
+        });
+
+        await test('phone export failures unlock retry and destination transfer belongs to the system dialog', 'export-control', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const nav = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await nav.getByRole('button', { name: /^Pages\b/ }).click();
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await nav.getByRole('button', { name: 'Text & tools', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            const save = page.getByRole('button', { name: 'Save Searchable PDF', exact: true });
+            const cancel = page.getByRole('button', { name: 'Cancel export', exact: true });
+            await page.evaluate(() => { window.ocrSmoke.failExport = true; });
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText('Fixture export could not finish writing.', { exact: true }).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.completedExports), 0);
+            await page.evaluate(() => { window.ocrSmoke.failExport = false; });
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'destination', bytes: 6291456 }));
+            await page.getByText('Saving to a destination · 6.0 MiB', { exact: true }).waitFor();
+            assert.equal(await cancel.isDisabled(), true);
+            assert.equal(await cancel.getAttribute('title'), 'Use the system save dialog to finish or cancel');
+            assert.equal(await save.isDisabled(), true);
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText(/^Exported 1 pages ·/).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            assert.deepEqual(await page.evaluate(() => [window.ocrSmoke.completedExports, window.ocrSmoke.cancelledExports, window.ocrSmoke.activeNative]), [1, 0, 0]);
+        });
+
         await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {
             await page.setViewportSize({ width: 390, height: 844 });
             const camera = page.getByLabel('Camera photo file', { exact: true });
@@ -668,8 +990,144 @@ if (process.argv.includes('--serve')) {
             assert.equal(await nav.getByRole('button', { name: 'Page image', exact: true }).getAttribute('aria-pressed'), 'true');
             await page.getByRole('button', { name: 'Check photo quality', exact: true }).click();
             await page.getByText('Suggested correction: -2.7°', { exact: true }).waitFor();
+            await page.getByRole('navigation', { name: 'Photo tools', exact: true }).getByRole('button', { name: 'Lighting', exact: true }).click();
             assert.equal(await page.getByRole('spinbutton', { name: /^Tilt correction \(degrees\)/ }).inputValue(), '-2.7');
+            await page.getByRole('navigation', { name: 'Photo tools', exact: true }).getByRole('button', { name: 'Check', exact: true }).click();
             await page.screenshot({ path: path.join(output, 'ocr-phone-photo-preparation.png'), fullPage: true });
+        });
+
+        await test('phone corner editing fits a usable page, accepts touch drags, and changes pixels only on Apply', 'review', async page => {
+            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await text.fill('Invoice reviewed before phone correction');
+            await text.blur();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === 'Invoice reviewed before phone correction');
+            const before = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            await page.setViewportSize({ width: 390, height: 844 });
+            const views = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await views.getByRole('button', { name: 'Page image', exact: true }).click();
+            await page.getByRole('combobox', { name: 'Page zoom', exact: true }).selectOption('2');
+            await page.getByRole('button', { name: 'Prepare photo', exact: true }).click();
+            const tools = page.getByRole('navigation', { name: 'Photo tools', exact: true });
+            const closeBox = await page.getByRole('button', { name: 'Close photo preparation', exact: true }).boundingBox();
+            assert.ok(closeBox && closeBox.width >= 44 && closeBox.height >= 44, 'The photo preparation close button must have a touch-sized target');
+            for (const button of await tools.getByRole('button').all()) {
+                const box = await button.boundingBox();
+                assert.ok(box && box.width >= 44 && box.height >= 44, 'Photo steps must have touch-sized targets');
+            }
+            assert.equal(await tools.getByRole('button', { name: 'Check', exact: true }).getAttribute('aria-pressed'), 'true');
+            assert.equal(await page.getByRole('button', { name: 'Correct perspective', exact: true }).isVisible(), false);
+            await tools.getByRole('button', { name: 'Lighting', exact: true }).click();
+            assert.equal(await page.getByRole('button', { name: 'Flatten shadows', exact: true }).isVisible(), true);
+            assert.equal(await page.getByRole('button', { name: 'Check photo quality', exact: true }).isVisible(), false);
+            await tools.getByRole('button', { name: 'Corners', exact: true }).click();
+            const back = page.getByRole('button', { name: 'Back to photo tools', exact: true });
+            await back.waitFor();
+            await page.waitForFunction(canvasFitState, false);
+            assert.equal(await page.getByRole('combobox', { name: 'Page zoom', exact: true }).inputValue(), 'page', 'Entering corner editing resets a previous custom zoom to Fit page');
+            for (const selector of ['.workspace-header', '.command-bar', '.mobile-workspace-nav', '.image-toolbar', '.photo-tool-toggle', '.photo-preparation']) {
+                assert.equal(await page.locator(selector).isVisible(), false, `${selector} must give its space to the page while choosing corners`);
+            }
+            for (const name of ['Back to photo tools', 'Apply perspective', 'Zoom out', 'Zoom in', 'Fit page']) {
+                const box = await page.getByRole('button', { name, exact: true }).boundingBox();
+                assert.ok(box && box.width >= 44 && box.height >= 44 && box.y >= 0 && box.y + box.height <= 844, `${name} must stay reachable at 390×844`);
+            }
+            // Zoom still works in focus mode, and Fit page restores all four handles.
+            await page.getByRole('combobox', { name: 'Page zoom', exact: true }).selectOption('1');
+            await assertFitPage(page, 'Phone corner editor');
+            const focus = page.getByRole('region', { name: 'Photo corner editing', exact: true });
+            const exact = focus.getByText('Exact corner positions', { exact: true });
+            await exact.click();
+            const cornerX = focus.getByRole('spinbutton', { name: 'Top left corner X', exact: true });
+            const cornerY = focus.getByRole('spinbutton', { name: 'Top left corner Y', exact: true });
+            const numberStyle = await cornerX.evaluate(input => ({ height: input.getBoundingClientRect().height, fontSize: parseFloat(getComputedStyle(input).fontSize), min: input.min, max: input.max }));
+            assert.ok(numberStyle.height >= 44 && numberStyle.fontSize >= 16, 'Numeric corner entry must support touch and avoid phone input zoom');
+            assert.deepEqual([numberStyle.min, numberStyle.max], ['0', String(before.width - 1)]);
+            await cornerX.fill(String(before.width - 1));
+            assert.equal(await focus.getByRole('button', { name: 'Apply perspective', exact: true }).isEnabled(), false, 'A degenerate corner selection must not be applied');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0);
+            await cornerX.fill('0');
+            await cornerY.fill('0');
+            assert.equal(await focus.getByRole('button', { name: 'Apply perspective', exact: true }).isEnabled(), true, 'Valid numeric coordinates restore Apply');
+            for (const name of ['Back to photo tools', 'Apply perspective']) {
+                const box = await focus.getByRole('button', { name, exact: true }).boundingBox();
+                assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `${name} stays reachable with numeric entry expanded`);
+            }
+            await exact.click();
+            await page.waitForFunction(canvasFitState, false);
+            const geometry = await page.evaluate(() => {
+                const rect = element => { const b = element.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; };
+                return {
+                    screen: { width: innerWidth, height: innerHeight },
+                    viewport: rect(document.querySelector('.canvas-shell .viewport')),
+                    paper: rect(document.querySelector('.canvas-shell .paper')),
+                    handles: [...document.querySelectorAll('.photo-corner')].map(rect),
+                };
+            });
+            assert.ok(geometry.viewport.height >= 540, `Corner editing needs a usable canvas: ${JSON.stringify(geometry)}`);
+            assert.ok(geometry.paper.width >= 300 && geometry.paper.height >= 420, `The fitted portrait page must be large enough to place corners: ${JSON.stringify(geometry)}`);
+            assert.equal(geometry.handles.length, 4);
+            for (const box of geometry.handles) {
+                assert.ok(box.width >= 44 && box.height >= 44, 'Each corner handle remains at least 44 CSS pixels');
+                assert.ok(box.x >= geometry.viewport.x && box.y >= geometry.viewport.y && box.x + box.width <= geometry.viewport.x + geometry.viewport.width && box.y + box.height <= geometry.viewport.y + geometry.viewport.height, 'Every fitted corner handle must be entirely inside the canvas');
+                assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 390 && box.y + box.height <= 844, 'Every fitted corner handle must be entirely on screen');
+            }
+            const corner = page.getByRole('button', { name: 'Top left corner', exact: true });
+            const initialImage = await page.getByRole('img', { name: /^Working page:/ }).getAttribute('src');
+            await page.evaluate(() => {
+                window.ocrCornerTouches = [];
+                document.querySelector('.photo-corner').addEventListener('pointerdown', event => window.ocrCornerTouches.push({ pointerType: event.pointerType, trusted: event.isTrusted }), { capture: true });
+            });
+            const session = await page.context().newCDPSession(page);
+            try {
+                await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+                const box = geometry.handles[0];
+                const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+                const touch = (x, y) => ({ x, y, radiusX: 6, radiusY: 6, force: 1, id: 1 });
+                await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [touch(start.x, start.y)] });
+                for (let step = 1; step <= 4; step++) {
+                    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [touch(start.x + 36 * step / 4, start.y + 42 * step / 4)] });
+                }
+                await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+            } finally { await session.detach(); }
+            await page.waitForFunction(() => document.querySelector('.photo-corner')?.title !== 'Top left: 0, 0 pixels');
+            const moved = (await corner.getAttribute('title')).match(/^Top left: (\d+), (\d+) pixels$/);
+            assert.ok(moved, 'The moved corner exposes its actual image coordinates');
+            assert.ok(Math.abs(Number(moved[1]) - 36 * before.width / geometry.paper.width) <= 2, 'A touch drag must map horizontal screen movement to source-image coordinates');
+            assert.ok(Math.abs(Number(moved[2]) - 42 * before.height / geometry.paper.height) <= 2, 'A touch drag must map vertical screen movement to source-image coordinates');
+            const touches = await page.evaluate(() => window.ocrCornerTouches);
+            assert.deepEqual(touches, [{ pointerType: 'touch', trusted: true }], 'The browser must deliver a trusted touch pointer rather than a synthetic mouse event');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0);
+            assert.equal(await page.getByRole('img', { name: /^Working page:/ }).getAttribute('src'), initialImage);
+            phoneCornerEvidence = { ...geometry, drag: { screenDelta: { x: 36, y: 42 }, imagePoint: { x: Number(moved[1]), y: Number(moved[2]) }, events: touches }, transformsBeforeApply: 0 };
+            await page.screenshot({ path: path.join(output, 'ocr-phone-corner-focus.png'), fullPage: true });
+            await back.click();
+            await page.getByRole('textbox', { name: 'Project name', exact: true }).waitFor();
+            await tools.waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Correct perspective', exact: true }).isVisible(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0, 'Back must leave the source image unchanged');
+            await tools.getByRole('button', { name: 'Corners', exact: true }).click();
+            await back.waitFor();
+            await page.keyboard.press('Escape');
+            await views.waitFor();
+            await tools.waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0, 'Escape must leave the source image unchanged');
+            await tools.getByRole('button', { name: 'Corners', exact: true }).click();
+            await page.getByRole('button', { name: 'Apply perspective', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath.endsWith('-perspective'));
+            const applied = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(applied.originalImagePath, before.originalImagePath);
+            assert.deepEqual([applied.width, applied.height], [900, 1300]);
+            assert.equal(applied.status, 'pending');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 1);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath === '/fixtures/northstar-page-1.png');
+            const restored = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(restored.originalImagePath, before.originalImagePath);
+            assert.deepEqual(restored.regions, before.regions, 'Undo restores reviewed text and original recognition evidence');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
         });
 
         await test('corner controls reject invalid selections and perspective undo restores review evidence', 'review', async page => {
@@ -684,7 +1142,7 @@ if (process.argv.includes('--serve')) {
             await corner.focus();
             await page.keyboard.press('ArrowRight');
             await page.keyboard.press('Shift+ArrowDown');
-            await page.getByText('Exact corner positions', { exact: true }).click();
+            await page.getByRole('region', { name: 'Photo preparation', exact: true }).getByText('Exact corner positions', { exact: true }).click();
             const x = page.getByRole('spinbutton', { name: 'Top left corner X', exact: true });
             const y = page.getByRole('spinbutton', { name: 'Top left corner Y', exact: true });
             assert.equal(await x.inputValue(), '1');
@@ -785,7 +1243,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { synthetic_ui_only: true, tests: results, browserErrors, phoneCornerEvidence, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-corner-focus.png', 'ocr-phone-import-progress.png', 'ocr-phone-export-progress.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

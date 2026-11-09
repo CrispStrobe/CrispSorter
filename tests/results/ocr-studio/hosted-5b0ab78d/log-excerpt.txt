@@ -1,0 +1,36 @@
+2026-11-09T12:23:52.2731517Z 5b0ab78d7ec70a051ae415b56066e90495c40484
+2026-11-09T12:24:55.4277526Z svelte-check found 0 errors and 54 warnings in 8 files
+2026-11-09T12:24:59.5398198Z  Test Files  28 passed (28)
+2026-11-09T12:24:59.5401031Z       Tests  218 passed (218)
+2026-11-09T12:25:57.4185773Z PASS recover pages, correct text, undo, redo, and revoke page approval
+2026-11-09T12:25:57.8598156Z PASS a document sent from another tab is imported once and selected
+2026-11-09T12:25:58.2829570Z PASS a document already in the project is selected instead of imported again
+2026-11-09T12:25:58.7618710Z PASS next issue navigates from uncertain text to an unrecognized page
+2026-11-09T12:25:59.4674949Z PASS unchanged preparation preserves corrections and approval while showing its warning
+2026-11-09T12:26:00.1280097Z PASS the low-memory CPU profile is offered only for Qwen2 VL and reaches recognition
+2026-11-09T12:26:00.6966472Z PASS export preflight blocks incomplete pages and exports explicit approved scope
+2026-11-09T12:26:01.2729824Z PASS batch errors stay per page and retry only failed work
+2026-11-09T12:26:01.8785515Z PASS pause, resume and stop preserve finished and pending pages without concurrent inference
+2026-11-09T12:26:02.3778986Z PASS an interrupted batch resumes its saved selection and settings without rerunning completed pages
+2026-11-09T12:26:02.9612530Z PASS a failed result save stops the batch and retry preserves completed recognition
+2026-11-09T12:26:03.4410987Z PASS finishing a batch keeps project changes locked until the final checkpoint is durable
+2026-11-09T12:26:03.9509968Z PASS stopping an already paused queue saves its stopped state without another native call
+2026-11-09T12:26:04.4435921Z PASS table extraction renders cell text and strips active HTML
+2026-11-09T12:26:05.1429494Z PASS delayed extraction follows its source page and undo restores visible and exported cells
+2026-11-09T12:26:05.6787633Z PASS an invalid saved project leaves the current project and autosaver usable
+2026-11-09T12:26:06.2093263Z PASS reopening the current project flushes pending edits without rollback or revision conflicts
+2026-11-09T12:26:06.7958814Z PASS a confirmation blocks navigation shortcuts and removes only its captured page
+2026-11-09T12:26:07.4103982Z PASS changing the search query cannot replace text at a stale match offset
+2026-11-09T12:26:08.2017797Z PASS mobile storage cleanup is explicit, recovers from failure, and keeps models and reviewed pages
+2026-11-09T12:26:09.0335953Z PASS model removal requires confirmation and the displayed exact generation, preserving cancellation and active models
+2026-11-09T12:26:09.7818629Z PASS mobile model setup is explicit, reports progress, locks work, and recovers after failure
+2026-11-09T12:26:10.3470051Z PASS phone import progress stays cancellable and saves only completed documents
+2026-11-09T12:26:10.8476021Z PASS a failed import checkpoint stops further documents and Save retries the retained pages
+2026-11-09T12:26:11.3663467Z PASS camera import validates the file and opens a preserved photo without starting recognition
+2026-11-09T12:26:12.1432449Z PASS corner controls reject invalid selections and perspective undo restores review evidence
+2026-11-09T12:26:12.8607085Z PASS measured tilt and lighting preparation preserve the original and remain undoable
+2026-11-09T12:26:13.7568026Z PASS desktop and compact layouts remain usable
+2026-11-09T12:26:13.8395283Z Browser verification: 28 passed, 0 failed. Report: /home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/artifacts/report.json
+2026-11-09T12:26:14.9694806Z SHA256 digest of uploaded artifact zip is d04401319108c87ef798eebaeacc0eb5b5b572bf703cbf32b8e3aa19d68cd015
+2026-11-09T12:26:15.4169622Z Artifact ocr-workspace-browser-report.zip successfully finalized. Artifact ID 13672233847
+2026-11-09T12:26:15.4170378Z Artifact ocr-workspace-browser-report has been successfully uploaded! Final size is 595815 bytes. Artifact ID is 13672233847

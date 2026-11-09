@@ -46,6 +46,20 @@
       "display_width": 80,
       "display_height": 120,
       "orientation": 6
+    },
+    {
+      "filename": "colors.heic",
+      "fixture": "colors.heic.b64",
+      "bytes": 2826,
+      "sha256": "e8091ae32edebf1739bc6556e9ec245b155bf82e49d92fa15344974a00531ae2",
+      "encoded_width": 120,
+      "encoded_height": 80,
+      "display_width": 120,
+      "display_height": 80,
+      "orientation": 1,
+      "source": "Self-authored four-color pixels; no third-party image content.",
+      "generator": "tests/scripts/generate_mobile_heic_fixture.py; Pillow 13.0.0; FFmpeg 7.1.5 with libx265 HEVC Main",
+      "independent_decode": "ImageMagick 7.1.1-43 with libheif 1.23.6; exact dimensions and four corner color bounds verified."
     }
   ],
   "image_generator": "Self-authored four-color image, Pillow 13.0.0",

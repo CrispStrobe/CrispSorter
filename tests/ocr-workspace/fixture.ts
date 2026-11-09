@@ -1,5 +1,5 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
-import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ModelStorageReport, ImportOptions, ImportProgress } from '../../src/lib/ocr/client';
+import type { ExportRequest, ExportOptions, ExportProgress, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ModelStorageReport, ImportOptions, ImportProgress } from '../../src/lib/ocr/client';
 import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
 import { photoQuadError } from '../../src/lib/ocr/photo';
 
@@ -83,6 +83,12 @@ export interface SmokeControl {
     cancelledImports: number;
     releaseImport(): boolean;
     emitImportProgress(progress: ImportProgress): boolean;
+    pendingExports: number;
+    cancelledExports: number;
+    completedExports: number;
+    failExport: boolean;
+    releaseExport(): boolean;
+    emitExportProgress(progress: ExportProgress): boolean;
     released: string[];
     releaseNext():boolean;
     releaseExtraction():boolean;
@@ -96,6 +102,10 @@ declare global {
 }
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
+    const overlayAudit = scenario === 'safe-overlays';
+    const rtlExport = scenario.startsWith('export-rtl');
+    const archivalExport = scenario === 'export-archive' || rtlExport || scenario === 'export-unicode' || scenario === 'export-invalid-text';
+    const wordExport = scenario !== 'export-rtl-limited';
     let project=scenario==='mobile-models'?createProject('New mobile scan'):addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
         pages:[1,2,3].map(page=>({image_path:pagePath(page),width:1000,height:1400})),
@@ -105,7 +115,14 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         const result=recognition(project.pages[0].imagePath);
         result.regions[2].text='Inv0ice NS-2026-1042';result.regions[2].confidence=0.42;
         project=applyRecognition(project,project.pages[0].id,result);
-        project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
+        const last = recognition(project.pages[2].imagePath);
+        if (rtlExport) last.regions[2].text = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
+        if (scenario === 'export-unicode') {
+            last.regions[2].text = 'Reviewed café 中文 😀 é';
+            last.regions[4].text = 'x'.repeat(50_000);
+        }
+        if (scenario === 'export-invalid-text') last.regions[2].text = 'Reviewed\u0000 العربية\fשלום';
+        project=applyRecognition(project,project.pages[2].id,last);
         project=approvePage(project,project.pages[2].id);
     }
     if(scenario==='batch-recovery') {
@@ -121,8 +138,15 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         project.recognitionSettings={engine:'got',language:'eng',config:{source_type:'screenshot'}};
     }
     const savedById=new Map<string,ProjectEnvelope>();
+    if (overlayAudit) project.pages[0].name = `${'Reviewed original with a long source filename '.repeat(35)}final.png`;
     const initialEnvelope:ProjectEnvelope={project:copy(project),revision:7,saved_at:Date.parse(stamp),path:'/fixtures/project.json'};
     savedById.set(project.id,initialEnvelope);
+    if (overlayAudit) for (let index = 1; index <= 20; index++) {
+        const saved = copy(project);
+        saved.id = `ocr-overlay-saved-${index}`;
+        saved.name = `Saved overlay project ${String(index).padStart(2, '0')}`;
+        savedById.set(saved.id, { ...initialEnvelope, project: saved });
+    }
     if(scenario==='project-recovery') {
         // Simulate a visible saved project from an unsupported future format.
         // The adapter intentionally returns invalid input at this trust boundary.
@@ -137,16 +161,17 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pendingModelInstalls:Array<{release:()=>void;onProgress?:(progress:ModelDownloadProgress)=>void}>=[];
     const pendingModelStorage:Array<()=>void>=[];
     const pendingImports:Array<{release:()=>void;options?:ImportOptions}>=[];
+    const pendingExports:Array<{release:()=>void;options?:ExportOptions;phase:ExportProgress['phase'];cancelled:boolean}>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
-        modelStorageReport: scenario==='mobile-storage' ? {
+        modelStorageReport: scenario==='mobile-storage' || overlayAudit ? {
             bytes:16*1024**2,reclaimable_bytes:4*1024**2,warnings:['Unrecognized fixture metadata was kept for inspection.'],
             models:[
                 {name:'dbnet-det',version:'11111111-1111-4111-8111-111111111111',bytes:8*1024**2,reclaimable_bytes:0,in_use:true},
-                {name:'tesseract-eng',version:'22222222-2222-4222-8222-222222222222',bytes:8*1024**2,reclaimable_bytes:4*1024**2,in_use:false},
+                {name:overlayAudit ? `${'archive language model '.repeat(35)}end` : 'tesseract-eng',version:'22222222-2222-4222-8222-222222222222',bytes:8*1024**2,reclaimable_bytes:4*1024**2,in_use:false},
             ],
         } : {bytes:0,reclaimable_bytes:0,models:[],warnings:[]},
         holdModelStorage:false,pendingModelStorage:0,failModelStorage:false,
@@ -154,6 +179,9 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         pendingImports:0,cancelledImports:0,
         releaseImport(){const item=pendingImports.shift();if(!item)return false;control.pendingImports=pendingImports.length;item.release();return true;},
         emitImportProgress(progress){const item=pendingImports[0];if(!item)return false;item.options?.onProgress?.(copy(progress));return true;},
+        pendingExports:0,cancelledExports:0,completedExports:0,failExport:false,
+        releaseExport(){const item=pendingExports.shift();if(!item)return false;control.pendingExports=pendingExports.length;item.release();return true;},
+        emitExportProgress(progress){const item=pendingExports[0];if(!item)return false;item.phase=progress.phase;item.options?.onProgress?.(copy(progress));return true;},
         releaseModelInstall(){const item=pendingModelInstalls.shift();if(!item)return false;control.pendingModelInstalls=pendingModelInstalls.length;item.release();return true;},
         emitModelProgress(progress){const item=pendingModelInstalls[0];if(!item)return false;item.onProgress?.(copy(progress));return true;},
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
@@ -174,7 +202,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         if(control.failModelStorage)throw new Error('Fixture storage is busy in another application. Retry cleanup.');
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf',...(archivalExport?['pdfa']:[]),'text','json','html','markdown','hocr','alto',...(wordExport?['docx']:[])],archival_pdf_export:archivalExport,pdf_bidi_export:!rtlExport,docx_export:wordExport,pdfa_export_reason:archivalExport?undefined:'PDF/A-2b requires the archival-capable native renderer in this build.',engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage','safe-overlays'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
         async modelStorage(){note('modelStorage');return copy(control.modelStorageReport);},
         async cleanModelStorage(){
             note('cleanModelStorage');await waitForStorage();
@@ -266,7 +294,25 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             };
             return {image_path:path+'-prepared',width:1000,height:1400};
         },
-        async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};},
+        async exportDocument(request,options){
+            note('exportDocument',request);control.exports.push(copy(request));
+            if(scenario==='export-control'){
+                const item:{release:()=>void;options?:ExportOptions;phase:ExportProgress['phase'];cancelled:boolean}={release:()=>{},options,phase:'rendering',cancelled:false};
+                const onAbort=()=>{if(item.phase!=='committing'&&item.phase!=='destination'){item.cancelled=true;control.cancelledExports++;}};
+                options?.signal?.addEventListener('abort',onAbort,{once:true});
+                control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
+                try{
+                    if(options?.signal?.aborted)onAbort();
+                    // A stop request does not finish the native worker. The test
+                    // controls that boundary separately from the AbortSignal.
+                    await new Promise<void>(release=>{item.release=release;pendingExports.push(item);control.pendingExports=pendingExports.length;});
+                    if(item.cancelled)throw new DOMException('Document export cancelled.','AbortError');
+                    if(control.failExport)throw new Error('Fixture export could not finish writing.');
+                }finally{control.activeNative--;options?.signal?.removeEventListener('abort',onAbort);}
+            }
+            control.completedExports++;
+            return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};
+        },
         async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
         async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
         async table(path){note('table',{path});await waitForExtraction();return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},

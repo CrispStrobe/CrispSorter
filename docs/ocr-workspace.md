@@ -29,6 +29,24 @@ rerunning completed recognition.
    approval is required by default and can be relaxed explicitly. Choose the
    output filename. Corrected text is used directly; export never reruns OCR.
 
+### Choose an output format
+
+Searchable PDF preserves current page images and reviewed text geometry. Archival
+PDF/A-2b additionally embeds its required font, color and metadata resources when
+the matching renderer advertises that capability. Preflight checks the selected
+text before the destination picker; text requiring an unavailable bidirectional
+PDF path receives a reason and buttons for the supported alternatives.
+
+Word exports editable paragraphs in reviewed reading order, with text direction,
+tabs, empty paragraphs and source-page breaks. Complex page layout becomes flowing
+text. It is available in the desktop and mobile OCR build profiles. Plain text
+keeps region characters and line endings exactly, including trailing whitespace;
+HTML supplies mobile-readable paragraphs with automatic text direction. JSON
+preserves reviewed region text and geometry. Invalid rich-document characters
+receive an explicit Text/JSON alternative instead of silently disappearing.
+See [text-export compatibility](ocr-text-export-compatibility.md) for the exact
+format rules and qualification scope.
+
 ### Projects and recovery
 
 Projects save automatically after edits and after processing results. **Save**
@@ -65,8 +83,9 @@ receives a conflict instead of overwriting newer work. Missing page assets are
 reported while text corrections remain recoverable; recognition and export
 require their images to be available.
 
-Undo/redo stores bounded project snapshots, with both a count limit and an
-approximately 24 MiB memory budget. Consecutive typing in one region is one undo
+Undo/redo stores bounded project snapshots, with a 50-entry limit and a 24 MiB
+serialized UTF-8 history budget. The live project, decoded images, and native
+runtime memory are separate from that budget. Consecutive typing in one region is one undo
 step. Pixel edits invalidate the old recognition geometry; Undo restores the
 previous working image and result together. The original image comparison hides
 working-image overlays so transformed coordinates are never drawn on the wrong
@@ -179,6 +198,14 @@ that selected external file. The imported original bytes and immutable workspace
 images remain preserved inside the application. Cancelling the picker reports
 cancellation. Temporary export staging is removed after completion, cancellation,
 or failure.
+
+Export progress shows the rendering, writing, and finishing stages with the
+current byte count. **Cancel export** remains available while rendering or
+writing; **Stopping…** keeps the workspace locked until the worker has stopped.
+Once publication begins, cancellation is disabled and the completed result is
+reported. On mobile, **Saving to a destination** means the system save dialog
+owns the operation. Finish or cancel there; the application waits for the
+provider copy before removing its private staging file.
 
 The **Prepare photo** controls are advertised only with `ocr-photo-tools`,
 included in `ocr-workspace`, and require the matching CrispEmbed source and native
@@ -302,19 +329,28 @@ existing chunking and semantic/full-text indexing pipeline.
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
 | Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
+| Archival PDF/A-2b | Searchable PDF with embedded fonts, sRGB output intent and archival metadata | Paired archival-capable renderer |
 
 Searchable PDF export requires the matching updated native renderer and the
-`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Older native builds retain the other export
-formats. Archival PDF/A export is not advertised: it requires embedded resources
-and independent conformance validation. DOCX export produces flowing text, not
+`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Its native capability
+mask must include decoded images and Unicode mappings. Bidirectional layout is
+advertised independently, so older capable builds retain ordinary searchable
+PDF with their existing script limits. The PDF/A-2b option also
+requires the archival capability; unsupported builds show a disabled option and
+the native capability reason. Both PDF choices retain source page dimensions or
+the explicitly selected scan resolution and save with a `.pdf` extension.
+DOCX export produces flowing text, not
 an exact reconstruction of arbitrary page typography. Exports preserve empty recognized
 pages as image pages when the output supports images.
 
-The reviewed PDF renderer rejects right-to-left text and directional controls
-with an actionable error. Its current text mapping cannot preserve their logical
-order consistently across PDF readers. Such documents can still be reviewed and
-exported as text, JSON, hOCR, or ALTO without publishing a reversed searchable
-layer. Full bidirectional PDF support needs a separately validated renderer.
+The matching renderer accepts logical reviewed text and resolves Unicode 17
+bidirectional paragraphs before positioning the invisible text. Original page
+images stay visible; text selection geometry is estimated within each supplied
+OCR region. The application enables the new native option only when the runtime
+advertises its matching capability bit. PDF/A-2b does not claim accessible PDF/UA
+or editable recovered typography. Independent native extraction, pixel and
+veraPDF conformance gates must pass for the exact source before deployment;
+the initial implementation checkpoint remains under qualification.
 
 All exports validate dimensions, finite coordinates, nonempty page selection,
 and asset availability. Existing output files require explicit replacement.
@@ -322,6 +358,14 @@ For direct filesystem exports, original source paths and workspace assets remain
 protected even when replacing an existing export. Mobile external destination
 replacement is controlled by the system save picker, as described above. Writes are staged atomically; a failed render does not
 truncate an existing file.
+
+The project is saved before an export destination is allocated. Export takes a
+snapshot of the selected pages and reviewed text, so a replacement confirmation
+uses the same content. A late stop cannot turn a successfully committed file into
+a cancellation message. If a mobile export stops after private rendering but
+before the system picker opens, the private output is discarded and no picker is
+shown. See [Export progress and cancellation](ocr-export-control.md) for the
+transport contract and qualification scope.
 
 ## Keyboard shortcuts
 
@@ -340,9 +384,10 @@ available for project-level changes while a text field has focus.
 
 ## Development and verification
 
-The [9 November checkpoint](ocr-studio-checkpoint-2026-11-09.md) records exact
-tested revisions, retained phone-photo results, corrected CI evidence, and the
-remaining native application and physical-device gates.
+The [9 November continuation record](ocr-studio-continuation-2026-11-09.md) records
+exact tested revisions, retained phone-photo results, corrected CI evidence, and
+native application and physical-device gates. The earlier checkpoint remains
+available as historical evidence.
 
 The main implementation is split between:
 
@@ -395,9 +440,11 @@ and automatic layout equivalence are outside the implemented workspace contract.
 ## Mobile OCR model installation
 
 The paired `ocr-mobile` Cargo profile enables image and TIFF OCR, photo correction,
-review diagnostics, and searchable PDF export. It deliberately omits `pdf-render`:
-PDF import needs a separately packaged mobile rasterizer, and this profile reports
-PDF import as unavailable. Release defaults and release runtime pins are unchanged.
+review diagnostics, and searchable PDF export. It uses Android PdfRenderer or iOS
+CoreGraphics for PDF import through the registered native document bridge;
+desktop's `pdf-render`/PDFium feature is not required on those mobile targets.
+HEIC/HEIF/AVIF support follows the codecs actually available on the device.
+Release defaults and release runtime pins are unchanged.
 
 The mobile profile provisions models in the application's private `ocr-models`
 store. Downloads are explicit user actions; recognition only loads an installed,
