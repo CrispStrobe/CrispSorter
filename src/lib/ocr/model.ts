@@ -72,7 +72,11 @@ export interface ExportPage {
 }
 export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
-export interface History { past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number; }
+export interface History {
+    past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number;
+    /** Sizes belong to the corresponding immutable history copies, not the editable present. */
+    pastBytes?: number[]; futureBytes?: number[];
+}
 
 export const PROFILES: readonly OcrProfile[] = [
     { id: 'balanced', name: 'Balanced document', description: 'Automatic routing with classical scan cleanup.', config: { enabled: true, router: true, cleanup_enabled: true } },
@@ -415,34 +419,70 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>activeRegions(p).map((r)=>r.text).join('\n')).join('\f')};
 }
 
+const historyEncoder = new TextEncoder();
+const historyEncodingBuffer = new Uint8Array(64 * 1024);
+const DEFAULT_HISTORY_BYTES = 24 * 1024 * 1024;
+
+// Count UTF-8 without allocating a second project-sized byte array. Text is
+// already serialized for the defensive copy, and the small scratch buffer is
+// reused synchronously. This also counts surrogate pairs consistently with
+// actual JSON serialization.
+function historyTextBytes(text: string): number {
+    if (!historyEncoder.encodeInto) return historyEncoder.encode(text).byteLength;
+    let offset = 0, bytes = 0;
+    while (offset < text.length) {
+        const chunk = historyEncoder.encodeInto(text.slice(offset), historyEncodingBuffer);
+        offset += chunk.read; bytes += chunk.written;
+    }
+    return bytes;
+}
+function historySizes(entries: OcrProject[], sizes?: number[]): number[] {
+    if (sizes?.length === entries.length && sizes.every((value) => Number.isSafeInteger(value) && value >= 0)) return sizes;
+    // Older in-memory callers may not yet carry accounting metadata.
+    return entries.map((entry) => historyTextBytes(JSON.stringify(entry)));
+}
+function historyCopy(project: OcrProject): { copy: OcrProject; bytes: number } {
+    const serialized = JSON.stringify(project);
+    return { copy: JSON.parse(serialized), bytes: historyTextBytes(serialized) };
+}
 /** History is bounded by count and UTF-8 snapshot bytes, excluding the live project. */
 export function createHistory(project: OcrProject, limit = 50, maxBytes = 24 * 1024 * 1024): History {
-    return {past:[],present:clone(project),future:[],limit:Math.max(1,Math.min(200,Math.floor(limit)||50)),maxBytes:Math.max(0,Math.floor(maxBytes))};
+    return {past:[],present:clone(project),future:[],pastBytes:[],futureBytes:[],limit:Math.max(1,Math.min(200,Math.floor(limit)||50)),maxBytes:Number.isFinite(maxBytes)?Math.max(0,Math.floor(maxBytes)):DEFAULT_HISTORY_BYTES};
 }
 function boundedHistory(history: History): History {
     const past = history.past.slice(-history.limit), future = history.future.slice(0,history.limit);
-    const encoder = new TextEncoder();
-    const size = (project:OcrProject) => encoder.encode(JSON.stringify(project)).byteLength;
-    const pastSizes=past.map(size), futureSizes=future.map(size);
+    const pastSizes=historySizes(history.past,history.pastBytes).slice(-history.limit);
+    const futureSizes=historySizes(history.future,history.futureBytes).slice(0,history.limit);
     let bytes=[...pastSizes,...futureSizes].reduce((sum,value)=>sum+value,0);
     while (bytes>history.maxBytes && (past.length || future.length)) {
         // Retain the nearest edit on each side for as long as possible.
         if (past.length >= future.length) { past.shift(); bytes-=pastSizes.shift()!; }
         else { future.pop(); bytes-=futureSizes.pop()!; }
     }
-    return {...history,past,future};
+    return {...history,past,future,pastBytes:pastSizes,futureBytes:futureSizes};
 }
 export function commitHistory(history: History, project: OcrProject): History {
-    if (project === history.present || JSON.stringify(project) === JSON.stringify(history.present)) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(project),future:[]});
+    if (project === history.present) return history;
+    const serialized=JSON.stringify(project), previous=JSON.stringify(history.present);
+    if (serialized === previous) return history;
+    const previousBytes=historyTextBytes(previous);
+    // A snapshot larger than the whole budget would evict all history anyway;
+    // avoid constructing that additional large object before discarding it.
+    if (previousBytes > history.maxBytes) return {...history,past:[],present:JSON.parse(serialized),future:[],pastBytes:[],futureBytes:[]};
+    return boundedHistory({...history,past:[...history.past,JSON.parse(previous)],present:JSON.parse(serialized),future:[],
+        pastBytes:[...historySizes(history.past,history.pastBytes),previousBytes],futureBytes:[]});
 }
 export function undoHistory(history: History): History {
     if (!history.past.length) return history;
-    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[clone(history.present),...history.future]});
+    const current=historyCopy(history.present);
+    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[current.copy,...history.future],
+        pastBytes:historySizes(history.past,history.pastBytes).slice(0,-1),futureBytes:[current.bytes,...historySizes(history.future,history.futureBytes)]});
 }
 export function redoHistory(history: History): History {
     if (!history.future.length) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(history.future[0]),future:history.future.slice(1)});
+    const current=historyCopy(history.present);
+    return boundedHistory({...history,past:[...history.past,current.copy],present:clone(history.future[0]),future:history.future.slice(1),
+        pastBytes:[...historySizes(history.past,history.pastBytes),current.bytes],futureBytes:historySizes(history.future,history.futureBytes).slice(1)});
 }
 
 /** Strict boundary validation; interrupted jobs return to pending on restore. */

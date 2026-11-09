@@ -40,6 +40,24 @@ export interface ModelDownloadProgress {
   total: number | null;
   request_id?: string;
 }
+export interface ModelStorageEntry {
+  name: string;
+  version: string | null;
+  bytes: number;
+  reclaimable_bytes: number;
+  in_use: boolean;
+}
+export interface ModelStorageReport {
+  bytes: number;
+  reclaimable_bytes: number;
+  models: ModelStorageEntry[];
+  warnings: string[];
+}
+export interface ModelStorageCleanup {
+  removed_bytes: number;
+  removed_versions: number;
+  report: ModelStorageReport;
+}
 export function modelDownloadLabel(progress: ModelDownloadProgress): string {
   if (progress.phase === "checking") return `Checking ${progress.name}…`;
   if (progress.phase === "verified") return `Verified ${progress.filename}`;
@@ -125,6 +143,9 @@ export interface WorkspaceClient {
   importImage?(name: string, bytes: Uint8Array): Promise<ImportedDocument>;
   assessPhoto?(pagePath: string): Promise<PhotoAssessment>;
   installMobileModels?(language: string, onProgress?: (progress: ModelDownloadProgress) => void): Promise<string[]>;
+  modelStorage?(): Promise<ModelStorageReport>;
+  cleanModelStorage?(): Promise<ModelStorageCleanup>;
+  removeMobileModel?(name: string, expectedVersion: string): Promise<ModelStorageCleanup>;
   recognize(options: RecognitionOptions): Promise<RecognitionResult>;
   transform(options: TransformOptions): Promise<{ pages: ImportedPage[] }>;
   prepare(
@@ -208,6 +229,9 @@ export const workspaceClient: WorkspaceClient = {
   },
   importImage: (name, bytes) => importPayload("ocr_workspace_import_image", name, bytes),
   assessPhoto: (pagePath) => invoke("ocr_workspace_assess_photo", { pagePath }),
+  modelStorage: () => invoke("ocr_workspace_model_storage"),
+  cleanModelStorage: () => invoke("ocr_workspace_clean_model_storage"),
+  removeMobileModel: (name, expectedVersion) => invoke("ocr_workspace_remove_mobile_model", { name, expectedVersion }),
   installMobileModels: async (language, onProgress) => {
     const requestId = crypto.randomUUID();
     const unlisten = await listen<ModelDownloadProgress>("crispembed-model-download", (event) => {

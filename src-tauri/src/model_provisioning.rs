@@ -6,6 +6,14 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(any(feature = "ocr-mobile", test))]
+#[path = "model_storage.rs"]
+mod storage;
+
+#[path = "model_storage_types.rs"]
+mod storage_types;
+pub use storage_types::{ModelStorageCleanup, ModelStorageEntry, ModelStorageReport};
+
 pub fn enabled() -> bool { cfg!(feature = "ocr-mobile") }
 
 pub fn initialize(app_data: &Path) -> Result<(), String> {
@@ -17,11 +25,17 @@ pub fn initialize(app_data: &Path) -> Result<(), String> {
 
 #[cfg(feature = "crispembed")]
 pub fn resolve_model(name: &str, auto_download: Option<bool>) -> Result<String, String> {
-    if Path::new(name).is_file() { return Ok(name.to_owned()); }
     #[cfg(feature = "ocr-mobile")]
-    { let _ = auto_download; mobile::resolve_installed(name) }
+    {
+        let _ = auto_download;
+        if Path::new(name).is_file() { mobile::resolve_local(name) }
+        else { mobile::resolve_installed(name, true) }
+    }
     #[cfg(not(feature = "ocr-mobile"))]
-    { crispembed::CrispEmbed::resolve_model(name, auto_download) }
+    {
+        if Path::new(name).is_file() { return Ok(name.to_owned()); }
+        crispembed::CrispEmbed::resolve_model(name, auto_download)
+    }
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
@@ -33,7 +47,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 
 pub fn is_installed(name: &str) -> bool {
     #[cfg(feature = "ocr-mobile")]
-    { mobile::resolve_installed(name).is_ok() }
+    { mobile::resolve_installed(name, false).is_ok() }
     #[cfg(not(feature = "ocr-mobile"))]
     { let _ = name; false }
 }
@@ -86,6 +100,30 @@ pub async fn ocr_workspace_install_mobile_models(
         let _ = (app, language, request_id);
         Err("The mobile model installer is unavailable in this build.".into())
     }
+}
+
+#[tauri::command]
+pub async fn ocr_workspace_model_storage() -> Result<ModelStorageReport, String> {
+    #[cfg(feature = "ocr-mobile")]
+    { tokio::task::spawn_blocking(mobile::storage_report).await.map_err(|error| format!("Model storage: {error}"))? }
+    #[cfg(not(feature = "ocr-mobile"))]
+    { Err("Private model storage is unavailable in this build.".into()) }
+}
+
+#[tauri::command]
+pub async fn ocr_workspace_clean_model_storage() -> Result<ModelStorageCleanup, String> {
+    #[cfg(feature = "ocr-mobile")]
+    { tokio::task::spawn_blocking(mobile::clean_storage).await.map_err(|error| format!("Model cleanup: {error}"))? }
+    #[cfg(not(feature = "ocr-mobile"))]
+    { Err("Private model storage is unavailable in this build.".into()) }
+}
+
+#[tauri::command]
+pub async fn ocr_workspace_remove_mobile_model(name: String, expected_version: String) -> Result<ModelStorageCleanup, String> {
+    #[cfg(feature = "ocr-mobile")]
+    { tokio::task::spawn_blocking(move || mobile::remove_model(&name, &expected_version)).await.map_err(|error| format!("Remove model: {error}"))? }
+    #[cfg(not(feature = "ocr-mobile"))]
+    { let _ = (name, expected_version); Err("Private model storage is unavailable in this build.".into()) }
 }
 
 #[cfg(any(feature = "ocr-mobile", test))]
@@ -147,7 +185,12 @@ mod mobile {
         if ROOT.get().is_some_and(|previous| previous != &root) {
             return Err("The OCR model store is already initialized at another location.".into());
         }
-        let _ = ROOT.set(root);
+        let _ = ROOT.set(root.clone());
+        // Best effort: an interrupted download must not consume disk forever,
+        // but a busy second process must not prevent the application starting.
+        if let Ok(_lock) = storage::lock_store(&root) {
+            if let Err(error) = storage::cleanup_locked(&root) { eprintln!("OCR model cleanup: {error}"); }
+        }
         Ok(())
     }
     pub(super) fn cache_dir() -> Option<PathBuf> { ROOT.get().cloned() }
@@ -289,11 +332,52 @@ mod mobile {
     }
 
     #[cfg(feature = "ocr-mobile")]
-    pub(super) fn resolve_installed(name: &str) -> Result<String, String> {
+    pub(super) fn resolve_installed(name: &str, retain: bool) -> Result<String, String> {
         let files = artifacts(name)?;
         let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
-        installed(root()?, name, &files)?.map(|path| path.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("Model '{name}' is not installed or failed its integrity check. Use Install basic OCR models for Tesseract, or the CrispEmbed model registry in Settings for other engines. Mobile recognition does not download models automatically."))
+        let root = root()?;
+        let _store = storage::lock_store(root)?;
+        let path = installed(root, name, &files)?
+            .ok_or_else(|| format!("Model '{name}' is not installed or failed its integrity check. Use Install basic OCR models for Tesseract, or the CrispEmbed model registry in Settings for other engines. Mobile recognition does not download models automatically."))?;
+        // Registry readiness checks must not pin every installed model.
+        if retain { storage::retain_path_locked(root, &path)?; }
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    #[cfg(feature = "ocr-mobile")]
+    pub(super) fn resolve_local(name: &str) -> Result<String, String> {
+        let path = Path::new(name);
+        // Preserve local-file support even before the private store is ready.
+        let Some(root) = ROOT.get() else { return Ok(name.to_owned()); };
+        let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
+        let _store = storage::lock_store(root)?;
+        storage::retain_path_locked(root, path)?;
+        Ok(name.to_owned())
+    }
+
+    #[cfg(feature = "ocr-mobile")]
+    pub(super) fn storage_report() -> Result<ModelStorageReport, String> {
+        let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
+        let root = root()?; let _store = storage::lock_store(root)?;
+        storage::report_locked(root)
+    }
+
+    #[cfg(feature = "ocr-mobile")]
+    pub(super) fn clean_storage() -> Result<ModelStorageCleanup, String> {
+        let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
+        let root = root()?; let _store = storage::lock_store(root)?;
+        let result = storage::cleanup_locked(root)?;
+        if let Some(cache) = VERIFIED.get() { if let Ok(mut cache) = cache.lock() { cache.retain(|path, _| path.is_file()); } }
+        Ok(result)
+    }
+
+    #[cfg(feature = "ocr-mobile")]
+    pub(super) fn remove_model(name: &str, version: &str) -> Result<ModelStorageCleanup, String> {
+        let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
+        let root = root()?; let _store = storage::lock_store(root)?;
+        let result = storage::remove_model_locked(root, name, version)?;
+        if let Some(cache) = VERIFIED.get() { if let Ok(mut cache) = cache.lock() { cache.retain(|path, _| path.is_file()); } }
+        Ok(result)
     }
 
     /// Writes only inside a fresh staging directory. The published model set is
@@ -408,6 +492,9 @@ mod mobile {
         let files = artifacts(name)?;
         let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
         let root = root()?;
+        // Shared with other app processes. It also makes incoming-* directories
+        // safe to reclaim: no active download can coexist with cleanup.
+        let _store = storage::lock_store(root)?;
         progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "checking", downloaded: 0, total: None, request_id: None });
         if let Some(path) = installed(root, name, &files)? {
             progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None, request_id: None });
@@ -436,6 +523,9 @@ mod mobile {
             emit("verified", bytes, Some(bytes));
         }
         let path = commit_set(root, name, &files, staging)?;
+        // Publishing a verified install remains successful if optional cleanup
+        // cannot run. Installed and in-use generations are always protected.
+        if let Err(error) = storage::cleanup_locked(root) { eprintln!("OCR model cleanup: {error}"); }
         progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None, request_id: None });
         Ok(path.to_string_lossy().into_owned())
     }

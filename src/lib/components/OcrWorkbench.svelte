@@ -59,6 +59,7 @@
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
+  import ModelStorage from "./ocr/ModelStorage.svelte";
   import { captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import {
@@ -156,6 +157,7 @@
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
   let modelProgress = $state("");
+  let modelStorageRevision = $state(0);
   let modelSetupPanel = $state<HTMLElement>();
   let cameraInput = $state<HTMLInputElement>();
   let lastPhotoSource = "";
@@ -871,7 +873,10 @@
       const names = await client.installMobileModels(language === "auto" ? "eng" : language, (progress) => {
         if (mounted) modelProgress = modelDownloadLabel(progress);
       });
-      if (mounted) notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+      if (mounted) {
+        notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+        modelStorageRevision += 1;
+      }
     } catch (value) {
       if (mounted) fail(value);
     } finally {
@@ -1703,6 +1708,7 @@
     </button>
     {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
     <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
+    <ModelStorage {client} disabled={locked} revision={modelStorageRevision} onerror={fail} onnotice={(value) => { notice = value; }} />
   </section>
 {/if}
 {/snippet}

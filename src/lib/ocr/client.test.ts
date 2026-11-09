@@ -27,6 +27,21 @@ describe('OCR workspace platform transport', () => {
         loadCapabilities.mockResolvedValue({ mobile: true });
     });
 
+    it('passes the displayed version when removing a model and preserves stale-version failures', async () => {
+        const report = { bytes: 12, reclaimable_bytes: 4, models: [], warnings: [] };
+        invoke.mockResolvedValueOnce(report);
+        expect(await workspaceClient.modelStorage!()).toEqual(report);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_model_storage');
+        const cleaned = { removed_bytes: 4, removed_versions: 1, report };
+        invoke.mockResolvedValueOnce(cleaned);
+        expect(await workspaceClient.cleanModelStorage!()).toEqual(cleaned);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_clean_model_storage');
+        const stale = new Error('This model changed after the storage view was opened.');
+        invoke.mockRejectedValueOnce(stale);
+        await expect(workspaceClient.removeMobileModel!('tesseract-eng', 'displayed-version')).rejects.toBe(stale);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_remove_mobile_model', { name: 'tesseract-eng', expectedVersion: 'displayed-version' });
+    });
+
     it('imports the exact provider URI and displayed filename, including unknown provider size', async () => {
         const uri = 'content://documents/document/CaseSensitive%3AA%2FB';
         const imported = { source_uri: uri, name: 'Überprüfung_日本.TIFF', pages: [] };

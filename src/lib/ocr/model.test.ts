@@ -423,6 +423,43 @@ describe('durable project recovery and history',()=>{
         p.recognitionSettings={engine:'surya',language:'deu',cleanup:{deskew:true}};
         expect(parseProject(serializeProject(p)).recognitionSettings).toEqual(p.recognitionSettings);
     });
+    it('large multilingual projects retain exact undo state and UTF-8 bounds through coalesced edits',()=>{
+        const original=recognize(project(1000),512,'日本語 العربية עברית 😀 e\u0301');
+        const pid=original.pages[512].id,rid=original.pages[512].regions[0].id;
+        const size=(p:OcrProject)=>new TextEncoder().encode(JSON.stringify(p)).byteLength;
+        let history=createHistory(original,50,size(original)*3+1024);
+        for (let index=0;index<8;index++) {
+            history=commitHistory(history,editRegion(history.present,pid,rid,`修正 ${index} العربية 😀`));
+            // The workbench coalesces typing by replacing only the live present.
+            history={...history,present:editRegion(history.present,pid,rid,`修正 ${index} العربية 😀 complete`)};
+        }
+        const committedText=history.present.pages[512].regions[0].text;
+        expect(history.past.length).toBeGreaterThan(0);
+        expect(history.pastBytes).toEqual(history.past.map(size));
+        expect([...history.past,...history.future].reduce((sum,p)=>sum+size(p),0)).toBeLessThanOrEqual(history.maxBytes);
+        history=undoHistory(history);
+        expect(history.present.pages[512].regions[0].text).toBe('修正 6 العربية 😀 complete');
+        expect(history.futureBytes).toEqual(history.future.map(size));
+        history=redoHistory(history);
+        expect(history.present.pages[512].regions[0].text).toBe(committedText);
+        expect(history.present.pages.map(p=>p.id)).toEqual(original.pages.map(p=>p.id));
+        expect(original.pages[512].regions[0].text).toBe('日本語 العربية עברית 😀 e\u0301');
+        expect(history.pastBytes).toEqual(history.past.map(size));
+    });
+    it('oversized history snapshots preserve the live edit without retaining discarded copies',()=>{
+        const original=recognize(project(2));
+        const pid=original.pages[0].id,rid=original.pages[0].regions[0].id;
+        const next=editRegion(original,pid,rid,'a'.repeat(40000));
+        let history=commitHistory(createHistory(original,50,1),next);
+        expect(history.past).toEqual([]);
+        expect(history.pastBytes).toEqual([]);
+        next.pages[0].regions[0].text='external mutation';
+        expect(history.present.pages[0].regions[0].text).toHaveLength(40000);
+        history=commitHistory(history,editRegion(history.present,pid,rid,'smaller'));
+        expect(history.present.pages[0].regions[0].text).toBe('smaller');
+        expect(history.past).toEqual([]);
+        expect(createHistory(original,50,NaN).maxBytes).toBe(24*1024*1024);
+    });
     it('undo/redo is bounded, immutable and a new edit discards future history',()=>{
         let p=recognize(project(1));
         const pid=p.pages[0].id,rid=p.pages[0].regions[0].id;
