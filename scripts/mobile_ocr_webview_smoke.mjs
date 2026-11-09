@@ -950,7 +950,7 @@ async function main() {
       await page.screenshot({ path: path.join(output, 'actual-workspace-capture.png') });
       const capturedId = captured.id;
       const observed = await measuredRecognition('ui-capture', async () => {
-        await workspace.getByRole('button', { name: 'Recognize page', exact: true })
+        await workspace.locator('.command-bar').getByRole('button', { name: 'Recognize page', exact: true })
           .click({ timeout: budget(15_000, 'recognize captured page from UI') });
         while (Date.now() < deadline) {
           const loaded = await invoke('ocr_workspace_load', { projectId: uiProjectId });
@@ -1004,7 +1004,7 @@ async function main() {
         }, null, { timeout: budget(30_000, 'return from system document picker') });
         await waitReady();
         const beforeCancel = await invoke('ocr_workspace_load', { projectId: saved.project.id });
-        await workspace.getByRole('button', { name: 'Add documents', exact: true }).click();
+        await workspace.locator('.command-bar').getByRole('button', { name: 'Add documents', exact: true }).click();
         let cancellationOpened = false;
         for (let attempt = 0; attempt < 4; attempt++) {
           const snapshot = await pickerSnapshot('cancel-' + attempt, filename);
@@ -1018,7 +1018,7 @@ async function main() {
           'Cancelling the real system picker mutated the saved project.');
         receipt.document_picker.cancellation_preserved_project = true;
 
-        await workspace.getByRole('button', { name: 'Add documents', exact: true }).click();
+        await workspace.locator('.command-bar').getByRole('button', { name: 'Add documents', exact: true }).click();
         let selected = false, returned = false;
         const navigation = new Set();
         for (let attempt = 0; attempt < 12; attempt++) {

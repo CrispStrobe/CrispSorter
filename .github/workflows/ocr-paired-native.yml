@@ -13,9 +13,17 @@ on:
       - src-tauri/src/model_storage.rs
       - src-tauri/src/model_storage_types.rs
       - src-tauri/src/index/tauri_commands.rs
+      - src-tauri/src/extractors/image_input.rs
+      - src-tauri/src/extractors/mod.rs
       - src-tauri/src/model_provisioning/**
       - src-tauri/src/lib.rs
       - src-tauri/Cargo.toml
+      - Cargo.lock
+      - src-tauri/src/main.rs
+      - src-tauri/src/cli/mod.rs
+      - src-tauri/tauri.conf.json
+      - scripts/desktop_ocr_startup_smoke.py
+      - tests/scripts/test_desktop_startup.py
       - .github/workflows/ocr-paired-native.yml
   pull_request:
     paths:
@@ -27,6 +35,8 @@ on:
       - src-tauri/src/model_storage.rs
       - src-tauri/src/model_storage_types.rs
       - src-tauri/src/index/tauri_commands.rs
+      - src-tauri/src/extractors/image_input.rs
+      - src-tauri/src/extractors/mod.rs
       - src-tauri/src/model_provisioning/**
       - src-tauri/src/lib.rs
       - src-tauri/src/ocr_reading_order.rs
@@ -35,6 +45,11 @@ on:
       - src-tauri/src/extractors/ocr_render.rs
       - src-tauri/src/extractors/page_source.rs
       - src-tauri/Cargo.toml
+      - src-tauri/src/main.rs
+      - src-tauri/src/cli/mod.rs
+      - src-tauri/tauri.conf.json
+      - scripts/desktop_ocr_startup_smoke.py
+      - tests/scripts/test_desktop_startup.py
       - .github/workflows/ocr-paired-native.yml
 
 permissions:
@@ -54,11 +69,16 @@ env:
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
 
 jobs:
   paired:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Cold desktop code generation/linking includes mistralrs; checking its Rust
+    # metadata alone does not prove the executable links or starts.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,6 +90,17 @@ jobs:
           submodules: recursive
           path: repos/CrispEmbed
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+      - name: Verify desktop evidence rejection controls
+        working-directory: repos/CrispSorter
+        run: python3 -m unittest discover -s tests/scripts -p test_desktop_startup.py -v
       - name: Verify conservative reading-order permutations
         working-directory: repos/CrispSorter
         run: |
@@ -78,7 +109,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf protobuf-compiler libssl-dev
+          sudo apt-get install -y -qq cmake ninja-build libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf protobuf-compiler libssl-dev xvfb xauth dbus-x11 xdotool imagemagick libgl1-mesa-dri ripgrep
       - name: Build matching native OCR library and serialization/export tests
         run: |
           cmake -S repos/CrispEmbed -B repos/CrispEmbed/build \
@@ -104,6 +135,12 @@ jobs:
         with:
           workspaces: repos/CrispSorter -> target
           shared-key: ocr-paired-native
+          cache-on-failure: true
+      - name: Build the production desktop frontend
+        working-directory: repos/CrispSorter
+        run: |
+          npm ci
+          npm run build
       - name: Verify application against paired native source
         working-directory: repos/CrispSorter
         env:
@@ -112,31 +149,63 @@ jobs:
         run: |
           mkdir -p build src-tauri/bin
           touch src-tauri/bin/.gitkeep
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_workspace:: -- --test-threads=1
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_photo::tests -- --test-threads=1
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             model_provisioning -- --test-threads=1
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_crispembed::tests -- --test-threads=1
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            extractors::tests::incomplete_jpeg_cannot_reach_an_ocr_fallback -- --list \
+            | rg '^extractors::tests::incomplete_jpeg_cannot_reach_an_ocr_fallback: test$'
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            extractors::tests::incomplete_jpeg_cannot_reach_an_ocr_fallback -- --exact --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::page_source::tests -- --test-threads=1
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_reading_order::tests -- --test-threads=1
-          cargo test -p crispsorter --lib --no-default-features \
+          cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_render::tests -- --test-threads=1
-          cargo check -p crispsorter --lib --no-default-features \
+          cargo check --locked -p crispsorter --lib --no-default-features \
             --features ocr-mobile
-          cargo check -p crispsorter --lib --no-default-features \
+      - name: Link the complete Linux desktop OCR executable
+        working-directory: repos/CrispSorter
+        env:
+          CRISPEMBED_SYS_LIB_DIR: ${{ github.workspace }}/repos/CrispEmbed/build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/repos/CrispEmbed/build:${{ github.workspace }}/repos/CrispEmbed/build/ggml/src
+        run: |
+          cargo build --locked -p crispsorter --bin crispsorter --no-default-features \
             --features desktop,ocr-workspace
+      - name: Execute desktop CLI and observe the production application startup
+        working-directory: repos/CrispSorter
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/repos/CrispEmbed/build:${{ github.workspace }}/repos/CrispEmbed/build/ggml/src
+        run: |
+          xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- \
+            python3 scripts/desktop_ocr_startup_smoke.py \
+              --source . --native-source ../CrispEmbed \
+              --binary target/debug/crispsorter \
+              --native-library ../CrispEmbed/build/libcrispembed.so \
+              --frontend build --output test-results/desktop-startup
+      - name: Save desktop execution evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-paired-desktop-startup-linux
+          path: repos/CrispSorter/test-results/desktop-startup
+          if-no-files-found: warn
+          retention-days: 14
       - name: Save native diagnostics library
         uses: actions/upload-artifact@v4
         with:
