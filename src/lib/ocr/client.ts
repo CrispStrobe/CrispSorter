@@ -280,7 +280,15 @@ async function trackedImport(options: ImportOptions | undefined, run: (requestId
 
 function exportAborted(): DOMException { return new DOMException("Document export cancelled.", "AbortError"); }
 function exportFailure(error: unknown): unknown {
-  return String(error).includes("OCR_EXPORT_CANCELLED") ? exportAborted() : error;
+  const detail = error instanceof Error ? error.message : String(error);
+  // Match the native command's exact cancellation causes. A path or another
+  // error's context can legally contain the same marker and must stay intact.
+  return [
+    "OCR_EXPORT_CANCELLED",
+    "Render OCR PDF: OCR_EXPORT_CANCELLED",
+    "Write OCR export: OCR_EXPORT_CANCELLED",
+    "Flush OCR export: OCR_EXPORT_CANCELLED",
+  ].includes(detail) ? exportAborted() : error;
 }
 
 /** A stop request can lose to atomic publication. Only the native cancellation
