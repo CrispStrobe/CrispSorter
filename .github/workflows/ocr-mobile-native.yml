@@ -9,6 +9,7 @@ on:
       - 'scripts/build_mobile_crispembed.py'
       - 'scripts/ocr-mobile-runtime-lock.json'
       - 'scripts/prepare_ocr_ios_project.py'
+      - 'scripts/mobile_ocr_webview_smoke.mjs'
       - 'scripts/validate_android_native_libs.py'
       - 'tools/mobile-ocr-probe/**'
       - 'tests/scripts/test_*mobile*'
@@ -62,11 +63,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Verify build and fixture contracts
         working-directory: repos/CrispSorter
         run: |
           python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v
           python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py tools/mobile-ocr-probe/prepare.py
+          node --check scripts/mobile_ocr_webview_smoke.mjs
+          bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
   mobile:
@@ -265,13 +271,19 @@ jobs:
           python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml
           npx tauri ios build --target aarch64-sim --features ocr-mobile \
             --debug --ci --config src-tauri/tauri.ocr-mobile.conf.json
+      - name: Install pinned Android WebView test driver
+        if: matrix.runtime == 'android-x86_64'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ocr-webview-tools" --no-save --package-lock=false 'playwright@1.62.1'
+          echo "PLAYWRIGHT_MODULE_PATH=$RUNNER_TEMP/ocr-webview-tools/node_modules/playwright" >> "$GITHUB_ENV"
       - name: Enable Android emulator acceleration
         if: matrix.runtime == 'android-x86_64'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Execute native OCR and app startup on Android
+      - name: Execute native OCR, real app model installation and review export on Android
         if: matrix.runtime == 'android-x86_64'
         uses: reactivecircus/android-emulator-runner@v2
         with:

@@ -24,3 +24,21 @@ Build with the same source headers and native runtime revision pinned in
 scripts/ocr-mobile-runtime-lock.json. Do not link this probe or the new Rust
 binding against an older released native library. The paired mobile workflow
 provides the Android emulator and iOS simulator build/run commands.
+
+## Android application command smoke
+
+The x86_64 emulator lane also connects to the installed debug application's own
+WebView socket and invokes the real Tauri commands. This separately exercises
+the private HTTPS model installer, independent artifact hash checks, raw image
+import, native photo transforms, persisted recognition settings, real OCR, and
+reviewed PDF staging and cleanup. The installed APK hash must match the built
+artifact. Its fresh model store must begin empty; no fixture adapter supplies
+recognition or pretends to install weights.
+
+The command receipt preserves raw recognition output before assertions and
+records input, model, APK, and runtime-build hashes. This is a synthetic command
+integration test, not interaction coverage for the mobile UI or a physical
+camera, system document picker, performance budget, or representative document
+corpus. PDF signature checks do not establish the accuracy of its text layer.
+The iOS lane currently executes the standalone native probe and app startup;
+it does not claim the Android application's command coverage.
