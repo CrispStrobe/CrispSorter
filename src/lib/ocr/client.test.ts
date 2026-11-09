@@ -8,7 +8,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
 vi.mock('../capabilities', () => ({ loadCapabilities }));
 
-import { workspaceClient, importProgressLabel, type ExportRequest, type ModelDownloadProgress, type ImportProgress } from './client';
+import { workspaceClient, importProgressLabel, exportProgressLabel, type ExportRequest, type ExportResult, type ExportProgress, type ModelDownloadProgress, type ImportProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
 
 const stagedPath = '/app/cache/ocr-exports/inspection.txt';
@@ -20,6 +20,12 @@ const exportRequest = (outputPath: string): ExportRequest => ({
 const decodeMetadata = (options: { headers: Record<string, string> }) => JSON.parse(
     new TextDecoder().decode(Uint8Array.from(atob(options.headers['x-ocr-metadata']), char => char.charCodeAt(0))),
 );
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+}
 
 describe('OCR workspace platform transport', () => {
     beforeEach(() => {
@@ -98,12 +104,14 @@ describe('OCR workspace platform transport', () => {
         const commands: string[] = [];
         let release!: () => void;
         const copy = new Promise<void>(resolve => { release = resolve; });
+        const copyStarted = deferred<void>();
         invoke.mockImplementation(async (command, args) => {
             commands.push(command);
             if (command === 'ocr_workspace_export_target') return stagedPath;
             if (command === 'ocr_workspace_export') return exported;
             if (command === 'plugin:mobile-provider|export_file') {
                 expect(args).toEqual({ path: stagedPath, name: 'Inspection.txt' });
+                copyStarted.resolve();
                 await copy;
                 return { cancelled: false, saved_path: 'content://documents/Export%3AInspection' };
             }
@@ -113,7 +121,7 @@ describe('OCR workspace platform transport', () => {
         const path = await workspaceClient.pickExport('Inspection', 'txt');
         let finished = false;
         const result = workspaceClient.exportDocument(exportRequest(path!)).then(value => { finished = true; return value; });
-        await Promise.resolve(); await Promise.resolve();
+        await copyStarted.promise;
         expect(finished).toBe(false);
         expect(commands).toEqual(['ocr_workspace_export_target', 'ocr_workspace_export', 'plugin:mobile-provider|export_file']);
         release();
@@ -332,5 +340,183 @@ describe('OCR workspace platform transport', () => {
         invoke.mockRejectedValue(failure);
         loadCapabilities.mockResolvedValue({ mobile: false });
         await expect(workspaceClient.importDocument('/scan/locked.pdf', { onProgress: vi.fn() })).rejects.toBe(failure);
+    });
+
+    it('subscribes before export, reports correlated byte progress, and ignores late or invalid events', async () => {
+        const registration = deferred<() => void>(), nativeStarted = deferred<void>(), native = deferred<ExportResult>();
+        const unlisten = vi.fn(), onProgress = vi.fn();
+        let receive!: (event: { payload: ExportProgress }) => void;
+        let requestId = '';
+        listen.mockImplementation((event, handler) => {
+            expect(event).toBe('ocr-workspace-export'); receive = handler; return registration.promise;
+        });
+        invoke.mockImplementation((command, args) => {
+            expect(command).toBe('ocr_workspace_export'); requestId = args.requestId;
+            expect(args).toEqual({ ...exportRequest('/exports/reviewed.txt'), requestId });
+            nativeStarted.resolve(); return native.promise;
+        });
+        const result = workspaceClient.exportDocument(exportRequest('/exports/reviewed.txt'), { onProgress });
+        expect(invoke).not.toHaveBeenCalled();
+        registration.resolve(unlisten); await nativeStarted.promise;
+        expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+        const progress: ExportProgress = { request_id: requestId, phase: 'writing', bytes: 1048576 };
+        receive({ payload: { ...progress, request_id: 'another-export' } });
+        receive({ payload: { ...progress, bytes: Number.NaN } });
+        receive({ payload: { ...progress, bytes: -1 } });
+        receive({ payload: { ...progress, phase: 'destination' } });
+        expect(onProgress).not.toHaveBeenCalled();
+        receive({ payload: progress });
+        expect(onProgress).toHaveBeenCalledWith(progress);
+        expect(exportProgressLabel(progress)).toBe('Writing export · 1.0 MiB');
+        expect(unlisten).not.toHaveBeenCalled();
+        native.resolve(exported); expect(await result).toBe(exported);
+        expect(unlisten).toHaveBeenCalledOnce();
+        receive({ payload: progress }); expect(onProgress).toHaveBeenCalledOnce();
+    });
+
+    it('waits for native cancellation before releasing its export listener', async () => {
+        const controller = new AbortController(), nativeStarted = deferred<void>(), native = deferred<ExportResult>();
+        const unlisten = vi.fn(); let requestId = '';
+        listen.mockResolvedValue(unlisten);
+        invoke.mockImplementation((command, args) => {
+            if (command === 'ocr_workspace_export') { requestId = args.requestId; nativeStarted.resolve(); return native.promise; }
+            if (command === 'ocr_workspace_cancel_export') return Promise.resolve(true);
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const result = workspaceClient.exportDocument(exportRequest('/exports/reviewed.txt'), { signal: controller.signal });
+        const cancelled = expect(result).rejects.toMatchObject({ name: 'AbortError', message: 'Document export cancelled.' });
+        await nativeStarted.promise; controller.abort();
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_cancel_export', { requestId });
+        expect(unlisten).not.toHaveBeenCalled();
+        native.reject(new Error('OCR_EXPORT_CANCELLED'));
+        await cancelled; expect(unlisten).toHaveBeenCalledOnce();
+    });
+
+    it.each(['commit-event', 'cancel-refused'])('preserves successful publication when abort loses the %s race', async race => {
+        const controller = new AbortController(), nativeStarted = deferred<void>(), native = deferred<ExportResult>();
+        const unlisten = vi.fn(), onProgress = vi.fn();
+        let receive!: (event: { payload: ExportProgress }) => void;
+        let requestId = '';
+        listen.mockImplementation(async (_event, handler) => { receive = handler; return unlisten; });
+        invoke.mockImplementation((command, args) => {
+            if (command === 'ocr_workspace_export') { requestId = args.requestId; nativeStarted.resolve(); return native.promise; }
+            if (command === 'ocr_workspace_cancel_export') return Promise.resolve(false);
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const result = workspaceClient.exportDocument(exportRequest('/exports/reviewed.txt'), { signal: controller.signal, onProgress });
+        await nativeStarted.promise;
+        receive({ payload: { request_id: requestId, phase: race === 'commit-event' ? 'committing' : 'writing', bytes: 4096 } });
+        controller.abort(); await Promise.resolve();
+        expect(onProgress).toHaveBeenLastCalledWith({ request_id: requestId, phase: 'committing', bytes: 4096 });
+        expect(invoke.mock.calls.filter(([command]) => command === 'ocr_workspace_cancel_export')).toHaveLength(race === 'commit-event' ? 0 : 1);
+        const notifications = onProgress.mock.calls.length;
+        receive({ payload: { request_id: requestId, phase: 'writing', bytes: 2048 } });
+        expect(onProgress).toHaveBeenCalledTimes(notifications);
+        expect(unlisten).not.toHaveBeenCalled();
+        native.resolve(exported);
+        expect(await result).toBe(exported);
+        expect(controller.signal.aborted).toBe(true);
+        expect(unlisten).toHaveBeenCalledOnce();
+    });
+
+    it('retains a native export failure even after abort and failed cancellation or listener teardown', async () => {
+        const controller = new AbortController(), nativeStarted = deferred<void>(), native = deferred<ExportResult>();
+        const failure = new Error('Output volume is full. The existing document is unchanged.');
+        const unlisten = vi.fn(() => { throw new Error('Event bridge closed'); });
+        listen.mockResolvedValue(unlisten);
+        invoke.mockImplementation(command => {
+            if (command === 'ocr_workspace_export') { nativeStarted.resolve(); return native.promise; }
+            if (command === 'ocr_workspace_cancel_export') return Promise.reject(new Error('Stop command unavailable'));
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const result = workspaceClient.exportDocument(exportRequest('/exports/reviewed.txt'), { signal: controller.signal });
+        const failed = expect(result).rejects.toBe(failure);
+        await nativeStarted.promise; controller.abort(); native.reject(failure);
+        await failed; expect(unlisten).toHaveBeenCalledOnce();
+    });
+
+    it.each(['before-subscribe', 'during-subscribe'])('cleans mobile staging without starting an export aborted %s', async timing => {
+        const controller = new AbortController(), registration = deferred<() => void>();
+        const unlisten = vi.fn();
+        listen.mockReturnValue(registration.promise);
+        invoke.mockImplementation(async command => {
+            if (command === 'ocr_workspace_export_target') return stagedPath;
+            if (command === 'ocr_workspace_discard_export') return null;
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const path = await workspaceClient.pickExport('Inspection', 'txt');
+        if (timing === 'before-subscribe') controller.abort();
+        const result = workspaceClient.exportDocument(exportRequest(path!), { signal: controller.signal });
+        if (timing === 'during-subscribe') { controller.abort(); registration.resolve(unlisten); }
+        await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+        expect(listen).toHaveBeenCalledTimes(timing === 'before-subscribe' ? 0 : 1);
+        expect(unlisten).toHaveBeenCalledTimes(timing === 'before-subscribe' ? 0 : 1);
+        expect(invoke.mock.calls.map(([command]) => command)).toEqual(['ocr_workspace_export_target', 'ocr_workspace_discard_export']);
+    });
+
+    it('preserves a failed export subscription and cleans its private staging destination', async () => {
+        const failure = new Error('Export progress subscription failed');
+        listen.mockRejectedValue(failure);
+        invoke.mockImplementation(async command => {
+            if (command === 'ocr_workspace_export_target') return stagedPath;
+            if (command === 'ocr_workspace_discard_export') throw new Error('Cleanup failed too');
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const path = await workspaceClient.pickExport('Inspection', 'txt');
+        await expect(workspaceClient.exportDocument(exportRequest(path!), { onProgress: vi.fn() })).rejects.toBe(failure);
+        expect(invoke.mock.calls.map(([command]) => command)).toEqual(['ocr_workspace_export_target', 'ocr_workspace_discard_export']);
+    });
+
+    it.each(['after-render', 'destination-callback'])('skips the mobile picker for an abort %s and removes the completed private stage', async timing => {
+        const controller = new AbortController(), unlisten = vi.fn();
+        const phases: string[] = [];
+        listen.mockResolvedValue(unlisten);
+        invoke.mockImplementation(async command => {
+            if (command === 'ocr_workspace_export_target') return stagedPath;
+            if (command === 'ocr_workspace_export') {
+                if (timing === 'after-render') controller.abort();
+                return exported;
+            }
+            if (command === 'ocr_workspace_cancel_export') return false;
+            if (command === 'ocr_workspace_discard_export') { expect(unlisten).toHaveBeenCalledOnce(); return null; }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const path = await workspaceClient.pickExport('Inspection', 'txt');
+        const result = await workspaceClient.exportDocument(exportRequest(path!), {
+            signal: controller.signal, onProgress: progress => {
+                phases.push(progress.phase);
+                if (progress.phase === 'destination' && timing === 'destination-callback') controller.abort();
+            },
+        });
+        expect(result).toEqual({ ...exported, saved_path: '', cancelled: true });
+        expect(phases.includes('destination')).toBe(timing === 'destination-callback');
+        expect(invoke.mock.calls.some(([command]) => command === 'plugin:mobile-provider|export_file')).toBe(false);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_discard_export', { path: stagedPath });
+    });
+
+    it('hands mobile destination control to the OS and keeps staging until the provider copy finishes', async () => {
+        const controller = new AbortController(), copyStarted = deferred<void>();
+        const provider = deferred<{ cancelled: boolean; saved_path: string }>();
+        const unlisten = vi.fn(), onProgress = vi.fn();
+        listen.mockResolvedValue(unlisten);
+        invoke.mockImplementation((command, args) => {
+            if (command === 'ocr_workspace_export_target') return Promise.resolve(stagedPath);
+            if (command === 'ocr_workspace_export') return Promise.resolve(exported);
+            if (command === 'plugin:mobile-provider|export_file') {
+                expect(args).toEqual({ path: stagedPath, name: 'Inspection.txt' });
+                expect(onProgress).toHaveBeenLastCalledWith({ request_id: expect.any(String), phase: 'destination', bytes: 14 });
+                expect(unlisten).toHaveBeenCalledOnce(); copyStarted.resolve(); return provider.promise;
+            }
+            if (command === 'ocr_workspace_discard_export') return Promise.resolve();
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const path = await workspaceClient.pickExport('Inspection', 'txt');
+        const result = workspaceClient.exportDocument(exportRequest(path!), { signal: controller.signal, onProgress });
+        await copyStarted.promise; controller.abort();
+        expect(invoke.mock.calls.some(([command]) => command === 'ocr_workspace_cancel_export')).toBe(false);
+        expect(invoke.mock.calls.some(([command]) => command === 'ocr_workspace_discard_export')).toBe(false);
+        provider.resolve({ cancelled: false, saved_path: 'content://documents/Reviewed%3AInspection' });
+        expect(await result).toEqual({ ...exported, saved_path: 'content://documents/Reviewed%3AInspection', cancelled: false });
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_discard_export', { path: stagedPath });
     });
 });

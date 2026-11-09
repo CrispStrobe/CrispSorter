@@ -66,12 +66,14 @@
     workspaceClient,
     modelDownloadLabel,
     importProgressLabel,
+    exportProgressLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
     type ExtractionField,
     type TransformOptions,
     type ExportRequest,
+    type ExportProgress,
     type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
@@ -189,6 +191,10 @@
   let saveStatus = $state<SaveStatus>({ state: "saved" });
   let importController = $state<AbortController | null>(null);
   let importStopping = $state(false);
+  let exportController = $state<AbortController | null>(null);
+  let exportStopping = $state(false);
+  let exportPhase = $state<ExportProgress["phase"] | null>(null);
+  const exportCancellable = $derived(!!exportController && (exportPhase === "rendering" || exportPhase === "writing"));
   let capabilities = $state<WorkspaceCapabilities>({
     ocr: false,
     crispembed: false,
@@ -1397,8 +1403,16 @@
         request.format
       ] ?? request.format;
     let target = path;
-    busy = "Choosing export destination";
+    const controller = new AbortController();
+    exportController = controller;
+    exportStopping = false;
+    exportPhase = null;
+    busy = "Saving project before export";
     try {
+      // Finish saving before allocating a mobile staging destination.
+      await autosave?.flush();
+      if (controller.signal.aborted) throw new DOMException("Document export cancelled.", "AbortError");
+      busy = "Choosing export destination";
       target =
         path ??
         (await client.pickExport(
@@ -1407,16 +1421,26 @@
         )) ??
         undefined;
       if (!target) return;
-      busy = "Exporting reviewed document";
-      await autosave?.flush();
+      exportPhase = "rendering";
+      busy = exportProgressLabel({ request_id: "", phase: "rendering", bytes: 0 });
       const result = await client.exportDocument({
         ...request,
         outputPath: target,
         overwrite,
+      }, {
+        signal: controller.signal,
+        onProgress: progress => {
+          if (exportController !== controller) return;
+          exportPhase = progress.phase;
+          if (progress.phase === "committing" || progress.phase === "destination") exportStopping = false;
+          busy = exportStopping ? "Stopping export after the current step…" : exportProgressLabel(progress);
+        },
       });
       notice = result.cancelled ? "Export cancelled" : `Exported ${result.pages} pages · ${result.saved_path}`;
     } catch (e) {
-      if (
+      if (e instanceof DOMException && e.name === "AbortError") {
+        notice = "Export cancelled";
+      } else if (
         !overwrite &&
         target &&
         /already exists|file exists/i.test(message(e))
@@ -1430,8 +1454,17 @@
         );
       } else fail(e);
     } finally {
+      exportController = null;
+      exportStopping = false;
+      exportPhase = null;
       busy = "";
     }
+  }
+  function cancelExport() {
+    if (!exportController || !exportCancellable || exportStopping) return;
+    exportStopping = true;
+    busy = "Stopping export after the current step…";
+    exportController.abort();
   }
   function tableFromHtml(html: string): string[][] {
     // Parse into an inert template; only cell text reaches the live document.
@@ -1757,6 +1790,7 @@
     return () => {
       mounted = false;
       importController?.abort();
+      exportController?.abort();
       unlisten?.();
       unlistenClose?.();
       queue.cancel();
@@ -3534,8 +3568,11 @@
       class="status-message">{busy || notice || "Ready"}</span
     >
     {#if importController}<button class="button cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
+    {#if exportController && exportPhase}<button class="button cancel-export" onclick={cancelExport} disabled={!exportCancellable || exportStopping}
+        title={exportPhase === "destination" ? "Use the system save dialog to finish or cancel" : exportPhase === "committing" ? "The export is finishing" : "Stop the export before it is saved"}
+      >{exportStopping ? "Stopping…" : "Cancel export"}</button>{/if}
     <div class="toolbar-spacer"></div>
-    {#if project.pages.length && !importController}<span
+    {#if project.pages.length && !importController && !exportController}<span
         >{metrics.recognized}/{metrics.included} recognized</span
       ><span class="status-divider"></span><span class="approved-stat"
         ><CheckCheck size={12} />{metrics.approved} approved</span
@@ -5036,7 +5073,7 @@
     font-size: 9px;
     color: #7f94b1;
   }
-  .cancel-import {
+  .cancel-import, .cancel-export {
     min-height: 44px;
     padding: 0 12px;
     white-space: nowrap;
