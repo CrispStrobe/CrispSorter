@@ -1,0 +1,19 @@
+Known clockwise rotation: 5; measured correction: -5
+crispasr_metal_pipeline_cache_open: pipeline cache created — /Users/runner/Library/Developer/CoreSimulator/Devices/4A57FB15-6E7C-49CC-BE93-450B18BD286E/data/Library/Caches/ggml-metal/Apple_iOS_simulator_GPU.archive
+ggml_metal_device_init: tensor API disabled for pre-M5 and pre-A19 devices
+ggml_metal_library_init: using embedded metal library
+ggml_metal_library_init: loaded in 26.207 sec
+ggml_metal_device_init: GPU name:   MTL0 (Apple iOS simulator GPU)
+ggml_metal_device_init: GPU family: MTLGPUFamilyApple2  (1002)
+ggml_metal_device_init: GPU family: MTLGPUFamilyCommon1 (3001)
+ggml_metal_device_init: simdgroup reduction   = false
+ggml_metal_device_init: simdgroup matrix mul. = false
+ggml_metal_device_init: has unified memory    = false
+ggml_metal_device_init: has bfloat            = false
+ggml_metal_device_init: has tensor            = false
+ggml_metal_device_init: use residency sets    = false
+ggml_metal_device_init: use shared buffers    = false
+ggml_metal_device_init: recommendedMaxWorkingSetSize  =     0.00 MB
+tesseract_lstm: loaded [1,36,0,1Ct3,3,16Mp3,3Lfys64Lfx96Lrx96Lfx512O1c1] (4 LSTM layers, 111 classes, height=36, int_mode=true, dawg=0)
+{"event":"native_ocr_observation","path":"/Users/runner/work/_temp/ocr-mobile-inputs/page.ppm","text":"CRISP MOBILE OCR\u000aDocument 2048\u000aTotal 125.00","normalized_cer":0,"regions":3,"milliseconds":30895.5}
+{"event":"native_ocr_observation","path":"/Users/runner/work/_temp/ocr-mobile-inputs/corrected.ppm","text":"CRISP MOBILE OCR\u000aDocument 2048\u000aTotal 125.00","normalized_cer":0,"regions":3,"milliseconds":5224.57}
