@@ -130,7 +130,9 @@ python3 scripts/build_mobile_crispembed.py \
   --source ../CrispEmbed --output ../ocr-native-android \
   --lock scripts/ocr-mobile-runtime-lock.json --target android-arm64
 export CRISPEMBED_SYS_LIB_DIR="$(cd ../ocr-native-android/lib && pwd)"
-export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+export RUSTFLAGS="-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+python3 scripts/prepare_ocr_cargo_env.py --project . \
+  --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
 npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
 CRISPEMBED_BUILD_DIR="$CRISPEMBED_SYS_LIB_DIR" \
   bash scripts/bundle_android_native_libs.sh --abi arm64-v8a --require-crispembed
@@ -146,6 +148,8 @@ python3 scripts/build_mobile_crispembed.py \
   --source ../CrispEmbed --output ../ocr-native-ios \
   --lock scripts/ocr-mobile-runtime-lock.json --target ios-sim-arm64
 export CRISPEMBED_SYS_LIB_DIR="$(cd ../ocr-native-ios/lib && pwd)"
+python3 scripts/prepare_ocr_cargo_env.py --project . \
+  --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
 npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
 python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml
 npx tauri ios build --target aarch64-sim --features ocr-mobile --debug \
@@ -157,6 +161,16 @@ supplies the system frameworks used by the merged native archive, and the
 generated-project helper links C++ while disabling signing only for the
 simulator SDK. Device builds still require normal Apple provisioning.
 
+The Cargo environment helper writes the exact native-library directory into the
+isolated workspace root's Cargo configuration, which is found from either the
+npm package root or the nested Rust project. This is required because the locked
+iOS build launcher replaces the inherited environment before invoking Xcode.
+Existing unrelated Cargo settings are preserved; a conflicting native-library
+path is rejected. Do not commit the generated machine-specific configuration.
+Android retains the inherited environment, but the locked Tauri launcher supplies
+its own target-specific Rust flags. The explicit flags above therefore retain
+both its three Android libraries and the 16 KiB page-alignment arguments.
+
 The [paired mobile workflow](../.github/workflows/ocr-mobile-native.yml) builds
 Android ARM64/x86_64 and an iOS ARM64
 simulator application against the same source lock. Its standalone native probe
@@ -167,6 +181,17 @@ branch; inspect the exact workflow revision and results before treating a build
 as qualified. A green browser fixture, link probe, native smoke, or startup
 check does not establish physical camera capture, picker interaction, corpus
 accuracy, or low-memory performance on a real phone.
+
+The Android x86_64 lane additionally drives the actual debug application's Tauri
+commands through its own WebView socket. It checks the installed APK hash,
+explicitly downloads the baseline through the app's private installer, verifies
+the installed model hashes independently, imports a PNG through raw IPC, prepares
+and recognizes original/modified pages, reloads saved recognition settings, and
+renders and discards a private reviewed PDF. Raw recognition and failure evidence
+are retained. This synthetic command test does not open the system camera or save
+picker, exercise user interactions, or validate the extracted PDF text layer.
+The iOS lane defines native inference and startup checks; it does not yet define
+an equivalent application-command test.
 
 ## Released runtime integration constraints
 

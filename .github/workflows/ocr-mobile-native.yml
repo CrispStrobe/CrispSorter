@@ -9,6 +9,7 @@ on:
       - 'scripts/build_mobile_crispembed.py'
       - 'scripts/ocr-mobile-runtime-lock.json'
       - 'scripts/prepare_ocr_ios_project.py'
+      - 'scripts/prepare_ocr_cargo_env.py'
       - 'scripts/mobile_ocr_webview_smoke.mjs'
       - 'scripts/validate_android_native_libs.py'
       - 'tools/mobile-ocr-probe/**'
@@ -70,7 +71,7 @@ jobs:
         working-directory: repos/CrispSorter
         run: |
           python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v
-          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py tools/mobile-ocr-probe/prepare.py
+          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py scripts/prepare_ocr_cargo_env.py tools/mobile-ocr-probe/prepare.py
           node --check scripts/mobile_ocr_webview_smoke.mjs
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
@@ -182,7 +183,7 @@ jobs:
             echo "AR_${rust_key}=$ndk_bin/llvm-ar"
             echo "RANLIB_${rust_key}=$ndk_bin/llvm-ranlib"
             echo "CARGO_TARGET_${upper_key}_LINKER=$ndk_bin/${rust_target}24-clang"
-            echo "RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+            echo "RUSTFLAGS=-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
           } >> "$GITHUB_ENV"
           for tool in ranlib ar strip nm objdump readelf; do
             ln -sf "$ndk_bin/llvm-$tool" "$ndk_bin/${rust_target}-$tool"
@@ -200,6 +201,11 @@ jobs:
             --lock scripts/ocr-mobile-runtime-lock.json \
             --target '${{ matrix.runtime }}' --jobs 2
           echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
+      - name: Preserve the runtime path through nested Tauri and Xcode Cargo calls
+        working-directory: repos/CrispSorter
+        run: |
+          python3 scripts/prepare_ocr_cargo_env.py --project . \
+            --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
       - name: Prepare immutable synthetic probe inputs
         if: matrix.probe
         working-directory: repos/CrispSorter
