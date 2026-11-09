@@ -30,6 +30,29 @@ and the runtime still require memory. Native page and text limits also apply.
 Physical page dimensions, corrected text, Unicode mappings, and reviewed region
 geometry use the same conversion as the byte-based renderer.
 
+## Progress and cancellation
+
+Each export has a UUID, correlated byte-progress events, and an explicit
+publication boundary. A stop received before the export's IPC request is retained
+in a bounded, expiring pending set. Rendering and writing check the stop between
+bounded writes, then again immediately before publication. The worker is awaited
+before staging is released. A stop after publication begins is rejected, and the
+completed output must still be reported as saved.
+
+The cancellation guard wraps the buffered writer so its `Interrupted` error
+reaches the native callback directly. Both the native callback and the byte-output
+loop propagate that error instead of retrying it indefinitely. Nonstreaming
+renderers are allowed to finish their current render before the stop is applied;
+native page decoding/compression also finishes its current work before the next
+writer callback. This is cooperative cancellation, not forced thread termination.
+Byte progress is throttled to at most ten updates per second during writing.
+
+On mobile the OS save picker owns the external destination and copy. Cancelling
+before that step discards the private staged output. The in-application stop is
+disabled during publication and the OS destination step; the picker supplies its
+own cancellation before the copy. Closing the UI does not delete a file while a
+native writer or provider is still using it.
+
 ## Qualification
 
 The portable contract crate compiles the actual application storage and atomic

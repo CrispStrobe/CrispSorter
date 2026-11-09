@@ -19,13 +19,16 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
 #[path = "ocr_atomic_output.rs"]
 mod atomic_output;
 use atomic_output::{atomic_write, atomic_write_with, sync_directory};
+#[path = "ocr_export_control.rs"]
+mod export_control;
+use export_control::{ControlledWriter, ExportControl, ExportJob};
 
 const PROJECT_VERSION: u64 = 1;
 const MAX_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
@@ -1222,36 +1225,56 @@ fn write_export(
     pdfa: bool,
     overwrite: bool,
     max_pdf_bytes: u64,
+    control: &ExportControl,
+    mut progress: impl FnMut(&str, u64),
 ) -> Result<usize, String> {
+    control.check().map_err(|error| error.to_string())?;
     validate_export_format(format, pdfa)?;
-    if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
-        && crate::extractors::ocr_render::reviewed_streaming_pdf_available() {
-        let render_pages = reviewed_render_pages(pages);
-        return atomic_write_with(path, overwrite, |file| {
-            let written = {
-                let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut *file);
-                let count = crate::extractors::ocr_render::render_pdf_to_writer(
-                    &render_pages, pdfa, max_pdf_bytes, &mut writer,
-                ).map_err(|error| format!("Render OCR PDF: {error:#}"))?;
-                writer.flush().map_err(|error| format!("Flush OCR PDF: {error}"))?;
-                count
+    let streaming_pdf = OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
+        && crate::extractors::ocr_render::reviewed_streaming_pdf_available();
+    atomic_write_with(path, overwrite, |file| {
+        control.check().map_err(|error| error.to_string())?;
+        progress("rendering", 0);
+        let written = {
+            let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, &mut *file);
+            let mut last_update = std::time::Instant::now();
+            // Cancellation is outside BufWriter so Interrupted reaches the
+            // native callback instead of being retried by its flush loop.
+            let mut writer = ControlledWriter::new(&mut buffered, control, |bytes| {
+                if last_update.elapsed() >= std::time::Duration::from_millis(100) {
+                    progress("writing", bytes);
+                    last_update = std::time::Instant::now();
+                }
+            });
+            let count = if streaming_pdf {
+                crate::extractors::ocr_render::render_pdf_to_writer(
+                    &reviewed_render_pages(pages), pdfa, max_pdf_bytes, &mut writer,
+                ).map_err(|error| format!("Render OCR PDF: {error:#}"))?
+            } else {
+                let bytes = export_bytes(pages, format, pdfa)?;
+                writer.write_all_checked(&bytes).map_err(|error| format!("Write OCR export: {error}"))?;
+                bytes.len() as u64
             };
-            if written == 0 {
-                return Err("The renderer produced an empty document.".into());
-            }
-            let actual = file.metadata().map_err(|error| format!("Check rendered PDF: {error}"))?.len();
-            if actual != written {
-                return Err("The renderer byte count does not match the staged PDF. No output was published.".into());
-            }
-            usize::try_from(written).map_err(|_| "The rendered PDF is too large for this device.".into())
-        });
-    }
-    let bytes = export_bytes(pages, format, pdfa)?;
-    if bytes.is_empty() && !["text", "txt", "plain"].contains(&format) {
-        return Err("The renderer produced an empty document.".into());
-    }
-    atomic_write(path, &bytes, overwrite)?;
-    Ok(bytes.len())
+            writer.flush().map_err(|error| format!("Flush OCR export: {error}"))?;
+            count
+        };
+        if written == 0 && !["text", "txt", "plain"].contains(&format) {
+            return Err("The renderer produced an empty document.".into());
+        }
+        let actual = file.metadata().map_err(|error| format!("Check rendered document: {error}"))?.len();
+        if actual != written {
+            return Err("The renderer byte count does not match the staged document. No output was published.".into());
+        }
+        let count = usize::try_from(written).map_err(|_| "The rendered document is too large for this device.")?;
+        control.begin_commit().map_err(|error| error.to_string())?;
+        progress("committing", written);
+        Ok(count)
+    })
+}
+
+#[tauri::command]
+pub fn ocr_workspace_cancel_export(request_id: String) -> Result<bool, String> {
+    export_control::cancel(&request_id)
 }
 
 #[tauri::command]
@@ -1263,13 +1286,20 @@ pub async fn ocr_workspace_export(
     pages: Vec<ExportPage>,
     overwrite: Option<bool>,
     source_uris: Option<Vec<String>>,
+    request_id: Option<String>,
 ) -> Result<OcrExportResult, String> {
+    let job = ExportJob::begin(request_id)?;
     let root = workspace_root(&app)?;
     tokio::task::spawn_blocking(move || {
         for page in &pages { managed_page(&root, &page.image_path)?; }
         validate_export_pages(&pages)?;
         let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false), MAX_STREAMED_PDF_BYTES)?;
+        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
+            MAX_STREAMED_PDF_BYTES, job.control(), |phase, bytes| {
+                let _ = app.emit("ocr-workspace-export", json!({
+                    "request_id": job.id(), "phase": phase, "bytes": bytes,
+                }));
+            })?;
         Ok(OcrExportResult {
             saved_path: path.to_string_lossy().into_owned(), bytes, pages: pages.len(),
             format: if pdfa { "pdfa".into() } else { format },
@@ -1788,7 +1818,8 @@ mod tests {
         let pages = vec![export_page(root.path(), "Reviewed résumé 東京")];
         let path = root.path().join("reviewed.pdf");
         assert!(crate::extractors::ocr_render::reviewed_streaming_pdf_available());
-        let count = write_export(&path, &pages, "pdf", false, false, MAX_STREAMED_PDF_BYTES).unwrap();
+        let count = write_export(&path, &pages, "pdf", false, false, MAX_STREAMED_PDF_BYTES,
+            &ExportControl::default(), |_, _| {}).unwrap();
         let previous = fs::read(&path).unwrap();
         assert_eq!(previous.len(), count);
         assert!(previous.len() > 4096, "fixture must exceed the native writer's minimum valid cap");
@@ -1796,9 +1827,36 @@ mod tests {
         assert_eq!(document.get_pages().len(), 1);
         assert!(document.extract_text(&[1]).unwrap().contains("Reviewed résumé 東京"));
         let count_before = fs::read_dir(root.path()).unwrap().count();
-        let error = write_export(&path, &pages, "pdf", false, true, 4096).unwrap_err();
+        let error = write_export(&path, &pages, "pdf", false, true, 4096,
+            &ExportControl::default(), |_, _| {}).unwrap_err();
         assert!(!error.is_empty());
         assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), count_before);
+    }
+
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    #[test]
+    fn cancelling_the_native_pdf_writer_after_output_starts_preserves_the_previous_export() {
+        let root = tempfile::tempdir().unwrap();
+        let pages = vec![export_page(root.path(), "Reviewed résumé 東京")];
+        let render_pages = reviewed_render_pages(&pages);
+        let path = root.path().join("reviewed.pdf");
+        fs::write(&path, b"previous complete export").unwrap();
+        let count_before = fs::read_dir(root.path()).unwrap().count();
+        let job = ExportJob::begin(None).unwrap();
+        let mut first_bytes = 0;
+        let result = atomic_write_with(&path, true, |file| {
+            let mut writer = ControlledWriter::new(file, job.control(), |bytes| {
+                first_bytes = bytes;
+                assert!(ocr_workspace_cancel_export(job.id().to_owned()).unwrap());
+            });
+            crate::extractors::ocr_render::render_pdf_to_writer(
+                &render_pages, false, MAX_STREAMED_PDF_BYTES, &mut writer,
+            ).map_err(|error| format!("{error:#}"))
+        });
+        assert!(result.unwrap_err().contains(export_control::CANCELLED));
+        assert!(first_bytes > 0, "the native writer must have emitted actual PDF bytes before cancellation");
+        assert_eq!(fs::read(&path).unwrap(), b"previous complete export");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), count_before);
     }
 
