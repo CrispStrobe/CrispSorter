@@ -21,6 +21,21 @@ export function validateBuildSource(build) {
   return generated;
 }
 
+export function validatePackagedAndroidLibraries(artifact) {
+  assert.equal(artifact.abis?.length, 1);
+  const names = Object.keys(artifact.native_libraries ?? {}).sort();
+  assert(names.length > 0);
+  assert.deepEqual(Object.keys(artifact.native_elf ?? {}).sort(), names, 'Every final APK library needs an ELF inspection.');
+  for (const name of names) {
+    const elf = artifact.native_elf[name];
+    assert(hex(artifact.native_libraries[name], 64));
+    assert.equal(elf.abi, artifact.abis[0]);
+    assert(Number.isSafeInteger(elf.minimum_load_alignment) && elf.minimum_load_alignment >= 16384,
+      'Final APK native load alignment does not support 16 KiB pages: ' + name);
+    assert(Array.isArray(elf.load_segments) && elf.load_segments.length > 0);
+  }
+}
+
 export function probeOptions(argv) {
   const required = ['serial', 'apk', 'inputs', 'output', 'source-commit', 'embed-commit', 'build-receipt'];
   const allowed = new Set([...required, 'runtime-receipt', 'device-kind', 'repeat-pages', 'max-rss-mib']);

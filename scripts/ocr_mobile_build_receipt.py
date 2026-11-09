@@ -73,6 +73,32 @@ def elf_allocated_identity(data):
     return {'machine': machine, 'entry': entry, 'flags': flags, 'sections': allocated}
 
 
+def android_load_identity(data, abi):
+    """Inspect the final packaged ELF, independently of compiler/zip flags."""
+    if len(data) < 64 or data[:6] != b'\x7fELF\x02\x01':
+        raise ValueError('Packaged Android library must be little-endian ELF64')
+    header = struct.unpack_from('<16sHHIQQQIHHHHHH', data)
+    if header[1] != 3 or header[2] != {'arm64-v8a': 183, 'x86_64': 62}.get(abi):
+        raise ValueError('Packaged Android library has the wrong shared-library target')
+    offset, entry_size, count = header[5], header[9], header[10]
+    if offset < 64 or entry_size != 56 or not 0 < count <= 128 or offset + count * entry_size > len(data):
+        raise ValueError('Packaged Android library has invalid program headers')
+    loads = []
+    for index in range(count):
+        kind, flags, start, address, _, size, memory_size, alignment = struct.unpack_from('<IIQQQQQQ', data, offset + index * entry_size)
+        if kind != 1:  # PT_LOAD; section alignment alone does not establish loadability.
+            continue
+        if (start + size > len(data) or memory_size < size or address + memory_size >= 2**64
+                or alignment < 16384 or alignment & (alignment - 1)
+                or start % alignment != address % alignment):
+            raise ValueError('Packaged Android library has invalid or non-16-KiB load segments')
+        loads.append({'offset': start, 'address': address, 'file_bytes': size,
+                      'memory_bytes': memory_size, 'flags': flags, 'alignment': alignment})
+    if not loads or not any(item['flags'] & 1 and item['file_bytes'] for item in loads):
+        raise ValueError('Packaged Android library has no executable load segment')
+    return {'abi': abi, 'minimum_load_alignment': min(item['alignment'] for item in loads), 'load_segments': loads}
+
+
 def android_identity(artifact, runtime_directory, runtime):
     expected_abi = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64'}.get(runtime['target'])
     if not expected_abi:
@@ -96,13 +122,15 @@ def android_identity(artifact, runtime_directory, runtime):
         packaged_data = archive.read(packaged)
         if elf_allocated_identity(packaged_data) != native_identity:
             raise ValueError('Packaged runtime code/data differs from the paired source build')
-        hashes = {}
+        hashes, native_elf = {}, {}
         for name in libraries:
             if archive.getinfo(name).file_size > MAX_LIBRARY_BYTES:
                 raise ValueError('APK native library exceeds the evidence size bound')
-            hashes[name] = hashlib.sha256(archive.read(name)).hexdigest()
+            data = archive.read(name)
+            hashes[name] = hashlib.sha256(data).hexdigest()
+            native_elf[name] = android_load_identity(data, expected_abi)
     return {'kind': 'apk', 'sha256': digest(artifact), 'bytes': artifact.stat().st_size,
-            'abis': abis, 'native_libraries': hashes,
+            'abis': abis, 'native_libraries': hashes, 'native_elf': native_elf,
             'paired_runtime_mapped_sections_match': True,
             'native_identity_sha256': hashlib.sha256(json.dumps(native_identity, sort_keys=True).encode()).hexdigest()}
 

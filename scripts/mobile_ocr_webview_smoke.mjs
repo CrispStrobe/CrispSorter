@@ -36,7 +36,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource } from './mobile_ocr_probe_utils.mjs';
+import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -382,6 +382,7 @@ async function main() {
       assert.equal(build.sorter_commit, opt['source-commit']);
       assert.equal(build.crispembed_commit, opt['embed-commit']);
       assert.equal(build.artifact.kind, 'apk');
+      validatePackagedAndroidLibraries(build.artifact);
       assert.equal(build.artifact.paired_runtime_mapped_sections_match, true);
       assert.equal(build.onnx_runtime?.runtime?.api_version, 23);
       assert.equal(build.onnx_runtime?.linkage?.mapped_sections_match, true);

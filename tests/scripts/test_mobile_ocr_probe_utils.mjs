@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource } from '../../scripts/mobile_ocr_probe_utils.mjs';
+import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
 
 const argumentsFor = serial => ['--serial', serial, '--apk', 'test.apk', '--inputs', 'inputs', '--output', 'evidence',
   '--source-commit', 'a'.repeat(40), '--embed-commit', 'b'.repeat(40), '--build-receipt', 'build.json'];
@@ -26,6 +26,19 @@ test('build source proof never extends the generated exception to code or depend
     const proof = sourceProof(true);
     Object.assign(proof.generated_tracked_files[0], change);
     assert.throws(() => validateBuildSource(proof));
+  }
+});
+
+test('every final APK native library needs its own load-alignment evidence', () => {
+  const name = 'lib/x86_64/libapplication.so';
+  const artifact = { abis: ['x86_64'], native_libraries: { [name]: 'd'.repeat(64) },
+    native_elf: { [name]: { abi: 'x86_64', minimum_load_alignment: 16384, load_segments: [{}] } } };
+  validatePackagedAndroidLibraries(artifact);
+  assert.throws(() => validatePackagedAndroidLibraries({ ...artifact, native_elf: {} }));
+  for (const change of [{ minimum_load_alignment: 4096 }, { abi: 'arm64-v8a' }, { load_segments: [] }]) {
+    const invalid = structuredClone(artifact);
+    Object.assign(invalid.native_elf[name], change);
+    assert.throws(() => validatePackagedAndroidLibraries(invalid));
   }
 });
 
