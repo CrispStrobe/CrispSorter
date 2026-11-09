@@ -32,8 +32,10 @@ content placement, following [WebKit's viewport and safe-area guidance](https://
 Replacing `100vh` with a percentage alone would not establish that contract in
 the observed automatically inset WebView.
 
-The Tools popup stays above the navigation and home indicator, has a bounded
-scrollable height, and respects landscape side insets. Phone navigation and
+The Tools popup is anchored above the navigation's actual height, including
+height growth from larger text. Its width is bounded by that already inset
+navigation; its scrollable height subtracts the navigation, safe areas, and
+spacing from the viewport. Phone navigation and
 popup actions have a minimum height of 44 CSS pixels. Desktop safe-area insets
 normally resolve to zero and its existing sidebar breakpoints remain in place.
 
