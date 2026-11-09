@@ -2452,7 +2452,9 @@ pub struct EmbedderRegistryEntry {
 /// "Select" button for already-downloaded models and a "Download" button
 /// for the rest, without a separate round-trip.
 #[tauri::command]
-pub async fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
+// Async with a `State` reference, so Tauri requires a `Result`; the list is
+// infallible, and the frontend receives the `Ok` value unchanged.
+pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<EmbedderRegistryEntry>, String> {
     #[cfg(feature = "crispembed")]
     {
         use std::path::PathBuf;
@@ -2469,7 +2471,7 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderR
             }
         };
 
-        tokio::task::spawn_blocking(move || {
+        Ok(tokio::task::spawn_blocking(move || {
         crispembed::CrispEmbed::list_models()
             .into_iter()
             .map(|m| {
@@ -2487,12 +2489,12 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderR
                 }
             })
             .collect::<Vec<_>>()
-        }).await.unwrap_or_default()
+        }).await.unwrap_or_default())
     }
     #[cfg(not(feature = "crispembed"))]
     {
         let _ = state;
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
