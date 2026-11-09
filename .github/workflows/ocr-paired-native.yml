@@ -71,7 +71,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75  # Paired photo/model APIs with audited, failure-propagating native contracts.
+  OCR_CRISPEMBED_REF: 9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a  # Streaming writer and UTF-8 paths; this gate qualifies the exact app integration.
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -147,6 +147,14 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Execute paired native Rust writer contracts
+        working-directory: repos/CrispEmbed
+        env:
+          CRISPEMBED_SYS_LIB_DIR: ${{ github.workspace }}/repos/CrispEmbed/build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/repos/CrispEmbed/build:${{ github.workspace }}/repos/CrispEmbed/build/ggml/src
+          OCR_WRITER_ARTIFACTS: ${{ runner.temp }}/ocr-paired-writer
+        run: |
+          cargo test --locked -p crispembed --test ocr_writer_contract -- --test-threads=1
       - name: Verify application against paired native source
         working-directory: repos/CrispSorter
         env:
@@ -213,10 +221,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Save native diagnostics library
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ocr-paired-native-linux
           path: |
             repos/CrispEmbed/build/libcrispembed*.so*
             repos/CrispEmbed/build/ggml/src/libggml*.so*
+            ${{ runner.temp }}/ocr-paired-writer/
+          if-no-files-found: warn
           retention-days: 14

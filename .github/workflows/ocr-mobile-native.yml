@@ -49,7 +49,9 @@ permissions:
 
 concurrency:
   group: ocr-mobile-native-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve the active target build and its cache while incremental saves
+  # replace only the pending successor. Each new source still needs its own run.
+  cancel-in-progress: false
 
 env:
   CARGO_NET_RETRY: '10'
