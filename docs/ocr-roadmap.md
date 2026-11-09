@@ -1,0 +1,696 @@
+# OCR roadmap
+
+This is the scoped implementation plan for closing the gaps between CrispSorter's
+document review workspace and established desktop OCR workflows. It covers the
+whole application, including existing PDF, DOCX, indexing, template, and watched
+folder features. It is not a claim of equivalent recognition accuracy or format
+fidelity.
+
+The starting point is commit `3c11da6` on `feat/ocr-word-review`, audited on
+**2026-11-09**, with the runtime pinned by
+[`crispembed-runtime-lock.json`](../scripts/crispembed-runtime-lock.json) to
+CrispEmbed **0.17.16**. The interactive baseline is described in
+[OCR document workspace](ocr-workspace.md); pipeline and CLI behavior are in
+[OCR workflow](ocr-workflow.md).
+
+## Status and delivery rules
+
+Every numbered work package below is **Planned** at this documentation
+checkpoint. Existing features are recorded separately as the baseline. A package
+is complete only when its stated acceptance boundary has evidence; a prototype,
+an accepted engine ID, or a synthetic fixture does not close its qualification
+work.
+
+Track these states separately when implementation starts:
+
+| State | Required evidence |
+| --- | --- |
+| Planned | Scope, dependencies, and acceptance criteria below |
+| Implemented | Reviewed code, migration behavior where applicable, relevant automated tests, and a pushed feature-branch commit |
+| Native verified | The pinned application, binding, native library, and model combination passes real integration cases |
+| Qualified | The declared platforms, document corpus, hardware, languages, or output standard pass the package's additional checks |
+
+Use small commits for the lettered increments. Push each coherent, verified
+increment to the feature branch and record its commit and test evidence in this
+document before starting the next. Keep documentation accurate when only part of
+a work package is implemented. A native library change, model evaluation,
+physical scanner test, or independent standards audit is a separate deliverable
+from its frontend controls.
+
+Preserve these invariants in every increment:
+
+- Source assets and original OCR evidence remain recoverable. Proposed
+  replacements identify their source revision and cannot overwrite a changed
+  project silently.
+- Corrections, structural edits, and changed recognition invalidate the affected
+  approval. Undo, autosave, reopening, and exports use the same current model.
+- Missing confidence stays missing. Detection confidence, recognition confidence,
+  character averages, and calibrated correctness are different quantities.
+- Output capabilities describe what the installed build can actually produce.
+  Unsupported content must produce an actionable limitation, not a success label
+  on incomplete output.
+- Every new automated operation has a visible result or failure. Source deletion,
+  upload destinations, and unattended acceptance of uncertain text require an
+  explicit user configuration; enabling a watcher does not imply them.
+
+## Existing baseline to retain
+
+These are implemented paths, with their present limits. Their presence does not
+imply that every engine, document, platform, or output format is qualified.
+
+| Area | Existing implementation | Boundary relevant to this plan |
+| --- | --- | --- |
+| Project and recovery | Multi-document projects, atomic revision-aware autosave, immutable source assets, reopen/recovery, and bounded undo/redo; [`model.ts`](../src/lib/ocr/model.ts), [`autosave.ts`](../src/lib/ocr/autosave.ts), [`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs) | Undo snapshots are session history; there is no durable, attributed correction ledger |
+| Inspection and correction | Region overlays, source magnifier, region and multiline passage editing, word review, review queue, approvals, and literal find/replace; [`OcrWorkbench.svelte`](../src/lib/components/OcrWorkbench.svelte), [`PageTextEditor.svelte`](../src/lib/components/ocr/PageTextEditor.svelte), [`WordReview.svelte`](../src/lib/components/ocr/WordReview.svelte) | Passage editing retains region boundaries; numeric word scores require verified aligned recognition evidence |
+| Partial OCR | Selected-region and drawn-area recognition with a before/after preview, cancellation, stale-result checks, and unaffected-region preservation; [`zoneReview.ts`](../src/lib/ocr/zoneReview.ts) | Replaces covered regions after acceptance; it is not a persistent history of all past recognition runs |
+| Pages and preparation | PDF/TIFF/image import, arrange/crop/rotate/split, classical cleanup, dewarp, restoration, and super-resolution; [`page_source.rs`](../src-tauri/src/extractors/page_source.rs), [`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs) | File import is not scanner acquisition; each preparation recipe still needs document and model qualification |
+| Recognition and extraction | Engine/configuration selection, sequential batch pause/resume/stop/retry, fields, LiLT, table and formula extraction; [`client.ts`](../src/lib/ocr/client.ts), [`extraction.ts`](../src/lib/ocr/extraction.ts), [`ocr_crispembed.rs`](../src-tauri/src/extractors/ocr_crispembed.rs) | Extraction currently stores one result per kind on a page; tables are a flat cell matrix |
+| Reviewed exports | Text, JSON, Markdown, HTML, desktop DOCX, and build-dependent hOCR/ALTO/searchable PDF; `prepareExport` in [`model.ts`](../src/lib/ocr/model.ts), `export_bytes` in [`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs), [`ocr_render.rs`](../src-tauri/src/extractors/ocr_render.rs) | DOCX emits plain paragraphs; OCR PDF/A is rejected; reviewed PDF has script and renderer limits |
+| Surrounding document tools | PDF page operations, annotations, AcroForms, text insertion/substitution, compression, and DOCX transformations; [`PdfWorkspace.svelte`](../src/lib/components/PdfWorkspace.svelte), [`PdfEditor.svelte`](../src/lib/components/PdfEditor.svelte), [`PdfTools.svelte`](../src/lib/components/PdfTools.svelte), [`DocxTools.svelte`](../src/lib/components/DocxTools.svelte) | These tools are not a structured OCR editor. Existing PDF paragraph reflow and complete PDF archival/accessibility conformance are not established |
+| Search and repeat processing | Full-text/semantic library search, cloud-source integrations, approved-text reindexing, watched-folder ingestion, template/zone backend, and text-comparison backend | These foundations need the guided workflows below; rule action emission alone is not a durable automation executor |
+
+Existing tests and evaluations are assets to extend, not replace:
+[`src/lib/ocr/`](../src/lib/ocr/),
+[`tests/ocr-workspace/`](../tests/ocr-workspace/),
+[`tests/quality/`](../tests/quality/), and
+[library model evaluation](library-model-evaluation.md).
+
+## Priorities and dependencies
+
+**P0** makes review evidence trustworthy and reduces correction work. **P1**
+finishes common document workflows. **P2** covers wider acquisition, archival,
+and specialized output. Priority describes impact; lettered increments are the
+units to implement and push one at a time.
+
+| ID | Priority | Work package | Principal dependency | Status |
+| --- | --- | --- | --- | --- |
+| OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | Planned |
+| OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | Planned |
+| OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | Planned |
+| OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | Planned |
+| OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | Planned |
+| OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | Planned |
+| OCR-07 | P1 | Reusable form and zone templates | Existing templates backend; OCR-03 geometry rules | Planned |
+| OCR-08 | P1 | Full comparison and review navigation | Existing diff/search; revision identity | Planned |
+| OCR-09 | P1 | Persistent OCR automation executor | Existing watcher/queue; export capability contract | Planned |
+| OCR-10 | P2 | Scanner and camera acquisition | Import pipeline; platform/device adapters | Planned |
+| OCR-11 | P1 | Preparation previews and quality guidance | Existing cleanup/restoration pipeline | Planned |
+| OCR-12 | P1 | Multilingual and RTL output | Paired renderer/shaping support; OCR-01 offsets | Planned |
+| OCR-13 | P2 | Validated PDF/A output | Content-complete renderer and independent validator | Planned |
+| OCR-14 | P2 | Tagged PDF and PDF/UA | OCR-04 structure, OCR-12 text mapping | Planned |
+| OCR-15 | P2 | OCR-specific PDF compression | Existing compressor; output validation fixtures | Planned |
+| OCR-16 | P1 | Integration and durable correction provenance | Stable source/revision identifiers | Planned |
+| OCR-17 | P1 | Accessible review interactions | Baseline and each new UI increment | Planned |
+| OCR-18 | P0 | Reproducible quality and release qualification | Starts now; accompanies all other packages | Planned |
+
+Default sequence: commit this scope first; establish the OCR-18a evidence manifest;
+then implement OCR-01a, OCR-02a/b, and OCR-03a/b as separate reviewable increments.
+Continue through structure, tables, exports, and workflow integration before
+specialized standards or hardware claims. Start an upstream or device dependency
+early, but do not mark it complete while implementing an independent software
+slice. OCR-17 checks accompany each UI change, rather than being deferred until
+the end.
+
+## OCR-01: Native word evidence and honest capabilities
+
+**Status: Planned.** The UI can already show word scores from explicitly aligned
+character recognition scores. The pinned native path commonly lacks verified
+word offsets or Unicode character alignment, so real results may correctly show
+**Unscored**. See `hasAlignedCharacterConfidence` in
+[`confidence.ts`](../src/lib/ocr/confidence.ts), `getWordEvidence` in
+[`words.ts`](../src/lib/ocr/words.ts), and the adapter in
+[`ocr_crispembed.rs`](../src-tauri/src/extractors/ocr_crispembed.rs).
+
+**Increments**
+
+- **01a — capability and provenance contract:** report the actual source of
+  confidence, available text-range/geometry evidence, native/model versions,
+  and why a result is unscored. Preserve unknown evidence across save/export.
+- **01b — native integration:** add a versioned result contract for word
+  spans or explicitly aligned character spans, recognition scores, optional
+  genuine word boxes, and optional native recognition alternatives. First
+  implement an explicit `system_tesseract` adapter using installed Tesseract's
+  TSV and text outputs, distinct from the CrispEmbed `tesseract` engine. Report
+  installation/language availability and qualify its real word ranges and boxes.
+  For later CrispEmbed engines, update the binding and native library together
+  whenever their existing ABI cannot provide this evidence.
+- **01c — precise inspection:** when genuine word geometry exists, focus the
+  source magnifier on that word. Retain the region crop when it does not. Add
+  further engines only with their own evidence tests.
+
+**Acceptance and validation:** test emoji, combining marks, ligatures, whitespace,
+punctuation, CJK, multiline text, invalid lengths, token scores, detector scores,
+and out-of-range values. Specify native offset units and convert to UTF-16 editor
+ranges explicitly. Edited text must not inherit old word scores; the original
+view retains the original evidence. Threshold behavior must agree among the
+word UI, overlay, queue, and export metadata. Record real native fixtures and
+engine/model versions. Character averages are described as averages, not as the
+probability that a word is correct. Calibration is a separate measured result
+under OCR-18; no word box may be synthesized from text length and presented as
+native evidence.
+
+## OCR-02: Dictionaries, suggestions, and reusable corrections
+
+**Status: Planned.** Browser spellcheck exists, but the application has no
+documented, managed proofreading dictionary or correction-suggestion workflow.
+The reference workflow is [ABBYY text verification][abbyy-proofing].
+
+**Increments**
+
+- **02a — vocabulary:** persist user and project dictionaries with explicit
+  language, add/remove/import/export, and an ignore decision distinct from
+  approving the OCR. Support protected identifiers and specialized vocabulary.
+- **02b — suggestions:** offer conservative spelling/confusion suggestions and
+  applicable native alternatives. Show original text and affected ranges; accept
+  one occurrence or preview selected occurrences. Never apply a suggestion just
+  because its string is in a dictionary.
+- **02c — reusable correction rules:** store user-created literal or bounded
+  pattern rules with scope, language, examples, and preview. Treat field regex
+  validation as validation, not as recognition certainty.
+- **02d — engine training feasibility and adapter:** document which installed
+  engines can consume lexicons or trainable patterns. Add training only for a
+  supported engine with versioned training data, opt-in collection, reset/export,
+  and a held-out evaluation. A correction memory alone is not model training.
+
+**Acceptance and validation:** dictionaries survive reopening, are scoped and
+removable, and handle Unicode/case policy without corrupting source spelling.
+Suggestions leave identifiers, dates, quantities, and ambiguous words untouched
+until accepted. Batch replacements show counts and support one-step undo; stale
+ranges are rejected. Test false suggestions and multilingual vocabulary, not
+only successful replacements. Use a licensed, packaged dictionary source or
+clearly identified user data. Report correction-time benefit and introduced
+errors on held-out documents before claiming recognition improvement. Engine
+training restrictions differ; [ABBYY's training guidance][abbyy-training] is a
+workflow reference, not evidence that CrispEmbed exposes the same facility.
+
+## OCR-03: Passage split/merge and text repair
+
+**Status: Planned.** `addRegion`, `deleteRegion`, `moveRegion`, and `editRegion`
+exist in [`model.ts`](../src/lib/ocr/model.ts). The passage editor changes full
+multiline text but does not split or merge source regions.
+
+**Increments**
+
+- **03a — explicit passage split:** choose a text boundary and specify how source
+  geometry is divided or shared. Preserve a link to the original recognition;
+  ambiguous geometry requires a visible choice.
+- **03b — explicit passage merge:** select adjacent passages in reading order,
+  preview separators and source coverage, and merge atomically. Preserve the
+  component source links and expose the changed reading order.
+- **03c — repair proposals:** preview line-break normalization, end-of-line
+  dehyphenation, whitespace cleanup, and paragraph joins. Preserve intentional
+  hyphens, lists, identifiers, and page boundaries unless the user selects them.
+
+**Acceptance and validation:** no edit infers region boundaries merely by
+splitting on newline. Split/merge preserves all text and source references,
+invalidates affected review/extraction evidence, and survives undo, save, reopen,
+partial OCR, search, and export. Empty selections and incompatible cross-page
+merges are explained. Test paragraphs containing multiple line breaks,
+multi-column order, hyphenated names, negative numbers, and formula/table regions.
+Semantic paragraph repair and page-image spread splitting remain separate tools.
+
+## OCR-04: Document structure and formatting editor
+
+**Status: Planned.** [`OcrRegion`](../src/lib/ocr/model.ts) holds text, geometry,
+kind, confidence, and review state. It does not represent styled runs, lists,
+columns, anchored pictures, footnotes, or a document hierarchy.
+
+**Increments**
+
+- **04a — versioned structure:** add stable paragraph/block IDs, typed hierarchy,
+  reading order, source-region links, and migration from existing projects.
+  Separate logical structure from source-page geometry.
+- **04b — editable semantics:** support headings, paragraphs, lists, emphasis,
+  alignment, and explicit page/section breaks. Keep plain-text passage editing
+  available and define how pasted text changes formatting.
+- **04c — complex layout:** add columns, picture/caption anchors, running
+  headers/footers, and linked footnotes incrementally, each with a supported
+  fixture and a correction UI. Recognized structure is a proposal users can fix.
+
+**Acceptance and validation:** older projects migrate without lost text,
+geometry, approvals, or original evidence; newer unsupported versions fail
+safely. Rich edits have deterministic plain-text projections for search and
+review. Keyboard selection/paste/undo works across supported block boundaries.
+Define a bounded supported set first: single-column reports, a two-column page,
+headings/lists, one anchored figure, and notes. More complex magazines and exact
+font reconstruction require additional fixtures. Do not promise universal exact
+typography. [ABBYY's output modes][abbyy-docx] demonstrate the explicit tradeoff
+between editing flexibility and source layout that our export UI must explain.
+
+## OCR-05: Multiple tables/formulas and structural repair
+
+**Status: Planned.** `tableFromHtml` in
+[`OcrWorkbench.svelte`](../src/lib/components/OcrWorkbench.svelte) keeps cell text
+but discards spans and geometry. [`ExtractionData`](../src/lib/ocr/extraction.ts)
+stores `tableRows: string[][]` and one table/formula source per page, so a second
+extraction of the same kind replaces the earlier one. CSV already protects
+against formula injection.
+
+**Increments**
+
+- **05a — multiple extraction objects:** key each table, formula, or field set by
+  stable ID and source region/revision. Preserve multiple results per page,
+  independent corrections, and original model output.
+- **05b — table structure and repair:** represent cell IDs, row/column spans,
+  optional genuine geometry, headers, and text. Add insert/delete row/column,
+  merge/split, and keyboard cell navigation with a source preview.
+- **05c — continuity and formulas:** let users join selected continuation tables
+  with repeated-header handling, and retain multiple editable formula objects
+  with source images and rendered previews. Keep inferred numeric types opt-in.
+
+**Acceptance and validation:** two tables and two formulas on one page survive
+re-extraction, undo, save, and export independently. Test merged cells, empty
+cells, multiline content, irregular model HTML, active HTML removal, and stale
+sources. Reject overlapping/invalid spans; do not invent cell boxes. Joining
+tables requires explicit mapping when columns differ. Preserve leading zeros,
+currency symbols, signs, and exact string values by default. Formula preview is
+not a proof of mathematical equivalence. Structural table operations follow the
+workflow described in [ABBYY's table editing documentation][abbyy-tables], with
+our own model and validation contract.
+
+## OCR-06: Structured DOCX/XLSX and export profiles
+
+**Status: Planned.** The DOCX branch of `export_bytes` in
+[`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs) joins page text and calls
+[`export_to_docx`](../src-tauri/src/extractors/export.rs), which emits simple
+paragraphs. Existing DOCX tools operate on documents; they do not reconstruct
+OCR layout. OCR XLSX output is not implemented.
+
+**Increments**
+
+- **06a — editable document export:** emit actual paragraphs, headings, lists,
+  styled runs, pictures, tables, and explicit breaks from OCR-04/05, with warnings
+  for unsupported structures. Preserve corrected text and source order.
+- **06b — table workbook export:** emit one named sheet per selected table or
+  explicit joined table, preserve cell spans where supported, and keep strings
+  literal unless users request numeric/formula interpretation.
+- **06c — output profiles:** distinguish plain/reflowable text, editable document,
+  source-oriented layout, and searchable page-image PDF. Add picture quality,
+  page range, inclusion, and header/footer options; persist the profile used.
+
+**Acceptance and validation:** inspect generated package XML for semantic
+structures and reopen artifacts in independent readers. Check text extraction,
+table cells/spans, image count, section breaks, notes, and selected page scope.
+Render a declared document set for visual review; publish known differences.
+Source-oriented layout preserves supported positions but does not guarantee
+identical fonts or editable reflow for arbitrary pages. Spreadsheet strings must
+remain safe and lossless, including values beginning with `=`, `+`, `-`, or `@`.
+Never label a flat paragraph DOCX as layout-preserving. Output choices are
+informed by [ABBYY's documented export distinctions][abbyy-docx].
+
+## OCR-07: Reusable form and zone templates
+
+**Status: Planned.** Named normalized zones and persistence already exist in
+[`templates.rs`](../src-tauri/src/index/templates.rs), with OCR/checkbox
+extraction in [`zone_ocr.rs`](../src-tauri/src/index/zone_ocr.rs) and CLI/Tauri
+commands. The gap is a guided authoring, application, and review workflow.
+
+**Increments**
+
+- **07a — visual template authoring:** draw/name/type zones, select page geometry,
+  save versions, duplicate, import/export, and preview coverage on a sample.
+- **07b — application and validation:** map template pages to input pages,
+  detect incompatible dimensions/orientation, review extracted values with source
+  crops, and apply required/type/regex/checkbox validation rules.
+- **07c — repeated-form processing:** use explicit alignment anchors and
+  tolerances where supported, report mismatches for human review, and provide a
+  template step to OCR-09 without silently accepting failed fields.
+
+**Acceptance and validation:** a template applies reproducibly to declared
+compatible layouts; wrong-page, shifted, missing-field, and unchecked-checkbox
+cases are visible. Unknown zone confidence is not converted to a passing score.
+Template edits do not alter prior reviewed results. Test multiple pages and
+several instances of one form plus deliberately incompatible forms. Automatic
+alignment requires its own corpus and error thresholds. Existing AcroForm
+filling remains a separate PDF capability; this package is document extraction,
+not a promise of arbitrary form designer or handwritten-form accuracy.
+
+## OCR-08: Full comparison and review navigation
+
+**Status: Planned.** [`comparison.rs`](../src-tauri/src/index/comparison.rs)
+provides `compare_texts`; related commands can compare indexed documents.
+`toggleCompare` in [`IndexSearch.svelte`](../src/lib/components/IndexSearch.svelte)
+currently presents result metadata/snippets. The OCR project already supports
+literal find/replace through `findMatches` and `replaceMatches` in
+[`model.ts`](../src/lib/ocr/model.ts).
+
+**Increments**
+
+- **08a — comparison view:** select two full document/project revisions, show
+  additions/deletions with context, navigate changes, and synchronize known source
+  regions. Clearly mark unmatched pages or missing geometry.
+- **08b — proofing search:** add a persistent result list, current-page/project
+  scope, issue/language filters, whole-word and case choices, and a preview for
+  bulk replacement. Preserve exact source ranges after edits.
+- **08c — report and visual comparison:** export a text-difference report with
+  source/version identifiers. Add an optional aligned page-image comparison as a
+  separate mode; require explicit alignment and tolerance for meaningful images.
+
+**Acceptance and validation:** comparisons use complete text and captured
+revisions, not truncated search snippets. Test moved passages, inserted pages,
+repeated words, Unicode, and multiple changes in one region. Find navigation
+must not leave a stale replacement target after switching editors or pages.
+Text differences must not be described as detecting all layout/image changes.
+Visual differences do not identify semantic corrections automatically. No
+comparison result may overwrite either source document.
+
+## OCR-09: Persistent OCR automation executor
+
+**Status: Planned.** Folder ingestion and the interactive OCR queue work.
+[`rules.rs`](../src-tauri/src/watcher/rules.rs) defines actions, but
+`emit_automation_actions` in [`watcher/mod.rs`](../src-tauri/src/watcher/mod.rs)
+emits evaluated actions without a complete durable side-effect executor.
+[`AutomationPanel.svelte`](../src/lib/components/AutomationPanel.svelte) edits
+and tests rule JSON. This is partial automation infrastructure.
+
+**Increments**
+
+- **09a — persistent jobs:** capture input identity, rule/profile versions,
+  planned steps, output destinations, state, attempts, and errors. Add a dry-run
+  view, collision rules, resumable execution, and idempotency keys.
+- **09b — OCR workflow execution:** connect recognize, review-exception routing,
+  approved export, and reindex steps. Execute supported actions through one
+  accountable worker; unsupported actions remain explicit failures.
+- **09c — unattended operation:** add opt-in hotfolder/scheduled jobs, settled-file
+  detection, resource limits, backoff, retry/cancel controls, and a human exception
+  queue. Layer templates and output profiles in as their packages complete.
+
+**Acceptance and validation:** duplicated watcher events and process restarts
+must not duplicate exports or apply the same move/upload twice. Test partially
+written files, unavailable models, disk exhaustion, conflicting destinations,
+network loss, failed classification, cancellation, and restart between each
+step. Preserve sources by default and keep unreviewed output distinct from
+approved output. Classification-dependent actions wait for actual classification
+results. Run a real unattended batch separately from fake-worker tests. The
+target workflow is comparable in shape to [OmniPage watched-folder jobs][omni-watch],
+not a claim that emitted action events already implement it.
+
+## OCR-10: Scanner and camera acquisition
+
+**Status: Planned.** The existing file importer accepts PDF/TIFF/images. No
+direct TWAIN/WIA/SANE acquisition adapter is established in the audited app.
+Scanner drivers are explicitly outside the current workspace contract.
+
+**Increments**
+
+- **10a — acquisition interface:** define device capabilities, scan settings,
+  page-arrival events, batch identity, cancellation, and error reporting. Provide
+  a fake adapter and an external scan-folder import path.
+- **10b — first platform adapter:** implement one supported platform's device
+  interface, then qualify named devices. Add ADF/duplex where reported by the
+  device, keeping page order and source metadata.
+- **10c — additional acquisition:** add other operating-system adapters and an
+  optional permission-aware camera capture flow, with crop/orientation preview.
+
+**Acceptance and validation:** fake-device tests cover empty feeder, jam,
+disconnect, cancellation, duplicate pages, and partial batches. Physical-device
+qualification separately records device/driver/OS, flatbed/ADF, duplex order,
+resolution, color mode, and recovery after failure. Unsupported settings remain
+unavailable rather than silently ignored. Hardware support is listed only after
+these runs; a compiled adapter is not broad scanner compatibility. Use the
+[FineReader specification][abbyy-spec] and [OmniPage product workflow][omni-product]
+as acquisition references, not as our supported-device list.
+
+## OCR-11: Preparation previews and quality guidance
+
+**Status: Planned.** Classical cleanup, dewarp, restoration, and upscaling
+already exist in `cleanup_image`/preparation commands in
+[`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs) and
+[`ocr_crispembed.rs`](../src-tauri/src/extractors/ocr_crispembed.rs).
+
+**Increments**
+
+- **11a — reversible preparation preview:** compare original/current/proposed
+  imagery at readable zoom, show dimensions and recipe, and apply to an explicit
+  page scope. Keep recognition and geometry invalidation clear.
+- **11b — diagnosis and selective retry:** surface measurable blur, skew,
+  resolution, contrast, or clipping indicators with their limits; propose a
+  recipe and compare before/after OCR without discarding the accepted result.
+- **11c — additional cleanup:** implement missing image operations such as
+  perspective correction, blank-page detection, or background removal only with
+  a declared use case and test set; reuse existing native operations first.
+
+**Acceptance and validation:** clean and degraded versions of the same pages
+retain small punctuation, pale text, lines, figures, and page dimensions.
+Geometry transforms must map source-linked results correctly or invalidate them
+explicitly. Quality warnings are hints, not proof of unreadability. Model-based
+restoration can alter glyph appearance, so preserve the source and quantify OCR
+benefit/harm on the corpus before recommending a default. Do not treat a more
+visually attractive output as necessarily better recognized text.
+
+## OCR-12: Multilingual and RTL output
+
+**Status: Planned.** Unicode text exports exist, while the checked PDF path in
+[`ocr_render.rs`](../src-tauri/src/extractors/ocr_render.rs) rejects currently
+unsupported RTL/directional content. A listed recognition language does not
+guarantee end-to-end PDF shaping or text extraction.
+
+**Increments**
+
+- **12a — language/script contract:** distinguish recognition language, spellcheck
+  language, logical text direction, and output support. Show the actual renderer
+  limitation before export; preserve Unicode without lossy transliteration.
+- **12b — native shaping and mapping:** integrate font fallback/embedding,
+  bidirectional ordering, shaping, and Unicode text mapping for a declared script
+  set. Keep logical reading order separate from glyph placement.
+- **12c — multilingual UI and export qualification:** validate mixed-direction
+  passages, punctuation, numbers, combining marks, vertical text if claimed, and
+  text selection/search in supported output viewers.
+
+**Acceptance and validation:** independent text extraction and copy/search agree
+with corrected logical text; rendered glyphs are present and correctly ordered.
+Fixtures include Arabic/Hebrew with Latin IDs, Indic combining/shaping examples,
+CJK, and ordinary Latin text. Qualification is per script/output/viewer, with
+explicit exclusions. Do not remove the current protective rejection until the
+paired native renderer passes. OCR-01 range evidence and OCR-04 semantics must
+survive direction changes without invalid text selections.
+
+## OCR-13: Validated PDF/A output
+
+**Status: Planned.** OCR export explicitly rejects PDF/A because conformance has
+not been validated. Separately, `convert_to_pdfa` in
+[`pdf_ops.rs`](../src-tauri/src/pdf_ops.rs) writes identification metadata and an
+OutputIntent, while its own comment says it does not remediate fonts/images.
+Metadata alone is not an archival conversion result.
+
+**Increments**
+
+- **13a — truthful operation and preflight:** distinguish metadata preparation
+  from validated conversion in PDF Tools/CLI and report unsupported content.
+  Select a bounded initial target, such as PDF/A-2b, and a pinned independent
+  validator before implementing the converter.
+- **13b — conformant construction/remediation:** handle required embedded fonts,
+  color profiles, metadata, prohibited features, and content dependencies for
+  that target. Fail without replacing the source when remediation is unavailable.
+- **13c — validation receipt:** validate each produced file, preserve the report
+  with output/profile/tool versions, and expose success or actionable failure.
+  Add other PDF/A levels only through their own requirements and tests.
+
+**Acceptance and validation:** a corpus of valid and deliberately invalid PDFs
+must produce correct validator outcomes, with readable pages and unchanged
+corrected text. Include nonembedded fonts, transparency, encryption, attachments,
+damaged metadata, and multilingual content according to the chosen target.
+Check output using an independently implemented validator, not only the writer.
+The OCR `--pdfa` path stays unavailable until its own artifacts pass. Existing
+PDFs that cannot be remediated must not acquire a misleading “archival” success
+status. Standard-specific requirements and validator versions are recorded in
+the implementation receipt; vendor claims in the [FineReader specification][abbyy-spec]
+are a product comparison reference, not conformance evidence for our files.
+
+## OCR-14: Tagged PDF and PDF/UA
+
+**Status: Planned.** Searchable text and a reading-order list do not by themselves
+create an accessible tagged PDF. A complete tagged/PDF/UA authoring and validation
+path is not established in the audited OCR export.
+
+**Increments**
+
+- **14a — semantic export preflight:** require document language/title, reviewed
+  reading order, real heading/list/table roles, image alternatives or decorative
+  designation, and warnings for missing semantics.
+- **14b — tagged PDF writer:** generate a valid structure tree and text/object
+  associations, table relationships, and artifact classification from OCR-04/05.
+- **14c — PDF/UA qualification:** select the target version, run independent
+  structural validation, and test representative documents with assistive
+  technology. Preserve diagnostics rather than setting a conformance flag alone.
+
+**Acceptance and validation:** keyboard/screen-reader reading follows logical
+order on columns, tables, notes, and mixed-language text. Meaningful figures have
+reviewed alternatives; OCR cannot infer their accessibility meaning reliably by
+itself. Automated checks and manual assistive-technology review are both required
+for a qualified output profile. Revalidate after compression or PDF Tools edits.
+Do not describe ordinary searchable PDF as PDF/UA. [ABBYY's PDF settings][abbyy-pdf]
+and [specification][abbyy-spec] provide feature references; the chosen standard's
+requirements govern acceptance.
+
+## OCR-15: OCR-specific PDF compression
+
+**Status: Planned.** General PDF stream/object compression is implemented in
+[`pdf_compress.rs`](../src-tauri/src/pdf_compress.rs). It deliberately does not
+silently downsample/re-encode page images. OCR-specific mixed-raster-content
+(MRC) processing and qualified image-quality profiles are separate work.
+
+**Increments**
+
+- **15a — explicit quality profiles:** show original/proposed size, resolution,
+  and image quality choices for searchable OCR PDFs, with lossless as a supported
+  option and a preview for lossy changes.
+- **15b — image/MRC implementation:** add deliberate downsampling and, if useful
+  on the corpus, foreground/background segmentation with supported codecs.
+- **15c — combined export qualification:** retain corrected text, geometry, page
+  size, tags, and archival requirements for each advertised profile.
+
+**Acceptance and validation:** compare bytes, peak memory, rendering time, and
+small-text/line/image readability on monochrome, color, photographed, and faint
+documents. Reject changes that corrupt text extraction or page count. A smaller
+file alone is not a passing result; report cases where compression does not help.
+Re-run OCR-13/14 validators when claiming those profiles after compression.
+MRC is motivated by [established PDF output settings][abbyy-pdf], not assumed to
+improve every document.
+
+## OCR-16: Integration and durable correction provenance
+
+**Status: Planned.** The application already has indexing, cloud sources, PDF
+and DOCX tool workspaces, and approved-text reindexing. The missing work is a
+coherent handoff and durable history, not another independent set of tools.
+
+**Increments**
+
+- **16a — source-aware handoffs:** carry document/page/revision identity from
+  library search to OCR review, comparison, export, and existing PDF/DOCX tools.
+  Show output destinations and the status of ongoing jobs in one place.
+- **16b — durable review ledger:** record correction/recognition/approval events,
+  previous evidence references, operation type, timestamps, and a user-supplied
+  reviewer identity where applicable. Reopen and export the audit record, with
+  retention and size limits. Keep it distinct from bounded interactive undo.
+- **16c — reviewed output integration:** explicitly choose whether to update
+  indexed text or create a derived file, preserve the original, and make changed
+  downstream files detectable. Add connectors through existing permission and
+  credential paths, without automatically uploading source documents.
+- **16d — adjacent PDF tool boundaries:** document and expose limitations of
+  existing text substitution, raster/Form-XObject redaction, and signing status.
+  Scope any expansion separately with adversarial content tests; do not imply
+  that OCR review implements arbitrary PDF paragraph reflow, complete redaction,
+  cryptographic signature validation, or PAdES/LTV.
+
+**Acceptance and validation:** open a library result, review it, export it, and
+reindex the chosen corrected text without losing source identity. Reopening a
+project can explain which revision produced an export even after undo history is
+gone. Partial OCR retains a durable reference to the superseded result when the
+ledger is enabled. Test renamed/moved sources, stale external edits, failed
+handoffs, storage limits, and audit export. Concurrent team assignment, shared
+editing, authentication, and conflict resolution are a separate later system;
+a local reviewer field is not collaborative access control.
+
+Code anchors: [`IndexSearch.svelte`](../src/lib/components/IndexSearch.svelte),
+[`PdfWorkspace.svelte`](../src/lib/components/PdfWorkspace.svelte), `activate` in
+[`OcrWorkbench.svelte`](../src/lib/components/OcrWorkbench.svelte),
+`createHistory`/`serializeProject` in [`model.ts`](../src/lib/ocr/model.ts),
+[`pdf_text_edit.rs`](../src-tauri/src/pdf_text_edit.rs),
+[`pdf_redact.rs`](../src-tauri/src/pdf_redact.rs), and
+[`pdf_ops.rs`](../src-tauri/src/pdf_ops.rs).
+
+## OCR-17: Accessible review interactions
+
+**Status: Planned.** The workspace already has labels, keyboard shortcuts, and
+numeric geometry controls. Those controls and synthetic browser tests do not
+establish full accessibility conformance.
+
+**Increments**
+
+- **17a — baseline audit and fixes:** verify complete keyboard paths for import,
+  passage/word review, geometry edits, partial OCR preview, extraction, and export.
+  Make focus, current selection, error, busy state, and save status perceivable.
+- **17b — scalable presentation:** test high contrast, color independence,
+  text zoom/reflow, compact layouts, large documents, and reduced motion.
+- **17c — assistive-technology qualification:** use named screen-reader/browser/OS
+  combinations, fix reading order and announcements, and publish the tested scope.
+
+**Acceptance and validation:** no operation requires color recognition or precise
+dragging as its only input. Modal focus is contained and restored; cancellable
+operations have usable controls; word/paragraph selection is announced without
+flooding live regions. Keep automated checks in the browser harness and attach
+manual keyboard/screen-reader results to each affected workflow. Rich tables and
+editors added by OCR-04/05 must pass their own navigation cases. Output-document
+accessibility remains OCR-14, separate from application accessibility.
+
+## OCR-18: Reproducible quality and release qualification
+
+**Status: Planned.** Existing unit/browser checks and model evaluations already
+provide useful evidence. Extend
+[`tests/quality/`](../tests/quality/) and
+[library model evaluation](library-model-evaluation.md) rather than treating the
+product as unevaluated.
+
+**Increments**
+
+- **18a — corpus and receipt contract:** select licensed/public or user-approved
+  documents, version ground truth, list supported languages/layouts/degradation,
+  and record model/native/app versions, settings, checksums, device, and timing.
+  Define pass/fail criteria before comparing candidates.
+- **18b — recognition and review measurements:** record character/word error,
+  missed text, word-evidence coverage, low-confidence recall, false flags, table
+  structure/cell accuracy, field/formula correctness, and human correction time.
+  Distinguish raw recognition from post-processing and manual corrections.
+- **18c — runtime and recovery:** measure cold/warm latency, peak memory, CPU/GPU
+  paths, cancellation, long batches, large projects, interrupted saves, low disk,
+  and installer/runtime pairing on declared platforms.
+- **18d — output and comparative qualification:** verify independent text
+  extraction, rendered layout, PDF standard reports, and device results. Compare
+  other products only using the same corpus/settings, licensed access, and
+  disclosed methodology; do not infer an accuracy ranking from feature lists.
+
+**Acceptance and validation:** publish machine-readable results and representative
+artifacts, including failures and excluded cases. Separate synthetic UI receipts,
+real native/model receipts, device receipts, and standards receipts. No overall
+“passed” label may hide an unrun category. Set performance budgets from an actual
+baseline and target hardware, not invented numbers. A regression threshold must
+protect both average quality and critical cases such as amounts and identifiers.
+
+The existing software entry points are:
+
+```sh
+npm run check
+npx vitest run src/lib/ocr
+node tests/ocr-workspace/smoke.mjs
+```
+
+Use the browser harness instructions in
+[`tests/ocr-workspace/README.md`](../tests/ocr-workspace/README.md) and record setup
+failures as setup failures. Native tests must use the paired features/dependencies
+from [`Cargo.toml`](../src-tauri/Cargo.toml); record the exact commands/build in
+each receipt. The commands above do not download/qualify OCR models, prove a
+scanner works, or validate PDF/A/PDF/UA. Those are additional package-specific
+runs, not implied by frontend test success.
+
+## External workflow references
+
+The following official documents were consulted on **2026-11-09** to scope user
+workflows. They describe the named version/edition, not universal guarantees,
+and do not substitute for testing CrispSorter. ABBYY FineReader PDF and Tungsten
+OmniPage are distinct products. OmniOCR is another product and should not be used
+as an alternate name for OmniPage.
+
+- [ABBYY FineReader 16: checking recognized text][abbyy-proofing] — word review,
+  suggestions, source inspection, and user dictionaries.
+- [ABBYY FineReader 16: DOC(X)/RTF/ODT settings][abbyy-docx] — editable versus
+  source-oriented output and document-structure choices.
+- [ABBYY FineReader 16: editing tables][abbyy-tables] — cell and row repair.
+- [ABBYY FineReader 16: non-standard fonts and training][abbyy-training] — a
+  bounded, engine-specific training workflow.
+- [ABBYY FineReader 16: PDF settings][abbyy-pdf] — image compression, output,
+  and tagging choices.
+- [ABBYY FineReader PDF 16 specification][abbyy-spec] — declared scanner,
+  language, and document-format capabilities.
+- [Tungsten OmniPage Ultimate][omni-product] and
+  [OmniPage 19.2 watched folders][omni-watch] — acquisition, output, and
+  unattended conversion workflows. Watched folders are edition-specific.
+
+[abbyy-proofing]: https://help.abbyy.com/en-us/finereader/16/user_guide/checkingtext/
+[abbyy-docx]: https://help.abbyy.com/en-us/finereader/16/user_guide/docx_settings/
+[abbyy-tables]: https://help.abbyy.com/en-us/finereader/16/user_guide/edittable/
+[abbyy-training]: https://help.abbyy.com/en-us/finereader/16/user_guide/ornatetype/
+[abbyy-pdf]: https://help.abbyy.com/en-us/finereader/16/user_guide/pdf_settings/
+[abbyy-spec]: https://support.abbyy.com/hc/en-us/articles/9904949915795-FineReader-PDF-16-specification
+[omni-product]: https://www.tungstenautomation.com/products/omnipage/ultimate
+[omni-watch]: https://docshield.tungstenautomation.com/OPU/en_US/19.2.0-x8jtnwx31a/help/OPU/Watched_folders.htm

@@ -1,5 +1,9 @@
 # OCR document workspace
 
+The [OCR implementation roadmap](ocr-roadmap.md) scopes the remaining work,
+dependencies, acceptance checks, and evidence required for release. Features
+listed there as planned or awaiting verification are not completed capabilities.
+
 The OCR tab is a document review workspace built around local CrispEmbed
 processing. A project combines source documents, immutable working page images,
 recognition evidence, corrections, and approval state. It can be resumed without
@@ -340,13 +344,14 @@ browser harness exercises the real component with a deterministic adapter and
 synthetic document fixture; it does not claim model accuracy. See
 `tests/ocr-workspace/README.md` for installation and screenshot output.
 
-The standard CI/release recipes keep their existing CrispEmbed pin. To enable
-new native review diagnostics, use the matching CrispEmbed feature-branch source
-and native library together, then build CrispSorter with
-`--features ocr-workspace` (plus `desktop` for the
-desktop-only features). The paired CI workflow pins an immutable native source
-revision, builds its library, and checks the Rust consumer against that exact
-revision. Never mix a new Rust binding with an older prebuilt native library.
+Desktop release recipes enable the reviewed PDF renderer and keep its source
+and native library pinned together. Runtime capability checks still determine
+whether a particular installed build can export reviewed PDF. The paired CI
+workflow pins an immutable native source revision, builds its library, and
+checks the Rust consumer against that exact revision. For development, use
+`--features ocr-workspace` (plus `desktop` for desktop-only features) with the
+matching native library. Never mix a new Rust binding with an older prebuilt
+native library. Renderer availability does not imply PDF/A or PDF/UA conformance.
 
 ### Release qualification
 

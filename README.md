@@ -84,7 +84,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 
 ## Features
 
-- **OCR document workspace** — multi-document projects with automatic recovery, page preparation, editable source regions, confidence review, batch pause/resume, structured field/table/formula extraction, and checked searchable/editable exports. See [the workspace guide](docs/ocr-workspace.md).
+- **OCR document workspace** — multi-document projects with automatic recovery, page preparation, editable source regions and multiline passages, confidence review, previewed partial re-OCR, batch pause/resume, structured field/table/formula extraction, and checked searchable/editable exports. See [the workspace guide](docs/ocr-workspace.md) and the [scoped implementation roadmap](docs/ocr-roadmap.md) for current limitations, remaining work, and acceptance gates.
 
 - **Four-tier OCR** (in quality order):
   - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): DBNet/TrOCR printed-text recognition by default, with complete Qwen2.5-VL and other configurable OCR stages; all-GGUF, no ORT dependency
@@ -231,10 +231,11 @@ crispsorter index stats                                # docs / chunks / fts-doc
 crispsorter ocr scan.pdf                               # plain text to stdout
 crispsorter ocr scan.png --engine tesseract --source-type scanned_doc \
     --denoise --punct-model fireredpunc                # cleanup+denoise → Tesseract-LSTM → punctuation restore
-crispsorter ocr paper.pdf --render hocr                # hOCR (XHTML + word boxes)
+crispsorter ocr paper.pdf --render hocr                # hOCR (XHTML + region geometry)
 crispsorter ocr paper.pdf --render alto --out paper.xml
 crispsorter ocr paper.pdf --render pdf  --out paper-searchable.pdf  # searchable PDF (binary → needs --out)
-crispsorter ocr paper.pdf --render pdf --pdfa --out paper-archival.pdf  # PDF/A-2b (archival: XMP + sRGB OutputIntent)
+# --pdfa currently fails explicitly: archival conformance has not been validated.
+# The separate PDF metadata helper does not make arbitrary PDFs PDF/A-conformant.
 crispsorter ocr photo.jpg --layout --drop-headers-footers          # layout-aware reading order
 crispsorter ocr lowres-scan.png --sr                               # super-resolve (PAN 4×) low-res pages before OCR
 crispsorter ocr blurry-scan.jpg --restore                          # Restormer denoise+deblur before OCR

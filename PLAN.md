@@ -1124,13 +1124,18 @@ management systems and enterprise OCR/archival suites.
   section: dropdown of templates, "Apply" button → calls `template_apply`,
   results table (label | text | confidence).  DE/EN i18n keys.
   Follow-up: drag-to-draw zones on the page preview canvas.
+  **Audit correction (2026-11-09):** the backend/CLI template store and zoned
+  extraction are present, but the current OCR workspace has no connected
+  template-design/application surface. This frontend slice is outstanding;
+  see [the OCR roadmap](docs/ocr-roadmap.md) for the scoped acceptance gate.
 
-- [x] **P26.5 — PDF/A archival conversion.**  ✅ SHIPPED (2026-07-02).
-  `pdf_ops::convert_to_pdfa()` adds PDF/A-2b conformance metadata
-  (XMP `pdfaid:part=2 conformance=B`, sRGB OutputIntent, PDF 1.7
-  version).  Tauri command `pdf_convert_pdfa`.  CLI:
-  `crispsorter pdf pdfa --out archival.pdf`.  Also available via
-  existing `ocr --render pdf --pdfa` for OCR output.
+- [ ] **P26.5 — Validated PDF/A archival conversion.**
+  **Audit correction (2026-11-09):** `pdf_ops::convert_to_pdfa()` supplies a
+  metadata helper, not a qualified archival converter. Identifying XMP and an
+  OutputIntent dictionary do not embed missing fonts/resources or establish
+  conformance. The OCR path rejects `--pdfa` explicitly. Complete the actual
+  conversion and independent validation before advertising archival output;
+  see [the OCR roadmap](docs/ocr-roadmap.md).
 
 - [x] **P26.6 — Digital signature detection.**  ✅ SHIPPED (2026-07-02).
   `pdf_ops::detect_signatures()` walks PDF annotation widgets for
