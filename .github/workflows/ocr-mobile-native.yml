@@ -23,6 +23,7 @@ on:
       - 'tools/mobile-ort-probe/**'
       - 'tests/scripts/test_*mobile*'
       - 'src-tauri/Cargo.toml'
+      - 'Cargo.lock'
       - 'src-tauri/tauri.ocr-mobile.conf.json'
       - 'src-tauri/src/model_provisioning.rs'
       - 'src-tauri/src/model_storage.rs'
