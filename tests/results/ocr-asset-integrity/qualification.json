@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "source_commit": "715cfc14aaeb88cd0774df7585d5d3ab77d864fe",
+  "source_branch": "feat/ocr-mobile-asset-integrity",
+  "workflow_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42621716073",
+  "workflow_run_id": 42621716073,
+  "workflow_job_id": 129175274170,
+  "conclusion": "success",
+  "runner": "Ubuntu 24.04.5 x86_64",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "tests": {
+    "passed": 9,
+    "failed": 0,
+    "ignored": 0,
+    "names": [
+      "image_input::tests::accepts_scan_stuffing_restarts_dnl_multiple_scans_and_trailing_bytes",
+      "image_input::tests::every_truncated_marker_stream_is_rejected_despite_metadata_end_marker",
+      "image_input::tests::rejects_invalid_segment_lengths_and_end_markers_without_scans",
+      "tests::asset_and_directory_aliases_cannot_redirect_private_snapshot_writes",
+      "tests::damaged_existing_assets_fail_without_overwriting_either_snapshot",
+      "tests::identical_existing_assets_are_verified_in_bounded_chunks_without_modification",
+      "tests::preserves_complete_jpegs_with_metadata_markers_and_legal_trailing_data",
+      "tests::rejects_incomplete_real_jpegs_and_records_raw_decoder_tolerance",
+      "tests::unavailable_sources_fail_before_any_decoder_or_fallback"
+    ]
+  },
+  "artifact": {
+    "id": 13678452314,
+    "name": "ocr-image-input-contracts",
+    "bytes": 2907,
+    "sha256": "cc33a0585cac4321850ecbdd9e5f71a95354b624d65289e638c010b9db5989bf",
+    "downloaded_and_sha256_verified": true
+  },
+  "tested_source_sha256": {
+    "src-tauri/src/extractors/image_input.rs": "4ee028379d258636cd98fbe37e95467e61644a819c4adfd92f58fabe773364bd",
+    "src-tauri/src/ocr_asset_store.rs": "ede8cfcc41d7213ef35216b75b05cd1a8f98468c238e7f827d2f2a45927e2942",
+    "tests/image-input-contract/Cargo.lock": "8ed78e82e730374b325dd9d487fdbf1e7c52549cd6039ba17ff3c987c3a86c70",
+    "tests/fixtures/mobile-documents/oriented.jpg.b64": "f81abbb9d86d69c58f6f5155757bbbda157e9b85a2d8ef3fdb1f0950e1c29d5d"
+  },
+  "application_dependency_pins": {
+    "image": {
+      "version": "0.25.10",
+      "registry_checksum": "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+    },
+    "zune-jpeg": {
+      "version": "0.5.15",
+      "registry_checksum": "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+    }
+  },
+  "fixture": {
+    "path": "tests/fixtures/mobile-documents/oriented.jpg.b64",
+    "decoded_bytes": 1421,
+    "decoded_sha256": "f2c4db841258621ec9ab96da989980ef729ea72750a2e20df0a561eaef32daec",
+    "encoded_width": 120,
+    "encoded_height": 80,
+    "exif_orientation": 6
+  },
+  "decoder_observations": [
+    {
+      "case": "complete",
+      "bytes": 1421,
+      "decoder_accepted": true,
+      "source_guard_accepted": true
+    },
+    {
+      "case": "legal-trailing-data",
+      "bytes": 1445,
+      "decoder_accepted": true,
+      "source_guard_accepted": true
+    },
+    {
+      "case": "legal-metadata-end-marker",
+      "bytes": 1427,
+      "decoder_accepted": true,
+      "source_guard_accepted": true
+    },
+    {
+      "case": "missing-end-marker",
+      "bytes": 1419,
+      "decoder_accepted": true,
+      "source_guard_accepted": false
+    },
+    {
+      "case": "truncated-scan",
+      "bytes": 1321,
+      "decoder_accepted": true,
+      "source_guard_accepted": false
+    },
+    {
+      "case": "metadata-end-marker-with-truncated-scan",
+      "bytes": 1327,
+      "decoder_accepted": true,
+      "source_guard_accepted": false
+    }
+  ],
+  "executed_scope": [
+    "The focused crate includes the exact production ocr_asset_store.rs and image_input.rs modules, verified by source hash.",
+    "A complete 200003-byte existing asset is compared over fixed 64 KiB buffers and reused without modification.",
+    "Truncated, oversized and same-length byte-corrupted existing assets fail without replacing existing or expected bytes.",
+    "Asset symlinks, asset-directory symlinks and non-file destinations fail without changing outside files.",
+    "All six JPEG source-validation controls from the historical 8dad704 result passed again with the same application dependency pins."
+  ],
+  "pending_scope": [
+    "Full application camera_reimport_rejects_damaged_existing_pixels_and_preserves_originals regression.",
+    "Full application camera_import_cannot_reuse_an_asset_symlink_or_write_through_a_cache_alias regression.",
+    "Physical device camera/provider execution. This focused host probe is not a device qualification."
+  ],
+  "historical_jpeg_receipt": "../ocr-image-input/qualification.json"
+}

@@ -63,3 +63,9 @@ test binary and are not covered by the focused six-test result above.
 This host result does not qualify physical camera capture, a document picker,
 or a phone's decoder. Native provider qualification remains separately
 documented in [mobile import](ocr-mobile-import.md).
+
+Existing normalized images are also verified before reuse. The subsequent
+[asset-integrity qualification](ocr-asset-integrity.md) records the exact
+nine-test source that combines these JPEG controls with bounded byte comparison
+and alias-rejection cases. The six-test result above remains the original
+decoder-tolerance receipt.
