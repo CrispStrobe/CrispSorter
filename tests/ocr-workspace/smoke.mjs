@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -150,6 +150,22 @@ if (process.argv.includes('--serve')) {
         async function expandStructureDetail(panel, name) {
             const summary = panel.getByText(name, { exact: true });
             if (!await summary.evaluate(element => element.closest('details').open)) await summary.click();
+        }
+
+        async function reopenFixtureProject(page) {
+            const loads = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'load').length);
+            await page.getByRole('button', { name: 'New', exact: true }).click();
+            await page.getByText('New project ready', { exact: true }).waitFor();
+            await page.getByRole('button', { name: 'Projects', exact: true }).click();
+            await page.getByRole('region', { name: 'Saved projects', exact: true }).getByRole('button', { name: /Northstar · quarterly statement/ }).click();
+            await page.getByText('Project restored', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'load').length), loads + 1);
+        }
+        async function pasteSelection(page, editor, start, end, text) {
+            await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+            await page.evaluate(value => navigator.clipboard.writeText(value), text);
+            await editor.evaluate((input, range) => { input.focus(); input.setSelectionRange(...range); }, [start, end]);
+            await page.keyboard.press((process.platform === 'darwin' ? 'Meta' : 'Control') + '+v');
         }
 
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
@@ -968,6 +984,167 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
         });
 
+        await test('page text drafts keep native undo separate, survive project reload, and retain stale work', 'page-draft', async page => {
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            const before = await saveSnapshot(page), original = before.pages[0].regions[1];
+            assert.ok(original.text.includes('\r\n'));
+            await page.getByRole('button', { name: 'Edit page text', exact: true }).click();
+            const dialog = page.getByRole('dialog', { name: 'Edit page text draft', exact: true });
+            const editor = dialog.getByRole('textbox', { name: 'Page text draft', exact: true });
+            const originalDraft = await editor.inputValue();
+            const start = originalDraft.indexOf('Equipment'), end = start + 'Equipment'.length;
+            assert.ok(start > 0);
+            const draftText = originalDraft.slice(0, start) + 'Checked' + originalDraft.slice(end);
+            await pasteSelection(page, editor, start, end, 'Checked');
+            await page.waitForFunction(value => document.querySelector('[data-page-text-draft]')?.value === value, draftText);
+            const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+            await page.keyboard.press(modifier + '+z');
+            await page.waitForFunction(value => document.querySelector('[data-page-text-draft]')?.value === value, originalDraft);
+            await page.keyboard.press(modifier + '+Shift+z');
+            await page.waitForFunction(value => document.querySelector('[data-page-text-draft]')?.value === value, draftText);
+            await dialog.getByRole('button', { name: 'Close and keep draft', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            const drafted = await saveSnapshot(page);
+            assert.deepEqual(drafted.pages, before.pages);
+            assert.equal(drafted.pageTextDraft.text, draftText);
+            assert.equal(drafted.pageTextDraft.page.id, before.pages[0].id);
+            assert.ok(drafted.pageTextDraft.revision > 1);
+            await page.locator('[data-page-text-draft-banner]').waitFor();
+
+            await reopenFixtureProject(page);
+            await page.getByRole('button', { name: 'Resume page text draft', exact: true }).click();
+            assert.equal(await editor.inputValue(), draftText);
+            await dialog.getByRole('button', { name: 'Review changes', exact: true }).click();
+            assert.equal(await dialog.getByRole('textbox', { name: 'Current page text', exact: true }).inputValue(), originalDraft);
+            assert.equal(await dialog.getByRole('textbox', { name: 'Proposed page text', exact: true }).inputValue(), draftText);
+            assert.equal(await dialog.getByRole('checkbox', { name: 'Use combined source coverage', exact: true }).count(), 0);
+            await dialog.getByRole('button', { name: 'Back to editing', exact: true }).click();
+            assert.equal(await editor.inputValue(), draftText);
+            await page.screenshot({ path: path.join(output, 'ocr-page-draft-editor.png'), fullPage: true });
+            await dialog.getByRole('button', { name: 'Close and keep draft', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages, before.pages);
+            await page.getByRole('button', { name: 'Resume page text draft', exact: true }).click();
+            await dialog.getByRole('button', { name: 'Review changes', exact: true }).click();
+            await dialog.getByRole('button', { name: 'Apply page changes', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            const applied = await saveSnapshot(page);
+            assert.equal(applied.pageTextDraft, undefined);
+            assert.equal(applied.pages[0].approved, false);
+            const edited = applied.pages[0].regions[1];
+            assert.equal(edited.id, original.id);
+            assert.equal(edited.text, original.text.replace('Equipment', 'Checked'));
+            assert.equal(edited.originalText, original.originalText);
+            assert.deepEqual(edited.char_conf, original.char_conf);
+            assert.deepEqual(applied.pages[0].structure.blocks[1].runs, []);
+            assert.deepEqual(applied.pages.slice(1), before.pages.slice(1));
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            const restored = await saveSnapshot(page);
+            assert.deepEqual(restored.pages, before.pages);
+            assert.equal(restored.pageTextDraft.text, draftText);
+
+            // Change the underlying source through the normal editor, save it,
+            // and actually reload the project: the retained draft is now stale.
+            await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+            await page.getByRole('textbox', { name: 'Passage 1 text', exact: true }).fill('Revised heading outside the saved draft');
+            await page.getByRole('textbox', { name: 'Passage 1 text', exact: true }).blur();
+            const changedSource = await saveSnapshot(page);
+            await reopenFixtureProject(page);
+            await page.getByRole('button', { name: 'Resume page text draft', exact: true }).click();
+            assert.equal(await editor.inputValue(), draftText);
+            await dialog.getByRole('button', { name: 'Review changes', exact: true }).click();
+            await dialog.getByRole('alert').filter({ hasText: /changed|stale|no longer/i }).waitFor();
+            assert.equal(await editor.inputValue(), draftText);
+            assert.equal(await dialog.getByRole('button', { name: 'Apply page changes', exact: true }).count(), 0);
+            await dialog.getByRole('button', { name: 'Close and keep draft', exact: true }).click();
+            const retained = await saveSnapshot(page);
+            assert.equal(retained.pageTextDraft.text, draftText);
+            assert.deepEqual(retained.pages, changedSource.pages);
+        });
+
+        await test('page text drafts reject hidden source barriers and combine reviewed passages only with explicit coverage', 'page-draft', async page => {
+            const before = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const original = before.pages[0], first = original.regions[1], second = original.regions[2];
+            await page.getByRole('button', { name: 'Edit page text', exact: true }).click();
+            const dialog = page.getByRole('dialog', { name: 'Edit page text draft', exact: true });
+            const editor = dialog.getByRole('textbox', { name: 'Page text draft', exact: true });
+            const originalDraft = await editor.inputValue();
+            const barrierStart = originalDraft.indexOf(original.regions[4].text);
+            const barrierEnd = originalDraft.indexOf(original.regions[6].text) + original.regions[6].text.length;
+            assert.ok(barrierStart > 0 && barrierEnd > barrierStart);
+            const rejectedText = originalDraft.slice(0, barrierStart) + 'Replacement across a picture' + originalDraft.slice(barrierEnd);
+            await editor.fill(rejectedText);
+            await dialog.getByRole('button', { name: 'Review changes', exact: true }).click();
+            await dialog.getByRole('alert').filter({ hasText: /picture|barrier|intervening/i }).waitFor();
+            assert.equal(await editor.inputValue(), rejectedText);
+            assert.equal(await dialog.getByRole('button', { name: 'Apply page changes', exact: true }).count(), 0);
+            await dialog.getByRole('button', { name: 'Close and keep draft', exact: true }).click();
+            const rejected = await saveSnapshot(page);
+            assert.deepEqual(rejected.pages, before.pages);
+            assert.equal(rejected.pageTextDraft.text, rejectedText);
+
+            await page.getByRole('button', { name: 'Resume page text draft', exact: true }).click();
+            await editor.fill(originalDraft);
+            const start = originalDraft.indexOf(first.text.replace(/\r\n?/g, '\n'));
+            const end = originalDraft.indexOf(second.text) + second.text.length;
+            const combinedText = '😀 Checked equipment.\nInspected the safety valve.';
+            const draftText = originalDraft.slice(0, start) + combinedText + originalDraft.slice(end);
+            await pasteSelection(page, editor, start, end, combinedText);
+            await page.waitForFunction(value => document.querySelector('[data-page-text-draft]')?.value === value, draftText);
+            await dialog.getByRole('button', { name: 'Review changes', exact: true }).click();
+            await dialog.getByText('Affected passages and source coverage', { exact: true }).click();
+            assert.equal(await dialog.getByRole('textbox', { name: 'Combined passage preview', exact: true }).inputValue(), combinedText);
+            const apply = dialog.getByRole('button', { name: 'Apply page changes', exact: true });
+            assert.equal(await apply.isDisabled(), true);
+            const coverage = dialog.getByRole('checkbox', { name: 'Use combined source coverage', exact: true });
+            assert.equal(await coverage.isChecked(), false);
+            await coverage.check();
+            await page.screenshot({ path: path.join(output, 'ocr-page-draft-preview.png'), fullPage: true });
+            await apply.click();
+            await dialog.waitFor({ state: 'hidden' });
+            const applied = await saveSnapshot(page), result = applied.pages[0], merged = result.regions[1];
+            assert.equal(applied.pageTextDraft, undefined);
+            assert.equal(result.regions.length, original.regions.length - 1);
+            assert.equal(merged.text, combinedText);
+            assert.equal(merged.kind, 'text');
+            assert.equal(merged.confidenceBasis, 'manual');
+            assert.equal(merged.confidence, null);
+            assert.deepEqual(merged.char_conf, []);
+            assert.deepEqual([merged.x, merged.y, merged.w, merged.h], [80, 220, 390, 230]);
+            assert.deepEqual(merged.sourceComponents.map(source => source.sourceRegionId), [first.id, second.id]);
+            for (const source of merged.sourceComponents) {
+                const captured = original.regions.find(region => region.id === source.sourceRegionId);
+                assert.equal(source.originalText, captured.originalText);
+                assert.deepEqual(source.char_conf, captured.char_conf);
+            }
+            for (const untouched of original.regions.filter(region => ![first.id, second.id].includes(region.id))) {
+                assert.deepEqual(result.regions.find(region => region.id === untouched.id), untouched);
+            }
+            const manualBlock = result.structure.blocks.find(block => block.sourceRegionId === merged.id);
+            assert.equal(manualBlock.role, 'paragraph');
+            assert.deepEqual(manualBlock.runs, []);
+            assert.equal(manualBlock.noteReferences, undefined);
+            const caption = original.structure.blocks[6];
+            assert.deepEqual(result.structure.blocks.find(block => block.id === caption.id), caption);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            const undone = await saveSnapshot(page);
+            assert.deepEqual(undone.pages, before.pages);
+            assert.equal(undone.pageTextDraft.text, draftText);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages, applied.pages);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0]);
+            const exportedMerged = exported.regions.find(region => region.id === merged.id);
+            assert.equal(exportedMerged.text, combinedText);
+            assert.deepEqual(exportedMerged.source_components, merged.sourceComponents);
+            assert.deepEqual(exported.structure, result.structure);
+            assert.equal(exported.figure_regions.length, 1);
+        });
+
         await test('partial OCR previews replacements, preserves cancellation and expands drawn areas to full passages', 'review', async page => {
             const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
             const current = 'Manually checked invoice number';
@@ -1366,7 +1543,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

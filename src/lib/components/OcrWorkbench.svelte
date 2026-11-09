@@ -62,6 +62,7 @@
   import PageTextEditor from "./ocr/PageTextEditor.svelte";
   import StructurePanel from "./ocr/StructurePanel.svelte";
   import PreviousStructure from "./ocr/PreviousStructure.svelte";
+  import PageTextDraftDialog from "./ocr/PageTextDraftDialog.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -79,6 +80,10 @@
   import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
   import type { WordEvidence } from "$lib/ocr/words";
   import { joinRegionText, sourceOffsetForTextarea } from "$lib/ocr/text";
+  import {
+    createPageTextDraft, updatePageTextDraft, discardPageTextDraft,
+    preparePageTextEdit, applyPageTextEdit, type PageTextEditPreview,
+  } from "$lib/ocr/pageTextDraft";
   import {
     passageEligibility, isPassageBoundary, applyPassagePreview, applyPassageRepair, readSourceComponents,
     type PassagePreview, type RepairPreview,
@@ -208,6 +213,8 @@
     mode: "split" | "merge" | "repair";
     offset?: number;
   } | null>(null);
+  let pageTextDraftOpen = $state(false);
+  let pageTextDraftLocalUnsaved = $state(false);
   let proofreadingOpen = $state(false);
   let userProofreading = $state<ProofreadingData>(emptyProofreadingData());
   let userProofreadingLoad = $state<"loading" | "ready" | "error" | "unavailable">("loading");
@@ -276,6 +283,7 @@
     if (!active) {
       confirm = null;
       passageAction = null;
+      if (!pageTextDraftLocalUnsaved) pageTextDraftOpen = false;
       helpOpen = false;
       recentOpen = false;
     }
@@ -732,10 +740,13 @@
     // Validate before closing the current writer: an invalid file must never
     // leave the still-visible project with an autosaver that silently ignores edits.
     const parsed = parseProject(next);
+    if (pageTextDraftLocalUnsaved) throw new Error("The page draft contains input that has not been stored. Reduce or copy that input before changing projects.");
     await autosave?.close();
     history = createHistory(parsed);
     selectedPageId = history.present.pages[0]?.id ?? null;
     selectedRegionId = null;
+    pageTextDraftOpen = false;
+    pageTextDraftLocalUnsaved = false;
     proofreadingOpen = false;
     correctionDraft = null;
     checkedPages = [];
@@ -992,7 +1003,7 @@
     caret: { start: number; end: number; text: string } | null = null,
   ) {
     const page = activePage;
-    if (!page || locked || confirm || passageAction) return;
+    if (!page || locked || confirm || passageAction || pageTextDraftOpen) return;
     const current = page.regions.find((item) => item.id === target.id);
     if (!current) return;
     try {
@@ -1050,6 +1061,53 @@
     try {
       change(applyPassageRepair(project, preview, selectedIds));
       finishPassageChange(preview.page.id, preview.regionIds[0], `${selectedIds.length} text repair${selectedIds.length === 1 ? "" : "s"} applied. Undo restores the previous text.`);
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function openPageTextDraft() {
+    if (!activePage || locked || confirm || passageAction || pageTextDraftOpen) return;
+    try {
+      change(createPageTextDraft(project, activePage.id), false);
+      resumePageTextDraft();
+    } catch (failure) { fail(failure); }
+  }
+  function resumePageTextDraft() {
+    if (!project.pageTextDraft || locked || confirm || passageAction) return;
+    currentMatch = null;
+    wordInspection = null;
+    editGroup = null;
+    error = "";
+    pageTextDraftOpen = true;
+  }
+  function updateOpenPageTextDraft(text: string): string | null {
+    if (locked) return "Wait for the current document operation to finish before updating the draft.";
+    try { change(updatePageTextDraft(project, text), false); return null; }
+    catch (failure) { return message(failure); }
+  }
+  function discardOpenPageTextDraft(): string | null {
+    if (locked) return "Wait for the current document operation to finish before discarding the draft.";
+    try {
+      change(discardPageTextDraft(project), false);
+      pageTextDraftOpen = false;
+      pageTextDraftLocalUnsaved = false;
+      notice = "Unapplied page text draft discarded.";
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function applyOpenPageTextDraft(preview: PageTextEditPreview, acceptCombinedCoverage: boolean): string | null {
+    if (locked) return "Wait for the current document operation to finish before applying the draft.";
+    try {
+      change(applyPageTextEdit(project, preview, acceptCombinedCoverage));
+      selectedPageId = preview.page.id;
+      selectedRegionId = preview.replacementIds[0] ?? null;
+      currentMatch = null;
+      wordInspection = null;
+      editGroup = null;
+      textView = "text";
+      inspector = "review";
+      pageTextDraftOpen = false;
+      pageTextDraftLocalUnsaved = false;
+      notice = "Page text draft applied. Review the changed passage before approving; Undo restores the previous page and draft.";
       return null;
     } catch (failure) { return message(failure); }
   }
@@ -1140,7 +1198,10 @@
     const issue = reviewIssues[(current + 1) % reviewIssues.length];
     selectPage(issue.pageId);
     if (issue.regionId) void selectRegion(issue.regionId);
-    else inspector = "review";
+    else {
+      inspector = "review";
+      if (issue.reason === "changed" && project.pages.find((page) => page.id === issue.pageId)?.structure) textView = "structure";
+    }
   }
   function approveRegion() {
     if (activePage && region) {
@@ -1840,7 +1901,7 @@
     }
   }
   function keydown(event: KeyboardEvent) {
-    if (!active || confirm || helpOpen || passageAction) return;
+    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen) return;
     const target = event.target as HTMLElement;
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
@@ -1910,7 +1971,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (queueActive || busy || autosave?.hasUnsavedChanges() || userProofreadingWriter.hasUnsavedChanges()) {
+    if (queueActive || busy || pageTextDraftLocalUnsaved || autosave?.hasUnsavedChanges() || userProofreadingWriter.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1946,7 +2007,7 @@
     // Native drag/drop supplies real filesystem paths; web File names are not paths.
     if (client === workspaceClient)
       void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
-        if (active && !locked && !passageAction) void importFiles(event.payload.paths);
+        if (active && !locked && !passageAction && !pageTextDraftOpen) void importFiles(event.payload.paths);
       })
         .then((fn) => {
           if (mounted) unlisten = fn;
@@ -1958,6 +2019,14 @@
         .onCloseRequested(async (event) => {
           if (closing) {
             event.preventDefault();
+            return;
+          }
+          if (pageTextDraftLocalUnsaved) {
+            event.preventDefault();
+            await nativeMessage(
+              "The open page draft contains input that could not be stored. Reduce the unsupported input or copy it before explicitly discarding the draft, then close the window again.",
+              { title: "Page draft has unsaved input", kind: "error" },
+            );
             return;
           }
           if (busy || (queueActive && queueState.phase !== "paused")) {
@@ -2124,6 +2193,11 @@
       ><Download size={15} /> Export <ChevronRight size={14} /></button
     >
   </div>
+
+  {#if project.pageTextDraft}<div class="page-text-draft-banner" data-page-text-draft-banner>
+      <FileText size={17} /><div><strong>Unapplied page text draft</strong><span>{project.pageTextDraft.page.name} · {saveStatus.state === "saved" ? "Draft saved" : saveStatus.state === "saving" ? "Saving draft…" : saveStatus.state === "pending" ? "Draft waiting to save" : "Draft save failed"}</span></div>
+      <button class="button small" type="button" onclick={resumePageTextDraft} disabled={locked}>Resume page text draft</button>
+    </div>{/if}
 
   {#if recentOpen}
     <div class="project-menu" role="region" aria-label="Saved projects">
@@ -2686,6 +2760,13 @@
                 need attention</span
               >
             </div>
+            <button
+              class="button small subtle"
+              onclick={openPageTextDraft}
+              disabled={locked || !activePage || activePage.excluded || !activePage.regions.some((item) => !item.excluded && ["text", "title", "header", "footer"].includes(item.kind)) || (!!project.pageTextDraft && project.pageTextDraft.page.id !== activePage.id)}
+              title={project.pageTextDraft && project.pageTextDraft.page.id !== activePage?.id ? "Resume or discard the existing draft before starting another page" : "Edit across the page's passages in a saved draft, then review before applying"}
+              ><FileText size={14} /> Edit page text</button
+            >
             <button
               class="icon-button"
               class:active={proofreadingOpen}
@@ -3914,6 +3995,24 @@
   </footer>
 </section>
 
+{#if pageTextDraftOpen && project.pageTextDraft}
+  {#key project.pageTextDraft.id}
+    <PageTextDraftDialog
+      draft={project.pageTextDraft}
+      {saveStatus}
+      disabled={locked}
+      imageUrl={client.imageUrl}
+      onupdate={updateOpenPageTextDraft}
+      onreview={() => preparePageTextEdit(project)}
+      onapply={applyOpenPageTextDraft}
+      ondiscard={discardOpenPageTextDraft}
+      onclose={() => { pageTextDraftOpen = false; pageTextDraftLocalUnsaved = false; }}
+      onsave={async () => { await autosave?.flush(); }}
+      onlocalunsaved={(unsaved) => (pageTextDraftLocalUnsaved = unsaved)}
+    />
+  {/key}
+{/if}
+
 {#if passageAction}
   <PassageToolsDialog
     project={passageAction.project}
@@ -4366,6 +4465,10 @@
     flex: none;
     font-size: 11px;
   }
+  .page-text-draft-banner { display: flex; flex-wrap: wrap; flex: none; align-items: center; gap: 10px; min-width: 0; padding: 10px 18px; border-bottom: 1px solid #49627f; background: #1b304a; color: #cce1fa; }
+  .page-text-draft-banner > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 150px; }
+  .page-text-draft-banner strong { font-size: 12px; }
+  .page-text-draft-banner span { color: #adc7e7; font-size: 11px; overflow-wrap: anywhere; }
   .feedback > span {
     flex: 1;
     white-space: pre-wrap;
@@ -4747,9 +4850,12 @@
   .review-heading {
     padding: 15px 16px 12px;
     display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
     align-items: center;
     justify-content: space-between;
   }
+  .review-heading > div { flex: 1; min-width: 120px; }
   .review-heading h2 {
     font-size: 14px;
     font-weight: 650;

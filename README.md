@@ -84,7 +84,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 
 ## Features
 
-- **OCR document workspace** — multi-document projects with automatic recovery, page preparation, confidence-colored word review, multiline editing and passage split/merge, previewed partial re-OCR, vocabulary and correction rules, logical document structure and per-passage formatting, batch pause/resume, field/table/formula extraction, and checked searchable/editable exports. See [the workspace guide](docs/ocr-workspace.md) and the [scoped implementation roadmap](docs/ocr-roadmap.md) for current format limitations, remaining work, and acceptance gates.
+- **OCR document workspace** — multi-document projects with automatic recovery, page preparation, confidence-colored word review, multiline editing and passage split/merge, previewed partial re-OCR, vocabulary and correction rules, logical document structure and per-passage formatting, saved whole-page text drafts with previewed changes, batch pause/resume, field/table/formula extraction, and checked searchable/editable exports. See [the workspace guide](docs/ocr-workspace.md) and the [scoped implementation roadmap](docs/ocr-roadmap.md) for current format limitations, remaining work, and acceptance gates.
 
 - **Four-tier OCR** (in quality order):
   - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): DBNet/TrOCR printed-text recognition by default, with complete Qwen2.5-VL and other configurable OCR stages; all-GGUF, no ORT dependency

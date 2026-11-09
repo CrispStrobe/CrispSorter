@@ -1,5 +1,5 @@
 import { describe,expect,it } from 'vitest';
-import { addDocument,applyPageImage,applyRecognition,approvePage,commitHistory,createHistory,createProject,deleteRegion,editRegion,moveRegion,parseProject,prepareExport,replaceMatches,serializeProject,splitPage,undoHistory,updateRegion,type OcrProject } from './model';
+import { addDocument,applyPageImage,applyRecognition,approvePage,commitHistory,createHistory,createProject,deleteRegion,editRegion,getReviewIssues,moveRegion,parseProject,prepareExport,replaceMatches,serializeProject,splitPage,undoHistory,updateRegion,type OcrProject } from './model';
 import { initializePageStructure,setBlockProperties,setCaptionAnchor,setFootnoteReference,setInlineMarks,setSectionColumns,startSection } from './structure';
 import { readStructureHistory } from './structureHistory';
 import { applyPassagePreview,capturePassageSplit } from './passages';
@@ -26,6 +26,14 @@ function linked():OcrProject {
 }
 
 describe('document structure across the project lifecycle',()=>{
+    it('queues semantic-only changes until the page is approved',()=>{
+        const p=structured(),page=p.pages[0];
+        expect(getReviewIssues(p)).toHaveLength(0);
+        const changed=setBlockProperties(p,page.id,page.structure!.blocks[1].id,{alignment:'center'});
+        expect(changed.pages[0].regions.map(region=>region.text)).toEqual(page.regions.map(region=>region.text));
+        expect(getReviewIssues(changed)).toContainEqual({pageId:page.id,regionId:null,reason:'changed',message:'Document structure changes need page approval.'});
+        expect(getReviewIssues(approvePage(changed,page.id))).toHaveLength(0);
+    });
     it('initializes legacy projects without changing text, geometry, approvals, or raw evidence',()=>{
         const original=fixture(),page=original.pages[0],next=initializePageStructure(original,page.id);
         expect(next.pages[0].approved).toBe(true);

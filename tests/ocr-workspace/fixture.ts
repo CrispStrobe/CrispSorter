@@ -1,6 +1,7 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
 import type { ExportRequest, ProjectEnvelope, WorkspaceClient } from '../../src/lib/ocr/client';
 import { emptyProofreadingData, type ProofreadingData } from '../../src/lib/ocr/proofreadingData';
+import { initializePageStructure, setBlockProperties, setCaptionAnchor, setFootnoteReference, setInlineMarks } from '../../src/lib/ocr/structure';
 
 const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
@@ -107,6 +108,7 @@ declare global {
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
     const nativeWord=scenario==='native-word'||scenario.startsWith('proofreading');
+    const structureFixture=scenario==='structure'||scenario==='page-draft';
     let project=addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
         pages:[1,2,3].map(page=>({image_path:pagePath(page),width:1000,height:1400})),
@@ -156,15 +158,34 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 confidence_basis:'recognition',char_conf:Array.from(repairText,()=>0.99),
                 char_conf_unit:'unicode_codepoint',char_conf_aligned:true}];
         }
-        if(scenario==='structure') {
+        if(structureFixture) {
             result.engine='fixture-verified-character-adapter';
-            result.regions=structureBlocks.map(block=>({...block,confidence:0.99,
-                confidence_basis:'recognition',char_conf:Array.from(block.text,()=>0.99),
-                char_conf_unit:'unicode_codepoint',char_conf_aligned:true}));
+            result.regions=structureBlocks.map((block,index)=>{
+                const text=scenario==='page-draft'&&index===1?block.text.replace('\n','\r\n'):block.text;
+                return {...block,text,confidence:0.99,
+                confidence_basis:'recognition',char_conf:Array.from(text,()=>0.99),
+                char_conf_unit:'unicode_codepoint',char_conf_aligned:true};
+            });
         }
         project=applyRecognition(project,project.pages[0].id,result);
         project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
         project=approvePage(project,project.pages[2].id);
+        if(scenario==='page-draft') {
+            // Existing authored semantics make a draft-only undo distinguishable
+            // from project history, and make combined-source resets reviewable.
+            const page=project.pages[0];
+            project=initializePageStructure(project,page.id);
+            const blocks=project.pages[0].structure!.blocks;
+            project=setBlockProperties(project,page.id,blocks[0].id,{role:'heading',headingLevel:2});
+            project=setBlockProperties(project,page.id,blocks[2].id,{role:'list-item',list:{kind:'bullet',level:0}});
+            project=setBlockProperties(project,page.id,blocks[6].id,{role:'caption'});
+            project=setCaptionAnchor(project,page.id,blocks[6].id,blocks[5].id);
+            project=setBlockProperties(project,page.id,blocks[7].id,{role:'footnote'});
+            const text=page.regions[1].text,start=text.indexOf('Equipment');
+            project=setInlineMarks(project,page.id,blocks[1].id,{start,end:start+'Equipment'.length},{bold:true});
+            const marker=text.indexOf('[1]');
+            project=setFootnoteReference(project,page.id,blocks[1].id,{start:marker,end:marker+3},blocks[7].id);
+        }
     }
     const savedById=new Map<string,ProjectEnvelope>();
     const initialEnvelope:ProjectEnvelope={project:copy(project),revision:7,saved_at:Date.parse(stamp),path:'/fixtures/project.json'};
@@ -270,7 +291,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
             control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
         },
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,scenario==='structure'&&page===1))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1))}`;},
     };
     return {client,initialProject:null};
 }

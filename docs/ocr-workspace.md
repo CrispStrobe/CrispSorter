@@ -103,6 +103,52 @@ needing another OCR run. Undo/redo works through the toolbar, and edits revoke
 the affected approval. Use **Regions** for confidence-colored words, geometry,
 region types, or reading-order changes.
 
+### Edit the full page as a saved draft
+
+Choose **Edit page text** to work across the current page's passages in one text
+area. Use ordinary keyboard selection, typing, cut, copy, and plain-text paste.
+Ctrl/Cmd+Z undoes typing inside the draft. Tables and formulas remain visible as
+protected text; pictures and excluded passages still form editing boundaries
+even when their text is absent from the draft.
+
+Draft changes save with the project, separately from the recognized page. The
+dialog reports **Draft saved · not applied**, saving progress, or a save error.
+**Save draft** retries or flushes its saved state. **Close and keep draft** leaves
+it available through **Resume page text draft**, including after reopening the
+project or navigating to another page. There is one active page draft per
+project. **Discard draft** asks before removing changed draft text; it does not
+apply anything to the recognized page.
+
+Choose **Review changes** to compare the current and proposed page text. Expand
+**Affected passages and source coverage** to inspect exactly which passages and
+image areas the change uses. A change contained in one passage keeps that
+passage's identity and original evidence. A change across adjacent text passages
+combines the full affected span into **one manual paragraph**, preserves its
+original source components, and resets active formatting and structural roles
+as described in the preview. Review any affected caption/note links and section
+placement. Check **Use combined source coverage** before applying a combined
+passage. The chosen area does not create native word boxes or OCR confidence.
+
+Several separate edits are reviewed as the span between the first and last
+change, so unchanged passages between them can also be combined. Apply separate
+edits if you want to keep those passage boundaries. Newlines stay inside the
+resulting passage; they do not create new OCR regions. An edit that crosses a
+table, formula, picture, or excluded passage is rejected. Combined coverage that
+overlaps another included region is also rejected until the source areas or
+scope are corrected.
+
+**Back to editing** changes no recognized text. **Apply page changes** creates
+one project history step and removes the applied draft. Project Undo restores
+the previous OCR text, structure, and saved draft. Unchanged text outside the
+reviewed replacement preserves its original line endings; line endings inside
+the changed span use LF. A no-op draft leaves the page unchanged.
+
+The draft retains its captured source. If that page or document changes before
+Apply, review is blocked and the draft remains available to copy or recover.
+Start a new draft from the current page after recovering any text you need.
+The full-page draft supports plain text across passages; formatting selections
+remain in the per-passage Structure editor.
+
 ### Assign document structure and formatting
 
 Open **Structure** in Review and choose **Enable document structure** for the
@@ -124,10 +170,10 @@ and pasted replacement text use plain formatting; the editor retains formatting
 only on unchanged ranges it can identify exactly. A replacement can remove an
 intersected note reference as well as formatting, so review the notices after
 editing. Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z restore text and metadata together while
-the editor has focus. This editor formats one
-passage at a time; selection and rich-text paste across multiple passages are a
-separate planned increment. Newlines inside a passage do not create new OCR
-regions or source-image boxes.
+the editor has focus. This editor formats one passage at a time. Use the
+full-page draft for plain-text selection and paste across passages; rich-text
+formatting across passages remains a separate planned increment. Newlines inside
+a passage do not create new OCR regions or source-image boxes.
 
 Use **Move block earlier/later** to change reading order. In **Sections and
 columns**, choose **Start section here** to begin a section at the selected
@@ -486,7 +532,9 @@ truncate an existing file.
 Native editing shortcuts continue to work inside text inputs. When a page has
 document structure, Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z in its passage editors use
 project history so text, formatting, and note references restore together.
-Toolbar Undo remains available while a text field has focus.
+The unapplied full-page draft keeps native textarea Undo until Apply; afterward,
+project Undo restores the applied change. Toolbar Undo remains available outside
+the draft dialog while a text field has focus.
 
 ## Development and verification
 

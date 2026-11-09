@@ -5,6 +5,7 @@ import { readSourceComponents, readSharedSourceGroups, collectSourceComponents, 
 import { joinRegionText, hasUnresolvedSharedGeometry, type PassageSeparator } from './text';
 import { readPageStructure, reconcilePageStructure, projectStructureForRegions, type PageStructure } from './structureData';
 import { readStructureHistory, archiveReplacedStructure } from './structureHistory';
+import { readPageTextDraft, pageTextDraftSourceIsCurrent, type PageTextDraft } from './pageTextDraft';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -44,6 +45,8 @@ export interface OcrProject {
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
     recognitionSettings?: Record<string, unknown>;
     proofreading?: ProofreadingData;
+    /** Unapplied page text stays recoverable independently of project undo history. */
+    pageTextDraft?: PageTextDraft;
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
 export interface ImportedDocument { source_uri: string; name: string; pages: ImportedPage[]; }
@@ -341,6 +344,9 @@ export function getReviewIssues(project: OcrProject, threshold = project.confide
             continue;
         }
         if (page.approved) continue;
+        if (page.structure && typeof page.provenance.structureChangedAt === 'string') {
+            issues.push({pageId:page.id,regionId:null,reason:'changed',message:'Document structure changes need page approval.'});
+        }
         const regions = activeRegions(page);
         if (!regions.length || regions.every((r) => !r.text.trim())) issues.push({pageId:page.id,regionId:null,reason:'empty',message:'No recognized text. Verify this is an intentionally blank page.'});
         for (const region of regions) {
@@ -478,17 +484,41 @@ function boundedHistory(history: History): History {
     }
     return {...history,past,future};
 }
+/** Ordinary history cannot overwrite a newer unapplied editor draft. */
+function historySnapshot(project: OcrProject, keepDraft = false): OcrProject {
+    const snapshot = clone(project);
+    if (!keepDraft) delete snapshot.pageTextDraft;
+    return snapshot;
+}
+function appliedDraft(project: OcrProject, draft: PageTextDraft): boolean {
+    const marker = project.pages.find(page => page.id === draft.page.id)?.provenance.lastPageTextEdit;
+    if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return false;
+    const applied = marker as Record<string, unknown>;
+    return applied.draftId === draft.id && applied.draftRevision === draft.revision;
+}
 export function commitHistory(history: History, project: OcrProject): History {
     if (project === history.present || JSON.stringify(project) === JSON.stringify(history.present)) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(project),future:[]});
+    const draft = history.present.pageTextDraft;
+    // Applying a captured draft is one undoable operation. Its previous snapshot
+    // retains that draft, so Undo restores both the OCR text and unapplied edits.
+    const consumesDraft = !!draft && !project.pageTextDraft && appliedDraft(project, draft);
+    return boundedHistory({...history,past:[...history.past,historySnapshot(history.present,consumesDraft)],present:clone(project),future:[]});
 }
 export function undoHistory(history: History): History {
     if (!history.past.length) return history;
-    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[clone(history.present),...history.future]});
+    const present = clone(history.past[history.past.length - 1]);
+    if (history.present.pageTextDraft) present.pageTextDraft = clone(history.present.pageTextDraft);
+    return boundedHistory({...history,past:history.past.slice(0,-1),present,future:[historySnapshot(history.present),...history.future]});
 }
 export function redoHistory(history: History): History {
     if (!history.future.length) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(history.future[0]),future:history.future.slice(1)});
+    const present = clone(history.future[0]), draft = history.present.pageTextDraft;
+    // Consume only the exact draft applied by this history entry, and only while
+    // its captured source is still current. A subsequently edited draft survives.
+    const consumesDraft = !!draft && appliedDraft(present,draft) && pageTextDraftSourceIsCurrent(history.present,draft);
+    if (draft && !consumesDraft) present.pageTextDraft = clone(draft);
+    else delete present.pageTextDraft;
+    return boundedHistory({...history,past:[...history.past,historySnapshot(history.present,consumesDraft)],present,future:history.future.slice(1)});
 }
 
 /** Strict boundary validation; interrupted jobs return to pending on restore. */
@@ -534,6 +564,7 @@ export function parseProject(input: unknown): OcrProject {
         if(page.provenance.structureHistory!==undefined) page.provenance.structureHistory=readStructureHistory(page.provenance.structureHistory);
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
     }
+    if (p.pageTextDraft !== undefined) p.pageTextDraft = readPageTextDraft(p.pageTextDraft);
     return p;
 }
 export function serializeProject(project: OcrProject): string { return JSON.stringify(parseProject(project),null,2); }

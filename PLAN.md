@@ -10,10 +10,12 @@ committed and pushed incrementally to `feat/ocr-word-review` through
 
 Native word evidence and source inspection, project/personal vocabulary and
 reviewable correction rules, passage split/merge/repair, and versioned document
-semantics with per-passage formatting have implementation checkpoints. The roadmap
-records which unit, browser, and native checks actually passed. Cross-block page
-text editing is the next structure increment, followed by multiple extraction
-objects and structured exports. Hardware support, trained
+semantics with per-passage formatting have implementation checkpoints. A separate
+whole-page text draft editor adds cross-passage selection and previewed changes,
+with durable unapplied drafts and guarded Undo/Redo. The roadmap records which
+unit, browser, and native checks actually passed; the recovered page-draft
+checkpoint still needs CI verification. Multiple extraction objects and
+structured exports follow next. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

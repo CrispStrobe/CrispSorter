@@ -86,8 +86,8 @@ units to implement and push one at a time.
 | --- | --- | --- | --- | --- |
 | OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | 01a–c implemented for System Tesseract; focused native, paired application, and browser CI passed |
 | OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | 02a–c implemented; 02d feasibility documented; training blocked |
-| OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | 03a–c implemented; 30 browser interactions passed; native export CI running |
-| OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | 04a and per-passage 04b/04c implemented; cross-block editing and current native/browser CI remain open |
+| OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | 03a–c implemented; 30 browser interactions and focused/paired native export checks passed |
+| OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | 04a–c bounded workflows implemented; structure browser/focused native CI passed; page-draft checkpoint verification pending |
 | OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | Planned |
 | OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | Planned |
 | OCR-07 | P1 | Reusable form and zone templates | Existing templates backend; OCR-03 geometry rules | Planned |
@@ -119,8 +119,9 @@ the end.
 | `fae6cc7` — OCR-18a | Versioned qualification receipt schema, recording guide, and a dated same-run Tesseract TSV/TXT capture | JSON Schema validation and artifact hashes checked. External Tesseract 5.5.0 produced five aligned words. Production Rust adapter, full app, real-scan corpus, devices, and output standards remain separate gates |
 | `349725a` — OCR-01a–c | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Focused Linux/Windows CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42682663208) and [paired application CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42682663303) passed. The Linux run exercised the actual Rust adapter against installed Tesseract; Windows exercised parser/feature gates. Corpus accuracy and device qualification remain separate |
 | `6330227` — OCR-02a–c and 02d feasibility | Project and personal vocabulary, protected terms, occurrence ignores, labeled suggestions, literal rules, selective stale-safe correction previews, import/export, and serialized retryable preference saves | 253 unit tests passed; Svelte check had 0 errors and the same 54 unrelated warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730) passed the 28-interaction suite, including native-evidence UI and proofreading. No recognizer training or automatic native lexicon change is claimed |
-| `f3984fd` — OCR-03a–c | Grapheme-safe passage split, explicit source coverage, adjacent merge with exact separators, selectable repair proposals, inspectable immutable source components, and preservation through later re-OCR | 280 full unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807) passed all 30 interactions and 175 OCR unit tests. Focused Linux/Windows native checks passed, including Linux live recognition. [Paired native export checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791842) are still running |
-| OCR-04 structure checkpoint (this checkpoint) | Versioned blocks and contiguous sections, explicit two-column order, per-passage roles/emphasis/alignment/breaks, figure descriptions, caption and footnote links, source-linked JSON, and bounded structure history | 306 full unit tests pass, including 19 semantic-core and seven project-lifecycle cases; Svelte check has 0 errors and the same 54 existing warnings. Two new browser flows bring the suite to 32; this checkpoint's execution remains pending. Native semantic validation, focused module tests, and paired integration tests are added. Cross-block text editing is the next 04b increment, and structured file writers remain OCR-06 |
+| `f3984fd` — OCR-03a–c | Grapheme-safe passage split, explicit source coverage, adjacent merge with exact separators, selectable repair proposals, inspectable immutable source components, and preservation through later re-OCR | 280 full unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807) passed all 30 interactions and 175 OCR unit tests. Focused Linux/Windows native checks passed, including Linux live recognition. [Paired native export checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791842) passed, including all 29 workspace cases |
+| `46a3e04` — OCR-04 structure | Versioned blocks and contiguous sections, explicit two-column order, per-passage roles/emphasis/alignment/breaks, figure descriptions, caption and footnote links, source-linked JSON, and bounded structure history | 306 full unit tests passed locally; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197) passed all 32 interactions and 201 OCR unit tests. [Focused Linux/Windows checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619973) passed, including the production semantic validator on both platforms. [Paired application checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619960) remain queued. Structured file writers remain OCR-06 |
+| OCR-04 page-text draft (this checkpoint) | Whole-page plain-text selection/editing, durable unapplied drafts, exact affected-passage previews, explicit combined source coverage, stale/tampered preview rejection, and draft-aware project history | Recovered from recorded source patches after the execution environment became unavailable. Earlier focused checks passed before the interruption; this recovered checkpoint has not yet executed. The existing CI job now runs the typecheck, full unit suite, and 34 browser scenarios. New key-order and failed/pending-page regressions require that CI result before qualification |
 
 ## OCR-01: Native word evidence and honest capabilities
 
@@ -208,8 +209,8 @@ workflow reference, not evidence that CrispEmbed exposes the same facility.
 
 ## OCR-03: Passage split/merge and text repair
 
-**Status: 03a–c implemented; 30 browser interactions passed. Paired native export
-checks for this checkpoint remain running.** The [passage guide](ocr-workspace.md#split-merge-and-repair-passages)
+**Status: 03a–c implemented; 30 browser interactions and focused/paired native
+export checks passed.** The [passage guide](ocr-workspace.md#split-merge-and-repair-passages)
 describes the controls. [`passages.ts`](../src/lib/ocr/passages.ts) captures and
 revalidates split/merge/repair previews; [`passageData.ts`](../src/lib/ocr/passageData.ts)
 retains flat source records with their own image, original text, and evidence.
@@ -243,8 +244,10 @@ Semantic paragraph repair and page-image spread splitting remain separate tools.
 
 ## OCR-04: Document structure and formatting editor
 
-**Status: 04a and per-passage 04b/04c implemented. Cross-block editing and current
-checkpoint native/browser validation remain open.**
+**Status: 04a–c bounded workflows implemented. The structure checkpoint passed
+32 browser interactions and focused Linux/Windows native validation. The
+recovered page-text draft checkpoint awaits CI verification; paired application
+checks for the structure checkpoint remain queued.**
 [`structureData.ts`](../src/lib/ocr/structureData.ts) adds independently versioned
 logical blocks, sections, reading columns, styled ranges, and explicit links.
 [`structure.ts`](../src/lib/ocr/structure.ts) supplies semantic editing operations;
@@ -267,8 +270,31 @@ is inspectable and included in project/JSON data; it is distinct from a full
 attributed audit ledger. Current JSON also retains included picture source
 regions so figure links resolve. Other file formats explicitly warn that they
 currently use the plain-text/source-image projection until OCR-06 supplies their
-structured writers. Arbitrary cross-block typing/paste is not yet delivered by
-the per-passage Structure editor and remains the next scoped increment.
+structured writers.
+
+The separate **Edit page text** dialog adds a whole-page plain-text draft with
+native selection, typing, paste, and local Undo/Redo. Review shows the exact
+changed envelope and affected passages. A one-passage edit keeps its ID and
+original OCR evidence. An edit spanning adjacent textual passages requires
+explicit acceptance of their combined source coverage; it creates one manual
+passage with immutable original source components. Newlines stay inside that
+passage. Pictures, excluded regions, tables, and formulas remain protected
+boundaries, and overlap with another included source region blocks combining.
+Formatting or links that would reset are disclosed before Apply. This is a
+bounded plain-text editing surface alongside the semantic controls; continuous
+rich WYSIWYG editing and arbitrary page-layout reconstruction are not claimed.
+
+One unapplied draft per project is saved with its captured source and remains
+recoverable after closing, reloading, or removal/change of the current source.
+Apply requires that source to match, using JSON key-order-independent comparison
+because native saves can reorder object properties. Drafts are bounded to one
+million UTF-16 units and 16 MiB of captured data, with at most 128 affected
+passages. Invalid oversized input remains in the open dialog for copying or
+reduction and is not reported as saved. Project Undo restores an applied draft;
+ordinary Undo/Redo cannot replace a newer pending draft. Apply is one project
+history operation and clears only the exact accepted draft. Explicit manual
+acceptance also clears a retained failed/pending status while reopening review.
+Semantic-only edits now enter the page review queue until page approval.
 
 **Increments**
 
