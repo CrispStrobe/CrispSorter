@@ -241,6 +241,7 @@ pub fn ocr_workspace_capabilities() -> Value {
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
+    if crate::extractors::ocr_render::reviewed_archival_pdf_available() { formats.push("pdfa"); }
     if cfg!(feature = "desktop") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
@@ -251,6 +252,10 @@ pub fn ocr_workspace_capabilities() -> Value {
         "default_language": if crate::model_provisioning::enabled() { "eng" } else { "auto" },
         "pdf_import": cfg!(feature = "pdf-render"),
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
+        "archival_pdf_export": crate::extractors::ocr_render::reviewed_archival_pdf_available(),
+        "pdf_bidi_export": reviewed_pdf_available(),
+        "pdfa_conformance": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { Some("PDF/A-2b") } else { None },
+        "pdfa_export_reason": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { None } else { Some("PDF/A-2b export requires a matching native renderer with archival resources and Unicode bidirectional text support. Choose another available output format with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
@@ -1107,7 +1112,10 @@ fn transcription_confidence(region: &ExportRegion) -> f32 {
 }
 
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
-    if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
+    if pdfa && format != "pdf" { return Err("PDF/A applies only to PDF output.".into()); }
+    if pdfa && !crate::extractors::ocr_render::reviewed_archival_pdf_available() {
+        return Err("PDF/A-2b requires a matching archival-capable native renderer.".into());
+    }
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
         return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
     }
@@ -1507,7 +1515,17 @@ mod tests {
         if !reviewed_pdf_available() { assert!(capabilities["pdf_export_reason"].as_str().is_some()); }
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "reviewed")];
-        assert!(export_bytes(&pages, "pdf", true).unwrap_err().contains("PDF/A"));
+        let archival = crate::extractors::ocr_render::reviewed_archival_pdf_available();
+        assert_eq!(formats.iter().any(|format| format == "pdfa"), archival);
+        assert_eq!(capabilities["archival_pdf_export"], archival);
+        if archival {
+            let bytes = export_bytes(&pages, "pdf", true).unwrap();
+            assert_eq!(lopdf::Document::load_mem(&bytes).unwrap().get_pages().len(), 1);
+        } else {
+            assert!(capabilities["pdfa_export_reason"].as_str().is_some());
+            assert!(export_bytes(&pages, "pdf", true).unwrap_err().contains("PDF/A"));
+        }
+        assert!(export_bytes(&pages, "text", true).unwrap_err().contains("only to PDF"));
         if !reviewed_pdf_available() {
             assert!(export_bytes(&pages, "pdf", false).unwrap_err().contains("matching updated CrispEmbed renderer"));
         }
