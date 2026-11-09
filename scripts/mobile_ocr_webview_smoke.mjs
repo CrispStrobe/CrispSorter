@@ -2,8 +2,8 @@
 /**
  * Real Android WebView -> Tauri -> Rust -> CrispEmbed smoke.
  *
- * Run only on a dedicated, fresh x86_64 emulator after mobile_simulator_smoke.py
- * has installed and launched the debug APK. No fixture adapter, native mocks,
+ * Run on a dedicated, fresh emulator or an explicitly selected physical Android
+ * test device with the exact debug APK already installed and running. No fixture adapter, native mocks,
  * automatic consent, system save picker, data wipe, or physical-camera claim.
  *
  * Wry wry-v0.55.1 src/android/main_pipe.rs enables WebView debugging in debug
@@ -18,7 +18,9 @@
  * node scripts/mobile_ocr_webview_smoke.mjs --serial emulator-5554 \
  *   --apk path/to/debug.apk --inputs path/to/prepared-inputs \
  *   --output path/to/new-receipt-directory --source-commit <40hex> \
- *   --embed-commit <40hex> [--runtime-receipt path/to/native-build.json]
+ *   --embed-commit <40hex> --build-receipt path/to/build-receipt.json \
+ *   [--runtime-receipt path/to/native-build.json] [--device-kind physical] \
+ *   [--repeat-pages 8] [--max-rss-mib 1024]
  *
  * PLAYWRIGHT_MODULE_PATH must identify an installed playwright package directory
  * (version 1.62.1). The script reads no weights from the host fixture directory:
@@ -32,6 +34,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
+import { probeOptions, processMemory, summarizeMemory, textErrorRate } from './mobile_ocr_probe_utils.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
 const PLAYWRIGHT_VERSION = '1.62.1';
@@ -40,21 +43,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const hex = (value, length) => typeof value === 'string' && new RegExp('^[0-9a-f]{' + length + '}$', 'i').test(value);
 const stamp = () => new Date().toISOString();
-
-function options(argv) {
-  const allowed = new Set(['serial', 'apk', 'inputs', 'output', 'source-commit', 'embed-commit', 'runtime-receipt']);
-  const result = {};
-  for (let i = 0; i < argv.length; i += 2) {
-    const key = argv[i]?.replace(/^--/, '');
-    assert(argv[i]?.startsWith('--') && allowed.has(key), 'Unknown argument: ' + argv[i]);
-    assert(argv[i + 1] && !argv[i + 1].startsWith('--') && !(key in result), 'Missing or repeated argument: ' + key);
-    result[key] = argv[i + 1];
-  }
-  for (const key of allowed) if (key !== 'runtime-receipt') assert(result[key], 'Required: --' + key);
-  assert(/^emulator-\d+$/.test(result.serial), 'Select a dedicated Android emulator explicitly.');
-  assert(hex(result['source-commit'], 40) && hex(result['embed-commit'], 40), 'Full source and paired native commit IDs are required.');
-  return result;
-}
 
 async function fileHash(filename) {
   const hash = createHash('sha256');
@@ -88,7 +76,7 @@ function validateAsset(asset, appData) {
   return asset;
 }
 
-function validateRecognition(result, appData) {
+function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00') {
   validateAsset(result, appData);
   assert(Array.isArray(result.regions) && result.regions.length > 0, 'Real OCR returned no regions.');
   for (const region of result.regions) {
@@ -98,7 +86,9 @@ function validateRecognition(result, appData) {
     assert(region.x + region.w <= result.width + 0.01 && region.y + region.h <= result.height + 0.01, 'OCR box is outside the returned raster.');
   }
   const text = result.regions.map(region => region.text).join('\n');
-  assert(text.trim().length > 0 && /\b2048\b/.test(text), 'Actual OCR did not recognize the synthetic document number 2048: ' + text);
+  assert(text.trim().length > 0, 'Actual OCR returned empty text.');
+  const cer = textErrorRate(expected, text);
+  assert(cer <= 0.25, 'Actual OCR exceeded the fixture Unicode character error limit (0.25): ' + cer + '\n' + text);
   const config = result.diagnostics?.requested_config;
   assert(config && config.router === false && config.stages?.length === 1, 'The saved explicit engine settings did not reach native recognition.');
   assert.equal(config.stages[0].engine, 'tesseract');
@@ -121,18 +111,20 @@ function projectRegion(region) {
 }
 
 async function main() {
-  const opt = options(process.argv.slice(2));
+  const opt = probeOptions(process.argv.slice(2));
   const output = path.resolve(opt.output);
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.mkdir(output); // Never overwrite evidence from an earlier run.
   const receipt = {
     schema_version: 1, kind: 'android-webview-native-ocr', started_at: stamp(), status: 'running',
     synthetic_only: true, physical_camera_tested: false, corpus_quality_qualified: false,
-    system_save_picker_tested: false, ui_interactions_tested: false,
+    system_save_picker_tested: false, ui_interactions_tested: false, device_kind: opt['device-kind'],
+    physical_device_qualified: false,
     source: { sorter_commit: opt['source-commit'], crispembed_commit: opt['embed-commit'],
-      identity_basis: 'CI checkout arguments, installed APK SHA-256, and optional native build receipt',
+      identity_basis: 'Clean checkout build receipt, matched packaged native code/data, and exact installed APK SHA-256',
       github_run_id: process.env.GITHUB_RUN_ID ?? null, github_sha: process.env.GITHUB_SHA ?? null },
-    serial: opt.serial, package: PACKAGE, steps: [], cleanup_errors: [],
+    serial: opt.serial, package: PACKAGE, steps: [], cleanup_errors: [], memory_samples: [],
+    limits: { repeated_inference_pages: opt['repeat-pages'], maximum_process_rss_mib: opt['max-rss-mib'] },
   };
   const consoleLog = [];
   let browser, page, forwardPort, pid, privateRoot, appData, exportPath;
@@ -151,6 +143,59 @@ async function main() {
     execFileAsync('adb', ['-s', opt.serial, ...args], { timeout: budget(timeout, 'adb'), maxBuffer, encoding });
   const adbText = async (args, settings) => (await adb(args, settings)).stdout.trim();
   const runAs = (args, settings) => adb(['exec-out', 'run-as', PACKAGE, ...args], settings);
+  async function sampleMemory(label) {
+    assert(/^\d+$/.test(pid), 'Memory samples require the verified application PID.');
+    const values = await Promise.allSettled([
+      runAs(['cat', '/proc/' + pid + '/status'], { timeout: 10_000, maxBuffer: 128 * 1024 }),
+      adb(['shell', 'dumpsys', 'meminfo', pid], { timeout: 10_000, maxBuffer: 512 * 1024 }),
+    ]);
+    const status = values[0].status === 'fulfilled' ? values[0].value.stdout : '';
+    const meminfo = values[1].status === 'fulfilled' ? values[1].value.stdout : '';
+    const sample = { at: stamp(), label, pid, ...processMemory(status, meminfo),
+      errors: values.flatMap(item => item.status === 'rejected' ? [String(item.reason).slice(0, 2000)] : []) };
+    receipt.memory_samples.push(sample);
+    await fs.mkdir(path.join(output, 'memory'), { recursive: true });
+    await fs.writeFile(path.join(output, 'memory', String(receipt.memory_samples.length).padStart(4, '0') + '.txt'),
+      'Process status\n' + status + '\nDumpsys meminfo\n' + meminfo);
+    return sample;
+  }
+  async function measuredRecognition(label, work) {
+    const before = await sampleMemory(label + ':before');
+    assert(Number.isFinite(before.rss_kib) && Number.isFinite(before.pss_kib), 'Application RSS/PSS could not be measured before inference.');
+    const started = Date.now();
+    let pendingSample = null, samplingError = null, value, failure;
+    const timer = setInterval(() => {
+      if (pendingSample) return;
+      pendingSample = sampleMemory(label + ':during').catch(error => { samplingError = error; }).finally(() => { pendingSample = null; });
+    }, 5000);
+    try { value = await work(); }
+    catch (error) { failure = error; }
+    finally {
+      clearInterval(timer);
+      if (pendingSample) await pendingSample;
+    }
+    const elapsed = Date.now() - started;
+    if (value != null) {
+      assert(/^[a-z0-9-]+$/.test(label));
+      await fs.mkdir(path.join(output, 'native-observations'), { recursive: true });
+      await fs.writeFile(path.join(output, 'native-observations', label + '.json'), JSON.stringify(value, null, 2) + '\n');
+    }
+    let after = null, afterError = null;
+    try { after = await sampleMemory(label + ':after'); }
+    catch (error) { afterError = error; }
+    receipt.memory = summarizeMemory(receipt.memory_samples);
+    receipt.inference_observations ??= [];
+    receipt.inference_observations.push({ label, wall_ms: elapsed,
+      native_elapsed_ms: value?.elapsed_ms ?? null, before, after });
+    if (failure) throw failure;
+    if (samplingError) throw samplingError;
+    if (afterError) throw afterError;
+    assert(Number.isFinite(after.rss_kib) && Number.isFinite(after.pss_kib), 'Application RSS/PSS could not be measured after inference.');
+    assert(receipt.memory.process_high_water_rss_kib != null, 'Kernel peak RSS is unavailable; the memory gate cannot pass without it.');
+    assert(receipt.memory.process_high_water_rss_kib <= opt['max-rss-mib'] * 1024,
+      'Application peak RSS exceeded the explicit fixture-run limit of ' + opt['max-rss-mib'] + ' MiB.');
+    return value;
+  }
   async function privatePath(value) {
     remotePath(value);
     assert(value.startsWith(privateRoot + '/'), 'Refusing to inspect a file outside the dedicated test app.');
@@ -227,9 +272,27 @@ async function main() {
         assert(/^[A-Za-z0-9_-]+\.gguf$/.test(model.filename));
         assert(model.url.startsWith('https://'));
       }
-      assert.equal(await adbText(['shell', 'getprop', 'ro.kernel.qemu']), '1', 'Target is not an emulator.');
+      assert.equal(await adbText(['get-state']), 'device', 'Selected device is not connected and authorized.');
+      const qemu = await adbText(['shell', 'getprop', 'ro.kernel.qemu']);
+      if (opt['device-kind'] === 'emulator') assert.equal(qemu, '1', 'Target is not an emulator.');
+      else assert.notEqual(qemu, '1', 'An emulator cannot establish physical-device execution.');
       const abis = (await adbText(['shell', 'getprop', 'ro.product.cpu.abilist'])).split(',');
-      assert(abis.includes('x86_64'), 'This smoke requires the x86_64 runtime build.');
+      const buildBytes = await fs.readFile(opt['build-receipt']);
+      assert(buildBytes.length <= 1024 * 1024, 'Application build receipt exceeds 1 MiB.');
+      const build = JSON.parse(buildBytes);
+      assert.equal(build.schema_version, 1);
+      assert.equal(build.kind, 'ocr-mobile-app-build');
+      assert.equal(build.platform, 'android');
+      assert.equal(build.package, PACKAGE);
+      assert.equal(build.sorter_commit, opt['source-commit']);
+      assert.equal(build.crispembed_commit, opt['embed-commit']);
+      assert.equal(build.tracked_source_clean, true);
+      assert.equal(build.artifact.kind, 'apk');
+      assert.equal(build.artifact.paired_runtime_mapped_sections_match, true);
+      assert(build.artifact.abis.length === 1 && abis.includes(build.artifact.abis[0]), 'Installed APK ABI is unsupported by the selected device.');
+      if (opt['device-kind'] === 'emulator') assert.equal(build.runtime.target, 'android-x86_64');
+      await fs.writeFile(path.join(output, 'application-build-receipt.json'), buildBytes);
+      receipt.source.app_build_receipt_sha256 = digest(buildBytes);
       const reportedRoot = remotePath(await adbText(['exec-out', 'run-as', PACKAGE, 'pwd']));
       assert(['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE].includes(reportedRoot), 'Unexpected app sandbox.');
       privateRoot = remotePath((await runAs(['realpath', reportedRoot])).stdout.trim());
@@ -241,9 +304,13 @@ async function main() {
       assert(installedPath.startsWith('/data/app/') && installedPath.endsWith('/base.apk'));
       const installedHash = (await adbText(['shell', 'sha256sum', installedPath], { timeout: 60_000 })).match(/^([0-9a-f]{64})\s/i)?.[1];
       const apkHash = await fileHash(opt.apk);
+      assert.equal(apkHash, build.artifact.sha256, 'Supplied APK differs from its clean source build receipt.');
       assert.equal(installedHash?.toLowerCase(), apkHash, 'Running installation is not the supplied APK.');
       receipt.apk = { sha256: apkHash, installed_path: installedPath, abis };
       receipt.device = {
+        kind: opt['device-kind'], qemu_property: qemu,
+        model: await adbText(['shell', 'getprop', 'ro.product.model']),
+        manufacturer: await adbText(['shell', 'getprop', 'ro.product.manufacturer']),
         sdk: await adbText(['shell', 'getprop', 'ro.build.version.sdk']),
         fingerprint: await adbText(['shell', 'getprop', 'ro.build.fingerprint']),
       };
@@ -255,6 +322,7 @@ async function main() {
         const runtime = await fs.readFile(opt['runtime-receipt']);
         assert(runtime.length <= 1024 * 1024, 'Native build receipt exceeds 1 MiB.');
         JSON.parse(runtime);
+        assert.equal(digest(runtime), build.runtime_receipt_sha256, 'Native build receipt differs from the application build identity.');
         await fs.writeFile(path.join(output, 'native-build-receipt.json'), runtime);
         receipt.source.native_build_receipt_sha256 = digest(runtime);
       }
@@ -316,7 +384,7 @@ async function main() {
     const capabilities = await step('require the native mobile OCR profile and a fresh model store', async () => {
       const value = await invoke('ocr_workspace_capabilities');
       for (const flag of ['ocr', 'crispembed', 'photo_tools', 'mobile_model_store', 'review_diagnostics']) assert.equal(value[flag], true, flag);
-      assert.equal(value.pdf_import, false);
+      // Native PDF availability is verified below when this profile exposes it.
       assert.equal(value.default_engine, 'tesseract');
       assert.equal(value.default_language, 'eng');
       assert(value.formats.includes('pdf'), 'The paired reviewed-PDF renderer is unavailable.');
@@ -325,7 +393,7 @@ async function main() {
       appData = remotePath((await runAs(['realpath', rawAppData])).stdout.trim());
       assert(appData.startsWith(privateRoot + '/'), 'Native app data is outside the app sandbox.');
       const projects = await invoke('ocr_workspace_list');
-      assert.deepEqual(projects, [], 'Use a fresh emulator; existing projects must not be overwritten or erased.');
+      assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
       for (const model of prepared.inputs.models) {
         const entry = registry.find(item => item.name === model.name);
@@ -454,10 +522,10 @@ async function main() {
       await step('recognize ' + (index === 0 ? 'original' : 'prepared') + ' pixels with saved Tesseract English settings', async () => {
         const target = saved.project.pages[index];
         const settings = saved.project.recognitionSettings;
-        const result = await invoke('ocr_workspace_recognize', {
+        const result = await measuredRecognition(index === 0 ? 'original' : 'prepared', () => invoke('ocr_workspace_recognize', {
           pagePath: target.imagePath, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
           pageWidthPoints: target.widthPoints, pageHeightPoints: target.heightPoints,
-        }, 180_000);
+        }, 180_000));
         // Keep the native diagnostics even when the text or geometry gate fails.
         await fs.writeFile(path.join(output, 'recognition-' + (index === 0 ? 'original' : 'prepared') + '.json'), JSON.stringify(result, null, 2) + '\n');
         const text = validateRecognition(result, appData);
@@ -481,6 +549,39 @@ async function main() {
           elapsed_ms: result.elapsed_ms, saved_revision: saved.revision, warnings: result.warnings });
       }, 220_000);
     }
+
+    receipt.repeated_inference = { requested_pages: opt['repeat-pages'], completed_pages: 0,
+      unique_source_rasters: 2, saved_page_ids: [],
+      qualification: 'Sequential actual native recognition and durable page saves, alternating two synthetic rasters. This does not establish diverse corpus accuracy or large-document capacity.' };
+    for (let index = 0; index < opt['repeat-pages']; index++) {
+      await step('repeat native recognition and durable page save ' + (index + 1) + '/' + opt['repeat-pages'], async () => {
+        const input = saved.project.pages[index % 2];
+        const settings = saved.project.recognitionSettings;
+        const result = await measuredRecognition('repeat-' + (index + 1), () => invoke('ocr_workspace_recognize', {
+          pagePath: input.imagePath, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
+          pageWidthPoints: input.widthPoints, pageHeightPoints: input.heightPoints,
+        }, 180_000));
+        const text = validateRecognition(result, appData);
+        const pageId = 'page-' + randomUUID();
+        saved.project.pages.push({ ...input, id: pageId, name: 'Repeated native observation ' + (index + 1),
+          imagePath: result.image_path, width: result.width, height: result.height,
+          regions: result.regions.map(projectRegion), status: 'recognized', approved: false,
+          elapsedMs: result.elapsed_ms, contentRevision: randomUUID(),
+          provenance: { syntheticNativeSmoke: true, repeatedObservation: index + 1, diagnostics: result.diagnostics } });
+        saved.project.updatedAt = stamp();
+        const committed = await invoke('ocr_workspace_save', { project: saved.project, expectedRevision: saved.revision });
+        assert.equal(committed.revision, saved.revision + 1);
+        saved = await invoke('ocr_workspace_load', { projectId: project.id });
+        assert.equal(saved.revision, committed.revision);
+        assert.equal(saved.project.pages.length, index + 3);
+        assert.equal(saved.project.pages.at(-1).id, pageId);
+        assert.equal(saved.project.pages.at(-1).regions.map(region => region.text).join('\n'), text);
+        assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid, 'Application restarted during repeated native recognition.');
+        receipt.repeated_inference.completed_pages++;
+        receipt.repeated_inference.saved_page_ids.push(pageId);
+      }, 220_000);
+    }
+    receipt.repeated_inference.saved_project_pages = saved.project.pages.length;
 
     await step('render the supplied review text to a private PDF and discard its staging file', async () => {
       const result = recognized[1];

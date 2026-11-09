@@ -3,7 +3,7 @@ name: Mobile provider checks
 on:
   workflow_dispatch:
   push:
-    branches: ['mobile-provider-check-*', 'feat/ocr-document-studio']
+    branches: ['mobile-provider-check-*', 'feat/ocr-document-studio', 'feat/ocr-mobile-documents']
     paths:
       - 'crates/tauri-plugin-mobile-provider/**'
       - 'tools/mobile-provider-check/**'
