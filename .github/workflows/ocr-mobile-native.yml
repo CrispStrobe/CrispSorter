@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/ocr-mobile-native.yml'
       - 'scripts/build_mobile_crispembed.py'
+      - 'scripts/mobile_native_provenance.py'
       - 'scripts/ocr-mobile-runtime-lock.json'
       - 'scripts/ocr-mobile-ort-lock.json'
       - 'scripts/prepare_mobile_ort.py'
@@ -305,6 +306,7 @@ jobs:
           npm ci
           mkdir -p src-tauri/bin
           cp "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" src-tauri/bin/ocr-mobile-runtime.json
+          cp "$RUNNER_TEMP/ocr-mobile-runtime/notices/"* src-tauri/bin/
           cp "$OCR_ORT_ROOT/notices/LICENSE" src-tauri/bin/onnxruntime-LICENSE.txt
           cp "$OCR_ORT_ROOT/notices/ThirdPartyNotices.txt" src-tauri/bin/onnxruntime-ThirdPartyNotices.txt
           npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
@@ -338,6 +340,7 @@ jobs:
           npm ci
           mkdir -p src-tauri/bin
           cp "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" src-tauri/bin/ocr-mobile-runtime.json
+          cp "$RUNNER_TEMP/ocr-mobile-runtime/notices/"* src-tauri/bin/
           cp "$OCR_ORT_ROOT/notices/LICENSE" src-tauri/bin/onnxruntime-LICENSE.txt
           cp "$OCR_ORT_ROOT/notices/ThirdPartyNotices.txt" src-tauri/bin/onnxruntime-ThirdPartyNotices.txt
           npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
@@ -378,6 +381,7 @@ jobs:
           name: ocr-mobile-${{ matrix.runtime }}
           path: |
             ${{ runner.temp }}/ocr-mobile-runtime/runtime-build.json
+            ${{ runner.temp }}/ocr-mobile-runtime/notices/
             ${{ runner.temp }}/ocr-mobile-ort/ort-runtime.json
             ${{ runner.temp }}/mobile-ort-probe
             ${{ runner.temp }}/ocr-mobile-inputs/inputs.json

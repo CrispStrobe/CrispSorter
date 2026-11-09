@@ -5,3 +5,4 @@
 /tests/results/ocr-studio/storage-f3cd96af/native.log -whitespace
 /tests/results/ocr-studio/storage-atomic-7688c8/native.log -whitespace
 tests/results/ocr-studio/storage-cancel-d90c/native.log -whitespace
+tests/results/ocr-studio/paired-7104a35c/log-excerpt.txt -whitespace

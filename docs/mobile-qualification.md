@@ -183,6 +183,7 @@ python3 scripts/prepare_ocr_cargo_env.py --project . \
   --ort-lib-dir "$OCR_ORT_ROOT/lib"
 mkdir -p src-tauri/bin
 cp ../ocr-native-android/runtime-build.json src-tauri/bin/ocr-mobile-runtime.json
+cp ../ocr-native-android/notices/* src-tauri/bin/
 cp "$OCR_ORT_ROOT/notices/LICENSE" src-tauri/bin/onnxruntime-LICENSE.txt
 cp "$OCR_ORT_ROOT/notices/ThirdPartyNotices.txt" src-tauri/bin/onnxruntime-ThirdPartyNotices.txt
 npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
@@ -208,6 +209,7 @@ python3 scripts/prepare_ocr_cargo_env.py --project . \
   --ort-xcframework "$OCR_ORT_ROOT/onnxruntime.xcframework"
 mkdir -p src-tauri/bin
 cp ../ocr-native-ios/runtime-build.json src-tauri/bin/ocr-mobile-runtime.json
+cp ../ocr-native-ios/notices/* src-tauri/bin/
 cp "$OCR_ORT_ROOT/notices/LICENSE" src-tauri/bin/onnxruntime-LICENSE.txt
 cp "$OCR_ORT_ROOT/notices/ThirdPartyNotices.txt" src-tauri/bin/onnxruntime-ThirdPartyNotices.txt
 npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json

@@ -21,6 +21,8 @@ import subprocess
 import tomllib
 import zipfile
 
+from mobile_native_provenance import verify_packaged as verify_native_provenance
+
 PACKAGE = 'com.crispstrobe.crispsorter'
 MAX_LIBRARY_BYTES = 256 * 1024 * 1024
 
@@ -298,6 +300,7 @@ def record(source, platform, artifact, runtime_path, ort_runtime_path):
         identity = bundle_identity(artifact, 'iphonesimulator' if platform == 'ios-simulator' else 'iphoneos')
     config = source / '.cargo/config.toml'
     ort = ort_identity(source, platform, artifact, ort_runtime_path.resolve(), runtime['target'])
+    native_provenance = verify_native_provenance(artifact, platform, runtime_path.parent, runtime, lock)
     return {'schema_version': 2, 'kind': 'ocr-mobile-app-build',
             'recorded_at': datetime.now(timezone.utc).isoformat(),
             'platform': platform, 'package': PACKAGE,
@@ -306,6 +309,7 @@ def record(source, platform, artifact, runtime_path, ort_runtime_path):
             'runtime_receipt_sha256': digest(runtime_path), 'runtime': runtime,
             'cargo_config_sha256': digest(config) if config.is_file() else None,
             'onnx_runtime': ort,
+            'native_provenance': native_provenance,
             'github': {key: os.environ.get('GITHUB_' + key.upper()) for key in ('run_id', 'run_attempt', 'job', 'sha', 'ref')},
             'artifact': identity, 'qualification': 'Build identity only; application behavior and OCR quality require executed tests.'}
 

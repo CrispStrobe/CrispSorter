@@ -12,6 +12,7 @@ import unittest
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'scripts'))
 SPEC = importlib.util.spec_from_file_location('mobile_build_receipt', ROOT / 'scripts/ocr_mobile_build_receipt.py')
 receipt = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(receipt)
