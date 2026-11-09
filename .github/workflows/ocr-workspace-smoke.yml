@@ -3,7 +3,7 @@ name: OCR workspace browser verification
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls', 'feat/ocr-phone-corner-focus', 'feat/ocr-archival-option-semantics', 'feat/ocr-pdf-text-alternatives']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls', 'feat/ocr-phone-corner-focus', 'feat/ocr-archival-option-semantics', 'feat/ocr-pdf-text-alternatives', 'feat/ocr-safe-overlays']
     paths:
       - src/lib/ocr/**
       - src/lib/tabs.ts
@@ -11,6 +11,7 @@ on:
       - src/app.html
       - src/app.css
       - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ThirdPartyAiConsent.svelte
       - src/lib/components/ocr/**
       - tests/ocr-workspace/**
       - .github/workflows/ocr-workspace-smoke.yml
@@ -22,6 +23,7 @@ on:
       - src/app.html
       - src/app.css
       - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ThirdPartyAiConsent.svelte
       - src/lib/components/ocr/**
       - tests/ocr-workspace/**
       - .github/workflows/ocr-workspace-smoke.yml
@@ -71,6 +73,7 @@ jobs:
             tests/ocr-workspace/artifacts/report.json
             tests/ocr-workspace/artifacts/archival-option-state.json
             tests/ocr-workspace/artifacts/text-alternatives.json
+            tests/ocr-workspace/artifacts/safe-overlay-state.json
             tests/ocr-workspace/artifacts/*.png
             test-results/ocr-history-benchmark.json
           if-no-files-found: warn

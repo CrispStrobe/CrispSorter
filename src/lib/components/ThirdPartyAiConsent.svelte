@@ -119,7 +119,9 @@
         width: 100%;
         min-width: 0;
         min-height: 0;
-        max-height: 100%;
+        max-height: calc(100vh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        box-sizing: border-box;
         overflow: auto;
         overscroll-behavior: contain;
         overflow-wrap: anywhere;

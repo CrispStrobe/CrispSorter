@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createServer } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { verifySafeOverlays } from './overlays.mjs';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -113,6 +114,9 @@ if (process.argv.includes('--serve')) {
             try { await page.waitForFunction(canvasFitState, false); }
             catch { assert.fail(`${label} Fit page did not fill and remain inside its viewport: ${JSON.stringify(await page.evaluate(canvasFitState, true))}`); }
         }
+
+        await test('OCR overlays keep long content and actions reachable inside asymmetric safe areas', 'safe-overlays',
+            page => verifySafeOverlays(page, output, repo));
 
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
             assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);

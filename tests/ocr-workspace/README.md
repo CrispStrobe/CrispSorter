@@ -5,6 +5,26 @@ This harness mounts the production `OcrWorkbench.svelte` component with its type
 fixtures. It exercises the actual UI, project model, queue and autosave code without
 native model downloads, user files, or a desktop runtime.
 
+## Safe-area overlays
+
+The `safe-overlays` scenario mounts the actual workspace, model-removal dialog,
+and third-party disclosure component. It uses Chromium's
+[`Emulation.setSafeAreaInsetsOverride`](https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setSafeAreaInsetsOverride)
+to supply asymmetric CSS `env()` insets at 740×360 and 390×844. The harness
+asserts the computed insets, without replacing production overlay CSS, then
+measures the real rectangles, centering, scroll ranges and hit-testable actions.
+Long saved-project lists, filenames, model names and disclosed endpoints force
+the scrolling cases. A method missing from the pinned browser fails the test.
+
+The consent test runs the production gate and UI with only persistent-store IPC
+mocked: declining does not save permission; approving saves exactly the chosen
+provider. It never issues a model/network request. Native modal state, contained
+focus, cancellation and Escape remain checked. `safe-overlay-state.json` records
+component hashes, browser version, every measured rectangle and outcomes; it is
+written on failure too. These are synthetic browser insets and fixture content,
+not physical-device or complete application-shell qualification. The separate
+native WKWebView geometry lane has its own source and platform scope.
+
 ## Run
 
 Install the repository's normal npm dependencies, run `npx svelte-kit sync`, and
