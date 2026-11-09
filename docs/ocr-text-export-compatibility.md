@@ -67,7 +67,23 @@ save buttons, zero destination-picker calls while blocked, exact export request
 text/geometry, touch-sized alternative buttons, older capability sets, and
 scope changes back to an eligible Latin page.
 
-At this source checkpoint those new hosted checks are pending. The portable
-module lane does not replace complete application builds, mobile document
-provider execution or physical-device testing. General bidirectional PDF
-capability remains disabled irrespective of these text-export results.
+The retained [5382 source receipt](../tests/results/ocr-studio/text-exports-5382.json)
+records the completed Linux portable lane: 5 plain-export contracts and 7
+Word-enabled contracts, Android target compilation, independent text/Word
+readbacks, and generated HTML in Chromium at widths 390 and 1440. Its resolved
+lock is now checked in unchanged; all 30 registry packages match the application
+versions and checksums, and the text-only dependency graph has no image decoder
+or native-library dependency. The application lock removes only the obsolete
+`docx-rs` image edge. Future portable jobs use `--locked` from their first test.
+
+The same immutable source passed 246 frontend tests and 38 browser workspace
+scenarios with no browser errors; Svelte reported no errors and 54 existing
+warnings. The later dense-page advisory has its own boundary/selection unit
+check and extends the existing supplementary-text browser scenario. Those
+successor checks are not included in the 5382 result. The iOS portable job was
+still queued when this receipt was saved.
+
+The portable module lane does not replace complete application builds, mobile
+document-provider execution, rendering in a Word application, or physical-device
+testing. General bidirectional PDF capability remains disabled irrespective of
+these text-export results.

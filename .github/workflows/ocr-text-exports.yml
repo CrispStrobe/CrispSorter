@@ -42,14 +42,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Resolve exact application pins for the isolated production module
+      - name: Verify frozen application pins for the isolated production module
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p test-results/ocr-text-exports
-          python3 tests/ocr-text-export-contract/pins.py seed
-          cargo test --manifest-path tests/ocr-text-export-contract/Cargo.toml --no-default-features -- --test-threads=1 2>&1 | tee test-results/ocr-text-exports/plain-contracts.log
           python3 tests/ocr-text-export-contract/pins.py check test-results/ocr-text-exports
+          cargo test --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --no-default-features -- --test-threads=1 2>&1 | tee test-results/ocr-text-exports/plain-contracts.log
       - name: Generate documents with the actual checked-in exporter
         shell: bash
         env:
@@ -103,7 +102,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp retained/tests/ocr-text-export-contract/Cargo.lock tests/ocr-text-export-contract/Cargo.lock
+          cmp retained/tests/ocr-text-export-contract/Cargo.lock tests/ocr-text-export-contract/Cargo.lock
           mkdir -p test-results/ocr-text-exports-ios
           python3 tests/ocr-text-export-contract/pins.py check test-results/ocr-text-exports-ios
           cargo check --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --features ocr-text-export --target aarch64-apple-ios 2>&1 | tee test-results/ocr-text-exports-ios/ios-check.log
