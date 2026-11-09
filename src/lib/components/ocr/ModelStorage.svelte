@@ -113,7 +113,29 @@
   .remove-button { flex-shrink: 0; font-size: 12px; }
   .clean-button { margin-top: 12px; }
   .storage-warning { font-size: 12px; line-height: 1.5; color: var(--warning-color, #e6b35a); overflow-wrap: anywhere; }
-  .remove-dialog { color: var(--text-primary, #e6edf7); background: var(--bg-secondary, #162131); width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; border: 1px solid var(--border-color, #344054); border-radius: 12px; padding: 20px; }
+  .remove-dialog {
+    position: fixed;
+    inset: calc(12px + env(safe-area-inset-top, 0px))
+      calc(12px + env(safe-area-inset-right, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-left, 0px));
+    margin: auto;
+    width: 420px;
+    height: fit-content;
+    max-width: calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    max-height: calc(100vh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    overflow: auto;
+    overscroll-behavior: contain;
+    box-sizing: border-box;
+    color: var(--text-primary, #e6edf7);
+    background: var(--bg-secondary, #162131);
+    border: 1px solid var(--border-color, #344054);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .remove-dialog button { min-height: 44px; }
+  .remove-dialog .icon-button { min-width: 44px; }
   .remove-dialog::backdrop { background: #0009; }
   .remove-dialog p { line-height: 1.6; font-size: 14px; overflow-wrap: anywhere; }
   .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
