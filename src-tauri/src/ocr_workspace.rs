@@ -246,6 +246,9 @@ pub fn ocr_workspace_capabilities() -> Value {
         "schema_version": PROJECT_VERSION,
         "ocr": native, "crispembed": native,
         "camera_import": true, "photo_tools": cfg!(feature = "ocr-photo-tools"),
+        "mobile_model_store": crate::model_provisioning::enabled(),
+        "default_engine": if crate::model_provisioning::enabled() { "tesseract" } else { "auto" },
+        "default_language": if crate::model_provisioning::enabled() { "eng" } else { "auto" },
         "pdf_import": cfg!(feature = "pdf-render"),
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
@@ -561,7 +564,7 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
 #[cfg(feature = "crispembed")]
 fn cleanup_image(image: DynamicImage, config: &crate::extractors::OcrPipelineConfig, recipe: &crate::extractors::OcrCleanupSpec, classical: bool, denoise: bool) -> Result<DynamicImage, String> {
     let model = if denoise {
-        Some(crispembed::CrispEmbed::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(true))
+        Some(crate::model_provisioning::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(true))
             .map_err(|e| format!("Load denoising model: {e}"))?)
     } else { None };
     let engine = crispembed::CrispScanCleanup::new(model.as_deref(), 0).map_err(|e| format!("Initialize scan cleanup: {e}"))?;
@@ -642,7 +645,7 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
     Ok(())
 }
 
-fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
+pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
     let engine = engine.filter(|s| !s.is_empty()).unwrap_or("auto");
     let language = language.filter(|s| !s.is_empty() && *s != "auto");
     let mut warnings = Vec::new();

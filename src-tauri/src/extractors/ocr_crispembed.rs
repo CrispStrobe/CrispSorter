@@ -505,8 +505,8 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
 
     let key = format!("{DEFAULT_DET_MODEL}:{DEFAULT_REC_MODEL}");
     let mut cache = super::context_cache::acquire(&OCR_PIPELINE, key, || {
-        let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))?;
-        let rec = crispembed::CrispEmbed::resolve_model(DEFAULT_REC_MODEL, Some(true))?;
+        let det = crate::model_provisioning::resolve_model(DEFAULT_DET_MODEL, Some(true))?;
+        let rec = crate::model_provisioning::resolve_model(DEFAULT_REC_MODEL, Some(true))?;
         crispembed::OcrPipeline::new(&det, &rec, 0)
     }).map_err(|e| anyhow::anyhow!("CrispEmbed OCR initialization failed: {e}"))?;
     let guard = &mut cache.as_mut().unwrap().context;
@@ -575,9 +575,9 @@ pub fn ocr_via_crispembed_custom(
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let det = crispembed::CrispEmbed::resolve_model(det_model, Some(true))
+    let det = crate::model_provisioning::resolve_model(det_model, Some(true))
         .unwrap_or_else(|_| det_model.to_string());
-    let rec = crispembed::CrispEmbed::resolve_model(rec_model, Some(true))
+    let rec = crate::model_provisioning::resolve_model(rec_model, Some(true))
         .unwrap_or_else(|_| rec_model.to_string());
 
     let mut pipeline = crispembed::OcrPipeline::new(&det, &rec, 0)
@@ -1142,7 +1142,7 @@ fn resolve(name: &str) -> String {
     if !crate::index::license_consent::may_download(name) {
         return name.to_string();
     }
-    crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
+    crate::model_provisioning::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
 /// Interactive OCR must report missing models instead of treating the native
@@ -1155,7 +1155,7 @@ fn resolve_checked(name: &str) -> Result<String> {
         name.to_string()
     } else {
         crate::index::license_consent::ensure_registry_download_allowed(name)?;
-        crispembed::CrispEmbed::resolve_model(name, Some(true))
+        crate::model_provisioning::resolve_model(name, Some(true))
             .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}"))?
     };
     let mut file = std::fs::File::open(&resolved)
@@ -1684,7 +1684,7 @@ mod tests {
         let mut models = Vec::new();
         for name in ["dbnet-det", "trocr-printed", "qwen2vl-3b"] {
             use std::io::Read;
-            let path = crispembed::CrispEmbed::resolve_model(name, Some(true)).expect("released OCR model must resolve");
+            let path = crate::model_provisioning::resolve_model(name, Some(true)).expect("released OCR model must resolve");
             let mut file = std::fs::File::open(&path).unwrap();
             let bytes = file.metadata().unwrap().len();
             let mut digest = Sha256::new();

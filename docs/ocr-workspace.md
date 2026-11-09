@@ -372,3 +372,37 @@ reading order, tables, and formulas; independently validate archival output; and
 exercise large documents, low disk space, process interruption, and recovery on
 each supported desktop platform. Scanner drivers, exact typography reconstruction,
 and automatic layout equivalence are outside the implemented workspace contract.
+
+## Mobile OCR model installation
+
+The paired `ocr-mobile` Cargo profile enables image and TIFF OCR, photo correction,
+review diagnostics, and searchable PDF export. It deliberately omits `pdf-render`:
+PDF import needs a separately packaged mobile rasterizer, and this profile reports
+PDF import as unavailable. Release defaults and release runtime pins are unchanged.
+
+The mobile profile provisions models in the application's private `ocr-models`
+store. Downloads are explicit user actions; recognition only loads an installed,
+verified model or a user-supplied local GGUF path. The workbench's basic installer
+uses `dbnet-det` and `tesseract-<language>` (English by default). Other registered
+engines use the existing Settings model browser and the same installer.
+
+The installer reads exact-name download metadata from the paired CrispEmbed
+registry. Every primary and declared companion file needs a real SHA-256 pin;
+unpinned entries fail with an actionable error. Rust streams HTTPS responses with
+a 64 KiB buffer, a 2 GiB limit per file, bounded redirects, and a 30-minute request
+timeout. It checks length, digest, and the primary GGUF header before publication.
+It respects the existing offline flags and model licence-consent checks. It never
+uses a shell downloader or changes the process environment on mobile.
+
+Each model has its own directory, so companion filenames cannot collide across
+models. A complete verified version is published through an atomic manifest;
+interrupted downloads and failed companion downloads leave the previous version
+intact. Readiness validates every declared artifact, with verification cached only
+while the immutable file's size and modification time match. Explicit local GGUF
+paths retain the existing behavior and are outside the managed download limit.
+
+These provisioning tests use tiny synthetic streams, including corruption,
+interruption, size/length failures, incomplete companion sets, and symlink escapes.
+They do not download production weights. A source/link check alone does not prove
+mobile inference, and simulator inference does not qualify physical camera capture,
+memory pressure, thermal behavior, or recognition accuracy on real phone photos.

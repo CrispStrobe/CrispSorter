@@ -36,7 +36,7 @@ fn init_vit(model_path: &str) -> Result<crispembed::CrispVit> {
         // `resolve_model` returns an existing file path unchanged, so this only
         // fails for an unknown name or a missing download — an initialization
         // error, not something to paper over with the raw string.
-        let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
+        let resolved = crate::model_provisioning::resolve_model(model_path, Some(true))
             .map_err(|e| anyhow::anyhow!("ViT model resolution failed: {e}"))?;
         crispembed::CrispVit::new(&resolved, 0)
             .map_err(|e| anyhow::anyhow!("ViT model init failed: {e}"))

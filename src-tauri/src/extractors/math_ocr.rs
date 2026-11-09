@@ -49,7 +49,7 @@ pub fn recognize_formula(image_path: &Path) -> Result<Option<String>> {
     let pixels = img.into_raw();
 
     let engine = MATH_OCR.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_MATH_MODEL, Some(true))
+        let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
             .unwrap_or_else(|_| DEFAULT_MATH_MODEL.to_string());
         let ocr = crispembed::MathOcr::new(&resolved, 0)
             .expect("MathOcr model init failed");
@@ -71,7 +71,7 @@ pub fn recognize_formula_from_pixels(
     height: i32,
 ) -> Result<Option<String>> {
     let engine = MATH_OCR.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_MATH_MODEL, Some(true))
+        let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
             .unwrap_or_else(|_| DEFAULT_MATH_MODEL.to_string());
         let ocr = crispembed::MathOcr::new(&resolved, 0)
             .expect("MathOcr model init failed");
@@ -101,7 +101,7 @@ pub fn recognize_formula_with_model(
     // CC-BY-NC-SA `posformer-crohme`), so refuse the implicit download without
     // consent instead of fetching it silently.
     crate::index::license_consent::ensure_registry_download_allowed(model_path)?;
-    let resolved = crispembed::CrispEmbed::resolve_model(model_path, Some(true))
+    let resolved = crate::model_provisioning::resolve_model(model_path, Some(true))
         .unwrap_or_else(|_| model_path.to_string());
     let mut ocr = crispembed::MathOcr::new(&resolved, 0)
         .map_err(|e| anyhow::anyhow!("MathOcr init failed: {e}"))?;
@@ -124,7 +124,7 @@ pub fn recognize_formulas_in_layout(
     let (img_w, img_h) = img.dimensions();
 
     let engine = MATH_OCR.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_MATH_MODEL, Some(true))
+        let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
             .unwrap_or_else(|_| DEFAULT_MATH_MODEL.to_string());
         let ocr = crispembed::MathOcr::new(&resolved, 0)
             .expect("MathOcr model init failed");

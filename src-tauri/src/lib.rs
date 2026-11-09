@@ -28,6 +28,7 @@ pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_photo;
 mod ocr_reading_order;
+pub mod model_provisioning;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;
@@ -2894,6 +2895,9 @@ pub fn run() {
 
             // Initialise job queue + store data_dir now that it is known.
             if let Ok(data_dir) = app.path().app_data_dir() {
+                if let Err(error) = model_provisioning::initialize(&data_dir) {
+                    app_log!("error", "OCR model store: {error}");
+                }
                 // Before anything can read a secret: pin the vault to the
                 // real data dir, so the user's chosen store is in force from
                 // the first read rather than from whenever Settings is
@@ -3440,6 +3444,7 @@ pub fn run() {
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
+            model_provisioning::ocr_workspace_install_mobile_models,
             ocr_workspace::ocr_workspace_import,
             ocr_workspace::ocr_workspace_import_image,
             ocr_workspace::ocr_workspace_import_bytes,
@@ -3888,6 +3893,7 @@ pub fn run() {
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
+            model_provisioning::ocr_workspace_install_mobile_models,
             ocr_workspace::ocr_workspace_import,
             ocr_workspace::ocr_workspace_import_image,
             ocr_workspace::ocr_workspace_import_bytes,
