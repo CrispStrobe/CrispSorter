@@ -60,7 +60,7 @@
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
   import ModelStorage from "./ocr/ModelStorage.svelte";
-  import { captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
+  import { CORNER_NAMES, captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import {
     workspaceClient,
@@ -160,6 +160,7 @@
   let perspective = $state(false);
   let photoToolsButton = $state<HTMLButtonElement>();
   let photoFocusBack = $state<HTMLButtonElement>();
+  let photoFocusCoordinatesOpen = $state(false);
   let photoQuad = $state<PhotoQuad>(initialPhotoQuad(100, 100));
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
@@ -727,7 +728,10 @@
     showOriginal = false;
     drawMode = "select";
     mobileView = "image";
-    if (enabled) fit = "page";
+    if (enabled) {
+      fit = "page";
+      photoFocusCoordinatesOpen = false;
+    }
     void tick().then(() => {
       if (enabled && perspective && photoFocusBack?.getClientRects().length) {
         photoFocusBack.focus({ preventScroll: true });
@@ -735,6 +739,9 @@
         photoToolsButton?.focus({ preventScroll: true });
       }
     });
+  }
+  function setPhotoCoordinate(index: number, axis: "x" | "y", value: number) {
+    photoQuad = photoQuad.map((point, i) => i === index ? { ...point, [axis]: value } : { ...point }) as PhotoQuad;
   }
   async function applyPerspective() {
     if (!activePage) return;
@@ -2415,6 +2422,18 @@
                 <button class="button primary" onclick={applyPerspective} disabled={locked || !!cornerError}><Check size={16} />Apply perspective</button>
               </div>
               {#if cornerError}<p class="photo-focus-error" role="status">{cornerError}</p>{/if}
+              <details class="photo-focus-coordinates" bind:open={photoFocusCoordinatesOpen}>
+                <summary>Exact corner positions</summary>
+                <div class="photo-focus-coordinate-grid">
+                  {#each photoQuad as point, index}
+                    <fieldset>
+                      <legend>{CORNER_NAMES[index]}</legend>
+                      <label>X<input type="number" min="0" max={activePage.width - 1} step="1" value={point.x} aria-label={`${CORNER_NAMES[index]} corner X`} oninput={(event) => setPhotoCoordinate(index, "x", event.currentTarget.valueAsNumber)} disabled={locked} /></label>
+                      <label>Y<input type="number" min="0" max={activePage.height - 1} step="1" value={point.y} aria-label={`${CORNER_NAMES[index]} corner Y`} oninput={(event) => setPhotoCoordinate(index, "y", event.currentTarget.valueAsNumber)} disabled={locked} /></label>
+                    </fieldset>
+                  {/each}
+                </div>
+              </details>
             </div>
           {/if}
         {/if}
@@ -5791,6 +5810,13 @@
     .photo-focus-actions { display: flex; gap: 8px; }
     .photo-focus-actions .button { flex: 1; min-width: 0; min-height: 44px; padding: 8px 5px; font-size: 11px; white-space: normal; }
     .photo-focus-error { margin: 7px 4px 0; color: #efc58b; line-height: 1.4; font-size: 11px; }
+    .photo-focus-coordinates { margin-top: 4px; }
+    .photo-focus-coordinates summary { min-height: 44px; padding: 12px 5px; color: #bfdcff; cursor: pointer; font-size: 11px; }
+    .photo-focus-coordinate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: clamp(132px, 30dvh, 250px); overflow: auto; overscroll-behavior: contain; padding: 2px 2px 8px; }
+    .photo-focus-coordinate-grid fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; padding: 5px 7px 8px; border: 1px solid #44607c; border-radius: 6px; min-width: 0; }
+    .photo-focus-coordinate-grid legend { padding: 0 4px; color: #bfdcff; font-size: 11px; }
+    .photo-focus-coordinate-grid label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 10px; min-width: 0; }
+    .photo-focus-coordinate-grid input { width: 100%; min-height: 44px; padding: 6px !important; font-size: 16px !important; }
     .photo-focusing .image-footer .page-navigation,
     .photo-focusing .image-footer .toolbar-spacer { display: none; }
     .photo-focusing .image-footer { justify-content: center; gap: 8px; }

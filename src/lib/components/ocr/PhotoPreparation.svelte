@@ -102,6 +102,7 @@
   @media (max-width: 1200px) { .photo-controls { grid-template-columns: 1fr; } .photo-step { border-right: 0; border-bottom: 1px solid #30445b; } }
   @media (max-width: 780px) {
     button { min-height: 44px; }
+    button.close { min-width: 44px; }
     .photo-preparation { max-height: 50%; }
     header span { display: none; }
     .photo-step-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 5px 8px; border-bottom: 1px solid #30445b; }
