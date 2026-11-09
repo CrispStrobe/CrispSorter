@@ -68,6 +68,8 @@ successful recognition result cannot be committed.
   completed results, and leave unrelated pending pages untouched.
 - A failed result checkpoint halts further recognition without turning a good
   result into an OCR error. Saving and resuming completes only unfinished pages.
+- Starting another batch, changing projects, and Undo remain locked until the
+  final batch checkpoint has actually saved, even after the native calls finish.
 - Camera import rejects unsupported image formats before transferring bytes,
   preserves a valid photo, and opens preparation without starting recognition.
 - Four-corner correction exposes touch-sized keyboard-operable handles, rejects
@@ -85,7 +87,8 @@ successful recognition result cannot be committed.
 - Desktop and phone layouts produce screenshots and retain the review controls.
   On phones, Pages, Page image, and Text & tools each remain reachable; selecting
   another page changes the reviewed text, and view controls have touch-sized
-  targets. The harness checks both 390-pixel and 320-pixel widths.
+  targets. The harness checks 390-pixel and 320-pixel portrait widths and an
+  844-by-390-pixel landscape screen with the page preview inside the viewport.
   Fit page keeps the complete paper within its viewport, fills one available axis,
   and requires no scrolling; this catches duplicate padding deductions.
 

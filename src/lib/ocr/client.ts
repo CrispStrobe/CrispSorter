@@ -142,6 +142,16 @@ const providerNames = new Map<string, string>();
 const mobileExports = new Map<string, string>();
 const documentExtensions = new Set(["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"]);
 
+/** Raw IPC avoids expanding a camera JPEG into millions of JavaScript numbers.
+ * Header metadata is UTF-8 encoded so provider identities stay byte-exact. */
+function importPayload(command: string, name: string, bytes: Uint8Array, sourceUri?: string): Promise<ImportedDocument> {
+  if (!bytes.byteLength || bytes.byteLength > 32 * 1024 * 1024) return Promise.reject(new Error("Choose a nonempty document no larger than 32 MiB."));
+  const metadata = new TextEncoder().encode(JSON.stringify({ name, ...(sourceUri ? { sourceUri } : {}) }));
+  if (metadata.byteLength > 12 * 1024) return Promise.reject(new Error("The document name or provider identity is too long."));
+  const encoded = btoa(String.fromCharCode(...metadata));
+  return invoke(command, bytes, { headers: { "x-ocr-metadata": encoded } });
+}
+
 /** The native picker owns destination access; the rendered file stays private
  * until the user chooses where to save it. Completion means the copy finished. */
 async function completeMobileExport<T extends { saved_path: string; bytes: number; cancelled?: boolean }>(path: string, render: () => Promise<T>): Promise<T> {
@@ -169,13 +179,13 @@ export const workspaceClient: WorkspaceClient = {
     if (isProviderUri(locationUri) && (await loadCapabilities()).mobile) {
       const bytes = await readProviderFile(locationUri);
       const name = providerNames.get(locationUri) ?? "Imported document";
-      const result = await invoke<ImportedDocument>("ocr_workspace_import_bytes", { name, bytes: Array.from(bytes), sourceUri: locationUri });
+      const result = await importPayload("ocr_workspace_import_bytes", name, bytes, locationUri);
       providerNames.delete(locationUri);
       return result;
     }
     return invoke("ocr_workspace_import", { locationUri });
   },
-  importImage: (name, bytes) => invoke("ocr_workspace_import_image", { name, bytes: Array.from(bytes) }),
+  importImage: (name, bytes) => importPayload("ocr_workspace_import_image", name, bytes),
   assessPhoto: (pagePath) => invoke("ocr_workspace_assess_photo", { pagePath }),
   recognize: (options) =>
     invoke("ocr_workspace_recognize", {

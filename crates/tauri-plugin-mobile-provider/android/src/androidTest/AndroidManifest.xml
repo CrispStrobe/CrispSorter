@@ -5,5 +5,10 @@
             android:authorities="com.crispstrobe.mobileprovider.testdocs"
             android:exported="true"
             android:grantUriPermissions="true" />
+        <provider
+            android:name="com.crispstrobe.mobileprovider.FakeExportProvider"
+            android:authorities="com.crispstrobe.mobileprovider.testexports"
+            android:exported="true"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

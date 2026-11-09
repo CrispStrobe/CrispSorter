@@ -300,6 +300,38 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
         });
 
+        await test('finishing a batch keeps project changes locked until the final checkpoint is durable', 'queue-control', async page => {
+            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.evaluate(() => {
+                window.ocrSmoke.holdFinalSave = true;
+                window.ocrSmoke.holdRecognition = false;
+                window.ocrSmoke.releaseNext();
+            });
+            await page.waitForFunction(() => window.ocrSmoke.recognitions.length === 3 && window.ocrSmoke.pendingSaves === 1);
+            await page.getByText('Batch complete', { exact: true }).waitFor();
+            for (const name of ['Process pending', 'New', 'Projects', 'Undo']) {
+                assert.equal(await page.getByRole('button', { name, exact: true }).isEnabled(), false, `${name} must wait for the final checkpoint`);
+            }
+            await page.evaluate(() => { window.ocrSmoke.holdFinalSave = false; window.ocrSmoke.releaseSave(); });
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'completed' && !document.querySelector('[aria-label="Project name"]').disabled);
+            assert.equal(await page.getByRole('button', { name: 'New', exact: true }).isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
+        });
+
+        await test('stopping an already paused queue saves its stopped state without another native call', 'queue-control', async page => {
+            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.getByRole('button', { name: 'Pause', exact: true }).click();
+            await page.evaluate(() => window.ocrSmoke.releaseNext());
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'paused');
+            await page.getByRole('button', { name: 'Stop', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'stopped');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.lastSaved.pages.map(item => item.status)), ['recognized', 'pending', 'pending']);
+            assert.equal(await page.getByRole('button', { name: 'Resume saved batch', exact: true }).isEnabled(), true);
+        });
+
         await test('table extraction renders cell text and strips active HTML', 'review', async page => {
             await page.getByRole('tab', { name: 'Extract', exact: true }).click();
             await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -532,11 +564,19 @@ if (process.argv.includes('--serve')) {
                 const bounds = await button.boundingBox();
                 assert.ok(bounds && bounds.height >= 44, 'Phone view navigation must have touch-sized targets');
             }
-            await page.setViewportSize({ width: 320, height: 568 });
+            await page.setViewportSize({ width: 320, height: 667 });
             await nav.getByRole('button', { name: 'Page image', exact: true }).click();
             const narrow = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
             assert.ok(narrow.documentWidth <= narrow.width + 2, `Narrow phone layout overflows: ${narrow.documentWidth} > ${narrow.width}`);
             assert.ok((await page.locator('.canvas-shell .viewport').boundingBox())?.height >= 80, 'Narrow phone retains room for the page image');
+            await page.setViewportSize({ width: 844, height: 390 });
+            await assertFitPage(page, 'Phone landscape');
+            const landscape = await page.evaluate(() => {
+                const preview = document.querySelector('.canvas-shell .viewport').getBoundingClientRect();
+                return { width: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth, previewTop: preview.top, previewBottom: preview.bottom };
+            });
+            assert.ok(landscape.documentWidth <= landscape.width + 2, 'Landscape phone must not overflow horizontally');
+            assert.ok(landscape.previewTop >= 0 && landscape.previewBottom <= landscape.height, 'Landscape page preview must remain within the screen');
         });
     } catch (error) {
         results.push({ name: 'browser setup', status: 'failed', error: error.stack ?? String(error) });

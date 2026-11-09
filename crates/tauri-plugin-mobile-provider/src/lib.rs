@@ -1,4 +1,4 @@
-//! Read-only access to user-selected Android and iOS document providers.
+//! Access to explicitly selected mobile documents and reviewed export destinations.
 //!
 //! The plugin is also registered on other targets so its permissions exist
 //! in the generated ACL; provider commands are implemented on mobile.
@@ -48,6 +48,19 @@ mod mobile {
             .await
             .map_err(|e| e.to_string())
     }
+
+    /// The platform implementation only reads this app's OCR export staging
+    /// directory, and writes after the user selects a system save destination.
+    #[tauri::command]
+    pub async fn export_file<R: Runtime>(
+        _app: AppHandle<R>,
+        provider: State<'_, Provider<R>>,
+        path: String,
+        name: String,
+    ) -> Result<Value, String> {
+        provider.0.run_mobile_plugin_async("exportFile", json!({ "path": path, "name": name }))
+            .await.map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -60,7 +73,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             mobile::pick_files,
             mobile::pick_folder,
-            mobile::read_file
+            mobile::read_file,
+            mobile::export_file
         ])
         .setup(|app, api| {
             use tauri::Manager;

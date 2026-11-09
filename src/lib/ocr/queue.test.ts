@@ -197,6 +197,21 @@ describe('sequential OCR queue', () => {
         expect(queue.state.phase).toBe('cancelled');
     });
 
+    it('suppresses a late checkpoint failure after the project generation changes', async () => {
+        const saving=gate<void>(),run=vi.fn(async()=>1),checkpointError=vi.fn();
+        const queue=new SequentialQueue<number>({onStart:()=>saving.promise,onCheckpointError:checkpointError});
+        queue.start([{id:'obsolete-page',run}]);
+        await started();
+        queue.invalidate();
+        expect(queue.canStart).toBe(false);
+        saving.reject(new Error('The old project could not save'));
+        await queue.whenSettled();
+        expect(run).not.toHaveBeenCalled();
+        expect(checkpointError).not.toHaveBeenCalled();
+        expect(queue.state.remainingIds).toEqual(['obsolete-page']);
+        expect(queue.state.phase).toBe('cancelled');
+    });
+
     it('stops when saving a recognition failure fails instead of losing its retry evidence', async () => {
         const second=vi.fn(async()=>2),checkpointError=vi.fn();
         const queue=new SequentialQueue<number>({onError:()=>{throw new Error('Storage unavailable');},onCheckpointError:checkpointError});

@@ -118,12 +118,14 @@ export class SequentialQueue<R> {
         this.publish();
     }
 
-    private async checkpoint(job: QueueJob<R>, stage: 'start' | 'result' | 'error', action: () => void | Promise<void>): Promise<boolean> {
+    private async checkpoint(token: number, job: QueueJob<R>, stage: 'start' | 'result' | 'error', action: () => void | Promise<void>): Promise<boolean> {
         try { await action(); return true; }
         catch (error) {
             // A failed notification must not unlock a second native invocation
             // or allow the next page to overtake an uncommitted checkpoint.
-            try { await this.callbacks.onCheckpointError?.(error, job, stage); } catch { /* the run still stops */ }
+            if (this.isCurrent(token, job)) {
+                try { await this.callbacks.onCheckpointError?.(error, job, stage); } catch { /* the run still stops */ }
+            }
             return false;
         }
     }
@@ -138,7 +140,7 @@ export class SequentialQueue<R> {
             if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
             this.value = { ...this.value, currentId: job.id, remainingIds: this.jobs.slice(this.next + 1).map((item) => item.id) };
             this.publish();
-            if (!await this.checkpoint(job, 'start', () => this.callbacks.onStart?.(job))) { terminal = 'cancelled'; break; }
+            if (!await this.checkpoint(token, job, 'start', () => this.callbacks.onStart?.(job))) { terminal = 'cancelled'; break; }
             if (!this.isCurrent(token, job) || this.value.phase === 'cancelling') { terminal = 'cancelled'; break; }
             // A user may pause or stop while the start checkpoint is saving.
             // Honor that request before entering the expensive native call.
@@ -149,7 +151,7 @@ export class SequentialQueue<R> {
             } catch (error) {
                 if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
                 this.value = { ...this.value, failed: this.value.failed + 1 };
-                if (!await this.checkpoint(job, 'error', () => this.callbacks.onError?.(job, error))) { terminal = 'cancelled'; break; }
+                if (!await this.checkpoint(token, job, 'error', () => this.callbacks.onError?.(job, error))) { terminal = 'cancelled'; break; }
                 if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
                 this.next += 1;
                 this.value = { ...this.value, currentId: null, remainingIds: this.jobs.slice(this.next).map((item) => item.id) };
@@ -157,7 +159,7 @@ export class SequentialQueue<R> {
                 continue;
             }
             if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
-            if (!await this.checkpoint(job, 'result', () => this.callbacks.onResult?.(job, result))) { terminal = 'cancelled'; break; }
+            if (!await this.checkpoint(token, job, 'result', () => this.callbacks.onResult?.(job, result))) { terminal = 'cancelled'; break; }
             if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
             this.value = { ...this.value, completed: this.value.completed + 1 };
             this.next += 1;

@@ -401,7 +401,10 @@ ocr-review-diagnostics = ["crispembed"]
 # raster embedding, Unicode text, and document-sized page tables.
 ocr-reviewed-pdf = ["ocr-review-diagnostics"]
 # Complete paired OCR workspace without imposing desktop-only integrations.
-ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf"]
+# Requires the matching native photo API and Rust binding from the paired build.
+# Keep ordinary released-library builds independent of the additive ABI.
+ocr-photo-tools = ["crispembed"]
+ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
 crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]

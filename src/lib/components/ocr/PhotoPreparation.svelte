@@ -14,7 +14,7 @@
     onapplyperspective: () => void; onapplyangle: () => void; onwhiten: () => void; onclose: () => void;
   } = $props();
   const cornerError = $derived(photoQuadError(quad, width, height));
-  const angleValid = $derived(Number.isFinite(angle) && Math.abs(angle) <= 15 && Math.abs(angle) >= 0.05);
+  const angleValid = $derived(Number.isFinite(angle) && Math.abs(angle) <= 20 && Math.abs(angle) >= 0.05);
   function coordinate(index: number, axis: "x" | "y", value: number) {
     onquad(quad.map((point, i) => i === index ? { ...point, [axis]: value } : { ...point }) as PhotoQuad);
   }
@@ -49,7 +49,7 @@
     </div>
     <div class="photo-step">
       <h3><span>3</span> Level & brighten</h3>
-      <label class="angle-label">Tilt correction (degrees)<div class="angle-control"><input type="number" min="-15" max="15" step="0.1" value={angle} oninput={(event) => onangle(event.currentTarget.valueAsNumber)} disabled={disabled} /><span>+ clockwise</span></div></label>
+      <label class="angle-label">Tilt correction (degrees)<div class="angle-control"><input type="number" min="-20" max="20" step="0.1" value={angle} oninput={(event) => onangle(event.currentTarget.valueAsNumber)} disabled={disabled} /><span>+ clockwise</span></div></label>
       <button onclick={onapplyangle} disabled={disabled || !angleValid}><RotateCcw size={14} />Apply tilt correction</button>
       <button onclick={onwhiten} disabled={disabled || !canWhiten}><WandSparkles size={14} />Flatten shadows</button>
       <p>For uneven lighting, flatten shadows after correcting tilt. Use Original to compare before recognizing.</p>

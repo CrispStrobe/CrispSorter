@@ -2,9 +2,17 @@ name: OCR paired native integration
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio']
+    paths:
+      - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_photo.rs
+      - src-tauri/Cargo.toml
+      - .github/workflows/ocr-paired-native.yml
   pull_request:
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_photo.rs
       - src-tauri/src/ocr_reading_order.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
@@ -25,7 +33,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: 14dc1960b6e515ff428bc1d4363b82b6f3dc454e  # CrispEmbed main: merge of PR #179
+  OCR_CRISPEMBED_REF: 1f2cb26461961dc446ae172648531ccde0b3a607  # Explicit photo C ABI, safe Rust bindings and reviewed OCR renderer.
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -90,6 +98,9 @@ jobs:
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_workspace::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_photo::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_crispembed::tests -- --test-threads=1

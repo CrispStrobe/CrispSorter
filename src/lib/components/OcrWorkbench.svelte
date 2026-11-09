@@ -209,7 +209,7 @@
     currentId: null,
     remainingIds: [],
   });
-  let queuePromise: Promise<void> | null = null;
+  let queuePromise = $state<Promise<void> | null>(null);
   let runningProjectId = "", runningBatchId = "";
   let checkpointFailed = false;
   let autosave: ProjectAutosave<OcrProject> | null = null;
@@ -344,7 +344,7 @@
   const queueActive = $derived(
     ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
   );
-  const locked = $derived(booting || closing || !!busy || queueActive);
+  const locked = $derived(booting || closing || !!busy || queueActive || queuePromise !== null);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
     typeof settings.engine === "string" ? settings.engine : "auto",
@@ -987,8 +987,20 @@
     change(plan.project);
     await runPreparedBatch(plan.pageIds, plan.options);
   }
+  async function stopQueue() {
+    const paused = queue.state.phase === "paused";
+    // The previous segment owns its final checkpoint until it clears this lock.
+    if (paused && queuePromise) return;
+    queue.cancel();
+    if (!paused) return; // A running segment saves its stopped phase on settlement.
+    const stopped = Promise.resolve().then(() => finishQueueSegment());
+    queuePromise = stopped;
+    try { await stopped; }
+    catch (failure) { fail(failure); }
+    finally { if (queuePromise === stopped) queuePromise = null; }
+  }
   async function resumeQueue() {
-    if (busy) return;
+    if (busy || queuePromise) return;
     busy = "Saving recognition checkpoint";
     checkpointFailed = false;
     try {
@@ -1053,6 +1065,8 @@
         operation,
         ...options,
       });
+      const first = result.pages[0];
+      const pixelsChanged = result.pages.length !== 1 || !first || first.image_path !== page.imagePath || first.width !== page.width || first.height !== page.height;
       if (result.pages.length > 1) {
         const before = project.pages.findIndex((p) => p.id === page.id);
         change(splitPage(project, page.id, result.pages));
@@ -1063,7 +1077,9 @@
       } else throw new Error("The operation produced no pages.");
       showOriginal = false;
       drawMode = "select";
-      notice = "Page updated. Recognize the new pixels before export.";
+      notice = pixelsChanged
+        ? "Page updated. Recognize the new pixels before export."
+        : "The page pixels are unchanged. Reviewed text and approval were retained.";
     } catch (e) {
       fail(e);
     } finally {
@@ -1560,7 +1576,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (queueActive || busy || autosave?.hasUnsavedChanges()) {
+    if (queueActive || queuePromise || busy || autosave?.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1609,7 +1625,7 @@
             event.preventDefault();
             return;
           }
-          if (busy || (queueActive && queueState.phase !== "paused")) {
+          if (busy || queuePromise || (queueActive && queueState.phase !== "paused")) {
             event.preventDefault();
             await nativeMessage(
               "A document operation is still running. Stop the recognition queue or wait for the current operation to finish, then close the window again. Completed pages are saved automatically.",
@@ -1618,7 +1634,10 @@
             return;
           }
           closing = true;
-          if (queueState.phase === "paused") queue.cancel();
+          if (queueState.phase === "paused") {
+            queue.cancel();
+            change(updateBatchPhase(project, "stopped"), false);
+          }
           try {
             // Tauri waits for this handler before honoring the user's close.
             await autosave?.flush();
@@ -1708,7 +1727,7 @@
         ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
       ><button class="button subtle" onclick={newProject} disabled={locked}
         ><Plus size={15} /> New</button
-      ><button class="button subtle" onclick={flush} disabled={booting}
+      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save"
         ><Save size={15} /><span class="optional-label">Save</span></button
       >
     </div>
@@ -1844,7 +1863,8 @@
       {#if queueActive}<div class="queue-actions">
           {#if queueState.phase === "paused"}<button
               class="button small"
-              onclick={resumeQueue}><Play size={13} /> Resume</button
+              onclick={resumeQueue}
+              disabled={!!busy || queuePromise !== null}><Play size={13} /> Resume</button
             >{:else}<button
               class="button small"
               onclick={() => queue.pause()}
@@ -1852,8 +1872,8 @@
               ><Pause size={13} /> Pause</button
             >{/if}<button
             class="button small"
-            onclick={() => queue.cancel()}
-            disabled={queueState.phase === "cancelling"}
+            onclick={stopQueue}
+            disabled={queueState.phase === "cancelling" || (queueState.phase === "paused" && queuePromise !== null)}
             ><Square size={12} /> Stop</button
           >
         </div>{:else if queueState.failed}<button

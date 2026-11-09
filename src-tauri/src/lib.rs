@@ -26,6 +26,7 @@ pub mod kindle_import;
 pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
+mod ocr_photo;
 mod ocr_reading_order;
 pub mod pdf_annots;
 pub mod pdf_base14;
@@ -3440,6 +3441,9 @@ pub fn run() {
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
             ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_import_image,
+            ocr_workspace::ocr_workspace_import_bytes,
+            ocr_workspace::ocr_workspace_assess_photo,
             ocr_workspace::ocr_workspace_transform,
             ocr_workspace::ocr_workspace_prepare,
             ocr_workspace::ocr_workspace_recognize,
@@ -3447,6 +3451,8 @@ pub fn run() {
             ocr_workspace::ocr_workspace_load,
             ocr_workspace::ocr_workspace_list,
             ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_export_target,
+            ocr_workspace::ocr_workspace_discard_export,
             ocr_workspace::ocr_workspace_write_text,
             ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
@@ -3883,6 +3889,9 @@ pub fn run() {
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
             ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_import_image,
+            ocr_workspace::ocr_workspace_import_bytes,
+            ocr_workspace::ocr_workspace_assess_photo,
             ocr_workspace::ocr_workspace_transform,
             ocr_workspace::ocr_workspace_prepare,
             ocr_workspace::ocr_workspace_recognize,
@@ -3890,6 +3899,8 @@ pub fn run() {
             ocr_workspace::ocr_workspace_load,
             ocr_workspace::ocr_workspace_list,
             ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_export_target,
+            ocr_workspace::ocr_workspace_discard_export,
             ocr_workspace::ocr_workspace_write_text,
             ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,

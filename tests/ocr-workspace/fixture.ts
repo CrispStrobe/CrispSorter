@@ -64,6 +64,7 @@ export interface SmokeControl {
     holdExtraction: boolean;
     pendingExtractions: number;
     holdSaves: boolean;
+    holdFinalSave: boolean;
     pendingSaves: number;
     failSaves: boolean;
     failPages: number[];
@@ -121,7 +122,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
-        holdSaves:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
+        holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
         releaseExtraction(){const release=pendingExtractions.shift();if(!release)return false;control.pendingExtractions=pendingExtractions.length;release();return true;},
         releaseSave(){const release=pendingSaves.shift();if(!release)return false;control.pendingSaves=pendingSaves.length;release();return true;},
@@ -139,7 +140,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
             note('save',{id:snapshot.id,expectedRevision});
-            if(control.holdSaves)await new Promise<void>(release=>{
+            if(control.holdSaves || (control.holdFinalSave && snapshot.batch?.phase==='completed'))await new Promise<void>(release=>{
                 pendingSaves.push(release);control.pendingSaves=pendingSaves.length;
             });
             if(control.failSaves)throw new Error('Disk full: the project checkpoint could not be saved.');
@@ -173,7 +174,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 return {pages:[{image_path:options.pagePath+'-perspective',width:900,height:1300,warnings:['Perspective corrected from four user-selected corners.']}]};
             }
             if(options.operation==='deskew') {
-                if(!Number.isFinite(options.angle)||Math.abs(options.angle??0)>15)throw new Error('Choose a finite angle between -15 and 15 degrees.');
+                if(!Number.isFinite(options.angle)||Math.abs(options.angle??0)>20)throw new Error('Choose a finite angle between -20 and 20 degrees.');
                 return {pages:[{image_path:options.pagePath+'-deskewed',width:1065,height:1447,warnings:['Tilt corrected using the chosen angle.']}]};
             }
             return {pages:[{image_path:options.pagePath+'-crop',width:Math.round(options.crop?.w??1000),height:Math.round(options.crop?.h??1400)}]};

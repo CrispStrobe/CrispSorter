@@ -3,6 +3,8 @@ package com.crispstrobe.mobileprovider
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
+import android.webkit.MimeTypeMap
 import android.util.Base64
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
@@ -20,7 +22,13 @@ class ReadArgs {
     lateinit var uri: String
 }
 
-/** A deliberately read-only SAF bridge. No content URI is converted to a path. */
+@InvokeArg
+class ExportArgs {
+    lateinit var path: String
+    lateinit var name: String
+}
+
+/** Provider URIs stay opaque; exports require an explicit system destination. */
 @TauriPlugin
 class MobileProviderPlugin(private val activity: Activity) : Plugin(activity) {
     companion object {
@@ -28,6 +36,50 @@ class MobileProviderPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private val reader = SafReader(activity)
+    private val exporter = ExportAccess(activity)
+
+    @Command
+    fun exportFile(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(ExportArgs::class.java)
+            exporter.source(args.path, args.name)
+            val extension = args.name.substringAfterLast('.', "").lowercase()
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
+                putExtra(Intent.EXTRA_TITLE, args.name)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            startActivityForResult(invoke, intent, "exportPicked")
+        } catch (e: Exception) {
+            invoke.reject("Could not prepare the export picker: ${e.message}")
+        }
+    }
+
+    @ActivityCallback
+    fun exportPicked(invoke: Invoke, result: ActivityResult) {
+        if (result.resultCode == Activity.RESULT_CANCELED) {
+            invoke.resolve(JSObject().put("cancelled", true))
+            return
+        }
+        val destination = result.data?.data
+        if (result.resultCode != Activity.RESULT_OK || destination == null) {
+            invoke.reject("The save picker did not return a destination")
+            return
+        }
+        runInBackground(invoke) {
+            try {
+                val args = invoke.parseArgs(ExportArgs::class.java)
+                val count = exporter.copy(exporter.source(args.path, args.name), destination)
+                JSObject().put("cancelled", false).put("saved_path", destination.toString()).put("bytes", count)
+            } catch (e: Exception) {
+                // ACTION_CREATE_DOCUMENT created this new destination for this
+                // operation. Remove a partial copy when the provider supports it.
+                try { DocumentsContract.deleteDocument(activity.contentResolver, destination) } catch (_: Exception) { }
+                throw e
+            }
+        }
+    }
 
     @Command
     fun pickFiles(invoke: Invoke) {
