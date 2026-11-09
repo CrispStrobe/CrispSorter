@@ -1431,7 +1431,8 @@ if (process.argv.includes('--serve')) {
                 assert.equal(object.captures[0].documentId, sourcePage.documentId);
                 assert.equal(object.captures[0].regionId, sourcePage.regions[regionNumber - 1].id);
                 assert.equal(object.captures[0].imagePath, sourcePage.imagePath);
-                assert.deepEqual(object.captures[0].bounds, sourcePage.regions[regionNumber - 1].bounds);
+                const sourceRegion = sourcePage.regions[regionNumber - 1];
+                assert.deepEqual(object.captures[0].bounds, { x: sourceRegion.x, y: sourceRegion.y, w: sourceRegion.w, h: sourceRegion.h });
                 return object;
             }
             async function selectObject(kind, id) {
@@ -1470,7 +1471,7 @@ if (process.argv.includes('--serve')) {
             assert.equal(fields.captures[0].text, sourcePage.regions[5].text);
             assert.equal(firstTable.captures[0].method, 'pixels');
             const cropRequests = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform' && call.data.operation === 'crop').map(call => call.data));
-            assert.deepEqual(cropRequests.map(request => request.crop), sourcePage.regions.slice(1, 5).map(region => region.bounds));
+            assert.deepEqual(cropRequests.map(request => request.crop), sourcePage.regions.slice(1, 5).map(({ x, y, w, h }) => ({ x, y, w, h })));
             assert.ok(cropRequests.every(request => request.pagePath === sourcePage.imagePath));
             assert.deepEqual(fields.originalOutput, [
                 { label: 'vendor', value: 'Northstar Supply Co.', score: 0.97 },

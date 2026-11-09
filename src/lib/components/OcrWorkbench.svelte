@@ -109,8 +109,9 @@
   import type { ExtractionSource } from "$lib/ocr/extraction";
   import {
     captureExtractionRequest, appendExtractionObject, getExtractionObjects,
-    extractionObjectFreshness, serializeExtractionObject, type ExtractionObject,
+    extractionObjectFreshness, type ExtractionObject,
   } from "$lib/ocr/extractionObjects";
+  import { prepareExtractionExport } from "$lib/ocr/extractionExport";
   import {
     PROFILES,
     createProject,
@@ -1803,7 +1804,7 @@
     try {
       const current = currentExtraction(object);
       if (!current) throw new Error("Select a saved extraction on the current page.");
-      await copy(serializeExtractionObject(current));
+      await copy(prepareExtractionExport(current).text);
     } catch (failure) { fail(failure); }
   }
   async function saveExtraction(object: ExtractionObject) {
@@ -1812,8 +1813,7 @@
       const current = currentExtraction(object);
       if (!current) throw new Error("Select a saved extraction on the current page.");
       const sources = project.documents.map((document) => document.sourceUri);
-      const extension = current.kind === "fields" ? "json" : current.kind === "table" ? "csv" : "tex";
-      const text = serializeExtractionObject(current);
+      const { extension, text } = prepareExtractionExport(current);
       busy = "Saving extracted data";
       const outputPath = await client.pickExport(project.name + "-" + current.name, extension);
       if (!outputPath) return;
