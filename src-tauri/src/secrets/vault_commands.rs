@@ -67,8 +67,11 @@ pub async fn secret_backend_unlock(passphrase: String) -> Result<Status, String>
 /// allowed to raise a system dialog again.
 #[tauri::command]
 pub async fn secret_backend_retry() -> Result<Status, String> {
-    vault::clear_denied();
-    Ok(vault::status())
+    // Reopening a keychain or vault file can block on I/O; keep it off
+    // the async runtime's worker threads.
+    tokio::task::spawn_blocking(vault::retry)
+        .await
+        .map_err(|e| format!("retry worker: {e}"))
 }
 
 #[derive(Debug, Serialize)]
