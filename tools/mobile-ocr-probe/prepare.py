@@ -76,6 +76,54 @@ def make_text_fixture(output, font_path):
             'rgb_sha256': digest(output / 'page.rgb'), 'png_sha256': digest(output / 'page.png')}
 
 
+def quality_spec(source=None):
+    source = source or Path(__file__).with_name('quality.json')
+    spec = json.loads(source.read_text())
+    if spec.get('schema_version') != 1 or len(spec.get('cases', [])) != 2:
+        raise ValueError('Unexpected bounded native quality fixture set')
+    if len(spec.get('models', [])) != 1 or spec['models'][0]['name'] != 'tesseract-deu' or not 0 < spec['models'][0]['bytes'] <= 2 * 1024 * 1024:
+        raise ValueError('Native quality fixture requires one bounded German recognizer')
+    names = set()
+    for case in spec['cases']:
+        name = case['filename']
+        if Path(name).name != name or not name.endswith('.png') or name in names:
+            raise ValueError('Unsafe or duplicate native quality fixture filename')
+        names.add(name)
+        if case['language'] not in ('eng', 'deu') or case['layout_engine'] not in (None, 'cc'):
+            raise ValueError('Quality fixtures must use the explicit small-model profiles')
+        if not 0 < case['width'] * case['height'] <= 2_000_000 or not 0 < len(case['lines']) <= 12:
+            raise ValueError('Quality fixture dimensions or line count exceeds its bound')
+        if not 0 < case['max_unicode_cer'] <= 0.25:
+            raise ValueError('Quality fixture cannot weaken the Unicode CER bound')
+        if any(not line['text'].strip() for line in case['lines']):
+            raise ValueError('Quality fixture text must not be empty')
+    return spec
+
+
+def make_quality_fixtures(output, font_path):
+    from PIL import Image, ImageDraw, ImageFont
+    spec = quality_spec()
+    prepared = []
+    for case in spec['cases']:
+        image = Image.new('RGB', (case['width'], case['height']), 'white')
+        draw = ImageDraw.Draw(image)
+        for line in case['lines']:
+            font = ImageFont.truetype(str(font_path), line.get('font_size', case['font_size']))
+            box = draw.textbbox((line['x'], line['y']), line['text'], font=font)
+            if box[0] < 0 or box[1] < 0 or box[2] > case['width'] or box[3] > case['height']:
+                raise ValueError('Native quality reference text is clipped by the selected font')
+            draw.text((line['x'], line['y']), line['text'], font=font, fill='black')
+        destination = output / case['filename']
+        if destination.exists() or destination.is_symlink():
+            raise ValueError('Choose a fresh output directory for native quality fixtures')
+        image.save(destination)
+        prepared.append({**case, 'text': '\n'.join(line['text'] for line in case['lines']),
+                         'png_sha256': digest(destination), 'bytes': destination.stat().st_size})
+    return {'spec_sha256': digest(Path(__file__).with_name('quality.json')),
+            'font_sha256': digest(font_path), 'models': spec['models'], 'cases': prepared,
+            'scope': spec['scope']}
+
+
 def prepare_document_fixtures(output, source=None):
     """Copy reviewed native document fixtures only after checking their pins."""
     source = source or Path(__file__).resolve().parents[2] / 'tests/fixtures/mobile-documents'
@@ -126,6 +174,7 @@ def main():
         fetch_model(model, args.output)
     receipt = {'schema_version': 1, 'synthetic_only': True, 'models': models,
                'fixture': make_text_fixture(args.output, args.font),
+               'quality_fixtures': make_quality_fixtures(args.output, args.font),
                'document_fixtures': prepare_document_fixtures(args.output)}
     (args.output / 'inputs.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt, indent=2))

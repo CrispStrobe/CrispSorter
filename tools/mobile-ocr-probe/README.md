@@ -44,6 +44,21 @@ actual recognitions with durable per-page saves, and enforces a declared process
 RSS budget. The repeat case alternates two synthetic rasters; it does not
 establish diverse-corpus or large-document performance.
 
+The bounded quality cases in `quality.json` add an accented German page and an
+English page with a spanning heading and two columns. The app explicitly
+installs the additional German recognizer (513,952 bytes) through its real
+installer; the driver checks its private stored length/SHA-256 and verifies
+that the already installed English/detector generations remain unchanged.
+Character error rate preserves NFC-normalized letters, case, diacritics,
+punctuation and digits. Required German words also prevent a tolerant overall
+score from hiding lost umlauts or `ß`. The column case selects the existing
+native connected-components layout engine, requiring no layout-model download,
+and checks the actual requested config, complete region permutation and
+left-column-before-right geometry. Raw outputs, memory samples, fixture/font
+hashes and exact saved text accompany each case. No result text is repaired or
+reordered by the test driver. Passing these two synthetic cases would establish
+only that bounded behavior, not general multilingual or complex-layout quality.
+
 When the app advertises native document import, the same harness imports the
 hash-pinned two-page PDF through actual raw IPC and native rasterization. It
 checks physical dimensions, UTF-8 metadata, source/archive identity, real OCR

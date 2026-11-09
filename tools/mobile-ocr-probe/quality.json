@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "scope": "Self-authored synthetic German and English native app fixtures; not a corpus or physical-camera qualification.",
+  "models": [
+    {
+      "name": "tesseract-deu",
+      "filename": "tesseract-deu-q8_0.gguf",
+      "url": "https://huggingface.co/cstr/tesseract-lstm-GGUF/resolve/main/tesseract-deu-q8_0.gguf",
+      "sha256": "7d41b26510033db7118ecc4f5b3b0b9d7fa91a5467695d552086a6b6a98b5a23",
+      "bytes": 513952,
+      "license": "Apache-2.0"
+    }
+  ],
+  "cases": [
+    {
+      "id": "german-accents",
+      "filename": "quality-german-accents.png",
+      "language": "deu",
+      "width": 1600,
+      "height": 1000,
+      "font_size": 64,
+      "max_unicode_cer": 0.25,
+      "required_tokens": ["Prüfung", "Größe", "Straße", "München"],
+      "layout_engine": null,
+      "lines": [
+        {"text": "Prüfung der Geräte", "x": 80, "y": 80},
+        {"text": "Größe und Qualität", "x": 80, "y": 240},
+        {"text": "Straße 17, München", "x": 80, "y": 400},
+        {"text": "Überweisung: 125,50 EUR", "x": 80, "y": 560},
+        {"text": "Rückfragen für Büro Süd", "x": 80, "y": 720}
+      ]
+    },
+    {
+      "id": "english-two-columns",
+      "filename": "quality-english-two-columns.png",
+      "language": "eng",
+      "width": 1800,
+      "height": 1000,
+      "font_size": 50,
+      "max_unicode_cer": 0.25,
+      "required_tokens": ["ALPHA", "OMEGA"],
+      "layout_engine": "cc",
+      "columns": {"body_top": 200, "gutter_left": 810, "gutter_right": 990, "minimum_regions_each": 3},
+      "lines": [
+        {"text": "TECHNICAL INSPECTION RECORD", "x": 300, "y": 60, "font_size": 72},
+        {"text": "ALPHA REPORT", "x": 80, "y": 250},
+        {"text": "Inspection complete.", "x": 80, "y": 400},
+        {"text": "Three valves checked.", "x": 80, "y": 550},
+        {"text": "Total 125.00 EUR", "x": 80, "y": 700},
+        {"text": "OMEGA NOTES", "x": 1040, "y": 250},
+        {"text": "Second floor ready.", "x": 1040, "y": 400},
+        {"text": "Four seals replaced.", "x": 1040, "y": 550},
+        {"text": "Next visit 2026-12-01", "x": 1040, "y": 700}
+      ]
+    }
+  ]
+}

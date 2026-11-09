@@ -37,6 +37,7 @@ import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { probeOptions, processMemory, summarizeMemory, textErrorRate } from './mobile_ocr_probe_utils.mjs';
+import { assessQualityFixture } from './mobile_ocr_quality.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
 const PLAYWRIGHT_VERSION = '1.62.1';
@@ -88,7 +89,7 @@ function validateAsset(asset, appData) {
   return asset;
 }
 
-function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00') {
+function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00', language = 'eng') {
   validateAsset(result, appData);
   assert(Array.isArray(result.regions) && result.regions.length > 0, 'Real OCR returned no regions.');
   for (const region of result.regions) {
@@ -104,7 +105,7 @@ function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocu
   const config = result.diagnostics?.requested_config;
   assert(config && config.router === false && config.stages?.length === 1, 'The saved explicit engine settings did not reach native recognition.');
   assert.equal(config.stages[0].engine, 'tesseract');
-  assert.equal(config.stages[0].rec_model, 'tesseract-eng');
+  assert.equal(config.stages[0].rec_model, 'tesseract-' + language);
   assert.equal(config.stages[0].cleanup.enabled, false);
   return text;
 }
@@ -228,6 +229,27 @@ async function main() {
     assert(hash, 'Device did not return a SHA-256 digest.');
     return hash.toLowerCase();
   }
+  async function verifyInstalledModel(model) {
+    const directory = appData + '/ocr-models/' + digest(model.name);
+    const manifestPath = directory + '/current.json';
+    const manifest = JSON.parse((await privateBytes(manifestPath, 128 * 1024)).toString('utf8'));
+    assert.equal(manifest.schema_version, 1);
+    assert.equal(manifest.model_name, model.name);
+    assert(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(manifest.version));
+    assert.deepEqual(manifest.files, [{ filename: model.filename, url: model.url, sha256: model.sha256, primary: true }],
+      'Installed registry artifacts differ from the immutable native test lock.');
+    const artifact = directory + '/' + manifest.version + '/' + model.filename;
+    assert.equal(await privateDigest(artifact), model.sha256);
+    const verified = { name: model.name, manifest_path: manifestPath, version: manifest.version,
+      filename: model.filename, sha256: model.sha256 };
+    if (model.bytes != null) {
+      const size = (await runAs(['stat', '-c', '%s', artifact])).stdout.trim();
+      assert(/^\d+$/.test(size));
+      assert.equal(Number(size), model.bytes, 'Installed language model length differs from its pin.');
+      verified.bytes = Number(size);
+    }
+    return verified;
+  }
   async function step(name, work, timeout = 60_000) {
     const entry = { name, started_at: stamp(), status: 'running' };
     receipt.steps.push(entry);
@@ -317,7 +339,30 @@ async function main() {
       assert.equal(inputs.fixture.width, 1400);
       assert.equal(inputs.fixture.height, 480);
       assert.equal(inputs.fixture.text, 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00');
-      for (const model of inputs.models) {
+      const qualitySpecBytes = await fs.readFile(new URL('../tools/mobile-ocr-probe/quality.json', import.meta.url));
+      const qualitySpec = JSON.parse(qualitySpecBytes);
+      assert.equal(inputs.quality_fixtures?.spec_sha256, digest(qualitySpecBytes), 'Prepared quality inputs differ from this exact source.');
+      assert.equal(inputs.quality_fixtures.font_sha256, inputs.fixture.font_sha256);
+      assert.deepEqual(inputs.quality_fixtures.models, qualitySpec.models);
+      assert.deepEqual(qualitySpec.models.map(model => model.name), ['tesseract-deu']);
+      assert.equal(inputs.quality_fixtures.cases.length, qualitySpec.cases.length);
+      const quality = [];
+      for (let index = 0; index < qualitySpec.cases.length; index++) {
+        const { text, png_sha256, bytes: pngSize, ...actualSpec } = inputs.quality_fixtures.cases[index];
+        const fixture = qualitySpec.cases[index];
+        assert.deepEqual(actualSpec, fixture);
+        assert.equal(text, fixture.lines.map(line => line.text).join('\n'));
+        assert(/^quality-[a-z-]+\.png$/.test(fixture.filename) && hex(png_sha256, 64));
+        const pixels = await fs.readFile(path.join(opt.inputs, fixture.filename));
+        assert(pixels.length > 32 && pixels.length <= 2 * 1024 * 1024);
+        assert.equal(pixels.length, pngSize);
+        assert.equal(digest(pixels), png_sha256);
+        assert.equal(pixels.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+        assert.equal(pixels.readUInt32BE(16), fixture.width);
+        assert.equal(pixels.readUInt32BE(20), fixture.height);
+        quality.push({ fixture, bytes: pixels, sha256: png_sha256 });
+      }
+      for (const model of [...inputs.models, ...qualitySpec.models]) {
         assert(hex(model.sha256, 64) && /^[a-z0-9-]+$/.test(model.name));
         assert(/^[A-Za-z0-9_-]+\.gguf$/.test(model.filename));
         assert(model.url.startsWith('https://'));
@@ -378,7 +423,7 @@ async function main() {
         await fs.writeFile(path.join(output, 'native-build-receipt.json'), runtime);
         receipt.source.native_build_receipt_sha256 = digest(runtime);
       }
-      return { bytes, inputs };
+      return { bytes, inputs, quality };
     }, 120_000);
 
     await step('attach to the running application WebView through its own debug socket', async () => {
@@ -447,7 +492,7 @@ async function main() {
       const projects = await invoke('ocr_workspace_list');
       assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
-      for (const model of prepared.inputs.models) {
+      for (const model of [...prepared.inputs.models, ...prepared.inputs.quality_fixtures.models]) {
         const entry = registry.find(item => item.name === model.name);
         assert(entry && entry.filename === model.filename && entry.cached === false, 'Expected an uninstalled baseline model: ' + model.name);
       }
@@ -467,17 +512,7 @@ async function main() {
     await step('independently hash every installed baseline artifact in private app storage', async () => {
       const installed = [];
       for (const model of prepared.inputs.models) {
-        const directory = appData + '/ocr-models/' + digest(model.name);
-        const manifestPath = directory + '/current.json';
-        const manifest = JSON.parse((await privateBytes(manifestPath, 128 * 1024)).toString('utf8'));
-        assert.equal(manifest.schema_version, 1);
-        assert.equal(manifest.model_name, model.name);
-        assert(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(manifest.version));
-        assert.deepEqual(manifest.files, [{ filename: model.filename, url: model.url, sha256: model.sha256, primary: true }],
-          'Baseline registry artifacts differ from the immutable test lock.');
-        const artifact = directory + '/' + manifest.version + '/' + model.filename;
-        assert.equal(await privateDigest(artifact), model.sha256);
-        installed.push({ name: model.name, manifest_path: manifestPath, version: manifest.version, filename: model.filename, sha256: model.sha256 });
+        installed.push(await verifyInstalledModel(model));
       }
       const registry = await invoke('embedder_registry_list', {}, 60_000);
       for (const model of prepared.inputs.models) assert.equal(registry.find(item => item.name === model.name)?.cached, true);
@@ -699,6 +734,83 @@ async function main() {
       }, 60_000);
       receipt.native_documents.status = 'passed';
     }
+
+    receipt.native_quality = { status: 'running', cases: [],
+      spec_sha256: prepared.inputs.quality_fixtures.spec_sha256,
+      qualification: 'Two self-authored German/English rasters through actual app installation, recognition, geometry ordering and durable saves. Uses classical connected-components layout, with no extra layout weights. This is not diverse corpus accuracy or physical-camera qualification.' };
+    await step('install and independently verify the small German recognizer through the actual app', async () => {
+      const requestId = randomUUID();
+      const installed = await invoke('ocr_workspace_install_mobile_models', { language: 'deu', requestId }, 8 * 60_000);
+      assert.deepEqual(installed, ['dbnet-det', 'tesseract-deu']);
+      for (const model of prepared.inputs.models) {
+        const checked = await verifyInstalledModel(model);
+        assert.deepEqual(checked, receipt.verified_models.find(item => item.name === model.name),
+          'Installing another language changed an existing verified model generation.');
+      }
+      const languageModel = prepared.inputs.quality_fixtures.models[0];
+      const verified = await verifyInstalledModel(languageModel);
+      receipt.verified_models.push(verified);
+      receipt.native_quality.installer = { command: 'ocr_workspace_install_mobile_models', request_id: requestId,
+        language: 'deu', installed, independently_verified_model: verified };
+    }, 8 * 60_000 + 5000);
+    for (const input of prepared.quality) {
+      const fixture = input.fixture;
+      await step('recognize and persist actual native quality case ' + fixture.id, async () => {
+        await fs.writeFile(path.join(output, fixture.filename), input.bytes);
+        const importedCase = await importBytes('ocr_workspace_import_image', input.bytes,
+          { name: fixture.filename, requestId: randomUUID() }, 60_000);
+        assert.equal(importedCase.pages.length, 1);
+        const asset = validateAsset(importedCase.pages[0], appData);
+        assert.equal(asset.width, fixture.width);
+        assert.equal(asset.height, fixture.height);
+        assert.equal(await privateDigest(archivedPath(importedCase)), input.sha256);
+        const settings = { engine: 'tesseract', language: fixture.language,
+          config: { ...project.recognitionSettings.config, layout: fixture.layout_engine != null,
+            layout_engine: fixture.layout_engine ?? 'cc' } };
+        const result = await measuredRecognition(fixture.id, () => invoke('ocr_workspace_recognize', {
+          pagePath: asset.image_path, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
+          pageWidthPoints: asset.page_width_points, pageHeightPoints: asset.page_height_points,
+        }, 180_000));
+        const text = validateRecognition(result, appData, fixture.lines.map(line => line.text).join('\n'), fixture.language);
+        const requested = result.diagnostics.requested_config;
+        assert.equal(requested.layout, fixture.layout_engine != null);
+        assert.equal(requested.layout_engine, settings.config.layout_engine);
+        if (fixture.columns) {
+          assert(Array.isArray(result.diagnostics.layout) && result.diagnostics.layout.length > 0,
+            'Actual connected-components layout returned no evidence.');
+          const order = result.diagnostics.layout_reading_order;
+          assert.equal(order?.strategy, 'layout_blocks_and_column_gutters');
+          assert.deepEqual([...order.indices].sort((a, b) => a - b), result.regions.map((_, index) => index),
+            'Native reading-order diagnostics are not a complete region permutation.');
+        }
+        const observation = assessQualityFixture(result, fixture);
+        const documentId = 'document-' + randomUUID(), pageId = 'page-' + randomUUID();
+        saved.project.documents.push({ id: documentId, sourceUri: importedCase.source_uri,
+          ...(importedCase.archive_uri ? { archiveUri: importedCase.archive_uri } : {}), name: fixture.filename });
+        saved.project.pages.push({ id: pageId, documentId, sourcePage: 1, name: fixture.id,
+          imagePath: result.image_path, originalImagePath: asset.image_path, width: result.width, height: result.height,
+          widthPoints: result.page_width_points ?? asset.width * 72 / 300,
+          heightPoints: result.page_height_points ?? asset.height * 72 / 300,
+          status: 'recognized', regions: result.regions.map(projectRegion), excluded: false, approved: false,
+          error: null, elapsedMs: result.elapsed_ms, profileId: 'screenshot', contentRevision: randomUUID(),
+          provenance: { syntheticNativeSmoke: true, nativeQualityCase: fixture.id, recognitionSettings: settings,
+            diagnostics: result.diagnostics, warnings: result.warnings } });
+        saved.project.updatedAt = stamp();
+        const committed = await invoke('ocr_workspace_save', { project: saved.project, expectedRevision: saved.revision });
+        assert.equal(committed.revision, saved.revision + 1);
+        saved = await invoke('ocr_workspace_load', { projectId: project.id });
+        assert.equal(saved.revision, committed.revision);
+        assert.equal(saved.project.pages.at(-1).id, pageId);
+        assert.equal(saved.project.pages.at(-1).regions.map(region => region.text).join('\n'), text);
+        assert.deepEqual(saved.project.pages.at(-1).provenance.recognitionSettings, settings);
+        assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid, 'Application restarted during native quality recognition.');
+        receipt.native_quality.cases.push({ id: fixture.id, status: 'passed', language: fixture.language,
+          image_sha256: input.sha256, layout_engine: fixture.layout_engine, page_id: pageId,
+          saved_revision: saved.revision, elapsed_ms: result.elapsed_ms, warnings: result.warnings, ...observation });
+      }, 280_000);
+    }
+    assert.equal(receipt.native_quality.cases.length, prepared.quality.length);
+    receipt.native_quality.status = 'passed';
 
     const repeatStartPages = saved.project.pages.length;
     receipt.repeated_inference = { requested_pages: opt['repeat-pages'], completed_pages: 0,
