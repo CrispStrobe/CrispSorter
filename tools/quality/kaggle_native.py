@@ -57,7 +57,7 @@ try:
     run(['sh', str(rustup), '-y', '--profile', 'minimal', '--default-toolchain', '1.98.1'], env=env)
     env['PATH'] = str(root / 'cargo/bin') + ':' + env['PATH']
     report['rustc'] = subprocess.check_output(['rustc', '--version'], env=env, text=True).strip()
-    for name, revision in [('CrispSorter', APP_SOURCE), ('CrispEmbed', '78493a31fc3043f3af4ab6fd2f197a32da6f07f0'),
+    for name, revision in [('CrispSorter', APP_SOURCE), ('CrispEmbed', 'd28ca2ea43a95934d673d1a54177fdf721614ade'),
                            ('CrispASR', 'v0.8.32'), ('crisp-docx', 'ddf7830d8d92e6b59b10874d144a59f163a256e1')]:
         destination = root / name
         run(['git', 'clone', '--filter=blob:none', '--no-checkout', f'https://github.com/CrispStrobe/{name}.git', str(destination)], env=env)
@@ -76,7 +76,7 @@ try:
     admitted = kh.safe_build_jobs(gpu=False)
     env['CARGO_BUILD_JOBS'] = str(min(2, os.cpu_count() or 2)) if admitted == '$(nproc)' else str(min(2, int(admitted)))
     archive = root / 'crispembed-linux-x86_64.tar.gz'
-    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.12/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
+    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.15/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
         shutil.copyfileobj(response, stream)
     run(['python', 'scripts/verify_crispembed_bundle.py', str(archive), '--asset', archive.name, '--source', str(root / 'CrispEmbed')], cwd=app, env=env)
     libs = root / 'CrispEmbed/build'
