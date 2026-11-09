@@ -15,8 +15,8 @@ CrispEmbed **0.17.16**. The interactive baseline is described in
 
 ## Status and delivery rules
 
-Every numbered work package below is **Planned** at this documentation
-checkpoint. Existing features are recorded separately as the baseline. A package
+The initial scope checkpoint was `12caadb`. The status table and delivery log
+below record subsequent increments. Existing features are recorded separately as the baseline. A package
 is complete only when its stated acceptance boundary has evidence; a prototype,
 an accepted engine ID, or a synthetic fixture does not close its qualification
 work.
@@ -101,7 +101,7 @@ units to implement and push one at a time.
 | OCR-15 | P2 | OCR-specific PDF compression | Existing compressor; output validation fixtures | Planned |
 | OCR-16 | P1 | Integration and durable correction provenance | Stable source/revision identifiers | Planned |
 | OCR-17 | P1 | Accessible review interactions | Baseline and each new UI increment | Planned |
-| OCR-18 | P0 | Reproducible quality and release qualification | Starts now; accompanies all other packages | Planned |
+| OCR-18 | P0 | Reproducible quality and release qualification | Starts now; accompanies all other packages | 18a implemented; other increments planned |
 
 Default sequence: commit this scope first; establish the OCR-18a evidence manifest;
 then implement OCR-01a, OCR-02a/b, and OCR-03a/b as separate reviewable increments.
@@ -110,6 +110,13 @@ specialized standards or hardware claims. Start an upstream or device dependency
 early, but do not mark it complete while implementing an independent software
 slice. OCR-17 checks accompany each UI change, rather than being deferred until
 the end.
+
+## Delivery log
+
+| Checkpoint | Delivered | Evidence and remaining boundary |
+| --- | --- | --- |
+| `12caadb` | Scoped OCR-01 through OCR-18; corrected capability and archival-output claims | Documentation audit; no new product capability claimed |
+| OCR-18a receipt contract (this checkpoint) | Versioned qualification receipt schema, recording guide, and a dated same-run Tesseract TSV/TXT capture | JSON Schema validation and artifact hashes checked. External Tesseract 5.5.0 produced five aligned words. Production Rust adapter, full app, real-scan corpus, devices, and output standards remain separate gates |
 
 ## OCR-01: Native word evidence and honest capabilities
 
@@ -616,7 +623,13 @@ accessibility remains OCR-14, separate from application accessibility.
 
 ## OCR-18: Reproducible quality and release qualification
 
-**Status: Planned.** Existing unit/browser checks and model evaluations already
+**Status: 18a implemented; 18b–d planned.** The
+[receipt schema](../tests/quality/ocr-workspace-receipt-schema.json) and
+[recording guide](../tests/quality/ocr-workspace-qualification.md) retain the
+existing frozen real-scan panel and require boundary-specific results. The first
+[external Tesseract capture](../tests/quality/results/2026-11-09/system-tesseract-word-smoke/receipt.json)
+is explicitly a synthetic-input executable smoke, not corpus or application
+qualification. Existing unit/browser checks and model evaluations already
 provide useful evidence. Extend
 [`tests/quality/`](../tests/quality/) and
 [library model evaluation](library-model-evaluation.md) rather than treating the
