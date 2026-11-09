@@ -246,11 +246,17 @@ async function documentCapabilities(): Promise<WorkspaceCapabilities> {
 }
 
 function importAborted(): DOMException { return new DOMException("Document import cancelled.", "AbortError"); }
+function importFailure(error: unknown): unknown {
+  const detail = error instanceof Error ? error.message : String(error);
+  // ImportJob::check returns this exact marker. Provider errors and filenames
+  // may contain the same text and must keep their actionable original cause.
+  return detail === "OCR_IMPORT_CANCELLED" ? importAborted() : error;
+}
 
 /** Register first so fast native imports cannot outrun progress/cancellation.
  * A cancelled worker is awaited: staging must not be removed while it writes. */
 async function trackedImport(options: ImportOptions | undefined, run: (requestId?: string) => Promise<ImportedDocument>): Promise<ImportedDocument> {
-  if (!options) return run();
+  if (!options) return run().catch(error => { throw importFailure(error); });
   if (options.signal?.aborted) throw importAborted();
   const requestId = crypto.randomUUID();
   let active = true;
@@ -269,8 +275,8 @@ async function trackedImport(options: ImportOptions | undefined, run: (requestId
     if (options.signal?.aborted) throw importAborted();
     return result;
   } catch (error) {
-    if (options.signal?.aborted || String(error).includes("OCR_IMPORT_CANCELLED")) throw importAborted();
-    throw error;
+    if (options.signal?.aborted) throw importAborted();
+    throw importFailure(error);
   } finally {
     active = false;
     options.signal?.removeEventListener("abort", cancel);

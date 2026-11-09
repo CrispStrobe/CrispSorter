@@ -342,6 +342,36 @@ describe('OCR workspace platform transport', () => {
         await expect(workspaceClient.importDocument('/scan/locked.pdf', { onProgress: vi.fn() })).rejects.toBe(failure);
     });
 
+    it.each([true, false])('keeps filename/provider errors distinct from import cancellation (tracked=%s)', async tracked => {
+        const unlisten = vi.fn();
+        listen.mockResolvedValue(unlisten);
+        loadCapabilities.mockResolvedValue({ mobile: false });
+        for (const failure of [
+            'Cannot read /scan/OCR_IMPORT_CANCELLED.pdf: permission denied',
+            new Error('Invalid image OCR_IMPORT_CANCELLED_recovery.jpg'),
+            new Error('Provider rejected request: OCR_IMPORT_CANCELLED'),
+        ]) {
+            invoke.mockRejectedValueOnce(failure);
+            await expect(workspaceClient.importDocument('/scan/OCR_IMPORT_CANCELLED.pdf',
+                tracked ? { onProgress: vi.fn() } : undefined)).rejects.toBe(failure);
+        }
+        expect(unlisten).toHaveBeenCalledTimes(tracked ? 3 : 0);
+        expect(invoke.mock.calls.every(([command]) => command !== 'ocr_workspace_cancel_import')).toBe(true);
+    });
+
+    it.each([true, false])('recognizes exact native import cancellation without hiding other failures (tracked=%s)', async tracked => {
+        const unlisten = vi.fn();
+        listen.mockResolvedValue(unlisten);
+        for (const failure of ['OCR_IMPORT_CANCELLED', new Error('OCR_IMPORT_CANCELLED')]) {
+            invoke.mockRejectedValueOnce(failure);
+            await expect(workspaceClient.importImage!('Photo.png', new Uint8Array([1]),
+                tracked ? { onProgress: vi.fn() } : undefined)).rejects.toMatchObject({
+                    name: 'AbortError', message: 'Document import cancelled.',
+                });
+        }
+        expect(unlisten).toHaveBeenCalledTimes(tracked ? 2 : 0);
+    });
+
     it('subscribes before export, reports correlated byte progress, and ignores late or invalid events', async () => {
         const registration = deferred<() => void>(), nativeStarted = deferred<void>(), native = deferred<ExportResult>();
         const unlisten = vi.fn(), onProgress = vi.fn();
