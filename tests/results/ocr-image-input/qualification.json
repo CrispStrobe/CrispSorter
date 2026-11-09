@@ -83,7 +83,7 @@
   ],
   "executed_scope": [
     "The contract crate includes the exact production image_input.rs module, verified by source hash.",
-    "All registry versions and checksums in the focused crate were checked against src-tauri/Cargo.lock before execution.",
+    "All registry versions and checksums in the focused crate were checked against the repository Cargo.lock before execution.",
     "Three real damaged JPEG inputs were accepted by the pinned raw decoder and rejected by the production source guard.",
     "The complete fixture and controls containing legal trailing bytes or metadata with an end-marker byte sequence remained accepted and unchanged.",
     "Marker grammar controls cover entropy stuffing, restart markers, DNL, multiple scans, invalid lengths, and truncated prefixes."

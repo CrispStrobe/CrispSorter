@@ -29,6 +29,8 @@ use atomic_output::{atomic_write, atomic_write_with, sync_directory};
 #[path = "ocr_export_control.rs"]
 mod export_control;
 use export_control::{ControlledWriter, ExportControl, ExportJob};
+#[path = "ocr_asset_store.rs"]
+mod asset_store;
 
 const PROJECT_VERSION: u64 = 1;
 const MAX_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
@@ -181,8 +183,7 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PAGE_PIXELS {
         return Err("Transformed page exceeds the 100 megapixel limit.".into());
     }
-    let assets = root.join("assets");
-    fs::create_dir_all(&assets).map_err(|e| format!("Create page cache: {e}"))?;
+    let assets = asset_store::directory(root).map_err(|e| format!("Open private page cache: {e}"))?;
     let mut staging = tempfile::NamedTempFile::new_in(&assets)
         .map_err(|e| format!("Create page snapshot: {e}"))?;
     // A recognizer that asks for RGB drops alpha, whereas the preview browser
@@ -205,7 +206,10 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
     let path = assets.join(format!("{:x}.png", hash.finalize()));
     match staging.persist_noclobber(&path) {
         Ok(_) => sync_directory(&assets)?,
-        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(mut e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            asset_store::verify_existing(&path, e.file.as_file_mut())
+                .map_err(|error| format!("Verify existing page snapshot: {error} The existing asset was retained; restore the page cache before retrying."))?;
+        },
         Err(e) => return Err(format!("Save page snapshot: {}", e.error)),
     }
     Ok(PageAsset { image_path: path.to_string_lossy().into_owned(), width, height,
@@ -1490,6 +1494,67 @@ mod tests {
             assert_eq!(fs::read(imported.archive_uri.unwrap()).unwrap(), bytes);
             assert_eq!(fs::read(&source).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn camera_reimport_rejects_damaged_existing_pixels_and_preserves_originals() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = pinned_oriented_jpeg();
+        let source = root.path().join("phone.jpg");
+        fs::write(&source, &bytes).unwrap();
+        let first = import_bytes(root.path(), "phone.jpg", &bytes, true,
+            Some("content://provider/Photo%3ACase.jpg")).unwrap();
+        let asset = Path::new(&first.pages[0].image_path);
+        let complete = fs::read(asset).unwrap();
+        let mut changed = complete.clone();
+        changed[complete.len() / 2] ^= 1;
+        for damaged in [&complete[..complete.len() - 1], changed.as_slice()] {
+            fs::write(asset, damaged).unwrap();
+            let error = import_document(root.path(), &source).unwrap_err();
+            assert!(error.contains("Verify existing page snapshot"), "{error}");
+            let error = import_bytes(root.path(), "phone.jpg", &bytes, true,
+                Some("content://provider/Photo%3ACase.jpg")).unwrap_err();
+            assert!(error.contains("Verify existing page snapshot"), "{error}");
+            assert_eq!(fs::read(asset).unwrap(), damaged);
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_eq!(fs::read(first.archive_uri.as_ref().unwrap()).unwrap(), bytes);
+            assert_eq!(fs::read_dir(root.path().join("assets")).unwrap().count(), 1);
+        }
+        fs::write(asset, &complete).unwrap();
+        let restored = import_bytes(root.path(), "phone.jpg", &bytes, false, None).unwrap();
+        assert_eq!(restored.pages[0].image_path, first.pages[0].image_path);
+        assert_eq!((restored.pages[0].width, restored.pages[0].height), (80, 120));
+        assert_eq!(fs::read(asset).unwrap(), complete);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn camera_import_cannot_reuse_an_asset_symlink_or_write_through_a_cache_alias() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let bytes = pinned_oriented_jpeg();
+        let first = import_bytes(root.path(), "phone.jpg", &bytes, false, None).unwrap();
+        let asset = Path::new(&first.pages[0].image_path);
+        let complete = fs::read(asset).unwrap();
+        let external = outside.path().join("unchanged.png");
+        fs::write(&external, &complete).unwrap();
+        fs::remove_file(asset).unwrap();
+        symlink(&external, asset).unwrap();
+        let error = import_bytes(root.path(), "phone.jpg", &bytes, false, None).unwrap_err();
+        assert!(error.contains("Verify existing page snapshot"), "{error}");
+        assert!(fs::symlink_metadata(asset).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(first.archive_uri.unwrap()).unwrap(), bytes);
+
+        let aliased_root = tempfile::tempdir().unwrap();
+        symlink(outside.path(), aliased_root.path().join("assets")).unwrap();
+        let error = import_bytes(aliased_root.path(), "phone.jpg", &bytes, false, None).unwrap_err();
+        assert!(error.contains("page directory must not be a symbolic link"), "{error}");
+        assert_eq!(fs::read(&external).unwrap(), complete);
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+        let archives: Vec<_> = fs::read_dir(aliased_root.path().join("sources")).unwrap().collect();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(fs::read(archives[0].as_ref().unwrap().path()).unwrap(), bytes);
     }
 
     #[test]

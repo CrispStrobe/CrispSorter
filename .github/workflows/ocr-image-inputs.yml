@@ -3,12 +3,13 @@ name: OCR image source contracts
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-source-validation']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-source-validation', 'feat/ocr-mobile-asset-integrity']
     paths:
       - src-tauri/src/extractors/image_input.rs
       - src-tauri/src/extractors/page_source.rs
       - src-tauri/src/extractors/mod.rs
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_asset_store.rs
       - tests/image-input-contract/**
       - tests/fixtures/mobile-documents/**
       - Cargo.lock
@@ -19,6 +20,7 @@ on:
       - src-tauri/src/extractors/page_source.rs
       - src-tauri/src/extractors/mod.rs
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_asset_store.rs
       - tests/image-input-contract/**
       - tests/fixtures/mobile-documents/**
       - Cargo.lock
@@ -64,7 +66,7 @@ jobs:
           set -euo pipefail
           mkdir -p test-results
           cargo test --locked --manifest-path tests/image-input-contract/Cargo.toml -- --test-threads=1 --nocapture 2>&1 | tee test-results/image-inputs.log
-          sha256sum src-tauri/src/extractors/image_input.rs tests/image-input-contract/Cargo.lock tests/fixtures/mobile-documents/oriented.jpg.b64 > test-results/image-input-sources.sha256
+          sha256sum src-tauri/src/extractors/image_input.rs src-tauri/src/ocr_asset_store.rs tests/image-input-contract/Cargo.lock tests/fixtures/mobile-documents/oriented.jpg.b64 > test-results/image-input-sources.sha256
           python3 - <<'PY'
           import json, pathlib
           log = pathlib.Path('test-results/image-inputs.log').read_text()
