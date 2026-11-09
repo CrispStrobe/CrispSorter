@@ -14,8 +14,10 @@ semantics with per-passage formatting have implementation checkpoints. A separat
 whole-page text draft editor adds cross-passage selection and previewed changes,
 with durable unapplied drafts and guarded Undo/Redo. The roadmap records which
 unit, browser, and native checks actually passed; the recovered page-draft
-checkpoint still needs CI verification. Multiple extraction objects and
-structured exports follow next. Hardware support, trained
+checkpoint passed local unit/type checks and still awaits browser CI. Independent
+table/formula/field objects now retain original output, spans, source captures,
+and historical results across edits. Table structural repair and continuation
+joining are next, followed by structured exports. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

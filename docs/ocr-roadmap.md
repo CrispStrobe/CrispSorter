@@ -87,8 +87,8 @@ units to implement and push one at a time.
 | OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | 01a–c implemented for System Tesseract; focused native, paired application, and browser CI passed |
 | OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | 02a–c implemented; 02d feasibility documented; training blocked |
 | OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | 03a–c implemented; 30 browser interactions and focused/paired native export checks passed |
-| OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | 04a–c bounded workflows implemented; structure browser/focused native CI passed; page-draft checkpoint verification pending |
-| OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | Planned |
+| OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | 04a–c bounded workflows implemented; page-draft unit/type checks passed; 34-flow browser qualification queued |
+| OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | 05a implemented; structural table repair and continuation joining next |
 | OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | Planned |
 | OCR-07 | P1 | Reusable form and zone templates | Existing templates backend; OCR-03 geometry rules | Planned |
 | OCR-08 | P1 | Full comparison and review navigation | Existing diff/search; revision identity | Planned |
@@ -121,7 +121,8 @@ the end.
 | `6330227` — OCR-02a–c and 02d feasibility | Project and personal vocabulary, protected terms, occurrence ignores, labeled suggestions, literal rules, selective stale-safe correction previews, import/export, and serialized retryable preference saves | 253 unit tests passed; Svelte check had 0 errors and the same 54 unrelated warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730) passed the 28-interaction suite, including native-evidence UI and proofreading. No recognizer training or automatic native lexicon change is claimed |
 | `f3984fd` — OCR-03a–c | Grapheme-safe passage split, explicit source coverage, adjacent merge with exact separators, selectable repair proposals, inspectable immutable source components, and preservation through later re-OCR | 280 full unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807) passed all 30 interactions and 175 OCR unit tests. Focused Linux/Windows native checks passed, including Linux live recognition. [Paired native export checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791842) passed, including all 29 workspace cases |
 | `46a3e04` — OCR-04 structure | Versioned blocks and contiguous sections, explicit two-column order, per-passage roles/emphasis/alignment/breaks, figure descriptions, caption and footnote links, source-linked JSON, and bounded structure history | 306 full unit tests passed locally; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197) passed all 32 interactions and 201 OCR unit tests. [Focused Linux/Windows checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619973) passed, including the production semantic validator on both platforms. [Paired application checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619960) remain queued. Structured file writers remain OCR-06 |
-| OCR-04 page-text draft (this checkpoint) | Whole-page plain-text selection/editing, durable unapplied drafts, exact affected-passage previews, explicit combined source coverage, stale/tampered preview rejection, and draft-aware project history | Recovered from recorded source patches after the execution environment became unavailable. Earlier focused checks passed before the interruption; this recovered checkpoint has not yet executed. The existing CI job now runs the typecheck, full unit suite, and 34 browser scenarios. New key-order and failed/pending-page regressions require that CI result before qualification |
+| `ed0480a` — OCR-04 page-text draft | Whole-page plain-text selection/editing, durable unapplied drafts, exact affected-passage previews, explicit combined source coverage, stale/tampered preview rejection, and draft-aware project history | Recovered source was pushed before restoring a fresh checkout. All 343 unit tests in 38 files passed, including native JSON key sorting and failed/pending-page repair; Svelte check had 0 errors and 54 existing warnings. The [34-flow browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961) remains queued. Local Chromium cannot start its required Unix socket in this environment; no local browser interaction result is claimed |
+| OCR-05a independent extraction objects (this checkpoint) | Multiple editable tables, formulas and field sets; immutable original output/data; actual captured image/text; historical retention; table spans/headers; safe literal CSV; bounded formula preview; per-object export and project review/undo | All 379 unit tests in 41 files passed, including 36 new table/object/lifecycle cases. Svelte check has 0 errors and the same 54 existing warnings. Browser harness syntax and whitespace checks passed; its 35 interactions await CI. Native structured DOCX/XLSX consumption remains OCR-06; table structural operations and continuation joins remain 05b/05c |
 
 ## OCR-01: Native word evidence and honest capabilities
 
@@ -246,8 +247,9 @@ Semantic paragraph repair and page-image spread splitting remain separate tools.
 
 **Status: 04a–c bounded workflows implemented. The structure checkpoint passed
 32 browser interactions and focused Linux/Windows native validation. The
-recovered page-text draft checkpoint awaits CI verification; paired application
-checks for the structure checkpoint remain queued.**
+page-text draft checkpoint passed 343 unit tests and the typecheck. Its 34-flow
+browser job and the paired application checks for the structure checkpoint remain
+queued.**
 [`structureData.ts`](../src/lib/ocr/structureData.ts) adds independently versioned
 logical blocks, sections, reading columns, styled ranges, and explicit links.
 [`structure.ts`](../src/lib/ocr/structure.ts) supplies semantic editing operations;
@@ -320,12 +322,37 @@ between editing flexibility and source layout that our export UI must explain.
 
 ## OCR-05: Multiple tables/formulas and structural repair
 
-**Status: Planned.** `tableFromHtml` in
-[`OcrWorkbench.svelte`](../src/lib/components/OcrWorkbench.svelte) keeps cell text
-but discards spans and geometry. [`ExtractionData`](../src/lib/ocr/extraction.ts)
-stores `tableRows: string[][]` and one table/formula source per page, so a second
-extraction of the same kind replaces the earlier one. CSV already protects
-against formula injection.
+**Status: 05a implemented; 05b structural repair and 05c continuation joining are
+next.** The versioned [extraction object model](../src/lib/ocr/extractionObjects.ts)
+retains multiple tables, formulas, and field sets independently. Each accepted
+result stores its exact original model output, original structured data, current
+corrections, stable identity, and captured source image/text. Actual region crops
+keep their source rectangle; no cell geometry is inferred from HTML or text.
+
+The extraction panel selects and edits each saved object, shows its captured
+source and original output, and exports selected CSV, LaTeX, or complete field
+object JSON. Image changes, passage edits, page splitting, and re-OCR keep earlier
+objects with an explicit historical-source status. Legacy records are retained
+unchanged; only records with recoverable source measurements are migrated, with
+diagnostics for the rest. Object changes reopen page approval and use project
+Undo/Redo. Distinct page-level structure/extraction issues can be navigated.
+
+[Table data](../src/lib/ocr/tableData.ts) preserves cell IDs, headers, row/column
+spans, and exact string values. The [inert HTML parser](../src/lib/ocr/tableHtml.ts)
+uses parse5, omits active subtrees/attributes, retains plain cell/link text, and
+never inserts source markup into the document. It rejects overlapping, incomplete,
+nested/multiple, or ambiguous grids, nonempty unmodeled captions, and excessive
+HTML depth/size. These errors preserve existing results. Raw output is retained
+for accepted objects. CSV places a merged cell's text at its anchor and leaves
+covered positions empty; formula-like strings remain literal.
+
+Formulas have an editable LaTeX source and a bounded, untrusted KaTeX preview.
+The rendered preview is not a mathematical-equivalence check. Corrected fields
+retain original model scores separately and do not acquire new confidence.
+The collection is bounded to 128 objects/16 MiB per page, with at most 128 source
+captures per object, 10,000 table-grid positions, and one million text units per
+data object. Current document JSON retains the collection; other document formats
+still use OCR text/source-image projections until OCR-06 implements their writers.
 
 **Increments**
 

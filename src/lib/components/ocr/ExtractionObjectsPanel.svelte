@@ -1,0 +1,201 @@
+<script lang="ts">
+  import type { OcrPage, OcrProject } from "$lib/ocr/model";
+  import {
+    getExtractionObjects, extractionObjectFreshness, updateExtractionObject,
+    editExtractionField, editExtractionCell, editExtractionFormula,
+    type ExtractionObject,
+  } from "$lib/ocr/extractionObjects";
+  import FormulaPreview from "./FormulaPreview.svelte";
+  import TableEditor from "./TableEditor.svelte";
+
+  let { project, page, kind, selectedId, disabled = false, imageUrl, onselect, onchange, onendedit, oncopy, onsave }: {
+    project: OcrProject;
+    page: OcrPage;
+    kind: ExtractionObject["kind"];
+    selectedId?: string;
+    disabled?: boolean;
+    imageUrl: (path: string) => string;
+    onselect: (id: string) => void;
+    onchange: (next: OcrProject, groupKey?: string) => void;
+    onendedit: () => void;
+    oncopy: (object: ExtractionObject) => void;
+    onsave: (object: ExtractionObject) => void;
+  } = $props();
+
+  let localError = $state("");
+  let sourceId = $state("");
+  let originalOpen = $state(false);
+  let sourceTextOpen = $state(false);
+  let legacyOpen = $state(false);
+  let sourceImageFailed = $state(false);
+  let lastObjectId = "";
+  let lastCaptureId = "";
+  const saved = $derived(getExtractionObjects(page));
+  const objects = $derived(saved.collection.objects.filter((object) => object.kind === kind));
+  const selected = $derived(objects.find((object) => object.id === selectedId) ?? objects[objects.length - 1]);
+  const freshness = $derived(selected ? extractionObjectFreshness(project, selected) : null);
+  const capture = $derived(selected?.captures.find((item) => item.id === sourceId) ?? selected?.captures[0]);
+  const sourcePage = $derived(capture ? project.pages.find((item) => item.id === capture.pageId) : undefined);
+  const sourceViewBox = $derived.by(() => {
+    if (!capture) return "0 0 1 1";
+    if (!capture.bounds) return "0 0 " + capture.width + " " + capture.height;
+    const x = Math.max(0, capture.bounds.x - 10);
+    const y = Math.max(0, capture.bounds.y - 10);
+    const right = Math.min(capture.width, capture.bounds.x + capture.bounds.w + 10);
+    const bottom = Math.min(capture.height, capture.bounds.y + capture.bounds.h + 10);
+    return x + " " + y + " " + Math.max(1, right - x) + " " + Math.max(1, bottom - y);
+  });
+
+  $effect(() => {
+    const id = selected?.id ?? "";
+    if (id !== lastObjectId) {
+      lastObjectId = id;
+      sourceId = "";
+      originalOpen = false;
+      sourceTextOpen = false;
+      localError = "";
+    }
+  });
+  $effect(() => {
+    const id = capture?.id ?? "";
+    if (id !== lastCaptureId) { lastCaptureId = id; sourceImageFailed = false; }
+  });
+
+  function mutate(action: () => OcrProject, groupKey?: string) {
+    if (disabled) return;
+    try { localError = ""; onchange(action(), groupKey); }
+    catch (failure) { localError = "This edit has not been saved: " + (failure instanceof Error ? failure.message : String(failure)); }
+  }
+  function outputText(value: unknown): string {
+    return typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "";
+  }
+  function fieldBudget(object: Extract<ExtractionObject, { kind: "fields" }>, fieldId: string): number {
+    const data = object.currentData;
+    const used = data.labels.reduce((sum, label) => sum + label.length, 0)
+      + data.fields.reduce((sum, field) => sum + field.label.length + (field.id === fieldId ? 0 : field.value.length), 0);
+    return Math.max(0, 1_000_000 - used);
+  }
+</script>
+
+<section class="extraction-objects" data-extraction-objects aria-label="Saved extraction objects">
+  <div class="object-heading"><h3>Saved {kind === "fields" ? "field sets" : kind === "table" ? "tables" : "formulas"}</h3><span>{objects.length}</span></div>
+  <p class="object-help">Each extraction is saved separately. Choose a result to inspect or correct it.</p>
+  {#if saved.diagnostics.length}<details class="extraction-notes">
+    <summary>Saved extraction notes ({saved.diagnostics.length})</summary>
+    <ul>{#each saved.diagnostics as diagnostic}<li>{diagnostic}</li>{/each}</ul>
+  </details>{/if}
+  {#if objects.length}<label class="object-field">Saved extraction<select aria-label="Saved extraction" value={selected?.id ?? ""} disabled={disabled}
+    onchange={(event) => { onendedit(); onselect(event.currentTarget.value); }}>
+    {#each objects as object (object.id)}<option value={object.id}>{object.name}{object.excluded ? " · excluded" : ""}</option>{/each}
+  </select></label>{:else}<p class="empty-objects">No saved {kind === "fields" ? "field sets" : kind === "table" ? "tables" : "formulas"} for this page yet.</p>{/if}
+
+  {#if selected}
+    {@const object = selected}
+    <div class="object-editor" data-extraction-object-id={object.id}>
+      <label class="object-field">Object name<input aria-label="Object name" value={object.name} maxlength="1000" disabled={disabled}
+        onchange={(event) => mutate(() => updateExtractionObject(project, page.id, object.id, { name: event.currentTarget.value }))} /></label>
+      <label class="exclude-choice"><input type="checkbox" aria-label="Exclude object" checked={object.excluded} disabled={disabled}
+        onchange={(event) => mutate(() => updateExtractionObject(project, page.id, object.id, { excluded: event.currentTarget.checked }))} /><span>Exclude object</span></label>
+      {#if object.excluded}<p class="object-help">Marked excluded. Its data remains in the project and can still be copied or saved explicitly.</p>{/if}
+      <div class="object-source-state" class:historical={!freshness?.current} data-extraction-source-state={freshness?.current ? "current" : "historical"}>
+        {freshness?.current ? "Current source" : "Historical source"}
+      </div>
+      {#if freshness && !freshness.current}<div class="source-warning">
+        <p>This result is retained from an earlier source. Compare its captured source before using the edited result.</p>
+        <ul>{#each freshness.reasons as reason}<li>{reason}</li>{/each}</ul>
+      </div>{/if}
+      {#if capture}
+        {#if object.captures.length > 1}<label class="object-field">Captured source<select aria-label="Captured source" value={capture.id} onchange={(event) => (sourceId = event.currentTarget.value)}>
+          {#each object.captures as item, index (item.id)}<option value={item.id}>Source {index + 1} · {item.regionId ? "region" : "page"}</option>{/each}
+        </select></label>{/if}
+        <figure class="source-preview">
+          <svg viewBox={sourceViewBox} role="img" aria-label="Captured extraction source">
+            <image href={imageUrl(capture.imagePath)} width={capture.width} height={capture.height} onerror={() => (sourceImageFailed = true)} />
+            {#if capture.bounds}<rect x={capture.bounds.x} y={capture.bounds.y} width={capture.bounds.w} height={capture.bounds.h} vector-effect="non-scaling-stroke"><title>Captured region area</title></rect>{/if}
+          </svg>
+          <figcaption>{sourcePage?.name ?? "Earlier page"} · {capture.regionId ? "Captured region" : "Captured page"} · {capture.method === "text" ? "Reviewed text input" : "Image input"}</figcaption>
+        </figure>
+        {#if sourceImageFailed}<p class="source-warning" role="status">The captured source image could not be loaded. The saved result and original output remain available below.</p>{/if}
+        {#if capture.method === "text"}<details class="source-text" bind:open={sourceTextOpen}><summary>Captured source text</summary>
+          {#if sourceTextOpen}<textarea readonly aria-label="Captured source text" value={capture.text ?? ""} rows="6" dir="auto"></textarea>{/if}
+        </details>{/if}
+      {:else}<p class="source-warning">This earlier record has no validated source snapshot. Its saved data is retained without assigning it current page coordinates.</p>{/if}
+
+      {#if object.kind === "fields"}
+        <div class="result-heading"><strong>{object.currentData.fields.length} extracted fields</strong><button type="button" onclick={() => oncopy(object)} disabled={disabled} title="Copy selected field set as JSON">JSON</button></div>
+        {#each object.currentData.fields as field (field.id)}
+          {@const original = object.originalData.fields.find((item) => item.id === field.id)}
+          {@const edited = !original || field.value !== original.value || field.label !== original.label}
+          <div class="extracted-field" data-extraction-field-id={field.id}>
+            <label>{field.label}<input value={field.value} maxlength={fieldBudget(object, field.id)} disabled={disabled} data-extraction-editor
+              oninput={(event) => mutate(() => editExtractionField(project, page.id, object.id, field.id, { value: event.currentTarget.value }), "extraction:" + page.id + ":" + object.id + ":field:" + field.id)}
+              onblur={onendedit} dir="auto" /></label>
+            <span title="Original model extraction score; manual corrections do not produce a new model score">{edited ? "Edited · " : ""}{typeof original?.score === "number" ? "Original score " + Math.round(original.score * 100) + "%" : "Unscored"}</span>
+          </div>
+        {/each}
+        <p class="object-help">Check each value against the captured source. Scores describe the original model result.</p>
+      {:else if object.kind === "table"}
+        <div class="result-heading"><strong>Editable table</strong><button type="button" onclick={() => oncopy(object)} disabled={disabled} title="Copy selected table as CSV">CSV</button></div>
+        <TableEditor rows={object.currentData.rows} columns={object.currentData.columns} cells={object.currentData.cells} {disabled}
+          onedit={(cellId, text) => mutate(() => editExtractionCell(project, page.id, object.id, cellId, text), "extraction:" + page.id + ":" + object.id + ":cell:" + cellId)} {onendedit} />
+      {:else}
+        <FormulaPreview latex={object.currentData.latex} />
+        <label class="object-field">LaTeX<textarea class="latex-editor" aria-label="LaTeX" value={object.currentData.latex} maxlength="1000000" disabled={disabled}
+          data-extraction-editor oninput={(event) => mutate(() => editExtractionFormula(project, page.id, object.id, event.currentTarget.value), "extraction:" + page.id + ":" + object.id + ":latex")}
+          onblur={onendedit} rows="8" spellcheck="false"></textarea></label>
+        <button type="button" onclick={() => oncopy(object)} disabled={disabled}>Copy LaTeX</button>
+      {/if}
+
+      <details class="original-output" bind:open={originalOpen}>
+        <summary>{object.originalOutputKind === "model" ? "Original model output" : "Original saved record"}</summary>
+        {#if originalOpen}
+          {#if object.originalOutputKind === "legacy-record"}<p class="object-help">This record preserves previously saved data. It does not recover an original model response that was not saved.</p>{/if}
+          <label class="object-field">Original extraction output<textarea readonly aria-label="Original extraction output" value={outputText(object.originalOutput)} rows="8" spellcheck="false"></textarea></label>
+          <label class="object-field">Original structured data<textarea readonly aria-label="Original structured data" value={outputText(object.originalData)} rows="6" spellcheck="false"></textarea></label>
+          <p class="object-help">Original output stays separate from your corrections. Markup is shown as text.</p>
+        {/if}
+      </details>
+      <button type="button" class="save-object" onclick={() => onsave(object)} disabled={disabled}>Save {object.kind === "fields" ? "fields as JSON" : object.kind === "table" ? "table as CSV" : "formula as LaTeX"}</button>
+    </div>
+  {/if}
+
+  {#if localError}<p class="edit-error" role="alert">{localError}</p>{/if}
+  {#if page.provenance.extraction !== undefined}<details class="legacy-record" bind:open={legacyOpen}><summary>Earlier extraction record</summary>
+    {#if legacyOpen}<p class="object-help">This is the unchanged earlier saved record. Any unverified source dimensions or raw output stay here for inspection.</p><textarea readonly aria-label="Earlier extraction record JSON" value={outputText(page.provenance.extraction)} rows="9" spellcheck="false"></textarea>{/if}
+  </details>{/if}
+</section>
+
+<style>
+  .extraction-objects { margin-top: 22px; padding-top: 15px; border-top: 1px solid #3c516f; }
+  .object-heading, .result-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  h3 { margin: 0; font-size: 13px; color: #c8dcf6; }
+  .object-heading > span { min-width: 22px; text-align: center; padding: 2px 5px; border-radius: 4px; background: #274362; color: #c6dffb; font-size: 11px; }
+  .object-help, .empty-objects { color: #9fb7d5; font-size: 11px; line-height: 1.7; margin: 9px 0 12px; overflow-wrap: anywhere; }
+  .object-field { display: flex; flex-direction: column; gap: 6px; margin: 13px 0; color: #bbd0ec; font-size: 11px; }
+  input:not([type="checkbox"]), select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px; border: 1px solid #435e7f; border-radius: 5px; background: #102036; color: #dceafa; font: inherit; font-size: 12px; }
+  textarea { line-height: 1.65; resize: vertical; }
+  textarea[readonly] { color: #bfd1e7; }
+  .latex-editor, .original-output textarea, .legacy-record textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .exclude-choice { display: flex; align-items: center; gap: 8px; color: #b7cce6; font-size: 11px; margin: 12px 0; }
+  .object-source-state { display: inline-block; margin: 3px 0 10px; padding: 4px 7px; border: 1px solid #3f796c; border-radius: 4px; background: #173d35; color: #b4e4d5; font-size: 10px; }
+  .object-source-state.historical { border-color: #9b7a48; background: #3c3120; color: #ead0a1; }
+  .source-warning, .edit-error { padding: 10px; border: 1px solid #84693f; border-radius: 5px; color: #efd6ac; background: #352e23; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+  .source-warning p { margin: 0; } .source-warning ul { margin: 6px 0 0; padding-left: 19px; }
+  .edit-error { border-color: #a26a7a; background: #432936; color: #ffd6df; }
+  .source-preview { margin: 10px 0 13px; }
+  .source-preview svg { display: block; width: 100%; height: 160px; background: #fff; border: 1px solid #506788; border-radius: 4px; }
+  .source-preview rect { fill: none; stroke: #2369bd; stroke-width: 2px; }
+  figcaption { color: #9eb5d2; font-size: 10px; line-height: 1.7; margin-top: 5px; overflow-wrap: anywhere; }
+  .result-heading { margin: 19px 0 12px; } .result-heading strong { color: #bfd4ef; font-size: 12px; }
+  .extracted-field { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+  .extracted-field label { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; color: #b6cce8; font-size: 11px; overflow-wrap: anywhere; }
+  .extracted-field > span { max-width: 95px; padding-top: 17px; color: #c8b082; font-size: 10px; line-height: 1.6; }
+  details { margin: 14px 0; padding: 10px; border: 1px solid #3d5574; border-radius: 5px; }
+  summary { cursor: pointer; color: #bed5f2; font-size: 11px; line-height: 1.6; }
+  .extraction-notes ul { padding-left: 18px; color: #dac69e; font-size: 11px; line-height: 1.7; }
+  .source-text textarea, .legacy-record textarea { margin-top: 10px; }
+  button { padding: 7px 10px; border: 1px solid #536f91; border-radius: 5px; background: #203c5e; color: #dcecff; font: inherit; font-size: 11px; cursor: pointer; }
+  .save-object { margin-top: 10px; width: 100%; }
+  button:disabled, input:disabled, textarea:disabled, select:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #a5d1ff; outline-offset: 2px; }
+</style>

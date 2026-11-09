@@ -63,6 +63,7 @@
   import StructurePanel from "./ocr/StructurePanel.svelte";
   import PreviousStructure from "./ocr/PreviousStructure.svelte";
   import PageTextDraftDialog from "./ocr/PageTextDraftDialog.svelte";
+  import ExtractionObjectsPanel from "./ocr/ExtractionObjectsPanel.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -93,7 +94,6 @@
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
-    type ExtractionField,
     type TransformOptions,
     type ExportRequest,
   } from "$lib/ocr/client";
@@ -106,13 +106,11 @@
     type ZoneReviewPreview,
   } from "$lib/ocr/zoneReview";
   import type { PixelRectangle } from "$lib/ocr/zones";
+  import type { ExtractionSource } from "$lib/ocr/extraction";
   import {
-    captureExtractionSource,
-    extractionSourceIsCurrent,
-    readExtraction,
-    tableToCsv,
-    type ExtractionSource,
-  } from "$lib/ocr/extraction";
+    captureExtractionRequest, appendExtractionObject, getExtractionObjects,
+    extractionObjectFreshness, serializeExtractionObject, type ExtractionObject,
+  } from "$lib/ocr/extractionObjects";
   import {
     PROFILES,
     createProject,
@@ -270,6 +268,7 @@
     await client.saveUserProofreading(data);
   }, (status) => { if (mounted) userProofreadingStatus = status; });
   let editGroup: string | null = null;
+  let lastReviewIssueKey: string | null = null;
   let editorPane = $state<HTMLDivElement>();
   let actionDialog = $state<HTMLDialogElement>();
   let helpDialog = $state<HTMLDialogElement>();
@@ -296,11 +295,8 @@
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
-  let fields = $state<ExtractionField[]>([]),
-    tableRows = $state<string[][]>([]),
-    formula = $state("");
   let extractionKind = $state<"fields" | "table" | "formula">("fields");
-  let extractionPageId = $state<string | null>(null);
+  let extractionSelection = $state<Record<string, string>>({});
   let geometryOpen = $state(false);
   let advancedConfig = $state(""),
     configError = $state("");
@@ -750,10 +746,8 @@
     proofreadingOpen = false;
     correctionDraft = null;
     checkedPages = [];
-    fields = [];
-    tableRows = [];
-    formula = "";
-    extractionPageId = null;
+    extractionSelection = {};
+    lastReviewIssueKey = null;
     saveStatus = { state: "saved" };
     bindSave(revision);
     recentOpen = false;
@@ -868,6 +862,7 @@
     if (added) selectPage(added.id);
   }
   function selectPage(id: string) {
+    lastReviewIssueKey = null;
     selectedPageId = id;
     selectedRegionId = null;
     wordInspection = null;
@@ -910,6 +905,7 @@
     if (next) selectPage(next.id);
   }
   async function selectRegion(id: string) {
+    lastReviewIssueKey = null;
     selectedRegionId = id;
     wordInspection = null;
     proofreadingOpen = false;
@@ -1189,19 +1185,34 @@
   }
   function reviewNext() {
     if (!reviewIssues.length) {
+      lastReviewIssueKey = null;
       notice = "No outstanding review issues";
       return;
     }
-    const current = reviewIssues.findIndex(
-      (i) => i.pageId === activePage?.id && i.regionId === selectedRegionId,
+    const keyFor = (issue: (typeof reviewIssues)[number]) =>
+      JSON.stringify([issue.pageId, issue.regionId, issue.reason, issue.message]);
+    const cursor = reviewIssues.findIndex((issue) => keyFor(issue) === lastReviewIssueKey &&
+      issue.pageId === activePage?.id && issue.regionId === selectedRegionId);
+    const current = cursor >= 0 ? cursor : reviewIssues.findIndex(
+      (issue) => issue.pageId === activePage?.id && issue.regionId === selectedRegionId,
     );
     const issue = reviewIssues[(current + 1) % reviewIssues.length];
     selectPage(issue.pageId);
     if (issue.regionId) void selectRegion(issue.regionId);
     else {
-      inspector = "review";
-      if (issue.reason === "changed" && project.pages.find((page) => page.id === issue.pageId)?.structure) textView = "structure";
+      const extractionIssue = issue.reason === "changed" && issue.message === "Extracted content needs page approval.";
+      inspector = extractionIssue ? "extract" : "review";
+      const page = project.pages.find((item) => item.id === issue.pageId);
+      if (extractionIssue && page) {
+        const candidates = getExtractionObjects(page).collection.objects.filter((object) => !object.excluded && extractionObjectFreshness(project, object).current);
+        const selected = candidates.find((object) => object.id === extractionSelection[page.id + ":" + extractionKind]) ?? candidates[0];
+        if (selected) {
+          extractionKind = selected.kind;
+          extractionSelection = { ...extractionSelection, [page.id + ":" + selected.kind]: selected.id };
+        }
+      } else if (issue.reason === "changed" && page?.structure) textView = "structure";
     }
+    lastReviewIssueKey = keyFor(issue);
   }
   function approveRegion() {
     if (activePage && region) {
@@ -1373,38 +1384,25 @@
       queuePromise = null;
     }
   }
-  function persistExtraction() {
-    if (!activePage || locked || extractionPageId !== activePage.id) return;
-    const saved = readExtraction(activePage);
-    change(
-      updatePage(project, activePage.id, {
-        provenance: {
-          ...activePage.provenance,
-          extraction: {
-            ...saved,
-            fields,
-            tableRows,
-            formula,
-            labels,
-            sourceImagePath: activePage.imagePath,
-            updatedAt: new Date().toISOString(),
-          },
-        },
-      }),
-    );
+  function changeExtraction(next: OcrProject, groupKey?: string) {
+    if (locked || next === project) return;
+    const record = !groupKey || editGroup !== groupKey;
+    change(next, record);
+    editGroup = groupKey ?? null;
   }
-  let lastExtractionSnapshot = "";
+  function selectExtraction(id: string) {
+    if (!activePage) return;
+    editGroup = null;
+    extractionSelection = { ...extractionSelection, [activePage.id + ":" + extractionKind]: id };
+  }
+  let lastExtractionPageKey = "";
   $effect(() => {
     const page = activePage;
-    const data = page ? readExtraction(page) : undefined;
-    const key = JSON.stringify([project.id, page?.id, page?.imagePath, data]);
-    if (key === lastExtractionSnapshot) return;
-    lastExtractionSnapshot = key;
-    fields = data?.fields ?? [];
-    tableRows = data?.tableRows ?? [];
-    formula = data?.formula ?? "";
-    if (data?.labels) labels = data.labels;
-    extractionPageId = data ? (page?.id ?? null) : null;
+    const key = project.id + ":" + (page?.id ?? "");
+    if (key === lastExtractionPageKey) return;
+    lastExtractionPageKey = key;
+    const fields = page ? getExtractionObjects(page).collection.objects.slice().reverse().find((object) => object.kind === "fields") : undefined;
+    if (fields?.kind === "fields" && fields.currentData.labels.length) labels = fields.currentData.labels.join(", ");
   });
   async function transform(
     operation: TransformOptions["operation"],
@@ -1720,18 +1718,6 @@
       busy = "";
     }
   }
-  function tableFromHtml(html: string): string[][] {
-    // Parse into an inert template; only cell text reaches the live document.
-    const template = document.createElement("template");
-    template.innerHTML = html;
-    return Array.from(template.content.querySelectorAll("tr"))
-      .map((row) =>
-        Array.from(row.querySelectorAll("td,th")).map(
-          (cell) => cell.textContent ?? "",
-        ),
-      )
-      .filter((row) => row.length);
-  }
   async function extractionPath(source: ExtractionSource) {
     if (source.bounds) {
       const result = await client.transform({
@@ -1747,87 +1733,55 @@
   }
   async function extract(kind: "fields" | "table" | "formula") {
     if (!activePage || locked) return;
-    const pageId = activePage.id,
-      projectId = project.id;
+    const pageId = activePage.id;
+    const regionId = region?.id ?? null;
     const layout = useLayoutFields;
-    const threshold = fieldThreshold,
-      labelSnapshot = labels;
-    const source = captureExtractionSource(
-      activePage,
-      region,
-      kind === "fields" && !layout ? "text" : "pixels",
-    );
-    busy = `Extracting ${kind}`;
+    const threshold = fieldThreshold;
+    const labelSnapshot = labels;
+    busy = "Extracting " + kind;
     error = "";
     extractionKind = kind;
     try {
-      let resultFields: ExtractionField[] = [],
-        resultRows: string[][] = [],
-        resultFormula = "";
+      const request = captureExtractionRequest(project, pageId, regionId, kind === "fields" && !layout ? "text" : "pixels");
+      const source = request.capture;
+      let output: unknown;
+      let labelList: string[] = [];
       if (kind === "fields") {
-        const list = labelSnapshot
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        if (!list.length) throw new Error("Enter at least one field label.");
-        if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)
-          throw new Error("Field score must be between zero and one.");
-        resultFields = layout
-          ? await client.layoutFields(
-              await extractionPath(source),
-              list,
-              threshold,
-            )
-          : await client.extractFields(source.text ?? "", list, threshold);
-        resultFields = resultFields.map((field) => ({
-          ...field,
-          original_value: field.value,
-          review: "unreviewed",
-        }));
-        notice = `${resultFields.length} fields extracted${layout ? " from page layout" : " from reviewed text"}`;
+        labelList = labelSnapshot.split(",").map((value) => value.trim()).filter(Boolean);
+        if (!labelList.length) throw new Error("Enter at least one field label.");
+        if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("Field score must be between zero and one.");
+        const result = layout
+          ? await client.layoutFields(await extractionPath(source), labelList, threshold)
+          : await client.extractFields(source.text ?? "", labelList, threshold);
+        output = result;
+        notice = result.length + " fields extracted" + (layout ? " from page layout" : " from reviewed text");
       } else if (kind === "table") {
         const result = await client.table(await extractionPath(source));
-        resultRows = tableFromHtml(result.html);
-        notice = `${result.rows} rows × ${result.cols} columns extracted`;
+        output = result;
+        notice = result.rows + " rows × " + result.cols + " columns extracted";
       } else {
-        resultFormula = (await client.math(await extractionPath(source))) ?? "";
-        notice = resultFormula
-          ? "Formula recognized"
-          : "No formula was recognized";
+        const result = await client.math(await extractionPath(source));
+        if (result === null || result === "") {
+          notice = "No formula was recognized. Existing saved formulas are unchanged.";
+          return;
+        }
+        output = result;
+        notice = "Formula recognized";
       }
-      const page = project.pages.find((p) => p.id === pageId);
-      if (
-        project.id !== projectId ||
-        !page ||
-        !extractionSourceIsCurrent(page, source)
-      )
-        throw new Error(
-          "The source changed during extraction. Run extraction again for the current page.",
-        );
-      const saved = readExtraction(page);
-      change(
-        updatePage(project, pageId, {
-          provenance: {
-            ...page.provenance,
-            extraction: {
-              ...saved,
-              ...(kind === "fields"
-                ? { fields: resultFields, labels: labelSnapshot }
-                : kind === "table"
-                  ? { tableRows: resultRows }
-                  : { formula: resultFormula }),
-              sources: { ...saved.sources, [kind]: source },
-              sourceImagePath: source.imagePath,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-        }),
-      );
-      // The restoration effect updates editors only for the selected page.
-      // Results from an in-flight page remain attached to that page after navigation.
-      if (selectedPageId !== pageId) notice += ` · saved to ${page.name}`;
-    } catch (e) {
-      fail(e);
+      // The request captures its project/page/region before recognition. A
+      // delayed result stays with that source, even after selection changes.
+      const next = appendExtractionObject(project, request, kind, output, kind === "fields" ? { labels: labelList } : undefined);
+      const page = next.pages.find((item) => item.id === pageId);
+      if (!page) throw new Error("The source page no longer exists.");
+      const object = getExtractionObjects(page).collection.objects.find((item) => item.id === request.objectId);
+      const freshness = object ? extractionObjectFreshness(next, object) : null;
+      change(next);
+      if (activePage?.id === pageId) {
+        extractionSelection = { ...extractionSelection, [pageId + ":" + kind]: request.objectId };
+      } else notice += " · saved to " + page.name;
+      if (freshness && !freshness.current) notice += " · Historical source: " + freshness.reasons.join(" ");
+    } catch (failure) {
+      fail(failure);
     } finally {
       busy = "";
     }
@@ -1841,35 +1795,32 @@
         "Clipboard access was unavailable. Select and copy the text manually.";
     }
   }
-  async function saveExtraction() {
-    if (locked || !activePage || extractionPageId !== activePage.id) return;
-    const data = readExtraction(activePage),
-      kind = extractionKind;
-    const sources = project.documents.map((d) => d.sourceUri);
-    const ext =
-      extractionKind === "fields"
-        ? "json"
-        : extractionKind === "table"
-          ? "csv"
-          : "tex";
-    const text =
-      extractionKind === "fields"
-        ? JSON.stringify(data.fields, null, 2)
-        : extractionKind === "table"
-          ? tableToCsv(data.tableRows)
-          : data.formula;
-    if (!data.sources[kind] || !text) return;
-    busy = "Saving extracted data";
+  function currentExtraction(object: ExtractionObject): ExtractionObject | undefined {
+    return activePage ? getExtractionObjects(activePage).collection.objects.find((item) => item.id === object.id) : undefined;
+  }
+  async function copyExtraction(object: ExtractionObject) {
+    if (locked) return;
     try {
-      const outputPath = await client.pickExport(
-        `${project.name}-${extractionKind}`,
-        ext,
-      );
+      const current = currentExtraction(object);
+      if (!current) throw new Error("Select a saved extraction on the current page.");
+      await copy(serializeExtractionObject(current));
+    } catch (failure) { fail(failure); }
+  }
+  async function saveExtraction(object: ExtractionObject) {
+    if (locked) return;
+    try {
+      const current = currentExtraction(object);
+      if (!current) throw new Error("Select a saved extraction on the current page.");
+      const sources = project.documents.map((document) => document.sourceUri);
+      const extension = current.kind === "fields" ? "json" : current.kind === "table" ? "csv" : "tex";
+      const text = serializeExtractionObject(current);
+      busy = "Saving extracted data";
+      const outputPath = await client.pickExport(project.name + "-" + current.name, extension);
       if (!outputPath) return;
       const result = await client.writeText(outputPath, text, sources);
-      notice = `Saved ${result.saved_path}`;
-    } catch (e) {
-      fail(e);
+      notice = "Saved " + result.saved_path;
+    } catch (failure) {
+      fail(failure);
     } finally {
       busy = "";
     }
@@ -1906,10 +1857,11 @@
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
     );
-    // Native textarea undo knows only the string. Structured text must restore
-    // its marks and note links from the same project-history snapshot.
-    if (!event.isComposing && activePage?.structure &&
-      target?.matches('textarea[data-region-text],textarea[data-passage-text],textarea[data-structure-text]') &&
+    // Structured text and extraction edits restore their metadata and text
+    // together from project history. Full-page drafts keep native textarea undo.
+    const projectEditor = target?.matches('[data-extraction-editor]') ||
+      (activePage?.structure && target?.matches('textarea[data-region-text],textarea[data-passage-text],textarea[data-structure-text]'));
+    if (!event.isComposing && projectEditor &&
       (event.metaKey || event.ctrlKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase())) {
       event.preventDefault();
       const selectedId = selectedRegionId;
@@ -3619,209 +3571,32 @@
             <div class="panel-intro">
               <span class="eyebrow">STRUCTURED CONTENT</span>
               <h2>Put the page to work</h2>
-              <p>
-                {region
-                  ? `Working with selected ${region.kind} region.`
-                  : "Working with the current page. Select a region to isolate a table, formula, or form."}
-              </p>
+              <p>{region ? "Working with selected " + region.kind + " region." : "Working with the current page. Select a region to isolate a table, formula, or form."}</p>
             </div>
             <div class="segmented">
-              <button
-                class:active={extractionKind === "fields"}
-                onclick={() => (extractionKind = "fields")}
-                ><Braces size={14} /> Fields</button
-              ><button
-                class:active={extractionKind === "table"}
-                onclick={() => (extractionKind = "table")}
-                ><Table2 size={14} /> Table</button
-              ><button
-                class:active={extractionKind === "formula"}
-                onclick={() => (extractionKind = "formula")}
-                ><Sigma size={14} /> Formula</button
-              >
+              <button class:active={extractionKind === "fields"} onclick={() => { extractionKind = "fields"; editGroup = null; }}><Braces size={14} /> Fields</button>
+              <button class:active={extractionKind === "table"} onclick={() => { extractionKind = "table"; editGroup = null; }}><Table2 size={14} /> Table</button>
+              <button class:active={extractionKind === "formula"} onclick={() => { extractionKind = "formula"; editGroup = null; }}><Sigma size={14} /> Formula</button>
             </div>
-            {#if extractionKind === "fields"}<label class="field-label"
-                >Fields to extract<textarea
-                  bind:value={labels}
-                  rows="2"
-                  placeholder="vendor, date, total, invoice number"
-                  disabled={locked}
-                ></textarea><small
-                  >Separate field names with commas. Extracted values remain
-                  editable.</small
-                ></label
-              ><label class="setting-toggle"
-                ><span
-                  ><strong>Use page layout</strong><small
-                    >LiLT uses word positions; otherwise GLiNER reads your
-                    corrected text.</small
-                  ></span
-                ><input
-                  type="checkbox"
-                  bind:checked={useLayoutFields}
-                  disabled={locked || !capabilities.kie}
-                /></label
-              ><label class="field-label"
-                >Minimum field score<input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  bind:value={fieldThreshold}
-                  disabled={locked}
-                /></label
-              ><button
-                class="button primary full"
-                onclick={() => extract("fields")}
-                disabled={locked || !capabilities.kie || !labels.trim()}
-                ><Braces size={15} /> Extract fields</button
-              >{#if !capabilities.kie}<p class="field-hint">
-                  Field extraction is unavailable in this build.
-                </p>{/if}
-              {#if fields.length}<div class="extraction-result">
-                  <div class="section-heading">
-                    <strong>{fields.length} extracted fields</strong><button
-                      class="text-button"
-                      onclick={() => copy(JSON.stringify(fields, null, 2))}
-                      ><Copy size={13} /> JSON</button
-                    >
-                  </div>
-                  {#each fields as field, index}<div class="extracted-field">
-                      <label
-                        >{field.label}<input
-                          value={field.value}
-                          disabled={locked}
-                          onchange={(e) => {
-                            fields = fields.map((f, i) =>
-                              i === index
-                                ? {
-                                    ...f,
-                                    value: e.currentTarget.value,
-                                    original_value: f.original_value ?? f.value,
-                                    review:
-                                      e.currentTarget.value ===
-                                      (f.original_value ?? f.value)
-                                        ? "unreviewed"
-                                        : "corrected",
-                                  }
-                                : f,
-                            );
-                            persistExtraction();
-                          }}
-                        /></label
-                      ><span
-                        title="Original model extraction score; manual corrections do not produce a new model score"
-                        >{field.review === "corrected"
-                          ? "Edited · "
-                          : ""}{Math.round(field.score * 100)}%</span
-                      >
-                    </div>{/each}
-                  <p class="field-hint">
-                    Check values against the source before using them.
-                  </p>
-                </div>{/if}
-            {:else if extractionKind === "table"}<div class="tool-explanation">
-                <Table2 size={32} />
-                <h3>Recover a table as editable cells</h3>
-                <p>
-                  Draw or select a table region for focused extraction. Review
-                  the resulting cells and export CSV.
-                </p>
-              </div>
-              <button
-                class="button primary full"
-                onclick={() => extract("table")}
-                disabled={locked || !capabilities.table}
-                ><Table2 size={15} /> Extract table</button
-              >{#if !capabilities.table}<p class="field-hint">
-                  Table recognition is unavailable in this build.
-                </p>{/if}{#if tableRows.length}<div class="extraction-result">
-                  <div class="section-heading">
-                    <strong>{tableRows.length} rows</strong><button
-                      class="text-button"
-                      onclick={() => copy(tableToCsv(tableRows))}
-                      ><Copy size={13} /> CSV</button
-                    >
-                  </div>
-                  <div class="editable-table">
-                    <table>
-                      <tbody
-                        >{#each tableRows as row, rowIndex}<tr
-                            >{#each row as cell, columnIndex}<td
-                                ><input
-                                  value={cell}
-                                  disabled={locked}
-                                  aria-label={`Row ${rowIndex + 1}, column ${columnIndex + 1}`}
-                                  onchange={(e) => {
-                                    tableRows = tableRows.map((r, i) =>
-                                      i === rowIndex
-                                        ? r.map((c, j) =>
-                                            j === columnIndex
-                                              ? e.currentTarget.value
-                                              : c,
-                                          )
-                                        : r,
-                                    );
-                                    persistExtraction();
-                                  }}
-                                /></td
-                              >{/each}</tr
-                          >{/each}</tbody
-                      >
-                    </table>
-                  </div>
-                  <p class="field-hint">
-                    CSV contains editable cell text and treats formula-like
-                    entries as text. Check merged cells and headers against the
-                    page.
-                  </p>
-                </div>{/if}
-            {:else}<div class="tool-explanation">
-                <Sigma size={32} />
-                <h3>Turn formulas into LaTeX</h3>
-                <p>
-                  Select a formula region, recognize it, and refine the notation
-                  before saving.
-                </p>
-              </div>
-              <button
-                class="button primary full"
-                onclick={() => extract("formula")}
-                disabled={locked || !capabilities.math}
-                ><Sigma size={15} /> Recognize formula</button
-              >{#if !capabilities.math}<p class="field-hint">
-                  Formula recognition is unavailable in this build.
-                </p>{/if}{#if formula}<label class="field-label"
-                  >LaTeX<textarea
-                    class="latex-editor"
-                    value={formula}
-                    disabled={locked}
-                    oninput={(e) => {
-                      formula = e.currentTarget.value;
-                      persistExtraction();
-                    }}
-                    rows="8"
-                    spellcheck="false"
-                  ></textarea></label
-                ><button class="button small" onclick={() => copy(formula)}
-                  ><Copy size={13} /> Copy LaTeX</button
-                >{/if}{/if}
-            {#if (extractionKind === "fields" && fields.length) || (extractionKind === "table" && tableRows.length) || (extractionKind === "formula" && formula)}<button
-                class="button full save-extraction"
-                onclick={saveExtraction}
-                disabled={locked}
-                ><Download size={15} /> Save {extractionKind === "fields"
-                  ? "fields as JSON"
-                  : extractionKind === "table"
-                    ? "table as CSV"
-                    : "formula as LaTeX"}</button
-              >{/if}
-            {#if extractionPageId && extractionPageId !== activePage?.id}<p
-                class="inline-warning"
-              >
-                These results came from another page. Run extraction again for
-                the current page.
-              </p>{/if}
+            {#if extractionKind === "fields"}
+              <label class="field-label">Fields to extract<textarea bind:value={labels} rows="2" placeholder="vendor, date, total, invoice number" disabled={locked}></textarea><small>Separate field names with commas. Extracted values remain editable.</small></label>
+              <label class="setting-toggle"><span><strong>Use page layout</strong><small>LiLT uses word positions; otherwise GLiNER reads your corrected text.</small></span><input type="checkbox" bind:checked={useLayoutFields} disabled={locked || !capabilities.kie} /></label>
+              <label class="field-label">Minimum field score<input type="number" min="0" max="1" step="0.05" bind:value={fieldThreshold} disabled={locked} /></label>
+              <button class="button primary full" onclick={() => extract("fields")} disabled={locked || !activePage || !capabilities.kie || !labels.trim()}><Braces size={15} /> Extract fields</button>
+              {#if !capabilities.kie}<p class="field-hint">Field extraction is unavailable in this build.</p>{/if}
+            {:else if extractionKind === "table"}
+              <div class="tool-explanation"><Table2 size={32} /><h3>Recover a table as editable cells</h3><p>Draw or select a table region for focused extraction. Each result keeps its own cells, header markers, and merged spans.</p></div>
+              <button class="button primary full" onclick={() => extract("table")} disabled={locked || !activePage || !capabilities.table}><Table2 size={15} /> Extract table</button>
+              {#if !capabilities.table}<p class="field-hint">Table recognition is unavailable in this build.</p>{/if}
+            {:else}
+              <div class="tool-explanation"><Sigma size={32} /><h3>Turn formulas into LaTeX</h3><p>Select a formula region, recognize it, and compare the editable notation with its captured source.</p></div>
+              <button class="button primary full" onclick={() => extract("formula")} disabled={locked || !activePage || !capabilities.math}><Sigma size={15} /> Recognize formula</button>
+              {#if !capabilities.math}<p class="field-hint">Formula recognition is unavailable in this build.</p>{/if}
+            {/if}
+            {#if activePage}<ExtractionObjectsPanel {project} page={activePage} kind={extractionKind}
+              selectedId={extractionSelection[activePage.id + ":" + extractionKind]} disabled={locked} imageUrl={client.imageUrl}
+              onselect={selectExtraction} onchange={changeExtraction} onendedit={() => (editGroup = null)}
+              oncopy={copyExtraction} onsave={saveExtraction} />{/if}
           </div>
         {:else}
           <div class="panel-scroll export-panel">
@@ -5340,8 +5115,7 @@
     margin-top: 6px;
   }
   .config-editor,
-  .provenance,
-  .latex-editor {
+  .provenance {
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
     font-size: 10px !important;
   }
@@ -5428,11 +5202,6 @@
     color: #8b9fbd;
     margin: 0 0 15px;
   }
-  .extraction-result {
-    margin-top: 22px;
-    padding-top: 14px;
-    border-top: 1px solid #2e4059;
-  }
   .section-heading {
     display: flex;
     align-items: center;
@@ -5443,52 +5212,6 @@
   .section-heading strong {
     font-size: 11px;
     color: #b6cbe8;
-  }
-  .extracted-field {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .extracted-field label {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    font-size: 10px;
-    color: #8a9fbb;
-  }
-  .extracted-field input {
-    width: 100%;
-    font-size: 11px !important;
-  }
-  .extracted-field > span {
-    font-size: 10px;
-    color: #c5a26a;
-    padding-top: 18px;
-  }
-  .editable-table {
-    overflow: auto;
-  }
-  .editable-table table {
-    border-collapse: collapse;
-    min-width: 100%;
-  }
-  .editable-table td {
-    border: 1px solid #3a4a60;
-    padding: 0;
-    min-width: 100px;
-  }
-  .editable-table input {
-    border: 0 !important;
-    background: #152236 !important;
-    min-width: 100px;
-    width: 100%;
-    border-radius: 0 !important;
-    font-size: 10px !important;
-  }
-  .save-extraction {
-    margin-top: 18px;
   }
   .format-card {
     display: flex;

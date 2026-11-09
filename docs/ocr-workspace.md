@@ -460,30 +460,58 @@ acceptance is distinct from human page approval.
 
 ## Structured extraction
 
-The **Extract** panel works on the current page or selected region:
+The **Extract** panel works on the current page or selected region. Select a
+source region in **Review**, choose **Fields**, **Table**, or **Formula**, and run
+the corresponding extraction. Each result is saved as a separate object:
+extracting a second table or formula keeps the earlier one available. Use
+**Saved extraction** to choose an object of the current kind, give it an
+**Object name**, or mark it **Exclude object**.
 
-- **Fields:** GLiNER operates on the reviewed text, so corrections affect the
-  resulting values. The layout option runs LiLT against page pixels. Field names,
-  minimum extraction score, and values are editable. Field JSON retains the
-  original value and flags manual corrections; its score always describes the
-  original model extraction. Export the result as JSON.
-- **Tables:** native structure recognition returns a table. Only inert cell text
-  is placed in the editor; returned HTML is not inserted into the live DOM.
-  Cells are editable and export as CSV. Formula-like entries are prefixed as
-  literal text for spreadsheet readers; ordinary numbers remain numeric and the
-  original cell values remain unchanged in the project and structured JSON.
-  Inspect merged cells against the source.
-- **Formulas:** native math recognition returns LaTeX. Edit and copy it, or save a
-  `.tex` file.
+Every object keeps its captured source page, document, image dimensions, selected
+region and bounds, extraction method, and the reviewed text used for text-based
+fields. **Original model output** exposes the exact raw response and the original
+structured data separately from your current edits. Original scores continue to
+describe that original response; changing a field or cell does not create a new
+recognition score.
 
-Extracted results are retained with their source page, selected region, and
-source evidence. Navigation during extraction cannot attach a result to another
-page. Text-based fields become stale when their input text changes; pixel-based
-results become stale when the source image or crop geometry changes. Undo/redo
-restores the matching editor values. Original scores and text remain available
-in structured JSON even after corrections. **Update search index** uses the
-approved corrected text for the current source document, feeding CrispSorter's
-existing chunking and semantic/full-text indexing pipeline.
+- **Fields:** GLiNER reads the reviewed text; the layout option runs LiLT against
+  page pixels. Choose the field labels and minimum extraction score, then correct
+  the returned values. **Save fields as JSON** writes the complete selected
+  object, including original and current values, source captures, review and
+  exclusion state, and the original model response.
+- **Tables:** native recognition returns table HTML and dimensions. The editor
+  displays inert, escaped cell text and retains validated row/column spans;
+  returned HTML is never inserted into the live DOM. Cells accept multiline text.
+  A source box is retained only when it is supplied as genuine cell evidence.
+  **Save table as CSV** writes the selected table's current cell values, placing
+  an empty value at positions covered by a merged cell. Formula-like entries are
+  prefixed as literal text for spreadsheet readers, while the stored cell strings
+  and structured JSON remain unchanged. Inspect merged cells against the captured
+  source; CSV cannot carry their span metadata.
+- **Formulas:** native math recognition returns LaTeX. Correct it in **LaTeX**,
+  inspect the rendered formula preview, then copy it or use **Save formula as
+  LaTeX** for a `.tex` file. The original model LaTeX remains available alongside
+  the current version.
+
+Edits belong to the selected object and participate in project history and
+autosave. Ctrl/Command+Z and Ctrl/Command+Shift+Z inside the extraction editors
+restore the project data together with the displayed value. Saved objects and
+their original evidence survive closing and reopening the project. The document's
+**Structured JSON** export retains the versioned collection at
+`pages[].provenance.extractionObjects`, including original outputs, structured
+baselines, current edits, and source captures.
+
+A result that finishes after page navigation remains attached to its captured
+source page. **Current source** means its inputs still match that page.
+**Historical source** means the image, selected geometry, or reviewed input text
+has since changed. Historical objects remain selectable with their original
+source image and edits available for inspection; a changed page does not silently
+replace or discard them. Review their provenance before using them with a newer
+page image.
+
+**Update search index** uses the approved corrected text for the current source
+document, feeding CrispSorter's existing chunking and semantic/full-text indexing
+pipeline.
 
 ## Output formats
 

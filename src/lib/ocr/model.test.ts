@@ -74,14 +74,14 @@ describe('OCR project and recognition',()=>{
         expect(next.pages[0].originalImagePath).toBe(p.pages[0].originalImagePath);
         expect(next.pages[0].provenance.lastImageOperation).toBe('rotate');
     });
-    it('pixel transforms clear extracted values while undo restores the source evidence',()=>{
+    it('pixel transforms retain raw extraction evidence while undo restores its source image',()=>{
         let p=recognize(project(1));
         const source=p.pages[0];
         const extraction={fields:[{name:'Invoice total',value:'120.00'}],tableRows:[['Item','Amount'],['Paper','120.00']],formula:'x^2',labels:['invoice'],sourceImagePath:source.imagePath,regionId:source.regions[0].id};
         p=updatePage(p,source.id,{provenance:{...source.provenance,extraction}});
         const history=createHistory(p);
         const next=applyPageImage(p,source.id,{image_path:'/cache/cropped.png',width:500,height:700},'crop');
-        expect(next.pages[0].provenance.extraction).toBeUndefined();
+        expect(next.pages[0].provenance.extraction).toEqual(extraction);
         expect(next.pages[0].provenance.engine).toBe('surya');
         expect(next.pages[0].provenance.lastImageOperation).toBe('crop');
         expect(p.pages[0].provenance.extraction).toEqual(extraction);
@@ -89,7 +89,7 @@ describe('OCR project and recognition',()=>{
         expect(undone.pages[0].imagePath).toBe(source.imagePath);
         expect(undone.pages[0].provenance.extraction).toEqual(extraction);
     });
-    it('split children never inherit spread extraction while other pages retain theirs',()=>{
+    it('split children retain the historical spread extraction without changing its source identity',()=>{
         let p=recognize(project(2));
         const source=p.pages[0], other=p.pages[1];
         const spreadExtraction={tableRows:[['Left','Right']],sourceImagePath:source.imagePath};
@@ -98,7 +98,7 @@ describe('OCR project and recognition',()=>{
         p=updatePage(p,other.id,{provenance:{...other.provenance,extraction:otherExtraction}});
         const next=splitPage(p,source.id,[{image_path:'/left.png',width:500,height:1400},{image_path:'/right.png',width:500,height:1400}]);
         for (const child of next.pages.slice(0,2)) {
-            expect(child.provenance.extraction).toBeUndefined();
+            expect(child.provenance.extraction).toEqual(spreadExtraction);
             expect(child.provenance.engine).toBe('surya');
             expect(child.provenance.splitFromPageId).toBe(source.id);
         }

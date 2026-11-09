@@ -44,7 +44,7 @@ The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `
 `?scenario=proofreading`, `?scenario=proofreading-save-failure`, `?scenario=proofreading-load-failure`,
 `?scenario=text-repair`, `?scenario=structure`, `?scenario=page-draft`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
-`?scenario=queue-control`, `?scenario=extraction-delay`,
+`?scenario=queue-control`, `?scenario=extraction-delay`, `?scenario=extraction-objects`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
@@ -92,6 +92,12 @@ textarea Undo test must affect only the unapplied draft, while Apply/project Und
 restores OCR text and structure together. Recovery tests switch to a new project
 and actually reload the saved fixture through the client; merely reopening the
 current-project shortcut would not exercise deserialization and draft recovery.
+
+The extraction-objects scenario supplies two independent table areas, two formula
+areas, and reviewed text for a field set. The first table has a merged header;
+the second includes a leading-zero identifier. Responses are distinct, repeatable
+synthetic model outputs. The fixture checks source capture and object persistence;
+it does not measure native table, math, or field recognition quality.
 
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
@@ -179,6 +185,18 @@ released, allowing page navigation before the result arrives.
 - Batch errors remain attached to their pages; retry processes only failed work.
 - Pause/resume/stop never overlaps native operations or drops pending pages.
 - Table model output becomes inert cell text, with active HTML removed.
+- Two tables, two formulas, and a field set append as five independently selectable
+  objects. Each retains its own captured source, exact raw response, and original
+  structured data. Merged-cell spans are retained without invented cell boxes.
+- A multiline table-cell correction affects only its selected object. Focused
+  Ctrl/Cmd+Z/Shift+Z restores the project object as well as the visible cell;
+  save and an actual project reload retain the correction.
+- Selected CSV, LaTeX, and field JSON exports use the selected object's current
+  data. CSV preserves multiline text and merged covered positions; field JSON
+  includes the complete object's original output, baseline, and source captures.
+  Document JSON preserves the entire versioned object collection.
+- Changing page pixels retains earlier extraction objects as historical source
+  records with their corrections and captured images still inspectable.
 - Delayed extraction remains attached to its captured page after navigation;
   editing and undo restore both the visible cells and exported CSV.
 - Invalid project input leaves the original autosaver usable, and reopening the
@@ -202,8 +220,20 @@ roles and inline formatting, clipboard/keyboard history, columns, and caption/no
 links. Its report and screenshots are available in
 [artifact 13709565396](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197/artifacts/13709565396).
 This result is specific to that source revision. The later full-page draft
-assertions are awaiting their own browser run.
+revision `ed0480a7e7bfab6f0c7b92bb5fb802689fa6fbe5` passed a clean local
+run of **343 unit tests in 38 files**, with **0 Svelte errors and 54 existing
+warnings**. Its [34-flow browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/job/129428191684)
+was still queued when these extraction assertions were added. The harness now
+contains **35 browser flows**; the saved-extraction-object flow requires execution
+against its own source revision before it can be reported as passing.
 
 These tests validate interaction and integration contracts. They do not measure
 recognition accuracy or substitute for native engine, PDF conformance, or installed
 application testing.
+
+The OCR-05a candidate passed **379 unit tests in 41 files** and the Svelte
+typecheck with **0 errors and 54 existing warnings** in the restored root
+checkout. `node --check tests/ocr-workspace/smoke.mjs` and `git diff --check`
+also passed. Local Chromium still cannot create its required Unix socket; no
+interaction pass is claimed from that launch attempt. The 35-flow harness needs
+its CI execution before browser qualification.

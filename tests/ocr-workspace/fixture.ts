@@ -17,6 +17,19 @@ const structureBlocks: RecognitionResult['regions'] = [
     {text:'Figure 1. Valve inspection points.',x:530,y:730,w:390,h:70,kind:'text'},
     {text:'[1] Inspect every six months.',x:80,y:1150,w:840,h:60,kind:'text'},
 ];
+const extractionBlocks: RecognitionResult['regions'] = [
+    {text:'Northstar inspection records',x:80,y:90,w:840,h:50,kind:'title'},
+    {text:'Parts\nValve 2',x:80,y:220,w:390,h:220,kind:'table'},
+    {text:'Code Amount\n0012 EUR 1,250.00',x:530,y:220,w:390,h:220,kind:'table'},
+    {text:'E = mc²',x:80,y:540,w:390,h:100,kind:'formula'},
+    {text:'a² + b² = c²',x:530,y:540,w:390,h:100,kind:'formula'},
+    {text:'Vendor: Northstar Supply Co.\nTotal: EUR 1,250.00',x:80,y:780,w:840,h:100,kind:'text'},
+];
+const extractionTables = [
+    {html:'<table><tr><th colspan="2">Parts</th></tr><tr><td>Valve</td><td>2</td></tr></table>',rows:2,cols:2},
+    {html:'<table><tr><th>Code</th><th>Amount</th></tr><tr><td>0012</td><td>EUR 1,250.00</td></tr></table>',rows:2,cols:2},
+];
+const extractionFormulas = ['E=mc^2','a^2+b^2=c^2'];
 const pagePath = (page:number) => `/fixtures/northstar-page-${page}.png`;
 const pageNumber = (path:string) => Number(path.match(/page-(\d+)/)?.[1] ?? 1);
 
@@ -38,7 +51,12 @@ function recognition(path:string):RecognitionResult {
     };
 }
 
-function documentSvg(page:number, wordReview=false, nativeWord=false, textRepair=false, structure=false):string {
+function documentSvg(page:number, wordReview=false, nativeWord=false, textRepair=false, structure=false, extractionObjects=false):string {
+    if(extractionObjects) return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
+      <rect width="1000" height="1400" fill="#fffefa"/>
+      <g fill="#263e50" font-family="Arial,sans-serif" font-size="21">${extractionBlocks.map(block=>block.text.split('\n').map((line,index)=>`<text x="${block.x}" y="${block.y+27+index*30}">${line}</text>`).join('')).join('')}</g>
+      <g fill="none" stroke="#c9d1d6" stroke-width="2"><rect x="80" y="220" width="390" height="220"/><rect x="530" y="220" width="390" height="220"/></g>
+    </svg>`;
     if(structure) return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
       <rect width="1000" height="1400" fill="#fffefa"/>
       <g fill="#263e50" font-family="Arial,sans-serif" font-size="21">${structureBlocks.map(block=>block.kind==='picture'
@@ -167,6 +185,14 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 char_conf_unit:'unicode_codepoint',char_conf_aligned:true};
             });
         }
+        if(scenario==='extraction-objects') {
+            // Multiple independent object sources exercise persistence and
+            // editing contracts, not native table/formula model accuracy.
+            result.engine='fixture-verified-character-adapter';
+            result.regions=extractionBlocks.map(block=>({...block,confidence:0.99,
+                confidence_basis:'recognition',char_conf:Array.from(block.text,()=>0.99),
+                char_conf_unit:'unicode_codepoint',char_conf_aligned:true}));
+        }
         project=applyRecognition(project,project.pages[0].id,result);
         project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
         project=approvePage(project,project.pages[2].id);
@@ -275,8 +301,8 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};},
         async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
         async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
-        async table(path){note('table',{path});await waitForExtraction();return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
-        async math(path){note('math',{path});await waitForExtraction();return String.raw`E = mc^2`;},
+        async table(path){note('table',{path});const index=control.calls.filter(call=>call.method==='table').length-1;await waitForExtraction();if(scenario==='extraction-objects')return copy(extractionTables[index%extractionTables.length]);return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
+        async math(path){note('math',{path});const index=control.calls.filter(call=>call.method==='math').length-1;await waitForExtraction();if(scenario==='extraction-objects')return extractionFormulas[index%extractionFormulas.length];return String.raw`E = mc^2`;},
         async reindex(sourceUri,text){note('reindex',{sourceUri,text});return {documents:1};},
         async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
@@ -291,7 +317,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
             control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
         },
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1,scenario==='extraction-objects'&&page===1))}`;},
     };
     return {client,initialProject:null};
 }

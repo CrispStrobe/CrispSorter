@@ -133,7 +133,7 @@ describe('page draft mapping and evidence',()=>{
         expect(next.pages[0].regions[0]).toEqual({...old,text:'😀 Fixed\r\nsecond',review:'corrected'});
         expect(next.pages[0].regions[1]).toEqual(p.pages[0].regions[1]);
         expect(next.pages[0].approved).toBe(false);expect(next.pageTextDraft).toBeUndefined();
-        expect(next.pages[0].provenance.extraction).toBeUndefined();
+        expect(next.pages[0].provenance.extraction).toEqual({value:'stale'});
         expect(next.pages[0].provenance.lastPageTextEdit).toMatchObject({draftId:p.pageTextDraft!.id,draftRevision:2,combined:false});
         expect(JSON.stringify(p)).toBe(before);
     });

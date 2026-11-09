@@ -6,6 +6,7 @@ import { joinRegionText, hasUnresolvedSharedGeometry, type PassageSeparator } fr
 import { readPageStructure, reconcilePageStructure, projectStructureForRegions, type PageStructure } from './structureData';
 import { readStructureHistory, archiveReplacedStructure } from './structureHistory';
 import { readPageTextDraft, pageTextDraftSourceIsCurrent, type PageTextDraft } from './pageTextDraft';
+import { getExtractionObjects, readExtractionObjects, extractionObjectFreshness } from './extractionObjects';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -156,6 +157,16 @@ export function updatePage(project: OcrProject, pageId: string, patch: Partial<O
     return touch(project, project.pages.map((page) => {
         if(page.id !== pageId) return page;
         const next={...page,...patch,id:page.id,documentId:page.documentId};
+        // Existing mutation paths may clear the old singleton editor projection.
+        // Preserve its raw record and the independent objects for recovery; the
+        // extraction reader decides whether each captured source is still current.
+        const retained=retainedExtractionProvenance(page);
+        for(const key of ['extraction','extractionObjects'] as const) {
+            if(retained[key]!==undefined && next.provenance[key]===undefined)
+                next.provenance={...next.provenance,[key]:retained[key]};
+        }
+        if(patch.provenance?.extractionObjects!==undefined)
+            next.provenance={...next.provenance,extractionObjects:readExtractionObjects(patch.provenance.extractionObjects)};
         if('structure' in patch) next.structure=readPageStructure(patch.structure,next);
         else if(patch.regions && page.structure) {
             const reconciled=reconcilePageStructure(page,next);
@@ -285,11 +296,13 @@ export function normalizeRectangle(start: {x:number;y:number}, end: {x:number;y:
     return {x, y, w: right-x, h: bottom-y};
 }
 
-/** Extracted values describe the old pixels and must not follow a transformed image. */
-function withoutExtraction(provenance: Record<string, unknown>): Record<string, unknown> {
-    const next = { ...provenance };
-    delete next.extraction;
-    return next;
+/** Migrate before replacing source pixels, while their measured geometry is known. */
+function retainedExtractionProvenance(page: OcrPage): Record<string, unknown> {
+    if(page.provenance.extractionObjects!==undefined || page.provenance.extraction===undefined) return page.provenance;
+    const migrated=getExtractionObjects(page);
+    return migrated.collection.objects.length
+        ? {...page.provenance,extractionObjects:migrated.collection}
+        : page.provenance;
 }
 
 function passageSources(page: OcrPage): SourceComponent[] {
@@ -298,7 +311,7 @@ function passageSources(page: OcrPage): SourceComponent[] {
 }
 function archivePassageSources(page: OcrPage): Record<string, unknown> {
     const sources=passageSources(page);
-    return {...withoutExtraction(page.provenance),...(sources.length ? {passageSources:sources} : {})};
+    return {...retainedExtractionProvenance(page),...(sources.length ? {passageSources:sources} : {})};
 }
 
 /** Transforming page pixels invalidates recognition rather than warping stale boxes. */
@@ -346,6 +359,10 @@ export function getReviewIssues(project: OcrProject, threshold = project.confide
         if (page.approved) continue;
         if (page.structure && typeof page.provenance.structureChangedAt === 'string') {
             issues.push({pageId:page.id,regionId:null,reason:'changed',message:'Document structure changes need page approval.'});
+        }
+        if ((page.provenance.extractionObjects!==undefined || page.provenance.extraction!==undefined) &&
+            getExtractionObjects(page).collection.objects.some(object=>!object.excluded && extractionObjectFreshness(project,object).current)) {
+            issues.push({pageId:page.id,regionId:null,reason:'changed',message:'Extracted content needs page approval.'});
         }
         const regions = activeRegions(page);
         if (!regions.length || regions.every((r) => !r.text.trim())) issues.push({pageId:page.id,regionId:null,reason:'empty',message:'No recognized text. Verify this is an intentionally blank page.'});
@@ -547,6 +564,7 @@ export function parseProject(input: unknown): OcrProject {
         if (!validPagePoints(physicalSize.widthPoints)||!validPagePoints(physicalSize.heightPoints)) throw new Error('OCR page exceeds the supported physical size at the default 300 DPI.');
         Object.assign(page,physicalSize);
         if (!page.provenance||typeof page.provenance!=='object'||Array.isArray(page.provenance)) page.provenance={};
+        if (page.provenance.extractionObjects!==undefined) page.provenance.extractionObjects=readExtractionObjects(page.provenance.extractionObjects);
         if (typeof page.profileId!=='string') page.profileId=p.profileId;
         for (const region of page.regions) {
             checkId(region.id);

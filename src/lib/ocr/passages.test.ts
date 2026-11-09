@@ -148,10 +148,10 @@ describe('passage split and merge',()=>{
         expect(joinRegionText(p.pages[0].regions)).toBe('alpha beta\ngamma delta\nunrelated');
     });
 
-    it('invalidates extraction but leaves the untouched source project unchanged',()=>{
+    it('retains raw historical extraction and leaves the source project unchanged',()=>{
         let p=project();p=updatePage(p,p.pages[0].id,{provenance:{extraction:{fields:['old']},engine:'fixture'}});
         const before=JSON.stringify(p),next=applyPassagePreview(p,split(p));
-        expect(next.pages[0].provenance.extraction).toBeUndefined();
+        expect(next.pages[0].provenance.extraction).toEqual({fields:['old']});
         expect(next.pages[0].provenance.engine).toBe('fixture');
         expect(JSON.stringify(p)).toBe(before);
     });

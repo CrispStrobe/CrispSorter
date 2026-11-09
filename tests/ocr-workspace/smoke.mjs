@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -1402,6 +1402,162 @@ if (process.argv.includes('--serve')) {
             assert.equal(await table.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).inputValue(), 'EUR 1,250.00');
         });
 
+        await test('saved extraction objects retain independent sources, edits, history and exports', 'extraction-objects', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const sourcePage = initial.pages[0];
+            const objectsOf = snapshot => snapshot.pages[0].provenance.extractionObjects.objects;
+            const cellAt = (object, row, column) => object.currentData.cells.find(cell => cell.row === row && cell.column === column);
+            let extractedCount = 0;
+            async function extractSource(regionNumber, kind, actionName) {
+                await page.getByRole('tab', { name: 'Review', exact: true }).click();
+                await page.getByRole('button', { name: 'Regions', exact: true }).click();
+                await page.getByRole('checkbox', { name: 'Needs attention', exact: true }).uncheck();
+                await page.getByRole('button', { name: 'Select region ' + regionNumber, exact: true }).click();
+                await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+                await page.getByRole('button', { name: kind, exact: true }).click();
+                const action = page.getByRole('button', { name: actionName, exact: true });
+                await action.click();
+                // Extraction locks this action until its captured-page update
+                // completes. A trial click waits without starting a second run.
+                await action.click({ trial: true });
+                const snapshot = await saveSnapshot(page);
+                const objects = objectsOf(snapshot);
+                assert.equal(objects.length, ++extractedCount);
+                assert.deepEqual(snapshot.pages[0].regions, sourcePage.regions);
+                const object = objects.at(-1);
+                assert.equal(await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).inputValue(), object.id);
+                assert.equal(object.captures.length, 1);
+                assert.equal(object.captures[0].pageId, sourcePage.id);
+                assert.equal(object.captures[0].documentId, sourcePage.documentId);
+                assert.equal(object.captures[0].regionId, sourcePage.regions[regionNumber - 1].id);
+                assert.equal(object.captures[0].imagePath, sourcePage.imagePath);
+                assert.deepEqual(object.captures[0].bounds, sourcePage.regions[regionNumber - 1].bounds);
+                return object;
+            }
+            async function selectObject(kind, id) {
+                await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+                await page.getByRole('button', { name: kind, exact: true }).click();
+                await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).selectOption(id);
+                await page.locator('[data-extraction-object-id="' + id + '"]').waitFor();
+            }
+            async function writeSelected(actionName) {
+                const count = await page.evaluate(() => window.ocrSmoke.writes.length);
+                await page.getByRole('button', { name: actionName, exact: true }).click();
+                await page.waitForFunction(previous => window.ocrSmoke.writes.length > previous, count);
+                return page.evaluate(index => window.ocrSmoke.writes[index], count);
+            }
+
+            const firstTable = await extractSource(2, 'Table', 'Extract table');
+            const secondTable = await extractSource(3, 'Table', 'Extract table');
+            const firstFormula = await extractSource(4, 'Formula', 'Recognize formula');
+            const secondFormula = await extractSource(5, 'Formula', 'Recognize formula');
+            const fields = await extractSource(6, 'Fields', 'Extract fields');
+            const originalObjects = [firstTable, secondTable, firstFormula, secondFormula, fields];
+            assert.equal(new Set(originalObjects.map(object => object.id)).size, 5);
+            assert.deepEqual(originalObjects.map(object => object.kind), ['table', 'table', 'formula', 'formula', 'fields']);
+            assert.equal(firstTable.originalOutputKind, 'model');
+            assert.deepEqual(firstTable.originalOutput, {
+                html: '<table><tr><th colspan="2">Parts</th></tr><tr><td>Valve</td><td>2</td></tr></table>',
+                rows: 2, cols: 2,
+            });
+            assert.equal(cellAt(firstTable, 0, 0).columnSpan, 2);
+            assert.equal(firstTable.currentData.cells.length, 3);
+            assert.equal(firstTable.currentData.cells.some(cell => cell.box !== undefined), false);
+            assert.equal(cellAt(secondTable, 1, 0).text, '0012');
+            assert.equal(firstFormula.originalOutput, 'E=mc^2');
+            assert.equal(secondFormula.originalOutput, 'a^2+b^2=c^2');
+            assert.equal(fields.captures[0].method, 'text');
+            assert.equal(fields.captures[0].text, sourcePage.regions[5].text);
+            assert.equal(firstTable.captures[0].method, 'pixels');
+            const cropRequests = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform' && call.data.operation === 'crop').map(call => call.data));
+            assert.deepEqual(cropRequests.map(request => request.crop), sourcePage.regions.slice(1, 5).map(region => region.bounds));
+            assert.ok(cropRequests.every(request => request.pagePath === sourcePage.imagePath));
+            assert.deepEqual(fields.originalOutput, [
+                { label: 'vendor', value: 'Northstar Supply Co.', score: 0.97 },
+                { label: 'total', value: 'EUR 1,250.00', score: 0.95 },
+            ]);
+
+            await selectObject('Table', firstTable.id);
+            const panel = page.locator('[data-extraction-objects]');
+            await panel.locator('[data-extraction-source-state="current"]').waitFor();
+            await expandStructureDetail(panel, 'Original model output');
+            assert.deepEqual(JSON.parse(await panel.getByRole('textbox', { name: 'Original extraction output', exact: true }).inputValue()), firstTable.originalOutput);
+            const cell = page.getByRole('textbox', { name: 'Row 2, column 1', exact: true });
+            const editedCell = 'Reviewed valve\nChecked';
+            await cell.fill(editedCell);
+            await cell.blur();
+            const edited = await saveSnapshot(page);
+            assert.equal(cellAt(objectsOf(edited)[0], 1, 0).text, editedCell);
+            assert.deepEqual(objectsOf(edited)[0].originalData, firstTable.originalData);
+            assert.deepEqual(objectsOf(edited)[0].originalOutput, firstTable.originalOutput);
+            assert.deepEqual(objectsOf(edited).slice(1), originalObjects.slice(1));
+
+            const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+            await cell.focus();
+            await page.keyboard.press(modifier + '+z');
+            await page.waitForFunction(() => document.querySelector('[aria-label="Row 2, column 1"]')?.value === 'Valve');
+            const undone = await saveSnapshot(page);
+            assert.deepEqual(objectsOf(undone), originalObjects);
+            await cell.focus();
+            await page.keyboard.press(modifier + '+Shift+z');
+            await page.waitForFunction(value => document.querySelector('[aria-label="Row 2, column 1"]')?.value === value, editedCell);
+            await saveSnapshot(page);
+            await reopenFixtureProject(page);
+            await selectObject('Table', firstTable.id);
+            assert.equal(await cell.inputValue(), editedCell);
+            assert.equal(await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).locator('option').count(), 2);
+            const tableCsv = await writeSelected('Save table as CSV');
+            assert.equal(tableCsv.text, '"Parts",""\r\n"Reviewed valve\nChecked","2"');
+
+            await selectObject('Formula', firstFormula.id);
+            const latex = page.getByRole('textbox', { name: 'LaTeX', exact: true });
+            await latex.fill('E=mc^2+C');
+            await latex.blur();
+            await page.locator('[data-formula-preview]').waitFor();
+            const formulaTex = await writeSelected('Save formula as LaTeX');
+            assert.equal(formulaTex.text, 'E=mc^2+C');
+            await selectObject('Fields', fields.id);
+            const vendor = page.getByRole('textbox', { name: 'vendor', exact: true });
+            await vendor.fill('Northstar Supply Company');
+            await vendor.blur();
+            const fieldsJson = JSON.parse((await writeSelected('Save fields as JSON')).text);
+            assert.equal(fieldsJson.id, fields.id);
+            assert.equal(fieldsJson.kind, 'fields');
+            assert.deepEqual(fieldsJson.originalOutput, fields.originalOutput);
+            assert.deepEqual(fieldsJson.originalData, fields.originalData);
+            assert.deepEqual(fieldsJson.captures, fields.captures);
+            assert.equal(fieldsJson.currentData.fields.find(field => field.label === 'vendor').value, 'Northstar Supply Company');
+            assert.equal(fieldsJson.originalData.fields.find(field => field.label === 'vendor').score, 0.97);
+
+            const reviewed = await saveSnapshot(page);
+            const reviewedObjects = objectsOf(reviewed);
+            assert.deepEqual(reviewedObjects[1], secondTable);
+            assert.deepEqual(reviewedObjects[3], secondFormula);
+            for (let index = 0; index < originalObjects.length; index++) {
+                assert.deepEqual(reviewedObjects[index].originalOutput, originalObjects[index].originalOutput);
+                assert.deepEqual(reviewedObjects[index].originalData, originalObjects[index].originalData);
+                assert.deepEqual(reviewedObjects[index].captures, originalObjects[index].captures);
+            }
+            assert.deepEqual(reviewed.pages[0].regions, sourcePage.regions);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.exports[0].pages[0].provenance.extractionObjects.objects), reviewedObjects);
+
+            await page.getByRole('button', { name: 'Rotate page right', exact: true }).click();
+            await selectObject('Table', firstTable.id);
+            await panel.locator('[data-extraction-source-state="historical"]').waitFor();
+            const historical = await saveSnapshot(page);
+            assert.notEqual(historical.pages[0].imagePath, sourcePage.imagePath);
+            assert.deepEqual(objectsOf(historical), reviewedObjects);
+            assert.equal(await cell.inputValue(), editedCell);
+            await panel.getByLabel('Captured extraction source', { exact: true }).waitFor();
+            await page.screenshot({ path: path.join(output, 'ocr-extraction-objects.png'), fullPage: true });
+        });
+
         await test('delayed extraction follows its source page and undo restores visible and exported cells', 'extraction-delay', async page => {
             await page.getByRole('tab', { name: 'Extract', exact: true }).click();
             await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -1411,11 +1567,14 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.releaseExtraction()), true);
             await page.getByText(/rows × 2 columns extracted · saved to/).waitFor();
             assert.equal(await page.getByRole('textbox', { name: 'Row 2, column 1', exact: true }).count(), 0);
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].provenance.extraction?.tableRows?.length === 2);
-            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
-            assert.equal(saved.pages[0].provenance.extraction.sourceImagePath, saved.pages[0].imagePath);
-            assert.equal(saved.pages[2].provenance.extraction, undefined);
+            const saved = await saveSnapshot(page);
+            const extracted = saved.pages[0].provenance.extractionObjects.objects;
+            assert.equal(extracted.length, 1);
+            assert.equal(extracted[0].kind, 'table');
+            assert.equal(extracted[0].currentData.rows, 2);
+            assert.equal(extracted[0].captures[0].pageId, saved.pages[0].id);
+            assert.equal(extracted[0].captures[0].imagePath, saved.pages[0].imagePath);
+            assert.equal(saved.pages[2].provenance.extractionObjects, undefined);
 
             await page.getByRole('button', { name: /^Page 1:/ }).click();
             const cell = page.getByRole('textbox', { name: 'Row 2, column 1', exact: true });
@@ -1543,7 +1702,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;
