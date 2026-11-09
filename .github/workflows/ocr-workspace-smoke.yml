@@ -3,7 +3,7 @@ name: OCR workspace browser verification
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation', 'feat/ocr-studio-integration', 'feat/ocr-export-controls', 'feat/ocr-phone-corner-focus']
     paths:
       - src/lib/ocr/**
       - src/lib/tabs.ts
@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: ocr-workspace-browser-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation", "feat/ocr-studio-integration", "feat/ocr-export-controls"]'), github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation", "feat/ocr-studio-integration", "feat/ocr-export-controls", "feat/ocr-phone-corner-focus"]'), github.head_ref || github.ref_name) }}
 
 jobs:
   browser:

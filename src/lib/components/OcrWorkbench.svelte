@@ -158,6 +158,8 @@
   let mobileView = $state<"pages" | "image" | "tools">("image");
   let photoOpen = $state(false);
   let perspective = $state(false);
+  let photoToolsButton = $state<HTMLButtonElement>();
+  let photoFocusBack = $state<HTMLButtonElement>();
   let photoQuad = $state<PhotoQuad>(initialPhotoQuad(100, 100));
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
@@ -720,10 +722,19 @@
     if (!photoOpen) perspective = false;
   }
   function setPerspective(enabled: boolean) {
+    const leavingPhoneFocus = !enabled && !!photoFocusBack?.getClientRects().length;
     perspective = enabled;
     showOriginal = false;
     drawMode = "select";
     mobileView = "image";
+    if (enabled) fit = "page";
+    void tick().then(() => {
+      if (enabled && perspective && photoFocusBack?.getClientRects().length) {
+        photoFocusBack.focus({ preventScroll: true });
+      } else if (leavingPhoneFocus) {
+        photoToolsButton?.focus({ preventScroll: true });
+      }
+    });
   }
   async function applyPerspective() {
     if (!activePage) return;
@@ -1688,7 +1699,7 @@
     }
     if (event.key === "Escape") {
       drawMode = "select";
-      perspective = false;
+      if (perspective) setPerspective(false);
       confirm = null;
       helpOpen = false;
       recentOpen = false;
@@ -1819,7 +1830,7 @@
 
 <svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
 
-<section class="ocr-workspace" aria-label="OCR document workspace">
+<section class="ocr-workspace" class:photo-focusing={photoOpen && perspective && mobileView === "image"} aria-label="OCR document workspace">
   <!-- Android's native chooser requires the image/* token to enter camera capture.
        Unsupported image formats are checked after selection, before import. -->
   <input class="camera-input" bind:this={cameraInput} type="file" accept="image/*" capture="environment" aria-label="Camera photo file" onchange={capturePhoto} />
@@ -2391,11 +2402,21 @@
           >
         </div>
         {#if activePage && capabilities.photo_tools}
-          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
+          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} bind:this={photoToolsButton} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
           {#if photoOpen}<PhotoPreparation width={activePage.width} height={activePage.height} assessment={photoAssessment} assessing={busy === "Checking photo quality"} disabled={locked}
             {perspective} quad={photoQuad} angle={photoAngle} canWhiten={capabilities.ocr} onassess={assessPhoto} onperspective={setPerspective} onquad={(quad) => (photoQuad = quad)}
             onangle={(angle) => (photoAngle = angle)} onapplyperspective={applyPerspective} onapplyangle={() => transform("deskew", { angle: photoAngle })} onwhiten={flattenShadows}
             onclose={() => { photoOpen = false; perspective = false; }} />{/if}
+          {#if photoOpen && perspective}
+            {@const cornerError = photoQuadError(photoQuad, activePage.width, activePage.height)}
+            <div class="photo-focus-controls" role="region" aria-label="Photo corner editing">
+              <div class="photo-focus-actions">
+                <button class="button" bind:this={photoFocusBack} onclick={() => setPerspective(false)}><ChevronLeft size={16} />Back to photo tools</button>
+                <button class="button primary" onclick={applyPerspective} disabled={locked || !!cornerError}><Check size={16} />Apply perspective</button>
+              </div>
+              {#if cornerError}<p class="photo-focus-error" role="status">{cornerError}</p>{/if}
+            </div>
+          {/if}
         {/if}
         {#if activePage}
           <PageCanvas
@@ -2421,14 +2442,14 @@
         {/if}
         <div class="image-footer">
           <button
-            class="icon-button"
+            class="icon-button page-navigation"
             onclick={() => gotoPage(-1)}
             disabled={pageIndex <= 0}
             aria-label="Previous page"><ChevronLeft size={17} /></button
-          ><span class="page-counter"
+          ><span class="page-counter page-navigation"
             >{pageIndex + 1} <span>/ {project.pages.length}</span></span
           ><button
-            class="icon-button"
+            class="icon-button page-navigation"
             onclick={() => gotoPage(1)}
             disabled={pageIndex >= project.pages.length - 1}
             aria-label="Next page"><ChevronRight size={17} /></button
@@ -5708,6 +5729,7 @@
   .mobile-workspace-nav { display: none; }
   .photo-tool-toggle { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #152030; flex: none; }
   .photo-tool-toggle > span { font-size: 10px; color: var(--muted); }
+  .photo-focus-controls { display: none; }
   .batch-recovery { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: #1d2d3e; border-bottom: 1px solid #3a526c; flex: none; }
   .batch-recovery > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .batch-recovery span { color: #adbed2; font-size: 10px; }
@@ -5759,6 +5781,21 @@
     .ocr-workspace :global(textarea), .ocr-workspace :global(input:not([type="checkbox"]):not([type="range"])), .ocr-workspace :global(select) { font-size: 16px; }
     .workspace-title input { font-size: 14px !important; }
     .photo-tool-toggle > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ocr-workspace.photo-focusing .workspace-header,
+    .ocr-workspace.photo-focusing .command-bar,
+    .ocr-workspace.photo-focusing .mobile-workspace-nav,
+    .ocr-workspace.photo-focusing .image-toolbar,
+    .ocr-workspace.photo-focusing .photo-tool-toggle,
+    .ocr-workspace.photo-focusing .document-pane :global(.photo-preparation) { display: none; }
+    .photo-focusing .photo-focus-controls { display: block; flex: none; background: #172435; border-bottom: 1px solid #35516e; padding: 8px; }
+    .photo-focus-actions { display: flex; gap: 8px; }
+    .photo-focus-actions .button { flex: 1; min-width: 0; min-height: 44px; padding: 8px 5px; font-size: 11px; white-space: normal; }
+    .photo-focus-error { margin: 7px 4px 0; color: #efc58b; line-height: 1.4; font-size: 11px; }
+    .photo-focusing .image-footer .page-navigation,
+    .photo-focusing .image-footer .toolbar-spacer { display: none; }
+    .photo-focusing .image-footer { justify-content: center; gap: 8px; }
+    .ocr-workspace.photo-focusing .image-footer .icon-button { min-width: 44px; }
+    .photo-focusing .image-footer select { min-height: 44px; min-width: 120px; max-width: 140px; font-size: 14px !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     .button {
