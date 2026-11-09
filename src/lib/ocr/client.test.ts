@@ -419,6 +419,34 @@ describe('OCR workspace platform transport', () => {
         expect(unlisten).toHaveBeenCalledOnce();
     });
 
+    it.each([
+        'OCR_EXPORT_CANCELLED',
+        'Render OCR PDF: OCR_EXPORT_CANCELLED',
+        'Write OCR export: OCR_EXPORT_CANCELLED',
+        'Flush OCR export: OCR_EXPORT_CANCELLED',
+    ])('recognizes only the exact native cancellation cause %s', async cause => {
+        listen.mockResolvedValue(vi.fn());
+        for (const failure of [cause, new Error(cause)]) {
+            invoke.mockRejectedValueOnce(failure);
+            await expect(workspaceClient.exportDocument(exportRequest('/exports/reviewed.txt'), { onProgress: vi.fn() })).rejects.toMatchObject({ name: 'AbortError' });
+        }
+    });
+
+    it.each([false, true])('preserves marker-like filenames and native error identity with tracked export %s', async tracked => {
+        listen.mockResolvedValue(vi.fn());
+        for (const cause of [
+            'Output already exists: OCR_EXPORT_CANCELLED',
+            'Output already exists: /exports/OCR_EXPORT_CANCELLED.pdf. Choose another name or explicitly confirm replacement.',
+            'Render OCR PDF: unsupported value OCR_EXPORT_CANCELLED',
+            'Read source: OCR_EXPORT_CANCELLED',
+        ]) {
+            for (const failure of [cause, new Error(cause)]) {
+                invoke.mockRejectedValueOnce(failure);
+                await expect(workspaceClient.exportDocument(exportRequest('/exports/reviewed.txt'), tracked ? { onProgress: vi.fn() } : undefined)).rejects.toBe(failure);
+            }
+        }
+    });
+
     it('retains a native export failure even after abort and failed cancellation or listener teardown', async () => {
         const controller = new AbortController(), nativeStarted = deferred<void>(), native = deferred<ExportResult>();
         const failure = new Error('Output volume is full. The existing document is unchanged.');
