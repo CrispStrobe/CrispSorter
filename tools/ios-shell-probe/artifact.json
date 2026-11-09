@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "repository": "CrispStrobe/CrispSorter",
+  "run_id": 42619149388,
+  "artifact_id": 13680296839,
+  "artifact_name": "ocr-mobile-ios-sim-arm64",
+  "artifact_bytes": 136772217,
+  "artifact_sha256": "14fe385e2b72d1c56ee56d077835471b3e2dd50234a64a464577c3205d907772",
+  "application_source": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "bundle_identifier": "com.crispstrobe.crispsorter",
+  "bundle_sha256": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+  "bundle_archive_member": "ocr-mobile-app/CrispSorter-ocr-simulator.zip",
+  "bundle_archive_bytes": 129093114,
+  "bundle_archive_sha256": "db9cd7227fe0afb44e09777bac5994325afa5b416ebd2a7dcfb7682f9b512ce8",
+  "build_receipt_member": "ocr-mobile-app/build-receipt.json",
+  "simulator_device": "iPhone 16 Pro",
+  "simulator_runtime": "18.5"
+}
