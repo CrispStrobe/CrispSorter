@@ -8,6 +8,7 @@ import type {
   RecognitionResult,
 } from "./model";
 import type { SaveReceipt } from "./autosave";
+import type { PhotoQuad } from "./photo";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -19,6 +20,8 @@ export interface WorkspaceCapabilities {
   kie: boolean;
   table: boolean;
   math: boolean;
+  photo_tools?: boolean;
+  camera_import?: boolean;
   reason?: string;
   pdf_export_reason?: string;
   reasons?: Record<string, string>;
@@ -47,10 +50,25 @@ export interface TransformOptions {
   pagePath: string;
   pageWidthPoints?: number;
   pageHeightPoints?: number;
-  operation: "rotate" | "crop" | "split";
+  operation: "rotate" | "crop" | "split" | "perspective" | "deskew";
   degrees?: number;
   crop?: { x: number; y: number; w: number; h: number };
   splitX?: number;
+  quad?: PhotoQuad;
+  angle?: number;
+}
+export interface PhotoAssessment {
+  width: number;
+  height: number;
+  sample_width: number;
+  sample_height: number;
+  mean_luminance: number;
+  contrast: number;
+  sharpness: number;
+  ink_fraction: number;
+  correction_degrees: number | null;
+  skew_confidence: number;
+  warnings: string[];
 }
 export interface ExtractionField {
   label: string;
@@ -81,6 +99,8 @@ export interface WorkspaceClient {
   load(projectId?: string): Promise<ProjectEnvelope | null>;
   save(project: OcrProject, expectedRevision: number): Promise<ProjectEnvelope>;
   importDocument(locationUri: string): Promise<ImportedDocument>;
+  importImage?(name: string, bytes: Uint8Array): Promise<ImportedDocument>;
+  assessPhoto?(pagePath: string): Promise<PhotoAssessment>;
   recognize(options: RecognitionOptions): Promise<RecognitionResult>;
   transform(options: TransformOptions): Promise<{ pages: ImportedPage[] }>;
   prepare(
@@ -124,6 +144,8 @@ export const workspaceClient: WorkspaceClient = {
     invoke("ocr_workspace_save", { project, expectedRevision }),
   importDocument: (locationUri) =>
     invoke("ocr_workspace_import", { locationUri }),
+  importImage: (name, bytes) => invoke("ocr_workspace_import_image", { name, bytes: Array.from(bytes) }),
+  assessPhoto: (pagePath) => invoke("ocr_workspace_assess_photo", { pagePath }),
   recognize: (options) =>
     invoke("ocr_workspace_recognize", {
       ...options,
@@ -138,6 +160,8 @@ export const workspaceClient: WorkspaceClient = {
       degrees: options.degrees ?? null,
       crop: options.crop ?? null,
       splitX: options.splitX ?? null,
+      quad: options.quad ?? null,
+      angle: options.angle ?? null,
     }),
   prepare: (pagePath, config, pageWidthPoints, pageHeightPoints) =>
     invoke("ocr_workspace_prepare", {

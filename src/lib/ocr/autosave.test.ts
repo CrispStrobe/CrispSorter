@@ -4,6 +4,46 @@ import { ProjectAutosave } from './autosave';
 const receipt = (revision: number) => ({ revision, saved_at: '2026-11-08T10:00:00Z', path: 'project.json' });
 
 describe('durable project autosave', () => {
+    it('does not lose edits or repeat a committed write when status observers throw', async () => {
+        const writer = vi.fn(async (_snapshot: { value: number }, revision: number) => receipt(revision + 1));
+        const saver = new ProjectAutosave(writer, () => { throw new Error('Detached UI'); }, 0, 60_000);
+        expect(() => saver.schedule({ value: 7 })).not.toThrow();
+        await saver.flush();
+        expect(writer).toHaveBeenCalledTimes(1);
+        expect(writer.mock.calls[0]).toEqual([{ value: 7 }, 0]);
+        expect(saver.getRevision()).toBe(1);
+        expect(saver.getStatus().state).toBe('saved');
+        expect(saver.hasUnsavedChanges()).toBe(false);
+        await saver.close();
+    });
+
+    it('claims the write lock before a saving observer re-enters flush', async () => {
+        const writer = vi.fn(async (_snapshot: { value: number }, revision: number) => receipt(revision + 1));
+        let nested: Promise<void> | undefined;
+        let saver!: ProjectAutosave<{ value: number }>;
+        saver = new ProjectAutosave(writer, status => {
+            if (status.state === 'saving') nested = saver.flush();
+        }, 0, 60_000);
+        saver.schedule({ value: 9 });
+        await saver.flush();
+        await nested;
+        expect(writer).toHaveBeenCalledTimes(1);
+        expect(saver.getRevision()).toBe(1);
+        await saver.close();
+    });
+
+    it('rejects a nonadvancing save receipt while retaining the same revision lease and edits', async () => {
+        const writer = vi.fn(async (_snapshot: { value: number }, revision: number) => receipt(revision));
+        const saver = new ProjectAutosave(writer, () => {}, 3, 60_000);
+        saver.schedule({ value: 12 });
+        await expect(saver.flush()).rejects.toThrow(/invalid revision/);
+        expect(saver.getRevision()).toBe(3);
+        expect(saver.hasUnsavedChanges()).toBe(true);
+        writer.mockImplementation(async (_snapshot, revision) => receipt(revision + 1));
+        await saver.close();
+        expect(writer.mock.calls[1]).toEqual([{ value: 12 }, 3]);
+    });
+
     it('serializes edits made while a save is in flight and advances the revision lease', async () => {
         const calls: Array<[number, number]> = [];
         let release!: () => void;

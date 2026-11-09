@@ -14,6 +14,32 @@ function recognize(p:OcrProject, index=0, text='Original text', confidence:numbe
 }
 
 describe('OCR project and recognition',()=>{
+    it('rejects malformed native payloads and dimension drift while preserving reviewed work',()=>{
+        const recognized=recognize(project(1));
+        const p=approvePage(recognized,recognized.pages[0].id);
+        const before=JSON.stringify(p), pageId=p.pages[0].id;
+        for (const value of [null,{width:1000,height:1400,regions:null},{width:1000,height:1400,regions:[null]},
+            {width:1000,height:1400,regions:[{text:99,x:1,y:2,w:20,h:30}]},
+            {width:1000,height:1400,regions:[{text:'x',char_conf:42,x:1,y:2,w:20,h:30}]},
+            {width:2000,height:2800,regions:[]}]) {
+            expect(()=>applyRecognition(p,pageId,value as never)).toThrow(/Recognition/);
+            expect(JSON.stringify(p)).toBe(before);
+        }
+    });
+    it('honors explicit unaligned evidence and never promotes token or unspecified scores through a boolean flag',()=>{
+        const p=project(1), pageId=p.pages[0].id;
+        const result={width:1000,height:1400,regions:[{text:'Hi',x:0,y:0,w:20,h:20,confidence:0.95,char_conf:[0.1,0.99],confidence_basis:'recognition'}]};
+        for (const metadata of [
+            {char_conf_unit:'token',char_conf_aligned:true},
+            {char_conf_aligned:true},
+            {char_conf_unit:'unicode_codepoint',char_conf_aligned:false},
+        ]) {
+            const out=applyRecognition(p,pageId,{...result,...metadata});
+            expect(out.pages[0].regions[0].charConfidenceAligned).toBe(false);
+            expect(getReviewIssues(out)).toEqual([]);
+            expect(prepareExport(out).pages[0].regions[0].char_conf_aligned).toBe(false);
+        }
+    });
     it('retains import identity and original source order across multiple documents',()=>{
         const p=addDocument(project(),imported('book.tif',3));
         expect(new Set([...p.documents.map(d=>d.id),...p.pages.map(p=>p.id)]).size).toBe(7);
@@ -175,6 +201,19 @@ describe('physical paper size',()=>{
 });
 
 describe('proofreading and geometry',()=>{
+    it('preserves approval and evidence version for identical text, geometry, order, and image edits',()=>{
+        let p=recognize(project(1));
+        p=approvePage(p,p.pages[0].id);
+        const page=p.pages[0], region=page.regions[0];
+        expect(editRegion(p,page.id,region.id,region.text)).toBe(p);
+        expect(updateRegion(p,page.id,region.id,{x:region.x,y:region.y})).toBe(p);
+        expect(moveRegion(p,page.id,region.id,-1)).toBe(p);
+        expect(applyPageImage(p,page.id,{image_path:page.imagePath,width:page.width,height:page.height},'scan repair')).toBe(p);
+        expect(approvePage(p,page.id)).toBe(p);
+        expect(updatePage(p,'missing',{approved:false})).toBe(p);
+        expect(p.pages[0].approved).toBe(true);
+        expect(p.pages[0].contentRevision).toBe(page.contentRevision);
+    });
     it('edits preserve raw recognition evidence and revoke page approval',()=>{
         let p=recognize(project(1));
         const pageId=p.pages[0].id, regionId=p.pages[0].regions[0].id;
@@ -340,6 +379,14 @@ describe('find, replace and export',()=>{
 });
 
 describe('durable project recovery and history',()=>{
+    it('rejects null document/page/region records with recovery errors rather than raw property errors',()=>{
+        const p=recognize(project(1));
+        for (const corrupt of [{...p,documents:[null]}, {...p,pages:[null]}, {...p,pages:[{...p.pages[0],regions:[null]}]}]) {
+            expect(()=>parseProject(corrupt)).toThrow(/OCR/);
+        }
+        const restored=parseProject({...p,pages:[{...p.pages[0],regions:[{...p.pages[0].regions[0],charConfidenceUnit:'token',charConfidenceAligned:true,char_conf:Array.from(p.pages[0].regions[0].text).map(()=>0.1)}]}]});
+        expect(restored.pages[0].regions[0].charConfidenceAligned).toBe(false);
+    });
     it('round trips arbitrary native provenance and interrupted jobs become retryable',()=>{
         let p=recognize(project(1));
         p=updatePage(p,p.pages[0].id,{status:'running',provenance:{engine:'surya',diagnostics:{stages:[1,2]}}});
