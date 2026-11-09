@@ -53,6 +53,14 @@ class WordReader(unittest.TestCase):
         self.assertEqual(result['paragraph_rtl'], [False, True])
         self.assertEqual(result['status'], 'passed')
         self.assertFalse(result['word_application_tested'])
+        values = parts()
+        document = ET.fromstring(values['word/document.xml'])
+        properties = document.find('.//' + reader.W + 'pPr')
+        stops = ET.SubElement(properties, reader.W + 'tabs')
+        ET.SubElement(stops, reader.W + 'tab', {reader.W + 'val': 'left', reader.W + 'pos': '720'})
+        values['word/document.xml'] = ET.tostring(document, encoding='utf-8')
+        self.write(values)
+        self.assertEqual(reader.verify(self.path, EXPECTED)['paragraphs'], EXPECTED['paragraphs'])
 
     def test_changed_correction_missing_diacritics_and_reordered_text_fail(self):
         for texts in [['Document 2048', MIXED], ['Document 2049', MIXED.replace('שָׁלוֹם', 'שלום')], list(reversed(EXPECTED['paragraphs']))]:

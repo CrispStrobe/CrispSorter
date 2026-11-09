@@ -47,16 +47,19 @@ def property_enabled(paragraph, name):
 
 def paragraph_text(paragraph):
     parts = []
-    for item in paragraph.iter():
-        if item.tag == W + 't':
-            value = item.text or ''
-            if value and (value[0].isspace() or value[-1].isspace()):
-                require(item.get(XML_SPACE) == 'preserve', 'Word whitespace lacks xml:space preservation')
-            parts.append(value)
-        elif item.tag == W + 'tab':
-            parts.append('\t')
-        elif item.tag in {W + 'br', W + 'cr'}:
-            parts.append('\n')
+    # Paragraph tab-stop definitions also use w:tab; only a run's w:tab
+    # represents an actual character in the document's logical text.
+    for run in paragraph.iter(W + 'r'):
+        for item in run.iter():
+            if item.tag == W + 't':
+                value = item.text or ''
+                if value and (value[0].isspace() or value[-1].isspace()):
+                    require(item.get(XML_SPACE) == 'preserve', 'Word whitespace lacks xml:space preservation')
+                parts.append(value)
+            elif item.tag == W + 'tab':
+                parts.append('\t')
+            elif item.tag in {W + 'br', W + 'cr'}:
+                parts.append('\n')
     return ''.join(parts)
 
 
