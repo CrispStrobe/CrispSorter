@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage, import-control, export-control');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -694,6 +694,90 @@ if (process.argv.includes('--serve')) {
             await page.getByText('All changes saved', { exact: true }).waitFor();
         });
 
+        await test('phone export progress waits for cancellation and a retry preserves the committed result', 'export-control', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const nav = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await nav.getByRole('button', { name: /^Pages\b/ }).click();
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await nav.getByRole('button', { name: 'Text & tools', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            const save = page.getByRole('button', { name: 'Save Searchable PDF', exact: true });
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'writing', bytes: 2621440 }));
+            await page.getByText('Writing export · 2.5 MiB', { exact: true }).waitFor();
+            const cancel = page.getByRole('button', { name: 'Cancel export', exact: true });
+            const bounds = await cancel.boundingBox();
+            assert.ok(bounds && bounds.height >= 44 && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y + bounds.height <= 844, 'Phone export cancel target must stay fully reachable');
+            assert.equal(await save.isDisabled(), true);
+            assert.equal(await page.getByRole('combobox', { name: /^Output format/ }).isDisabled(), true);
+            assert.equal(await page.getByRole('button', { name: 'Add documents', exact: true }).first().isDisabled(), true);
+            await page.screenshot({ path: path.join(output, 'ocr-phone-export-progress.png'), fullPage: true });
+            await cancel.click();
+            const stopping = page.getByRole('button', { name: 'Stopping…', exact: true });
+            await stopping.waitFor(); assert.equal(await stopping.isDisabled(), true);
+            assert.deepEqual(await page.evaluate(() => [window.ocrSmoke.cancelledExports, window.ocrSmoke.activeNative, window.ocrSmoke.completedExports]), [1, 1, 0]);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'writing', bytes: 3145728 }));
+            await page.getByText('Stopping export after the current step…', { exact: true }).waitFor();
+            assert.equal(await save.isDisabled(), true);
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText('Export cancelled', { exact: true }).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            assert.deepEqual(await page.evaluate(() => [window.ocrSmoke.activeNative, window.ocrSmoke.completedExports]), [0, 0]);
+
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            assert.equal(await cancel.isEnabled(), true);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'committing', bytes: 4194304 }));
+            await page.getByText('Finishing export · 4.0 MiB', { exact: true }).waitFor();
+            assert.equal(await cancel.isDisabled(), true);
+            assert.equal(await cancel.getAttribute('title'), 'The export is finishing');
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText(/^Exported 1 pages ·/).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            const state = await page.evaluate(() => ({ completed: window.ocrSmoke.completedExports, cancelled: window.ocrSmoke.cancelledExports, max: window.ocrSmoke.maxNative, requests: window.ocrSmoke.exports }));
+            assert.deepEqual([state.completed, state.cancelled, state.max], [1, 1, 1]);
+            assert.equal(state.requests.length, 2);
+            assert.deepEqual(state.requests[1], state.requests[0]);
+            assert.equal(state.requests[1].pages[0].image_path, '/fixtures/northstar-page-3.png');
+        });
+
+        await test('phone export failures unlock retry and destination transfer belongs to the system dialog', 'export-control', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const nav = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await nav.getByRole('button', { name: /^Pages\b/ }).click();
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await nav.getByRole('button', { name: 'Text & tools', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            const save = page.getByRole('button', { name: 'Save Searchable PDF', exact: true });
+            const cancel = page.getByRole('button', { name: 'Cancel export', exact: true });
+            await page.evaluate(() => { window.ocrSmoke.failExport = true; });
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText('Fixture export could not finish writing.', { exact: true }).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.completedExports), 0);
+            await page.evaluate(() => { window.ocrSmoke.failExport = false; });
+            await save.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExports === 1);
+            await page.evaluate(() => window.ocrSmoke.emitExportProgress({ request_id: 'fixture-export', phase: 'destination', bytes: 6291456 }));
+            await page.getByText('Saving to a destination · 6.0 MiB', { exact: true }).waitFor();
+            assert.equal(await cancel.isDisabled(), true);
+            assert.equal(await cancel.getAttribute('title'), 'Use the system save dialog to finish or cancel');
+            assert.equal(await save.isDisabled(), true);
+            await page.evaluate(() => window.ocrSmoke.releaseExport());
+            await page.getByText(/^Exported 1 pages ·/).waitFor();
+            assert.equal(await cancel.count(), 0);
+            assert.equal(await save.isEnabled(), true);
+            assert.deepEqual(await page.evaluate(() => [window.ocrSmoke.completedExports, window.ocrSmoke.cancelledExports, window.ocrSmoke.activeNative]), [1, 0, 0]);
+        });
+
         await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {
             await page.setViewportSize({ width: 390, height: 844 });
             const camera = page.getByLabel('Camera photo file', { exact: true });
@@ -835,7 +919,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-import-progress.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-import-progress.png', 'ocr-phone-export-progress.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

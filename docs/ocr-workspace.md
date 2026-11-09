@@ -181,6 +181,14 @@ images remain preserved inside the application. Cancelling the picker reports
 cancellation. Temporary export staging is removed after completion, cancellation,
 or failure.
 
+Export progress shows the rendering, writing, and finishing stages with the
+current byte count. **Cancel export** remains available while rendering or
+writing; **Stopping…** keeps the workspace locked until the worker has stopped.
+Once publication begins, cancellation is disabled and the completed result is
+reported. On mobile, **Saving to a destination** means the system save dialog
+owns the operation. Finish or cancel there; the application waits for the
+provider copy before removing its private staging file.
+
 The **Prepare photo** controls are advertised only with `ocr-photo-tools`,
 included in `ocr-workspace`, and require the matching CrispEmbed source and native
 library. Camera byte import and ordinary image review remain available without
@@ -332,6 +340,14 @@ For direct filesystem exports, original source paths and workspace assets remain
 protected even when replacing an existing export. Mobile external destination
 replacement is controlled by the system save picker, as described above. Writes are staged atomically; a failed render does not
 truncate an existing file.
+
+The project is saved before an export destination is allocated. Export takes a
+snapshot of the selected pages and reviewed text, so a replacement confirmation
+uses the same content. A late stop cannot turn a successfully committed file into
+a cancellation message. If a mobile export stops after private rendering but
+before the system picker opens, the private output is discarded and no picker is
+shown. See [Export progress and cancellation](ocr-export-control.md) for the
+transport contract and qualification scope.
 
 ## Keyboard shortcuts
 

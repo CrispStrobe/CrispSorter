@@ -1,5 +1,5 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
-import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ModelStorageReport, ImportOptions, ImportProgress } from '../../src/lib/ocr/client';
+import type { ExportRequest, ExportOptions, ExportProgress, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ModelStorageReport, ImportOptions, ImportProgress } from '../../src/lib/ocr/client';
 import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
 import { photoQuadError } from '../../src/lib/ocr/photo';
 
@@ -83,6 +83,12 @@ export interface SmokeControl {
     cancelledImports: number;
     releaseImport(): boolean;
     emitImportProgress(progress: ImportProgress): boolean;
+    pendingExports: number;
+    cancelledExports: number;
+    completedExports: number;
+    failExport: boolean;
+    releaseExport(): boolean;
+    emitExportProgress(progress: ExportProgress): boolean;
     released: string[];
     releaseNext():boolean;
     releaseExtraction():boolean;
@@ -137,6 +143,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pendingModelInstalls:Array<{release:()=>void;onProgress?:(progress:ModelDownloadProgress)=>void}>=[];
     const pendingModelStorage:Array<()=>void>=[];
     const pendingImports:Array<{release:()=>void;options?:ImportOptions}>=[];
+    const pendingExports:Array<{release:()=>void;options?:ExportOptions;phase:ExportProgress['phase'];cancelled:boolean}>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
@@ -154,6 +161,9 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         pendingImports:0,cancelledImports:0,
         releaseImport(){const item=pendingImports.shift();if(!item)return false;control.pendingImports=pendingImports.length;item.release();return true;},
         emitImportProgress(progress){const item=pendingImports[0];if(!item)return false;item.options?.onProgress?.(copy(progress));return true;},
+        pendingExports:0,cancelledExports:0,completedExports:0,failExport:false,
+        releaseExport(){const item=pendingExports.shift();if(!item)return false;control.pendingExports=pendingExports.length;item.release();return true;},
+        emitExportProgress(progress){const item=pendingExports[0];if(!item)return false;item.phase=progress.phase;item.options?.onProgress?.(copy(progress));return true;},
         releaseModelInstall(){const item=pendingModelInstalls.shift();if(!item)return false;control.pendingModelInstalls=pendingModelInstalls.length;item.release();return true;},
         emitModelProgress(progress){const item=pendingModelInstalls[0];if(!item)return false;item.onProgress?.(copy(progress));return true;},
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
@@ -266,7 +276,25 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             };
             return {image_path:path+'-prepared',width:1000,height:1400};
         },
-        async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};},
+        async exportDocument(request,options){
+            note('exportDocument',request);control.exports.push(copy(request));
+            if(scenario==='export-control'){
+                const item:{release:()=>void;options?:ExportOptions;phase:ExportProgress['phase'];cancelled:boolean}={release:()=>{},options,phase:'rendering',cancelled:false};
+                const onAbort=()=>{if(item.phase!=='committing'&&item.phase!=='destination'){item.cancelled=true;control.cancelledExports++;}};
+                options?.signal?.addEventListener('abort',onAbort,{once:true});
+                control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
+                try{
+                    if(options?.signal?.aborted)onAbort();
+                    // A stop request does not finish the native worker. The test
+                    // controls that boundary separately from the AbortSignal.
+                    await new Promise<void>(release=>{item.release=release;pendingExports.push(item);control.pendingExports=pendingExports.length;});
+                    if(item.cancelled)throw new DOMException('Document export cancelled.','AbortError');
+                    if(control.failExport)throw new Error('Fixture export could not finish writing.');
+                }finally{control.activeNative--;options?.signal?.removeEventListener('abort',onAbort);}
+            }
+            control.completedExports++;
+            return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};
+        },
         async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
         async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
         async table(path){note('table',{path});await waitForExtraction();return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
