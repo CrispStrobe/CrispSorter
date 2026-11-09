@@ -23,6 +23,9 @@ use tauri::{Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
+#[path = "ocr_atomic_output.rs"]
+mod atomic_output;
+use atomic_output::{atomic_write, atomic_write_with, sync_directory};
 
 const PROJECT_VERSION: u64 = 1;
 const MAX_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
@@ -214,32 +217,6 @@ fn opaque_page(image: &DynamicImage) -> DynamicImage {
             ((u16::from(source[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
         }))
     }))
-}
-
-fn sync_directory(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    File::open(path).and_then(|f| f.sync_all()).map_err(|e| format!("Sync directory: {e}"))?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
-}
-
-fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| "Choose a file in an existing output directory.".to_string())?;
-    if !parent.is_dir() { return Err("The output directory does not exist.".into()); }
-    let mut staging = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("Create output staging file: {e}"))?;
-    staging.write_all(bytes).map_err(|e| format!("Write output: {e}"))?;
-    staging.flush().map_err(|e| format!("Flush output: {e}"))?;
-    staging.as_file().sync_all().map_err(|e| format!("Sync output: {e}"))?;
-    let persisted = if overwrite { staging.persist(path) } else { staging.persist_noclobber(path) };
-    persisted.map_err(|e| {
-        if e.error.kind() == std::io::ErrorKind::AlreadyExists {
-            format!("Output already exists: {}. Choose another name or explicitly confirm replacement.", path.display())
-        } else { format!("Commit output ({}): {}", path.display(), e.error) }
-    })?;
-    sync_directory(parent)
 }
 
 /// Engines the workspace offers and accepts. All exist in the pinned CrispEmbed
@@ -1688,18 +1665,6 @@ mod tests {
         assert!(output_path(&pages[0].image_path, &pages, &[], &workspace).is_err());
         assert!(output_path("relative.txt", &pages, &[], &workspace).is_err());
         assert!(output_path(root.path().join("reviewed.txt").to_str().unwrap(), &pages, &[], &workspace).is_ok());
-    }
-
-    #[test]
-    fn atomic_output_requires_explicit_replacement_and_leaves_no_partial_file() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("out.txt");
-        atomic_write(&path, b"first", false).unwrap();
-        assert!(atomic_write(&path, b"second", false).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"first");
-        atomic_write(&path, b"second", true).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"second");
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[test]
