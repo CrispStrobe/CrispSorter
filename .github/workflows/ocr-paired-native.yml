@@ -7,12 +7,16 @@ on:
     paths:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_photo.rs
+      - src-tauri/src/model_provisioning.rs
+      - src-tauri/src/lib.rs
       - src-tauri/Cargo.toml
       - .github/workflows/ocr-paired-native.yml
   pull_request:
     paths:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_photo.rs
+      - src-tauri/src/model_provisioning.rs
+      - src-tauri/src/lib.rs
       - src-tauri/src/ocr_reading_order.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
@@ -33,7 +37,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: 5a52dbfbc2739cb8490f5b847a6445311c589124  # Explicit photo C ABI, fallible Rust allocation and reviewed OCR renderer.
+  OCR_CRISPEMBED_REF: fde19180f4726a7708186eb130b9f37099a622c7  # Explicit photo C ABI, mobile linking/provisioning metadata and reviewed OCR renderer.
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -103,6 +107,9 @@ jobs:
             ocr_photo::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
+            model_provisioning::mobile::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
             extractors::ocr_crispembed::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
@@ -113,6 +120,8 @@ jobs:
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_render::tests -- --test-threads=1
+          cargo check -p crispsorter --lib --no-default-features \
+            --features ocr-mobile
           cargo check -p crispsorter --lib --no-default-features \
             --features desktop,ocr-workspace
       - name: Save native diagnostics library
