@@ -176,6 +176,27 @@ struct DocumentRasterizer {
     return RasterizedDocument(pages: pages, bytes: bytes, decoder: "ios-core-graphics")
   }
 
+  /// JPEG must end with the EOI marker (trailing padding tolerated) and PNG with
+  /// the IEND chunk. Other formats rely on ImageIO's own status.
+  static func hasCompleteTrailer(_ url: URL, type: String?) -> Bool {
+    guard let type else { return true }
+    let isJPEG = type == "public.jpeg", isPNG = type == "public.png"
+    guard isJPEG || isPNG else { return true }
+    guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+    defer { try? handle.close() }
+    guard let size = try? handle.seekToEnd(), size >= 12 else { return false }
+    let window = UInt64(min(size, 4096))
+    guard (try? handle.seek(toOffset: size - window)) != nil,
+      let tail = try? handle.read(upToCount: Int(window)) else { return false }
+    let bytes = [UInt8](tail)
+    if isPNG {
+      return Array(bytes.suffix(12)) == [0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]
+    }
+    var end = bytes.count
+    while end > 0 && (bytes[end - 1] == 0 || bytes[end - 1] == 0x0A || bytes[end - 1] == 0x0D || bytes[end - 1] == 0x20) { end -= 1 }
+    return end >= 2 && bytes[end - 2] == 0xFF && bytes[end - 1] == 0xD9
+  }
+
   private func image(source: URL, output: URL) throws -> RasterizedDocument {
     try progress(output, completed: 0, total: 1)
     guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -197,7 +218,10 @@ struct DocumentRasterizer {
       thumbnail.width > 0, thumbnail.height > 0, thumbnail.width <= Self.maxPagePixels / thumbnail.height else {
       throw RasterizerError(message: "The primary image could not be decoded within the raster limit.")
     }
-    guard CGImageSourceGetStatusAtIndex(imageSource, index) == .statusComplete else {
+    // ImageIO reports a fully present but truncated file as complete and
+    // returns partially decoded pixels, so also check the container's trailer.
+    guard CGImageSourceGetStatusAtIndex(imageSource, index) == .statusComplete,
+      Self.hasCompleteTrailer(source, type: CGImageSourceGetType(imageSource) as String?) else {
       throw RasterizerError(message: "This image is incomplete or damaged. Import a complete JPEG, PNG, or supported phone image.")
     }
     try checkCancelled(output)
