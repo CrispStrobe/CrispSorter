@@ -174,7 +174,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         if(control.failModelStorage)throw new Error('Fixture storage is busy in another application. Retry cleanup.');
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf',...(scenario==='export-archive'?['pdfa']:[]),'text','json','html','markdown','hocr','alto','docx'],archival_pdf_export:scenario==='export-archive',pdf_bidi_export:true,pdfa_export_reason:scenario==='export-archive'?undefined:'PDF/A-2b requires the archival-capable native renderer in this build.',engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
         async modelStorage(){note('modelStorage');return copy(control.modelStorageReport);},
         async cleanModelStorage(){
             note('cleanModelStorage');await waitForStorage();

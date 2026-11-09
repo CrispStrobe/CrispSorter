@@ -251,6 +251,36 @@ if (process.argv.includes('--serve')) {
             assert.deepEqual(pdf.pages[0].regions, request.pages[0].regions);
         });
 
+        await test('archival export keeps approved page geometry and sends an explicit PDF/A request', 'export-archive', async page => {
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdfa');
+            await page.getByRole('combobox', { name: /^Page sizes/ }).selectOption('dpi');
+            await page.getByRole('spinbutton', { name: /^Scan resolution \(DPI\)/ }).fill('150');
+            await page.getByRole('button', { name: 'Save Archival PDF/A-2b', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'pdf');
+            assert.equal(request.pdfa, true);
+            assert.ok(request.outputPath.endsWith('.pdf'));
+            assert.equal(request.pages.length, 1);
+            assert.equal(request.pages[0].image_path, '/fixtures/northstar-page-3.png');
+            assert.equal(request.pages[0].page_width_points, 480);
+            assert.equal(request.pages[0].page_height_points, 672);
+            assert.equal(request.pages[0].regions[2].text, 'Invoice NS-2026-1042');
+            assert.equal(request.overwrite, false);
+        });
+
+        await test('unsupported archival output is disabled with its native capability reason', 'review', async page => {
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            const unavailable = page.locator('select option[value="pdfa"]');
+            assert.equal(await unavailable.count(), 1);
+            assert.equal(await unavailable.isDisabled(), true);
+            await page.getByText('PDF/A-2b requires the archival-capable native renderer in this build.', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.exports.length), 0);
+        });
+
         await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
             await page.getByRole('button', { name: 'Process pending', exact: true }).click();
             await page.getByText('Batch complete', { exact: true }).waitFor();

@@ -95,9 +95,18 @@ if (rustOutput) {
     });
 }
 
+// Native OCR text layout is linked into matching CrispEmbed builds. Its full
+// Apache-2.0 license and provenance ship in static/native-licenses on every platform.
+const nativeLicenses = [{
+    name: 'SheenBidi (CrispEmbed OCR text layout)',
+    version: '3.0.0', license: 'Apache-2.0',
+    author: 'Muhammad Tayyab Akram', source: 'Native',
+    link: 'https://github.com/Tehreer/SheenBidi',
+}];
+
 // 3. Combine and save. Include a generatedAt footer entry so the UI can
 //    surface how fresh this list is without anyone having to stat the file.
-const combined = [...npmLicenses, ...rustLicenses].sort((a, b) =>
+const combined = [...npmLicenses, ...rustLicenses, ...nativeLicenses].sort((a, b) =>
     a.name.localeCompare(b.name)
 );
 
@@ -106,6 +115,7 @@ const payload = {
     counts: {
         frontend: npmLicenses.length,
         backend: rustLicenses.length,
+        native: nativeLicenses.length,
         total: combined.length,
     },
     licenses: combined,

@@ -36,6 +36,10 @@ export interface WorkspaceCapabilities {
   cpu_budget_pixels?: number;
   reason?: string;
   pdf_export_reason?: string;
+  archival_pdf_export?: boolean;
+  pdf_bidi_export?: boolean;
+  pdfa_conformance?: "PDF/A-2b";
+  pdfa_export_reason?: string;
   reasons?: Record<string, string>;
 }
 export interface ModelDownloadProgress {

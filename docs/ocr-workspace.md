@@ -303,19 +303,28 @@ existing chunking and semantic/full-text indexing pipeline.
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
 | Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
+| Archival PDF/A-2b | Searchable PDF with embedded fonts, sRGB output intent and archival metadata | Paired archival-capable renderer |
 
 Searchable PDF export requires the matching updated native renderer and the
-`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Older native builds retain the other export
-formats. Archival PDF/A export is not advertised: it requires embedded resources
-and independent conformance validation. DOCX export produces flowing text, not
+`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Its native capability
+mask must include decoded images and Unicode mappings. Bidirectional layout is
+advertised independently, so older capable builds retain ordinary searchable
+PDF with their existing script limits. The PDF/A-2b option also
+requires the archival capability; unsupported builds show a disabled option and
+the native capability reason. Both PDF choices retain source page dimensions or
+the explicitly selected scan resolution and save with a `.pdf` extension.
+DOCX export produces flowing text, not
 an exact reconstruction of arbitrary page typography. Exports preserve empty recognized
 pages as image pages when the output supports images.
 
-The reviewed PDF renderer rejects right-to-left text and directional controls
-with an actionable error. Its current text mapping cannot preserve their logical
-order consistently across PDF readers. Such documents can still be reviewed and
-exported as text, JSON, hOCR, or ALTO without publishing a reversed searchable
-layer. Full bidirectional PDF support needs a separately validated renderer.
+The matching renderer accepts logical reviewed text and resolves Unicode 17
+bidirectional paragraphs before positioning the invisible text. Original page
+images stay visible; text selection geometry is estimated within each supplied
+OCR region. The application enables the new native option only when the runtime
+advertises its matching capability bit. PDF/A-2b does not claim accessible PDF/UA
+or editable recovered typography. Independent native extraction, pixel and
+veraPDF conformance gates must pass for the exact source before deployment;
+the initial implementation checkpoint remains under qualification.
 
 All exports validate dimensions, finite coordinates, nonempty page selection,
 and asset availability. Existing output files require explicit replacement.

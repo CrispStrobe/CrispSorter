@@ -75,6 +75,7 @@
     type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
+  import { resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
     expandRecognitionZone,
@@ -245,6 +246,7 @@
     requireReviewed = $state(true);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
+  const pdfExportSelected = $derived(exportFormat === "pdf" || exportFormat === "pdfa");
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
@@ -407,6 +409,7 @@
   );
   const formatNames: Record<string, string> = {
     pdf: "Searchable PDF",
+    pdfa: "Archival PDF/A-2b",
     hocr: "hOCR",
     alto: "ALTO XML",
     text: "Plain text",
@@ -1355,13 +1358,18 @@
   ) {
     if (locked) return;
     error = "";
+    let exportMode = { format: exportFormat, pdfa: false };
+    if (!snapshot) {
+      try { exportMode = resolveExportFormat(exportFormat, capabilities); }
+      catch (cause) { error = cause instanceof Error ? cause.message : String(cause); return; }
+    }
     if (!snapshot && preflight.errors.length) {
       error = preflight.errors.join("\n");
       return;
     }
     if (
       !snapshot &&
-      exportFormat === "pdf" &&
+      pdfExportSelected &&
       pdfScale === "dpi" &&
       (!Number.isFinite(pdfDpi) || pdfDpi < 36 || pdfDpi > 2400)
     ) {
@@ -1372,10 +1380,9 @@
       snapshot ??
       (JSON.parse(
         JSON.stringify({
-          format: exportFormat,
-          pdfa: false,
+          ...exportMode,
           pages:
-            exportFormat === "pdf" && pdfScale === "dpi"
+            pdfExportSelected && pdfScale === "dpi"
               ? preflight.pages.map((p) => ({
                   ...p,
                   page_width_points: (p.width * 72) / pdfDpi,
@@ -3375,7 +3382,7 @@
               >Output format<select bind:value={exportFormat} disabled={locked}
                 >{#each capabilities.formats as format}<option value={format}
                     >{formatNames[format] ?? format}</option
-                  >{/each}</select
+                  >{/each}{#if !capabilities.formats.includes("pdfa")}<option value="pdfa" disabled>Archival PDF/A-2b — unavailable</option>{/if}</select
               ></label
             >
             <div class="format-card">
@@ -3383,7 +3390,9 @@
               <div>
                 <strong>{formatNames[exportFormat] ?? exportFormat}</strong>
                 <p>
-                  {exportFormat === "pdf"
+                  {exportFormat === "pdfa"
+                    ? "Archival PDF/A-2b with embedded fonts, an sRGB color profile, and your searchable reviewed text."
+                    : exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
                     : exportFormat === "docx"
                       ? "Editable text in page order. Complex page layout is converted to flowing text."
@@ -3398,7 +3407,10 @@
             {#if capabilities.pdf_export_reason}<p class="field-hint">
                 {capabilities.pdf_export_reason}
               </p>{/if}
-            {#if exportFormat === "pdf"}
+            {#if !capabilities.archival_pdf_export}<p class="field-hint">
+                {capabilities.pdfa_export_reason ?? "PDF/A-2b export requires the matching archival renderer."}
+              </p>{/if}
+            {#if pdfExportSelected}
               <label class="field-label"
                 >Page sizes
                 <select bind:value={pdfScale} disabled={locked}>
