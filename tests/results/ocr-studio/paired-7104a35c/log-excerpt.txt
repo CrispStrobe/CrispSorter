@@ -1,0 +1,60 @@
+Audited excerpts from https://github.com/CrispStrobe/CrispSorter/actions/runs/42614585554/job/129158835576
+Full logs were inspected; this excerpt retains source, native checks, test summaries, storage cases and metadata checks.
+The successful child-process lease case is not counted twice.
+
+2026-11-09T12:52:29.7043609Z 7104a35c01de8535a5651179275f9c1b1133a2f9
+2026-11-09T12:52:37.2468188Z d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T12:52:37.7267652Z   stable-x86_64-unknown-linux-gnu unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T12:52:37.7603950Z   stable-x86_64-unknown-linux-gnu unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T12:52:37.9063549Z rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T12:52:42.8604259Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-11-09T13:00:22.2096956Z OCR review snapshot: 0 failure(s)
+2026-11-09T13:00:22.2145418Z === Results: 51 passed, 0 failed ===
+2026-11-09T13:00:45.7739901Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7740549Z   --features ocr-workspace \
+2026-11-09T13:00:45.7741824Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7742512Z   --features ocr-workspace \
+2026-11-09T13:00:45.7744060Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7744751Z   --features ocr-workspace \
+2026-11-09T13:00:45.7746095Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7746790Z   --features ocr-workspace \
+2026-11-09T13:00:45.7748252Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7748940Z   --features ocr-workspace \
+2026-11-09T13:00:45.7750472Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7751179Z   --features ocr-workspace \
+2026-11-09T13:00:45.7752514Z cargo test -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7753160Z   --features ocr-workspace \
+2026-11-09T13:00:45.7754586Z cargo check -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7755280Z   --features ocr-mobile
+2026-11-09T13:00:45.7755925Z cargo check -p crispsorter --lib --no-default-features \
+2026-11-09T13:00:45.7756660Z   --features desktop,ocr-workspace
+2026-11-09T13:00:46.7197811Z     Updating crispembed v0.17.15 (/home/runner/work/CrispSorter/CrispSorter/repos/CrispEmbed/crispembed) -> v0.17.16
+2026-11-09T13:00:46.7221658Z     Updating crispembed-sys v0.17.15 (/home/runner/work/CrispSorter/CrispSorter/repos/CrispEmbed/crispembed-sys) -> v0.17.16
+2026-11-09T13:05:06.8855783Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 21s
+2026-11-09T13:05:07.0916742Z test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 1522 filtered out; finished in 0.09s
+2026-11-09T13:06:13.4510187Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 06s
+2026-11-09T13:06:13.5385171Z test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1555 filtered out; finished in 0.00s
+2026-11-09T13:06:14.1022232Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+2026-11-09T13:06:14.1790543Z test model_provisioning::storage::tests::aliases_into_managed_storage_are_leased_and_links_out_are_refused ... ok
+2026-11-09T13:06:14.2114319Z test model_provisioning::storage::tests::another_process_keeps_old_generation_alive_until_it_exits ... 
+2026-11-09T13:06:14.2344645Z test model_provisioning::storage::tests::lease_child_process ... ok
+2026-11-09T13:06:14.2345653Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1556 filtered out; finished in 0.02s
+2026-11-09T13:06:14.2446399Z test model_provisioning::storage::tests::cleanup_preserves_current_and_leased_versions_and_reclaims_interrupted_downloads ... ok
+2026-11-09T13:06:14.2480576Z test model_provisioning::storage::tests::explicit_paths_protect_managed_generations_and_leave_external_models_alone ... ok
+2026-11-09T13:06:14.2481784Z test model_provisioning::storage::tests::lease_child_process ... ok
+2026-11-09T13:06:14.2501200Z test model_provisioning::storage::tests::malformed_manifests_and_unknown_subtrees_are_preserved ... ok
+2026-11-09T13:06:14.2550018Z test model_provisioning::storage::tests::removal_requires_current_version_and_refuses_active_models ... ok
+2026-11-09T13:06:16.2605564Z test model_provisioning::storage::tests::store_lock_serializes_independent_connections ... ok
+2026-11-09T13:06:16.2612951Z test model_provisioning::storage::tests::symlinked_artifacts_and_locks_never_touch_targets ... ok
+2026-11-09T13:06:16.2650907Z test model_provisioning::storage::tests::wal_leases_are_rejected_instead_of_mistaking_a_writer_lock_for_exclusive_use ... ok
+2026-11-09T13:06:16.2652283Z test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 1541 filtered out; finished in 2.10s
+2026-11-09T13:06:16.8018462Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+2026-11-09T13:06:16.8636974Z test result: ok. 20 passed; 0 failed; 13 ignored; 0 measured; 1524 filtered out; finished in 0.00s
+2026-11-09T13:06:17.4041824Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+2026-11-09T13:06:17.4797290Z test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 1545 filtered out; finished in 0.01s
+2026-11-09T13:06:18.0111334Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+2026-11-09T13:06:18.0727509Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1550 filtered out; finished in 0.00s
+2026-11-09T13:06:18.6178154Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+2026-11-09T13:06:18.8506073Z test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 1547 filtered out; finished in 0.17s
+2026-11-09T13:07:56.6539130Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 37s
+2026-11-09T13:09:40.5309740Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 43s
