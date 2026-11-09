@@ -325,6 +325,10 @@ available for project-level changes while a text field has focus.
 
 ## Development and verification
 
+The [9 November checkpoint](ocr-studio-checkpoint-2026-11-09.md) records exact
+tested revisions, retained phone-photo results, corrected CI evidence, and the
+remaining native application and physical-device gates.
+
 The main implementation is split between:
 
 - `src/lib/ocr/model.ts`: versioned state, geometry, approvals, search, history,

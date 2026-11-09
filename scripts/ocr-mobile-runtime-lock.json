@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
   "purpose": "Paired OCR mobile feature builds; independent of the release runtime lock",
-  "source_commit": "fde19180f4726a7708186eb130b9f37099a622c7",
+  "source_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
   "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac"
 }

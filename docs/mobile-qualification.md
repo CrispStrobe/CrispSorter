@@ -77,7 +77,11 @@ provider. The Android instrumentation covers nested folders, case-sensitive
 document IDs, reads, unavailable access, size limits and folder cycles. The iOS
 simulator tests cover bookmark-record identity and bounded reads. They do not
 exercise either system picker, a real provider's persistent grants, or the
-complete apps. The [qualification run](https://github.com/CrispStrobe/CrispSorter/actions/runs/40838687391) passed four Android emulator tests and three iOS simulator tests, along with Rust and Swift cross-checks. The device checks below remain necessary before qualifying complete provider workflows.
+complete apps. The [latest provider run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42586987764)
+passed ten Android emulator tests and eight iOS simulator tests at source de40879f,
+along with Rust and Swift checks. The additional export controls cover exact-byte
+copy completion/failure and private staging protection. The device checks below
+remain necessary before qualifying complete provider workflows.
 
 For qualification, use a dedicated device or emulator and disposable local and
 cloud-provider fixtures. Record the build and OS/device, and verify picker

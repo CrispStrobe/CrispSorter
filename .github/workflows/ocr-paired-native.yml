@@ -37,7 +37,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: fde19180f4726a7708186eb130b9f37099a622c7  # Explicit photo C ABI, mobile linking/provisioning metadata and reviewed OCR renderer.
+  OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75  # Paired photo/model APIs with audited, failure-propagating native contracts.
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
