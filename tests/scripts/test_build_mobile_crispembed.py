@@ -75,6 +75,34 @@ class BuildTests(unittest.TestCase):
             for component in ('AUDIO', 'PUNC', 'LID', 'TRUECASE'):
                 self.assertIn(f'-DCRISP_{component}_DIR=/out/disabled-optional/{component}', args)
             self.assertIn('-DBUILD_SHARED_LIBS=OFF', args)
+            self.assertIn('-DANDROID_ABI=arm64-v8a', args)
+            self.assertIn('-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON', args)
+            simulator_args = mobile.configure_args('android-x86_64', Path('/source'), Path('/out'), ndk)
+            self.assertIn('-DANDROID_ABI=x86_64', simulator_args)
+            self.assertNotIn('-DANDROID_ABI=arm64-v8a', simulator_args)
+
+    def test_unknown_target_never_falls_through_to_ios(self):
+        with patch.object(mobile, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'unsupported mobile target'):
+                mobile.configure_args('host-linux', Path('/source'), Path('/out'))
+            run.assert_not_called()
+
+    def test_explicit_feature_lock_is_checked_before_native_configuration(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source'
+            source.mkdir()
+            lock_path = root / 'feature-lock.json'
+            lock = {'source_commit': 'feature-source', 'ggml_commit': 'feature-ggml'}
+            lock_path.write_text(json.dumps(lock))
+            with patch.object(mobile, 'check_source', side_effect=ValueError('source mismatch')) as check:
+                with patch.object(mobile, 'configure_args') as configure:
+                    with self.assertRaisesRegex(ValueError, 'source mismatch'):
+                        mobile.build_runtime(source, root / 'output', 'android-arm64', 1, None, lock_path)
+                    check.assert_called_once_with(source.resolve(), lock)
+                    configure.assert_not_called()
+
 
     def test_rejects_incomplete_ndk_before_configure(self):
         with tempfile.TemporaryDirectory() as temp:

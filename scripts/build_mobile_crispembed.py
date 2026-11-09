@@ -17,7 +17,8 @@ import sys
 from validate_android_native_libs import closure
 
 LOCK = Path(__file__).with_name('crispembed-runtime-lock.json')
-TARGETS = ('android-arm64', 'ios-arm64', 'ios-sim-arm64')
+ANDROID_TARGETS = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64'}
+TARGETS = (*ANDROID_TARGETS, 'ios-arm64', 'ios-sim-arm64')
 
 
 def run(args, **kwargs):
@@ -41,23 +42,27 @@ def check_source(source, lock):
 
 
 def configure_args(target, source, build, ndk=None):
+    if target not in TARGETS:
+        raise ValueError(f'unsupported mobile target: {target}')
     args = ['cmake', '-S', source, '-B', build, '-DCMAKE_BUILD_TYPE=Release',
             '-DBUILD_SHARED_LIBS=OFF', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON',
             '-DGGML_NATIVE=OFF', '-DCRISPEMBED_NATIVE=OFF',
-            '-DGGML_BLAS=OFF', '-DGGML_LLAMAFILE=OFF']
+            '-DGGML_BLAS=OFF', '-DGGML_LLAMAFILE=OFF',
+            '-DGGML_CUDA=OFF', '-DGGML_VULKAN=OFF']
     # The pinned CMake file auto-discovers optional CrispASR siblings. Keep
     # this build's provenance limited to the two verified source commits.
     for component in ('AUDIO', 'PUNC', 'LID', 'TRUECASE'):
         args.append(f'-DCRISP_{component}_DIR={build / "disabled-optional" / component}')
-    if target == 'android-arm64':
+    if target in ANDROID_TARGETS:
         if not ndk:
             raise ValueError('ANDROID_NDK_HOME or --ndk is required for Android')
         toolchain = ndk / 'build/cmake/android.toolchain.cmake'
         clang = ndk / 'toolchains/llvm/prebuilt/linux-x86_64/bin/clang'
         if not toolchain.is_file() or (sys.platform.startswith('linux') and not clang.is_file()):
             raise ValueError(f'Android NDK is incomplete: {ndk}')
-        args += [f'-DCMAKE_TOOLCHAIN_FILE={toolchain}', '-DANDROID_ABI=arm64-v8a',
+        args += [f'-DCMAKE_TOOLCHAIN_FILE={toolchain}', f'-DANDROID_ABI={ANDROID_TARGETS[target]}',
                  '-DANDROID_NATIVE_API_LEVEL=24', '-DANDROID_STL=c++_static',
+                 '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
                  '-DCRISPEMBED_BUILD_SHARED=ON', '-DGGML_METAL=OFF']
     else:
         sdk = 'iphonesimulator' if target == 'ios-sim-arm64' else 'iphoneos'
@@ -87,8 +92,8 @@ def package_ios(build, libdir):
     return [output]
 
 
-def build_runtime(source, output, target, jobs, ndk):
-    lock = json.loads(LOCK.read_text())
+def build_runtime(source, output, target, jobs, ndk, lock_path=LOCK):
+    lock = json.loads(lock_path.read_text())
     source, output = source.resolve(), output.resolve()
     if output == source or source in output.parents or output in source.parents:
         raise ValueError('output must be outside the source checkout')
@@ -100,16 +105,16 @@ def build_runtime(source, output, target, jobs, ndk):
     libdir.mkdir(parents=True, exist_ok=True)
     run(args)
     run(['cmake', '--build', output / 'build', '--target',
-         'crispembed-shared' if target == 'android-arm64' else 'crispembed',
+         'crispembed-shared' if target in ANDROID_TARGETS else 'crispembed',
          '--config', 'Release', '--parallel', str(jobs)])
-    if target == 'android-arm64':
+    if target in ANDROID_TARGETS:
         binary = output / 'build/libcrispembed.so'
         if not binary.is_file():
             raise ValueError(f'missing Android library: {binary}')
         # BUILD_SHARED_LIBS=OFF should statically incorporate ggml. If it does
         # not, reject the result rather than guess which similarly named ggml
         # binaries came from this same build.
-        names = closure(binary.parent, 'arm64-v8a')
+        names = closure(binary.parent, ANDROID_TARGETS[target])
         if names != ['libcrispembed.so']:
             raise ValueError(f'Android build unexpectedly requires bundled libraries: {names}')
         shutil.copy2(binary, libdir / binary.name)
@@ -128,6 +133,8 @@ def main():
     parser.add_argument('--source', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--target', required=True, choices=TARGETS)
+    parser.add_argument('--lock', type=Path, default=LOCK,
+                        help='Source and ggml commit lock; defaults to the release runtime lock')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--ndk', type=Path, default=os.environ.get('ANDROID_NDK_HOME'))
     args = parser.parse_args()
@@ -135,7 +142,7 @@ def main():
         parser.error('--jobs must be positive')
     try:
         build_runtime(args.source, args.output, args.target, args.jobs,
-                      Path(args.ndk).resolve() if args.ndk else None)
+                      Path(args.ndk).resolve() if args.ndk else None, args.lock)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         print(f'mobile runtime build failed: {exc}', file=sys.stderr)
         return 1
