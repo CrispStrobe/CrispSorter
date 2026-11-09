@@ -1,0 +1,3 @@
+# PDF cross-reference offsets and fixture SHA-256 values require exact bytes.
+/tests/fixtures/mobile-documents/two-pages.pdf binary
+/crates/tauri-plugin-mobile-provider/ios/Tests/Fixtures/two-pages.pdf binary

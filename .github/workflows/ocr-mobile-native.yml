@@ -26,6 +26,7 @@ on:
       - 'src-tauri/src/model_provisioning/**'
       - 'tests/fixtures/mobile-documents/**'
       - 'src-tauri/src/ocr_workspace.rs'
+      - 'src-tauri/src/ocr_document_import.rs'
       - 'src-tauri/src/ocr_photo.rs'
       - 'src-tauri/src/lib.rs'
       - 'src/lib/ocr/**'
@@ -201,7 +202,10 @@ jobs:
       - name: Prepare iOS project tools
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
           if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          if ! command -v protoc >/dev/null; then brew install protobuf; fi
+          protoc --version
       - name: Build matching native runtime
         working-directory: repos/CrispSorter
         run: |
@@ -210,11 +214,12 @@ jobs:
             --lock scripts/ocr-mobile-runtime-lock.json \
             --target '${{ matrix.runtime }}' --jobs 2
           echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
-      - name: Preserve the runtime path through nested Tauri and Xcode Cargo calls
+      - name: Preserve runtime and host compiler paths through nested mobile Cargo calls
         working-directory: repos/CrispSorter
         run: |
           python3 scripts/prepare_ocr_cargo_env.py --project . \
-            --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
+            --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR" \
+            --protoc "$(command -v protoc)"
       - name: Prepare immutable synthetic probe inputs
         if: matrix.probe
         working-directory: repos/CrispSorter

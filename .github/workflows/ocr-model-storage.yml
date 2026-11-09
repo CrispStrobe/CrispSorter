@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ocr-model-storage-${{ github.head_ref || github.ref }}
+  group: ocr-model-storage-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
