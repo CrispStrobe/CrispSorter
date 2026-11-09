@@ -572,6 +572,8 @@
     error = "";
     busy = "Choosing documents";
     try {
+      // Resolve an earlier save failure before adding more source documents.
+      await autosave?.flush();
       const selected = paths ?? (await client.pickDocuments());
       if (!selected.length) return;
       const controller = new AbortController();
@@ -579,6 +581,7 @@
       importStopping = false;
       busy = "Importing documents";
       let added = 0;
+      let importSaveFailed = false;
       const errors: string[] = [];
       for (const path of selected) {
         if (controller.signal.aborted) break;
@@ -603,13 +606,23 @@
           }
           change(next);
           added += imported.pages.length;
-          await autosave?.flush();
+          try {
+            await autosave?.flush();
+          } catch (e) {
+            // The autosaver retains this snapshot for Retry. Stop the import
+            // before accepting another document into an unsaved project.
+            importSaveFailed = true;
+            errors.push(`${imported.name}: project save failed: ${message(e)}`);
+            break;
+          }
         } catch (e) {
           if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) break;
           errors.push(`${path.split(/[\\/]/).pop()}: ${message(e)}`);
         }
       }
-      notice = `${added} ${added === 1 ? "page" : "pages"} added${controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
+      notice = `${added} ${added === 1 ? "page" : "pages"} added${importSaveFailed
+        ? ". Import stopped because saving failed. Use Save to retry; keep this workspace open."
+        : controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
     } catch (e) {
       fail(e);

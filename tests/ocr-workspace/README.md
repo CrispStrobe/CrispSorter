@@ -83,6 +83,8 @@ retry, and recognition readiness without network requests or real model weights.
 - Held document imports expose correlated progress and a reachable phone Cancel
   control, stay locked until the current native step finishes, and save completed
   documents while rejecting the cancelled document without starting later files.
+- A failed import checkpoint stops later documents, keeps the imported pages in
+  the pending project, and allows Save to retry them without importing duplicates.
 - Four-corner correction exposes touch-sized keyboard-operable handles, rejects
   invalid geometry, invalidates stale text after correction, and restores the
   original review evidence with Undo.

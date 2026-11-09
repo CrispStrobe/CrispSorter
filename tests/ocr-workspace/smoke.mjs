@@ -534,6 +534,26 @@ if (process.argv.includes('--serve')) {
             assert.equal(await cancel.count(), 0);
         });
 
+        await test('a failed import checkpoint stops further documents and Save retries the retained pages', 'import-control', async page => {
+            await page.getByRole('button', { name: 'Add documents', exact: true }).first().click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingImports === 1);
+            await page.evaluate(() => { window.ocrSmoke.failSaves = true; window.ocrSmoke.releaseImport(); });
+            await page.getByText('2 pages added. Import stopped because saving failed. Use Save to retry; keep this workspace open.', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importDocument').length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.pendingImports), 0);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.activeNative), 0);
+            assert.equal(await page.getByRole('button', { name: 'Cancel import', exact: true }).count(), 0);
+            await page.getByText('Save failed', { exact: true }).waitFor();
+            await page.evaluate(() => { window.ocrSmoke.failSaves = false; });
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 5);
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
+            assert.equal(saved.documents.at(-1).sourceUri, '/fixtures/first.pdf');
+            assert.equal(saved.documents.at(-1).archiveUri, '/fixtures/archive/first.pdf');
+            assert.equal(saved.pages.filter(item => item.documentId === saved.documents.at(-1).id).length, 2);
+            await page.getByText('All changes saved', { exact: true }).waitFor();
+        });
+
         await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {
             await page.setViewportSize({ width: 390, height: 844 });
             const camera = page.getByLabel('Camera photo file', { exact: true });
