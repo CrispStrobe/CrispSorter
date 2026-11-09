@@ -76,7 +76,7 @@ try:
     run('rust', ['sh', str(installer), '-y', '--profile', 'minimal', '--default-toolchain', '1.98.1'], env=env)
     env['PATH'] = str(root / 'cargo/bin') + ':' + env['PATH']
     report['rustc'] = subprocess.check_output(['rustc', '--version'], env=env, text=True).strip()
-    for name, revision in [('CrispSorter', APP_SOURCE), ('CrispEmbed', '78493a31fc3043f3af4ab6fd2f197a32da6f07f0'),
+    for name, revision in [('CrispSorter', APP_SOURCE), ('CrispEmbed', 'd28ca2ea43a95934d673d1a54177fdf721614ade'),
                            ('CrispASR', '5e318f0c7ec93a1c7cf5851de4625f0fd74bd7c0')]:
         destination = root / name
         run('clone-' + name, ['git', 'clone', '--filter=blob:none', '--no-checkout', 'https://github.com/CrispStrobe/' + name + '.git', str(destination)], env=env)
@@ -102,7 +102,7 @@ try:
         paths.extend(['src-tauri/src/extractors/ocr_worker.rs', 'src-tauri/src/main.rs'])
     run('source-equivalence', ['git', 'diff', '--exit-code', BINARY_SOURCE, APP_SOURCE, '--', *paths], cwd=app, env=env)
     archive = root / 'crispembed-linux-x86_64.tar.gz'
-    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.12/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
+    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.15/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
         shutil.copyfileobj(response, stream)
     run('verify-runtime', ['python', 'scripts/verify_crispembed_bundle.py', str(archive), '--asset', archive.name, '--source', str(root / 'CrispEmbed')], cwd=app, env=env)
     libs = root / 'CrispEmbed/build'

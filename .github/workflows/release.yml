@@ -33,9 +33,9 @@ env:
   # arrow in a comment should not be able to break a release build.
   PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.12   # keep equal to ci.yml's CRISPEMBED_REF
+  CRISPEMBED_REF: v0.17.15   # keep equal to ci.yml's CRISPEMBED_REF
   # Exact source of that tag; must equal scripts/crispembed-runtime-lock.json.
-  CRISPEMBED_COMMIT: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
+  CRISPEMBED_COMMIT: d28ca2ea43a95934d673d1a54177fdf721614ade
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.32  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
