@@ -1,0 +1,83 @@
+name: Retained Android OCR startup diagnosis
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-android-launch-diagnostics']
+    paths:
+      - '.github/workflows/ocr-android-startup-probe.yml'
+      - 'tools/android-startup-probe/**'
+      - 'scripts/mobile_simulator_smoke.py'
+      - 'tests/scripts/test_mobile_startup_diagnostics.py'
+      - 'tests/scripts/test_mobile_retained_apk.py'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ocr-android-startup-probe-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  retained-apk-startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify bounded artifact staging and failure retention
+        run: |
+          python3 -m unittest discover -s tests/scripts -p 'test_mobile_startup_diagnostics.py' -v
+          python3 -m unittest discover -s tests/scripts -p 'test_mobile_retained_apk.py' -v
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Prepare the Android manifest inspector
+        run: sdkmanager 'build-tools;36.0.0'
+      - name: Download and validate the immutable application artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact_id=$(python3 -c 'import json; print(json.load(open("tools/android-startup-probe/artifact.json"))["artifact_id"])')
+          gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id" > "$RUNNER_TEMP/ocr-android-startup-artifact.json"
+          gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/ocr-android-startup-artifact.zip"
+          python3 tools/android-startup-probe/stage.py \
+            --archive "$RUNNER_TEMP/ocr-android-startup-artifact.zip" \
+            --metadata "$RUNNER_TEMP/ocr-android-startup-artifact.json" \
+            --output "$RUNNER_TEMP/ocr-android-startup-probe"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree \
+            "$RUNNER_TEMP/ocr-android-startup-probe/CrispSorter-ocr.apk" AndroidManifest.xml \
+            > "$RUNNER_TEMP/ocr-android-startup-probe/manifest.txt"
+      - name: Enable Android emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Repeat the original launch gate against the retained APK
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: python3 scripts/mobile_simulator_smoke.py --platform android --target emulator-5554 --artifact "$RUNNER_TEMP/ocr-android-startup-probe/CrispSorter-ocr.apk" --output "$RUNNER_TEMP/ocr-android-startup-probe/startup"
+      - name: Preserve launch evidence and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-android-retained-startup
+          path: |
+            ${{ runner.temp }}/ocr-android-startup-artifact.json
+            ${{ runner.temp }}/ocr-android-startup-probe/*.json
+            ${{ runner.temp }}/ocr-android-startup-probe/*.txt
+            ${{ runner.temp }}/ocr-android-startup-probe/startup/
+          if-no-files-found: warn
+          retention-days: 14
