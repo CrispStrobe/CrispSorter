@@ -1,5 +1,5 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
-import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress } from '../../src/lib/ocr/client';
+import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ModelStorageReport } from '../../src/lib/ocr/client';
 import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
 import { photoQuadError } from '../../src/lib/ocr/photo';
 
@@ -72,6 +72,11 @@ export interface SmokeControl {
     installedModels: string[];
     pendingModelInstalls: number;
     failModelInstall: boolean;
+    modelStorageReport: ModelStorageReport;
+    holdModelStorage: boolean;
+    pendingModelStorage: number;
+    failModelStorage: boolean;
+    releaseModelStorage(): boolean;
     releaseModelInstall(): boolean;
     emitModelProgress(progress: ModelDownloadProgress): boolean;
     released: string[];
@@ -126,11 +131,21 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pendingExtractions:Array<()=>void>=[];
     const pendingSaves:Array<()=>void>=[];
     const pendingModelInstalls:Array<{release:()=>void;onProgress?:(progress:ModelDownloadProgress)=>void}>=[];
+    const pendingModelStorage:Array<()=>void>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
+        modelStorageReport: scenario==='mobile-storage' ? {
+            bytes:16*1024**2,reclaimable_bytes:4*1024**2,warnings:['Unrecognized fixture metadata was kept for inspection.'],
+            models:[
+                {name:'dbnet-det',version:'11111111-1111-4111-8111-111111111111',bytes:8*1024**2,reclaimable_bytes:0,in_use:true},
+                {name:'tesseract-eng',version:'22222222-2222-4222-8222-222222222222',bytes:8*1024**2,reclaimable_bytes:4*1024**2,in_use:false},
+            ],
+        } : {bytes:0,reclaimable_bytes:0,models:[],warnings:[]},
+        holdModelStorage:false,pendingModelStorage:0,failModelStorage:false,
+        releaseModelStorage(){const release=pendingModelStorage.shift();if(!release)return false;control.pendingModelStorage=pendingModelStorage.length;release();return true;},
         releaseModelInstall(){const item=pendingModelInstalls.shift();if(!item)return false;control.pendingModelInstalls=pendingModelInstalls.length;item.release();return true;},
         emitModelProgress(progress){const item=pendingModelInstalls[0];if(!item)return false;item.onProgress?.(copy(progress));return true;},
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
@@ -144,8 +159,32 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             pendingExtractions.push(release);control.pendingExtractions=pendingExtractions.length;
         });
     };
+    const waitForStorage=async()=>{
+        if(control.holdModelStorage)await new Promise<void>(release=>{
+            pendingModelStorage.push(release);control.pendingModelStorage=pendingModelStorage.length;
+        });
+        if(control.failModelStorage)throw new Error('Fixture storage is busy in another application. Retry cleanup.');
+    };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(scenario==='mobile-models'?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async modelStorage(){note('modelStorage');return copy(control.modelStorageReport);},
+        async cleanModelStorage(){
+            note('cleanModelStorage');await waitForStorage();
+            const removed_bytes=control.modelStorageReport.reclaimable_bytes;
+            control.modelStorageReport={...control.modelStorageReport,bytes:control.modelStorageReport.bytes-removed_bytes,reclaimable_bytes:0,
+                models:control.modelStorageReport.models.map(model=>({...model,bytes:model.bytes-model.reclaimable_bytes,reclaimable_bytes:0}))};
+            return {removed_bytes,removed_versions:removed_bytes?2:0,report:copy(control.modelStorageReport)};
+        },
+        async removeMobileModel(name,expectedVersion){
+            note('removeMobileModel',{name,expectedVersion});await waitForStorage();
+            const current=control.modelStorageReport.models.find(model=>model.name===name);
+            if(!current || current.version!==expectedVersion)throw new Error('This model changed after the storage view was opened. Refresh storage before removing it.');
+            if(current.in_use)throw new Error('This model is in use by OCR. Restart before removing it.');
+            control.modelStorageReport={...control.modelStorageReport,bytes:control.modelStorageReport.bytes-current.bytes,
+                reclaimable_bytes:control.modelStorageReport.reclaimable_bytes-current.reclaimable_bytes,
+                models:control.modelStorageReport.models.filter(model=>model.name!==name)};
+            return {removed_bytes:current.bytes,removed_versions:1,report:copy(control.modelStorageReport)};
+        },
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){

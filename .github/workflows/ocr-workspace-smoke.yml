@@ -3,7 +3,7 @@ name: OCR workspace browser verification
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-native-validation']
     paths:
       - src/lib/ocr/**
       - src/lib/tabs.ts
@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: ocr-workspace-browser-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
+  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation"]'), github.head_ref || github.ref_name) }}
 
 jobs:
   browser:
@@ -50,6 +50,8 @@ jobs:
         run: npm run check
       - name: Test the full frontend suite
         run: npm test -- --run
+      - name: Measure large-project history with integrity and byte-budget controls
+        run: node tests/ocr-workspace/history-benchmark.mjs test-results/ocr-history-benchmark.json
       - name: Build the production frontend
         run: npm run build
       - name: Verify production workspace interactions
@@ -64,5 +66,6 @@ jobs:
           path: |
             tests/ocr-workspace/artifacts/report.json
             tests/ocr-workspace/artifacts/*.png
+            test-results/ocr-history-benchmark.json
           if-no-files-found: warn
           retention-days: 14

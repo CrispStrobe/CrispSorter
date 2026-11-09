@@ -16,6 +16,8 @@ import subprocess
 import time
 import zipfile
 
+from ocr_mobile_build_receipt import bundle_identity
+
 PACKAGE = 'com.crispstrobe.crispsorter'
 
 
@@ -52,6 +54,12 @@ def android(serial, apk, output, wait):
         if archive.testzip() is not None:
             raise ValueError('APK archive integrity failed')
     run(adb + ['install', '-r', str(apk)])
+    installed = run(adb + ['shell', 'pm', 'path', PACKAGE]).splitlines()
+    if len(installed) != 1 or not re.fullmatch(r'package:/data/app/[A-Za-z0-9_./+~=-]+/base\.apk', installed[0]):
+        raise RuntimeError('Expected one installed base APK in the application directory')
+    installed_hash = run(adb + ['shell', 'sha256sum', installed[0][8:]]).split()[0]
+    if installed_hash != digest(apk):
+        raise RuntimeError('Installed application differs from the supplied APK')
     run(adb + ['shell', 'am', 'force-stop', PACKAGE])
     launch = run(adb + ['shell', 'am', 'start', '-W', '-a', 'android.intent.action.MAIN',
                         '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE])
@@ -70,7 +78,8 @@ def android(serial, apk, output, wait):
     if not shot.startswith(b'\x89PNG\r\n\x1a\n'):
         raise RuntimeError('Android screenshot was not PNG')
     (output / 'screen.png').write_bytes(shot)
-    return {'target': serial, 'package': PACKAGE, 'pid': pid, 'apk_sha256': digest(apk), 'supported_abis': abis}
+    return {'target': serial, 'package': PACKAGE, 'pid': pid, 'apk_sha256': digest(apk),
+            'installed_apk_sha256': installed_hash, 'supported_abis': abis}
 
 
 def ios(udid, app, output, wait):
@@ -84,6 +93,11 @@ def ios(udid, app, output, wait):
     if info.get('CFBundleIdentifier') != PACKAGE or info.get('DTPlatformName') != 'iphonesimulator':
         raise ValueError('App bundle must be CrispSorter built for the iOS simulator')
     run(['xcrun', 'simctl', 'install', udid, str(app)])
+    source_identity = bundle_identity(app, 'iphonesimulator')
+    installed_app = Path(run(['xcrun', 'simctl', 'get_app_container', udid, PACKAGE, 'app']))
+    installed_identity = bundle_identity(installed_app, 'iphonesimulator')
+    if installed_identity != source_identity:
+        raise RuntimeError('Installed simulator bundle differs from the supplied application')
     launch = run(['xcrun', 'simctl', 'launch', '--terminate-running-process', udid, PACKAGE])
     match = re.search(r':\s*(\d+)\s*$', launch)
     if not match:
@@ -95,6 +109,7 @@ def ios(udid, app, output, wait):
     if not (output / 'screen.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
         raise RuntimeError('iOS screenshot was not PNG')
     return {'target': udid, 'package': PACKAGE, 'pid': pid,
+            'source_bundle_sha256': source_identity['sha256'], 'installed_bundle_sha256': installed_identity['sha256'],
             'bundle_version': info.get('CFBundleShortVersionString'), 'simulator_name': devices[0]['name']}
 
 
@@ -109,11 +124,18 @@ def main():
     if not 1 <= args.wait_seconds <= 60:
         p.error('--wait-seconds must be between 1 and 60')
     args.output.mkdir(parents=True, exist_ok=False)
-    result = android(args.target, args.artifact.resolve(), args.output, args.wait_seconds) if args.platform == 'android' else ios(args.target, args.artifact.resolve(), args.output, args.wait_seconds)
-    result.update(platform=args.platform, screenshot_sha256=digest(args.output / 'screen.png'),
-                  scope='App installed, launched, remained running, and screenshot captured; user flows and physical devices are not covered')
-    (args.output / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
-    print(json.dumps(result, indent=2))
+    result = {'status': 'running', 'platform': args.platform, 'target': args.target,
+              'scope': 'App identity, startup and screenshot only; user flows and physical devices are not covered'}
+    try:
+        result.update(android(args.target, args.artifact.resolve(), args.output, args.wait_seconds)
+                      if args.platform == 'android' else ios(args.target, args.artifact.resolve(), args.output, args.wait_seconds))
+        result.update(status='passed', screenshot_sha256=digest(args.output / 'screen.png'))
+    except Exception as error:
+        result.update(status='failed', error=f'{type(error).__name__}: {error}')
+        raise
+    finally:
+        (args.output / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == '__main__':

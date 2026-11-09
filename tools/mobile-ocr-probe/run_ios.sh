@@ -26,6 +26,9 @@ apps.sort(key=lambda p: ('xcarchive' in str(p), len(str(p))))
 print(apps[0])
 PY
 )
+python3 "$repo/scripts/ocr_mobile_build_receipt.py" --platform ios-simulator \
+  --artifact "$app" --runtime-receipt "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" \
+  --output "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json"
 python3 "$repo/scripts/mobile_simulator_smoke.py" \
   --platform ios --target "$simulator" --artifact "$app" \
   --output "$RUNNER_TEMP/ocr-mobile-evidence/app-startup"
