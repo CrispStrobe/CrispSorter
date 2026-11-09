@@ -169,6 +169,7 @@ jobs:
         with:
           workspaces: repos/CrispSorter -> target
           shared-key: ocr-mobile-${{ matrix.runtime }}
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
