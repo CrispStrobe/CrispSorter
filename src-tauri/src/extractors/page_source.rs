@@ -202,6 +202,7 @@ fn tiff_density<R: Read + Seek>(decoder: &mut tiff::decoder::Decoder<R>) -> Opti
 /// Decode `path` into per-page image files. Multi-page TIFF is split into temp
 /// PNGs; every other format returns the original path as a single page.
 pub fn rasterize_pages(path: &Path, ext: &str) -> Result<PageImages> {
+    super::image_input::validate_file(path).context("Validate source image")?;
     match ext {
         "tif" | "tiff" => tiff_pages(path),
         _ => Ok(PageImages::single(path)),

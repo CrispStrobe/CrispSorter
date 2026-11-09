@@ -107,6 +107,20 @@ final class DocumentRasterizerTests: XCTestCase {
     }
   }
 
+  func testDecodesPinnedHeicWhenImageIOAdvertisesIt() throws {
+    try XCTSkipUnless(DocumentRasterizer.capabilities().image_formats.contains("heic"), "This runtime does not advertise a HEIC decoder.")
+    try isolated { home in
+      let original = try fixture("colors.heic.b64"), source = try archive(home, bytes: original, fileExtension: "heic")
+      let page = try XCTUnwrap(DocumentRasterizer(home: home).rasterize(sourcePath: source.path, outputDir: staging(home).path, kind: "image").pages.first)
+      XCTAssertEqual(page.width, 120); XCTAssertEqual(page.height, 80)
+      let image = try raster(page.path), rgba = try pixels(image)
+      let red = (10 * image.width + 10) * 4, blue = (70 * image.width + 10) * 4
+      XCTAssertGreaterThan(rgba[red], 180); XCTAssertLessThan(rgba[red + 2], 70)
+      XCTAssertGreaterThan(rgba[blue + 2], 180); XCTAssertLessThan(rgba[blue], 70)
+      XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+  }
+
   func testDecodesAvifOnlyWhenImageIOActuallyAdvertisesIt() throws {
     try XCTSkipUnless(DocumentRasterizer.capabilities().image_formats.contains("avif"), "This runtime does not advertise an AVIF decoder.")
     try isolated { home in

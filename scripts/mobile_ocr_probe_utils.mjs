@@ -2,6 +2,25 @@ import assert from 'node:assert/strict';
 
 const hex = (value, length) => typeof value === 'string' && new RegExp('^[0-9a-f]{' + length + '}$', 'i').test(value);
 
+export function validateBuildSource(build) {
+  assert.equal(build.schema_version, 2, 'A source-aware app build receipt is required.');
+  assert.equal(build.application_source_clean, true, 'Application source or dependency lock changed.');
+  assert(hex(build.cargo_lock_sha256, 64), 'Exact resolved dependency lock identity is required.');
+  const generated = build.generated_tracked_files;
+  assert(Array.isArray(generated) && generated.length <= 1, 'Unexpected generated tracked files.');
+  assert.equal(build.tracked_source_clean, generated.length === 0, 'Tracked tree status contradicts its generated inventory.');
+  if (generated.length) {
+    const file = generated[0];
+    assert.equal(file.path, 'static/licenses.json', 'Only the generated license inventory may differ.');
+    assert(Number.isSafeInteger(file.bytes) && file.bytes > 0 && file.bytes <= 8 * 1024 * 1024);
+    assert(hex(file.sha256, 64) && hex(file.committed_sha256, 64));
+    assert(Number.isFinite(Date.parse(file.generated_at)), 'Generated inventory timestamp is missing.');
+    assert(file.counts && ['frontend', 'backend', 'total'].every(key => Number.isSafeInteger(file.counts[key]) && file.counts[key] >= 0));
+    assert.equal(file.counts.total, file.counts.frontend + file.counts.backend);
+  }
+  return generated;
+}
+
 export function probeOptions(argv) {
   const required = ['serial', 'apk', 'inputs', 'output', 'source-commit', 'embed-commit', 'build-receipt'];
   const allowed = new Set([...required, 'runtime-receipt', 'device-kind', 'repeat-pages', 'max-rss-mib']);

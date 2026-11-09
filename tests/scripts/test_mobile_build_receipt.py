@@ -35,6 +35,65 @@ def elf(text=b'\x90\x90\xc3\0', debug=b'debug', machine=62):
 
 
 class BuildReceiptTests(unittest.TestCase):
+    def source_fixture(self, root):
+        source = root / 'source'
+        (source / 'static').mkdir(parents=True)
+        (source / 'Cargo.lock').write_text('# immutable dependency lock fixture\nversion = 4\n')
+        (source / 'app.rs').write_text('// immutable application source fixture\n')
+        inventory = {'generatedAt': '2026-11-09T00:00:00Z',
+                     'counts': {'frontend': 1, 'backend': 0, 'total': 1},
+                     'licenses': [{'name': 'fixture', 'source': 'Frontend'}]}
+        (source / 'static/licenses.json').write_text(json.dumps(inventory))
+        for args in (['init', '-q'], ['add', '.'],
+                     ['-c', 'user.name=Receipt control', '-c', 'user.email=receipt-control@example.invalid', 'commit', '-qm', 'fixture']):
+            subprocess.run(['git', '-C', str(source), *args], check=True, capture_output=True, timeout=30)
+        return source, inventory
+
+    def test_source_receipt_records_generated_inventory_without_claiming_a_clean_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, inventory = self.source_fixture(Path(directory))
+            clean = receipt.source_tree_identity(source)
+            self.assertTrue(clean['tracked_source_clean'])
+            self.assertEqual(clean['generated_tracked_files'], [])
+            inventory['generatedAt'] = '2026-11-09T01:00:00Z'
+            (source / 'static/licenses.json').write_text(json.dumps(inventory))
+            generated = receipt.source_tree_identity(source)
+            self.assertTrue(generated['application_source_clean'])
+            self.assertFalse(generated['tracked_source_clean'])
+            self.assertEqual(generated['cargo_lock_sha256'], receipt.digest(source / 'Cargo.lock'))
+            entry = generated['generated_tracked_files'][0]
+            self.assertEqual(entry['path'], 'static/licenses.json')
+            self.assertEqual(entry['sha256'], receipt.digest(source / entry['path']))
+            self.assertNotEqual(entry['sha256'], entry['committed_sha256'])
+
+    def test_source_receipt_still_rejects_changed_code_lock_and_untracked_files(self):
+        for name in ('app.rs', 'Cargo.lock', 'untracked.rs'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                source, inventory = self.source_fixture(Path(directory))
+                inventory['generatedAt'] = '2026-11-09T01:00:00Z'
+                (source / 'static/licenses.json').write_text(json.dumps(inventory))
+                (source / name).write_text('changed fixture')
+                with self.assertRaisesRegex(ValueError, 'Application source or dependency lock'):
+                    receipt.source_tree_identity(source)
+
+    def test_source_receipt_rejects_malformed_inventories_and_symlinked_generated_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, inventory = self.source_fixture(Path(directory))
+            target = source / 'static/licenses.json'
+            inventory['counts']['total'] = 2
+            target.write_text(json.dumps(inventory))
+            with self.assertRaisesRegex(ValueError, 'inconsistent'):
+                receipt.source_tree_identity(source)
+            target.write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'unknown schema'):
+                receipt.source_tree_identity(source)
+            outside = Path(directory) / 'outside.json'
+            outside.write_text('never adopt external data')
+            target.unlink()
+            target.symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, 'regular source-contained'):
+                receipt.source_tree_identity(source)
+
     @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc') and shutil.which('strip'), 'ELF strip control needs a Linux host C compiler and strip tool')
     def test_real_shared_library_keeps_identity_after_debug_stripping(self):
         with tempfile.TemporaryDirectory() as directory:

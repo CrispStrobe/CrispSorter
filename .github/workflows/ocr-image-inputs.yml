@@ -1,0 +1,84 @@
+name: OCR image source contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-source-validation']
+    paths:
+      - src-tauri/src/extractors/image_input.rs
+      - src-tauri/src/extractors/page_source.rs
+      - src-tauri/src/extractors/mod.rs
+      - src-tauri/src/ocr_workspace.rs
+      - tests/image-input-contract/**
+      - tests/fixtures/mobile-documents/**
+      - Cargo.lock
+      - .github/workflows/ocr-image-inputs.yml
+  pull_request:
+    paths:
+      - src-tauri/src/extractors/image_input.rs
+      - src-tauri/src/extractors/page_source.rs
+      - src-tauri/src/extractors/mod.rs
+      - src-tauri/src/ocr_workspace.rs
+      - tests/image-input-contract/**
+      - tests/fixtures/mobile-documents/**
+      - Cargo.lock
+      - .github/workflows/ocr-image-inputs.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-image-source-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  source-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/image-input-contract
+      - name: Verify the fixture and exact application dependency pins
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, pathlib, tomllib
+          fixture_root = pathlib.Path('tests/fixtures/mobile-documents')
+          fixture = next(item for item in json.loads((fixture_root / 'manifest.json').read_text())['images'] if item['fixture'] == 'oriented.jpg.b64')
+          data = base64.b64decode((fixture_root / fixture['fixture']).read_bytes())
+          assert len(data) == fixture['bytes']
+          assert hashlib.sha256(data).hexdigest() == fixture['sha256']
+          root = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
+          contract = tomllib.loads(pathlib.Path('tests/image-input-contract/Cargo.lock').read_text())['package']
+          for package in contract:
+              if 'source' in package:
+                  match = next(item for item in root if item['name'] == package['name'] and item['version'] == package['version'])
+                  assert (package['source'], package['checksum']) == (match['source'], match['checksum'])
+          print('Fixture and all contract dependency pins match the application.')
+          PY
+      - name: Exercise the actual source guard and pinned JPEG decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          cargo test --locked --manifest-path tests/image-input-contract/Cargo.toml -- --test-threads=1 --nocapture 2>&1 | tee test-results/image-inputs.log
+          sha256sum src-tauri/src/extractors/image_input.rs tests/image-input-contract/Cargo.lock tests/fixtures/mobile-documents/oriented.jpg.b64 > test-results/image-input-sources.sha256
+          python3 - <<'PY'
+          import json, pathlib
+          log = pathlib.Path('test-results/image-inputs.log').read_text()
+          observations = [json.loads(line.split('OCR_JPEG_OBSERVATION ', 1)[1]) for line in log.splitlines() if 'OCR_JPEG_OBSERVATION ' in line]
+          assert len(observations) == 6
+          pathlib.Path('test-results/jpeg-decoder-observations.json').write_text(json.dumps(observations, indent=2) + '\n')
+          PY
+      - name: Preserve source and decoder observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-image-input-contracts
+          path: |
+            test-results/image-input*
+            test-results/jpeg-decoder-observations.json
+            tests/image-input-contract/Cargo.lock
+          retention-days: 30

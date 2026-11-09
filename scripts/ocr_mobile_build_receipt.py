@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Bind a mobile app artifact to its clean source tree and paired native build.
+"""Bind a mobile artifact to immutable application source and paired native code.
 
 Run after building, before installation. This records identity; it does not
 qualify OCR accuracy or device behavior. Existing receipts are never replaced.
+The generated license inventory is recorded separately from application sources;
+regenerating that data must not be misreported as an entirely clean Git tree.
 """
 from __future__ import annotations
 
@@ -126,6 +128,52 @@ def git(source, *args):
                           capture_output=True, timeout=30).stdout.strip()
 
 
+def source_tree_identity(source):
+    def paths(*args):
+        output = subprocess.run(['git', '-C', str(source), *args], check=True,
+                                capture_output=True, timeout=30).stdout
+        if output and not output.endswith(b'\0'):
+            raise ValueError('Source status was not NUL-delimited')
+        return [item.decode('utf-8') for item in output.split(b'\0') if item]
+
+    modified = paths('diff', '--name-only', '-z', 'HEAD', '--')
+    untracked = paths('ls-files', '--others', '--exclude-standard', '-z')
+    generated_path = 'static/licenses.json'
+    if untracked or set(modified) - {generated_path}:
+        raise ValueError('Application source or dependency lock changed after checkout; commit source changes first')
+    generated = []
+    if modified:
+        inventory = source / generated_path
+        if inventory.is_symlink() or not inventory.is_file() or inventory.resolve() != inventory:
+            raise ValueError('Generated license inventory must be a regular source-contained file')
+        if not 0 < inventory.stat().st_size <= 8 * 1024 * 1024:
+            raise ValueError('Generated license inventory exceeds its bounded size')
+        data = inventory.read_bytes()
+        value = json.loads(data)
+        if (not isinstance(value, dict) or set(value) != {'generatedAt', 'counts', 'licenses'}
+                or not isinstance(value['generatedAt'], str)):
+            raise ValueError('Generated license inventory has an unknown schema')
+        generated_at = datetime.fromisoformat(value['generatedAt'].replace('Z', '+00:00'))
+        counts, licenses = value['counts'], value['licenses']
+        if (generated_at.tzinfo is None or not isinstance(counts, dict)
+                or set(counts) != {'frontend', 'backend', 'total'}
+                or any(type(count) is not int or count < 0 for count in counts.values())
+                or not isinstance(licenses, list) or len(licenses) > 20_000
+                or any(not isinstance(item, dict) or not isinstance(item.get('name'), str)
+                       or item.get('source') not in ('Frontend', 'Backend') for item in licenses)
+                or counts != {'frontend': sum(item['source'] == 'Frontend' for item in licenses),
+                              'backend': sum(item['source'] == 'Backend' for item in licenses),
+                              'total': len(licenses)}):
+            raise ValueError('Generated license inventory counts/content are inconsistent')
+        committed = subprocess.run(['git', '-C', str(source), 'show', 'HEAD:' + generated_path],
+                                   check=True, capture_output=True, timeout=30).stdout
+        generated.append({'path': generated_path, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
+                          'committed_sha256': hashlib.sha256(committed).hexdigest(),
+                          'generated_at': value['generatedAt'], 'counts': counts})
+    return {'application_source_clean': True, 'tracked_source_clean': not modified,
+            'generated_tracked_files': generated, 'cargo_lock_sha256': digest(source / 'Cargo.lock')}
+
+
 def ort_identity(source, platform, artifact, runtime_path, expected_target):
     """Bind the extra indexing runtime to pinned inputs and packaged bytes."""
     lock_path = source / 'scripts/ocr-mobile-ort-lock.json'
@@ -203,10 +251,7 @@ def ort_identity(source, platform, artifact, runtime_path, expected_target):
 
 def record(source, platform, artifact, runtime_path, ort_runtime_path):
     source, artifact, runtime_path = source.resolve(), artifact.resolve(), runtime_path.resolve()
-    modified = git(source, 'diff', '--name-only', 'HEAD', '--')
-    untracked = git(source, 'ls-files', '--others', '--exclude-standard')
-    if modified or untracked:
-        raise ValueError('Record an app built from a clean tracked source tree; commit source changes first')
+    source_identity = source_tree_identity(source)
     source_commit = git(source, 'rev-parse', 'HEAD')
     tree = git(source, 'rev-parse', 'HEAD^{tree}')
     runtime = json.loads(runtime_path.read_text())
@@ -225,10 +270,10 @@ def record(source, platform, artifact, runtime_path, ort_runtime_path):
         identity = bundle_identity(artifact, 'iphonesimulator' if platform == 'ios-simulator' else 'iphoneos')
     config = source / '.cargo/config.toml'
     ort = ort_identity(source, platform, artifact, ort_runtime_path.resolve(), runtime['target'])
-    return {'schema_version': 1, 'kind': 'ocr-mobile-app-build',
+    return {'schema_version': 2, 'kind': 'ocr-mobile-app-build',
             'recorded_at': datetime.now(timezone.utc).isoformat(),
             'platform': platform, 'package': PACKAGE,
-            'sorter_commit': source_commit, 'sorter_tree': tree, 'tracked_source_clean': True,
+            'sorter_commit': source_commit, 'sorter_tree': tree, **source_identity,
             'crispembed_commit': runtime['source_commit'], 'ggml_commit': runtime['ggml_commit'],
             'runtime_receipt_sha256': digest(runtime_path), 'runtime': runtime,
             'cargo_config_sha256': digest(config) if config.is_file() else None,

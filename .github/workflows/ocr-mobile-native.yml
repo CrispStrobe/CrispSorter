@@ -23,11 +23,14 @@ on:
       - 'tools/mobile-ort-probe/**'
       - 'tests/scripts/test_*mobile*'
       - 'src-tauri/Cargo.toml'
+      - 'Cargo.lock'
       - 'src-tauri/tauri.ocr-mobile.conf.json'
       - 'src-tauri/src/model_provisioning.rs'
       - 'src-tauri/src/model_storage.rs'
       - 'src-tauri/src/model_storage_types.rs'
       - 'src-tauri/src/index/tauri_commands.rs'
+      - 'src-tauri/src/extractors/image_input.rs'
+      - 'src-tauri/src/extractors/mod.rs'
       - 'src-tauri/src/model_provisioning/**'
       - 'tests/fixtures/mobile-documents/**'
       - 'src-tauri/src/ocr_workspace.rs'
@@ -167,6 +170,7 @@ jobs:
         with:
           workspaces: repos/CrispSorter -> target
           shared-key: ocr-mobile-${{ matrix.runtime }}
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

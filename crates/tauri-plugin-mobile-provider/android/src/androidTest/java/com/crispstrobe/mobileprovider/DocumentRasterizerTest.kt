@@ -105,6 +105,21 @@ class DocumentRasterizerTest {
         assertArrayEquals(original, source.readBytes())
     }
 
+    @Test fun decodesPinnedHeicWhenTheRuntimeAdvertisesIt() = isolated { wrapped, home ->
+        val formats = DocumentRasterizer.capabilities().getJSONArray("image_formats")
+        assumeTrue((0 until formats.length()).any { formats.getString(it) == "heic" })
+        val original = fixture("colors.heic.b64"); val source = archive(home, original, "heic")
+        val page = DocumentRasterizer(wrapped).rasterize(source.path, staging(home).path, "image").getJSONArray("pages").getJSONObject(0)
+        assertEquals(120, page.getInt("width")); assertEquals(80, page.getInt("height"))
+        val image = BitmapFactory.decodeFile(page.getString("path"))
+        try {
+            val red = image.getPixel(10, 10); val blue = image.getPixel(10, 70)
+            assertTrue(Color.red(red) > 180 && Color.blue(red) < 70)
+            assertTrue(Color.blue(blue) > 180 && Color.red(blue) < 70)
+        } finally { image.recycle() }
+        assertArrayEquals(original, source.readBytes())
+    }
+
     @Test fun decodesAvifOnlyWhenTheRuntimeActuallySupportsIt() = isolated { wrapped, home ->
         val formats = DocumentRasterizer.capabilities().getJSONArray("image_formats")
         assumeTrue((0 until formats.length()).any { formats.getString(it) == "avif" })

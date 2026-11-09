@@ -36,7 +36,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate } from './mobile_ocr_probe_utils.mjs';
+import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -375,13 +375,12 @@ async function main() {
       const buildBytes = await fs.readFile(opt['build-receipt']);
       assert(buildBytes.length <= 1024 * 1024, 'Application build receipt exceeds 1 MiB.');
       const build = JSON.parse(buildBytes);
-      assert.equal(build.schema_version, 1);
+      validateBuildSource(build);
       assert.equal(build.kind, 'ocr-mobile-app-build');
       assert.equal(build.platform, 'android');
       assert.equal(build.package, PACKAGE);
       assert.equal(build.sorter_commit, opt['source-commit']);
       assert.equal(build.crispembed_commit, opt['embed-commit']);
-      assert.equal(build.tracked_source_clean, true);
       assert.equal(build.artifact.kind, 'apk');
       assert.equal(build.artifact.paired_runtime_mapped_sections_match, true);
       assert.equal(build.onnx_runtime?.runtime?.api_version, 23);
@@ -401,7 +400,7 @@ async function main() {
       assert(installedPath.startsWith('/data/app/') && installedPath.endsWith('/base.apk'));
       const installedHash = (await adbText(['shell', 'sha256sum', installedPath], { timeout: 60_000 })).match(/^([0-9a-f]{64})\s/i)?.[1];
       const apkHash = await fileHash(opt.apk);
-      assert.equal(apkHash, build.artifact.sha256, 'Supplied APK differs from its clean source build receipt.');
+      assert.equal(apkHash, build.artifact.sha256, 'Supplied APK differs from its source-bound build receipt.');
       assert.equal(installedHash?.toLowerCase(), apkHash, 'Running installation is not the supplied APK.');
       receipt.apk = { sha256: apkHash, installed_path: installedPath, abis };
       receipt.device = {
@@ -951,7 +950,7 @@ async function main() {
       await page.screenshot({ path: path.join(output, 'actual-workspace-capture.png') });
       const capturedId = captured.id;
       const observed = await measuredRecognition('ui-capture', async () => {
-        await workspace.getByRole('button', { name: 'Recognize page', exact: true })
+        await workspace.locator('.command-bar').getByRole('button', { name: 'Recognize page', exact: true })
           .click({ timeout: budget(15_000, 'recognize captured page from UI') });
         while (Date.now() < deadline) {
           const loaded = await invoke('ocr_workspace_load', { projectId: uiProjectId });
@@ -1005,7 +1004,7 @@ async function main() {
         }, null, { timeout: budget(30_000, 'return from system document picker') });
         await waitReady();
         const beforeCancel = await invoke('ocr_workspace_load', { projectId: saved.project.id });
-        await workspace.getByRole('button', { name: 'Add documents', exact: true }).click();
+        await workspace.locator('.command-bar').getByRole('button', { name: 'Add documents', exact: true }).click();
         let cancellationOpened = false;
         for (let attempt = 0; attempt < 4; attempt++) {
           const snapshot = await pickerSnapshot('cancel-' + attempt, filename);
@@ -1019,7 +1018,7 @@ async function main() {
           'Cancelling the real system picker mutated the saved project.');
         receipt.document_picker.cancellation_preserved_project = true;
 
-        await workspace.getByRole('button', { name: 'Add documents', exact: true }).click();
+        await workspace.locator('.command-bar').getByRole('button', { name: 'Add documents', exact: true }).click();
         let selected = false, returned = false;
         const navigation = new Set();
         for (let attempt = 0; attempt < 12; attempt++) {
