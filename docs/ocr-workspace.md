@@ -65,8 +65,9 @@ receives a conflict instead of overwriting newer work. Missing page assets are
 reported while text corrections remain recoverable; recognition and export
 require their images to be available.
 
-Undo/redo stores bounded project snapshots, with both a count limit and an
-approximately 24 MiB memory budget. Consecutive typing in one region is one undo
+Undo/redo stores bounded project snapshots, with a 50-entry limit and a 24 MiB
+serialized UTF-8 history budget. The live project, decoded images, and native
+runtime memory are separate from that budget. Consecutive typing in one region is one undo
 step. Pixel edits invalidate the old recognition geometry; Undo restores the
 previous working image and result together. The original image comparison hides
 working-image overlays so transformed coordinates are never drawn on the wrong
@@ -340,9 +341,10 @@ available for project-level changes while a text field has focus.
 
 ## Development and verification
 
-The [9 November checkpoint](ocr-studio-checkpoint-2026-11-09.md) records exact
-tested revisions, retained phone-photo results, corrected CI evidence, and the
-remaining native application and physical-device gates.
+The [9 November continuation record](ocr-studio-continuation-2026-11-09.md) records
+exact tested revisions, retained phone-photo results, corrected CI evidence, and
+native application and physical-device gates. The earlier checkpoint remains
+available as historical evidence.
 
 The main implementation is split between:
 
@@ -395,9 +397,11 @@ and automatic layout equivalence are outside the implemented workspace contract.
 ## Mobile OCR model installation
 
 The paired `ocr-mobile` Cargo profile enables image and TIFF OCR, photo correction,
-review diagnostics, and searchable PDF export. It deliberately omits `pdf-render`:
-PDF import needs a separately packaged mobile rasterizer, and this profile reports
-PDF import as unavailable. Release defaults and release runtime pins are unchanged.
+review diagnostics, and searchable PDF export. It uses Android PdfRenderer or iOS
+CoreGraphics for PDF import through the registered native document bridge;
+desktop's `pdf-render`/PDFium feature is not required on those mobile targets.
+HEIC/HEIF/AVIF support follows the codecs actually available on the device.
+Release defaults and release runtime pins are unchanged.
 
 The mobile profile provisions models in the application's private `ocr-models`
 store. Downloads are explicit user actions; recognition only loads an installed,

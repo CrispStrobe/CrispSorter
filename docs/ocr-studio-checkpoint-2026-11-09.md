@@ -1,5 +1,10 @@
 # OCR studio checkpoint — 9 November 2026
 
+This is the first recovery checkpoint, retained as historical evidence. See the
+[continuation record](ocr-studio-continuation-2026-11-09.md) for later implementation
+and executed checks. The remaining-work section below describes this checkpoint,
+not the current feature branch.
+
 The implementation is saved on **feat/ocr-document-studio** in CrispSorter and
 **feat/ocr-photo-preprocessing** in CrispEmbed. The reviewable changes are
 [draft PR #29](https://github.com/CrispStrobe/CrispSorter/pull/29) and

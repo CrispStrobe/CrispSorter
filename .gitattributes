@@ -1,3 +1,5 @@
 # PDF cross-reference offsets and fixture SHA-256 values require exact bytes.
 /tests/fixtures/mobile-documents/two-pages.pdf binary
 /crates/tauri-plugin-mobile-provider/ios/Tests/Fixtures/two-pages.pdf binary
+# Preserve the downloaded native test log byte for byte, including terminal spacing.
+/tests/results/ocr-studio/storage-f3cd96af/native.log -whitespace

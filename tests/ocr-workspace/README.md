@@ -119,8 +119,8 @@ are exercised separately in the native model-storage contract lane.
   and requires no scrolling; this catches duplicate padding deductions.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same
-harness on OCR changes pushed to `feat/ocr-document-studio` or the dedicated
-`feat/ocr-native-validation` branch and on relevant pull
+harness on OCR changes pushed to `feat/ocr-document-studio`,
+`feat/ocr-native-validation`, or `feat/ocr-studio-integration` and on relevant pull
 requests, and attaches its JSON report and screenshots as
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.
