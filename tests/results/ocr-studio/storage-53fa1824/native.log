@@ -1,0 +1,318 @@
+[1m[92m    Updating[0m crates.io index
+[1m[92m     Locking[0m 63 packages to highest compatible versions
+[1m[92m      Adding[0m generic-array v0.14.7 [1m[33m(available: v0.14.9)[0m
+[1m[92m      Adding[0m rusqlite v0.39.0 [1m[33m(available: v0.41.1)[0m
+[1m[92m      Adding[0m serde v1.0.228 [1m[33m(available: v1.0.229)[0m
+[1m[92m      Adding[0m serde_core v1.0.228 [1m[33m(available: v1.0.229)[0m
+[1m[92m      Adding[0m serde_derive v1.0.228 [1m[33m(available: v1.0.229)[0m
+[1m[92m      Adding[0m serde_json v1.0.150 [1m[33m(available: v1.0.154)[0m
+[1m[92m      Adding[0m sha2 v0.10.9 [1m[33m(available: v0.11.1)[0m
+[1m[92m      Adding[0m uuid v1.23.3 [1m[33m(available: v1.29.2)[0m
+[1m[92m Downloading[0m crates ...
+[1m[92m  Downloaded[0m cpufeatures v0.2.17
+[1m[92m  Downloaded[0m cfg-if v1.0.5
+[1m[92m  Downloaded[0m digest v0.10.7
+[1m[92m  Downloaded[0m block-buffer v0.10.4
+[1m[92m  Downloaded[0m crypto-common v0.1.7
+[1m[92m  Downloaded[0m generic-array v0.14.7
+[1m[92m  Downloaded[0m itoa v1.0.19
+[1m[92m  Downloaded[0m version_check v0.9.5
+[1m[92m  Downloaded[0m quote v1.0.47
+[1m[92m  Downloaded[0m zmij v1.0.23
+[1m[92m  Downloaded[0m errno v0.3.14
+[1m[92m  Downloaded[0m fallible-iterator v0.3.0
+[1m[92m  Downloaded[0m fallible-streaming-iterator v0.1.9
+[1m[92m  Downloaded[0m fastrand v2.5.0
+[1m[92m  Downloaded[0m foldhash v0.2.0
+[1m[92m  Downloaded[0m hashlink v0.11.1
+[1m[92m  Downloaded[0m once_cell v1.21.4
+[1m[92m  Downloaded[0m pkg-config v0.3.34
+[1m[92m  Downloaded[0m sha2 v0.10.9
+[1m[92m  Downloaded[0m shlex v2.0.1
+[1m[92m  Downloaded[0m smallvec v1.16.5
+[1m[92m  Downloaded[0m unicode-ident v1.0.27
+[1m[92m  Downloaded[0m bitflags v2.13.2
+[1m[92m  Downloaded[0m find-msvc-tools v0.1.15
+[1m[92m  Downloaded[0m proc-macro2 v1.0.107
+[1m[92m  Downloaded[0m serde_core v1.0.228
+[1m[92m  Downloaded[0m serde_derive v1.0.228
+[1m[92m  Downloaded[0m tempfile v3.27.0
+[1m[92m  Downloaded[0m getrandom v0.4.3
+[1m[92m  Downloaded[0m uuid v1.23.3
+[1m[92m  Downloaded[0m hashbrown v0.16.1
+[1m[92m  Downloaded[0m memchr v2.8.3
+[1m[92m  Downloaded[0m serde v1.0.228
+[1m[92m  Downloaded[0m typenum v1.20.1
+[1m[92m  Downloaded[0m cc v1.11.1
+[1m[92m  Downloaded[0m serde_json v1.0.150
+[1m[92m  Downloaded[0m rusqlite v0.39.0
+[1m[92m  Downloaded[0m vcpkg v0.2.15
+[1m[92m  Downloaded[0m syn v2.0.119
+[1m[92m  Downloaded[0m rustix v1.1.6
+[1m[92m  Downloaded[0m libc v0.2.191
+[1m[92m  Downloaded[0m linux-raw-sys v0.12.1
+[1m[92m  Downloaded[0m libsqlite3-sys v0.37.0
+[1m[92m   Compiling[0m version_check v0.9.5
+[1m[92m   Compiling[0m proc-macro2 v1.0.107
+[1m[92m   Compiling[0m typenum v1.20.1
+[1m[92m   Compiling[0m shlex v2.0.1
+[1m[92m   Compiling[0m find-msvc-tools v0.1.15
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m   Compiling[0m generic-array v0.14.7
+[1m[92m   Compiling[0m unicode-ident v1.0.27
+[1m[92m   Compiling[0m libc v0.2.191
+[1m[92m   Compiling[0m cc v1.11.1
+[1m[92m   Compiling[0m cfg-if v1.0.5
+[1m[92m   Compiling[0m vcpkg v0.2.15
+[1m[92m   Compiling[0m serde_core v1.0.228
+[1m[92m   Compiling[0m pkg-config v0.3.34
+[1m[92m   Compiling[0m getrandom v0.4.3
+[1m[92m   Compiling[0m zmij v1.0.23
+[1m[92m   Compiling[0m bitflags v2.13.2
+[1m[92m   Compiling[0m rustix v1.1.6
+[1m[92m   Compiling[0m foldhash v0.2.0
+[1m[92m   Compiling[0m hashbrown v0.16.1
+[1m[92m   Compiling[0m syn v2.0.119
+[1m[92m   Compiling[0m libsqlite3-sys v0.37.0
+[1m[92m   Compiling[0m crypto-common v0.1.7
+[1m[92m   Compiling[0m block-buffer v0.10.4
+[1m[92m   Compiling[0m linux-raw-sys v0.12.1
+[1m[92m   Compiling[0m serde v1.0.228
+[1m[92m   Compiling[0m serde_json v1.0.150
+[1m[92m   Compiling[0m serde_derive v1.0.228
+[1m[92m   Compiling[0m digest v0.10.7
+[1m[92m   Compiling[0m hashlink v0.11.1
+[1m[92m   Compiling[0m itoa v1.0.19
+[1m[92m   Compiling[0m smallvec v1.16.5
+[1m[92m   Compiling[0m once_cell v1.21.4
+[1m[92m   Compiling[0m memchr v2.8.3
+[1m[92m   Compiling[0m cpufeatures v0.2.17
+[1m[92m   Compiling[0m fallible-streaming-iterator v0.1.9
+[1m[92m   Compiling[0m fallible-iterator v0.3.0
+[1m[92m   Compiling[0m fastrand v2.5.0
+[1m[92m   Compiling[0m tempfile v3.27.0
+[1m[92m   Compiling[0m sha2 v0.10.9
+[1m[92m   Compiling[0m uuid v1.23.3
+[1m[92m   Compiling[0m rusqlite v0.39.0
+[1m[92m   Compiling[0m ocr-model-storage-contract v0.1.0 (/home/runner/work/CrispSorter/CrispSorter/tests/model-storage-contract)
+[1m[33mwarning[0m[1m: constant `MAX_MODELS` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:14:7
+   [1m[94m|[0m
+[1m[94m14[0m [1m[94m|[0m const MAX_MODELS: usize = 1024;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m[1m: constant `MAX_GENERATIONS` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:15:7
+   [1m[94m|[0m
+[1m[94m15[0m [1m[94m|[0m const MAX_GENERATIONS: usize = 256;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `MAX_FILES` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:16:7
+   [1m[94m|[0m
+[1m[94m16[0m [1m[94m|[0m const MAX_FILES: usize = 16;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `MAX_FILE_BYTES` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:17:7
+   [1m[94m|[0m
+[1m[94m17[0m [1m[94m|[0m const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: constant `MAX_MANIFEST_BYTES` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:18:7
+   [1m[94m|[0m
+[1m[94m18[0m [1m[94m|[0m const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+   [1m[94m|[0m       [1m[33m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `StoreLock` is never constructed[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:20:19
+   [1m[94m|[0m
+[1m[94m20[0m [1m[94m|[0m pub(super) struct StoreLock { _connection: Connection }
+   [1m[94m|[0m                   [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `UsageLocks` is never constructed[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:22:8
+   [1m[94m|[0m
+[1m[94m22[0m [1m[94m|[0m struct UsageLocks { connections: Mutex<HashMap<PathBuf, Connection>> }
+   [1m[94m|[0m        [1m[33m^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: static `USAGE` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:23:8
+   [1m[94m|[0m
+[1m[94m23[0m [1m[94m|[0m static USAGE: OnceLock<UsageLocks> = OnceLock::new();
+   [1m[94m|[0m        [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `private_directory` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:25:4
+   [1m[94m|[0m
+[1m[94m25[0m [1m[94m|[0m fn private_directory(path: &Path) -> Result<(), String> {
+   [1m[94m|[0m    [1m[33m^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `open_lock` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:34:4
+   [1m[94m|[0m
+[1m[94m34[0m [1m[94m|[0m fn open_lock(path: &Path) -> Result<Connection, String> {
+   [1m[94m|[0m    [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `lock_store` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:83:15
+   [1m[94m|[0m
+[1m[94m83[0m [1m[94m|[0m pub(super) fn lock_store(root: &Path) -> Result<StoreLock, String> {
+   [1m[94m|[0m               [1m[33m^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `model_key` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:91:4
+   [1m[94m|[0m
+[1m[94m91[0m [1m[94m|[0m fn model_key(value: &str) -> bool {
+   [1m[94m|[0m    [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `generation` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:94:4
+   [1m[94m|[0m
+[1m[94m94[0m [1m[94m|[0m fn generation(value: &str) -> bool {
+   [1m[94m|[0m    [1m[33m^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `incoming` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:97:4
+   [1m[94m|[0m
+[1m[94m97[0m [1m[94m|[0m fn incoming(value: &str) -> bool {
+   [1m[94m|[0m    [1m[33m^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `lease_path` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:102:4
+    [1m[94m|[0m
+[1m[94m102[0m [1m[94m|[0m fn lease_path(model: &Path, version: &str) -> Result<PathBuf, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: method `retain` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:116:8
+    [1m[94m|[0m
+[1m[94m115[0m [1m[94m|[0m impl UsageLocks {
+    [1m[94m|[0m [1m[94m---------------[0m [1m[94mmethod in this implementation[0m
+[1m[94m116[0m [1m[94m|[0m     fn retain(&self, model: &Path, version: &str) -> Result<(), String> {
+    [1m[94m|[0m        [1m[33m^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `retain_path_locked` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:132:15
+    [1m[94m|[0m
+[1m[94m132[0m [1m[94m|[0m pub(super) fn retain_path_locked(root: &Path, path: &Path) -> Result<(), String> {
+    [1m[94m|[0m               [1m[33m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `exclusive` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:149:4
+    [1m[94m|[0m
+[1m[94m149[0m [1m[94m|[0m fn exclusive(model: &Path, version: &str) -> Result<Option<Connection>, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `Pointer` is never constructed[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:161:8
+    [1m[94m|[0m
+[1m[94m161[0m [1m[94m|[0m struct Pointer { schema_version: u32, model_name: String, version: String }
+    [1m[94m|[0m        [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `pointer` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:162:4
+    [1m[94m|[0m
+[1m[94m162[0m [1m[94m|[0m fn pointer(model: &Path) -> Result<Option<Pointer>, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `children` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:185:4
+    [1m[94m|[0m
+[1m[94m185[0m [1m[94m|[0m fn children(path: &Path, limit: usize) -> Result<Vec<PathBuf>, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `payload_bytes` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:195:4
+    [1m[94m|[0m
+[1m[94m195[0m [1m[94m|[0m fn payload_bytes(path: &Path) -> Result<u64, String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `Candidate` is never constructed[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:211:8
+    [1m[94m|[0m
+[1m[94m211[0m [1m[94m|[0m struct Candidate { path: PathBuf, version: String, bytes: u64, current: bool, staging: bool }
+    [1m[94m|[0m        [1m[33m^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: struct `Model` is never constructed[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:212:8
+    [1m[94m|[0m
+[1m[94m212[0m [1m[94m|[0m struct Model { path: PathBuf, pointer: Option<Pointer>, candidates: Vec<Candidate> }
+    [1m[94m|[0m        [1m[33m^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `scan` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:213:4
+    [1m[94m|[0m
+[1m[94m213[0m [1m[94m|[0m fn scan(root: &Path, warnings: &mut Vec<String>) -> Result<Vec<Model>, String> {
+    [1m[94m|[0m    [1m[33m^^^^[0m
+
+[1m[33mwarning[0m[1m: function `report_locked` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:238:15
+    [1m[94m|[0m
+[1m[94m238[0m [1m[94m|[0m pub(super) fn report_locked(root: &Path) -> Result<ModelStorageReport, String> {
+    [1m[94m|[0m               [1m[33m^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `remove_payload` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:260:4
+    [1m[94m|[0m
+[1m[94m260[0m [1m[94m|[0m fn remove_payload(candidate: &Candidate) -> Result<(), String> {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `remove_unused_lease` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:270:4
+    [1m[94m|[0m
+[1m[94m270[0m [1m[94m|[0m fn remove_unused_lease(model: &Path, candidate: &Candidate, warnings: &mut Vec<String>) {
+    [1m[94m|[0m    [1m[33m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `cleanup_locked` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:284:15
+    [1m[94m|[0m
+[1m[94m284[0m [1m[94m|[0m pub(super) fn cleanup_locked(root: &Path) -> Result<ModelStorageCleanup, String> {
+    [1m[94m|[0m               [1m[33m^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m[1m: function `remove_model_locked` is never used[0m
+   [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:307:15
+    [1m[94m|[0m
+[1m[94m307[0m [1m[94m|[0m pub(super) fn remove_model_locked(root: &Path, name: &str, expected_version: &str) -> Result<ModelStorageCleanup, String> {
+    [1m[94m|[0m               [1m[33m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[33mwarning[0m: `ocr-model-storage-contract` (lib) generated 30 warnings
+[1m[33mwarning[0m[1m: static `USAGE` is never used[0m
+  [1m[94m--> [0msrc/../../../src-tauri/src/model_storage.rs:23:8
+   [1m[94m|[0m
+[1m[94m23[0m [1m[94m|[0m static USAGE: OnceLock<UsageLocks> = OnceLock::new();
+   [1m[94m|[0m        [1m[33m^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[1m[33mwarning[0m: `ocr-model-storage-contract` (lib test) generated 2 warnings (1 duplicate)
+[1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 23.22s
+[1m[92m     Running[0m unittests src/lib.rs (tests/model-storage-contract/target/debug/deps/ocr_model_storage_contract-8e8e79dea33e37b6)
+
+running 8 tests
+test storage::tests::another_process_keeps_old_generation_alive_until_it_exits ... 
+running 1 test
+test storage::tests::lease_child_process ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.03s
+
+ok
+test storage::tests::cleanup_preserves_current_and_leased_versions_and_reclaims_interrupted_downloads ... ok
+test storage::tests::lease_child_process ... ok
+test storage::tests::malformed_manifests_and_unknown_subtrees_are_preserved ... ok
+test storage::tests::removal_requires_current_version_and_refuses_active_models ... ok
+test storage::tests::store_lock_serializes_independent_connections ... ok
+test storage::tests::symlinked_artifacts_and_locks_never_touch_targets ... ok
+test storage::tests::wal_leases_are_rejected_instead_of_mistaking_a_writer_lock_for_exclusive_use ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+
+[1m[92m   Doc-tests[0m ocr_model_storage_contract
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

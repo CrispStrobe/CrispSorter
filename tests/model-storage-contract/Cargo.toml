@@ -5,7 +5,8 @@ edition = "2021"
 publish = false
 
 # An isolated, model-free native gate using the application's real modules.
-# Direct versions match the application lock. CI retains the resolved lockfile.
+# Direct versions match the application lock. The complete resolved lockfile was
+# retained from the first passing native run; CI now requires it unchanged.
 [workspace]
 
 [dependencies]

@@ -22,6 +22,8 @@ Models already used by an OCR engine remain protected until the application exit
 
 Native tests cover current/in-use preservation, abandoned downloads, stale-version removal, unsafe manifests/links/journals, WAL-mode rejection, store contention, and a child process retaining an old generation while another process attempts cleanup. The small **OCR model storage contracts** workflow compiles these actual production modules without a WebView or model runtime, retaining its exact source hashes and dependency lockfile. The paired native workflow also tests the application integration; frontend tests do not substitute for either.
 
+The [first native storage run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42605533260) passed all eight tests at `53fa1824d2e78971903a005ecee802b91dce1b8e`. Its artifact hash, raw test log and exact module hashes are retained in `tests/results/ocr-studio/storage-53fa1824/`. The resolved dependency lockfile from that run is now checked in and required by CI. Subsequent explicit-local-path and alias controls exercise additional public entry points; their later run is recorded separately from this initial eight-test result.
+
 ## Large-document history
 
 The default undo history retains at most 50 snapshots and 24 MiB of serialized UTF-8 snapshot data. The live project is excluded from this history budget. Object/renderer/native memory can exceed the serialized size; this budget is not a whole-application memory limit.

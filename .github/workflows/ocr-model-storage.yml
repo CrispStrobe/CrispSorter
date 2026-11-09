@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-results
-          cargo test --manifest-path tests/model-storage-contract/Cargo.toml -- --test-threads=1 --nocapture 2>&1 | tee test-results/model-storage.log
+          cargo test --locked --manifest-path tests/model-storage-contract/Cargo.toml -- --test-threads=1 --nocapture 2>&1 | tee test-results/model-storage.log
           sha256sum src-tauri/src/model_storage.rs src-tauri/src/model_storage_types.rs tests/model-storage-contract/Cargo.lock > test-results/model-storage-sources.sha256
       - name: Retain exact native storage evidence
         if: always()

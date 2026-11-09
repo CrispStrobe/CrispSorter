@@ -399,6 +399,49 @@ mod tests {
     }
 
     #[test]
+    fn explicit_paths_protect_managed_generations_and_leave_external_models_alone() {
+        let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(outside.path(), b"GGUF external user model").unwrap();
+        let _store = lock_store(&root).unwrap();
+        let (model, version) = fixture(&root, "local-path", false);
+        let published = model.join(&version).join("model.gguf");
+        retain_path_locked(&root, outside.path()).unwrap();
+        retain_path_locked(&root, &published).unwrap();
+        let staging = model.join("incoming-ABC123"); std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join("model.gguf"), b"GGUF incomplete").unwrap();
+        assert!(retain_path_locked(&root, &staging.join("model.gguf")).unwrap_err().contains("published generation"));
+        assert_eq!(cleanup_locked(&root).unwrap().removed_versions, 1);
+        assert!(published.exists());
+        assert_eq!(std::fs::read(outside.path()).unwrap(), b"GGUF external user model");
+        let key = lease_path(&model, &version).unwrap();
+        USAGE.get().unwrap().connections.lock().unwrap().remove(&key);
+        assert_eq!(cleanup_locked(&root).unwrap().removed_versions, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aliases_into_managed_storage_are_leased_and_links_out_are_refused() {
+        let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();
+        let aliases = tempfile::tempdir().unwrap();
+        let _store = lock_store(&root).unwrap();
+        let (model, version) = fixture(&root, "alias", false);
+        let published = model.join(&version).join("model.gguf");
+        let alias = aliases.path().join("chosen.gguf");
+        std::os::unix::fs::symlink(&published, &alias).unwrap();
+        retain_path_locked(&root, &alias).unwrap();
+        assert_eq!(cleanup_locked(&root).unwrap().removed_versions, 0);
+        let external = aliases.path().join("external.gguf"); std::fs::write(&external, b"GGUF external").unwrap();
+        let escaping = model.join(&version).join("escape.gguf");
+        std::os::unix::fs::symlink(&external, &escaping).unwrap();
+        assert!(retain_path_locked(&root, &escaping).unwrap_err().contains("leaves private storage"));
+        assert_eq!(std::fs::read(external).unwrap(), b"GGUF external");
+        std::fs::remove_file(escaping).unwrap();
+        let key = lease_path(&model, &version).unwrap();
+        USAGE.get().unwrap().connections.lock().unwrap().remove(&key);
+    }
+
+    #[test]
     fn malformed_manifests_and_unknown_subtrees_are_preserved() {
         let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();
         let _store = lock_store(&root).unwrap();
