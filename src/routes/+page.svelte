@@ -666,12 +666,14 @@
 
 <style>
     .mobile-tools-menu {
-        position: fixed;
-        bottom: calc(64px + env(safe-area-inset-bottom, 0px));
-        right: calc(12px + env(safe-area-inset-right, 0px));
-        max-width: calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
-        max-height: calc(100vh - 100px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-        max-height: calc(100dvh - 100px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+        position: absolute;
+        /* The containing navigation already sits inside all four safe edges.
+           Its actual height can grow with text; anchor above that height. */
+        bottom: calc(100% + 8px);
+        right: 12px;
+        max-width: calc(100% - 24px);
+        max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 100% - 16px);
+        max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 100% - 16px);
         overflow-y: auto;
         background: #18181b;
         border: 1px solid #52525b;
@@ -901,6 +903,7 @@
 
     /* ── Mobile bottom tab bar ─────────────────────────────────────── */
     .mobile-nav {
+        position: relative;
         display: none;
     }
 
