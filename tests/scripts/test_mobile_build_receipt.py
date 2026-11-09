@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +40,84 @@ def elf(text=b'\x90\x90\xc3\0', debug=b'debug', machine=62, alignment=16384):
 
 
 class BuildReceiptTests(unittest.TestCase):
+    def test_zip_library_inspection_streams_payload_and_reads_only_bounded_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, artifact = self.make_android(root)
+            with zipfile.ZipFile(artifact) as archive:
+                # A whole-member read would regress the failure seen with the
+                # real 302.81 MiB debug application library.
+                with patch.object(archive, 'read', side_effect=AssertionError('eager ZIP member read')):
+                    inspected = receipt.inspect_apk_library(archive, 'lib/x86_64/libcrispsorter.so', 'x86_64')
+            self.assertEqual(inspected['sha256'], hashlib.sha256(elf(text=b'app!')).hexdigest())
+            self.assertEqual(inspected['bytes'], len(elf(text=b'app!')))
+            self.assertEqual(inspected['elf']['minimum_load_alignment'], 16384)
+
+    def test_file_section_hashing_never_requests_a_whole_large_section(self):
+        class BoundedReader:
+            def __init__(self, stream):
+                self.stream, self.largest = stream, 0
+            def fileno(self):
+                return self.stream.fileno()
+            def seek(self, *args):
+                return self.stream.seek(*args)
+            def read(self, count):
+                self.largest = max(self.largest, count)
+                if not 0 <= count <= receipt.INSPECTION_CHUNK_BYTES:
+                    raise AssertionError('large eager ELF read')
+                return self.stream.read(count)
+        # A sparse, never-executed structural fixture gives its .text section
+        # a large extent without storing an oversized repository artifact.
+        data = bytearray(elf())
+        section_bytes = 10 * receipt.INSPECTION_CHUNK_BYTES
+        struct.pack_into('<Q', data, 192 + 128 + 32, section_bytes)
+        with tempfile.TemporaryFile() as stream:
+            stream.write(data)
+            stream.truncate(128 + section_bytes)
+            stream.flush()
+            reader = BoundedReader(stream)
+            identity = receipt.elf_allocated_identity(reader)
+            self.assertEqual(identity['sections'][0]['size'], section_bytes)
+            self.assertEqual(reader.largest, receipt.INSPECTION_CHUNK_BYTES)
+            with self.assertRaisesRegex(ValueError, 'metadata exceeds'):
+                receipt.ElfReader(reader).read(0, receipt.MAX_ELF_METADATA_BYTES + 1)
+
+    def test_zip_actual_byte_count_and_member_budget_are_enforced(self):
+        class Member:
+            filename = 'lib/x86_64/fixture.so'
+            def __init__(self, size): self.file_size = size
+        class Archive:
+            def __init__(self, payload, size): self.payload, self.member = payload, Member(size)
+            def getinfo(self, name): return self.member
+            def open(self, entry): return io.BytesIO(self.payload)
+        data = elf()
+        for declared in (len(data) - 1, len(data) + 1):
+            with self.subTest(declared=declared), self.assertRaisesRegex(ValueError, 'actual bytes'):
+                receipt.inspect_apk_library(Archive(data, declared), 'fixture', 'x86_64')
+        with self.assertRaisesRegex(ValueError, 'member inspection budget'):
+            receipt.inspect_apk_library(Archive(data, len(data)), 'fixture', 'x86_64', limit=len(data) - 1)
+        result = receipt.inspect_apk_library(Archive(data, len(data)), 'fixture', 'x86_64', limit=len(data))
+        self.assertEqual(result['bytes'], len(data))
+
+    def test_aggregate_zip_and_metadata_budgets_reject_before_payload_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, artifact = self.make_android(root)
+            with zipfile.ZipFile(artifact) as archive:
+                total = sum(item.file_size for item in archive.infolist())
+                with patch.object(receipt, 'MAX_APK_UNCOMPRESSED_BYTES', total - 1):
+                    with self.assertRaisesRegex(ValueError, 'aggregate uncompressed'):
+                        receipt.apk_inventory(archive)
+                with patch.object(receipt, 'MAX_APK_MEMBERS', 1):
+                    with self.assertRaisesRegex(ValueError, 'count bound'):
+                        receipt.apk_inventory(archive)
+
+    def test_overlapping_allocated_file_sections_are_rejected(self):
+        data = bytearray(elf())
+        struct.pack_into('<IIQQQQIIQQ', data, 192 + 192, 17, 1, 2, 4096, 128, 4, 0, 0, 1, 0)
+        with self.assertRaisesRegex(ValueError, 'sections overlap'):
+            receipt.elf_allocated_identity(data)
+
     def source_fixture(self, root):
         source = root / 'source'
         (source / 'static').mkdir(parents=True)

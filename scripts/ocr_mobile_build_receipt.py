@@ -18,6 +18,7 @@ import plistlib
 import re
 import struct
 import subprocess
+import tempfile
 import tomllib
 import zipfile
 
@@ -25,11 +26,57 @@ from mobile_native_provenance import verify_packaged as verify_native_provenance
 
 PACKAGE = 'com.crispstrobe.crispsorter'
 MAX_LIBRARY_BYTES = 256 * 1024 * 1024
+# The qualified ARM64 debug app produced a 317,517,760-byte application .so.
+# Keep paired third-party inputs at the smaller bound; inspect app members
+# without loading their complete payloads into memory.
+MAX_PACKAGED_LIBRARY_BYTES = 512 * 1024 * 1024
+MAX_APK_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_APK_MEMBERS = 20_000
+MAX_ELF_METADATA_BYTES = 8 * 1024 * 1024
+INSPECTION_CHUNK_BYTES = 1024 * 1024
 
 
 def digest(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+class ElfReader:
+    """Random access to bounded metadata and streamed mapped-section hashes."""
+    def __init__(self, source):
+        self.source = source
+        self.buffer = isinstance(source, (bytes, bytearray, memoryview))
+        self.size = len(source) if self.buffer else os.fstat(source.fileno()).st_size
+
+    def check_range(self, offset, count):
+        if offset < 0 or count < 0 or offset + count > self.size:
+            raise ValueError('ELF range exceeds the actual file bytes')
+
+    def read(self, offset, count):
+        self.check_range(offset, count)
+        if count > MAX_ELF_METADATA_BYTES:
+            raise ValueError('ELF metadata exceeds the inspection bound')
+        if self.buffer:
+            return bytes(memoryview(self.source)[offset:offset + count])
+        self.source.seek(offset)
+        value = self.source.read(count)
+        if len(value) != count:
+            raise ValueError('ELF metadata ended before its declared range')
+        return value
+
+    def hash(self, offset, count):
+        self.check_range(offset, count)
+        result = hashlib.sha256()
+        if not self.buffer:
+            self.source.seek(offset)
+        for position in range(0, count, INSPECTION_CHUNK_BYTES):
+            length = min(INSPECTION_CHUNK_BYTES, count - position)
+            chunk = (memoryview(self.source)[offset + position:offset + position + length]
+                     if self.buffer else self.source.read(length))
+            if len(chunk) != length:
+                raise ValueError('ELF section ended before its declared range')
+            result.update(chunk)
+        return result.hexdigest()
 
 
 def elf_allocated_identity(data):
@@ -41,22 +88,28 @@ def elf_allocated_identity(data):
     actual code/data independently of nonallocated debug and section-name data.
     Only the two supported little-endian Android ELF64 targets are admitted.
     """
-    if len(data) < 64 or data[:6] != b'\x7fELF\x02\x01':
+    source = ElfReader(data)
+    if source.size < 64 or source.read(0, 6) != b'\x7fELF\x02\x01':
         raise ValueError('Expected a little-endian ELF64 Android runtime')
-    header = struct.unpack_from('<16sHHIQQQIHHHHHH', data)
+    header = struct.unpack('<16sHHIQQQIHHHHHH', source.read(0, 64))
     _, kind, machine, _, entry, _, section_offset, flags, _, _, _, section_size, count, names_index = header
     if kind != 3 or machine not in (62, 183):
         raise ValueError('Runtime must be an Android x86_64 or arm64 shared library')
     if section_size != 64 or not 0 < count < 65536 or not 0 < names_index < count:
         raise ValueError('Unsupported ELF section table')
-    if section_offset + section_size * count > len(data):
+    if section_offset + section_size * count > source.size:
         raise ValueError('Truncated ELF section table')
-    sections = [struct.unpack_from('<IIQQQQIIQQ', data, section_offset + i * section_size) for i in range(count)]
+    table = source.read(section_offset, section_size * count)
+    sections = [struct.unpack_from('<IIQQQQIIQQ', table, i * section_size) for i in range(count)]
     names_section = sections[names_index]
     names_start, names_size = names_section[4:6]
-    if names_start + names_size > len(data):
+    if names_start + names_size > source.size:
         raise ValueError('Truncated ELF section names')
-    names = data[names_start:names_start + names_size]
+    names = source.read(names_start, names_size)
+    spans = sorted((section[4], section[4] + section[5]) for section in sections
+                   if section[2] & 2 and section[1] != 8 and section[5])
+    if any(left[1] > right[0] for left, right in zip(spans, spans[1:])):
+        raise ValueError('Allocated ELF file sections overlap')
     allocated = []
     for name_at, section_type, section_flags, address, offset, size, _, _, alignment, _ in sections:
         if not section_flags & 2:  # SHF_ALLOC, excluding debug/symbol-only metadata.
@@ -65,11 +118,11 @@ def elf_allocated_identity(data):
         if name_at >= len(names) or end < 0:
             raise ValueError('Invalid allocated ELF section name')
         name = names[name_at:end].decode('ascii')
-        if section_type != 8 and offset + size > len(data):  # SHT_NOBITS has no file content.
+        if section_type != 8 and offset + size > source.size:  # SHT_NOBITS has no file content.
             raise ValueError('Truncated allocated ELF section')
         allocated.append({'name': name, 'type': section_type, 'flags': section_flags,
                           'address': address, 'size': size, 'alignment': alignment,
-                          'sha256': None if section_type == 8 else hashlib.sha256(data[offset:offset + size]).hexdigest()})
+                          'sha256': None if section_type == 8 else source.hash(offset, size)})
     if not allocated or not any(item['name'] == '.text' and item['size'] for item in allocated):
         raise ValueError('Runtime has no allocated executable text')
     return {'machine': machine, 'entry': entry, 'flags': flags, 'sections': allocated}
@@ -77,20 +130,22 @@ def elf_allocated_identity(data):
 
 def android_load_identity(data, abi):
     """Inspect the final packaged ELF, independently of compiler/zip flags."""
-    if len(data) < 64 or data[:6] != b'\x7fELF\x02\x01':
+    source = ElfReader(data)
+    if source.size < 64 or source.read(0, 6) != b'\x7fELF\x02\x01':
         raise ValueError('Packaged Android library must be little-endian ELF64')
-    header = struct.unpack_from('<16sHHIQQQIHHHHHH', data)
+    header = struct.unpack('<16sHHIQQQIHHHHHH', source.read(0, 64))
     if header[1] != 3 or header[2] != {'arm64-v8a': 183, 'x86_64': 62}.get(abi):
         raise ValueError('Packaged Android library has the wrong shared-library target')
     offset, entry_size, count = header[5], header[9], header[10]
-    if offset < 64 or entry_size != 56 or not 0 < count <= 128 or offset + count * entry_size > len(data):
+    if offset < 64 or entry_size != 56 or not 0 < count <= 128 or offset + count * entry_size > source.size:
         raise ValueError('Packaged Android library has invalid program headers')
+    table = source.read(offset, entry_size * count)
     loads = []
     for index in range(count):
-        kind, flags, start, address, _, size, memory_size, alignment = struct.unpack_from('<IIQQQQQQ', data, offset + index * entry_size)
+        kind, flags, start, address, _, size, memory_size, alignment = struct.unpack_from('<IIQQQQQQ', table, index * entry_size)
         if kind != 1:  # PT_LOAD; section alignment alone does not establish loadability.
             continue
-        if (start + size > len(data) or memory_size < size or address + memory_size >= 2**64
+        if (start + size > source.size or memory_size < size or address + memory_size >= 2**64
                 or alignment < 16384 or alignment & (alignment - 1)
                 or start % alignment != address % alignment):
             raise ValueError('Packaged Android library has invalid or non-16-KiB load segments')
@@ -101,6 +156,43 @@ def android_load_identity(data, abi):
     return {'abi': abi, 'minimum_load_alignment': min(item['alignment'] for item in loads), 'load_segments': loads}
 
 
+def apk_inventory(archive):
+    members = archive.infolist()
+    names = [entry.filename for entry in members]
+    if len(members) > MAX_APK_MEMBERS or len(set(names)) != len(names):
+        raise ValueError('APK member inventory exceeds its count bound or contains duplicates')
+    if any(entry.file_size < 0 for entry in members) or sum(entry.file_size for entry in members) > MAX_APK_UNCOMPRESSED_BYTES:
+        raise ValueError('APK exceeds the aggregate uncompressed inspection budget')
+    return names
+
+
+def inspect_apk_library(archive, name, abi, expected_allocated=None, limit=MAX_PACKAGED_LIBRARY_BYTES):
+    """Stream one exact ZIP member to private scratch, then read only ELF metadata.
+
+    Mapped-section hashes also stream. No full application .so byte buffer is
+    created, and actual bytes must equal the independently bounded ZIP metadata.
+    """
+    entry = archive.getinfo(name)
+    if not 0 < entry.file_size <= limit:
+        raise ValueError('APK native library exceeds its member inspection budget: ' + name)
+    sha, total = hashlib.sha256(), 0
+    with tempfile.TemporaryFile() as staged:
+        with archive.open(entry) as stream:
+            while chunk := stream.read(INSPECTION_CHUNK_BYTES):
+                total += len(chunk)
+                if total > entry.file_size or total > limit:
+                    raise ValueError('APK member actual bytes exceed its declared inspection budget')
+                sha.update(chunk)
+                staged.write(chunk)
+        if total != entry.file_size:
+            raise ValueError('APK member actual bytes differ from its ZIP metadata')
+        staged.flush()
+        elf = android_load_identity(staged, abi)
+        if expected_allocated is not None and elf_allocated_identity(staged) != expected_allocated:
+            raise ValueError('Packaged runtime code/data differs from the paired source build')
+    return {'sha256': sha.hexdigest(), 'bytes': total, 'elf': elf}
+
+
 def android_identity(artifact, runtime_directory, runtime):
     expected_abi = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64'}.get(runtime['target'])
     if not expected_abi:
@@ -109,10 +201,11 @@ def android_identity(artifact, runtime_directory, runtime):
     expected_hash = runtime['artifacts'].get('libcrispembed.so')
     if not library.is_file() or library.stat().st_size > MAX_LIBRARY_BYTES or digest(library) != expected_hash:
         raise ValueError('Built runtime bytes do not match their receipt')
-    native_identity = elf_allocated_identity(library.read_bytes())
+    with library.open('rb') as stream:
+        native_identity = elf_allocated_identity(stream)
     with zipfile.ZipFile(artifact) as archive:
-        names = archive.namelist()
-        if len(set(names)) != len(names) or archive.testzip() is not None:
+        names = apk_inventory(archive)
+        if archive.testzip() is not None:
             raise ValueError('APK contains duplicate members or failed archive integrity')
         libraries = [name for name in names if re.fullmatch(r'lib/[^/]+/[^/]+\.so', name)]
         abis = sorted({name.split('/')[1] for name in libraries})
@@ -121,18 +214,22 @@ def android_identity(artifact, runtime_directory, runtime):
         packaged = f'lib/{expected_abi}/libcrispembed.so'
         if packaged not in names or archive.getinfo(packaged).file_size > MAX_LIBRARY_BYTES:
             raise ValueError('APK is missing its bounded CrispEmbed runtime')
-        packaged_data = archive.read(packaged)
-        if elf_allocated_identity(packaged_data) != native_identity:
-            raise ValueError('Packaged runtime code/data differs from the paired source build')
-        hashes, native_elf = {}, {}
+        hashes, native_elf, sizes = {}, {}, {}
         for name in libraries:
-            if archive.getinfo(name).file_size > MAX_LIBRARY_BYTES:
-                raise ValueError('APK native library exceeds the evidence size bound')
-            data = archive.read(name)
-            hashes[name] = hashlib.sha256(data).hexdigest()
-            native_elf[name] = android_load_identity(data, expected_abi)
+            inspected = inspect_apk_library(archive, name, expected_abi,
+                                            native_identity if name == packaged else None,
+                                            MAX_LIBRARY_BYTES if name == packaged else MAX_PACKAGED_LIBRARY_BYTES)
+            hashes[name] = inspected['sha256']
+            native_elf[name] = inspected['elf']
+            sizes[name] = inspected['bytes']
     return {'kind': 'apk', 'sha256': digest(artifact), 'bytes': artifact.stat().st_size,
             'abis': abis, 'native_libraries': hashes, 'native_elf': native_elf,
+            'native_library_bytes': sizes,
+            'inspection_budget': {'member_bytes': MAX_PACKAGED_LIBRARY_BYTES,
+                                  'paired_runtime_bytes': MAX_LIBRARY_BYTES,
+                                  'aggregate_uncompressed_bytes': MAX_APK_UNCOMPRESSED_BYTES,
+                                  'maximum_elf_metadata_read_bytes': MAX_ELF_METADATA_BYTES,
+                                  'stream_chunk_bytes': INSPECTION_CHUNK_BYTES},
             'paired_runtime_mapped_sections_match': True,
             'native_identity_sha256': hashlib.sha256(json.dumps(native_identity, sort_keys=True).encode()).hexdigest()}
 
@@ -244,11 +341,11 @@ def ort_identity(source, platform, artifact, runtime_path, expected_target):
             raise ValueError('ONNX Runtime library differs from its immutable binary pin')
         with zipfile.ZipFile(artifact) as archive:
             name = f'lib/{abi}/libonnxruntime.so'
-            if name not in archive.namelist() or archive.getinfo(name).file_size > MAX_LIBRARY_BYTES:
+            if name not in apk_inventory(archive) or archive.getinfo(name).file_size > MAX_LIBRARY_BYTES:
                 raise ValueError('APK is missing its bounded ONNX Runtime library')
-            packaged = archive.read(name)
-            if elf_allocated_identity(packaged) != elf_allocated_identity(native.read_bytes()):
-                raise ValueError('Packaged ONNX Runtime code/data differs from the qualified library')
+            with native.open('rb') as stream:
+                expected = elf_allocated_identity(stream)
+            inspected = inspect_apk_library(archive, name, abi, expected, MAX_LIBRARY_BYTES)
             for basename, notice in notices.items():
                 candidates = [item for item in archive.namelist() if Path(item).name == basename]
                 if len(candidates) != 1 or archive.getinfo(candidates[0]).file_size != notice['bytes']:
@@ -256,7 +353,7 @@ def ort_identity(source, platform, artifact, runtime_path, expected_target):
                 if hashlib.sha256(archive.read(candidates[0])).hexdigest() != notice['sha256']:
                     raise ValueError('Packaged ONNX Runtime notice changed')
                 packaged_notices[basename] = {'path': candidates[0], 'sha256': notice['sha256']}
-        linkage = {'packaged_library': name, 'packaged_sha256': hashlib.sha256(packaged).hexdigest(), 'mapped_sections_match': True}
+        linkage = {'packaged_library': name, 'packaged_sha256': inspected['sha256'], 'mapped_sections_match': True}
     else:
         identifier = 'ios-arm64_x86_64-simulator' if expected_target == 'ios-sim-arm64' else 'ios-arm64'
         binary = directory / 'onnxruntime.xcframework' / identifier / 'onnxruntime.framework/onnxruntime'
