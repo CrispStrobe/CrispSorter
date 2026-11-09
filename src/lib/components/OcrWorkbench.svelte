@@ -57,6 +57,9 @@
     ShieldCheck,
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
+  import WordReview from "./ocr/WordReview.svelte";
+  import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
+  import type { WordEvidence } from "$lib/ocr/words";
   import {
     workspaceClient,
     type WorkspaceClient,
@@ -658,6 +661,25 @@
     editorPane
       ?.querySelector<HTMLElement>(`[data-region-id="${id}"]`)
       ?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }
+  async function selectWord(r: OcrRegion, word: WordEvidence) {
+    if (!activePage || locked || r.excluded) return;
+    const pageId = activePage.id;
+    const sourceText = r.text;
+    if (sourceText.slice(word.start, word.end) !== word.text) return;
+    await selectRegion(r.id);
+    // The selection is valid only for the text version that supplied its
+    // offsets. Navigation or an edit during the render must not target another
+    // page, a changed word, or original OCR offsets in corrected text.
+    if (
+      activePage?.id !== pageId ||
+      activePage.regions.find((item) => item.id === r.id)?.text !== sourceText
+    ) return;
+    const editor = editorPane?.querySelector<HTMLTextAreaElement>(
+      `[data-region-id="${r.id}"] textarea`,
+    );
+    editor?.focus();
+    editor?.setSelectionRange(word.start, word.end);
   }
   function togglePage(id: string) {
     checkedPages = checkedPages.includes(id)
@@ -2425,18 +2447,20 @@
                       onclick={() => selectRegion(r.id)}>{r.kind}</button
                     ><span
                       class="confidence"
-                      class:unknown={r.confidenceBasis !== "recognition"}
+                      class:unknown={r.confidenceBasis !== "recognition" || r.confidence === null}
                       title={r.confidenceBasis === "recognition"
-                        ? "Recognition score; a review signal, not calibrated accuracy"
+                        ? r.text !== r.originalText
+                          ? "Original OCR region score. Manual corrections do not produce a new recognition score; this is a review signal, not calibrated accuracy."
+                          : "Region recognition score; a review signal, not calibrated accuracy. Word scores are shown separately when available."
                         : r.confidenceBasis === "detection"
                           ? "Detection score only; text confidence is unknown"
                           : "Recognition confidence unavailable"}
                       >{r.confidenceBasis === "recognition" &&
                       r.confidence !== null
-                        ? `${Math.round(r.confidence * 100)}%`
+                        ? `Region ${Math.round(r.confidence * 100)}%`
                         : r.confidenceBasis === "manual"
-                          ? "Manual"
-                          : "Unscored"}</span
+                          ? "Manual region"
+                          : "Region: unscored"}</span
                     >{#if r.review === "approved"}<span
                         class="region-approved"
                         title="Approved"><Check size={14} /></span
@@ -2444,12 +2468,13 @@
                         class="edited-badge">Edited</span
                       >{/if}
                   </div>
-                  {#if r.charConfidenceAligned && r.char_conf.length === Array.from(r.originalText).length}<div
+                  {#if hasAlignedCharacterConfidence(r)}<div
                       class="character-evidence"
                       aria-label="Original text with character confidence"
                     >
                       <span class="evidence-label">OCR</span
                       >{#each Array.from(r.originalText) as ch, index}<span
+                          title={`Original character score: ${Math.round(r.char_conf[index] * 100)}%`}
                           class:uncertain={(r.char_conf[index] ?? 1) <
                             project.confidenceThreshold}>{ch}</span
                         >{/each}
@@ -2474,6 +2499,14 @@
                     spellcheck="true"
                     dir="auto"
                   ></textarea>
+                  {#if r.id === selectedRegionId}
+                    <WordReview
+                      region={r}
+                      threshold={project.confidenceThreshold}
+                      disabled={locked || r.excluded}
+                      onselect={(word) => selectWord(r, word)}
+                    />
+                  {/if}
                   {#if r.id === selectedRegionId}<div class="region-actions">
                       <button
                         class="text-button"

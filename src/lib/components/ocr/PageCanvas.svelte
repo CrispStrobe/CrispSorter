@@ -6,6 +6,7 @@
     type OcrPage,
     type OcrRegion,
   } from "$lib/ocr/model";
+  import { regionReviewReason } from "$lib/ocr/confidence";
 
   type Rectangle = { x: number; y: number; w: number; h: number };
   type DrawMode =
@@ -184,12 +185,7 @@
       ongeometry(g.region.id, g.rect);
   }
   function low(region: OcrRegion) {
-    return (
-      region.review !== "approved" &&
-      (region.confidenceBasis !== "recognition" ||
-        region.confidence === null ||
-        region.confidence < threshold)
-    );
+    return !page.approved && regionReviewReason(region, threshold) !== null;
   }
 </script>
 
