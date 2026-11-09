@@ -18,7 +18,9 @@ passed 343 unit tests and all 34 browser interactions. Independent
 table/formula/field objects now retain original output, spans, source captures,
 and historical results across edits. Previewed row/column insertion and deletion,
 cell merge/split, and header repair preserve original evidence and use one-step
-Undo. Continuation joining is next, followed by structured exports. Hardware support, trained
+Undo. Continuation joins now add explicit order, column mapping, repeated-header
+review, and flat input snapshots while keeping source tables unchanged. Structured
+exports are next. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

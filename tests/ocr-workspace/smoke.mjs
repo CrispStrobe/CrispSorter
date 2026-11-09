@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, table-continuation, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -1703,6 +1703,138 @@ if (process.argv.includes('--serve')) {
             assert.deepEqual(objectsOf(restored), objectsOf(split));
         });
 
+        await test('continuation joins require explicit mapping and preserve cross-page input evidence', 'table-continuation', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const sources = initial.pages.map(sourcePage => ({
+                pageId: sourcePage.id,
+                object: sourcePage.provenance.extractionObjects.objects[0],
+            }));
+            const [first, second, third] = sources;
+            const objectsOf = snapshot => snapshot.pages[0].provenance.extractionObjects.objects;
+            const rowsOf = table => Array.from({ length: table.rows }, (_, row) =>
+                Array.from({ length: table.columns }, (_, column) =>
+                    table.cells.find(cell => cell.row === row && cell.column === column)?.text ?? ''));
+            await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+            await page.getByRole('button', { name: 'Table', exact: true }).click();
+            await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).selectOption(first.object.id);
+            const dialog = page.getByRole('dialog', { name: 'Join continuation tables', exact: true });
+            async function configureJoin(checkMissingMap = false) {
+                await page.getByRole('button', { name: 'Join continuation tables', exact: true }).click();
+                await dialog.waitFor();
+                await dialog.locator('[data-join-input-index="0"]').waitFor();
+                assert.equal(await dialog.locator('[data-join-input-index]').count(), 1);
+                for (const source of [second, third]) {
+                    await dialog.getByRole('combobox', { name: 'Continuation table', exact: true }).selectOption(JSON.stringify([source.pageId, source.object.id]));
+                    await dialog.getByRole('button', { name: 'Add table to join', exact: true }).click();
+                }
+                await dialog.getByRole('button', { name: 'Move table 3 up', exact: true }).click();
+                assert.match(await dialog.locator('[data-join-input-index="1"]').innerText(), /Parts — page 3/);
+                assert.match(await dialog.locator('[data-join-input-index="2"]').innerText(), /Parts — page 2/);
+                await dialog.getByRole('textbox', { name: 'Joined table name', exact: true }).fill('Parts — reviewed continuation');
+                assert.equal(await dialog.getByRole('checkbox', { name: 'Set column mapping', exact: true }).isChecked(), true);
+                await dialog.getByRole('spinbutton', { name: 'Joined column count', exact: true }).fill('3');
+                if (checkMissingMap) {
+                    await dialog.getByRole('button', { name: 'Review joined table', exact: true }).click();
+                    const error = dialog.getByRole('alert');
+                    await error.waitFor();
+                    assert.match(await error.innerText(), /column|mapping/i);
+                    assert.equal(await dialog.locator('[data-table-join-preview]').count(), 0);
+                }
+                // Destinations are one-based in the UI. All input mappings are
+                // explicit because one table has a different number of columns.
+                for (const [index, mapping] of [[1, [1, 2]], [2, [2, 1, 3]], [3, [1, 2]]]) {
+                    for (let source = 0; source < mapping.length; source++) {
+                        await dialog.getByRole('spinbutton', { name: 'Joined column for table ' + index + ' source column ' + (source + 1), exact: true }).fill(String(mapping[source]));
+                    }
+                }
+                assert.equal(await dialog.getByRole('spinbutton', { name: 'Repeated header rows for table 1', exact: true }).inputValue(), '0');
+                await dialog.getByRole('spinbutton', { name: 'Repeated header rows for table 2', exact: true }).fill('1');
+                await dialog.getByRole('spinbutton', { name: 'Repeated header rows for table 3', exact: true }).fill('1');
+                await dialog.getByRole('button', { name: 'Review joined table', exact: true }).click();
+                await dialog.locator('[data-table-join-preview]').waitFor();
+                await dialog.locator('[data-join-proposed-table]').waitFor();
+                assert.deepEqual(await dialog.locator('[data-join-removed-headers]').getByRole('textbox').evaluateAll(inputs => inputs.map(input => input.value)), ['Qty', 'Item', 'Reference', 'Item', 'Qty']);
+                await dialog.getByText(/Removed header rows differ from the first table's retained header rows\./).waitFor();
+            }
+            await configureJoin(true);
+            await page.screenshot({ path: path.join(output, 'ocr-table-continuation-preview.png'), fullPage: true });
+            await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            assert.deepEqual((await saveSnapshot(page)).pages, initial.pages);
+
+            await configureJoin();
+            await dialog.getByRole('button', { name: 'Create joined table', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            const joinedProject = await saveSnapshot(page);
+            assert.equal(objectsOf(joinedProject).length, 2);
+            const joined = objectsOf(joinedProject).find(object => object.id !== first.object.id);
+            assert.ok(joined);
+            assert.equal(joined.name, 'Parts — reviewed continuation');
+            assert.equal(joined.kind, 'table');
+            assert.equal(joined.originalOutputKind, 'table-join');
+            assert.equal(joined.excluded, false);
+            assert.equal(await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).inputValue(), joined.id);
+            assert.deepEqual(objectsOf(joinedProject)[0], first.object);
+            assert.deepEqual(joinedProject.pages[1], initial.pages[1]);
+            assert.deepEqual(joinedProject.pages[2], initial.pages[2]);
+            assert.deepEqual(joinedProject.pages[0].regions, initial.pages[0].regions);
+            assert.deepEqual(rowsOf(joined.currentData), [
+                ['Item', 'Qty', ''],
+                ['Valve', '0012', ''],
+                ['Seal', '03', 'LOT-003'],
+                ['Pump', '0007', ''],
+            ]);
+            assert.deepEqual(joined.originalData, joined.currentData);
+            assert.equal(joined.tableSources.version, 1);
+            assert.equal(joined.tableSources.snapshots.length, 3);
+            assert.deepEqual(new Set(joined.captures.map(capture => capture.pageId)), new Set(sources.map(source => source.pageId)));
+            for (const source of sources) {
+                const snapshot = joined.tableSources.snapshots.find(item => item.objectId === source.object.id);
+                assert.ok(snapshot);
+                assert.equal(snapshot.ownerPageId, source.pageId);
+                assert.deepEqual(snapshot.originalOutput, source.object.originalOutput);
+                assert.deepEqual(snapshot.originalData, source.object.originalData);
+                assert.deepEqual(snapshot.currentData, source.object.currentData);
+                assert.deepEqual(snapshot.captures, source.object.captures);
+                assert.equal(Object.hasOwn(snapshot, 'tableSources'), false);
+            }
+
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.waitForFunction(() => document.querySelector('[aria-label="Saved extraction"]')?.options.length === 1);
+            assert.deepEqual((await saveSnapshot(page)).pages, initial.pages);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            await page.waitForFunction(() => document.querySelector('[aria-label="Saved extraction"]')?.options.length === 2);
+            assert.deepEqual((await saveSnapshot(page)).pages, joinedProject.pages);
+            await reopenFixtureProject(page);
+            await page.getByRole('tab', { name: 'Extract', exact: true }).click();
+            await page.getByRole('button', { name: 'Table', exact: true }).click();
+            await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).selectOption(joined.id);
+            assert.equal(await page.getByRole('textbox', { name: 'Row 3, column 1', exact: true }).inputValue(), 'Seal');
+            assert.equal(await page.getByRole('textbox', { name: 'Row 4, column 2', exact: true }).inputValue(), '0007');
+            const panel = page.locator('[data-extraction-objects]');
+            await expandStructureDetail(panel, 'Source tables at joining');
+            assert.deepEqual(JSON.parse(await panel.locator('[data-joined-source-snapshots]').inputValue()), joined.tableSources);
+            assert.deepEqual(JSON.parse(await panel.getByRole('textbox', { name: 'Initial joined structure', exact: true }).inputValue()), joined.originalData);
+            await page.getByRole('button', { name: 'Save table as CSV', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.writes.length === 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.writes[0].text), '"Item","Qty",""\r\n"Valve","0012",""\r\n"Seal","03","LOT-003"\r\n"Pump","0007",""');
+
+            // A join is a captured result. Later source edits change its
+            // freshness, not its strings or the evidence recorded at joining.
+            await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).selectOption(first.object.id);
+            const inputCell = page.getByRole('textbox', { name: 'Row 2, column 1', exact: true });
+            await inputCell.fill('Valve inspected');
+            await inputCell.blur();
+            await saveSnapshot(page);
+            await page.getByRole('combobox', { name: 'Saved extraction', exact: true }).selectOption(joined.id);
+            await panel.locator('[data-extraction-source-state="historical"]').waitFor();
+            assert.equal(await page.getByRole('textbox', { name: 'Row 2, column 1', exact: true }).inputValue(), 'Valve');
+            const historical = await saveSnapshot(page);
+            assert.deepEqual(objectsOf(historical).find(object => object.id === joined.id), joined);
+            assert.deepEqual(historical.pages[1].provenance.extractionObjects.objects, [second.object]);
+            assert.deepEqual(historical.pages[2].provenance.extractionObjects.objects, [third.object]);
+        });
+
         await test('delayed extraction follows its source page and undo restores visible and exported cells', 'extraction-delay', async page => {
             await page.getByRole('tab', { name: 'Extract', exact: true }).click();
             await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -1847,7 +1979,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png', 'ocr-table-continuation-preview.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

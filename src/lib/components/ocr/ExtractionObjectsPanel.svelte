@@ -7,8 +7,9 @@
   } from "$lib/ocr/extractionObjects";
   import FormulaPreview from "./FormulaPreview.svelte";
   import TableEditor from "./TableEditor.svelte";
+  import TableGridPreview from "./TableGridPreview.svelte";
 
-  let { project, page, kind, selectedId, disabled = false, imageUrl, onselect, onchange, onendedit, oncopy, onsave, onrepair }: {
+  let { project, page, kind, selectedId, disabled = false, imageUrl, onselect, onchange, onendedit, oncopy, onsave, onrepair, onjoin }: {
     project: OcrProject;
     page: OcrPage;
     kind: ExtractionObject["kind"];
@@ -21,10 +22,12 @@
     oncopy: (object: ExtractionObject) => void;
     onsave: (object: ExtractionObject) => void;
     onrepair: (object: ExtractionObject, cellId: string | null) => void;
+    onjoin: (object: ExtractionObject) => void;
   } = $props();
 
   let localError = $state("");
   let selectedCellId = $state("");
+  let joinedSnapshotId = $state("");
   let sourceId = $state("");
   let originalOpen = $state(false);
   let sourceTextOpen = $state(false);
@@ -37,6 +40,8 @@
   const selected = $derived(objects.find((object) => object.id === selectedId) ?? objects[objects.length - 1]);
   const selectedCell = $derived(selected?.kind === "table" ? selected.currentData.cells.find((cell) => cell.id === selectedCellId)
     ?? selected.currentData.cells.slice().sort((a, b) => a.row - b.row || a.column - b.column)[0] : undefined);
+  const joinedSnapshots = $derived(selected?.kind === "table" && selected.originalOutputKind === "table-join" ? selected.tableSources?.snapshots ?? [] : []);
+  const joinedSnapshot = $derived(joinedSnapshots.find((snapshot) => snapshot.id === joinedSnapshotId) ?? joinedSnapshots[0]);
   const freshness = $derived(selected ? extractionObjectFreshness(project, selected) : null);
   const capture = $derived(selected?.captures.find((item) => item.id === sourceId) ?? selected?.captures[0]);
   const sourcePage = $derived(capture ? project.pages.find((item) => item.id === capture.pageId) : undefined);
@@ -56,6 +61,7 @@
       lastObjectId = id;
       sourceId = "";
       selectedCellId = "";
+      joinedSnapshotId = "";
       originalOpen = false;
       sourceTextOpen = false;
       localError = "";
@@ -147,6 +153,7 @@
         <div class="table-repair-tools">
           <p class="object-help">{selectedCell ? "Selected cell: row " + (selectedCell.row + 1) + ", column " + (selectedCell.column + 1) + ". Focus a cell to choose a starting position." : "This table is empty. Inserting a row or column starts a one-cell table."}</p>
           <button type="button" onclick={() => { onendedit(); onrepair(object, selectedCell?.id ?? null); }} disabled={disabled || !!localError}>Repair table structure</button>
+          <button type="button" onclick={() => { onendedit(); onjoin(object); }} disabled={disabled || !!localError || !object.currentData.rows || !object.currentData.columns}>Join continuation tables</button>
         </div>
       {:else}
         <FormulaPreview latex={object.currentData.latex} />
@@ -157,12 +164,34 @@
       {/if}
 
       <details class="original-output" bind:open={originalOpen}>
-        <summary>{object.originalOutputKind === "model" ? "Original model output" : "Original saved record"}</summary>
+        <summary>{object.originalOutputKind === "table-join" ? "Source tables at joining" : object.originalOutputKind === "model" ? "Original model output" : "Original saved record"}</summary>
         {#if originalOpen}
-          {#if object.originalOutputKind === "legacy-record"}<p class="object-help">This record preserves previously saved data. It does not recover an original model response that was not saved.</p>{/if}
-          <label class="object-field">Original extraction output<textarea readonly aria-label="Original extraction output" value={outputText(object.originalOutput)} rows="8" spellcheck="false"></textarea></label>
-          <label class="object-field">Original structured data<textarea readonly aria-label="Original structured data" value={outputText(object.originalData)} rows="6" spellcheck="false"></textarea></label>
-          <p class="object-help">Original output stays separate from your corrections. Markup is shown as text.</p>
+          {#if object.kind === "table" && object.originalOutputKind === "table-join"}
+            <p class="object-help">This table has a manual joined baseline. Its source snapshots preserve the input tables, their corrections at joining, and their earlier output.</p>
+            <div class="initial-joined-grid"><TableGridPreview table={object.originalData} label="Initial joined table" /></div>
+            <label class="object-field">Initial joined structure<textarea readonly aria-label="Initial joined structure" value={outputText(object.originalData)} rows="6" spellcheck="false"></textarea></label>
+            {#if joinedSnapshot}
+              <label class="object-field">Joined source snapshot<select aria-label="Joined source snapshot" value={joinedSnapshot.id} onchange={(event) => (joinedSnapshotId = event.currentTarget.value)}>
+                {#each joinedSnapshots as snapshot (snapshot.id)}<option value={snapshot.id}>{snapshot.name} · {project.pages.find((item) => item.id === snapshot.ownerPageId)?.name ?? snapshot.ownerPageId}</option>{/each}
+              </select></label>
+              <section class="joined-snapshot" data-joined-source-snapshot-id={joinedSnapshot.id}>
+                <p class="object-help"><strong>{joinedSnapshot.name}</strong><br />Source page: {project.pages.find((item) => item.id === joinedSnapshot.ownerPageId)?.name ?? joinedSnapshot.ownerPageId}<br />Snapshot captured: {joinedSnapshot.capturedAt}</p>
+                <TableGridPreview table={joinedSnapshot.currentData} label="Source table at joining" />
+                <div class="source-original-grid"><TableGridPreview table={joinedSnapshot.originalData}
+                  label={joinedSnapshot.originalOutputKind === "table-join" ? "Initial source join structure" : joinedSnapshot.originalOutputKind === "model" ? "Original recognized table" : "Earlier saved source structure"} /></div>
+                <label class="object-field">{joinedSnapshot.originalOutputKind === "table-join" ? "Source join receipt" : joinedSnapshot.originalOutputKind === "model" ? "Original source output" : "Earlier source record"}<textarea readonly
+                  aria-label={joinedSnapshot.originalOutputKind === "table-join" ? "Source join receipt" : joinedSnapshot.originalOutputKind === "model" ? "Original source output" : "Earlier source record"}
+                  value={outputText(joinedSnapshot.originalOutput)} rows="7" spellcheck="false"></textarea></label>
+              </section>
+            {/if}
+            <label class="object-field">Join receipt<textarea readonly aria-label="Join receipt" value={outputText(object.originalOutput)} rows="6" spellcheck="false"></textarea></label>
+            <label class="object-field">Source table snapshots<textarea readonly data-joined-source-snapshots aria-label="Source table snapshots" value={outputText(object.tableSources)} rows="8" spellcheck="false"></textarea></label>
+          {:else}
+            {#if object.originalOutputKind === "legacy-record"}<p class="object-help">This record preserves previously saved data. It does not recover an original model response that was not saved.</p>{/if}
+            <label class="object-field">Original extraction output<textarea readonly aria-label="Original extraction output" value={outputText(object.originalOutput)} rows="8" spellcheck="false"></textarea></label>
+            <label class="object-field">Original structured data<textarea readonly aria-label="Original structured data" value={outputText(object.originalData)} rows="6" spellcheck="false"></textarea></label>
+            <p class="object-help">Original output stays separate from your corrections. Markup is shown as text.</p>
+          {/if}
         {/if}
       </details>
       <button type="button" class="save-object" onclick={() => onsave(object)} disabled={disabled}>Save {object.kind === "fields" ? "fields as JSON" : object.kind === "table" ? "table as CSV" : "formula as LaTeX"}</button>
@@ -207,7 +236,9 @@
   button { padding: 7px 10px; border: 1px solid #536f91; border-radius: 5px; background: #203c5e; color: #dcecff; font: inherit; font-size: 11px; cursor: pointer; }
   .save-object { margin-top: 10px; width: 100%; }
   .table-repair-tools { margin-top: 12px; }
-  .table-repair-tools > button { width: 100%; }
+  .table-repair-tools > button { width: 100%; margin-top: 8px; }
+  .initial-joined-grid, .source-original-grid { margin: 14px 0; }
+  .joined-snapshot { padding: 10px; border: 1px solid #405d80; border-radius: 5px; background: #112136; }
   button:disabled, input:disabled, textarea:disabled, select:disabled { opacity: .5; cursor: default; }
   button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #a5d1ff; outline-offset: 2px; }
 </style>

@@ -1,24 +1,38 @@
 import type { OcrPage, OcrProject } from './model';
 import { captureExtractionSource, type ExtractionKind, type ExtractionSource } from './extraction';
 import { joinRegionText } from './text';
-import { readTableData, tableDataFromRows, MAX_EXTRACTION_TEXT, type TableData } from './tableData';
+import { readTableData, tableDataFromRows, MAX_EXTRACTION_TEXT, MAX_TABLE_DIMENSION, MAX_TABLE_GRID, type TableData } from './tableData';
 import { parseTableHtml } from './tableHtml';
 export type { TableData, TableCell } from './tableData';
 export type { ExtractionKind } from './extraction';
 
 export type JsonValue=null|boolean|number|string|JsonValue[]|{[key:string]:JsonValue};
 export type ExtractionReview='unreviewed'|'corrected'|'approved';
+export type ExtractionOutputKind='model'|'legacy-record'|'table-join';
 export interface ExtractionCapture extends ExtractionSource {
     id:string; pageId:string; documentId:string; width:number; height:number;
 }
 export interface ExtractionFieldValue { id:string; label:string; value:string; score:number|null; }
 export interface ExtractionFieldsData { version:1; labels:string[]; fields:ExtractionFieldValue[]; }
 export interface ExtractionFormulaData { version:1; latex:string; }
+export interface TableSourceSnapshot {
+    id:string;objectId:string;ownerPageId:string;name:string;capturedAt:string;sourceUpdatedAt:string;
+    originalOutputKind:ExtractionOutputKind;originalOutput:JsonValue;
+    originalData:TableData;currentData:TableData;captures:ExtractionCapture[];
+}
+export interface TableSources { version:1;snapshots:TableSourceSnapshot[]; }
+export interface TableJoinReceipt {
+    version:1;operation:'continuation-join';targetColumns:number;
+    inputs:{snapshotId:string;dropHeaderRows:number;columnMap:number[]}[];
+    cellOrigins:{cellId:string;snapshotId:string;sourceCellId:string}[];
+    blankCellIds:string[];
+}
 interface ExtractionBase<K extends ExtractionKind,D> {
     version:1; id:string; kind:K; name:string; createdAt:string; updatedAt:string;
     excluded:boolean; review:ExtractionReview; captures:ExtractionCapture[];
-    originalOutput:JsonValue; originalOutputKind:'model'|'legacy-record';
+    originalOutput:JsonValue; originalOutputKind:ExtractionOutputKind;
     originalData:D; currentData:D;
+    tableSources?:TableSources;
 }
 export type ExtractionObject=
     |ExtractionBase<'fields',ExtractionFieldsData>
@@ -115,18 +129,151 @@ function checkBoxes(data:TableData,captures:readonly ExtractionCapture[]):void {
     }
 }
 
+export function readTableJoinReceipt(raw:unknown):TableJoinReceipt {
+    if(!object(raw)||Object.keys(raw).some(key=>!['version','operation','targetColumns','inputs','cellOrigins','blankCellIds'].includes(key))||
+        raw.version!==1||raw.operation!=='continuation-join'||!Number.isSafeInteger(raw.targetColumns)||
+        (raw.targetColumns as number)<1||(raw.targetColumns as number)>MAX_TABLE_DIMENSION||
+        !Array.isArray(raw.inputs)||raw.inputs.length<2||raw.inputs.length>16||
+        !Array.isArray(raw.cellOrigins)||raw.cellOrigins.length>MAX_TABLE_GRID||
+        !Array.isArray(raw.blankCellIds)||raw.blankCellIds.length>MAX_TABLE_GRID)return fail('invalid continuation-join receipt');
+    const targetColumns=raw.targetColumns as number;
+    const inputs=raw.inputs.map((value,index)=>{
+        if(!object(value)||Object.keys(value).some(key=>!['snapshotId','dropHeaderRows','columnMap'].includes(key))||
+            !validId(value.snapshotId)||!Number.isSafeInteger(value.dropHeaderRows)||(value.dropHeaderRows as number)<0||
+            (value.dropHeaderRows as number)>MAX_TABLE_DIMENSION||(index===0&&value.dropHeaderRows!==0)||
+            !Array.isArray(value.columnMap)||!value.columnMap.length||value.columnMap.length>MAX_TABLE_DIMENSION||
+            value.columnMap.some(column=>!Number.isSafeInteger(column)||column<0||column>=targetColumns)||
+            new Set(value.columnMap).size!==value.columnMap.length)return fail('invalid continuation column mapping or header removal');
+        return {snapshotId:value.snapshotId,dropHeaderRows:value.dropHeaderRows as number,columnMap:[...value.columnMap] as number[]};
+    });
+    if(new Set(inputs.map(input=>input.snapshotId)).size!==inputs.length)return fail('continuation inputs repeat');
+    const cellOrigins=raw.cellOrigins.map(value=>{
+        if(!object(value)||Object.keys(value).some(key=>!['cellId','snapshotId','sourceCellId'].includes(key))||
+            !validId(value.cellId)||!validId(value.snapshotId)||!validId(value.sourceCellId))return fail('invalid joined cell origin');
+        return {cellId:value.cellId,snapshotId:value.snapshotId,sourceCellId:value.sourceCellId};
+    });
+    const blankCellIds=raw.blankCellIds as unknown[];
+    if(blankCellIds.some(id=>!validId(id))||new Set(blankCellIds).size!==blankCellIds.length||
+        new Set(cellOrigins.map(origin=>origin.cellId)).size!==cellOrigins.length||
+        cellOrigins.some(origin=>blankCellIds.includes(origin.cellId)))return fail('joined cell origins overlap or repeat');
+    return {version:1,operation:'continuation-join',targetColumns,inputs,cellOrigins,blankCellIds:[...blankCellIds] as string[]};
+}
+
+function readTableSources(raw:unknown):TableSources {
+    if(!object(raw)||Object.keys(raw).some(key=>!['version','snapshots'].includes(key))||raw.version!==1||
+        !Array.isArray(raw.snapshots)||!raw.snapshots.length||raw.snapshots.length>128||bytes(raw)>MAX_COLLECTION_BYTES)
+        return fail('table source snapshots exceed the version or 128-snapshot/16 MB bounds');
+    const ids=new Set<string>();
+    const snapshots=raw.snapshots.map((value):TableSourceSnapshot=>{
+        if(!object(value)||Object.keys(value).some(key=>!['id','objectId','ownerPageId','name','capturedAt','sourceUpdatedAt','originalOutputKind',
+            'originalOutput','originalData','currentData','captures'].includes(key))||
+            !validId(value.id)||ids.has(value.id)||!validId(value.objectId)||!validId(value.ownerPageId)||!string(value.name,1000)||
+            !date(value.capturedAt)||!date(value.sourceUpdatedAt)||!['model','legacy-record','table-join'].includes(value.originalOutputKind as string)||
+            !Array.isArray(value.captures)||!value.captures.length||value.captures.length>MAX_CAPTURES)
+            return fail('invalid, duplicate, or recursively nested table source snapshot');
+        ids.add(value.id);
+        const captures=value.captures.map(readCapture);
+        if(new Set(captures.map(capture=>capture.id)).size!==captures.length)return fail('source snapshot capture identities repeat');
+        const originalData=readTableData(value.originalData),currentData=readTableData(value.currentData);
+        checkBoxes(originalData,captures);checkBoxes(currentData,captures);
+        return {id:value.id,objectId:value.objectId,ownerPageId:value.ownerPageId,name:value.name,capturedAt:value.capturedAt,
+            sourceUpdatedAt:value.sourceUpdatedAt,originalOutputKind:value.originalOutputKind as ExtractionOutputKind,
+            originalOutput:readOutput(value.originalOutput),originalData,currentData,captures};
+    });
+    return {version:1,snapshots};
+}
+
+const equalJson=(left:unknown,right:unknown):boolean=>canonical(left as JsonValue)===canonical(right as JsonValue);
+/** Reachability stays iterative and bounded; stored snapshots never nest. */
+function reachableSources(receipt:TableJoinReceipt,snapshots:Map<string,TableSourceSnapshot>):Set<string> {
+    const seen=new Set<string>(),pending=receipt.inputs.map(input=>input.snapshotId);
+    while(pending.length) {
+        const id=pending.pop()!;if(seen.has(id))continue;
+        const snapshot=snapshots.get(id);if(!snapshot)return fail('a joined source snapshot is missing');
+        seen.add(id);
+        if(snapshot.originalOutputKind==='table-join')pending.push(...readTableJoinReceipt(snapshot.originalOutput).inputs.map(input=>input.snapshotId));
+    }
+    return seen;
+}
+
+function validateJoinBaseline(baseline:TableData,receipt:TableJoinReceipt,sources:Map<string,TableSourceSnapshot>):void {
+    if(baseline.columns!==receipt.targetColumns)return fail('joined grid width disagrees with its explicit mapping');
+    const byId=new Map(baseline.cells.map(cell=>[cell.id,cell])),origins=new Map<string,typeof receipt.cellOrigins[number]>();
+    const referenced=new Set<string>();
+    for(const origin of receipt.cellOrigins) {
+        if(!receipt.inputs.some(input=>input.snapshotId===origin.snapshotId))return fail('a joined cell refers to an unselected snapshot');
+        const key=JSON.stringify([origin.snapshotId,origin.sourceCellId]);
+        if(origins.has(key))return fail('a source cell was copied more than once');
+        origins.set(key,origin);
+    }
+    let offset=0;
+    for(const input of receipt.inputs) {
+        const snapshot=sources.get(input.snapshotId);if(!snapshot)return fail('a joined source snapshot is missing');
+        const table=snapshot.currentData;
+        if(!table.rows||!table.columns||input.dropHeaderRows>table.rows||input.columnMap.length!==table.columns)
+            return fail('a continuation input or mapping has incompatible dimensions');
+        for(const source of table.cells) {
+            if(source.row+source.rowSpan<=input.dropHeaderRows)continue;
+            if(source.row<input.dropHeaderRows)return fail('header removal cuts through a spanning cell');
+            const mapped=input.columnMap.slice(source.column,source.column+source.columnSpan).sort((left,right)=>left-right);
+            if(mapped.some((column,index)=>index>0&&column!==mapped[index-1]+1))return fail('a spanned cell maps to disconnected columns');
+            const key=JSON.stringify([input.snapshotId,source.id]),origin=origins.get(key),cell=origin?byId.get(origin.cellId):undefined;
+            if(!origin||!cell||cell.row!==offset+source.row-input.dropHeaderRows||cell.column!==mapped[0]||
+                cell.rowSpan!==source.rowSpan||cell.columnSpan!==source.columnSpan||cell.text!==source.text||
+                cell.header!==source.header||!equalJson(cell.box??null,source.box??null))
+                return fail('the joined baseline does not preserve an input cell exactly');
+            referenced.add(origin.cellId);origins.delete(key);
+        }
+        offset+=table.rows-input.dropHeaderRows;
+    }
+    if(offset!==baseline.rows||origins.size)return fail('the joined baseline contains missing or unexpected source cells');
+    for(const id of receipt.blankCellIds) {
+        const cell=byId.get(id);
+        if(!cell||cell.text!==''||cell.rowSpan!==1||cell.columnSpan!==1||cell.header!==undefined||cell.box!==undefined)
+            return fail('unmapped destination cells must be empty and have no inferred header or geometry');
+        referenced.add(id);
+    }
+    if(referenced.size!==baseline.cells.length)return fail('the join receipt does not account for every baseline cell');
+}
+
+function validateTableJoin(baseline:TableData,receipt:TableJoinReceipt,tableSources:TableSources,captures:ExtractionCapture[]):void {
+    const sources=new Map(tableSources.snapshots.map(snapshot=>[snapshot.id,snapshot]));
+    const degree=new Map(tableSources.snapshots.map(snapshot=>[snapshot.id,0])),edges=new Map<string,string[]>();
+    for(const snapshot of tableSources.snapshots) {
+        const children=snapshot.originalOutputKind==='table-join'?readTableJoinReceipt(snapshot.originalOutput).inputs.map(input=>input.snapshotId):[];
+        for(const child of children){if(!sources.has(child))return fail('a joined ancestor snapshot is missing');degree.set(child,degree.get(child)!+1);}
+        edges.set(snapshot.id,children);
+    }
+    const ready=[...degree].filter(([,count])=>count===0).map(([id])=>id);let visited=0;
+    while(ready.length){const id=ready.pop()!;visited++;for(const child of edges.get(id)!){degree.set(child,degree.get(child)!-1);if(!degree.get(child))ready.push(child);}}
+    if(visited!==sources.size)return fail('table source receipts form a cycle');
+    if(reachableSources(receipt,sources).size!==sources.size)return fail('unreferenced table source snapshots are not permitted');
+    const captureMap=new Map(captures.map(capture=>[capture.id,capture])),seenCaptures=new Set<string>();
+    for(const snapshot of tableSources.snapshots) {
+        for(const capture of snapshot.captures) {
+            if(!equalJson(captureMap.get(capture.id)??null,capture))return fail('joined source captures are missing or conflicting');
+            seenCaptures.add(capture.id);
+        }
+        if(snapshot.originalOutputKind==='table-join')validateJoinBaseline(snapshot.originalData,readTableJoinReceipt(snapshot.originalOutput),sources);
+    }
+    if(seenCaptures.size!==captures.length)return fail('joined captures include an unrelated source');
+    validateJoinBaseline(baseline,receipt,sources);
+}
+
 function readObject(raw:unknown):ExtractionObject {
-    const fields=['version','id','kind','name','createdAt','updatedAt','excluded','review','captures','originalOutput','originalOutputKind','originalData','currentData'];
+    const fields=['version','id','kind','name','createdAt','updatedAt','excluded','review','captures','originalOutput','originalOutputKind','originalData','currentData','tableSources'];
     if(!object(raw)||Object.keys(raw).some(key=>!fields.includes(key))||raw.version!==1||!validId(raw.id)||
         !['fields','table','formula'].includes(raw.kind as string)||!string(raw.name,1000)||!date(raw.createdAt)||!date(raw.updatedAt)||
         typeof raw.excluded!=='boolean'||!['unreviewed','corrected','approved'].includes(raw.review as string)||
-        !['model','legacy-record'].includes(raw.originalOutputKind as string)||
+        !['model','legacy-record','table-join'].includes(raw.originalOutputKind as string)||
         !Array.isArray(raw.captures)||!raw.captures.length||raw.captures.length>MAX_CAPTURES)return fail('unsupported object metadata');
+    if(raw.originalOutputKind==='table-join'?(raw.kind!=='table'||raw.tableSources===undefined):raw.tableSources!==undefined)
+        return fail('only a table join may and must contain flat table source snapshots');
     const captures=raw.captures.map(readCapture);
     if(new Set(captures.map(capture=>capture.id)).size!==captures.length)return fail('source capture identities repeat');
     const base={version:1 as const,id:raw.id,name:raw.name,createdAt:raw.createdAt,updatedAt:raw.updatedAt,
         excluded:raw.excluded,review:raw.review as ExtractionReview,captures,originalOutput:readOutput(raw.originalOutput),
-        originalOutputKind:raw.originalOutputKind as 'model'|'legacy-record'};
+        originalOutputKind:raw.originalOutputKind as ExtractionOutputKind};
     if(raw.kind==='fields') {
         const originalData=readFields(raw.originalData),currentData=readFields(raw.currentData);
         const originalById=new Map(originalData.fields.map(field=>[field.id,field]));
@@ -140,7 +287,9 @@ function readObject(raw:unknown):ExtractionObject {
     if(raw.kind==='formula')return {...base,kind:'formula',originalData:readFormula(raw.originalData),currentData:readFormula(raw.currentData)};
     const originalData=readTableData(raw.originalData),currentData=readTableData(raw.currentData);
     checkBoxes(originalData,captures);checkBoxes(currentData,captures);
-    return {...base,kind:'table',originalData,currentData};
+    const tableSources=raw.tableSources===undefined?undefined:readTableSources(raw.tableSources);
+    if(tableSources)validateTableJoin(originalData,readTableJoinReceipt(base.originalOutput),tableSources,captures);
+    return {...base,kind:'table',originalData,currentData,...(tableSources?{tableSources}:{})};
 }
 
 /** Independent persisted boundary: stale sources are kept, never silently filtered. */
@@ -249,6 +398,26 @@ export function extractionObjectFreshness(project:Pick<OcrProject,'pages'|'docum
             reasons.push('The source crop geometry changed.');
         if(capture.method==='text'&&capture.text!==(region?.text??pageText(page)))reasons.push('The text sent to the model changed.');
     }
+    if(entry.kind==='table'&&entry.originalOutputKind==='table-join'&&entry.tableSources) {
+        const snapshots=new Map(entry.tableSources.snapshots.map(snapshot=>[snapshot.id,snapshot]));
+        const ownerCollections=new Map<string,ExtractionObjects>();
+        for(const id of reachableSources(readTableJoinReceipt(entry.originalOutput),snapshots)) {
+            const snapshot=snapshots.get(id)!,owner=project.pages.find(page=>page.id===snapshot.ownerPageId);
+            if(owner&&!ownerCollections.has(owner.id))ownerCollections.set(owner.id,getExtractionObjects(owner).collection);
+            const current=ownerCollections.get(snapshot.ownerPageId)?.objects.find(object=>object.id===snapshot.objectId);
+            if(!current||current.kind!=='table'){reasons.push('A contributing source table was removed.');continue;}
+            if(current.updatedAt!==snapshot.sourceUpdatedAt||current.name!==snapshot.name||
+                current.originalOutputKind!==snapshot.originalOutputKind||!equalJson(current.currentData,snapshot.currentData)||
+                !equalJson(current.originalData,snapshot.originalData)||!equalJson(current.originalOutput,snapshot.originalOutput)||
+                !equalJson(current.captures,snapshot.captures))reasons.push('A contributing source table was edited after joining.');
+            if(snapshot.originalOutputKind==='table-join'&&current.originalOutputKind==='table-join') {
+                const expected=reachableSources(readTableJoinReceipt(snapshot.originalOutput),snapshots);
+                const actual=new Map((current.tableSources?.snapshots??[]).map(source=>[source.id,source]));
+                if(expected.size!==actual.size||[...expected].some(source=>!equalJson(snapshots.get(source),actual.get(source)??null)))
+                    reasons.push('A contributing source table history changed after joining.');
+            }
+        }
+    }
     return {current:reasons.length===0,reasons:[...new Set(reasons)]};
 }
 
@@ -256,6 +425,16 @@ function storeCollection(project:OcrProject,pageId:string,collection:ExtractionO
     const checked=readExtractionObjects(collection)!;
     return {...project,updatedAt:now(),pages:project.pages.map(page=>page.id!==pageId?page:
         {...page,approved:false,provenance:{...page.provenance,extractionObjects:checked}})};
+}
+
+/** A validated manual join is appended without changing any selected input object. */
+export function appendJoinedTableObject(project:OcrProject,pageId:string,value:ExtractionObject):OcrProject {
+    const entry=readObject(value),page=project.pages.find(page=>page.id===pageId);
+    if(!page||entry.kind!=='table'||entry.originalOutputKind!=='table-join')return fail('choose a destination for a validated table join');
+    if(project.pages.some(page=>getExtractionObjects(page).collection.objects.some(object=>object.id===entry.id)))
+        return fail('the joined table identity is already in use');
+    const collection=getExtractionObjects(page).collection;
+    return storeCollection(project,pageId,{version:1,objects:[...collection.objects,entry]});
 }
 
 /** A delayed result stays attached to its captured page, explicitly historical if stale. */

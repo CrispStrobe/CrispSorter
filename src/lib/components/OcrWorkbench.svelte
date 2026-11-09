@@ -65,6 +65,7 @@
   import PageTextDraftDialog from "./ocr/PageTextDraftDialog.svelte";
   import ExtractionObjectsPanel from "./ocr/ExtractionObjectsPanel.svelte";
   import TableRepairDialog from "./ocr/TableRepairDialog.svelte";
+  import TableJoinDialog from "./ocr/TableJoinDialog.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -109,6 +110,7 @@
   import type { PixelRectangle } from "$lib/ocr/zones";
   import type { ExtractionSource } from "$lib/ocr/extraction";
   import { applyTableOperation, type TableOperationPreview, type TableExtractionObject } from "$lib/ocr/tableOperations";
+  import { applyContinuationJoin, type ContinuationJoinPreview } from "$lib/ocr/continuationJoin";
   import {
     captureExtractionRequest, appendExtractionObject, getExtractionObjects,
     extractionObjectFreshness, type ExtractionObject,
@@ -215,6 +217,7 @@
     offset?: number;
   } | null>(null);
   let tableRepair = $state<{ projectId: string; pageId: string; object: TableExtractionObject; cellId: string | null } | null>(null);
+  let tableJoin = $state<{ projectId: string; pageId: string; object: TableExtractionObject } | null>(null);
   let pageTextDraftOpen = $state(false);
   let pageTextDraftLocalUnsaved = $state(false);
   let proofreadingOpen = $state(false);
@@ -287,6 +290,7 @@
       confirm = null;
       passageAction = null;
       tableRepair = null;
+      tableJoin = null;
       if (!pageTextDraftLocalUnsaved) pageTextDraftOpen = false;
       helpOpen = false;
       recentOpen = false;
@@ -749,6 +753,7 @@
     pageTextDraftOpen = false;
     pageTextDraftLocalUnsaved = false;
     tableRepair = null;
+    tableJoin = null;
     proofreadingOpen = false;
     correctionDraft = null;
     checkedPages = [];
@@ -1005,7 +1010,7 @@
     caret: { start: number; end: number; text: string } | null = null,
   ) {
     const page = activePage;
-    if (!page || locked || confirm || passageAction || pageTextDraftOpen || tableRepair) return;
+    if (!page || locked || confirm || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
     const current = page.regions.find((item) => item.id === target.id);
     if (!current) return;
     try {
@@ -1067,14 +1072,14 @@
     } catch (failure) { return message(failure); }
   }
   function openPageTextDraft() {
-    if (!activePage || locked || confirm || passageAction || pageTextDraftOpen || tableRepair) return;
+    if (!activePage || locked || confirm || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
     try {
       change(createPageTextDraft(project, activePage.id), false);
       resumePageTextDraft();
     } catch (failure) { fail(failure); }
   }
   function resumePageTextDraft() {
-    if (!project.pageTextDraft || locked || confirm || passageAction || tableRepair) return;
+    if (!project.pageTextDraft || locked || confirm || passageAction || tableRepair || tableJoin) return;
     currentMatch = null;
     wordInspection = null;
     editGroup = null;
@@ -1402,7 +1407,7 @@
     extractionSelection = { ...extractionSelection, [activePage.id + ":" + extractionKind]: id };
   }
   function openTableRepair(object: ExtractionObject, cellId: string | null) {
-    if (!activePage || locked || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair) return;
+    if (!activePage || locked || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
     const current = currentExtraction(object);
     if (!current || current.kind !== "table") {
       error = "Select a saved table on the current page.";
@@ -1429,6 +1434,39 @@
       extractionSelection = { ...extractionSelection, [preview.pageId + ":table"]: preview.objectId };
       inspector = "extract";
       notice = "Table structure updated. Review the changed table before page approval; Undo restores the previous table in one step.";
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function openTableJoin(object: ExtractionObject) {
+    if (!activePage || locked || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
+    const current = currentExtraction(object);
+    if (!current || current.kind !== "table" || !current.currentData.rows || !current.currentData.columns) {
+      error = "Select a nonempty saved table to begin a continuation join.";
+      return;
+    }
+    currentMatch = null;
+    wordInspection = null;
+    editGroup = null;
+    error = "";
+    tableJoin = { projectId: project.id, pageId: activePage.id, object: current };
+  }
+  function applyTableJoin(preview: ContinuationJoinPreview): string | null {
+    if (locked) return "Wait for the current document operation to finish before creating the joined table.";
+    if (!tableJoin || tableJoin.projectId !== project.id || preview.projectId !== project.id) {
+      return "The source project changed. Your join choices have been kept; review them again before creating the table.";
+    }
+    try {
+      const destinationPageId = preview.request.inputs[0].pageId;
+      change(applyContinuationJoin(project, preview));
+      selectedPageId = destinationPageId;
+      selectedRegionId = null;
+      wordInspection = null;
+      currentMatch = null;
+      lastReviewIssueKey = null;
+      extractionKind = "table";
+      extractionSelection = { ...extractionSelection, [destinationPageId + ":table"]: preview.result.id };
+      inspector = "extract";
+      notice = "Joined table created. Source tables remain separate. Review the result before page approval; Undo restores the project before this join.";
       return null;
     } catch (failure) { return message(failure); }
   }
@@ -1888,7 +1926,7 @@
     }
   }
   function keydown(event: KeyboardEvent) {
-    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair) return;
+    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
     const target = event.target as HTMLElement;
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
@@ -1995,7 +2033,7 @@
     // Native drag/drop supplies real filesystem paths; web File names are not paths.
     if (client === workspaceClient)
       void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
-        if (active && !locked && !passageAction && !pageTextDraftOpen && !tableRepair) void importFiles(event.payload.paths);
+        if (active && !locked && !passageAction && !pageTextDraftOpen && !tableRepair && !tableJoin) void importFiles(event.payload.paths);
       })
         .then((fn) => {
           if (mounted) unlisten = fn;
@@ -3632,7 +3670,7 @@
             {#if activePage}<ExtractionObjectsPanel {project} page={activePage} kind={extractionKind}
               selectedId={extractionSelection[activePage.id + ":" + extractionKind]} disabled={locked} imageUrl={client.imageUrl}
               onselect={selectExtraction} onchange={changeExtraction} onendedit={() => (editGroup = null)}
-              oncopy={copyExtraction} onsave={saveExtraction} onrepair={openTableRepair} />{/if}
+              oncopy={copyExtraction} onsave={saveExtraction} onrepair={openTableRepair} onjoin={openTableJoin} />{/if}
           </div>
         {:else}
           <div class="panel-scroll export-panel">
@@ -3805,6 +3843,11 @@
       >{/if}
   </footer>
 </section>
+
+{#if tableJoin}
+  <TableJoinDialog {project} projectId={tableJoin.projectId} initialPageId={tableJoin.pageId} initialObject={tableJoin.object}
+    disabled={locked} imageUrl={client.imageUrl} onapply={applyTableJoin} onclose={() => (tableJoin = null)} />
+{/if}
 
 {#if tableRepair}
   <TableRepairDialog {project} projectId={tableRepair.projectId} pageId={tableRepair.pageId}

@@ -45,6 +45,7 @@ The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `
 `?scenario=text-repair`, `?scenario=structure`, `?scenario=page-draft`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`, `?scenario=extraction-objects`,
+`?scenario=table-continuation`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
@@ -98,6 +99,13 @@ areas, and reviewed text for a field set. The first table has a merged header;
 the second includes a leading-zero identifier. Responses are distinct, repeatable
 synthetic model outputs. The fixture checks source capture and object persistence;
 it does not measure native table, math, or field recognition quality.
+
+The table-continuation scenario seeds three saved table objects through the
+production recognition and extraction helpers, one on each source page. Two
+tables share a two-column header; the third has three differently ordered
+columns. Exact leading-zero strings and distinct source images make column
+mapping, header removal, ordering, and captured-evidence assertions observable.
+The fixture does not infer a continuation or run a native model.
 
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
@@ -206,6 +214,18 @@ released, allowing page navigation before the result arrives.
   structured data unchanged. The selected CSV uses the repaired current grid.
   The repair dialog works with keyboard activation at 390px width without
   horizontal page overflow.
+- Cross-page continuation joins reject missing mappings for differing widths,
+  then honor explicit per-table column destinations and chosen input order.
+  Header removal is explicit, previews the exact omitted values, and warns when
+  the removed header differs from the first table's retained header.
+- Cancel preserves all inputs. Create adds one separate, included result on the
+  first input's page without changing any input or its inclusion setting.
+  Flat source snapshots preserve original model data and the current input
+  values captured at joining.
+- One Undo/Redo restores the entire join. Save/reload retains the result, source
+  snapshots, and initial joined structure; CSV preserves the selected column and
+  row order. A later input correction marks the join historical while keeping its
+  saved strings and source snapshots unchanged.
 - Changing page pixels retains earlier extraction objects as historical source
   records with their corrections and captured images still inspectable.
 - Delayed extraction remains attached to its captured page after navigation;
@@ -241,21 +261,35 @@ recovery, hidden-source barriers, and explicit combined-source application.
 Its report and screenshots are in
 [artifact 13711038096](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/artifacts/13711038096).
 
-The OCR-05a candidate at `4904354fb21d32cd7a73d8ca6a7192603da8c772` passed
-**379 unit tests in 41 files** and the Svelte typecheck with **0 errors and 54
-existing warnings** in the restored root checkout. The export-dispatch
-correction at `5ecd539612465e47831b17757ffbe28a29cde2c5` passed **382 unit tests
-in 42 files**, with the same typecheck result. The script syntax and whitespace
-checks passed. Local Chromium still cannot create its required Unix socket; no
-interaction pass is claimed from that launch attempt.
+The original OCR-05a revision `4904354fb21d32cd7a73d8ca6a7192603da8c772`
+completed its [browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42699692705/job/129445404867)
+with **33 interactions passed and 2 failed**. Its **379 unit tests in 41 files**
+passed, with **0 Svelte errors and 54 existing warnings**. The failures were the
+new lifecycle test comparing capture bounds against a nonexistent nested region
+field, and the delayed table test receiving object JSON instead of CSV. Both were
+already corrected in `5ecd539612465e47831b17757ffbe28a29cde2c5`; the original run
+does not qualify that correction. Its failed report and screenshots remain in
+[artifact 13713200211](https://github.com/CrispStrobe/CrispSorter/actions/runs/42699692705/artifacts/13713200211).
+
+The export-dispatch and bounds correction at `5ecd539612465e47831b17757ffbe28a29cde2c5`
+passed **382 unit tests in 42 files** locally, with **0 Svelte errors and 54
+existing warnings**. Script syntax and whitespace checks passed. Local Chromium
+still cannot create its required Unix socket; no interaction pass is claimed
+from that launch attempt.
 
 The OCR-05b table-repair checkpoint passed **405 unit tests in 43 files**, including
 23 new operation cases, and the Svelte typecheck with **0 errors and the same 54
 existing warnings**. The browser harness passes the JavaScript syntax check;
 its new interaction has not yet run in CI.
 
-The harness now contains **36 browser flows**. The saved-extraction-object and
-table-repair flows require execution against their own source revision before
-they can be reported as passing. These tests validate interaction and integration
+The OCR-05c continuation-join checkpoint passed **421 unit tests in 45 files**,
+including 12 new join-core cases and four lifecycle cases, and the Svelte
+typecheck with **0 errors and the same 54 existing warnings**. Its final browser
+harness passes JavaScript syntax and whitespace checks.
+
+The harness now contains **37 browser flows**. The corrected extraction-object,
+table-repair, and continuation-join flows require a successful browser run against
+their own source revision before they can be reported as passing. No browser-pass
+evidence has yet been recorded for the hotfix or OCR-05b revisions. These tests validate interaction and integration
 contracts; they do not measure recognition accuracy or substitute for native
 engine, PDF conformance, or installed application testing.

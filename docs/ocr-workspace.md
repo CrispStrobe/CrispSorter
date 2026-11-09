@@ -544,6 +544,42 @@ selected object changes must be reviewed again before it can be applied.
 Historical-source tables can still be repaired with their provenance warning
 visible.
 
+### Joining continuation tables
+
+Select a saved table and choose **Join continuation tables**. Add the other
+source tables, including tables on other pages, and put them in the required
+order. The first input determines the destination page. Give the result a
+**Joined table name**; the preview accepts 2–16 distinct, nonempty inputs.
+
+Tables with the same width can use their current column order. If widths differ,
+set the **Joined column count** and explicitly map every source column in every
+input to a destination. Destinations shown in the UI start at 1. Within each
+input, two source columns cannot share a destination, and the destination columns
+of a merged source cell must remain consecutive. Columns can be reordered;
+unmapped destination positions become empty cells. Nothing infers a matching
+column from a label or numeric-looking value.
+
+Set **Repeated header rows** separately for each continuation. The first table
+keeps its rows. Header removal starts at zero and cannot cut through a merged
+cell. **Review joined table** shows the input order, proposed grid, captured
+sources, and exact omitted header values. A differing header, a removed cell
+that was not marked as a header, or a historical or excluded source produces a
+warning for review. Cancel leaves all objects unchanged.
+
+**Create joined table** adds a separate included result on the first input's
+page and creates one project-history step. Input tables and their inclusion
+settings remain unchanged. The joined object preserves the selected row and
+column order, literal strings, an initial joined structure, a join receipt,
+and flat snapshots of the source tables' original model output and values at
+joining. Inspect these under **Source tables at joining**. Select the joined
+object when saving its CSV; its source inputs remain individually available.
+
+A join is a captured result, so later input edits do not rewrite it. They mark it
+**Historical source**, with the joined values and recorded source snapshots
+retained. If an input changes while a preview is open, review the join again
+before applying it. Save and project reload preserve both the result and its
+source evidence.
+
 ## Output formats
 
 | Format | Contents | Availability |

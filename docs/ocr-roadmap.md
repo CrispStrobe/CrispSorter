@@ -88,7 +88,7 @@ units to implement and push one at a time.
 | OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | 02a–c implemented; 02d feasibility documented; training blocked |
 | OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | 03a–c implemented; 30 browser interactions and focused/paired native export checks passed |
 | OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | 04a–c bounded workflows implemented; all 34 browser interactions and 343 unit tests passed for the page-draft checkpoint |
-| OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | 05a–b implemented; continuation joining next |
+| OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | 05a–c implemented; 421 unit tests and typecheck pass; expanded browser qualification pending |
 | OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | Planned |
 | OCR-07 | P1 | Reusable form and zone templates | Existing templates backend; OCR-03 geometry rules | Planned |
 | OCR-08 | P1 | Full comparison and review navigation | Existing diff/search; revision identity | Planned |
@@ -122,9 +122,10 @@ the end.
 | `f3984fd` — OCR-03a–c | Grapheme-safe passage split, explicit source coverage, adjacent merge with exact separators, selectable repair proposals, inspectable immutable source components, and preservation through later re-OCR | 280 full unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807) passed all 30 interactions and 175 OCR unit tests. Focused Linux/Windows native checks passed, including Linux live recognition. [Paired native export checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791842) passed, including all 29 workspace cases |
 | `46a3e04` — OCR-04 structure | Versioned blocks and contiguous sections, explicit two-column order, per-passage roles/emphasis/alignment/breaks, figure descriptions, caption and footnote links, source-linked JSON, and bounded structure history | 306 full unit tests passed locally; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197) passed all 32 interactions and 201 OCR unit tests. [Focused Linux/Windows checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619973) passed, including the production semantic validator on both platforms. [Paired application checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619960) remain queued. Structured file writers remain OCR-06 |
 | `ed0480a` — OCR-04 page-text draft | Whole-page plain-text selection/editing, durable unapplied drafts, exact affected-passage previews, explicit combined source coverage, stale/tampered preview rejection, and draft-aware project history | All 343 unit tests in 38 files passed locally and in CI, including native JSON key sorting and failed/pending-page repair; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961) passed all 34 interactions, including draft recovery and cross-passage coverage. [Report and screenshots](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/artifacts/13711038096) retain the execution evidence |
-| `4904354` — OCR-05a independent extraction objects | Multiple editable tables, formulas and field sets; immutable original output/data; actual captured image/text; historical retention; table spans/headers; safe literal CSV; bounded formula preview; per-object export and project review/undo | All 379 unit tests in 41 files passed, including 36 new table/object/lifecycle cases. Svelte check has 0 errors and the same 54 existing warnings. Browser harness syntax and whitespace checks passed; its 35 interactions await CI. Native structured DOCX/XLSX consumption remains OCR-06; table structural operations and continuation joins remain 05b/05c |
+| `4904354` — OCR-05a independent extraction objects | Multiple editable tables, formulas and field sets; immutable original output/data; actual captured image/text; historical retention; table spans/headers; safe literal CSV; bounded formula preview; per-object export and project review/undo | All 379 unit tests in 41 files passed locally and in CI; Svelte check has 0 errors and 54 existing warnings. Its [browser run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42699692705) passed 33 interactions and failed two: a fixture geometry assertion and CSV using the JSON serializer. Both were already corrected in `5ecd539`; that later revision still needs its own browser evidence. Native structured DOCX/XLSX consumption remains OCR-06 |
 | `5ecd539` — OCR-05a export-format correction | Table copy/save emits literal CSV, formula copy/save emits exact LaTeX, and field copy/save retains complete source-linked object JSON; format and extension share one decision | The isolated correction passed all 382 unit tests in 42 files, including three exported-content regressions. Svelte check has 0 errors and the same 54 existing warnings; browser harness syntax and whitespace checks passed. Two browser assertions now use the actual flat region geometry. Browser execution remains pending CI |
-| OCR-05b table structure repair (this checkpoint) | Previewed insert/delete row/column, explicit rectangular merge separators, span splitting, header changes, captured-source inspection, exact removed-value review, stale/tampered preview checks, and one-step Undo | All 405 unit tests in 43 files passed, including 23 new operation cases. Svelte check has 0 errors and the same 54 existing warnings. The browser harness parses and now contains 36 interactions; the new table-repair interaction awaits CI. Original model output/data and unrelated objects remain unchanged. Continuation joins remain OCR-05c |
+| `691be05` — OCR-05b table structure repair | Previewed insert/delete row/column, explicit rectangular merge separators, span splitting, header changes, captured-source inspection, exact removed-value review, stale/tampered preview checks, and one-step Undo | All 405 unit tests in 43 files passed, including 23 new operation cases. Svelte check has 0 errors and the same 54 existing warnings. The 36-interaction browser harness passes syntax checks; browser execution is pending. Original model output/data and unrelated objects remain unchanged |
+| OCR-05c continuation joining (this checkpoint) | Explicit ordered joins, complete column mapping, repeated-header review, separate editable results, flat source snapshots and receipts, inspectable manual baselines, stale application checks, and later-source-change detection | All 421 unit tests in 45 files passed, including 12 core and four project-lifecycle cases. Svelte check has 0 errors and the same 54 existing warnings. The 37-flow browser harness passes syntax and whitespace checks; execution awaits CI. Source tables and their inclusion settings remain unchanged. No cell typing, formula evaluation, or native recognition-accuracy claim is introduced |
 
 ## OCR-01: Native word evidence and honest capabilities
 
@@ -324,7 +325,8 @@ between editing flexibility and source layout that our export UI must explain.
 
 ## OCR-05: Multiple tables/formulas and structural repair
 
-**Status: 05a–b implemented; 05c continuation joining is next.** The versioned
+**Status: 05a–c implemented; the expanded browser suite still needs execution
+against this checkpoint.** The versioned
 [extraction object model](../src/lib/ocr/extractionObjects.ts)
 retains multiple tables, formulas, and field sets independently. Each accepted
 result stores its exact original model output, original structured data, current
@@ -374,6 +376,29 @@ Historical results remain editable with their source status visible. Failed
 application retains the operation choices; Cancel changes nothing. Empty tables
 start at one cell when inserting and return to exactly 0 × 0 when the final row
 or column is deleted. No numeric or formula interpretation is introduced.
+
+[Continuation joining](../src/lib/ocr/continuationJoin.ts) creates a new table
+from 2–16 explicitly ordered nonempty inputs across pages. Differing column
+counts require a complete, distinct destination mapping for every source column;
+source columns cannot be dropped. Spanned cells must map to contiguous columns.
+Unmapped destination positions become explicit empty cells without inferred
+geometry or header roles. Header removal is an explicit top-row count for each
+continuation, never an automatic text match. It cannot cut through a span; the
+preview lists exact removed values and warns about differing, nonheader, or
+entirely removed continuation rows. The first input retains every row.
+
+The joined object is stored on the first input's page and has a manual baseline,
+not a newly recognized model result. Flat versioned snapshots retain each input's
+original output/data and its corrected table at joining. Joining a joined table
+retains its ancestors through receipt references instead of nesting histories.
+The reader checks all origins, mappings, references, cycles and capture conflicts
+within the existing limits, plus a maximum of 128 flat source snapshots. Original
+source objects and their inclusion flags stay unchanged. Later contributing-table
+edits or removals mark the joined result historical without changing its values.
+Snapshots and manual baselines remain inspectable and survive Undo/Redo,
+serialization, page transforms, splitting, and selected-object/document JSON.
+Actual source boxes remain associated with their original capture; logical row
+and column placement does not move those pixels.
 
 **Increments**
 
@@ -426,6 +451,25 @@ identical fonts or editable reflow for arbitrary pages. Spreadsheet strings must
 remain safe and lossless, including values beginning with `=`, `+`, `-`, or `@`.
 Never label a flat paragraph DOCX as layout-preserving. Output choices are
 informed by [ABBYY's documented export distinctions][abbyy-docx].
+
+**Implementation boundary:** Office writers must run behind the existing native
+managed-source validation, output-path protection, and atomic-write path. The
+versioned extraction objects inside page provenance need independent native
+validation before their cells or source captures are consumed. Select table and
+formula objects by stable IDs and make their document placement explicit when
+multiple results share one source region. Preserved continuation inputs and a
+joined result must not all be included merely because they exist in the project.
+No writer may open arbitrary image paths from an unvalidated provenance record.
+
+The current desktop DOCX dependency is `docx-rs` 0.4.20. Its new structured path
+must be exercised by a production-module harness that generates actual output,
+since the existing paired workflow's desktop compile check does not execute
+that writer. The bounded XLSX writer can use the existing ZIP/XML dependencies
+for literal strings and merged rectangles. Validation must check relationships,
+defined styles and numbering, text ranges, source pictures, literal spreadsheet
+values, and exact selected scope. Independent reader and rendered-output results
+must name their producer commit and tool versions; neither a ZIP/XML smoke nor
+a compile check establishes general Office compatibility.
 
 ## OCR-07: Reusable form and zone templates
 
