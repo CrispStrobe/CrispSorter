@@ -1,0 +1,135 @@
+{
+  "kind": "audited-hosted-paired-native",
+  "schema": 1,
+  "audit_utc": "2026-11-09T12:32:07Z",
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42608320582",
+  "job_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42608320582/job/129129867807",
+  "sorter_commit": "7b5a7791c592e2e178b85724cb8cd26c5ac3558a",
+  "crispembed_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+  "checkout_identities_observed_in_log": true,
+  "job": {
+    "id": 129129867807,
+    "status": "completed",
+    "conclusion": "success",
+    "started_utc": "2026-11-09T11:45:46Z",
+    "finished_utc": "2026-11-09T12:25:24Z"
+  },
+  "rust": {
+    "version": "1.99.1",
+    "target": "x86_64-unknown-linux-gnu",
+    "groups": [
+      {
+        "filter": "ocr_workspace::",
+        "passed": 35,
+        "ignored": 0
+      },
+      {
+        "filter": "ocr_photo::tests",
+        "passed": 2,
+        "ignored": 0
+      },
+      {
+        "filter": "model_provisioning",
+        "passed": 14,
+        "ignored": 0,
+        "note": "Six installer and eight storage/lease cases. The lease case additionally executed a successful child-process test; that child is not counted as another top-level case."
+      },
+      {
+        "filter": "extractors::ocr_crispembed::tests",
+        "passed": 20,
+        "ignored": 13
+      },
+      {
+        "filter": "extractors::page_source::tests",
+        "passed": 11,
+        "ignored": 1
+      },
+      {
+        "filter": "ocr_reading_order::tests",
+        "passed": 7,
+        "ignored": 0
+      },
+      {
+        "filter": "extractors::ocr_render::tests",
+        "passed": 9,
+        "ignored": 1
+      }
+    ],
+    "top_level_passed": 98,
+    "failed": 0,
+    "ignored": 15,
+    "standalone_reading_order": {
+      "passed": 7,
+      "failed": 0,
+      "note": "Separately compiled source module; overlaps the application reading-order filter, so not added to the 98 top-level cases."
+    },
+    "feature_checks": [
+      {
+        "features": [
+          "ocr-mobile"
+        ],
+        "command_kind": "cargo check",
+        "passed": true
+      },
+      {
+        "features": [
+          "desktop",
+          "ocr-workspace"
+        ],
+        "command_kind": "cargo check",
+        "passed": true
+      }
+    ],
+    "lockfile": {
+      "mutated_by_cargo": true,
+      "changes": [
+        {
+          "name": "crispembed",
+          "from": "0.17.15",
+          "to": "0.17.16"
+        },
+        {
+          "name": "crispembed-sys",
+          "from": "0.17.15",
+          "to": "0.17.16"
+        }
+      ],
+      "note": "These were the only two resolver changes in the audited log. The later lock correction is required before strict clean-source app receipts can pass."
+    }
+  },
+  "native": {
+    "shared_library_built": true,
+    "review_snapshot_failures": 0,
+    "renderer": {
+      "passed": 51,
+      "failed": 0
+    },
+    "flags": {
+      "cpu": true,
+      "cuda": false,
+      "metal": false,
+      "vulkan": false,
+      "blas": false
+    }
+  },
+  "artifact": {
+    "id": 13673565288,
+    "name": "ocr-paired-native-linux",
+    "bytes": 19042515,
+    "sha256": "9bee989ae84e3ceb2e465fe277b66bf9dac6289954720a49ae3252fee5987685",
+    "downloaded_and_digest_verified": true,
+    "archive_integrity_verified": true,
+    "crispembed_library": {
+      "bytes": 12170072,
+      "sha256": "27f3f5207c97a9b4e123826b7b93729707f73f2824a0b214823fe738450b4325"
+    },
+    "file_manifest": "artifact-identity.json"
+  },
+  "limitations": [
+    "This source predates subsequent model-storage fixes, official mobile ONNX packaging, expanded multilingual app probes and final reviewed-PDF work. Later source needs its own paired result.",
+    "Fifteen live/model cases were explicitly ignored by the test definitions; no OCR weights were exercised by this paired run.",
+    "The executable successfully linked for Rust test harnesses. Desktop/mobile application checks emitted metadata only; no complete app executable, GUI startup or mobile device run was qualified here.",
+    "The native export tests are useful unit/integration contracts, not an independent PDF reader or archival conformance result.",
+    "Compiler warnings were present; success does not imply warning-free source."
+  ]
+}
