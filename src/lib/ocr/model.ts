@@ -27,7 +27,7 @@ export interface OcrPage {
     /** Opaque evidence version; queue progress and autosaves do not change it. */
     contentRevision?: string;
 }
-export interface OcrDocument { id: string; sourceUri: string; name: string; }
+export interface OcrDocument { id: string; sourceUri: string; archiveUri?: string; name: string; }
 export interface OcrProject {
     version: typeof PROJECT_VERSION; id: string; name: string; createdAt: string; updatedAt: string;
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
@@ -35,7 +35,14 @@ export interface OcrProject {
     batch?: RecognitionBatch;
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
-export interface ImportedDocument { source_uri: string; name: string; pages: ImportedPage[]; }
+export interface ImportedDocument { source_uri: string; archive_uri?: string; name: string; pages: ImportedPage[]; }
+
+/** Provider identities stay opaque; immutable archives identify a repeated file
+ * selected from another provider without changing its original source identity. */
+export function findSourceDocument(project: OcrProject, sourceUri: string, archiveUri?: string): OcrDocument | undefined {
+    return project.documents.find(document => document.sourceUri === sourceUri || document.archiveUri === sourceUri
+        || (!!archiveUri && document.archiveUri === archiveUri));
+}
 export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
     confidence?: number | null; char_conf?: number[];
@@ -125,7 +132,9 @@ export function createProject(name = 'Untitled OCR project'): OcrProject {
 export function addDocument(project: OcrProject, imported: ImportedDocument): OcrProject {
     if (!imported.source_uri || !imported.pages.length) throw new Error('The document contains no readable pages.');
     if (imported.pages.some((page) => !page.image_path || !validDimension(page.width) || !validDimension(page.height))) throw new Error('Imported page dimensions or image paths are invalid.');
-    const document: OcrDocument = { id: id('document'), sourceUri: imported.source_uri, name: imported.name || imported.source_uri.split(/[\\/]/).pop() || 'Document' };
+    const document: OcrDocument = { id: id('document'), sourceUri: imported.source_uri,
+        ...(imported.archive_uri ? { archiveUri: imported.archive_uri } : {}),
+        name: imported.name || imported.source_uri.split(/[\\/]/).pop() || 'Document' };
     const pages: OcrPage[] = imported.pages.map((page, index) => ({
         id: id('page'), documentId: document.id, sourcePage: index + 1, name: `${document.name} · ${index + 1}`,
         imagePath: page.image_path, originalImagePath: page.image_path, width: page.width, height: page.height,
@@ -502,6 +511,7 @@ export function parseProject(input: unknown): OcrProject {
         if (!record(document)) throw new Error('OCR document metadata is invalid.');
         checkId(document.id);
         if (typeof document.sourceUri!=='string'||typeof document.name!=='string') throw new Error('OCR document metadata is invalid.');
+        if (document.archiveUri!==undefined && (typeof document.archiveUri!=='string'||!document.archiveUri)) throw new Error('OCR document archive metadata is invalid.');
     }
     for (const page of p.pages) {
         if (!record(page)) throw new Error('OCR project contains an invalid page.');

@@ -28,6 +28,13 @@ class ExportArgs {
     lateinit var name: String
 }
 
+@InvokeArg
+class RasterizeArgs {
+    lateinit var sourcePath: String
+    lateinit var outputDir: String
+    lateinit var kind: String
+}
+
 /** Provider URIs stay opaque; exports require an explicit system destination. */
 @TauriPlugin
 class MobileProviderPlugin(private val activity: Activity) : Plugin(activity) {
@@ -37,6 +44,22 @@ class MobileProviderPlugin(private val activity: Activity) : Plugin(activity) {
 
     private val reader = SafReader(activity)
     private val exporter = ExportAccess(activity)
+
+    @Command
+    fun documentCapabilities(invoke: Invoke) {
+        invoke.resolve(DocumentRasterizer.capabilities())
+    }
+
+    @Command
+    fun rasterizeDocument(invoke: Invoke) {
+        val args = try { invoke.parseArgs(RasterizeArgs::class.java) } catch (error: Exception) {
+            invoke.reject("An archived document and private staging directory are required")
+            return
+        }
+        runInBackground(invoke) {
+            DocumentRasterizer(activity).rasterize(args.sourcePath, args.outputDir, args.kind)
+        }
+    }
 
     @Command
     fun exportFile(invoke: Invoke) {

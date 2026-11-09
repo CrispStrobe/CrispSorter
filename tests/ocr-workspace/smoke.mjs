@@ -615,6 +615,35 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.modelInstalls.length), 2);
         });
 
+        await test('phone import progress stays cancellable and saves only completed documents', 'import-control', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            await page.getByRole('button', { name: 'Add documents', exact: true }).first().click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingImports === 1);
+            await page.evaluate(() => window.ocrSmoke.emitImportProgress({ request_id: 'fixture-import', phase: 'rendering', completed: 1, total: 2 }));
+            await page.getByText('Rendering pages: 1 of 2', { exact: true }).waitFor();
+            const cancel = page.getByRole('button', { name: 'Cancel import', exact: true });
+            const bounds = await cancel.boundingBox();
+            assert.ok(bounds && bounds.height >= 44 && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y + bounds.height <= 844, 'Phone cancel target must stay fully reachable');
+            assert.equal(await page.getByRole('button', { name: 'Add documents', exact: true }).first().isDisabled(), true);
+            await page.screenshot({ path: path.join(output, 'ocr-phone-import-progress.png'), fullPage: true });
+            await page.evaluate(() => window.ocrSmoke.releaseImport());
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 5 && window.ocrSmoke.pendingImports === 1);
+            await cancel.click();
+            const stopping = page.getByRole('button', { name: 'Stopping…', exact: true });
+            await stopping.waitFor(); assert.equal(await stopping.isDisabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.cancelledImports), 1);
+            await page.evaluate(() => window.ocrSmoke.emitImportProgress({ request_id: 'fixture-import', phase: 'rendering', completed: 2, total: 2 }));
+            await page.getByText('Stopping import after the current step…', { exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Add documents', exact: true }).first().isDisabled(), true);
+            await page.evaluate(() => window.ocrSmoke.releaseImport());
+            await page.getByText('2 pages added. Import cancelled; completed documents are saved.', { exact: true }).waitFor();
+            const final = await page.evaluate(() => ({ project: window.ocrSmoke.lastSaved, calls: window.ocrSmoke.calls.filter(call => call.method === 'importDocument'), max: window.ocrSmoke.maxNative }));
+            assert.equal(final.project.pages.length, 5); assert.equal(final.calls.length, 2); assert.equal(final.max, 1);
+            assert.equal(final.project.documents.at(-1).sourceUri, '/fixtures/first.pdf');
+            assert.equal(final.project.documents.at(-1).archiveUri, '/fixtures/archive/first.pdf');
+            assert.equal(await cancel.count(), 0);
+        });
+
         await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {
             await page.setViewportSize({ width: 390, height: 844 });
             const camera = page.getByLabel('Camera photo file', { exact: true });

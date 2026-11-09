@@ -13,10 +13,24 @@ private struct ReadArgs: Decodable { let uri: String }
 private struct ReadResponse: Encodable { let data: String }
 private struct ExportArgs: Decodable { let path: String; let name: String }
 private struct ExportResponse: Encodable { let cancelled: Bool; let saved_path: String? }
+private struct RasterizeArgs: Decodable { let sourcePath: String; let outputDir: String; let kind: String }
 
 class MobileProviderPlugin: Plugin, UIDocumentPickerDelegate {
   private var pending: (invoke: Invoke, folder: Bool)?
   private var pendingExport: Invoke?
+
+  @objc public func documentCapabilities(_ invoke: Invoke) {
+    invoke.resolve(DocumentRasterizer.capabilities())
+  }
+
+  @objc public func rasterizeDocument(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(RasterizeArgs.self)
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        invoke.resolve(try DocumentRasterizer().rasterize(sourcePath: args.sourcePath, outputDir: args.outputDir, kind: args.kind))
+      } catch { invoke.reject(error.localizedDescription) }
+    }
+  }
 
   @objc public func exportFile(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(ExportArgs.self)

@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "source": "Self-authored deterministic PDF fixture; no external document data.",
+  "filename": "two-pages.pdf",
+  "sha256": "5544f89e6c4ce670715f4e1585906915bf27bfa311710800242e7d5c7d3a26ae",
+  "bytes": 1064,
+  "pages": [
+    {
+      "width_points": 612,
+      "height_points": 792,
+      "text": [
+        "CRISP OCR MOBILE DOCUMENT ONE",
+        "Invoice 1278",
+        "Total 123.45"
+      ]
+    },
+    {
+      "width_points": 432,
+      "height_points": 648,
+      "text": [
+        "CRISP OCR MOBILE DOCUMENT TWO",
+        "Phone photo workflow",
+        "Archive original bytes"
+      ]
+    }
+  ],
+  "images": [
+    {
+      "filename": "colors.avif",
+      "fixture": "colors.avif.b64",
+      "bytes": 374,
+      "sha256": "d0a9389fd028c976acec56e4495a9d20e71a7f3c929ff91ab559e2d2f5cb3941",
+      "encoded_width": 120,
+      "encoded_height": 80,
+      "display_width": 120,
+      "display_height": 80,
+      "orientation": 1
+    },
+    {
+      "filename": "oriented.jpg",
+      "fixture": "oriented.jpg.b64",
+      "bytes": 1421,
+      "sha256": "f2c4db841258621ec9ab96da989980ef729ea72750a2e20df0a561eaef32daec",
+      "encoded_width": 120,
+      "encoded_height": 80,
+      "display_width": 80,
+      "display_height": 120,
+      "orientation": 6
+    }
+  ],
+  "image_generator": "Self-authored four-color image, Pillow 13.0.0",
+  "pdf_variants": [
+    {
+      "filename": "locked.pdf",
+      "fixture": "locked.pdf.b64",
+      "bytes": 1701,
+      "sha256": "12855b7bfc621049227f45365cb665312fc252de21e12be1c84ac18d9957270e",
+      "password_protected": true,
+      "pages": 2
+    },
+    {
+      "filename": "rotated.pdf",
+      "fixture": "rotated.pdf.b64",
+      "bytes": 1110,
+      "sha256": "d3b007d8edbf50a98cfad705527a1680f7525b80a27a3b131cad651207a09a2d",
+      "password_protected": false,
+      "pages": 2
+    }
+  ]
+}

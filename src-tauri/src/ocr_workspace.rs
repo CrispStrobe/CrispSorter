@@ -21,6 +21,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 
+#[path = "ocr_document_import.rs"]
+mod document_import;
+
 const PROJECT_VERSION: u64 = 1;
 const MAX_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PAGE_PIXELS: u64 = 100_000_000;
@@ -38,6 +41,8 @@ pub struct PageAsset {
     pub page_width_points: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_height_points: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 fn checked_physical_size(width: Option<f64>, height: Option<f64>) -> Result<Option<(f64, f64)>, String> {
@@ -56,6 +61,8 @@ fn set_physical_size(page: &mut PageAsset, size: Option<(f64, f64)>) {
 #[derive(Debug, Serialize)]
 pub struct ImportedDocument {
     pub source_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_uri: Option<String>,
     pub name: String,
     pub pages: Vec<PageAsset>,
 }
@@ -98,7 +105,7 @@ fn workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("ocr-workspace");
     fs::create_dir_all(root.join("assets")).map_err(|e| format!("Create OCR asset directory: {e}"))?;
     fs::create_dir_all(root.join("projects")).map_err(|e| format!("Create OCR project directory: {e}"))?;
-    Ok(root)
+    fs::canonicalize(root).map_err(|e| format!("Open OCR workspace: {e}"))
 }
 
 fn now_ms() -> u64 {
@@ -194,7 +201,7 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
         Err(e) => return Err(format!("Save page snapshot: {}", e.error)),
     }
     Ok(PageAsset { image_path: path.to_string_lossy().into_owned(), width, height,
-        page_width_points: None, page_height_points: None })
+        page_width_points: None, page_height_points: None, warnings: Vec::new() })
 }
 
 fn opaque_page(image: &DynamicImage) -> DynamicImage {
@@ -259,7 +266,8 @@ pub fn ocr_workspace_capabilities() -> Value {
         "mobile_model_store": crate::model_provisioning::enabled(),
         "default_engine": if crate::model_provisioning::enabled() { "tesseract" } else { "auto" },
         "default_language": if crate::model_provisioning::enabled() { "eng" } else { "auto" },
-        "pdf_import": cfg!(feature = "pdf-render"),
+        "pdf_import": cfg!(any(feature = "pdf-render", target_os = "android", target_os = "ios")),
+        "native_document_import": cfg!(any(target_os = "android", target_os = "ios")),
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
@@ -269,7 +277,7 @@ pub fn ocr_workspace_capabilities() -> Value {
         "cpu_budget_pixels": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET,
         "engines": if native { WORKSPACE_ENGINES.to_vec() } else { vec![] },
         "reason": if native { None } else { Some("Recognition and document models require a build with CrispEmbed. Project editing, import of images and TIFFs, and text exports remain available.") },
-        "pdf_reason": if cfg!(feature = "pdf-render") { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
+        "pdf_reason": if cfg!(any(feature = "pdf-render", target_os = "android", target_os = "ios")) { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
     })
 }
@@ -279,29 +287,52 @@ fn reviewed_pdf_available() -> bool {
 }
 
 #[tauri::command]
-pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String) -> Result<ImportedDocument, String> {
+pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String, request_id: Option<String>) -> Result<ImportedDocument, String> {
     let root = workspace_root(&app)?;
     let path = local_file(&location_uri)?;
-    tokio::task::spawn_blocking(move || import_document(&root, &path)).await
-        .map_err(|e| format!("Import worker: {e}"))?
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let file = File::open(path).map_err(|e| format!("Open selected document: {e}"))?;
+            if file.metadata().map_err(|e| e.to_string())?.len() > MAX_CAPTURE_BYTES as u64 { return Err("This document exceeds the 32 MiB mobile import limit.".to_string()); }
+            let mut bytes = Vec::new();
+            file.take(MAX_CAPTURE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            Ok(bytes)
+        }).await.map_err(|e| format!("Read import worker: {e}"))??;
+        let metadata = ImportMetadata { name, source_uri: None, request_id };
+        let mut document = document_import::from_bytes(app, root, metadata, bytes, true).await?;
+        document.source_uri = location_uri;
+        Ok(document)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let job = document_import::ImportJob::begin(app, request_id)?;
+        tokio::task::spawn_blocking(move || import_document_with_progress(&root, &path, Some(&job))).await
+            .map_err(|e| format!("Import worker: {e}"))?
+    }
 }
 
 /// Camera and provider bytes never become paths supplied by the webview. Keep
 /// their originals by content hash before creating the oriented page assets.
 #[tauri::command]
 pub async fn ocr_workspace_import_image(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
-    let (metadata, bytes) = import_request(&request)?;
+    let (mut metadata, bytes) = import_request(&request)?;
     let root = workspace_root(&app)?;
-    tokio::task::spawn_blocking(move || import_bytes(&root, &metadata.name, &bytes, false, None)).await
-        .map_err(|e| format!("Camera import worker: {e}"))?
+    metadata.source_uri = None;
+    document_import::from_bytes(app, root, metadata, bytes, false).await
 }
 
 #[tauri::command]
 pub async fn ocr_workspace_import_bytes(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
     let (metadata, bytes) = import_request(&request)?;
     let root = workspace_root(&app)?;
-    tokio::task::spawn_blocking(move || import_bytes(&root, &metadata.name, &bytes, true, metadata.source_uri.as_deref())).await
-        .map_err(|e| format!("Provider import worker: {e}"))?
+    document_import::from_bytes(app, root, metadata, bytes, true).await
+}
+
+#[tauri::command]
+pub fn ocr_workspace_cancel_import(request_id: String) -> Result<(), String> {
+    document_import::cancel(&request_id)
 }
 
 #[derive(Deserialize)]
@@ -309,6 +340,7 @@ pub async fn ocr_workspace_import_bytes(app: tauri::AppHandle, request: tauri::i
 struct ImportMetadata {
     name: String,
     source_uri: Option<String>,
+    request_id: Option<String>,
 }
 
 fn import_request(request: &tauri::ipc::Request<'_>) -> Result<(ImportMetadata, Vec<u8>), String> {
@@ -331,39 +363,8 @@ fn import_request(request: &tauri::ipc::Request<'_>) -> Result<(ImportMetadata, 
 }
 
 fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_uri: Option<&str>) -> Result<ImportedDocument, String> {
-    if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
-        return Err("Choose a nonempty document no larger than 32 MiB.".into());
-    }
-    if source_uri.is_some_and(|uri| !uri.starts_with("content://") && !uri.starts_with("file://")) {
-        return Err("The imported provider identity must be a document provider URI.".into());
-    }
-    let extension = if allow_pdf && bytes.starts_with(b"%PDF-") { "pdf" } else {
-        match image::guess_format(bytes).map_err(|_| "This image format is unsupported. Export the photo as JPEG or PNG and try again.")? {
-            image::ImageFormat::Png => "png", image::ImageFormat::Jpeg => "jpg",
-            image::ImageFormat::Tiff => "tiff", image::ImageFormat::Bmp => "bmp",
-            image::ImageFormat::WebP => "webp",
-            _ => return Err("Import JPEG, PNG, TIFF, BMP or WebP page images.".into()),
-        }
-    };
-    let sources = root.join("sources");
-    fs::create_dir_all(&sources).map_err(|e| format!("Create source archive: {e}"))?;
-    let path = sources.join(format!("{:x}.{extension}", Sha256::digest(bytes)));
-    let mut staging = tempfile::NamedTempFile::new_in(&sources).map_err(|e| format!("Stage imported source: {e}"))?;
-    staging.write_all(bytes).map_err(|e| format!("Archive imported source: {e}"))?;
-    staging.as_file().sync_all().map_err(|e| e.to_string())?;
-    match staging.persist_noclobber(&path) {
-        Ok(_) => sync_directory(&sources)?,
-        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {},
-        Err(e) => return Err(format!("Commit imported source: {}", e.error)),
-    }
-    let mut document = import_document(root, &path)?;
-    document.name = name.rsplit(['/', '\\']).next().unwrap_or("")
-        .chars().filter(|c| !c.is_control()).take(240).collect::<String>();
-    if document.name.trim().is_empty() { document.name = format!("Captured page.{extension}"); }
-    if let Some(uri) = source_uri {
-        document.source_uri = uri.to_owned();
-    }
-    Ok(document)
+    let archived = document_import::archive(root, name, bytes, allow_pdf, source_uri)?;
+    import_document(root, &archived.path).map(|document| archived.attach(document))
 }
 
 #[tauri::command]
@@ -379,6 +380,11 @@ pub async fn ocr_workspace_assess_photo(app: tauri::AppHandle, page_path: String
 }
 
 fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String> {
+    import_document_with_progress(root, path, None)
+}
+
+fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document_import::ImportJob>) -> Result<ImportedDocument, String> {
+    if let Some(job) = job { job.check()?; job.progress("rendering", 0, None); }
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
     if !["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"].contains(&ext.as_str()) {
         return Err(format!("Unsupported OCR document type: .{ext}"));
@@ -393,6 +399,7 @@ fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String>
     }
     let mut pages = Vec::with_capacity(images.len());
     for (index, page) in images.paths().iter().enumerate() {
+        if let Some(job) = job { job.check()?; job.progress("verifying", index, Some(images.len())); }
         let img = decode_page(page).map_err(|e| format!("Page {}: {e}", index + 1))?;
         let orientation = images.page_orientation(index);
         let mut page = persist_image(root, &orient_image(img, orientation))?;
@@ -406,8 +413,10 @@ fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String>
         set_physical_size(&mut page, size);
         pages.push(page);
     }
+    if let Some(job) = job { job.check()?; job.progress("complete", pages.len(), Some(pages.len())); }
     Ok(ImportedDocument {
         source_uri: path.to_string_lossy().into_owned(),
+        archive_uri: None,
         name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
         pages,
     })
@@ -813,7 +822,7 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         let crop = persist_image(root, &image.crop_imm(x, y, w, h))?;
         warnings.push("Zone recognition preserves the current page geometry; scan repair settings are applied only when recognizing a complete page.".into());
         (PageAsset { image_path: path.to_string_lossy().into_owned(), width: image.width(), height: image.height(),
-            page_width_points:physical_size.map(|(w, _)| w), page_height_points:physical_size.map(|(_, h)| h) }, PathBuf::from(crop.image_path), (x, y))
+            page_width_points:physical_size.map(|(w, _)| w), page_height_points:physical_size.map(|(_, h)| h), warnings: Vec::new() }, PathBuf::from(crop.image_path), (x, y))
     } else {
         let prepared = prepare_page(root, path, config, physical_size)?;
         warnings.extend(prepared.warnings);

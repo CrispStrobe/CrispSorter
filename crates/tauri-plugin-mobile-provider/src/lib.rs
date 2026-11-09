@@ -13,6 +13,15 @@ mod mobile {
     pub struct Provider<R: Runtime>(pub PluginHandle<R>);
 
     #[tauri::command]
+    pub async fn document_capabilities<R: Runtime>(
+        _app: AppHandle<R>,
+        provider: State<'_, Provider<R>>,
+    ) -> Result<Value, String> {
+        provider.0.run_mobile_plugin_async("documentCapabilities", json!({}))
+            .await.map_err(|e| e.to_string())
+    }
+
+    #[tauri::command]
     pub async fn pick_files<R: Runtime>(
         _app: AppHandle<R>,
         provider: State<'_, Provider<R>>,
@@ -63,6 +72,25 @@ mod mobile {
     }
 }
 
+/// Internal app bridge, deliberately absent from the webview command/ACL list.
+/// The app archives input first and owns the temporary staging directory; both
+/// native implementations independently enforce that private layout.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn rasterize_ocr_document<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_path: &str,
+    output_dir: &str,
+    kind: &str,
+) -> Result<serde_json::Value, String> {
+    use tauri::Manager;
+    let provider = app.try_state::<mobile::Provider<R>>()
+        .ok_or_else(|| "The mobile document reader is unavailable. Restart the app and retry.".to_string())?;
+    provider.0.run_mobile_plugin_async(
+        "rasterizeDocument",
+        serde_json::json!({ "sourcePath": source_path, "outputDir": output_dir, "kind": kind }),
+    ).await.map_err(|e| e.to_string())
+}
+
 #[cfg(target_os = "ios")]
 tauri::ios_plugin_binding!(init_plugin_mobile_provider);
 
@@ -74,7 +102,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             mobile::pick_files,
             mobile::pick_folder,
             mobile::read_file,
-            mobile::export_file
+            mobile::export_file,
+            mobile::document_capabilities
         ])
         .setup(|app, api| {
             use tauri::Manager;

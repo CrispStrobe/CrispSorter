@@ -4,7 +4,7 @@ import {
     createHistory, createProject, deleteRegion, editRegion, findMatches, getMetrics,
     getReviewIssues, movePage, moveRegion, nextMatch, normalizeRectangle, parseProject,
     prepareExport, redoHistory, removePage, replaceMatches, serializeProject, splitPage, undoHistory,
-    updatePage, updateRegion, type OcrProject,
+    updatePage, updateRegion, findSourceDocument, type OcrProject,
 } from './model';
 
 const imported = (name='invoice.pdf', count=2) => ({source_uri:`/sources/${name}`,name,pages:Array.from({length:count},(_,i)=>({image_path:`/cache/${name}-${i}.png`,width:1000,height:1400}))});
@@ -14,6 +14,21 @@ function recognize(p:OcrProject, index=0, text='Original text', confidence:numbe
 }
 
 describe('OCR project and recognition',()=>{
+    it('retains provider identity and the immutable archive separately across save and restore',()=>{
+        const source='content://provider/Case%3AA%2FB';
+        const archive='/private/ocr-workspace/sources/123.heic';
+        const p=addDocument(createProject(),{...imported('Phone.HEIC',1),source_uri:source,archive_uri:archive});
+        const restored=parseProject(serializeProject(p));
+        expect(restored.documents[0].sourceUri).toBe(source);
+        expect(restored.documents[0].archiveUri).toBe(archive);
+        expect(findSourceDocument(restored, source)?.id).toBe(restored.documents[0].id);
+        expect(findSourceDocument(restored, archive)?.id).toBe(restored.documents[0].id);
+        expect(findSourceDocument(restored, 'content://other/provider', archive)?.id).toBe(restored.documents[0].id);
+        expect(findSourceDocument(restored, source.toLowerCase())).toBeUndefined();
+        const malformed=structuredClone(restored);
+        malformed.documents[0].archiveUri=42 as never;
+        expect(()=>parseProject(malformed)).toThrow(/archive metadata/);
+    });
     it('rejects malformed native payloads and dimension drift while preserving reviewed work',()=>{
         const recognized=recognize(project(1));
         const p=approvePage(recognized,recognized.pages[0].id);
