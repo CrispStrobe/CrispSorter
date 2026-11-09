@@ -1,3 +1,5 @@
+import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
+
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
 /** Raster sources with no physical-size metadata are interpreted at 300 DPI. */
@@ -145,7 +147,10 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
         const score = confidence(region.confidence);
         const chars = (region.char_conf ?? []).filter((c) => confidence(c) !== null);
         const unit = region.char_conf_unit ?? result.char_conf_unit;
-        const aligned = (region.char_conf_aligned === true || result.char_conf_aligned === true || unit === 'unicode_codepoint') &&
+        // An explicit Unicode unit is an alignment contract; an explicit false
+        // flag overrides it. Region metadata takes precedence over page defaults.
+        const alignment = region.char_conf_aligned ?? result.char_conf_aligned;
+        const aligned = unit === 'unicode_codepoint' && alignment !== false &&
             chars.length > 0 && chars.length === Array.from(region.text).length && chars.length === (region.char_conf ?? []).length;
         const normalized: OcrRegion = {
             id: id('region'), text: region.text, originalText: region.text,
@@ -283,10 +288,7 @@ export function getReviewIssues(project: OcrProject, threshold = project.confide
         if (!regions.length || regions.every((r) => !r.text.trim())) issues.push({pageId:page.id,regionId:null,reason:'empty',message:'No recognized text. Verify this is an intentionally blank page.'});
         for (const region of regions) {
             if (region.review === 'approved') continue;
-            let reason: ReviewIssue['reason'] | null = null;
-            if (region.review === 'corrected') reason = 'changed';
-            else if (region.confidenceBasis !== 'recognition' || region.confidence === null) reason = 'unknown-confidence';
-            else if (region.confidence < threshold || (region.charConfidenceAligned && region.char_conf.some((c) => c < threshold))) reason = 'low-confidence';
+            const reason = regionReviewReason(region, threshold);
             if (reason) issues.push({ pageId: page.id, regionId: region.id, reason, message: reason === 'changed' ? 'Corrected text needs approval.' : reason === 'unknown-confidence' ? 'Recognition confidence is unavailable; inspect the source.' : 'Recognition confidence is below the review threshold.' });
         }
     }
@@ -369,8 +371,7 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
             image_path:page.imagePath, width:page.width, height:page.height,
             page_width_points:physicalSize.widthPoints, page_height_points:physicalSize.heightPoints,
             regions:regions.map((r): ExportRegion => {
-            const originalAligned = r.charConfidenceAligned && r.charConfidenceUnit !== 'token' &&
-                r.char_conf.length > 0 && r.char_conf.length === Array.from(r.originalText).length;
+            const originalAligned = hasAlignedCharacterConfidence(r);
             const currentAligned = originalAligned && r.text === r.originalText;
             return {
                 id:r.id, text:r.text, original_text:r.originalText,
@@ -446,7 +447,7 @@ export function parseProject(input: unknown): OcrProject {
             checkId(region.id);
             // Earlier v1 snapshots omitted this metadata; default to no character tint.
             if (!['unicode_codepoint','token','unknown'].includes(region.charConfidenceUnit)) region.charConfidenceUnit='unknown';
-            if (region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
+            if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
             if (typeof region.text!=='string'||typeof region.originalText!=='string'||!hasBox(region,page)||!kinds.includes(region.kind)||!reviews.includes(region.review)||!bases.includes(region.confidenceBasis)||typeof region.excluded!=='boolean'||!Array.isArray(region.char_conf)||region.char_conf.some((c)=>confidence(c)===null)||(region.confidence!==null&&confidence(region.confidence)===null)) throw new Error('OCR project contains an invalid region.');
         }
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
