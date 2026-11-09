@@ -6,6 +6,8 @@ on:
     branches: ['feat/ocr-document-studio']
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_document_import.rs
+      - tests/fixtures/mobile-documents/**
       - src-tauri/src/ocr_photo.rs
       - src-tauri/src/model_provisioning.rs
       - src-tauri/src/model_storage.rs
@@ -18,6 +20,8 @@ on:
   pull_request:
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_document_import.rs
+      - tests/fixtures/mobile-documents/**
       - src-tauri/src/ocr_photo.rs
       - src-tauri/src/model_provisioning.rs
       - src-tauri/src/model_storage.rs
@@ -109,7 +113,7 @@ jobs:
           touch src-tauri/bin/.gitkeep
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
-            ocr_workspace::tests -- --test-threads=1
+            ocr_workspace:: -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_photo::tests -- --test-threads=1
