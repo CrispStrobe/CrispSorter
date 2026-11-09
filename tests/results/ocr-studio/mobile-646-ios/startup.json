@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "platform": "ios",
+  "target": "4A57FB15-6E7C-49CC-BE93-450B18BD286E",
+  "scope": "App identity, startup and screenshot only; user flows and physical devices are not covered",
+  "package": "com.crispstrobe.crispsorter",
+  "pid": 63764,
+  "source_bundle_sha256": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+  "installed_bundle_sha256": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+  "bundle_version": "0.15.0",
+  "simulator_name": "iPhone 16 Pro",
+  "screenshot_sha256": "b85ba50258e3a89f206e42dfd52f41d43ef06a1174a16efc4842b2ad846631ed"
+}
