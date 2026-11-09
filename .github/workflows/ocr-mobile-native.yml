@@ -396,6 +396,9 @@ jobs:
           script: bash repos/CrispSorter/tools/mobile-ocr-probe/run_android.sh
       - name: Execute native OCR and app startup on iOS
         if: runner.os == 'macOS'
+        # Bound simulator hangs at the step level so the always-upload step
+        # can preserve the compiled, explicitly unqualified bundle and logs.
+        timeout-minutes: 15
         working-directory: repos/CrispSorter
         shell: bash
         run: bash tools/mobile-ocr-probe/run_ios.sh

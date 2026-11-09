@@ -2,6 +2,36 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$RUNNER_TEMP/ocr-mobile-evidence" "$RUNNER_TEMP/ocr-mobile-app"
+# Preserve the completed build before any simulator operation can fail or hang.
+# This archive is evidence to inspect, not a successful application result.
+app=$(OCR_REPO="$repo" python3 - <<'PY'
+import os,pathlib
+root = pathlib.Path(os.environ['OCR_REPO']) / 'src-tauri/gen/apple'
+apps = list(root.rglob('CrispSorter.app'))
+if not apps:
+    raise SystemExit('No OCR simulator application was built')
+apps.sort(key=lambda p: ('xcarchive' in str(p), len(str(p))))
+print(apps[0])
+PY
+)
+ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/ocr-mobile-app/CrispSorter-ocr-simulator.zip"
+OCR_REPO="$repo" python3 - <<'PY'
+from datetime import datetime, timezone
+import hashlib, json, os, pathlib, subprocess
+root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'ocr-mobile-app'
+archive = root / 'CrispSorter-ocr-simulator.zip'
+with archive.open('rb') as stream:
+    sha256 = hashlib.file_digest(stream, 'sha256').hexdigest()
+value = {'schema_version': 1, 'kind': 'preserved-ios-compiled-bundle',
+         'recorded_at': datetime.now(timezone.utc).isoformat(),
+         'source_commit': subprocess.check_output(['git', '-C', os.environ['OCR_REPO'], 'rev-parse', 'HEAD'], text=True).strip(),
+         'archive': archive.name, 'bytes': archive.stat().st_size, 'sha256': sha256,
+         'status_at_preservation': 'unqualified',
+         'qualification': 'Preserved before simulator discovery. This does not establish build identity, native inference, or successful app startup; each requires its separate passing receipt.'}
+with (root / 'compiled-bundle.json').open('x') as stream:
+    json.dump(value, stream, indent=2)
+    stream.write('\n')
+PY
 simulator=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for runtime,devices in d.items() if "iOS" in runtime for x in devices if x["name"].startswith("iPhone")))')
 state=$(xcrun simctl list devices available --json | OCR_SIMULATOR="$simulator" python3 -c 'import json,os,sys; print(next(x["state"] for devices in json.load(sys.stdin)["devices"].values() for x in devices if x["udid"]==os.environ["OCR_SIMULATOR"]))')
 if [[ "$state" != Booted ]]; then xcrun simctl boot "$simulator"; fi
@@ -30,16 +60,6 @@ with (root / 'ocr-mobile-evidence/native.log').open('w') as log:
                     str(root / 'ocr-mobile-evidence/native.json')],
                    stdout=log, stderr=subprocess.STDOUT, timeout=300, check=True)
 PY
-app=$(OCR_REPO="$repo" python3 - <<'PY'
-import os,pathlib
-root = pathlib.Path(os.environ['OCR_REPO']) / 'src-tauri/gen/apple'
-apps = list(root.rglob('CrispSorter.app'))
-if not apps:
-    raise SystemExit('No OCR simulator application was built')
-apps.sort(key=lambda p: ('xcarchive' in str(p), len(str(p))))
-print(apps[0])
-PY
-)
 python3 "$repo/scripts/ocr_mobile_build_receipt.py" --platform ios-simulator \
   --artifact "$app" --runtime-receipt "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" \
   --ort-runtime-receipt "$RUNNER_TEMP/ocr-mobile-ort/ort-runtime.json" \
@@ -47,4 +67,3 @@ python3 "$repo/scripts/ocr_mobile_build_receipt.py" --platform ios-simulator \
 python3 "$repo/scripts/mobile_simulator_smoke.py" \
   --platform ios --target "$simulator" --artifact "$app" \
   --output "$RUNNER_TEMP/ocr-mobile-evidence/app-startup"
-ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/ocr-mobile-app/CrispSorter-ocr-simulator.zip"
