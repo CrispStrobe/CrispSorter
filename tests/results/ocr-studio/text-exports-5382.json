@@ -29,7 +29,14 @@
     "ios_target_check": {
       "target": "aarch64-apple-ios",
       "job_id": 129256617896,
-      "status_at_receipt": "queued"
+      "status_at_receipt": "queued",
+      "latest_observation": {
+        "observed_at": "2026-11-09T15:48:17Z",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "steps": null,
+        "qualification": "No succeeding iOS-target check recorded; cancellation cause is not established by this job response."
+      }
     },
     "independent_readers": [
       {

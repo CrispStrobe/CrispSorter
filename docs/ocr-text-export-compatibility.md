@@ -81,7 +81,9 @@ scenarios with no browser errors; Svelte reported no errors and 54 existing
 warnings. The later dense-page advisory has its own boundary/selection unit
 check and extends the existing supplementary-text browser scenario. Those
 successor checks are not included in the 5382 result. The iOS portable job was
-still queued when this receipt was saved.
+queued when the initial receipt was saved and subsequently completed as
+cancelled, with no execution steps reported. Its target check remains
+unqualified; the receipt preserves both observations.
 
 The portable module lane does not replace complete application builds, mobile
 document-provider execution, rendering in a Word application, or physical-device
