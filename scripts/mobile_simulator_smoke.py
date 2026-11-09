@@ -19,6 +19,7 @@ import zipfile
 from ocr_mobile_build_receipt import bundle_identity
 
 PACKAGE = 'com.crispstrobe.crispsorter'
+MAX_DIAGNOSTIC_TEXT = 2 * 1024 * 1024
 
 
 def run(args, **kwargs):
@@ -28,6 +29,73 @@ def run(args, **kwargs):
 def digest(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def command_failure(error):
+    """Preserve the actual failing command's output without changing its result."""
+    if not isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        return None
+    def text(value):
+        return (value.decode('utf-8', errors='replace') if isinstance(value, bytes) else value or '')[:65536]
+    return {'command': error.cmd, 'returncode': getattr(error, 'returncode', None),
+            'timeout_seconds': getattr(error, 'timeout', None),
+            'stdout': text(error.stdout), 'stderr': text(error.stderr),
+            'output_truncated': any(len(value or b'') > 65536 for value in (error.stdout, error.stderr))}
+
+
+def android_failure_evidence(serial, output):
+    """Observe only the explicitly selected emulator; never retry or clear data."""
+    evidence = {'status': 'partial', 'budget_seconds': 30, 'commands': []}
+    if not re.fullmatch(r'emulator-\d+', serial):
+        return {**evidence, 'skipped': 'The selected target is not an emulator serial'}
+    adb = ['adb', '-s', serial]
+    deadline = time.monotonic() + evidence['budget_seconds']
+    try:
+        verified = subprocess.run(adb + ['shell', 'getprop', 'ro.kernel.qemu'],
+                                  check=True, capture_output=True, text=True, timeout=5)
+        if verified.stdout.strip() != '1':
+            return {**evidence, 'skipped': 'The selected target did not identify itself as an emulator'}
+    except Exception as error:
+        return {**evidence, 'verification_error': str(error)}
+    commands = [
+        ('launcher-resolution.txt', ['shell', 'cmd', 'package', 'resolve-activity', '--brief',
+                                    '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE]),
+        ('package-manager.txt', ['shell', 'dumpsys', 'package', PACKAGE]),
+        ('activity-state.txt', ['shell', 'dumpsys', 'activity', 'activities']),
+        ('process-id.txt', ['shell', 'pidof', PACKAGE]),
+        ('logcat.txt', ['logcat', '-d', '-b', 'all', '-v', 'threadtime', '-t', '1000']),
+    ]
+    for name, arguments in commands:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            evidence['budget_exhausted'] = True
+            break
+        record = {'file': name, 'command': adb + arguments}
+        evidence['commands'].append(record)
+        try:
+            result = subprocess.run(record['command'], capture_output=True, text=True,
+                                    timeout=min(8, remaining), check=False)
+            stdout, stderr = result.stdout or '', result.stderr or ''
+            content = 'STDOUT\n' + stdout[:MAX_DIAGNOSTIC_TEXT] + '\nSTDERR\n' + stderr[:65536]
+            (output / name).write_text(content)
+            record.update(returncode=result.returncode, sha256=digest(output / name),
+                          output_truncated=len(stdout) > MAX_DIAGNOSTIC_TEXT or len(stderr) > 65536)
+        except Exception as error:
+            record.update(error=str(error), failed_command=command_failure(error))
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        try:
+            result = subprocess.run(adb + ['exec-out', 'screencap', '-p'], check=True,
+                                    capture_output=True, timeout=min(8, remaining))
+            if not result.stdout.startswith(b'\x89PNG\r\n\x1a\n') or len(result.stdout) > 16 * 1024 * 1024:
+                raise RuntimeError('Failure screenshot is not a bounded PNG')
+            (output / 'failure-screen.png').write_bytes(result.stdout)
+            evidence['screenshot_sha256'] = digest(output / 'failure-screen.png')
+        except Exception as error:
+            evidence['screenshot_error'] = str(error)
+    if not evidence.get('budget_exhausted'):
+        evidence['status'] = 'collected'
+    return evidence
 
 
 def android(serial, apk, output, wait):
@@ -43,7 +111,9 @@ def android(serial, apk, output, wait):
     aapt = str(tools[-1]) if tools else shutil.which('aapt')
     if not aapt:
         raise RuntimeError('Android SDK build-tools aapt is required to verify the APK identity')
-    package = re.search(r"^package: name='([^']+)'", run([aapt, 'dump', 'badging', str(apk)]), re.M)
+    badging = run([aapt, 'dump', 'badging', str(apk)])
+    (output / 'apk-badging.txt').write_text(badging + '\n')
+    package = re.search(r"^package: name='([^']+)'", badging, re.M)
     if not package or package.group(1) != PACKAGE:
         raise ValueError('APK does not have the expected CrispSorter application ID')
     with zipfile.ZipFile(apk) as archive:
@@ -60,9 +130,15 @@ def android(serial, apk, output, wait):
     installed_hash = run(adb + ['shell', 'sha256sum', installed[0][8:]]).split()[0]
     if installed_hash != digest(apk):
         raise RuntimeError('Installed application differs from the supplied APK')
+    (output / 'installed-identity.json').write_text(json.dumps({
+        'package': PACKAGE, 'target': serial, 'apk_sha256': digest(apk),
+        'installed_apk_sha256': installed_hash, 'supported_abis': abis,
+        'scope': 'Installed package byte identity before launch; no successful startup claim.',
+    }, indent=2) + '\n')
     run(adb + ['shell', 'am', 'force-stop', PACKAGE])
     launch = run(adb + ['shell', 'am', 'start', '-W', '-a', 'android.intent.action.MAIN',
                         '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE])
+    (output / 'launch.txt').write_text(launch + '\n')
     if 'Error:' in launch or 'Status: ok' not in launch:
         raise RuntimeError('Android activity did not start: ' + launch)
     initial = set(run(adb + ['shell', 'pidof', PACKAGE]).split())
@@ -132,6 +208,16 @@ def main():
         result.update(status='passed', screenshot_sha256=digest(args.output / 'screen.png'))
     except Exception as error:
         result.update(status='failed', error=f'{type(error).__name__}: {error}')
+        failure = command_failure(error)
+        if failure:
+            result['failed_command'] = failure
+        # Preserve the original failure before any optional diagnostic command.
+        (args.output / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
+        if args.platform == 'android':
+            try:
+                result['failure_evidence'] = android_failure_evidence(args.target, args.output)
+            except Exception as diagnostic_error:
+                result['failure_evidence_error'] = str(diagnostic_error)
         raise
     finally:
         (args.output / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
