@@ -17,6 +17,8 @@ No release qualification is inferred from a source change or a queued workflow.
 | Large-project history | Retained snapshots carry their measured UTF-8 size, avoiding repeated serialization of all history. Oversized snapshots are not cloned only to be discarded. Undo/redo, corrected text and byte bounds remain intact. |
 | Recognition settings | Interrupted batches retain the CPU pixel budget alongside their original selection, engine, language and profile. Mobile embedding providers report and select their actual CPU execution path. |
 | Mobile runtime closure | Pinned official Android and iOS ONNX Runtime inputs preserve embedding/indexing capabilities alongside CrispEmbed OCR. Archive, binary, header and notice hashes are checked; build receipts and a target inference probe bind the runtime to the resulting app. |
+| Export lifecycle | Reviewed PDFs can stream into a staged file with bounded writes; cancellation and progress follow the worker until it finishes. Publication is atomic, existing outputs need explicit replacement, and late stops cannot cancel a completed result. Mobile destination handoff is explicit. |
+| Asset integrity | Reusing an existing content-addressed page requires a bounded byte comparison and regular-file checks. Truncated, corrupted or aliased assets fail without replacing the source. |
 | Native build recovery | The async registry command now returns the Tauri-compatible result type. The iOS build retains the host protobuf compiler and native dependency paths through Xcode's nested Cargo invocation. |
 
 The existing workspace also retains confidence-aware review, page/region editing,
@@ -33,17 +35,22 @@ change does not turn these into tests of a different binary.
 
 | Gate | Result and source | Evidence scope |
 | --- | --- | --- |
-| Combined frontend | 218 tests passed; Svelte check: zero errors, 54 existing warnings in eight other files | Local integration `33f456ee8c78f27b5ecb78d85aef6c88dc45b509`; includes import save recovery and mobile CPU provider changes |
-| Build/probe helper contracts | 60 Python tests and five Node tests passed | Same integration source; fixture, packaging, receipt, device-selection and measurement logic; these are not target execution |
-| Hosted browser | 27 scenarios and 218 unit tests passed; production build passed; nine screenshots retained | [Run 42608320490](https://github.com/CrispStrobe/CrispSorter/actions/runs/42608320490), exact source `7b5a7791c592e2e178b85724cb8cd26c5ac3558a`; real Svelte component with synthetic native adapters; predates the later import-save-failure scenario |
-| Model storage | 10 native tests passed, zero failed/ignored; includes a subprocess holding a generation open | [Run 42609934442](https://github.com/CrispStrobe/CrispSorter/actions/runs/42609934442), exact source `f3cd96af7aa6ab0e1bb0b19598e1e31a9bc376ea`; actual production modules with locked dependencies |
-| iOS document provider | 18 tests passed, zero failures | [Run 42609744777](https://github.com/CrispStrobe/CrispSorter/actions/runs/42609744777), exact source `dd8d9b1419e5b5d339c8a432118cb94218cdbce3`; simulator native PDF, HEIC/AVIF, orientation and failure controls |
-| Android document provider | 19 tests: 18 passed, one AVIF decoder skip, zero failures | Same source and run; Android 10 emulator native PDF/image/provider contracts. A skipped codec is not a passed decoder case. |
+| Combined frontend | 233 tests passed; Svelte check: zero errors, 54 existing warnings in eight other files | Integrated frontend through `2757114091f55620873e4d4245a6a42e1ecf8313`; export controls, archival selector, import recovery and mobile CPU provider |
+| Build/probe helper contracts | 83 Python tests and 11 Node tests passed | Same integrated build/helper sources; these validate helper behavior, packaging, receipts and controls, not target execution |
+| Hosted browser | 28 scenarios and 218 unit tests passed; production build passed; nine screenshots retained | [Run 42613157935](https://github.com/CrispStrobe/CrispSorter/actions/runs/42613157935), exact source `5b0ab78d7ec70a051ae415b56066e90495c40484`; includes failed-import-save recovery; native adapters remain synthetic |
+| Paired native application modules | 100 Rust cases passed; 15 live/model cases explicitly ignored; native renderer 51/51 | [Run 42614585554](https://github.com/CrispStrobe/CrispSorter/actions/runs/42614585554), Sorter `7104a35c` with Embed `d49a8967`; successful Rust test links and two metadata-only feature checks, not a complete app build |
+| Model storage and export control | 22 native tests passed, zero failed/ignored: ten storage, six atomic output and six cancellation | [Run 42622751482](https://github.com/CrispStrobe/CrispSorter/actions/runs/42622751482), exact source `d90c4612`; actual production modules with locked dependencies. Three later terminal-ID regressions need their own run. |
+| JPEG integrity | Six actual decoder/guard controls passed | [Run 42616849573](https://github.com/CrispStrobe/CrispSorter/actions/runs/42616849573), source `8dad704`; three damaged JPEGs accepted by the decoder are rejected by the guard; three valid controls retain exact pixels |
+| Page-asset reuse | Nine portable native tests passed | [Run 42621716073](https://github.com/CrispStrobe/CrispSorter/actions/runs/42621716073), source `715cfc14`; production asset helper and image integrity controls, not full-app reimport |
+| iOS document provider | 19 tests passed, zero failures | [Run 42612700801](https://github.com/CrispStrobe/CrispSorter/actions/runs/42612700801), exact source `76de6dad`; simulator native PDF, pinned HEIC fixture, AVIF, orientation and failure controls |
+| Android document provider | 20 tests: 19 passed, one AVIF decoder skip, zero failures | Same source and run; Android 10 emulator native PDF/image/provider contracts, including the same pinned HEIC input. A skipped codec is not a passed decoder case. |
 | Native registry metadata | C and sanitizer controls plus four Rust wrapper tests passed | [Run 42600802983](https://github.com/CrispStrobe/CrispEmbed/actions/runs/42600802983), exact source `f2a0fec94d36af268c0d0c4bc8e0d0d39a258dfc`; includes a failure-propagation negative control |
 
 Downloaded artifact hashes and source digests are retained under
-`tests/results/ocr-studio/hosted-7b5a7791/`,
-`tests/results/ocr-studio/storage-f3cd96af/`, and
+`tests/results/ocr-studio/hosted-5b0ab78d/`,
+`tests/results/ocr-studio/paired-7104a35c/`,
+`tests/results/ocr-studio/storage-cancel-d90c/`,
+`tests/results/ocr-asset-integrity/qualification.json`, and
 `tests/results/ocr-mobile-import/qualification.json`. The earlier native storage
 receipt and failed provider receipts remain available. Correcting a test or
 implementation does not erase the previous failure.
@@ -66,7 +73,8 @@ or multilingual accuracy.
 
 The hosted history benchmark verifies final text, page identities and byte budgets
 before reporting timings. On its 1,000-page fixture, median edit time changed from
-217.5 ms to 36.8 ms; on its 5,000-page fixture, from 457.4 ms to 190.4 ms. The
+184.6 ms to 28.1 ms; on its 5,000-page fixture, from 395.3 ms to 165.1 ms
+in the retained `5b0ab78d` run. The
 5,000-page fixture deliberately uses a history budget too small for any snapshot.
 Memory did not improve uniformly: process maximum RSS increased for the
 1,000-page case and decreased for the 5,000-page case. These are Node history-model
@@ -74,19 +82,32 @@ measurements, excluding decoded page pixels, WebView paint and native OCR.
 
 ## Qualification in progress
 
-The complete paired native application check and newly packaged Android/iOS
-applications need their own successful source-pinned runs. Official runtime input
-hashes and C++ probe syntax do not establish target loading or inference. The
-browser harness is being rerun on the combined integration source, including the
-later failed-import-save recovery case.
+The paired native module run now passes, with its exact limits retained: no model
+weights were exercised, application feature checks emitted metadata, and that
+older run rewrote two local dependency-lock entries. The tracked lock correction
+is present in the newer source. Complete desktop executable link/startup and
+packaged Android/iOS applications still need their successful source-pinned runs.
+Official runtime hashes and helper tests do not establish target loading or
+inference. The later export-control browser cases and terminal-ID cancellation
+regressions are being qualified separately.
 
-Archival PDF and bidirectional reviewed-PDF support are being developed and
-qualified separately. The archival validator has passed 15 generated PDF/A-2b
-files and rejected both damaged controls in [run 42608270168](https://github.com/CrispStrobe/CrispEmbed/actions/runs/42608270168),
-source `c2f71f7c28f838c3c0b5d2ae5461507e0503b606`. Independent
-text readers still expose bidirectional mapping issues there; that source is not
-yet enabled in this integrated application. The existing reviewed-PDF capability
-gate continues to protect unsupported output.
+CrispEmbed's frozen streaming candidate `2111db64` passed 70 native controls,
+nine actual Rust writer controls, and 13 independent PDF/A-2b positives while
+rejecting both damaged controls. It wrote a 138,448,604-byte, 11-page file through
+the bounded writer and preserved the independently checked pixels, physical
+sizes, page count and copied text. The overall [run 42622422668](https://github.com/CrispStrobe/CrispEmbed/actions/runs/42622422668)
+remained failed: PDFium supplementary-character search and a Poppler dense-page
+stress case require explicit compatibility diagnostics. General bidirectional
+PDF export remains disabled because the strict multi-reader matrix still fails.
+The integrated writer requires matching native code and bindings before final
+application qualification; it must not be paired with the earlier runtime pin.
+See [streaming export](ocr-streaming-export.md) and
+[export controls](ocr-export-control.md).
+
+Windows Unicode image paths are repaired in the production loader and crop
+writer, with a hosted Windows test of the actual translation units, exact pixels,
+PDF image preservation and an executable historical ANSI negative control. That
+platform run must succeed before the path is called qualified.
 
 Physical devices are not connected to this workspace. Actual camera capture,
 cloud-provider lifetime/revocation, low-memory and thermal behavior, sustained

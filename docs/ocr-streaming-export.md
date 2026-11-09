@@ -83,3 +83,11 @@ records the exact source hashes, verified 8,179-byte artifact ZIP and raw log.
 This exercises the production Rust modules independently of Tauri and the
 native renderer. The full application and a late post-completion stop regression
 remain separate qualification gates.
+
+Completed request IDs are also retained for five minutes, capped at 64 entries.
+A stop arriving while a completed worker response is still in flight returns
+false; it cannot create a before-start cancellation for that same ID. Reusing a
+retained completed ID is rejected. Each new export uses a fresh UUID. Three
+regressions exercise completed publication, finished cancelled/failed workers,
+and the bounded expiry rule; their hosted execution is tracked separately from
+the earlier 22-test receipt.
