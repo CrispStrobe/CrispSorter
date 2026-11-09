@@ -178,9 +178,13 @@ The new mobile Word/text module at `5382ccc5` has accepted
 [portable/Android/iOS contracts](https://github.com/CrispStrobe/CrispSorter/actions/runs/42640418541)
 and [browser preflight](https://github.com/CrispStrobe/CrispSorter/actions/runs/42640418500)
 runs, currently queued. These checks compile the actual production writer and
-independently read DOCX/HTML/plain-text artifacts. A separate Android WebView
-probe is being extended to save/reload reviewed text, export Word through the
-actual app command and read the saved OOXML independently. None of these pending
+independently read DOCX/HTML/plain-text artifacts. The Android WebView
+probe now defines a separate reviewed fixture, saves/reloads it, exports Word
+through the actual app command and independently reads the saved OOXML. It
+checks the correction, mixed logical text, spacing and private staging cleanup,
+while preserving raw recognition and all existing pages. The six reader
+controls pass locally; actual target execution remains pending. See the
+[mobile Word probe](ocr-mobile-word-probe.md). None of these pending
 checks is reported as a completed mobile Word round-trip. See the
 [text-export contract](ocr-text-export-compatibility.md).
 
