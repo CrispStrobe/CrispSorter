@@ -30,7 +30,7 @@
     import TransferDrawer from '$lib/components/TransferDrawer.svelte';
     import DriveBrowser from '$lib/components/DriveBrowser.svelte';
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
-    import { getBackendStatus, type BackendStatus } from '$lib/secretBackend';
+    import { getBackendStatus, retryBackend, type BackendStatus } from '$lib/secretBackend';
 
     $effect(() => { if ($documentToolRequest && ($documentToolRequest.tool !== 'ocr' || supportsOcrWorkbench($caps))) activeTab = $documentToolRequest.tool; });
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
@@ -54,6 +54,19 @@
      * that would nag everyone whose keychain works fine.
      */
     let secretStoreAlert: BackendStatus | null = $state(null);
+    let secretStoreRetrying = $state(false);
+    /** Reopen the chosen store, e.g. after its volume was remounted. */
+    async function retrySecretStore() {
+        secretStoreRetrying = true;
+        try {
+            const st = await retryBackend();
+            secretStoreAlert = st.denied || st.error ? st : null;
+        } catch (e) {
+            flog('warn', `secret store retry failed: ${e}`);
+        } finally {
+            secretStoreRetrying = false;
+        }
+    }
     let secretStoreAlertDismissed = $state(false);
     let navCollapsed = $state(false);
     let showMobileTools = $state(false);
@@ -549,10 +562,16 @@
                         password — CrispSorter cannot supply it, and will stop asking
                         for the rest of this session.
                     {:else}
-                        CrispSorter could not open the store your secrets are kept in:
-                        {secretStoreAlert.error}
+                        CrispSorter could not open the store your secrets are kept in, and is
+                        running without it: saved keys are unavailable and new ones are not
+                        saved until it opens. ({secretStoreAlert.error})
                     {/if}
                 </span>
+                {#if secretStoreAlert.error}
+                    <button class="secret-store-banner-action" disabled={secretStoreRetrying} onclick={retrySecretStore}>
+                        {secretStoreRetrying ? 'Retrying…' : 'Retry'}
+                    </button>
+                {/if}
                 <button class="secret-store-banner-action" onclick={() => { activeTab = 'settings'; secretStoreAlertDismissed = true; }}>
                     Choose where secrets are stored
                 </button>
