@@ -69,10 +69,9 @@ final class DocumentRasterizerTests: XCTestCase {
         let image = try raster(page.path); XCTAssertEqual(image.width, sizes[index].0); XCTAssertEqual(image.height, sizes[index].1)
         let rgba = try pixels(image)
         var ink = 0
-        for y in stride(from: 0, to: image.height, by: 8) {
-          for x in stride(from: 0, to: image.width, by: 8) { if rgba[(y * image.width + x) * 4] < 120 { ink += 1 } }
-        }
-        XCTAssertGreaterThan(ink, 30, "A blank page must not pass as rendered text.")
+        // Count all pixels: a sparse sampling grid can miss thin glyph strokes.
+        for offset in stride(from: 0, to: rgba.count, by: 4) { if rgba[offset] < 120 { ink += 1 } }
+        XCTAssertGreaterThan(ink, 500, "A blank page must not pass as rendered text.")
         bytes += try Data(contentsOf: URL(fileURLWithPath: page.path)).count
       }
       XCTAssertEqual(result.bytes, bytes); XCTAssertEqual(try Data(contentsOf: source), original)
@@ -145,6 +144,16 @@ final class DocumentRasterizerTests: XCTestCase {
       let complete = try fixture("oriented.jpg.b64")
       let source = try archive(home, bytes: Data(complete.dropLast(100)), fileExtension: "jpg")
       XCTAssertThrowsError(try DocumentRasterizer(home: home).rasterize(sourcePath: source.path, outputDir: staging(home).path, kind: "image"))
+      // An apparent end marker in an APP segment must not conceal a truncated scan.
+      let falseEnd = complete.prefix(2) + Data([0xff, 0xef, 0x00, 0x04, 0xff, 0xd9]) + complete.dropFirst(2).dropLast(100)
+      let metadataEnd = try archive(home, bytes: Data(falseEnd), fileExtension: "jpg")
+      XCTAssertThrowsError(try DocumentRasterizer(home: home).rasterize(sourcePath: metadataEnd.path, outputDir: staging(home).path, kind: "image"))
+      // A complete primary JPEG remains valid with bytes following its end marker.
+      let trailing = try archive(home, bytes: complete + Data("source trailer".utf8), fileExtension: "jpg")
+      XCTAssertEqual(try DocumentRasterizer(home: home).rasterize(sourcePath: trailing.path, outputDir: staging(home).path, kind: "image").pages.count, 1)
+      let avif = try fixture("colors.avif.b64")
+      let truncatedBox = try archive(home, bytes: Data(avif.dropLast()), fileExtension: "avif")
+      XCTAssertThrowsError(try DocumentRasterizer(home: home).rasterize(sourcePath: truncatedBox.path, outputDir: staging(home).path, kind: "image"))
     }
   }
 

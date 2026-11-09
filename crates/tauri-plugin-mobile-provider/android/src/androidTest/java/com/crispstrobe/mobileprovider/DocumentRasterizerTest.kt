@@ -71,10 +71,12 @@ class DocumentRasterizerTest {
             try {
                 assertEquals(sizes[index].first, raster.width); assertEquals(sizes[index].second, raster.height)
                 var ink = 0
-                for (y in 0 until raster.height step 8) for (x in 0 until raster.width step 8) {
-                    if (Color.red(raster.getPixel(x, y)) < 120) ink++
+                val row = IntArray(raster.width)
+                for (y in 0 until raster.height) {
+                    raster.getPixels(row, 0, raster.width, 0, y, raster.width, 1)
+                    for (pixel in row) if (Color.red(pixel) < 120) ink++
                 }
-                assertTrue("Rendered text must not be a blank success", ink > 30)
+                assertTrue("Rendered text must not be a blank success", ink > 500)
                 assertEquals(Color.WHITE, raster.getPixel(raster.width - 2, raster.height - 2))
             } finally { raster.recycle() }
         }
