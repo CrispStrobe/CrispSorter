@@ -253,7 +253,12 @@ fn adopt_pages(root: &Path, staging: &Path, native: NativeDocument, job: Option<
         if let Some(job) = job { job.check()?; job.progress("verifying", index, Some(page_count)); }
         let expected = staging.join(format!("page-{:06}.png", index + 1));
         let path = PathBuf::from(&page.path);
-        if path != expected || fs::canonicalize(&path).map_err(|e| e.to_string())? != expected ||
+        // Compare resolved paths only. The importer may report the staging path
+        // unresolved (macOS temp dirs, and iOS containers, live under /var, a
+        // symlink to /private/var), so a raw comparison rejected every page there.
+        // Resolving to exactly the expected file, plus the final component not
+        // being a symlink, keeps the containment guarantee.
+        if fs::canonicalize(&path).map_err(|e| e.to_string())? != expected ||
             !fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_file() {
             return Err("The native importer returned a page outside its private staging directory.".into());
         }
@@ -334,6 +339,27 @@ mod tests {
         let document = input.attach(ImportedDocument { source_uri: String::new(), archive_uri: None, name: String::new(), pages: vec![] });
         assert_eq!(document.source_uri, "content://Photo/Case%2F42");
         assert_eq!(document.archive_uri.unwrap(), input.path.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_adoption_accepts_an_unresolved_staging_path_but_not_a_symlinked_page() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real-staging"); fs::create_dir(&real).unwrap();
+        // The importer reports pages under a symlinked directory, as iOS does
+        // with /var -> /private/var.
+        let alias = root.path().join("alias-staging"); std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let page = alias.join("page-000001.png");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(&page).unwrap();
+        let doc = |p: &Path| NativeDocument { bytes: fs::metadata(&real.join("page-000001.png")).unwrap().len(),
+            pages: vec![NativePage { path: p.to_string_lossy().into_owned(), width: 8, height: 8,
+                width_points: 8.0, height_points: 8.0, warnings: vec![] }] };
+        assert_eq!(adopt_pages(root.path(), &alias, doc(&page), None).unwrap().len(), 1);
+        // A page that is itself a symlink to the expected file is still refused.
+        image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(&real.join("page-000001.png")).unwrap();
+        let outside = root.path().join("elsewhere.png"); fs::rename(real.join("page-000001.png"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, real.join("page-000001.png")).unwrap();
+        assert!(adopt_pages(root.path(), &real, doc(&real.join("page-000001.png")), None).is_err());
     }
 
     #[test]

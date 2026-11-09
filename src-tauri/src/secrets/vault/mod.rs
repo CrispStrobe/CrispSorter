@@ -742,6 +742,14 @@ pub fn clear_denied() {
     DENIED.store(false, Ordering::Relaxed);
 }
 
+/// Tests that set or assert the process-wide "denied" latch hold this, so a
+/// test latching it cannot race one asserting it is clear.
+#[cfg(test)]
+pub(crate) fn denied_latch_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Raise the latch. Backends call this the moment they see a refusal.
 pub(crate) fn latch_denied() {
     DENIED.store(true, Ordering::Relaxed);

@@ -466,6 +466,9 @@ mod tests {
         }
     }
 
+    // Spawns a child test process, which only spawn-capable (`sidecars`) builds
+    // may do; the compliance guard checks this per file.
+    #[cfg(feature = "sidecars")]
     #[test]
     fn another_process_keeps_old_generation_alive_until_it_exits() {
         let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();

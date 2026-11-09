@@ -105,6 +105,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_dialog_is_a_denial_and_latches() {
+        let _latch = super::super::denied_latch_test_guard();
         super::super::clear_denied();
         let e = classify(keyring::Error::PlatformFailure(
             "SecKeychain error (-128)".into(),
@@ -116,6 +117,7 @@ mod tests {
 
     #[test]
     fn a_wrong_keychain_password_is_a_denial() {
+        let _latch = super::super::denied_latch_test_guard();
         super::super::clear_denied();
         let e = classify(keyring::Error::PlatformFailure(
             "The user name or passphrase you entered is not correct.".into(),
@@ -126,6 +128,7 @@ mod tests {
 
     #[test]
     fn an_ordinary_failure_is_not_a_denial() {
+        let _latch = super::super::denied_latch_test_guard();
         // Misclassifying here would hide real breakage behind "switch
         // your secret store", so the test pins the conservative side.
         super::super::clear_denied();
