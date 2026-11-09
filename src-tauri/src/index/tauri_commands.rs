@@ -2469,7 +2469,7 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<Em
             }
         };
 
-        Ok(tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
         crispembed::CrispEmbed::list_models()
             .into_iter()
             .map(|m| {
