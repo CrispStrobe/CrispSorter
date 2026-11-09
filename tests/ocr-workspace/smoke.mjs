@@ -822,6 +822,8 @@ if (process.argv.includes('--serve')) {
             await page.getByRole('combobox', { name: 'Page zoom', exact: true }).selectOption('2');
             await page.getByRole('button', { name: 'Prepare photo', exact: true }).click();
             const tools = page.getByRole('navigation', { name: 'Photo tools', exact: true });
+            const closeBox = await page.getByRole('button', { name: 'Close photo preparation', exact: true }).boundingBox();
+            assert.ok(closeBox && closeBox.width >= 44 && closeBox.height >= 44, 'The photo preparation close button must have a touch-sized target');
             for (const button of await tools.getByRole('button').all()) {
                 const box = await button.boundingBox();
                 assert.ok(box && box.width >= 44 && box.height >= 44, 'Photo steps must have touch-sized targets');
@@ -846,6 +848,26 @@ if (process.argv.includes('--serve')) {
             // Zoom still works in focus mode, and Fit page restores all four handles.
             await page.getByRole('combobox', { name: 'Page zoom', exact: true }).selectOption('1');
             await assertFitPage(page, 'Phone corner editor');
+            const focus = page.getByRole('region', { name: 'Photo corner editing', exact: true });
+            const exact = focus.getByText('Exact corner positions', { exact: true });
+            await exact.click();
+            const cornerX = focus.getByRole('spinbutton', { name: 'Top left corner X', exact: true });
+            const cornerY = focus.getByRole('spinbutton', { name: 'Top left corner Y', exact: true });
+            const numberStyle = await cornerX.evaluate(input => ({ height: input.getBoundingClientRect().height, fontSize: parseFloat(getComputedStyle(input).fontSize), min: input.min, max: input.max }));
+            assert.ok(numberStyle.height >= 44 && numberStyle.fontSize >= 16, 'Numeric corner entry must support touch and avoid phone input zoom');
+            assert.deepEqual([numberStyle.min, numberStyle.max], ['0', String(before.width - 1)]);
+            await cornerX.fill(String(before.width - 1));
+            assert.equal(await focus.getByRole('button', { name: 'Apply perspective', exact: true }).isEnabled(), false, 'A degenerate corner selection must not be applied');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0);
+            await cornerX.fill('0');
+            await cornerY.fill('0');
+            assert.equal(await focus.getByRole('button', { name: 'Apply perspective', exact: true }).isEnabled(), true, 'Valid numeric coordinates restore Apply');
+            for (const name of ['Back to photo tools', 'Apply perspective']) {
+                const box = await focus.getByRole('button', { name, exact: true }).boundingBox();
+                assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `${name} stays reachable with numeric entry expanded`);
+            }
+            await exact.click();
+            await page.waitForFunction(canvasFitState, false);
             const geometry = await page.evaluate(() => {
                 const rect = element => { const b = element.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; };
                 return {
