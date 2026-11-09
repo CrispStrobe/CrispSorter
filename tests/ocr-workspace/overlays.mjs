@@ -115,6 +115,10 @@ export async function verifySafeOverlays(page, output, repo) {
         }
         await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
         await confirmation.waitFor({ state: 'hidden' });
+        // The last surface is a phone, where the page rail is intentionally
+        // behind the mobile "Pages" view; count the cancelled removal on the
+        // desktop layout, where every page card is rendered.
+        await size(desktop);
         assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
 
         // The shortcut dialog uses the same top-layer rule, with a close button
