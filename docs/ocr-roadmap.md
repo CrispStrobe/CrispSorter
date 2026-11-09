@@ -85,7 +85,7 @@ units to implement and push one at a time.
 | ID | Priority | Work package | Principal dependency | Status |
 | --- | --- | --- | --- | --- |
 | OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | 01a–c implemented for System Tesseract; native CI pending |
-| OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | Planned |
+| OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | 02a–c implemented; 02d feasibility documented; training blocked |
 | OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | Planned |
 | OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | Planned |
 | OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | Planned |
@@ -117,7 +117,8 @@ the end.
 | --- | --- | --- |
 | `12caadb` | Scoped OCR-01 through OCR-18; corrected capability and archival-output claims | Documentation audit; no new product capability claimed |
 | `fae6cc7` — OCR-18a | Versioned qualification receipt schema, recording guide, and a dated same-run Tesseract TSV/TXT capture | JSON Schema validation and artifact hashes checked. External Tesseract 5.5.0 produced five aligned words. Production Rust adapter, full app, real-scan corpus, devices, and output standards remain separate gates |
-| OCR-01a–c implementation (this checkpoint) | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests pass; Svelte check has 0 errors and 54 existing warnings. Added browser interaction and native crop/export checks. New focused Linux/Windows Rust workflow checks the actual module and feature gates, plus a real Linux adapter run. Browser and Rust execution on this checkpoint remain pending CI; local Chromium and Rust are unavailable |
+| `349725a` — OCR-01a–c | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests pass; Svelte check has 0 errors and 54 existing warnings. Focused Windows production-module parser/feature-gate tests passed (12 no-sidecars; 11 plus one ignored live case with sidecars; 12 sidecars+MAS). Linux live adapter, paired full application, and browser checks remain pending CI |
+| OCR-02 implementation (this checkpoint) | Project and personal vocabulary, protected terms, occurrence ignores, labeled suggestions, literal rules, selective stale-safe correction previews, import/export, and serialized retryable preference saves | 253 unit tests pass, including 18 new proofreading/store cases; Svelte check has 0 errors and the same 54 unrelated warnings. Four browser flows added (28 total), execution pending CI. Training feasibility is documented; no recognizer training or automatic native lexicon change is claimed |
 
 ## OCR-01: Native word evidence and honest capabilities
 
@@ -163,8 +164,15 @@ native evidence.
 
 ## OCR-02: Dictionaries, suggestions, and reusable corrections
 
-**Status: Planned.** Browser spellcheck exists, but the application has no
-documented, managed proofreading dictionary or correction-suggestion workflow.
+**Status: 02a–c implemented; browser execution pending. 02d feasibility decision
+documented; training remains blocked on its data/toolchain/evaluation gates.**
+The [workspace guide](ocr-workspace.md#vocabulary-and-correction-rules) describes
+the shipped controls. Versioned project/personal preferences and captured
+literal previews live in [`proofreading.ts`](../src/lib/ocr/proofreading.ts),
+[`proofreadingData.ts`](../src/lib/ocr/proofreadingData.ts), and
+[`proofreadingStore.ts`](../src/lib/ocr/proofreadingStore.ts).
+The [engine support decision](ocr-proofreading-engine-support.md) separates app
+vocabulary, currently unwired native recognition hints, and model training.
 The reference workflow is [ABBYY text verification][abbyy-proofing].
 
 **Increments**

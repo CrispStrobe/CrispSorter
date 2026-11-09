@@ -41,6 +41,7 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
 The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `?scenario=native-word`,
+`?scenario=proofreading`, `?scenario=proofreading-save-failure`, `?scenario=proofreading-load-failure`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
@@ -63,6 +64,12 @@ null native score both take precedence over 99% character scores; the null score
 retains its source box without acquiring a fabricated percentage. This fixture
 does not execute Tesseract. Live engine output and parser qualification are
 recorded separately using the [workspace qualification guide](../quality/ocr-workspace-qualification.md).
+
+The proofreading scenarios reuse the native word evidence and add independent
+user-vocabulary storage. Failure scenarios retain an existing user term while
+failing the first load or save. The harness can inspect successful user saves
+separately from project autosaves, so project Undo cannot masquerade as a global
+preference rollback and failed loads cannot silently replace existing vocabulary.
 
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
@@ -91,6 +98,16 @@ released, allowing page navigation before the result arrives.
   selection. Keyboard inspection of original evidence restores the original
   crop without changing the corrected text. Save, history, and JSON export keep
   the original word envelope, with no current evidence attached to edited text.
+- Vocabulary, ignored suggestions, and protected identifiers preserve native
+  confidence. Accepting a vocabulary suggestion previews the exact replacement,
+  cancellation leaves text unchanged, and one Undo restores an accepted edit
+  while user-wide vocabulary remains saved.
+- Literal rules respect protected identifiers, approved text, and the chosen
+  page scope. A preview can select one occurrence without changing other matches;
+  the resulting text edit is one undoable action.
+- A failed user-vocabulary save retains the draft for explicit retry. A failed
+  load disables user-wide edits until retry succeeds and never overwrites the
+  unread existing preferences.
 - Source overlays flag low character evidence and unapproved corrections
   consistently with the review queue. Word controls fit desktop and compact
   layouts, with dedicated screenshots for both.

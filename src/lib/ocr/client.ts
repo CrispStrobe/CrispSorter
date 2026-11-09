@@ -8,6 +8,8 @@ import type {
   RecognitionResult,
 } from "./model";
 import type { SaveReceipt } from "./autosave";
+import { getSetting, saveSetting } from "../store";
+import { readProofreadingData, type ProofreadingData } from "./proofreadingData";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -124,6 +126,8 @@ export interface WorkspaceClient {
   pickDocuments(): Promise<string[]>;
   pickExport(name: string, extension: string): Promise<string | null>;
   imageUrl(path: string): string;
+  loadUserProofreading?(): Promise<ProofreadingData>;
+  saveUserProofreading?(data: ProofreadingData): Promise<void>;
 }
 
 export const workspaceClient: WorkspaceClient = {
@@ -215,4 +219,6 @@ export const workspaceClient: WorkspaceClient = {
       filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
     }),
   imageUrl: convertFileSrc,
+  loadUserProofreading: async () => readProofreadingData(await getSetting("ocrProofreadingV1")),
+  saveUserProofreading: async (data) => saveSetting("ocrProofreadingV1", readProofreadingData(data)),
 };

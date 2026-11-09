@@ -242,6 +242,62 @@ Editing an approved region revokes approval, and source-image warnings follow th
 same review rules as the issue queue, including low native word or character scores and
 unapproved corrections.
 
+### Vocabulary and correction rules
+
+Open **Vocabulary and rules** to maintain terms for **This project** or **All
+projects**. Project vocabulary travels with the OCR project. User-wide vocabulary
+is saved separately and is unaffected by undoing a document edit. Give terms and
+rules the intended language; a term in one language is not silently used as a
+dictionary for another.
+
+Select a current word to add it to vocabulary, **Protect identifier**, or **Ignore
+suggestion** for that exact occurrence. These actions do not correct the text,
+approve it, or raise its OCR confidence. Protected terms can represent product
+codes, names, and identifiers that must remain unchanged by suggestions and
+literal correction rules. An ignored occurrence remains tied to its page, source
+image, and exact text version.
+
+Vocabulary suggestions are review aids, not retraining of the OCR model. **Use
+suggestion** opens **Review proposed corrections**; inspect the replacement before
+applying it. Cancel leaves the text unchanged. An accepted correction uses the
+same original-evidence preservation, autosave, approval invalidation, and Undo
+behavior as a manual text edit.
+
+Saved rules replace literal text. Configure language, case matching, and whole
+word matching, then choose the correction scope and preview the rule. The preview
+lists eligible occurrences and reports protected or approved text that was
+skipped. Select only the occurrences you intend to change. Applying the preview
+is one undoable operation; changing a target passage or the vocabulary policy
+makes an old preview invalid rather than applying stale text offsets.
+
+If user-wide vocabulary cannot be saved, the draft stays visible for **Retry
+saving vocabulary**. If its saved data cannot be loaded, user-wide edits remain
+disabled; **Retry loading vocabulary** reads the existing data again before
+allowing changes. A load error is never treated as permission to replace the
+existing vocabulary with an empty list.
+
+Vocabulary JSON import merges entries and rules in the selected scope; export
+retains their languages, case settings, and protection choices. Exact occurrence
+ignores belong to their source project and are not included in portable vocabulary
+exports. **Clear ignored occurrences** makes those occurrences eligible for
+suggestions again without approving or changing their OCR text.
+
+The active proofreading language is separate from recognition language. `und`
+means unspecified; language-neutral protected entries apply across languages.
+Case-insensitive matching uses Unicode case folding, and canonically equivalent
+Unicode spellings retain exact source UTF-16 ranges. An accepted vocabulary word
+does not receive a nearby vocabulary suggestion merely because another word is
+similar. Actual engine alternatives and explicit saved rules remain separate.
+
+Rule previews work on included text passages; tables, formulas, pictures, and
+excluded passages are reported as skipped. Use their dedicated editors or manual
+text editing for those objects. Previews are bounded to 5,000 correction matches
+and one million source characters; large projects can be processed with selected
+pages or passages. Protection matching has its own work limit.
+
+See [Proofreading, recognition hints, and model training](ocr-proofreading-engine-support.md)
+for the inspected engine interfaces and the outstanding requirements for training.
+
 ### Physical page sizes
 
 Physical page sizes are kept separately from raster dimensions. PDF import

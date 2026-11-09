@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -367,6 +367,159 @@ if (process.argv.includes('--serve')) {
             assert.equal(Object.hasOwn(exported, 'word_evidence'), false);
             assert.deepEqual(exported.original_word_evidence, originalEvidence);
             assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
+        await test('proofreading decisions retain native scores and accepted suggestions undo without rolling back user vocabulary', 'proofreading', async page => {
+            const original = '😀 Inv0ice NS-2026-1042';
+            const corrected = '😀 Invoice NS-2026-1042';
+            const editor = page.locator('textarea[aria-label="Text for region 3"]');
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            const invoice = words.getByRole('button', { name: 'Select word 1: Inv0ice', exact: true });
+            for (const action of ['Add to vocabulary', 'Ignore suggestion', 'Protect identifier']) {
+                await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+                await invoice.click();
+                await page.getByRole('combobox', { name: 'Save selected term in', exact: true }).selectOption('project');
+                await page.getByRole('button', { name: action, exact: true }).click();
+                const saved = await saveSnapshot(page);
+                assert.equal(await editor.inputValue(), original);
+                assert.equal(await invoice.getAttribute('data-word-confidence'), '0.42');
+                assert.equal(await invoice.getAttribute('data-word-confidence-band'), 'low');
+                assert.equal(saved.pages[0].regions[2].review, 'unreviewed');
+                assert.equal(saved.pages[0].regions[2].wordEvidence.words[0].confidence, 0.42);
+                if (action === 'Ignore suggestion') assert.equal(saved.proofreading.ignored[0].text, 'Inv0ice');
+                else assert.ok(saved.proofreading.entries.some(entry => entry.text === 'Inv0ice' && entry.kind === (action === 'Protect identifier' ? 'protected' : 'word')));
+                await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            }
+            await page.getByRole('button', { name: 'Vocabulary and rules', exact: true }).click();
+            const manager = page.locator('[data-proofreading-manager]');
+            await manager.getByRole('combobox', { name: 'Vocabulary scope', exact: true }).selectOption('user');
+            await manager.getByRole('textbox', { name: 'Vocabulary term', exact: true }).fill('Invoice');
+            await manager.getByRole('textbox', { name: 'Entry language', exact: true }).fill('und');
+            await manager.getByRole('button', { name: 'Add entry', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.userProofreading.entries.some(entry => entry.text === 'Invoice'));
+            await manager.locator('[data-proofreading-user-status="saved"]').waitFor();
+            const userSaved = await page.evaluate(() => window.ocrSmoke.userProofreading);
+            await manager.getByRole('button', { name: 'Close vocabulary and rules', exact: true }).click();
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            await invoice.click();
+            const suggestion = page.getByRole('button', { name: 'Use suggestion: Invoice', exact: true });
+            await suggestion.click();
+            const preview = page.getByRole('dialog', { name: 'Review proposed corrections', exact: true });
+            await preview.waitFor();
+            assert.equal(await editor.inputValue(), original);
+            assert.equal(await preview.getByRole('checkbox', { name: 'Apply correction 1: Inv0ice → Invoice', exact: true }).isChecked(), true);
+            await page.screenshot({ path: path.join(output, 'ocr-proofreading-preview.png'), fullPage: true });
+            await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
+            assert.equal(await editor.inputValue(), original);
+            assert.equal(await invoice.getAttribute('data-word-confidence'), '0.42');
+            await suggestion.click();
+            await preview.getByRole('button', { name: 'Apply 1 correction', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            assert.equal(await editor.inputValue(), corrected);
+            const correctedProject = await saveSnapshot(page);
+            assert.equal(correctedProject.pages[0].regions[2].originalText, original);
+            assert.equal(correctedProject.pages[0].regions[2].wordEvidence.words[0].confidence, 0.42);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.waitForFunction(value => document.querySelector('[aria-label="Text for region 3"]')?.value === value, original);
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            assert.equal(await invoice.getAttribute('data-word-confidence'), '0.42');
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.userProofreading), userSaved);
+            const restored = await saveSnapshot(page);
+            assert.equal(restored.pages[0].regions[2].text, original);
+            assert.equal(restored.proofreading?.entries.some(entry => entry.text === 'Invoice') ?? false, false);
+        });
+
+        await test('literal rule previews honor scope and protected identifiers and apply only selected occurrences', 'proofreading', async page => {
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            const identifier = words.getByRole('button', { name: 'Select word 2: NS-2026-1042', exact: true });
+            await identifier.click();
+            await page.getByRole('combobox', { name: 'Save selected term in', exact: true }).selectOption('project');
+            await page.getByRole('button', { name: 'Protect identifier', exact: true }).click();
+            const before = await saveSnapshot(page);
+            assert.equal(await identifier.getAttribute('data-word-confidence-band'), 'unscored');
+            assert.ok(before.proofreading.entries.some(entry => entry.text === 'NS-2026-1042' && entry.kind === 'protected'));
+            await page.getByRole('button', { name: 'Vocabulary and rules', exact: true }).click();
+            const manager = page.locator('[data-proofreading-manager]');
+            await manager.getByRole('combobox', { name: 'Vocabulary scope', exact: true }).selectOption('user');
+            await manager.getByRole('button', { name: 'Correction rules', exact: true }).click();
+            await manager.getByRole('textbox', { name: 'Rule name', exact: true }).fill('OCR zero correction');
+            await manager.getByRole('textbox', { name: 'Find literal text', exact: true }).fill('0');
+            await manager.getByRole('textbox', { name: 'Replace with', exact: true }).fill('o');
+            await manager.getByRole('textbox', { name: 'Rule language', exact: true }).fill('und');
+            await manager.getByRole('checkbox', { name: 'Whole words only', exact: true }).uncheck();
+            await manager.getByRole('button', { name: 'Add rule', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.userProofreading.rules.some(rule => rule.name === 'OCR zero correction'));
+            await manager.locator('[data-proofreading-user-status="saved"]').waitFor();
+            await manager.getByRole('combobox', { name: 'Correction scope', exact: true }).selectOption('page');
+            await manager.getByRole('button', { name: 'Preview rule: OCR zero correction', exact: true }).click();
+            const preview = page.getByRole('dialog', { name: 'Review proposed corrections', exact: true });
+            await preview.waitFor();
+            assert.equal(Number(await preview.locator('[data-skipped-approved]').getAttribute('data-skipped-approved')), 0);
+            assert.ok(Number(await preview.locator('[data-skipped-protected]').getAttribute('data-skipped-protected')) > 0);
+            await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
+            await manager.getByRole('combobox', { name: 'Correction scope', exact: true }).selectOption('project');
+            await manager.getByRole('button', { name: 'Preview rule: OCR zero correction', exact: true }).click();
+            await preview.waitFor();
+            assert.ok(Number(await preview.locator('[data-skipped-approved]').getAttribute('data-skipped-approved')) > 0);
+            assert.ok(Number(await preview.locator('[data-skipped-protected]').getAttribute('data-skipped-protected')) > 0);
+            assert.ok(await preview.getByRole('checkbox', { name: /^Apply correction / }).count() > 1);
+            await preview.getByRole('checkbox', { name: 'Select all corrections', exact: true }).uncheck();
+            await preview.getByRole('checkbox', { name: 'Apply correction 1: 0 → o', exact: true }).check();
+            await preview.getByRole('button', { name: 'Apply 1 correction', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            await manager.getByRole('button', { name: 'Close vocabulary and rules', exact: true }).click();
+            const saved = await saveSnapshot(page);
+            assert.equal(saved.pages[0].regions[2].text, '😀 Invoice NS-2026-1042');
+            assert.deepEqual(saved.pages[0].regions.filter((_, index) => index !== 2), before.pages[0].regions.filter((_, index) => index !== 2));
+            assert.deepEqual(saved.pages[2], before.pages[2]);
+            assert.deepEqual(saved.pages[0].regions[2].wordEvidence, before.pages[0].regions[2].wordEvidence);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            const restored = await saveSnapshot(page);
+            assert.deepEqual(restored.pages, before.pages);
+            assert.deepEqual(restored.proofreading, before.proofreading);
+            assert.ok(await page.evaluate(() => window.ocrSmoke.userProofreading.rules.some(rule => rule.name === 'OCR zero correction')));
+        });
+
+        await test('user vocabulary save failures retain the draft and retry without replacing existing terms', 'proofreading-save-failure', async page => {
+            await page.getByRole('button', { name: 'Vocabulary and rules', exact: true }).click();
+            const manager = page.locator('[data-proofreading-manager]');
+            await manager.getByRole('combobox', { name: 'Vocabulary scope', exact: true }).selectOption('user');
+            await manager.getByText('RetainedTerm', { exact: true }).waitFor();
+            await manager.getByRole('textbox', { name: 'Vocabulary term', exact: true }).fill('Invoice');
+            await manager.getByRole('button', { name: 'Add entry', exact: true }).click();
+            await manager.locator('[data-proofreading-user-status="error"]').waitFor();
+            assert.equal(await manager.getByText('Invoice', { exact: true }).count(), 1);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.userProofreading.entries.map(entry => entry.text)), ['RetainedTerm']);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.userProofreadingSaves.length), 0);
+            await manager.getByRole('button', { name: 'Retry saving vocabulary', exact: true }).click();
+            await manager.locator('[data-proofreading-user-status="saved"]').waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.userProofreading.entries.map(entry => entry.text).sort()), ['Invoice', 'RetainedTerm']);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.userProofreadingSaves.length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'saveUserProofreading').length), 2);
+        });
+
+        await test('a user vocabulary load failure never overwrites unread preferences and retry restores them', 'proofreading-load-failure', async page => {
+            await page.getByRole('button', { name: 'Vocabulary and rules', exact: true }).click();
+            const manager = page.locator('[data-proofreading-manager]');
+            await manager.locator('[data-proofreading-load-error]').waitFor();
+            await manager.getByRole('combobox', { name: 'Vocabulary scope', exact: true }).selectOption('user');
+            assert.equal(await manager.getByRole('textbox', { name: 'Vocabulary term', exact: true }).isDisabled(), true);
+            assert.equal(await manager.getByRole('button', { name: 'Import JSON', exact: true }).isDisabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'saveUserProofreading').length), 0);
+            await manager.getByRole('combobox', { name: 'Vocabulary scope', exact: true }).selectOption('project');
+            await manager.getByRole('textbox', { name: 'Vocabulary term', exact: true }).fill('ProjectTerm');
+            await manager.getByRole('button', { name: 'Add entry', exact: true }).click();
+            const saved = await saveSnapshot(page);
+            assert.ok(saved.proofreading.entries.some(entry => entry.text === 'ProjectTerm'));
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.userProofreading.entries.map(entry => entry.text)), ['RetainedTerm']);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.userProofreadingSaves.length), 0);
+            await manager.getByRole('button', { name: 'Retry loading vocabulary', exact: true }).click();
+            await manager.locator('[data-proofreading-user-status="saved"]').waitFor();
+            await manager.getByRole('combobox', { name: 'Vocabulary scope', exact: true }).selectOption('user');
+            await manager.getByText('RetainedTerm', { exact: true }).waitFor();
+            assert.equal(await manager.getByRole('textbox', { name: 'Vocabulary term', exact: true }).isDisabled(), false);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'saveUserProofreading').length), 0);
         });
 
         await test('word review leaves token and detector evidence unscored and fits compact screens', 'word-review', async page => {
@@ -871,7 +1024,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-passage-editor.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

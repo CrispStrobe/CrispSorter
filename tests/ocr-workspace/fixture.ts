@@ -1,5 +1,6 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
 import type { ExportRequest, ProjectEnvelope, WorkspaceClient } from '../../src/lib/ocr/client';
+import { emptyProofreadingData, type ProofreadingData } from '../../src/lib/ocr/proofreadingData';
 
 const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
@@ -73,6 +74,10 @@ export interface SmokeControl {
     releaseSave():boolean;
     writes: Array<{outputPath:string;text:string;sourceUris:string[]}>;
     lastSaved: OcrProject | null;
+    userProofreading: ProofreadingData;
+    userProofreadingSaves: ProofreadingData[];
+    failUserProofreadingLoads: number;
+    failUserProofreadingSaves: number;
 }
 
 declare global {
@@ -80,6 +85,7 @@ declare global {
 }
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
+    const nativeWord=scenario==='native-word'||scenario.startsWith('proofreading');
     let project=addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
         pages:[1,2,3].map(page=>({image_path:pagePath(page),width:1000,height:1400})),
@@ -108,7 +114,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             detection.char_conf=Array.from(detection.text,()=>0.99);
             detection.char_conf_unit='unicode_codepoint';detection.char_conf_aligned=true;
         }
-        if(scenario==='native-word') {
+        if(nativeWord) {
             // Provider-shaped synthetic input tests the native evidence contract;
             // only a separate live receipt can demonstrate actual OCR accuracy.
             result.engine='system_tesseract';
@@ -141,6 +147,10 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pending:Array<{path:string;release:()=>void}>=[];
     const pendingExtractions:Array<()=>void>=[];
     const pendingSaves:Array<()=>void>=[];
+    const userProofreading=emptyProofreadingData();
+    if(scenario==='proofreading-save-failure'||scenario==='proofreading-load-failure') {
+        userProofreading.entries.push({id:'fixture-existing-user-term',text:'RetainedTerm',language:'und',kind:'word',caseSensitive:true});
+    }
     const control:SmokeControl={
         initialProject:copy(project),
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
@@ -149,6 +159,9 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
         releaseExtraction(){const release=pendingExtractions.shift();if(!release)return false;control.pendingExtractions=pendingExtractions.length;release();return true;},
         releaseSave(){const release=pendingSaves.shift();if(!release)return false;control.pendingSaves=pendingSaves.length;release();return true;},
+        userProofreading:copy(userProofreading),userProofreadingSaves:[],
+        failUserProofreadingLoads:scenario==='proofreading-load-failure'?1:0,
+        failUserProofreadingSaves:scenario==='proofreading-save-failure'?1:0,
     };
     window.ocrSmoke=control;
     const note=(method:string,data:unknown={})=>control.calls.push({method,data:copy(data)});
@@ -158,7 +171,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         });
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(scenario==='native-word'?['system_tesseract']:[])],...(scenario==='native-word'?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(nativeWord?['system_tesseract']:[])],...(nativeWord?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -214,7 +227,17 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
         async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',scenario==='native-word'&&page===1))}`;},
+        async loadUserProofreading(){
+            note('loadUserProofreading');
+            if(control.failUserProofreadingLoads>0){control.failUserProofreadingLoads--;throw new Error('Fixture user vocabulary load failure');}
+            return copy(control.userProofreading);
+        },
+        async saveUserProofreading(data){
+            note('saveUserProofreading',data);
+            if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
+            control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
+        },
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1))}`;},
     };
     return {client,initialProject:null};
 }

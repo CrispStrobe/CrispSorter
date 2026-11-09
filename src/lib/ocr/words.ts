@@ -104,7 +104,9 @@ export function getWordEvidence(region: OcrRegion, source: 'current' | 'original
             minConfidence: null, basis: 'word',
             bounds: {x:word.x,y:word.y,w:word.w,h:word.h},
             sourceStart: word.start, sourceEnd: word.end,
-            ...(word.alternatives ? { alternatives: word.alternatives.map(alternative => ({...alternative})) } : {}),
+            ...(word.alternatives ? { alternatives: word.alternatives.map(alternative => ({
+                ...alternative, confidence: word.confidence_basis === 'recognition' ? alternative.confidence : null,
+            })) } : {}),
         });
         cursor = word.end;
     }

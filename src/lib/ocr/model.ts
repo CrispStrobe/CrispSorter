@@ -1,5 +1,6 @@
 import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
 import { readWordEvidence, type WordEvidenceEnvelope } from './wordEvidence';
+import { readProofreadingData, type ProofreadingData } from './proofreadingData';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -33,6 +34,7 @@ export interface OcrProject {
     version: typeof PROJECT_VERSION; id: string; name: string; createdAt: string; updatedAt: string;
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
     recognitionSettings?: Record<string, unknown>;
+    proofreading?: ProofreadingData;
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
 export interface ImportedDocument { source_uri: string; name: string; pages: ImportedPage[]; }
@@ -437,6 +439,7 @@ export function parseProject(input: unknown): OcrProject {
     if (typeof p.id!=='string'||!p.id||typeof p.name!=='string'||!Array.isArray(p.pages)||!Array.isArray(p.documents)||p.pages.length>10000) throw new Error('OCR project metadata is invalid.');
     if (!finite(p.confidenceThreshold)||p.confidenceThreshold<0||p.confidenceThreshold>1||typeof p.profileId!=='string') throw new Error('OCR project settings are invalid.');
     if (p.recognitionSettings!==undefined && (!p.recognitionSettings || typeof p.recognitionSettings!=='object' || Array.isArray(p.recognitionSettings))) throw new Error('OCR recognition settings are invalid.');
+    if (p.proofreading!==undefined) p.proofreading=readProofreadingData(p.proofreading);
     const ids=new Set<string>();
     const checkId=(candidate:unknown) => { if (typeof candidate!=='string'||!candidate||ids.has(candidate)) throw new Error('OCR project contains duplicate or invalid identifiers.'); ids.add(candidate); };
     checkId(p.id);

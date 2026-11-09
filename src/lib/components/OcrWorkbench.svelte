@@ -55,10 +55,23 @@
     PanelLeftOpen,
     ScanLine,
     ShieldCheck,
+    BookOpen,
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import WordReview from "./ocr/WordReview.svelte";
   import PageTextEditor from "./ocr/PageTextEditor.svelte";
+  import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
+  import WordSuggestions from "./ocr/WordSuggestions.svelte";
+  import CorrectionPreviewPanel from "./ocr/CorrectionPreview.svelte";
+  import {
+    emptyProofreadingData, readProofreadingData, createVocabularyEntry,
+    mergeProofreadingData, exportProofreadingData, normalizeProofreadingLanguage,
+    updateProjectProofreading, suggestCorrections, ignoreSuggestion, isSuggestionIgnored,
+    captureCorrectionPreview, applyCorrectionPreview,
+    type ProofreadingData, type ProofreadingSelection, type CorrectionSuggestion,
+    type CorrectionRule, type CorrectionRequest, type CorrectionPreview,
+  } from "$lib/ocr/proofreading";
+  import { createProofreadingWriter, type ProofreadingSaveStatus } from "$lib/ocr/proofreadingStore";
   import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
   import type { WordEvidence } from "$lib/ocr/words";
   import {
@@ -179,6 +192,15 @@
     replacement = $state(""),
     matchCase = $state(false);
   let currentMatch = $state<TextMatch | null>(null);
+  let proofreadingOpen = $state(false);
+  let userProofreading = $state<ProofreadingData>(emptyProofreadingData());
+  let userProofreadingLoad = $state<"loading" | "ready" | "error" | "unavailable">("loading");
+  let userProofreadingError = $state("");
+  let userProofreadingStatus = $state<ProofreadingSaveStatus>({ state: "saved", error: null });
+  let correctionSelectedIds = $state<string[]>([]);
+  let correctionDraft = $state<{ from: string; to: string; language: string; nonce: number } | null>(null);
+  let correctionDraftNonce = 0;
+  let userProofreadingLoadAttempt = 0;
   let booting = $state(true),
     closing = $state(false),
     busy = $state(""),
@@ -206,6 +228,7 @@
     action: () => void | Promise<void>;
     splitWidth?: number;
     ocrPreview?: ZoneReviewPreview;
+    correctionPreview?: CorrectionPreview;
   } | null>(null);
   let splitPosition = $state(0);
   let queueState = $state<QueueState>({
@@ -219,6 +242,10 @@
   let queuePromise: Promise<void> | null = null;
   let autosave: ProjectAutosave<OcrProject> | null = null;
   let mounted = true;
+  const userProofreadingWriter = createProofreadingWriter(async (data) => {
+    if (!client.saveUserProofreading) throw new Error("All-project vocabulary storage is unavailable in this build.");
+    await client.saveUserProofreading(data);
+  }, (status) => { if (mounted) userProofreadingStatus = status; });
   let editGroup: string | null = null;
   let editorPane = $state<HTMLDivElement>();
   let actionDialog = $state<HTMLDialogElement>();
@@ -295,6 +322,24 @@
   $effect(() => {
     if (wordInspection && !inspectedWord) wordInspection = null;
   });
+  const projectProofreading = $derived(project.proofreading ?? emptyProofreadingData());
+  const proofreadingReady = $derived(userProofreadingLoad === "ready" || userProofreadingLoad === "unavailable");
+  const userProofreadingWritable = $derived(userProofreadingLoad === "ready" && !!client.saveUserProofreading);
+  const proofreadingSelection = $derived<ProofreadingSelection | null>(
+    inspectedWord && wordInspection?.source === "current" && activePage && region &&
+    !["picture", "formula", "table"].includes(region.kind) && !region.excluded && !activePage.excluded
+      ? { pageId: activePage.id, regionId: region.id, start: inspectedWord.start, end: inspectedWord.end, text: inspectedWord.text }
+      : null,
+  );
+  const proofreadingSuggestions = $derived.by((): { items: CorrectionSuggestion[]; error: string } => {
+    if (!proofreadingReady || !proofreadingSelection) return { items: [], error: "" };
+    try {
+      return { items: suggestCorrections(project, proofreadingSelection, userProofreading, projectProofreading.language), error: "" };
+    } catch (failure) {
+      return { items: [], error: message(failure) };
+    }
+  });
+  const proofreadingIgnored = $derived(proofreadingSelection ? isSuggestionIgnored(project, proofreadingSelection) : false);
   const metrics = $derived(getMetrics(project));
   const reviewIssues = $derived(getReviewIssues(project));
   const pageIssues = $derived(
@@ -371,6 +416,11 @@
     ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
   );
   const locked = $derived(booting || closing || !!busy || queueActive);
+  const visibleSaveStatus = $derived<SaveStatus>(saveStatus.state === "error" ? saveStatus
+    : userProofreadingStatus.state === "error" ? { state: "error", error: userProofreadingStatus.error ?? "All-project vocabulary save failed." }
+    : saveStatus.state === "saving" || userProofreadingStatus.state === "saving" ? { state: "saving" }
+    : saveStatus.state === "pending" || userProofreadingStatus.state === "pending" ? { state: "pending" }
+    : saveStatus);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
     typeof settings.engine === "string" ? settings.engine : "auto",
@@ -542,11 +592,128 @@
   async function flush() {
     try {
       await autosave?.flush();
+      if (!await userProofreadingWriter.flush()) throw new Error(userProofreadingStatus.error ?? "All-project vocabulary could not be saved. Retry saving it before closing.");
       notice = "Project saved";
       error = "";
     } catch (e) {
       fail(e);
     }
+  }
+  async function loadUserProofreading() {
+    const attempt = ++userProofreadingLoadAttempt;
+    if (!client.loadUserProofreading) {
+      userProofreadingLoad = "unavailable";
+      return;
+    }
+    userProofreadingLoad = "loading";
+    userProofreadingError = "";
+    try {
+      const data = readProofreadingData(await client.loadUserProofreading());
+      if (!mounted || attempt !== userProofreadingLoadAttempt) return;
+      userProofreading = data;
+      userProofreadingLoad = "ready";
+    } catch (failure) {
+      if (!mounted || attempt !== userProofreadingLoadAttempt) return;
+      userProofreadingLoad = "error";
+      userProofreadingError = message(failure);
+    }
+  }
+  function setProjectProofreading(data: ProofreadingData, expectedProjectId = project.id) {
+    if (locked) return;
+    safe(() => {
+      if (project.id !== expectedProjectId) throw new Error("The active project changed. Apply the vocabulary change again in the intended project.");
+      change(updateProjectProofreading(project, data));
+    });
+  }
+  function setUserProofreading(data: ProofreadingData) {
+    if (locked || !userProofreadingWritable) return;
+    safe(() => {
+      userProofreading = readProofreadingData(data);
+      userProofreadingWriter.schedule(userProofreading);
+    });
+  }
+  function setProofreadingLanguage(value: string) {
+    if (locked) return;
+    safe(() => change(updateProjectProofreading(project, {
+      ...projectProofreading, language: normalizeProofreadingLanguage(value),
+    })));
+  }
+  function addSelectedVocabulary(kind: "word" | "protected", scope: "project" | "user") {
+    const selection = proofreadingSelection;
+    if (!selection || locked || (scope === "user" && !userProofreadingWritable)) return;
+    safe(() => {
+      const entry = createVocabularyEntry(selection.text, kind === "protected" ? "und" : projectProofreading.language, kind, true);
+      const current = scope === "project" ? projectProofreading : userProofreading;
+      const data = mergeProofreadingData(current, { ...emptyProofreadingData(), entries: [entry] });
+      if (scope === "project") setProjectProofreading(data); else setUserProofreading(data);
+      notice = `${kind === "protected" ? "Protected identifier" : "Vocabulary entry"} added to ${scope === "project" ? "this project" : "all projects"}. OCR scores and approval are unchanged.`;
+    });
+  }
+  function ignoreSelectedSuggestion() {
+    if (!proofreadingSelection || locked) return;
+    safe(() => change(ignoreSuggestion(project, proofreadingSelection!)));
+  }
+  function previewCorrections(request: CorrectionRequest) {
+    if (locked || !proofreadingReady) return;
+    safe(() => {
+      const preview = captureCorrectionPreview(project, request, userProofreading);
+      correctionSelectedIds = preview.matches.map((match) => match.id);
+      confirm = {
+        title: "Review proposed corrections",
+        message: "Choose the occurrences to change. Protected identifiers are retained, and current source text is checked again when you apply.",
+        label: "Apply corrections", correctionPreview: preview,
+        action: () => safe(() => {
+          const next = applyCorrectionPreview(project, preview, correctionSelectedIds, userProofreading);
+          const count = correctionSelectedIds.length;
+          change(next);
+          currentMatch = null;
+          wordInspection = null;
+          notice = `Applied ${count} correction${count === 1 ? "" : "s"}. Undo restores the previous text.`;
+        }),
+      };
+    });
+  }
+  function previewSuggestion(suggestion: CorrectionSuggestion) {
+    const selection = proofreadingSelection;
+    if (!selection) return;
+    previewCorrections({
+      from: selection.text, to: suggestion.text, language: projectProofreading.language,
+      caseSensitive: true, wholeWord: false, scope: "passage", pageId: selection.pageId,
+      regionId: selection.regionId, selection: { ...selection }, includeApproved: true,
+    });
+  }
+  function previewRule(rule: CorrectionRule, scope: CorrectionRequest["scope"], includeApproved: boolean) {
+    if (!rule.enabled) return;
+    previewCorrections({ from: rule.from, to: rule.to, language: rule.language,
+      caseSensitive: rule.caseSensitive, wholeWord: rule.wholeWord, scope, includeApproved,
+      pageId: activePage?.id, regionId: region?.id, pageIds: [...checkedPages],
+    });
+  }
+  function rememberCorrection(suggestion: CorrectionSuggestion) {
+    if (!proofreadingSelection || locked) return;
+    correctionDraft = { from: proofreadingSelection.text, to: suggestion.text,
+      language: projectProofreading.language, nonce: ++correctionDraftNonce };
+    wordInspection = null;
+    proofreadingOpen = true;
+  }
+  function toggleProofreading() {
+    correctionDraft = null;
+    wordInspection = null;
+    proofreadingOpen = !proofreadingOpen;
+  }
+  async function exportProofreading(data: ProofreadingData, scope: "project" | "user") {
+    if (locked) return;
+    const sources = project.documents.map((document) => document.sourceUri);
+    busy = "Exporting vocabulary";
+    error = "";
+    try {
+      const text = exportProofreadingData(data);
+      const path = await client.pickExport(scope === "project" ? "project-vocabulary" : "user-vocabulary", "json");
+      if (!path) return;
+      const result = await client.writeText(path, text, sources);
+      notice = `Saved ${result.saved_path}`;
+    } catch (failure) { fail(failure); }
+    finally { busy = ""; }
   }
   async function activate(next: OcrProject, revision = 0) {
     // Validate before closing the current writer: an invalid file must never
@@ -556,6 +723,8 @@
     history = createHistory(parsed);
     selectedPageId = history.present.pages[0]?.id ?? null;
     selectedRegionId = null;
+    proofreadingOpen = false;
+    correctionDraft = null;
     checkedPages = [];
     fields = [];
     tableRows = [];
@@ -719,6 +888,7 @@
   async function selectRegion(id: string) {
     selectedRegionId = id;
     wordInspection = null;
+    proofreadingOpen = false;
     inspector = "review";
     textView = "regions";
     if (onlyIssues && !issueRegionIds.has(id)) onlyIssues = false;
@@ -784,6 +954,7 @@
     const pageId = activePage.id;
     currentMatch = null;
     wordInspection = null;
+    proofreadingOpen = false;
     selectedRegionId = r.id;
     inspector = "review";
     textView = "text";
@@ -1264,6 +1435,7 @@
     onlyIssues = false;
     inspector = "review";
     textView = "regions";
+    proofreadingOpen = false;
     await tick();
     const field = editorPane?.querySelector<HTMLTextAreaElement>(
       `[data-region-id="${match.regionId}"] textarea`,
@@ -1574,6 +1746,7 @@
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
+      proofreadingOpen = false;
       searchOpen = true;
       return;
     }
@@ -1620,7 +1793,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (queueActive || busy || autosave?.hasUnsavedChanges()) {
+    if (queueActive || busy || autosave?.hasUnsavedChanges() || userProofreadingWriter.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1630,6 +1803,7 @@
     let unlisten: (() => void) | undefined;
     let unlistenClose: (() => void) | undefined;
     bindSave();
+    void loadUserProofreading();
     void (async () => {
       const results = await Promise.allSettled([
         client.capabilities(),
@@ -1682,13 +1856,14 @@
           try {
             // Tauri waits for this handler before honoring the user's close.
             await autosave?.flush();
+            if (!await userProofreadingWriter.flush()) throw new Error(userProofreadingStatus.error ?? "All-project vocabulary could not be saved.");
           } catch (e) {
             event.preventDefault();
             closing = false;
             fail(e);
             await nativeMessage(
-              `The project could not be saved. The window remains open so corrections can be recovered.\n\n${message(e)}`,
-              { title: "Project save failed", kind: "error" },
+              `The project or vocabulary could not be saved. The window remains open so changes can be recovered.\n\n${message(e)}`,
+              { title: "Workspace save failed", kind: "error" },
             );
           }
         })
@@ -1704,7 +1879,7 @@
       queue.cancel();
       void queue
         .whenSettled()
-        .then(() => autosave?.close())
+        .then(() => Promise.allSettled([autosave?.close(), userProofreadingWriter.close()]))
         .catch(() => {});
     };
   });
@@ -1733,28 +1908,28 @@
     </div>
     <div
       class="save-state"
-      class:save-error={saveStatus.state === "error"}
-      title={saveStatus.error ??
-        "Project and corrections are saved on this device"}
+      class:save-error={visibleSaveStatus.state === "error"}
+      title={visibleSaveStatus.error ??
+        "Project, corrections, and vocabulary are saved on this device"}
     >
-      {#if saveStatus.state === "saving"}<LoaderCircle
+      {#if visibleSaveStatus.state === "saving"}<LoaderCircle
           size={13}
           class="spin"
-        />{:else if saveStatus.state === "error"}<AlertTriangle
+        />{:else if visibleSaveStatus.state === "error"}<AlertTriangle
           size={13}
-        />{:else if saveStatus.state === "pending"}<Clock3
+        />{:else if visibleSaveStatus.state === "pending"}<Clock3
           size={13}
         />{:else}<ShieldCheck size={13} />{/if}
       <span
-        >{saveStatus.state === "saved"
+        >{visibleSaveStatus.state === "saved"
           ? "All changes saved"
-          : saveStatus.state === "pending"
+          : visibleSaveStatus.state === "pending"
             ? "Unsaved changes"
-            : saveStatus.state === "saving"
+            : visibleSaveStatus.state === "saving"
               ? "Saving…"
               : "Save failed"}</span
       >
-      {#if saveStatus.state === "error"}<button onclick={flush}>Retry</button
+      {#if visibleSaveStatus.state === "error"}<button onclick={flush}>Retry</button
         >{/if}
     </div>
     <div class="header-actions">
@@ -2396,12 +2571,45 @@
             </div>
             <button
               class="icon-button"
+              class:active={proofreadingOpen}
+              onclick={toggleProofreading}
+              aria-label="Vocabulary and rules"
+              title="Vocabulary and correction rules"
+              ><BookOpen size={16} /></button
+            >
+            <button
+              class="icon-button"
               class:active={searchOpen}
               onclick={() => (searchOpen = !searchOpen)}
               aria-label="Find and replace"
               title="Find and replace (Ctrl/Cmd F)"><Search size={16} /></button
             >
           </div>
+          {#if proofreadingOpen}
+            <ProofreadingPanel
+              projectId={project.id}
+              projectData={projectProofreading}
+              userData={userProofreading}
+              language={projectProofreading.language}
+              userLoadState={userProofreadingLoad}
+              userLoadError={userProofreadingError}
+              userSaveStatus={userProofreadingStatus}
+              userWritable={userProofreadingWritable}
+              disabled={locked}
+              hasPage={!!activePage}
+              hasRegion={!!region && !region.excluded && !["picture", "formula", "table"].includes(region.kind)}
+              selectedPageCount={checkedPages.length}
+              draftRule={correctionDraft}
+              onproject={setProjectProofreading}
+              onuser={setUserProofreading}
+              onlanguage={setProofreadingLanguage}
+              onreload={loadUserProofreading}
+              onretry={async () => { await userProofreadingWriter.retry(); }}
+              onexport={exportProofreading}
+              onpreview={previewRule}
+              onclose={() => { proofreadingOpen = false; correctionDraft = null; }}
+            />
+          {:else}
           {#if searchOpen}<div class="find-panel">
               <div class="find-row">
                 <input
@@ -2670,6 +2878,23 @@
                       onselect={(word) => selectWord(r, word)}
                       oninspect={(word, source) => inspectWord(r, word, source)}
                     />
+                    {#if proofreadingSelection && proofreadingSelection.regionId === r.id}
+                      <WordSuggestions
+                        selection={proofreadingSelection}
+                        language={projectProofreading.language}
+                        suggestions={proofreadingSuggestions.items}
+                        errorMessage={proofreadingSuggestions.error}
+                        ignored={proofreadingIgnored}
+                        disabled={locked}
+                        ready={proofreadingReady}
+                        userEditable={userProofreadingWritable}
+                        onlanguage={setProofreadingLanguage}
+                        onadd={addSelectedVocabulary}
+                        onignore={ignoreSelectedSuggestion}
+                        onpreview={previewSuggestion}
+                        onremember={rememberCorrection}
+                      />
+                    {/if}
                   {/if}
                   {#if r.id === selectedRegionId}<div class="region-actions">
                       <button
@@ -2819,6 +3044,7 @@
               >Accept & next <ChevronRight size={14} /></button
             >
           </div>
+          {/if}
         {:else if inspector === "recognition"}
           <div class="panel-scroll settings-panel">
             <div class="panel-intro">
@@ -3504,7 +3730,7 @@
 
 {#if confirm}<dialog
     class="workspace-dialog"
-    class:ocr-preview-dialog={!!confirm.ocrPreview}
+    class:ocr-preview-dialog={!!confirm.ocrPreview || !!confirm.correctionPreview}
     bind:this={actionDialog}
     onclose={() => {
       if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
@@ -3514,6 +3740,13 @@
   >
     <h2 id="ocr-confirm-title">{confirm.title}</h2>
     <p>{confirm.message}</p>
+    {#if confirm.correctionPreview}
+      <CorrectionPreviewPanel
+        preview={confirm.correctionPreview}
+        selectedIds={correctionSelectedIds}
+        onselect={(ids) => (correctionSelectedIds = ids)}
+      />
+    {/if}
     {#if confirm.ocrPreview}
       <div class="ocr-preview-comparison">
         <label>
@@ -3564,18 +3797,21 @@
         if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
         confirm = null;
       }}>{confirm.ocrPreview ? "Keep current text" : "Cancel"}</button
-      ><button
+      >{#if !confirm.correctionPreview || confirm.correctionPreview.matches.length}<button
         class="button primary"
-        disabled={!!confirm.splitWidth &&
-          (!Number.isFinite(splitPosition) ||
-            splitPosition < 1 ||
-            splitPosition >= confirm.splitWidth)}
+        disabled={(!!confirm.correctionPreview && !correctionSelectedIds.length) ||
+          (!!confirm.splitWidth &&
+            (!Number.isFinite(splitPosition) ||
+              splitPosition < 1 ||
+              splitPosition >= confirm.splitWidth))}
         onclick={() => {
           const action = confirm?.action;
           confirm = null;
           void action?.();
-        }}>{confirm.label}</button
-      >
+        }}>{confirm.correctionPreview
+          ? `Apply ${correctionSelectedIds.length} correction${correctionSelectedIds.length === 1 ? "" : "s"}`
+          : confirm.label}</button
+      >{/if}
     </div>
   </dialog>{/if}
 {#if helpOpen}<dialog
