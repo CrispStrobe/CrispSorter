@@ -15,8 +15,11 @@ export function validateBuildSource(build) {
     assert(Number.isSafeInteger(file.bytes) && file.bytes > 0 && file.bytes <= 8 * 1024 * 1024);
     assert(hex(file.sha256, 64) && hex(file.committed_sha256, 64));
     assert(Number.isFinite(Date.parse(file.generated_at)), 'Generated inventory timestamp is missing.');
-    assert(file.counts && ['frontend', 'backend', 'total'].every(key => Number.isSafeInteger(file.counts[key]) && file.counts[key] >= 0));
-    assert.equal(file.counts.total, file.counts.frontend + file.counts.backend);
+    const keys = file.counts && Object.keys(file.counts).sort();
+    assert(keys && (JSON.stringify(keys) === '["backend","frontend","total"]'
+      || JSON.stringify(keys) === '["backend","frontend","native","total"]'));
+    assert(keys.every(key => Number.isSafeInteger(file.counts[key]) && file.counts[key] >= 0));
+    assert.equal(file.counts.total, file.counts.frontend + file.counts.backend + (file.counts.native ?? 0));
   }
   return generated;
 }

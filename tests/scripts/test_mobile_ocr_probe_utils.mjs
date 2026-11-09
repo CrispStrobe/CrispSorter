@@ -29,6 +29,18 @@ test('build source proof never extends the generated exception to code or depend
   }
 });
 
+test('generated native license counts remain explicit and consistent with the receipt total', () => {
+  const proof = sourceProof(true);
+  proof.generated_tracked_files[0].counts = { frontend: 1, backend: 9, native: 1, total: 11 };
+  validateBuildSource(proof);
+  for (const counts of [{ frontend: 1, backend: 9, native: 1, total: 10 },
+    { frontend: 1, backend: 9, native: -1, total: 9 },
+    { frontend: 1, backend: 9, native: 1, extra: 1, total: 12 }]) {
+    proof.generated_tracked_files[0].counts = counts;
+    assert.throws(() => validateBuildSource(proof));
+  }
+});
+
 test('every final APK native library needs its own load-alignment evidence', () => {
   const name = 'lib/x86_64/libapplication.so';
   const artifact = { abis: ['x86_64'], native_libraries: { [name]: 'd'.repeat(64) },
