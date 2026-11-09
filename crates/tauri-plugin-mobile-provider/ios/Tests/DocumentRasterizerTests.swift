@@ -72,7 +72,9 @@ final class DocumentRasterizerTests: XCTestCase {
         for y in stride(from: 0, to: image.height, by: 8) {
           for x in stride(from: 0, to: image.width, by: 8) { if rgba[(y * image.width + x) * 4] < 120 { ink += 1 } }
         }
-        XCTAssertGreaterThan(ink, 30, "A blank page must not pass as rendered text.")
+        // Samples every 8th pixel: a blank page scores 0, this fixture's text
+        // ~27 on Xcode 16.4 and 26.2 PDF rasterisers (~1700 dark pixels).
+        XCTAssertGreaterThan(ink, 10, "A blank page must not pass as rendered text.")
         bytes += try Data(contentsOf: URL(fileURLWithPath: page.path)).count
       }
       XCTAssertEqual(result.bytes, bytes); XCTAssertEqual(try Data(contentsOf: source), original)
