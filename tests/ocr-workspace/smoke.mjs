@@ -276,9 +276,50 @@ if (process.argv.includes('--serve')) {
             await page.getByRole('tab', { name: 'Export', exact: true }).click();
             const unavailable = page.locator('select option[value="pdfa"]');
             assert.equal(await unavailable.count(), 1);
-            assert.equal(await unavailable.isDisabled(), true);
-            await page.getByText('PDF/A-2b requires the archival-capable native renderer in this build.', { exact: true }).waitFor();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.exports.length), 0);
+            // Playwright 1.62.1 follows the enclosing label for this query and
+            // retargets OPTION to its enabled SELECT. Retain that observation,
+            // then verify the actual native option state and keyboard behavior.
+            // https://github.com/microsoft/playwright/blob/v1.62.1/packages/injected/src/injectedScript.ts
+            const evidence = {
+                browser: browser.version(),
+                playwright_is_disabled: await unavailable.isDisabled(),
+                native: await unavailable.evaluate(option => {
+                    if (!(option instanceof HTMLOptionElement)) throw new Error('Expected a native OPTION');
+                    const select = option.closest('select');
+                    return {
+                        option_disabled: option.disabled,
+                        matches_disabled: option.matches(':disabled'),
+                        select_disabled: select?.disabled,
+                        label_targets_select: option.closest('label')?.control === select,
+                        value: option.value,
+                    };
+                }),
+                keyboard: [],
+            };
+            const receipt = path.join(output, 'archival-option-state.json');
+            await writeFile(receipt, JSON.stringify(evidence, null, 2));
+            assert.equal(evidence.native.option_disabled, true);
+            assert.equal(evidence.native.matches_disabled, true);
+            assert.equal(evidence.native.select_disabled, false);
+            assert.equal(evidence.native.value, 'pdfa');
+            const reason = page.getByText('PDF/A-2b requires the archival-capable native renderer in this build.', { exact: true });
+            await reason.waitFor();
+            evidence.native_reason = await reason.innerText();
+            const format = page.getByRole('combobox', { name: /^Output format/ });
+            await format.selectOption('docx');
+            await format.focus();
+            // First prove native keyboard navigation works, then prove it
+            // cannot enter the unavailable option after the last supported one.
+            for (const [key, expected] of [['ArrowUp', 'alto'], ['ArrowDown', 'docx'], ['ArrowDown', 'docx']]) {
+                await page.keyboard.press(key);
+                const selected = await format.inputValue();
+                evidence.keyboard.push({ key, expected, selected });
+                await writeFile(receipt, JSON.stringify(evidence, null, 2));
+                assert.equal(selected, expected);
+            }
+            evidence.export_calls = await page.evaluate(() => window.ocrSmoke.exports.length);
+            await writeFile(receipt, JSON.stringify(evidence, null, 2));
+            assert.equal(evidence.export_calls, 0);
         });
 
         await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
