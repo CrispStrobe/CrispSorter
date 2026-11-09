@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -123,6 +123,22 @@ if (process.argv.includes('--serve')) {
                 copy.querySelectorAll('.word-score').forEach(score => score.remove());
                 return copy.textContent;
             });
+        }
+        async function saveSnapshot(page) {
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.locator('.save-state').getByText('All changes saved', { exact: true }).waitFor();
+            await page.getByText('Project saved', { exact: true }).waitFor();
+            return page.evaluate(() => window.ocrSmoke.lastSaved ?? window.ocrSmoke.initialProject);
+        }
+        async function beginAreaDrag(page) {
+            await page.getByRole('button', { name: 'Re-OCR area', exact: true }).click();
+            const paper = await page.locator('.canvas-shell .paper').boundingBox();
+            assert.ok(paper);
+            // Both points are strictly inside source region 3; the request must
+            // expand this small rectangle to cover the full existing passage.
+            await page.mouse.move(paper.x + paper.width * 100 / 1000, paper.y + paper.height * 280 / 1400);
+            await page.mouse.down();
+            await page.mouse.move(paper.x + paper.width * 150 / 1000, paper.y + paper.height * 295 / 1400);
         }
 
         await test('recover pages, correct text, undo, redo, and revoke page approval', 'review', async page => {
@@ -315,6 +331,142 @@ if (process.argv.includes('--serve')) {
             assert.ok(await invoice.isVisible());
             await invoice.click();
             assert.equal(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).evaluate(input => input.value.slice(input.selectionStart, input.selectionEnd)), 'Inv0ice');
+        });
+
+        await test('passage editing retains multiline text and source evidence through save, history and export', 'word-review', async page => {
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            const before = await saveSnapshot(page);
+            const original = before.pages[0].regions[2];
+            await page.locator('.region-card.selected').getByRole('button', { name: 'Edit passage', exact: true }).click();
+            const editor = page.getByRole('textbox', { name: 'Passage 3 text', exact: true });
+            await editor.waitFor();
+            assert.equal(await editor.evaluate(input => document.activeElement === input), true);
+            const corrected = 'Invoice NS-2026-1042 was checked against the source.\nThe complete sentence can be corrected here.\n\nA new paragraph retains its line breaks.';
+            await editor.fill(corrected);
+            await editor.blur();
+            assert.ok(await page.getByRole('button', { name: 'Copy page text', exact: true }).isVisible());
+            await page.screenshot({ path: path.join(output, 'ocr-passage-editor.png'), fullPage: true });
+            const saved = await saveSnapshot(page);
+            const region = saved.pages[0].regions[2];
+            assert.equal(region.text, corrected);
+            assert.equal(region.review, 'corrected');
+            assert.equal(saved.pages[0].approved, false);
+            for (const key of ['id', 'x', 'y', 'w', 'h', 'confidence', 'confidenceBasis', 'originalText', 'char_conf', 'charConfidenceUnit', 'charConfidenceAligned']) {
+                assert.deepEqual(region[key], original[key], `Passage correction changed original ${key}`);
+            }
+            assert.equal(saved.pages[0].imagePath, before.pages[0].imagePath);
+            assert.equal(saved.pages[0].originalImagePath, before.pages[0].originalImagePath);
+            assert.equal(saved.pages[0].documentId, before.pages[0].documentId);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.equal(await editor.inputValue(), original.text);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.equal(await editor.inputValue(), corrected);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('text');
+            await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0]);
+            assert.equal(exported.regions[2].text, corrected);
+            assert.equal(exported.regions[2].original_text, original.originalText);
+            assert.deepEqual(exported.regions[2].original_char_conf, original.char_conf);
+            assert.deepEqual(exported.regions[2].char_conf, []);
+            assert.equal(exported.image_path, before.pages[0].imagePath);
+        });
+
+        await test('partial OCR previews replacements, preserves cancellation and expands drawn areas to full passages', 'review', async page => {
+            const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            const current = 'Manually checked invoice number';
+            await editor.fill(current);
+            await editor.blur();
+            const before = await saveSnapshot(page);
+            const reocr = page.locator('.region-card.selected').getByRole('button', { name: 'Re-OCR region', exact: true });
+            await reocr.click();
+            const preview = page.getByRole('dialog', { name: 'Review new OCR text', exact: true });
+            await preview.waitFor();
+            assert.equal(await preview.getByRole('textbox', { name: 'Current text', exact: true }).inputValue(), current);
+            assert.equal(await preview.getByRole('textbox', { name: 'New OCR text', exact: true }).inputValue(), 'Invoice NS-2026-1042');
+            await page.screenshot({ path: path.join(output, 'ocr-partial-review.png'), fullPage: true });
+            // The modal makes the underlying editor inert; inspect its value
+            // without asking the accessibility tree to expose an active control.
+            assert.equal(await page.locator('textarea[aria-label="Text for region 3"]').inputValue(), current);
+            let calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'recognize'));
+            assert.equal(calls.length, 1);
+            assert.deepEqual(calls[0].data.zone, { x: 80, y: 270, w: 640, h: 40 });
+            assert.equal(calls[0].data.pagePath, before.pages[0].imagePath);
+            await preview.getByRole('button', { name: 'Keep current text', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            assert.deepEqual((await saveSnapshot(page)).pages, before.pages);
+
+            await reocr.click();
+            await preview.waitFor();
+            await preview.getByRole('button', { name: 'Use new OCR text', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            const accepted = await saveSnapshot(page);
+            assert.equal(accepted.pages[0].regions[2].text, 'Invoice NS-2026-1042');
+            assert.equal(accepted.pages[0].regions[2].originalText, 'Invoice NS-2026-1042');
+            assert.equal(accepted.pages[0].regions[2].review, 'unreviewed');
+            assert.equal(accepted.pages[0].approved, false);
+            assert.deepEqual(accepted.pages[0].regions.filter((_, i) => i !== 2), before.pages[0].regions.filter((_, i) => i !== 2));
+            assert.deepEqual(accepted.pages.slice(1), before.pages.slice(1));
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages, before.pages);
+
+            await assertFitPage(page, 'Area OCR');
+            await beginAreaDrag(page);
+            await page.keyboard.press('Escape');
+            await page.mouse.up();
+            assert.equal(await preview.count(), 0);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 2);
+            await beginAreaDrag(page);
+            await page.mouse.up();
+            await preview.waitFor();
+            calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'recognize'));
+            assert.equal(calls.length, 3);
+            assert.deepEqual(calls[2].data.zone, { x: 80, y: 270, w: 640, h: 40 });
+            assert.equal(await preview.getByRole('textbox', { name: 'Current text', exact: true }).inputValue(), current);
+            await preview.getByRole('button', { name: 'Keep current text', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages, before.pages);
+        });
+
+        await test('empty partial OCR retains corrected text and approval', 'zone-empty', async page => {
+            const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await editor.fill('Retain this reviewed correction');
+            await editor.blur();
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            const before = await saveSnapshot(page);
+            await page.locator('.region-card.selected').getByRole('button', { name: 'Re-OCR region', exact: true }).click();
+            await page.getByRole('alert').filter({ hasText: 'No text was found in this area. Existing text was preserved.' }).waitFor();
+            assert.equal(await page.getByRole('dialog', { name: 'Review new OCR text', exact: true }).count(), 0);
+            assert.equal(await editor.inputValue(), 'Retain this reviewed correction');
+            assert.deepEqual((await saveSnapshot(page)).pages, before.pages);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
+        });
+
+        await test('delayed partial OCR follows its captured page after navigation', 'zone-delay', async page => {
+            const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await editor.fill('Correction on the original page');
+            await editor.blur();
+            const before = await saveSnapshot(page);
+            await page.locator('.region-card.selected').getByRole('button', { name: 'Re-OCR region', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseNext()), true);
+            const preview = page.getByRole('dialog', { name: 'Review new OCR text', exact: true });
+            await preview.waitFor();
+            assert.equal(await preview.getByRole('textbox', { name: 'Current text', exact: true }).inputValue(), 'Correction on the original page');
+            assert.match(await page.locator('button[aria-current="page"]').getAttribute('aria-label'), /^Page 3:/);
+            await page.keyboard.press('Alt+ArrowLeft');
+            assert.match(await page.locator('button[aria-current="page"]').getAttribute('aria-label'), /^Page 3:/);
+            await preview.getByRole('button', { name: 'Use new OCR text', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            assert.equal(await page.getByRole('button', { name: /^Page 1:/ }).getAttribute('aria-current'), 'page');
+            const saved = await saveSnapshot(page);
+            assert.equal(saved.pages[0].regions[2].text, 'Invoice NS-2026-1042');
+            assert.deepEqual(saved.pages[2], before.pages[2]);
+            assert.deepEqual(saved.pages[0].regions.filter((_, i) => i !== 2), before.pages[0].regions.filter((_, i) => i !== 2));
         });
 
         await test('a document sent from another tab is imported once and selected', `review&open=${encodeURIComponent('/fixtures/sent-from-library.png')}`, async page => {
@@ -582,6 +734,28 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].text), 'Inv0ice NS-2026-1042');
         });
 
+        await test('entering the passage editor clears an earlier search replacement target', 'review', async page => {
+            await page.getByRole('button', { name: 'Find and replace', exact: true }).click();
+            await page.getByRole('textbox', { name: 'Find text', exact: true }).fill('Inv0ice');
+            await page.getByRole('textbox', { name: 'Replacement text', exact: true }).fill('Receipt');
+            const replace = page.getByRole('button', { name: 'Replace', exact: true });
+            await page.getByRole('button', { name: 'Next match', exact: true }).click();
+            assert.equal(await replace.isEnabled(), true);
+            await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+            assert.equal(await replace.isDisabled(), true);
+            await page.getByRole('textbox', { name: 'Passage 5 text', exact: true }).fill('A separate passage correction.');
+            assert.equal(await replace.isDisabled(), true);
+            const saved = await saveSnapshot(page);
+            assert.equal(saved.pages[0].regions[2].text, 'Inv0ice NS-2026-1042');
+            assert.equal(saved.pages[0].regions[4].text, 'A separate passage correction.');
+
+            await page.getByRole('button', { name: 'Next match', exact: true }).click();
+            assert.equal(await replace.isEnabled(), true);
+            await page.locator('.region-card.selected').getByRole('button', { name: 'Edit passage', exact: true }).click();
+            assert.equal(await replace.isDisabled(), true);
+            assert.equal(await page.getByRole('textbox', { name: 'Passage 3 text', exact: true }).inputValue(), 'Inv0ice NS-2026-1042');
+        });
+
         await test('desktop and compact layouts remain usable', 'review', async page => {
             await page.getByRole('button', { name: 'Next issue', exact: true }).click();
             await assertFitPage(page, 'Desktop');
@@ -600,7 +774,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-passage-editor.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

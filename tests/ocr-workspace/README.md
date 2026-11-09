@@ -40,7 +40,8 @@ For interactive inspection:
 node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
-The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `?scenario=queue-failure`,
+The fixture can be selected using `?scenario=review`, `?scenario=word-review`,
+`?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
@@ -54,6 +55,12 @@ native engines supply verified per-word confidence. Its uncertain word has a hig
 mean score but one low character score; other words cover medium and high scores.
 A leading emoji exercises UTF-16 text selection offsets, and punctuation and
 whitespace must survive the flowing colored-text display unchanged.
+
+Partial OCR fixtures honor the requested crop: returned regions remain in
+full-page coordinates, only contained regions are included, and
+`diagnostics.effective_zone` identifies the exact crop. The zone-empty scenario
+returns no text. The zone-delay scenario holds recognition until explicitly
+released, allowing page navigation before the result arrives.
 
 ## Assertions
 
@@ -73,6 +80,15 @@ whitespace must survive the flowing colored-text display unchanged.
 - Source overlays flag low character evidence and unapproved corrections
   consistently with the review queue. Word controls fit desktop and compact
   layouts, with dedicated screenshots for both.
+- The passage editor accepts multiline sentences and paragraphs, while save,
+  undo/redo, and export preserve their source geometry and original evidence.
+- Partial OCR presents current and proposed text before applying changes.
+  Cancel preserves corrections; acceptance replaces only the covered regions;
+  Undo restores the prior result. Drawing a small area expands to its complete
+  source passage, and Escape cancels an unfinished gesture without recognizing.
+- Empty partial results retain corrected text and approval. A delayed result
+  stays attached to its captured source page after navigation, and the preview
+  blocks page-navigation shortcuts until the comparison is resolved.
 - The review queue traverses uncertain text and pending pages.
 - Preparation that returns the same image preserves corrections, recognition
   evidence, physical dimensions, and approval while showing its returned warning.

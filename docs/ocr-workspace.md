@@ -20,8 +20,10 @@ rerunning completed recognition.
    Pause and Stop take effect after the current native call; completed page
    results are retained. A failed page does not stop the remaining batch.
 4. **Review.** Select a source region to see a magnified detail and its text. Edit
-   text, move/resize its box, change its region type, and reorder its position in
-   the exported text. Follow **Next issue** or press **F8** to move through the
+   words in **Regions**, or open **Text editor** to revise complete sentences and
+   paragraphs. Re-OCR a region or drawn area and compare the proposed text before
+   applying it. Move/resize boxes, change region types, and reorder their position
+   in exported text. Follow **Next issue** or press **F8** to move through the
    project. Approve individual regions or the complete page after inspecting it.
 5. **Export.** Select a format and page scope. Export preflight accounts for every
    selected included page. Unrecognized or invalid pages block export; page
@@ -66,19 +68,57 @@ image.
 - Picture regions remain on the source image and are excluded from the text
   layer. Excluding a text region removes its text, not the underlying image.
   This control is not a redaction tool.
-- Zone recognition expands a selected rectangle to cover intersecting text
-  regions completely, preserves their reading-order position, and retains
-  unaffected regions. The effective crop and its page offset are recorded.
-  It does not geometrically repair the crop, because its boxes must map back
-  to the unchanged page.
+- **Re-OCR region** recognizes a selected source region again; **Re-OCR area**
+  lets you draw a rectangle. The area expands to cover intersecting text regions
+  completely. A comparison preview lets you keep the current text or apply the
+  proposed replacement; unaffected regions and their reading order are retained.
+  The effective crop and its page offset are recorded. Partial OCR does not
+  geometrically repair the crop, because its boxes must map back to the unchanged
+  page.
 - Spread splitting starts at the center and accepts an exact vertical split
   position in pixels. Large projects display the page rail in groups of 100;
   range selection and batch processing still cover the full project.
-- The Reading order view shows the text sequence used by export. Move regions
-  earlier/later to change that sequence.
+- **Text editor** shows editable passages in the sequence used by export. Move
+  regions earlier/later in **Regions** to change that sequence.
 - Find/replace works across included pages, handles literal Unicode text, and
   treats replacement text literally. Replace-all is undoable and invalidates
   approvals on changed pages.
+
+### Edit complete sentences and paragraphs
+
+Choose **Text editor** above the review list, or select a region and click **Edit
+passage** to focus its passage directly. Each text area accepts whole sentences,
+pasted replacements, and multiple paragraphs with line breaks. Focus a passage
+to inspect its magnified source region alongside the text. **Copy page text**
+copies all included passages in their export order.
+
+Passages remain linked to their source regions. Editing their text preserves the
+page image, source geometry, original OCR text, and original confidence evidence.
+The corrected text is autosaved and exported with its line breaks, without
+needing another OCR run. Undo/redo works through the toolbar, and edits revoke
+the affected approval. Use **Regions** for confidence-colored words, geometry,
+region types, or reading-order changes.
+
+### Recognize only the text that needs another pass
+
+Select **Re-OCR region** on a region or passage, or use **Re-OCR area** in the
+source-image toolbar and drag over the relevant text. Drawing across part of an
+existing passage includes the whole passage so recognition cannot silently erase
+its remaining words. Press **Escape** to cancel an unfinished drawing.
+
+After recognition, **Review new OCR text** displays the current text and the
+proposed OCR text side by side. **Keep current text** dismisses the result without
+changing the project. **Use new OCR text** replaces only the covered source
+regions, preserves other corrections, and requires renewed review. Undo restores
+the previous text and evidence. Recognition never overwrites the current text
+before this comparison.
+
+Empty recognition, failed inference, invalid crop coordinates, or a result for a
+different page image leave the existing text intact. If you navigate while OCR
+is running, the result remains attached to the source page captured when the
+operation started; applying it returns to that page. A stale result cannot
+overwrite intervening changes to its source page. Navigating or leaving drawing
+mode cancels an unfinished source-image gesture.
 
 ## Recognition and scan repair
 

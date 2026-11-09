@@ -58,6 +58,7 @@
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import WordReview from "./ocr/WordReview.svelte";
+  import PageTextEditor from "./ocr/PageTextEditor.svelte";
   import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
   import type { WordEvidence } from "$lib/ocr/words";
   import {
@@ -72,10 +73,12 @@
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
-    expandRecognitionZone,
-    effectiveRecognitionZone,
-    mergeZoneRegions,
-  } from "$lib/ocr/zones";
+    captureZoneReview,
+    prepareZoneReview,
+    applyZoneReview,
+    type ZoneReviewPreview,
+  } from "$lib/ocr/zoneReview";
+  import type { PixelRectangle } from "$lib/ocr/zones";
   import {
     captureExtractionSource,
     extractionSourceIsCurrent,
@@ -189,6 +192,7 @@
     label: string;
     action: () => void | Promise<void>;
     splitWidth?: number;
+    ocrPreview?: ZoneReviewPreview;
   } | null>(null);
   let splitPosition = $state(0);
   let queueState = $state<QueueState>({
@@ -681,6 +685,28 @@
     editor?.focus();
     editor?.setSelectionRange(word.start, word.end);
   }
+  async function editPassage(r: OcrRegion) {
+    if (!activePage || locked || r.excluded || r.kind === "picture") return;
+    const pageId = activePage.id;
+    currentMatch = null;
+    selectedRegionId = r.id;
+    inspector = "review";
+    textView = "text";
+    editGroup = null;
+    await tick();
+    if (activePage?.id !== pageId || selectedRegionId !== r.id) return;
+    const editor = editorPane?.querySelector<HTMLTextAreaElement>(
+      `[data-passage-id="${r.id}"] textarea`,
+    );
+    editor?.focus();
+    editor?.scrollIntoView({ block: "nearest" });
+  }
+  function drawRecognitionArea() {
+    if (!activePage || locked || !capabilities.ocr) return;
+    drawMode = "recognize";
+    showOriginal = false;
+    notice = "Draw an area on the page. You can compare the new OCR text before using it.";
+  }
   function togglePage(id: string) {
     checkedPages = checkedPages.includes(id)
       ? checkedPages.filter((p) => p !== id)
@@ -1059,6 +1085,60 @@
       busy = "";
     }
   }
+  async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
+    if (!pageId || locked || !capabilities.ocr) return;
+    error = "";
+    try {
+      const request = captureZoneReview(project, pageId, rect);
+      const configSnapshot = JSON.parse(JSON.stringify(config));
+      const engineSnapshot = engine;
+      const languageSnapshot = language;
+      const cpuBudgetSnapshot = cpuBudget;
+      const profileSnapshot = project.profileId;
+      const page = request.page;
+      busy = "Recognizing selected area";
+      showOriginal = false;
+      const result = await client.recognize({
+        pagePath: page.imagePath,
+        pageWidthPoints: page.widthPoints,
+        pageHeightPoints: page.heightPoints,
+        config: configSnapshot,
+        engine: engineSnapshot,
+        language: languageSnapshot,
+        zone: request.zone,
+        cpuPixelBudget: cpuBudgetSnapshot,
+      });
+      const preview = prepareZoneReview(project, request, result, profileSnapshot);
+      if (!mounted || !active) {
+        notice = "Partial OCR finished without replacing text. Open the OCR workspace and run it again to review the result.";
+        return;
+      }
+      const zone = request.zone;
+      confirm = {
+        title: "Review new OCR text",
+        message: `${page.name}. The area covers ${zone.w} × ${zone.h} pixels at (${zone.x}, ${zone.y}) and ${request.affectedRegionIds.length} existing text regions. Intersecting passages are covered in full. Compare the result before replacing their text.`,
+        label: "Use new OCR text",
+        ocrPreview: preview,
+        action: () => {
+          safe(() => {
+            change(applyZoneReview(project, preview));
+            selectPage(page.id);
+            inspector = "review";
+            textView = "regions";
+            const first = preview.regions[0];
+            if (first) void selectRegion(first.id);
+            notice = "New OCR text applied to the selected area. Review it before approval; Undo restores the previous text.";
+          });
+        },
+      };
+      notice = "Partial OCR is ready to compare. Current text has been kept.";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+      drawMode = "select";
+    }
+  }
   async function onRectangle(
     rect: { x: number; y: number; w: number; h: number },
     mode: string,
@@ -1069,53 +1149,7 @@
       return;
     }
     if (mode === "recognize") {
-      const page = activePage;
-      busy = "Recognizing selected zone";
-      error = "";
-      try {
-        const zone = expandRecognitionZone(page, rect);
-        const result = await client.recognize({
-          pagePath: page.imagePath,
-          pageWidthPoints: page.widthPoints,
-          pageHeightPoints: page.heightPoints,
-          config,
-          engine,
-          language,
-          zone,
-          cpuPixelBudget: cpuBudget,
-        });
-        const recognized = applyRecognition(
-          project,
-          page.id,
-          result,
-          project.profileId,
-        ).pages.find((p) => p.id === page.id)!;
-        const effective = effectiveRecognitionZone(
-          page,
-          zone,
-          (result.diagnostics as { effective_zone?: unknown } | undefined)
-            ?.effective_zone,
-        );
-        const { extraction: _staleExtraction, ...provenance } = page.provenance;
-        change(
-          updatePage(project, page.id, {
-            regions: mergeZoneRegions(page, effective, recognized.regions),
-            status: "recognized",
-            approved: false,
-            error: null,
-            provenance: {
-              ...provenance,
-              lastZoneRecognition: recognized.provenance,
-            },
-          }),
-        );
-        notice = `${recognized.regions.length} regions recognized. Intersecting text regions were covered in full and reading order was preserved.`;
-      } catch (e) {
-        fail(e);
-      } finally {
-        busy = "";
-        drawMode = "select";
-      }
+      await recognizeZone(rect, activePage.id);
       return;
     }
     safe(() => {
@@ -2093,6 +2127,16 @@
           </div>
           <div class="tool-group">
             <button
+              class="button small subtle"
+              class:active={drawMode === "recognize"}
+              onclick={drawRecognitionArea}
+              disabled={locked || !activePage || !capabilities.ocr}
+              title="Draw an area to recognize again, then compare before replacing text"
+              ><ScanLine size={15} /> Re-OCR area</button
+            >
+          </div>
+          <div class="tool-group">
+            <button
               class="icon-button"
               onclick={() => transform("rotate", { degrees: 270 })}
               disabled={locked}
@@ -2315,8 +2359,8 @@
               >
             </div>{/if}
           <div class="review-options">
-            <label class="check-label"
-              ><input type="checkbox" bind:checked={onlyIssues} /> Needs attention</label
+            <label class="check-label" title="Filters the Regions view; Text editor shows all included passages"
+              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView === "text"} /> Needs attention</label
             >
             <div class="toolbar-spacer"></div>
             <button
@@ -2332,7 +2376,10 @@
               onclick={() => (textView = "regions")}>Regions</button
             ><button
               class:active={textView === "text"}
-              onclick={() => (textView = "text")}>Reading order</button
+              onclick={() => {
+                currentMatch = null;
+                textView = "text";
+              }}>Text editor</button
             ><span>{activePage?.width} × {activePage?.height} px</span>
           </div>
           {#if recognitionWarnings.length}
@@ -2400,16 +2447,20 @@
                 >
               </div>
             {:else if textView === "text"}<div class="reading-order">
-                <p class="muted">
-                  Text follows the region order below. Reorder regions to change
-                  the exported reading order.
-                </p>
-                <textarea
-                  class="plain-text"
-                  readonly
-                  value={pageText}
-                  aria-label="Page text in reading order"
-                ></textarea><button
+                <PageTextEditor
+                  page={activePage}
+                  selectedId={selectedRegionId}
+                  disabled={locked}
+                  ocrAvailable={capabilities.ocr}
+                  onfocus={(id) => {
+                    currentMatch = null;
+                    selectedRegionId = id;
+                  }}
+                  onedit={editText}
+                  onblur={() => (editGroup = null)}
+                  onrecognize={(r) => recognizeZone(r, activePage.id)}
+                />
+                <button
                   class="button small"
                   onclick={() => copy(pageText)}
                   disabled={!pageText}><Copy size={13} /> Copy page text</button
@@ -2500,6 +2551,22 @@
                     dir="auto"
                   ></textarea>
                   {#if r.id === selectedRegionId}
+                    <div class="region-edit-actions">
+                      <button
+                        class="text-button"
+                        onclick={() => editPassage(r)}
+                        disabled={locked || r.excluded || r.kind === "picture"}
+                        title="Open the page text editor for full sentences and paragraphs"
+                        ><FileText size={13} /> Edit passage</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => recognizeZone(r, activePage.id)}
+                        disabled={locked || r.excluded || !capabilities.ocr}
+                        title="Recognize this source region again and compare before replacing text"
+                        ><ScanLine size={13} /> Re-OCR region</button
+                      >
+                    </div>
                     <WordReview
                       region={r}
                       threshold={project.confidenceThreshold}
@@ -3323,12 +3390,45 @@
 
 {#if confirm}<dialog
     class="workspace-dialog"
+    class:ocr-preview-dialog={!!confirm.ocrPreview}
     bind:this={actionDialog}
-    onclose={() => (confirm = null)}
+    onclose={() => {
+      if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
+      confirm = null;
+    }}
     aria-labelledby="ocr-confirm-title"
   >
     <h2 id="ocr-confirm-title">{confirm.title}</h2>
     <p>{confirm.message}</p>
+    {#if confirm.ocrPreview}
+      <div class="ocr-preview-comparison">
+        <label>
+          Current text
+          <textarea
+            readonly
+            aria-label="Current text"
+            value={confirm.ocrPreview.request.previousText}
+            placeholder="No existing text in this area"
+            dir="auto"
+          ></textarea>
+        </label>
+        <label>
+          New OCR text
+          <textarea
+            readonly
+            aria-label="New OCR text"
+            value={confirm.ocrPreview.replacementText}
+            dir="auto"
+          ></textarea>
+        </label>
+      </div>
+      {#if confirm.ocrPreview.warnings.length}
+        <ul class="ocr-preview-warnings">
+          {#each confirm.ocrPreview.warnings as warning}<li>{warning}</li>{/each}
+        </ul>
+      {/if}
+      <p class="ocr-preview-note">Using the new result replaces text only in this area and clears its approval. Other passages keep their corrections. Undo restores the previous result.</p>
+    {/if}
     {#if confirm.splitWidth}
       <label class="field-label"
         >Split position from left edge (pixels)
@@ -3346,7 +3446,10 @@
       </label>
     {/if}
     <div class="dialog-actions">
-      <button class="button" onclick={() => (confirm = null)}>Cancel</button
+      <button class="button" onclick={() => {
+        if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
+        confirm = null;
+      }}>{confirm.ocrPreview ? "Keep current text" : "Cancel"}</button
       ><button
         class="button primary"
         disabled={!!confirm.splitWidth &&
@@ -4322,6 +4425,17 @@
     align-items: center;
     min-width: 0;
   }
+  .region-edit-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px 14px;
+    padding: 7px 10px;
+    border-top: 1px solid #34465c;
+  }
+  .region-edit-actions .text-button {
+    font-size: 11px;
+  }
   .region-actions .icon-button {
     min-width: 23px;
     min-height: 23px;
@@ -4396,13 +4510,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    height: 100%;
-  }
-  .plain-text {
-    resize: vertical;
-    flex: 1;
-    min-height: 180px;
-    font-size: 12px !important;
+    min-height: 100%;
   }
   .panel-message {
     display: flex;
@@ -5036,6 +5144,61 @@
     line-height: 1.8;
     color: #9cb4d4;
     margin: 0 0 20px;
+  }
+  .workspace-dialog.ocr-preview-dialog {
+    box-sizing: border-box;
+    width: min(800px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+  }
+  .ocr-preview-comparison {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .ocr-preview-comparison label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    color: #d4e4f8;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .ocr-preview-comparison textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 200px;
+    resize: vertical;
+    border: 1px solid #47627f;
+    border-radius: 5px;
+    padding: 10px;
+    background: #101e30;
+    color: #dce9fa;
+    font: inherit;
+    font-weight: 400;
+    line-height: 1.65;
+  }
+  .ocr-preview-warnings {
+    color: #e5c58a;
+    font-size: 12px;
+    line-height: 1.65;
+    padding-left: 20px;
+  }
+  .workspace-dialog .ocr-preview-note {
+    margin-top: 14px;
+    margin-bottom: 0;
+  }
+  @media (max-width: 600px) {
+    .ocr-preview-comparison {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ocr-preview-comparison textarea {
+      min-height: 130px;
+    }
+    .ocr-preview-dialog .dialog-actions {
+      flex-wrap: wrap;
+    }
   }
   .dialog-actions {
     display: flex;
