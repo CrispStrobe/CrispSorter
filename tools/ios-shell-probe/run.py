@@ -35,6 +35,21 @@ def digest(path):
     return value.hexdigest()
 
 
+def simulator_inventory(kind, receipt):
+    # A fresh hosted macOS image can spend more than a minute starting
+    # CoreSimulator and mounting its existing runtimes. Retry that discovery
+    # once, with both attempts bounded and retained; do not relax UI assertions.
+    attempts = receipt.setdefault('simulator_inventory_attempts', [])
+    for attempt, timeout in enumerate((90, 180), start=1):
+        try:
+            value = json.loads(output(['xcrun', 'simctl', 'list', kind, '--json'], timeout=timeout))
+            attempts.append({'kind': kind, 'attempt': attempt, 'timeout_seconds': timeout, 'status': 'passed'})
+            return value
+        except subprocess.TimeoutExpired:
+            attempts.append({'kind': kind, 'attempt': attempt, 'timeout_seconds': timeout, 'status': 'timed_out'})
+    raise RuntimeError(f'CoreSimulator {kind} discovery timed out on both bounded startup attempts')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--staged', required=True, type=Path)
@@ -63,11 +78,11 @@ def main():
         receipt['xcode_version'] = output(['xcodebuild', '-version'])
         receipt['xcodegen_version'] = output(['xcodegen', '--version'])
         receipt['simulator_sdk'] = output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'])
-        runtime_list = json.loads(output(['xcrun', 'simctl', 'list', 'runtimes', '--json']))
+        runtime_list = simulator_inventory('runtimes', receipt)
         runtimes = [item for item in runtime_list['runtimes']
                     if item.get('isAvailable') and item.get('version') == pin['simulator_runtime']
                     and '.iOS-' in item['identifier']]
-        devices = json.loads(output(['xcrun', 'simctl', 'list', 'devicetypes', '--json']))
+        devices = simulator_inventory('devicetypes', receipt)
         device_types = [item for item in devices['devicetypes'] if item['name'] == pin['simulator_device']]
         if len(runtimes) != 1 or len(device_types) != 1:
             raise RuntimeError('The exact retained-build simulator device/runtime is unavailable')
