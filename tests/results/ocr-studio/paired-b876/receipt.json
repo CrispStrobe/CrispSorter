@@ -1,0 +1,287 @@
+{
+  "schema_version": 1,
+  "kind": "source-paired-native-integration",
+  "status": "failed",
+  "application_source": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+  "crispembed_source": "9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a",
+  "ggml_source": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "github": {
+    "run_id": 42634608358,
+    "job_id": 129219334906,
+    "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608358/job/129219334906",
+    "started_at": "2026-11-09T14:53:27Z",
+    "completed_at": "2026-11-09T15:30:11Z"
+  },
+  "observed": {
+    "native_review_snapshot_reported_failures": 0,
+    "native_renderer": {
+      "passed": 70,
+      "failed": 0
+    },
+    "full_crispembed_crate_writer": {
+      "passed": 10,
+      "failed": 0,
+      "ignored": 1,
+      "ignored_scope": "Explicit large-file contract is run separately by the dedicated native writer gate."
+    },
+    "application_ocr_workspace": {
+      "compiled": true,
+      "executed": 55,
+      "passed": 54,
+      "failed": 1,
+      "tests": [
+        {
+          "name": "ocr_workspace::atomic_output::tests::byte_output_requires_explicit_replacement",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::atomic_output::tests::completed_stream_is_published_only_after_the_writer_finishes",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::atomic_output::tests::destination_created_during_render_is_not_overwritten_without_consent",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::atomic_output::tests::existing_unconfirmed_output_does_not_start_rendering",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::atomic_output::tests::failed_stream_preserves_old_output_and_removes_new_staging",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::atomic_output::tests::renderer_unwind_cleans_staging_without_publishing_partial_bytes",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::document_import::tests::archives_modern_images_without_rewriting_original_bytes_or_provider_identity",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::document_import::tests::detects_phone_formats_by_bounded_brands_and_rejects_malformed_boxes",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::document_import::tests::native_adoption_rejects_path_escape_bad_counts_and_truncated_png",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::document_import::tests::rejects_source_archive_and_rendered_page_symlinks",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::document_import::tests::source_pinned_pdf_fixture_is_intact",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::accepted_stop_prevents_atomic_publication_and_cleans_staging",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::before_start_stops_survive_but_finished_cancelled_or_failed_jobs_stay_terminal",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::cancellation_before_start_is_retained_without_stopping_another_job",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::cancellation_between_bounded_writes_stops_without_retrying_interrupted",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::completed_ids_are_bounded_and_expire_without_extending_on_late_stops",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::late_stop_after_finished_publication_is_refused_and_cannot_reuse_its_id",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::pending_stops_are_bounded_expiring_and_deduplicated",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::stop_and_publication_have_one_winner",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::export_control::tests::writer_preserves_original_io_errors_and_rejects_zero_progress",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::blank_reviewed_pages_preserve_document_page_positions",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::camera_import_cannot_reuse_an_asset_symlink_or_write_through_a_cache_alias",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::camera_reimport_rejects_damaged_existing_pixels_and_preserves_originals",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::cancelling_the_native_pdf_writer_after_output_starts_preserves_the_previous_export",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::capture_rejects_empty_unsupported_and_nonprovider_input_before_archiving",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::captured_bytes_are_archived_and_imported_by_signature_without_modifying_sources",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::complete_jpeg_metadata_and_trailing_bytes_keep_archive_identity_and_orientation",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::cpu_budget_is_limited_to_qwen2vl_in_spawn_capable_builds",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::crop_bounds_reject_invalid_values_and_include_fractional_edges",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::crop_scales_paper_size_but_repair_preserves_sampling_independence",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::engine_and_language_choices_produce_explicit_config",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::engine_changes_do_not_inherit_another_recognizers_weights",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::every_offered_engine_builds_a_single_stage_with_registry_defaults",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::exif_orientation_is_baked_into_pixels",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::explicit_photo_geometry_keeps_identity_and_rejects_invalid_corners",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::export_capabilities_never_offer_an_unverified_pdf_renderer",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::export_cleanup_only_removes_a_private_staged_file",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::export_never_overwrites_sources_or_internal_assets",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::export_rejects_stale_page_geometry_and_outside_regions",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::html_export_escapes_recognized_markup",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::identical_page_snapshots_are_deduplicated_and_readable",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::image_import_preserves_original_and_creates_durable_snapshot",
+          "status": "FAILED"
+        },
+        {
+          "name": "ocr_workspace::tests::invalid_configuration_never_reaches_native_models",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::invalid_projects_cannot_replace_saved_work",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::jpeg_file_and_camera_imports_reject_incomplete_sources_before_persisting_pixels",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::jpeg_import_preserves_exif_resolution_and_rotated_paper_axes",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::json_export_preserves_unknown_confidence_and_review_evidence",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::missing_assets_do_not_prevent_saving_reviewed_text",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::recovery_preserves_a_valid_previous_revision_after_corruption",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::rotation_keeps_source_bytes_and_changes_snapshot_dimensions",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::save_rejects_stale_writers_without_losing_newer_edits",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::split_preserves_both_halves_and_the_last_pixel",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::streamed_pdf_is_atomic_and_a_native_limit_failure_preserves_the_previous_file",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::structured_confidence_requires_unchanged_transcription_evidence",
+          "status": "ok"
+        },
+        {
+          "name": "ocr_workspace::tests::transparent_scans_use_the_same_white_paper_for_preview_and_recognition",
+          "status": "ok"
+        }
+      ]
+    },
+    "native_license_inventory": {
+      "backend": 1106,
+      "frontend": 19,
+      "native": 1,
+      "total": 1126,
+      "exact_locked_profile": "x86_64-unknown-linux-gnu; desktop,ocr-workspace; no default features",
+      "independently_compared": true
+    }
+  },
+  "failure": {
+    "test": "ocr_workspace::tests::image_import_preserves_original_and_creates_durable_snapshot",
+    "source_location": "src-tauri/src/ocr_workspace.rs:1944",
+    "error": "Open private page cache: No such file or directory (os error 2)",
+    "cause": "The fixture passes a nonexistent workspace root. Production import commands first create and canonicalize workspace_root; asset_store::directory deliberately requires that existing root before creating/verifying the assets directory.",
+    "correction": "Create only the fixture workspace root before import. Keep assets absent, source/durability assertions unchanged, and the production canonicalization/integrity checks intact.",
+    "corrected_source_execution": "pending"
+  },
+  "not_executed": [
+    "Later photo/model-storage/extractor/reading-order/native-render test filters in the same application step",
+    "ocr-mobile cargo check after the failed test command",
+    "Complete desktop executable link",
+    "Desktop CLI/startup smoke"
+  ],
+  "artifact": {
+    "id": 13686429078,
+    "name": "ocr-paired-native-linux",
+    "bytes": 19667170,
+    "sha256": "d82d057451aa1ee69b2d4107a900033a42dec872154852121706006a6e113427",
+    "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608358/artifacts/13686429078",
+    "download_sha256_and_zip_crc_verified": true
+  },
+  "qualification": "This failed application gate establishes the recorded native renderer, complete-crate writer, and individual workspace test observations only. It does not qualify a linked/running desktop application or recognition quality. The fixture correction still requires a succeeding source-paired run."
+}

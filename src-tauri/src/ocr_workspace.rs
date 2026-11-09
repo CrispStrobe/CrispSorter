@@ -1966,6 +1966,9 @@ mod tests {
         let source = root.path().join("scan.png"); image().save(&source).unwrap();
         let before = fs::read(&source).unwrap();
         let workspace = root.path().join("workspace");
+        // Production commands create the workspace before entering the importer.
+        // Keep assets absent here so the cold page-cache creation is still tested.
+        fs::create_dir(&workspace).unwrap();
         let imported = import_document(&workspace, &source).unwrap();
         assert_eq!(imported.pages.len(), 1);
         assert_eq!(imported.pages[0].page_width_points, Some(8.0 * 72.0 / 300.0));
