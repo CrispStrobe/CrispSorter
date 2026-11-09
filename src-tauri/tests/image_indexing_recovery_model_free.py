@@ -71,6 +71,14 @@ impl CrispVit {
     pub fn encode_file(&mut self, _: &str) -> Vec<f32> { vec![1.0; 768] }
     pub fn dim(&self) -> i32 { 768 }
 }
+// The embedders resolve through the app's provisioning funnel (desktop:
+// licence-aware registry resolution; mobile: verified installs). The stub
+// forwards to the stubbed resolver so every injected stage is still exercised.
+mod model_provisioning {
+    pub fn resolve_model(model: &str, auto_download: Option<bool>) -> crate::Result<String> {
+        crate::CrispEmbed::resolve_model(model, auto_download)
+    }
+}
 #[path = "__VIT__"] mod vit;
 mod index {
     pub mod embedder { pub fn crispembed_threads() -> i32 { 1 } }

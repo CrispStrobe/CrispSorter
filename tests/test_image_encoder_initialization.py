@@ -55,6 +55,12 @@ impl CrispVit {
     pub fn dim(&self) -> i32 { 768 }
 }
 mod embedder { pub fn crispembed_threads() -> i32 { 0 } }
+// The encoders resolve through the provisioning funnel; forward to the stub.
+mod model_provisioning {
+    pub fn resolve_model(path: &str, auto_download: Option<bool>) -> std::result::Result<String, String> {
+        crate::CrispEmbed::resolve_model(path, auto_download)
+    }
+}
 mod omni {
 ''' + omni + '\n}\nmod vit {\n' + vit + r'''
 }

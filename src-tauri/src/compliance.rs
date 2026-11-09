@@ -605,7 +605,9 @@ mod tests {
         let commands = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src/index/tauri_commands.rs"),
         )
-        .expect("read tauri_commands.rs");
+        .expect("read tauri_commands.rs")
+        // A Windows checkout has CRLF endings; the body is sliced at "\n}\n".
+        .replace("\r\n", "\n");
         let start = commands
             .find("pub async fn embedder_download_registry_model(")
             .expect("the GUI registry download command moved; re-point this guard");
