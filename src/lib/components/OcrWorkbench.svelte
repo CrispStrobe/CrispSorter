@@ -66,6 +66,7 @@
   import ExtractionObjectsPanel from "./ocr/ExtractionObjectsPanel.svelte";
   import TableRepairDialog from "./ocr/TableRepairDialog.svelte";
   import TableJoinDialog from "./ocr/TableJoinDialog.svelte";
+  import OfficeExportPanel from "./ocr/OfficeExportPanel.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -116,6 +117,7 @@
     extractionObjectFreshness, type ExtractionObject,
   } from "$lib/ocr/extractionObjects";
   import { prepareExtractionExport } from "$lib/ocr/extractionExport";
+  import { emptyOfficeExportOptions, type OfficeExportOptions } from "$lib/ocr/officeExport";
   import {
     PROFILES,
     createProject,
@@ -299,6 +301,8 @@
   let exportFormat = $state("pdf"),
     exportScope = $state("all"),
     requireReviewed = $state(true);
+  let officeOptions = $state<OfficeExportOptions>(emptyOfficeExportOptions());
+  let exportResultNotes = $state<{ path: string; format: string; warnings: string[] } | null>(null);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
   let labels = $state("vendor, invoice number, date, total, tax"),
@@ -491,7 +495,8 @@
         : undefined,
   );
   const preflight = $derived(
-    prepareExport(project, { pageIds: exportIds, requireReviewed, format: exportFormat }),
+    prepareExport(project, { pageIds: exportIds, requireReviewed, format: exportFormat,
+      ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions } : {}) }),
   );
   const pageText = $derived(
     joinRegionText(activePage?.regions.filter((r) => !r.excluded && r.kind !== "picture") ?? []),
@@ -758,6 +763,8 @@
     correctionDraft = null;
     checkedPages = [];
     extractionSelection = {};
+    officeOptions = emptyOfficeExportOptions();
+    exportResultNotes = null;
     lastReviewIssueKey = null;
     saveStatus = { state: "saved" };
     bindSave(revision);
@@ -1722,6 +1729,7 @@
   ) {
     if (locked) return;
     error = "";
+    exportResultNotes = null;
     if (!snapshot && preflight.errors.length) {
       error = preflight.errors.join("\n");
       return;
@@ -1750,6 +1758,7 @@
                 }))
               : preflight.pages,
           sourceUris: project.documents.map((d) => d.sourceUri),
+          ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions: preflight.officeOptions ?? emptyOfficeExportOptions() } : {}),
         }),
       ) as Omit<ExportRequest, "outputPath" | "overwrite">);
     const ext =
@@ -1774,7 +1783,9 @@
         outputPath: target,
         overwrite,
       });
-      notice = `Exported ${result.pages} pages · ${result.saved_path}`;
+      const warnings = [...new Set((result.warnings ?? []).filter((item): item is string => typeof item === "string" && !!item))];
+      exportResultNotes = { path: result.saved_path, format: result.format, warnings };
+      notice = `Exported ${result.pages} pages · ${result.saved_path}${warnings.length ? ` · ${warnings.length} export notes` : ""}`;
     } catch (e) {
       if (
         !overwrite &&
@@ -2133,7 +2144,7 @@
         />{:else if visibleSaveStatus.state === "pending"}<Clock3
           size={13}
         />{:else}<ShieldCheck size={13} />{/if}
-      <span
+      <span id={"ocr-save-status-" + project.id}
         >{visibleSaveStatus.state === "saved"
           ? "All changes saved"
           : visibleSaveStatus.state === "pending"
@@ -2156,6 +2167,7 @@
       ><button class="button subtle" onclick={newProject} disabled={locked}
         ><Plus size={15} /> New</button
       ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save" title="Save project"
+        aria-describedby={"ocr-save-status-" + project.id}
         ><Save size={15} /><span class="optional-label">Save</span></button
       >
     </div>
@@ -3698,7 +3710,9 @@
                   {exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
                     : exportFormat === "docx"
-                      ? "Editable text in page order. Complex page layout is converted to flowing text."
+                      ? capabilities.structured_docx
+                        ? "Editable Word structure: reviewed headings, styles, lists, reading columns and figures, with explicitly selected tables and formulas."
+                        : "Editable text in page order. This build does not provide structured Word export."
                       : exportFormat === "alto" || exportFormat === "hocr"
                         ? "Machine-readable text and page coordinates for downstream processing."
                         : exportFormat === "json"
@@ -3757,6 +3771,10 @@
                 disabled={locked}
               /></label
             >
+            {#if exportFormat === "docx" && capabilities.structured_docx}
+              <OfficeExportPanel {project} pageIds={exportIds} value={officeOptions} disabled={locked}
+                onchange={(next) => (officeOptions = next)} />
+            {/if}
             <div class="preflight-card" class:ready={!preflight.errors.length}>
               <div class="section-heading">
                 {#if preflight.errors.length}<AlertTriangle size={17} /><strong
@@ -3804,6 +3822,13 @@
               Choose the output filename and location. Original documents and
               workspace images are protected from replacement.
             </p>
+            {#if exportResultNotes?.warnings.length}
+              <section class="export-result-notes" data-office-export-warnings aria-label="Export notes" aria-live="polite">
+                <h3>{formatNames[exportResultNotes.format] ?? exportResultNotes.format} export completed with notes</h3>
+                <p>{exportResultNotes.path}</p>
+                <ul>{#each exportResultNotes.warnings as warning}<li>{warning}</li>{/each}</ul>
+              </section>
+            {/if}
             <div class="settings-section">
               <h3>Use the corrected text</h3>
               <div class="button-grid">
@@ -5364,6 +5389,11 @@
     align-items: center;
     padding: 4px 0;
   }
+  .export-result-notes { margin: 16px 0; padding: 12px; border: 1px solid #80673f; border-radius: 6px; color: #dfc49a; background: #382e222e; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+  .export-result-notes h3 { margin: 0; color: #ecd2a6; font-size: 12px; }
+  .export-result-notes p { margin: 8px 0; }
+  .export-result-notes ul { padding-left: 18px; margin: 8px 0 0; }
+  .export-result-notes li + li { margin-top: 7px; }
   .muted {
     color: #8296b3;
     font-size: 10px;

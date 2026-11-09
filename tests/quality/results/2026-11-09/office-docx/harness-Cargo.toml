@@ -1,0 +1,19 @@
+[package]
+name = "crispsorter-office-quality"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+[[bin]]
+name = "ocr-office-fixtures"
+path = "main.rs"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+unicode-segmentation = "=1.13.3"
+docx-rs = "=0.4.20"
+zip = "=7.2.0"
+quick-xml = "=0.38.4"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }

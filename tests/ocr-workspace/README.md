@@ -45,7 +45,7 @@ The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `
 `?scenario=text-repair`, `?scenario=structure`, `?scenario=page-draft`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`, `?scenario=extraction-objects`,
-`?scenario=table-continuation`,
+`?scenario=table-continuation`, `?scenario=office-export`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
@@ -107,6 +107,13 @@ columns. Exact leading-zero strings and distinct source images make column
 mapping, header removal, ordering, and captured-evidence assertions observable.
 The fixture does not infer a continuation or run a native model.
 
+The office-export scenario seeds approved source pages with two tables, two
+formulas, a field set, and a table on another page. One table is excluded. It
+advertises the native `structured_docx` capability and returns representative
+export warnings. This fixture validates choices, placement, scope, immutable
+source data, and warning presentation; its synthetic `exportDocument` adapter
+does not create or qualify a Word package. The native harness below does.
+
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
 `diagnostics.effective_zone` identifies the exact crop. The zone-empty scenario
@@ -115,6 +122,14 @@ released, allowing page navigation before the result arrives.
 
 ## Assertions
 
+- Word export starts with no selected extraction objects. Excluded objects cannot
+  be selected, fields stay outside the table/formula catalog, and replacement
+  requires an explicit same-kind passage. The omitted OCR text is shown exactly.
+- Append ordering and page scope reach the native request unchanged. Narrowing
+  scope retains an invalid choice visibly and blocks export until it is removed;
+  choices never modify source text, extraction history, or approval. Native
+  warnings remain visible after export, and JSON requests do not inherit Word
+  placement options. Compact placement controls remain within the viewport.
 - Enabling versioned structure retains legacy passage text, geometry, source IDs,
   and original OCR evidence. Roles, heading/list properties, alignment, and breaks
   save separately from the text.
@@ -295,9 +310,70 @@ including 12 new join-core cases and four lifecycle cases, and the Svelte
 typecheck with **0 errors and the same 54 existing warnings**. Its final browser
 harness passes JavaScript syntax and whitespace checks.
 
-The harness now contains **37 browser flows**. The corrected extraction-object,
-table-repair, and continuation-join flows require a successful browser run against
+The harness now contains **38 browser flows**. The corrected extraction-object,
+table-repair, continuation-join, and Word export flows require a successful browser run against
 their own source revision before they can be reported as passing. No browser-pass
 evidence has yet been recorded for the hotfix or OCR-05b revisions. These tests validate interaction and integration
 contracts; they do not measure recognition accuracy or substitute for native
 engine, PDF conformance, or installed application testing.
+
+## Native Word package qualification
+
+Run the standalone production-module harness from the repository root with
+Python 3.11 or later and the Rust toolchain on `PATH`:
+
+```sh
+python tools/quality/check_ocr_office.py --output target/ocr-office-qualification
+```
+
+The output directory must be new or empty so one run cannot inherit another's
+packages or receipt. `--target-dir` chooses a reusable Cargo build cache. If the
+host lacks a usable temporary directory, set `TMPDIR` to an existing writable
+directory before running. The focused `OCR reviewed Office packages` workflow
+runs this command on Linux and Windows, with a separate 30-minute budget for the
+first docx-rs/image compilation and generation. Artifacts are uploaded even after
+a failed command.
+
+The temporary Rust crate imports the actual `ocr_document.rs`, `ocr_office.rs`,
+and `ocr_docx.rs` modules. It runs each module's native tests and then invokes
+the production boundary and writer from `ocr_office_fixture.rs`. It pins the
+reviewed docx-rs 0.4.20 API and the application's image/ZIP/Unicode dependencies,
+seeds its lock from the repository lock, and verifies that resolved registry
+name/version/source/checksum tuples are an exact subset. The paired integration
+workflow also executes the real workspace adapter tests with
+`ocr-workspace,ocr-office`; a desktop compilation alone does not qualify export.
+
+Three real DOCX files cover Unicode range formatting, headings, numbered and
+nested lists, explicit columns and breaks, literal body notes/header/footer
+text, exact whitespace and a blank source page, merged table rectangles, literal
+identifiers and formula-looking cell values, a captured PNG, explicit table
+replacement, and appended literal LaTeX. Raw, original, and unselected extraction
+sentinels must be absent. Expected limitation warnings are authored independently
+from the writer's returned warnings.
+
+Python's ZIP and XML readers independently verify package CRCs, unique safe
+paths, relationship targets, defined style and numbering references, exact text
+and range formatting, section boundaries, complete table spans with empty
+vertical continuations, and image dimensions/references. ZIP directory entries
+are not counted as images. These are focused package checks, not an OOXML schema
+validator or a rendered-layout result.
+
+`receipt.json` records the actual checkout SHA, changed producer files and their
+hashes, PR head/workflow SHA when available, tool versions, commands, timing,
+dependency-lock result, and separate gate statuses. The artifact also includes
+exact fixture inputs, PNG input, actual warnings, generated packages, resolved
+lock, logs, and package/XML report. A local run before commit is identified by
+its dirty source hashes and must not be attributed solely to the earlier HEAD.
+Independent Word/LibreOffice rendering, schema validation, installed application,
+live OCR corpus, and device gates remain `not_run` until separately executed and
+recorded. A passing package check must never be reported as passing those gates.
+
+The [dated OCR-06a run](../quality/results/2026-11-09/office-docx/README.md)
+passed 22 native tests, exact registry-lock comparison, actual generation of all
+three packages and independent ZIP/XML inspection. Its separate reader receipt
+records LibreOfficeDev 26.8.0.0.alpha0 reopening the three original DOCX files;
+all six rendered pages were visually inspected. The initial list-numbering
+collision and corrected rerun are retained separately. The full frontend suite
+passed 433 tests in 46 files with 0 Svelte errors and 54 existing warnings.
+The 38-flow browser run and complete workspace adapter execution remain pending
+their own CI result; this local module run does not substitute for either.

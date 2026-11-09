@@ -192,8 +192,9 @@ preview to navigate to that note. Links are explicit and restricted to valid
 targets on the same page; nearby placement alone does not establish a link.
 
 Structure is saved with the project and retained in **Structured JSON**,
-including separate figure source geometry. Other output formats warn when they
-flatten these semantics until their structured exporters are implemented. The
+including separate figure source geometry. Builds with structured Word export
+also use the reviewed roles, inline formatting, lists, columns and figures in
+DOCX. Other output formats warn when they flatten these semantics. The
 preview does not promise exact source typography, PDF tagging, or accessibility
 conformance. OCR scores continue to describe the original recognition rather
 than the chosen formatting or document roles.
@@ -588,7 +589,7 @@ source evidence.
 | Markdown | Corrected text in page order | All builds |
 | HTML | Escaped corrected text grouped by page | All builds |
 | JSON | Structured page/region data and review evidence | All builds |
-| DOCX | Editable flowing text in page order | Desktop builds |
+| DOCX | Reviewed headings, styles, lists, columns and figures; explicitly chosen editable tables and literal LaTeX | `ocr-office` builds, included in desktop |
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
 | Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
@@ -596,9 +597,70 @@ source evidence.
 Searchable PDF export requires the matching updated native renderer and the
 `ocr-reviewed-pdf` feature (included in `ocr-workspace`). Older native builds retain the other export
 formats. Archival PDF/A export is not advertised: it requires embedded resources
-and independent conformance validation. DOCX export produces flowing text, not
-an exact reconstruction of arbitrary page typography. Exports preserve empty recognized
+and independent conformance validation. Exports preserve empty recognized
 pages as image pages when the output supports images.
+
+### Reviewed Word documents
+
+Choose **Word document** and the pages to include. When the installed build
+provides structured Word export, the document uses current reviewed text and
+authored structure: heading levels, bold/italic/underline ranges, list levels and
+starting numbers, alignment, explicit page breaks, reading columns, and current
+source figures. Text remains editable and Word lays it out using the exported
+structure. The original scan's fonts, line wrapping and exact page positions are
+not reconstructed. Empty source pages retain explicit page boundaries.
+
+In **Word extracted content**, select the saved tables and formulas you want to
+include. Nothing is selected automatically. Each object initially appends at the
+end of its own source page; move appended objects earlier or later to control
+their order. An excluded object must be included again in Extract before it can
+be selected. Field sets remain available through their JSON export.
+
+To use an extracted table or formula in place of OCR text, choose **Replace one
+OCR passage**, then select an included passage of the same kind. The panel shows
+the exact OCR text that this choice omits. Matching source boxes never choose a
+replacement for you. Other OCR passages remain included, so check the review
+notes for duplicated content when appending a table or using a joined table whose
+input passages are still present. Joined inputs are not selected automatically.
+The choices affect this export without changing project text or source history.
+
+Changing the page scope can leave an earlier choice outside that scope. The
+choice stays visible and export is blocked until it is removed or the scope is
+expanded. Historical extraction objects remain explicitly selectable, with their
+source state and reasons shown. The native boundary validates the selected
+object collection again before interpreting its contents.
+
+Editable Word tables preserve current literal strings, including leading zeroes,
+tabs, line breaks, identifiers, and formula-looking values, along with explicit
+row/column spans. Header-cell text is bold. A table is limited to 63 logical
+columns; use CSV or JSON for a wider table. Empty 0 by 0 tables must be deselected
+or given a row and column first. Page dimensions must not exceed 22 inches
+(1584 points) in either direction.
+
+The current writer has explicit limits:
+
+- Formulas are editable **literal LaTeX text**, with no automatic Word-equation
+  conversion.
+- Headers, footers, footnote bodies, and exact reference markers remain in body
+  reading order. Repeating Word header/footer parts and native footnote objects
+  are not generated. Caption text and source order are retained; caption links
+  are not converted into Word cross-reference fields.
+- Figure alternative text and decorative flags remain in the project and JSON;
+  this writer does not encode them in the Word image. Table header rows do not
+  automatically repeat on subsequent pages.
+- Lists add Word numbering or bullets while preserving any literal marker in the
+  reviewed text. Remove an existing marker in the text editor if it would produce
+  duplicate visible markers.
+- LF and tabs become Word line breaks and tabs. CRLF and lone CR become single
+  visible line breaks, with a warning; original newline bytes stay in the project
+  and JSON. Whitespace is not trimmed. Conflicting inline passage separators and
+  structural boundaries require an explicit text/structure correction.
+
+Review notes appear before export and native writer warnings remain visible
+after a successful save. The actual production writer is exercised separately
+from the browser adapter by the [native package qualification harness](../tests/ocr-workspace/README.md#native-word-package-qualification).
+Its package/XML checks, independent reader rendering, installed-app integration,
+and accessibility/schema qualification are recorded as separate results.
 
 The reviewed PDF renderer rejects right-to-left text and directional controls
 with an actionable error. Its current text mapping cannot preserve their logical

@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, table-continuation, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, table-continuation, office-export, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -1320,6 +1320,94 @@ if (process.argv.includes('--serve')) {
             assert.equal(calls.at(-1).cpuPixelBudget, false);
         });
 
+        await test('Word export uses explicit object placement and scope without altering saved source evidence', 'office-export', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const first = initial.pages[0], second = initial.pages[1];
+            const objects = first.provenance.extractionObjects.objects;
+            const table = objects.find(object => object.name === 'Reviewed parts');
+            const excluded = objects.find(object => object.name === 'Excluded ledger');
+            const energy = objects.find(object => object.name === 'Energy formula');
+            const geometry = objects.find(object => object.name === 'Geometry formula');
+            const continuation = second.provenance.extractionObjects.objects[0];
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            const scope = page.getByRole('combobox', { name: /^Pages/ });
+            const format = page.getByRole('combobox', { name: /^Output format/ });
+            await scope.selectOption('current');
+            await format.selectOption('docx');
+            const panel = page.locator('[data-office-export-options]');
+            await panel.waitFor();
+            const candidate = object => panel.locator(`[data-office-candidate][data-office-object-id="${object.id}"]`);
+            const selection = object => panel.locator(`[data-office-selection][data-office-object-id="${object.id}"]`);
+            const saveWord = page.getByRole('button', { name: 'Save Word document', exact: true });
+            assert.equal(await panel.locator('[data-office-candidate]').count(), 4);
+            assert.equal(await panel.locator('[data-office-selection]').count(), 0);
+            assert.equal(await panel.getByRole('checkbox', { checked: true }).count(), 0);
+            assert.equal(await candidate(excluded).getByRole('checkbox').isDisabled(), true);
+            assert.equal(await panel.getByText('Vendor fields', { exact: true }).count(), 0);
+
+            await candidate(table).getByRole('checkbox').check();
+            const placement = selection(table).getByRole('combobox', { name: /^Placement for / });
+            assert.equal(await placement.inputValue(), 'append');
+            await placement.selectOption('replace-region');
+            const replacement = selection(table).getByRole('combobox', { name: /^Replace passage for / });
+            assert.equal(await replacement.inputValue(), '');
+            await selection(table).getByText(/choose one included table passage to replace/).waitFor();
+            assert.equal(await saveWord.isDisabled(), true);
+            assert.deepEqual(await replacement.locator('option').evaluateAll(options => options.map(option => option.value)), ['', first.regions[1].id, first.regions[2].id]);
+            await replacement.selectOption(first.regions[1].id);
+            const omitted = selection(table).getByRole('textbox', { name: /^OCR text replaced by / });
+            await omitted.waitFor();
+            assert.equal(await omitted.inputValue(), first.regions[1].text);
+            assert.equal(await omitted.getAttribute('readonly'), '');
+
+            await candidate(energy).getByRole('checkbox').check();
+            await candidate(geometry).getByRole('checkbox').check();
+            await selection(geometry).getByRole('button', { name: /earlier on page$/ }).click();
+            assert.deepEqual(await panel.locator('[data-office-selection]').evaluateAll(cards => cards.map(card => card.dataset.officeObjectId)), [table.id, geometry.id, energy.id]);
+
+            // A retained selection must not silently follow a narrowed page scope.
+            await scope.selectOption('all');
+            await candidate(continuation).getByRole('checkbox').check();
+            await scope.selectOption('current');
+            await selection(continuation).getByText(/outside the selected export scope/).waitFor();
+            assert.equal(await candidate(continuation).count(), 0);
+            assert.equal(await saveWord.isDisabled(), true);
+            await selection(continuation).getByRole('button', { name: /from Word$/ }).click();
+            await saveWord.click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'docx');
+            assert.deepEqual(request.officeOptions, { version: 1, objects: [
+                { pageId: first.id, objectId: table.id, placement: 'replace-region', regionId: first.regions[1].id },
+                { pageId: first.id, objectId: geometry.id, placement: 'append' },
+                { pageId: first.id, objectId: energy.id, placement: 'append' },
+            ] });
+            assert.equal(request.pages.length, 1);
+            assert.equal(request.pages[0].id, first.id);
+            assert.deepEqual(request.pages[0].provenance.extractionObjects, first.provenance.extractionObjects);
+            assert.deepEqual(request.pages[0].regions.map(region => region.text), first.regions.map(region => region.text));
+            assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
+            const notes = page.locator('[data-office-export-warnings]');
+            await notes.getByText(/literal editable LaTeX/).waitFor();
+            assert.match(await notes.innerText(), /repeated table header rows/);
+            const saved = await saveSnapshot(page);
+            assert.deepEqual(saved.pages, initial.pages);
+
+            await page.setViewportSize({ width: 390, height: 844 });
+            await selection(table).scrollIntoViewIfNeeded();
+            const dimensions = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
+            assert.ok(dimensions.documentWidth <= dimensions.width + 2, 'Word placement controls overflow compact layout');
+            await page.screenshot({ path: path.join(output, 'ocr-office-export-compact.png'), fullPage: true });
+
+            await format.selectOption('json');
+            assert.equal(await panel.count(), 0);
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 2);
+            const json = await page.evaluate(() => window.ocrSmoke.exports[1]);
+            assert.equal(json.officeOptions, undefined);
+            assert.deepEqual(json.pages[0].provenance.extractionObjects, first.provenance.extractionObjects);
+        });
+
         await test('export preflight blocks incomplete pages and exports explicit approved scope', 'review', async page => {
             await page.getByRole('tab', { name: 'Export', exact: true }).click();
             await page.getByText(/recognition is pending/).waitFor();
@@ -1980,7 +2068,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png', 'ocr-table-continuation-preview.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png', 'ocr-table-continuation-preview.png', 'ocr-office-export-compact.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

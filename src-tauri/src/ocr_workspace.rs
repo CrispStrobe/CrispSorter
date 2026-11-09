@@ -6,7 +6,7 @@
 //! exports use the reviewed pixels and text, never silently rerun recognition.
 
 use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
-use crate::index::tauri_commands::{KieFieldDto, OcrExportResult};
+use crate::index::tauri_commands::KieFieldDto;
 use crate::AppState;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
@@ -250,7 +250,7 @@ pub fn ocr_workspace_capabilities() -> Value {
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
-    if cfg!(feature = "desktop") { formats.push("docx"); }
+    if cfg!(feature = "ocr-office") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
         "ocr": native || system.available, "crispembed": native,
@@ -259,6 +259,7 @@ pub fn ocr_workspace_capabilities() -> Value {
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
+        "structured_docx": cfg!(feature = "ocr-office"),
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
         // Isolated low-memory Qwen2-VL worker (see `ocr_worker::run_cpu_budget`).
         "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
@@ -1279,6 +1280,73 @@ fn transcription_confidence(region: &ExportRegion) -> f32 {
     } else { unknown }
 }
 
+/// Adapt validated current page content to the pure Word writer. Capture paths
+/// in provenance are never opened; pictures come only from the current page
+/// images already admitted by managed_page and validate_export_pages.
+#[cfg(feature = "ocr-office")]
+fn export_docx(pages: &[ExportPage], options: &crate::ocr_office::OfficeOptions) -> Result<crate::ocr_docx::DocxOutput, String> {
+    use crate::ocr_docx::{DocxFigure, DocxPage, DocxRegion};
+    use crate::ocr_office::{OfficeSourcePage, OfficeSourceRegion, select_office_objects};
+    // Positional identities keep plain legacy exports readable, but must never
+    // authorize an explicit extraction selection or removal of source text.
+    for selection in &options.objects {
+        let page = pages.iter().find(|page| page.id.as_deref() == Some(selection.page_id.as_str()))
+            .ok_or("Selected Word content requires the supplied stable page identity within this export scope. Reopen the project and select it again.")?;
+        if selection.placement == "replace-region" && !page.regions.iter().any(|region|
+            region.id.as_deref().is_some_and(|id| Some(id) == selection.region_id.as_deref())) {
+            return Err("Replacing Word source text requires the supplied stable passage identity. Choose the passage again.".into());
+        }
+    }
+    let identities: Vec<_> = pages.iter().enumerate().map(|(index, page)|
+        page.id.clone().unwrap_or_else(|| format!("legacy-page-{}", index + 1))).collect();
+    let region_ids: Vec<Vec<String>> = pages.iter().map(|page| page.regions.iter().enumerate().map(|(index, region)|
+        region.id.clone().unwrap_or_else(|| format!("legacy-region-{}", index + 1))).collect()).collect();
+    let sources: Vec<_> = pages.iter().enumerate().map(|(index, page)| OfficeSourcePage {
+        id: identities[index].as_str(), provenance: page.provenance.as_ref(),
+        regions: page.regions.iter().enumerate().map(|(position, region)| OfficeSourceRegion {
+            id: region_ids[index][position].as_str(), kind: region.kind.as_deref().unwrap_or("text"),
+        }).collect(),
+    }).collect();
+    let selected = select_office_objects(&sources, options)?;
+    let figure_count: usize = pages.iter().map(|page| page.figure_regions.as_ref().map_or(0, Vec::len)).sum();
+    if figure_count > 1_024 { return Err("Word export supports at most 1,024 pictures per document. Export a smaller page selection.".into()); }
+    let mut picture_bytes = 0usize;
+    let mut document = Vec::with_capacity(pages.len());
+    for (index, page) in pages.iter().enumerate() {
+        let width_points = page.page_width_points.unwrap_or(f64::from(page.width) * 72.0 / 300.0);
+        let height_points = page.page_height_points.unwrap_or(f64::from(page.height) * 72.0 / 300.0);
+        let mut figures = vec![];
+        if let Some(regions) = page.figure_regions.as_ref().filter(|regions| !regions.is_empty()) {
+            let image = decode_page(Path::new(&page.image_path))?;
+            for region in regions {
+                let region_id = region.id.as_deref().ok_or("A Word picture needs its stable source region identity.")?;
+                let (x, y, width, height) = checked_rect(PixelRect {
+                    x: f64::from(region.x), y: f64::from(region.y), w: f64::from(region.w), h: f64::from(region.h),
+                }, image.width(), image.height())?;
+                let mut output = std::io::Cursor::new(Vec::new());
+                image.crop_imm(x, y, width, height).write_to(&mut output, image::ImageFormat::Png)
+                    .map_err(|error| format!("Prepare current picture pixels: {error}"))?;
+                let png = output.into_inner();
+                picture_bytes = picture_bytes.saturating_add(png.len());
+                if picture_bytes > 64 * 1024 * 1024 { return Err("Word picture data exceeds 64 MB. Export a smaller page selection.".into()); }
+                figures.push(DocxFigure { region_id: region_id.to_owned(), png, width_px: width, height_px: height,
+                    width_points: f64::from(width) / f64::from(page.width) * width_points,
+                    height_points: f64::from(height) / f64::from(page.height) * height_points });
+            }
+        }
+        document.push(DocxPage {
+            id: identities[index].clone(), page_width_points: width_points, page_height_points: height_points,
+            regions: page.regions.iter().enumerate().map(|(position, region)| DocxRegion {
+                id: region_ids[index][position].clone(), kind: region.kind.clone().unwrap_or_else(|| "text".into()),
+                text: region.text.clone(), separator_before: region.separator_before.clone(),
+            }).collect(),
+            figures, structure: page.structure.clone(),
+            objects: selected.iter().filter(|(page_id, _)| page_id == &identities[index]).map(|(_, object)| object.clone()).collect(),
+        });
+    }
+    crate::ocr_docx::render_docx(&document)
+}
+
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
     if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
     if OcrOutputFormat::from_name(format).is_some_and(|format| format.needs_render_binding()) && pages.iter().any(has_shared_source_overlap) {
@@ -1296,15 +1364,10 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
             Ok(format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>Reviewed OCR document</title><style>body{{font:16px/1.6 system-ui,sans-serif;max-width:72ch;margin:3rem auto;padding:0 1rem}}p{{white-space:pre-wrap}}section{{break-after:page}}section:last-child{{break-after:auto}}h2{{font-size:1rem;color:#555}}</style></head><body>{body}</body></html>").into_bytes())
         },
         "docx" => {
-            #[cfg(feature = "desktop")]
-            {
-                let file = tempfile::Builder::new().suffix(".docx").tempfile().map_err(|e| e.to_string())?;
-                let body = joined_text(pages).replace('\u{000c}', "\n\n");
-                crate::extractors::export::export_to_docx("", &body, file.path())?;
-                fs::read(file.path()).map_err(|e| format!("Read generated Word document: {e}"))
-            }
-            #[cfg(not(feature = "desktop"))]
-            { Err("Word export requires a desktop build.".into()) }
+            #[cfg(feature = "ocr-office")]
+            { export_docx(pages, &crate::ocr_office::OfficeOptions::default()).map(|output| output.bytes) }
+            #[cfg(not(feature = "ocr-office"))]
+            { Err("Word export is unavailable in this build. Install a build with Office export support.".into()) }
         },
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
@@ -1319,6 +1382,12 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct WorkspaceExportResult {
+    pub saved_path: String, pub bytes: usize, pub pages: usize, pub format: String,
+    pub warnings: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn ocr_workspace_export(
     app: tauri::AppHandle,
@@ -1328,18 +1397,31 @@ pub async fn ocr_workspace_export(
     pages: Vec<ExportPage>,
     overwrite: Option<bool>,
     source_uris: Option<Vec<String>>,
-) -> Result<OcrExportResult, String> {
+    office_options: Option<crate::ocr_office::OfficeOptions>,
+) -> Result<WorkspaceExportResult, String> {
     let root = workspace_root(&app)?;
     tokio::task::spawn_blocking(move || {
         for page in &pages { managed_page(&root, &page.image_path)?; }
         validate_export_pages(&pages)?;
         let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-        let bytes = export_bytes(&pages, &format, pdfa)?;
+        if office_options.is_some() && format != "docx" {
+            return Err("Word object placement options are only supported for DOCX export.".into());
+        }
+        let (bytes, warnings) = if format == "docx" && !pdfa {
+            #[cfg(feature = "ocr-office")]
+            {
+                let output = export_docx(&pages, &office_options.unwrap_or_default())?;
+                (output.bytes, output.warnings)
+            }
+            #[cfg(not(feature = "ocr-office"))]
+            { return Err("Word export is unavailable in this build. Install a build with Office export support.".into()); }
+        } else { (export_bytes(&pages, &format, pdfa)?, vec![]) };
         if bytes.is_empty() && !["text", "txt", "plain"].contains(&format.as_str()) { return Err("The renderer produced an empty document.".into()); }
         atomic_write(&path, &bytes, overwrite.unwrap_or(false))?;
-        Ok(OcrExportResult {
+        Ok(WorkspaceExportResult {
             saved_path: path.to_string_lossy().into_owned(), bytes: bytes.len(), pages: pages.len(),
             format: if pdfa { "pdfa".into() } else { format },
+            warnings,
         })
     }).await.map_err(|e| format!("Export worker: {e}"))?
 }
@@ -1680,6 +1762,8 @@ mod tests {
         let capabilities = ocr_workspace_capabilities();
         let formats = capabilities["formats"].as_array().unwrap();
         assert_eq!(formats.iter().any(|format| format == "pdf"), reviewed_pdf_available());
+        assert_eq!(formats.iter().any(|format| format == "docx"), cfg!(feature = "ocr-office"));
+        assert_eq!(capabilities["structured_docx"], json!(cfg!(feature = "ocr-office")));
         if !reviewed_pdf_available() { assert!(capabilities["pdf_export_reason"].as_str().is_some()); }
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "reviewed")];
@@ -1688,6 +1772,100 @@ mod tests {
             assert!(export_bytes(&pages, "pdf", false).unwrap_err().contains("matching updated CrispEmbed renderer"));
         }
         assert_eq!(export_bytes(&pages, "text", false).unwrap(), b"reviewed");
+    }
+
+    #[cfg(feature = "ocr-office")]
+    fn office_part(bytes: &[u8], name: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut part = archive.by_name(name).unwrap();
+        let mut result = vec![];
+        part.read_to_end(&mut result).unwrap();
+        result
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn docx_adapter_retains_literal_text_and_blank_source_pages() {
+        let root = tempfile::tempdir().unwrap();
+        let mut first = export_page(root.path(), "  Hello\tworld\r\n\n😀 & < >  ");
+        first.page_width_points = Some(612.0); first.page_height_points = Some(792.0);
+        let mut blank = export_page(root.path(), ""); blank.regions.clear();
+        blank.page_width_points = Some(612.0); blank.page_height_points = Some(792.0);
+        let pages = vec![first, blank];
+        validate_export_pages(&pages).unwrap();
+        let output = export_docx(&pages, &crate::ocr_office::OfficeOptions::default()).unwrap();
+        let xml = String::from_utf8(office_part(&output.bytes, "word/document.xml")).unwrap();
+        assert!(xml.contains("  Hello")); assert!(xml.contains("world"));
+        assert!(xml.contains("😀 &amp; &lt; &gt;  "));
+        assert!(xml.contains("<w:tab")); assert!(xml.contains("<w:br"));
+        assert!(output.warnings.iter().any(|warning| warning.contains("CR") || warning.contains("line break")));
+        // Distinct page sections retain the explicit trailing blank source page.
+        assert!(xml.matches("<w:sectPr").count() >= 2 || xml.contains("w:type=\"page\""));
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn docx_adapter_never_selects_or_replaces_by_generated_legacy_identity() {
+        use crate::ocr_office::{OfficeObjectSelection, OfficeOptions};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "This source text must not be replaced by its position.");
+        page.regions[0].kind = Some("table".into());
+        let mut options = OfficeOptions { version: 1, objects: vec![OfficeObjectSelection {
+            page_id: "legacy-page-1".into(), object_id: "table-object".into(),
+            placement: "append".into(), region_id: None,
+        }] };
+        assert!(export_docx(std::slice::from_ref(&page), &options).unwrap_err().contains("supplied stable page identity"));
+        page.id = Some("real-page".into());
+        options.objects[0].page_id = "real-page".into();
+        options.objects[0].placement = "replace-region".into();
+        options.objects[0].region_id = Some("legacy-region-1".into());
+        assert!(export_docx(std::slice::from_ref(&page), &options).unwrap_err().contains("supplied stable passage identity"));
+        page.regions[0].id = Some("real-passage".into());
+        options.objects[0].region_id = Some("real-passage".into());
+        // Real identities advance to object validation; they do not authorize a
+        // nonexistent extraction merely because the page/region are known.
+        assert!(export_docx(&[page], &options).unwrap_err().contains("selected extraction data is missing"));
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn docx_adapter_uses_current_picture_pixels_and_explicit_corrected_table() {
+        use crate::ocr_office::{OfficeObjectSelection, OfficeOptions};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "OCR table passage omitted only by explicit replacement");
+        page.id = Some("page".into()); page.page_width_points = Some(612.0); page.page_height_points = Some(792.0);
+        page.regions[0].id = Some("table-region".into()); page.regions[0].kind = Some("table".into());
+        let mut figure = export_page(root.path(), "").regions.remove(0);
+        figure.id = Some("picture-region".into()); figure.kind = Some("picture".into());
+        figure.x = 2.0; figure.y = 1.0; figure.w = 3.0; figure.h = 2.0;
+        page.figure_regions = Some(vec![figure]);
+        page.structure = Some(serde_json::from_value(json!({"version":1,"sections":[{"id":"section","columns":1}],"blocks":[
+            {"id":"table-block","sourceRegionId":"table-region","sectionId":"section","column":1,"role":"table","alignment":"start","breakBefore":"none","runs":[]},
+            {"id":"picture-block","sourceRegionId":"picture-region","sectionId":"section","column":1,"role":"figure","alignment":"start","breakBefore":"none","runs":[],"altText":"Current measured crop"}
+        ]})).unwrap());
+        let table = |text: &str| json!({"version":1,"rows":1,"columns":1,"cells":[{"id":"cell","row":0,"column":0,"rowSpan":1,"columnSpan":1,"text":text}]});
+        page.provenance = Some(json!({"extractionObjects":{"version":1,"objects":[{
+            "version":1,"id":"table-object","kind":"table","name":"Corrected table","createdAt":"2026-11-09T00:00:00.000Z","updatedAt":"2026-11-09T00:00:00.000Z",
+            "excluded":false,"review":"corrected","captures":[{"id":"capture","pageId":"old-page","documentId":"document","width":8,"height":4,
+                "imagePath":"/never-read/untrusted-provenance.png","regionId":null,"bounds":null,"method":"pixels","text":null}],
+            "originalOutputKind":"model","originalOutput":"<table><td>old</td></table>","originalData":table("old"),"currentData":table("0012 =SUM(A1) & exact")
+        }]}}));
+        let pages = vec![page]; validate_export_pages(&pages).unwrap();
+        let options = OfficeOptions { version:1, objects:vec![OfficeObjectSelection { page_id:"page".into(),object_id:"table-object".into(),placement:"replace-region".into(),region_id:Some("table-region".into()) }] };
+        let output = export_docx(&pages, &options).unwrap();
+        let xml = String::from_utf8(office_part(&output.bytes, "word/document.xml")).unwrap();
+        assert!(xml.contains("0012 =SUM(A1) &amp; exact"));
+        assert!(!xml.contains("OCR table passage omitted")); assert!(xml.contains("<w:tbl"));
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&output.bytes)).unwrap();
+        let media: Vec<_> = archive.file_names().filter(|name| name.starts_with("word/media/") && !name.ends_with('/')).map(str::to_owned).collect();
+        assert_eq!(media.len(), 1);
+        let mut bytes = vec![]; archive.by_name(&media[0]).unwrap().read_to_end(&mut bytes).unwrap();
+        let actual = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(actual, image().crop_imm(2, 1, 3, 2).to_rgba8());
+        let unselected = export_docx(&pages, &OfficeOptions::default()).unwrap();
+        let plain = String::from_utf8(office_part(&unselected.bytes, "word/document.xml")).unwrap();
+        assert!(plain.contains("OCR table passage omitted"));
+        assert!(!plain.contains("0012 =SUM(A1)"));
     }
 
     #[test]

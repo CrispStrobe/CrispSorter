@@ -2,7 +2,7 @@ import { addDocument, applyRecognition, approvePage, createProject, type OcrProj
 import type { ExportRequest, ProjectEnvelope, WorkspaceClient } from '../../src/lib/ocr/client';
 import { emptyProofreadingData, type ProofreadingData } from '../../src/lib/ocr/proofreadingData';
 import { initializePageStructure, setBlockProperties, setCaptionAnchor, setFootnoteReference, setInlineMarks } from '../../src/lib/ocr/structure';
-import { appendExtractionObject, captureExtractionRequest } from '../../src/lib/ocr/extractionObjects';
+import { appendExtractionObject, captureExtractionRequest, updateExtractionObject } from '../../src/lib/ocr/extractionObjects';
 
 const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
@@ -224,7 +224,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 char_conf_unit:'unicode_codepoint',char_conf_aligned:true};
             });
         }
-        if(scenario==='extraction-objects') {
+        if(scenario==='extraction-objects'||scenario==='office-export') {
             // Multiple independent object sources exercise persistence and
             // editing contracts, not native table/formula model accuracy.
             result.engine='fixture-verified-character-adapter';
@@ -250,6 +250,28 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             project=setInlineMarks(project,page.id,blocks[1].id,{start,end:start+'Equipment'.length},{bold:true});
             const marker=text.indexOf('[1]');
             project=setFootnoteReference(project,page.id,blocks[1].id,{start:marker,end:marker+3},blocks[7].id);
+        }
+        if(scenario==='office-export') {
+            // Real model helpers seed explicit choices. The browser validates
+            // the request/UI contract; the Rust quality harness generates DOCX.
+            const first=project.pages[0];
+            for(const [index,name] of ['Reviewed parts','Excluded ledger'].entries()) {
+                const request=captureExtractionRequest(project,first.id,first.regions[index+1].id,'pixels');
+                project=appendExtractionObject(project,request,'table',copy(extractionTables[index]),{name});
+                if(index===1)project=updateExtractionObject(project,first.id,request.objectId,{excluded:true});
+            }
+            for(const [index,name] of ['Energy formula','Geometry formula'].entries()) {
+                const request=captureExtractionRequest(project,first.id,first.regions[index+3].id,'pixels');
+                project=appendExtractionObject(project,request,'formula',extractionFormulas[index],{name});
+            }
+            const fields=captureExtractionRequest(project,first.id,first.regions[5].id,'text');
+            project=appendExtractionObject(project,fields,'fields',[{label:'vendor',value:'Northstar Supply Co.',score:0.97}],{name:'Vendor fields',labels:['vendor']});
+            const second=project.pages[1];
+            project=applyRecognition(project,second.id,continuationRecognition(second.imagePath));
+            const continuation=captureExtractionRequest(project,second.id,project.pages[1].regions[1].id,'pixels');
+            project=appendExtractionObject(project,continuation,'table',copy(continuationTables[1].output),{name:'Continuation ledger'});
+            project=approvePage(project,first.id);
+            project=approvePage(project,second.id);
         }
     }
     const savedById=new Map<string,ProjectEnvelope>();
@@ -290,7 +312,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         });
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(nativeWord?['system_tesseract']:[])],...(nativeWord?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(nativeWord?['system_tesseract']:[])],...(nativeWord?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,structured_docx:true,cpu_budget:true,cpu_budget_pixels:262144};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -337,7 +359,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             };
             return {image_path:path+'-prepared',width:1000,height:1400};
         },
-        async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format};},
+        async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format,...(scenario==='office-export'&&request.format==='docx'?{warnings:['Selected formula objects are exported as literal editable LaTeX; they are not converted into Word equation objects (OMML).','Table header cells are bold. Automatic repeated table header rows are not supported by this DOCX writer.']}:{} )};},
         async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
         async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
         async table(path){note('table',{path});const index=control.calls.filter(call=>call.method==='table').length-1;await waitForExtraction();if(scenario==='extraction-objects')return copy(extractionTables[index%extractionTables.length]);if(scenario==='table-continuation')return copy((continuationTables[pageNumber(path)-1]??continuationTables[0]).output);return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
@@ -356,7 +378,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
             control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
         },
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1,scenario==='extraction-objects'&&page===1,scenario==='table-continuation'&&page<=3))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1,(scenario==='extraction-objects'||scenario==='office-export')&&page===1,(scenario==='table-continuation'&&page<=3)||(scenario==='office-export'&&page===2)))}`;},
     };
     return {client,initialProject:null};
 }

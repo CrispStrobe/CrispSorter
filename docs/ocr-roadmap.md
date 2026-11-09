@@ -65,7 +65,7 @@ imply that every engine, document, platform, or output format is qualified.
 | Partial OCR | Selected-region and drawn-area recognition with a before/after preview, cancellation, stale-result checks, and unaffected-region preservation; [`zoneReview.ts`](../src/lib/ocr/zoneReview.ts) | Replaces covered regions after acceptance; it is not a persistent history of all past recognition runs |
 | Pages and preparation | PDF/TIFF/image import, arrange/crop/rotate/split, classical cleanup, dewarp, restoration, and super-resolution; [`page_source.rs`](../src-tauri/src/extractors/page_source.rs), [`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs) | File import is not scanner acquisition; each preparation recipe still needs document and model qualification |
 | Recognition and extraction | Engine/configuration selection, sequential batch pause/resume/stop/retry, fields, LiLT, table and formula extraction; [`client.ts`](../src/lib/ocr/client.ts), [`extraction.ts`](../src/lib/ocr/extraction.ts), [`ocr_crispembed.rs`](../src-tauri/src/extractors/ocr_crispembed.rs) | Extraction currently stores one result per kind on a page; tables are a flat cell matrix |
-| Reviewed exports | Text, JSON, Markdown, HTML, desktop DOCX, and build-dependent hOCR/ALTO/searchable PDF; `prepareExport` in [`model.ts`](../src/lib/ocr/model.ts), `export_bytes` in [`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs), [`ocr_render.rs`](../src-tauri/src/extractors/ocr_render.rs) | DOCX emits plain paragraphs; OCR PDF/A is rejected; reviewed PDF has script and renderer limits |
+| Reviewed exports | Text, JSON, Markdown, HTML, structured DOCX, and build-dependent hOCR/ALTO/searchable PDF; `prepareExport` in [`model.ts`](../src/lib/ocr/model.ts), `export_bytes` in [`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs), [`ocr_render.rs`](../src-tauri/src/extractors/ocr_render.rs) | DOCX supports the declared reflowable structures with explicit fallback warnings; XLSX remains next; OCR PDF/A is rejected; reviewed PDF has script and renderer limits |
 | Surrounding document tools | PDF page operations, annotations, AcroForms, text insertion/substitution, compression, and DOCX transformations; [`PdfWorkspace.svelte`](../src/lib/components/PdfWorkspace.svelte), [`PdfEditor.svelte`](../src/lib/components/PdfEditor.svelte), [`PdfTools.svelte`](../src/lib/components/PdfTools.svelte), [`DocxTools.svelte`](../src/lib/components/DocxTools.svelte) | These tools are not a structured OCR editor. Existing PDF paragraph reflow and complete PDF archival/accessibility conformance are not established |
 | Search and repeat processing | Full-text/semantic library search, cloud-source integrations, approved-text reindexing, watched-folder ingestion, template/zone backend, and text-comparison backend | These foundations need the guided workflows below; rule action emission alone is not a durable automation executor |
 
@@ -89,7 +89,7 @@ units to implement and push one at a time.
 | OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | 03a–c implemented; 30 browser interactions and focused/paired native export checks passed |
 | OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | 04a–c bounded workflows implemented; all 34 browser interactions and 343 unit tests passed for the page-draft checkpoint |
 | OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | 05a–c implemented; 421 unit tests and typecheck pass; expanded browser qualification pending |
-| OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | Planned |
+| OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | 06a implemented; 22 native module tests, 433 frontend tests and three independently rendered DOCX fixtures passed; app/browser CI pending; 06b–c planned |
 | OCR-07 | P1 | Reusable form and zone templates | Existing templates backend; OCR-03 geometry rules | Planned |
 | OCR-08 | P1 | Full comparison and review navigation | Existing diff/search; revision identity | Planned |
 | OCR-09 | P1 | Persistent OCR automation executor | Existing watcher/queue; export capability contract | Planned |
@@ -120,13 +120,14 @@ the end.
 | `349725a` — OCR-01a–c | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Focused Linux/Windows CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42682663208) and [paired application CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42682663303) passed. The Linux run exercised the actual Rust adapter against installed Tesseract; Windows exercised parser/feature gates. Corpus accuracy and device qualification remain separate |
 | `6330227` — OCR-02a–c and 02d feasibility | Project and personal vocabulary, protected terms, occurrence ignores, labeled suggestions, literal rules, selective stale-safe correction previews, import/export, and serialized retryable preference saves | 253 unit tests passed; Svelte check had 0 errors and the same 54 unrelated warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730) passed the 28-interaction suite, including native-evidence UI and proofreading. No recognizer training or automatic native lexicon change is claimed |
 | `f3984fd` — OCR-03a–c | Grapheme-safe passage split, explicit source coverage, adjacent merge with exact separators, selectable repair proposals, inspectable immutable source components, and preservation through later re-OCR | 280 full unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791807) passed all 30 interactions and 175 OCR unit tests. Focused Linux/Windows native checks passed, including Linux live recognition. [Paired native export checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42688791842) passed, including all 29 workspace cases |
-| `46a3e04` — OCR-04 structure | Versioned blocks and contiguous sections, explicit two-column order, per-passage roles/emphasis/alignment/breaks, figure descriptions, caption and footnote links, source-linked JSON, and bounded structure history | 306 full unit tests passed locally; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197) passed all 32 interactions and 201 OCR unit tests. [Focused Linux/Windows checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619973) passed, including the production semantic validator on both platforms. [Paired application checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619960) remain queued. Structured file writers remain OCR-06 |
+| `46a3e04` — OCR-04 structure | Versioned blocks and contiguous sections, explicit two-column order, per-passage roles/emphasis/alignment/breaks, figure descriptions, caption and footnote links, source-linked JSON, and bounded structure history | 306 full unit tests passed locally; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692620197) passed all 32 interactions and 201 OCR unit tests. [Focused Linux/Windows checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619973) passed, including the production semantic validator on both platforms. [Paired application checks](https://github.com/CrispStrobe/CrispSorter/actions/runs/42692619960) passed, including 30 workspace cases, both structure cases, the other declared native suites, and the desktop compile gate. Structured file writers remain OCR-06 |
 | `ed0480a` — OCR-04 page-text draft | Whole-page plain-text selection/editing, durable unapplied drafts, exact affected-passage previews, explicit combined source coverage, stale/tampered preview rejection, and draft-aware project history | All 343 unit tests in 38 files passed locally and in CI, including native JSON key sorting and failed/pending-page repair; Svelte check had 0 errors and 54 existing warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961) passed all 34 interactions, including draft recovery and cross-passage coverage. [Report and screenshots](https://github.com/CrispStrobe/CrispSorter/actions/runs/42696088961/artifacts/13711038096) retain the execution evidence |
 | `4904354` — OCR-05a independent extraction objects | Multiple editable tables, formulas and field sets; immutable original output/data; actual captured image/text; historical retention; table spans/headers; safe literal CSV; bounded formula preview; per-object export and project review/undo | All 379 unit tests in 41 files passed locally and in CI; Svelte check has 0 errors and 54 existing warnings. Its [browser run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42699692705) passed 33 interactions and failed two: a fixture geometry assertion and CSV using the JSON serializer. Both were already corrected in `5ecd539`; that later revision still needs its own browser evidence. Native structured DOCX/XLSX consumption remains OCR-06 |
 | `5ecd539` — OCR-05a export-format correction | Table copy/save emits literal CSV, formula copy/save emits exact LaTeX, and field copy/save retains complete source-linked object JSON; format and extension share one decision | The isolated correction passed all 382 unit tests in 42 files, including three exported-content regressions. Svelte check has 0 errors and the same 54 existing warnings; browser harness syntax and whitespace checks passed. Two browser assertions now use the actual flat region geometry. Browser execution remains pending CI |
 | `691be05` — OCR-05b table structure repair | Previewed insert/delete row/column, explicit rectangular merge separators, span splitting, header changes, captured-source inspection, exact removed-value review, stale/tampered preview checks, and one-step Undo | All 405 unit tests in 43 files passed locally and in CI; Svelte check has 0 errors and 54 existing warnings. Its [browser run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42701880471) passed 34 interactions and failed two: approval navigation still on Extract, and a compact Save button without an accessible name. The original data and unrelated objects remain unchanged; the follow-up correction is recorded below |
-| `e112040` — OCR-05c continuation joining | Explicit ordered joins, complete column mapping, repeated-header review, separate editable results, flat source snapshots and receipts, inspectable manual baselines, stale application checks, and later-source-change detection | All 421 unit tests in 45 files passed, including 12 core and four project-lifecycle cases. Svelte check has 0 errors and the same 54 existing warnings. The 37-flow browser harness passes syntax and whitespace checks; execution awaits CI. Source tables and their inclusion settings remain unchanged. No cell typing, formula evaluation, or native recognition-accuracy claim is introduced |
-| OCR-05 accessible Save and browser navigation (this checkpoint) | Stable Save button accessible name at compact widths, actual autosave-state observation, and explicit Review navigation before page approval | Typecheck has 0 errors and the same 54 existing warnings; final harness syntax and whitespace checks pass. The 05b failure screenshots were inspected. Browser execution against this correction remains pending; the earlier 34-pass/2-failure run is not a pass for this change |
+| `e112040` — OCR-05c continuation joining | Explicit ordered joins, complete column mapping, repeated-header review, separate editable results, flat source snapshots and receipts, inspectable manual baselines, stale application checks, and later-source-change detection | All 421 unit tests in 45 files passed, including 12 core and four project-lifecycle cases. Svelte check has 0 errors and the same 54 existing warnings. [Paired native CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42705067117) passed all 30 workspace cases and the other declared suites, including the desktop compile gate. [Focused Linux/Windows CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42705066693) passed. Browser execution is still pending. Source tables and their inclusion settings remain unchanged. No cell typing, formula evaluation, or native recognition-accuracy claim is introduced |
+| `b10cf4e` — OCR-05 accessible Save and browser navigation | Stable Save button accessible name at compact widths, actual autosave-state observation, and explicit Review navigation before page approval | Typecheck has 0 errors and the same 54 existing warnings; final harness syntax and whitespace checks pass. The 05b failure screenshots were inspected. [Browser execution against this correction](https://github.com/CrispStrobe/CrispSorter/actions/runs/42707630172) remains pending; the earlier 34-pass/2-failure run is not a pass for this change |
+| OCR-06a structured Word export (this checkpoint) | Reviewed headings, lists, styled ranges, reading columns, breaks, current-image figures, explicit editable table/formula selection and placement, native provenance validation, and disclosed fallback notes | All 433 frontend tests in 46 files passed; Svelte check has 0 errors and 54 existing warnings. The production-module harness passed 22 native tests, matched every registry dependency to the production lock, generated three DOCX files, and passed independent ZIP/XML checks. LibreOfficeDev 26.8.0.0.alpha0 reopened all three; all six rendered pages were inspected. [Exact fixtures, logs, locks, receipts and images](../tests/quality/results/2026-11-09/office-docx/README.md) retain the result and the initial numbering collision that was corrected. The 38-flow browser suite and complete app adapter execution await CI; Microsoft Word and schema validation remain separate gates |
 
 ## OCR-01: Native word evidence and honest capabilities
 
@@ -274,9 +275,9 @@ Replacing source regions or images archives up to eight prior structure snapshot
 within 16 MB, including their exact text and captured source image. The history
 is inspectable and included in project/JSON data; it is distinct from a full
 attributed audit ledger. Current JSON also retains included picture source
-regions so figure links resolve. Other file formats explicitly warn that they
-currently use the plain-text/source-image projection until OCR-06 supplies their
-structured writers.
+regions so figure links resolve. OCR-06a now consumes the supported structure in
+DOCX. Other file formats explicitly warn that they use the plain-text/source-image
+projection; unsupported Word semantics receive their own specific warnings.
 
 The separate **Edit page text** dialog adds a whole-page plain-text draft with
 native selection, typing, paste, and local Undo/Redo. Review shows the exact
@@ -356,8 +357,9 @@ The rendered preview is not a mathematical-equivalence check. Corrected fields
 retain original model scores separately and do not acquire new confidence.
 The collection is bounded to 128 objects/16 MiB per page, with at most 128 source
 captures per object, 10,000 table-grid positions, and one million text units per
-data object. Current document JSON retains the collection; other document formats
-still use OCR text/source-image projections until OCR-06 implements their writers.
+data object. Current document JSON retains the collection. OCR-06a consumes only
+explicitly selected tables/formulas in DOCX; other document formats still use
+OCR text/source-image projections until their structured writers are implemented.
 
 [Table repair operations](../src/lib/ocr/tableOperations.ts) insert/delete rows or
 columns, merge a complete rectangular selection with an explicit separator,
@@ -425,11 +427,71 @@ our own model and validation contract.
 
 ## OCR-06: Structured DOCX/XLSX and export profiles
 
-**Status: Planned.** The DOCX branch of `export_bytes` in
-[`ocr_workspace.rs`](../src-tauri/src/ocr_workspace.rs) joins page text and calls
-[`export_to_docx`](../src-tauri/src/extractors/export.rs), which emits simple
-paragraphs. Existing DOCX tools operate on documents; they do not reconstruct
-OCR layout. OCR XLSX output is not implemented.
+**Status: 06a implemented; 22 production-module tests, three generated packages,
+independent ZIP/XML checks, and all six LibreOffice-rendered pages passed.
+All 433 frontend tests passed. Browser execution and complete application
+integration await CI; 06b–c remain planned.** The previous
+DOCX branch flattened page text through `export_to_docx`. Its replacement uses
+the reviewed document structure and explicit extraction-object selections in a
+pure [Word writer](../src-tauri/src/ocr_docx.rs), behind the existing native
+[workspace export route](../src-tauri/src/ocr_workspace.rs). OCR XLSX output is
+not yet implemented.
+
+**06a supported boundary:** paragraphs retain literal corrected text, whitespace,
+tabs, and empty lines; headings, numbered/bulleted lists, emphasis, alignment,
+reading columns, and explicit breaks use Word structures. Compatible passages
+with an explicit empty/space separator remain in one paragraph. Conflicting
+style, column, list, or table boundaries fail with a correction instruction
+instead of inserting a different separator. CRLF/lone CR become single visible
+Word line breaks, with a warning; original byte sequences remain in project JSON.
+
+Pictures use only the current managed page image and explicit figure bounds.
+Selected table objects become editable cell grids with horizontal/vertical spans
+and exact string values. No object is selected automatically. Each selection
+explicitly appends to its page or replaces one included source region of the same
+kind. Duplicate replacements, missing/excluded objects, and selections outside
+the chosen page scope fail preflight. A joined table's other source passages can
+remain in the document; the UI must disclose those duplicates instead of removing
+them silently. Legacy extraction migration is projected into the export payload
+without changing the project.
+
+The [native Office boundary](../src-tauri/src/ocr_office.rs) independently checks
+the versioned collection, grid coverage, unique IDs, real capture bounds, original
+field scores, flat continuation ancestry, and exact joined baselines before
+consuming selected values. It never opens provenance image paths. Office options
+are versioned and capped at 512 selected objects. XML-incompatible characters
+cause an actionable error; they are never stripped.
+
+The locked docx-rs 0.4.20 writer keeps header/footer and note text in body order,
+exports formulas as literal LaTeX, and styles table header cells without automatic
+repeated rows. Figure alternative/decorative metadata and caption cross-reference
+links remain in the project/JSON. These limits produce explicit warnings; no
+native Word-equation, footnote, or accessibility conformance claim is made.
+DOCX additionally rejects pages above [Word's 22-inch limit](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oi29500/e7017520-06b4-438f-97d2-3e49f247ca9f)
+and tables above a conservative 63 logical columns, consistent with
+[Word's row-cell limit](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oi29500/cc8ad504-f84b-4d8b-ac1d-808e6f7b2a31).
+The wider source table model is retained for CSV and the subsequent XLSX writer.
+
+The `ocr-office` feature is included in desktop builds and independently enables
+the actual native writer/adapter in the paired test build. `structured_docx`
+reports that capability separately from recognition-engine availability. The
+standalone production-module fixture harness generated real package bytes and
+retained exact source hashes and dependency versions/checksums. Its 22 passing
+tests comprise two semantic-validator, nine extraction-boundary, and 11 writer
+cases. The independent package checker resolves actual paragraph numbering
+references and rejects duplicate definitions; it caught the same failure class
+as the initial LibreOffice render. The corrected rerun preserves the requested
+start value and bullet format. The native adapter also rejects positional
+legacy IDs for explicit object selection or passage replacement.
+
+The [dated evidence directory](../tests/quality/results/2026-11-09/office-docx/README.md)
+contains original generated packages, dependency/source receipts, raw logs,
+independent reader output, every rendered page, and the initial failure.
+LibreOfficeDev 26.8.0.0.alpha0 build
+`2c87e51eeaa2b413ff4ae097b2705eea1995d8e5` was the reader. These synthetic cases
+establish the recorded structures, literal values, images and breaks; they do
+not establish Microsoft Word compatibility, installed-app behavior, arbitrary
+document fidelity, or OOXML schema conformance.
 
 **Increments**
 

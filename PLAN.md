@@ -20,7 +20,11 @@ and historical results across edits. Previewed row/column insertion and deletion
 cell merge/split, and header repair preserve original evidence and use one-step
 Undo. Continuation joins now add explicit order, column mapping, repeated-header
 review, and flat input snapshots while keeping source tables unchanged. Structured
-exports are next. Hardware support, trained
+Word export now consumes reviewed headings, lists, styles, columns, current
+pictures, and explicitly selected tables/formulas. It warns about unsupported
+Word semantics and preserves literal values. Native package generation and
+independent-reader results are recorded separately in the roadmap. Literal table
+workbooks and saved export profiles are next. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

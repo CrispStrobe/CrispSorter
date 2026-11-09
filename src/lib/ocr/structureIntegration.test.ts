@@ -67,7 +67,9 @@ describe('document structure across the project lifecycle',()=>{
         const exported=prepareExport(p,{format:'json'});
         expect(exported.pages[0].structure!.blocks[3].anchorBlockId).toBe(page.structure!.blocks[2].id);
         expect(exported.pages[0].figure_regions![0]).toMatchObject({x:400,y:120,w:100,h:100,kind:'picture'});
-        expect(prepareExport(p,{format:'docx'}).warnings.some(warning=>warning.includes('plain-text'))).toBe(true);
+        const word=prepareExport(p,{format:'docx'});
+        expect(word.warnings.some(warning=>warning.includes('plain-text'))).toBe(false);
+        expect(word.warnings.some(warning=>warning.includes('does not encode figure alt text'))).toBe(true);
         p=updateRegion(p,page.id,page.regions[2].id,{excluded:true});
         const subset=prepareExport(p,{format:'json'});
         expect(subset.pages[0].figure_regions).toEqual([]);
