@@ -274,7 +274,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-linux-x86_64.tar.gz"
           echo "Downloading $URL"
-          curl -fL -o crispembed-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispembed-libs.tar.gz "$URL"
           python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source ../CrispEmbed
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
@@ -289,7 +289,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-linux-x86_64.tar.gz"
           echo "Downloading $URL"
-          curl -fL -o crispasr-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispasr-libs.tar.gz "$URL"
           # Tarball top-level dir is `libcrispasr-<platform>/`; strip it so the
           # contents land where crispasr-sys's `try_existing_build` looks first.
           mkdir -p ../CrispASR/build-flutter-bundle
@@ -479,7 +479,16 @@ jobs:
       # `lance-encoding` shells out to protoc from its own build script, so a
       # PROTOC set inside ours does not reach it — it has to be on PATH before
       # cargo starts. The Linux job gets this from apt.
-      - uses: arduino/setup-protoc@v3
+      # GitHub release downloads return transient 5xx; the action's own
+      # retries give up after ~45 s, so try once more before failing the job.
+      - id: protoc1
+        uses: arduino/setup-protoc@v3
+        continue-on-error: true
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.protoc1.outcome == 'failure'
+        uses: arduino/setup-protoc@v3
         with:
           version: "29.0"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -642,7 +651,16 @@ jobs:
 
       # `lance-encoding` shells out to protoc from its own build script, so it
       # has to be on PATH before cargo starts.
-      - uses: arduino/setup-protoc@v3
+      # GitHub release downloads return transient 5xx; the action's own
+      # retries give up after ~45 s, so try once more before failing the job.
+      - id: protoc2
+        uses: arduino/setup-protoc@v3
+        continue-on-error: true
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.protoc2.outcome == 'failure'
+        uses: arduino/setup-protoc@v3
         with:
           version: "29.0"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -660,7 +678,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
           echo "Downloading $URL"
-          curl -fL -o crispembed-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispembed-libs.tar.gz "$URL"
           python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source ../CrispEmbed
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
@@ -675,7 +693,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-macos-arm64.tar.gz"
           echo "Downloading $URL"
-          curl -fL -o crispasr-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispasr-libs.tar.gz "$URL"
           # Tarball top-level dir is `libcrispasr-<platform>/`; strip it so the
           # contents land where crispasr-sys's `try_existing_build` looks first.
           mkdir -p ../CrispASR/build-flutter-bundle
