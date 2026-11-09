@@ -13,14 +13,14 @@ Models already used by an OCR engine remain protected until the application exit
 ### Storage contract
 
 - An application mutex and a SQLite transaction serialize installs, resolution and cleanup across windows/processes. Cleanup never races an active download.
-- Each used generation has a retained SQLite read transaction. Cleanup requires an exclusive transaction for that generation before removal. A process exit releases its locks automatically.
+- Each used generation has a retained SQLite read transaction. Cleanup requires an exclusive transaction for that generation before removal. A process exit releases its locks automatically. The lock files must use the default rollback journal; WAL mode is explicitly rejected because its exclusive writer transaction would not exclude readers.
 - Registry readiness checks do not retain usage locks. Explicit local paths into the managed store receive the same lifetime protection as registry names.
 - Manifests identify the model by its SHA-256 directory and an immutable UUID generation. Removal checks the expected generation before changing the current pointer.
 - Cleanup refuses symbolic links, unexpected subdirectories, malformed manifests and over-budget directory walks. It reports preserved entries instead of recursively deleting an ambiguous tree. SQLite lock/journal paths receive the same private-file checks.
 - Removing an installed model first clears its current pointer while holding all generation locks. A crash afterward leaves unpublished generations that the next cleanup can reclaim.
 - Payload size totals exclude the small control manifests and SQLite lock records. Unused generation lock records are removed after their payload, while the store lock is still held.
 
-Native tests cover current/in-use preservation, abandoned downloads, stale-version removal, unsafe manifests/links/journals, store contention, and a child process retaining an old generation while another process attempts cleanup. Their execution belongs to the paired native workflow; frontend tests do not substitute for them.
+Native tests cover current/in-use preservation, abandoned downloads, stale-version removal, unsafe manifests/links/journals, WAL-mode rejection, store contention, and a child process retaining an old generation while another process attempts cleanup. The small **OCR model storage contracts** workflow compiles these actual production modules without a WebView or model runtime, retaining its exact source hashes and dependency lockfile. The paired native workflow also tests the application integration; frontend tests do not substitute for either.
 
 ## Large-document history
 

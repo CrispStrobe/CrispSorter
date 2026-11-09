@@ -68,6 +68,11 @@ fn open_lock(path: &Path) -> Result<Connection, String> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .map_err(|error| format!("Open model storage lock: {error}"))?;
     connection.busy_timeout(Duration::from_secs(2)).map_err(|error| error.to_string())?;
+    let journal: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(|error| format!("Inspect model storage lock mode: {error}"))?;
+    // BEGIN EXCLUSIVE excludes readers only in rollback-journal mode. Never
+    // silently convert a database that another process may currently lease.
+    if journal != "delete" { return Err("The model storage lock uses an unsupported journal mode; its files were preserved.".into()); }
     // Initialization is short and idempotent. Reading this table below obtains
     // a real SHARED lock, unlike an empty deferred transaction.
     connection.execute_batch("CREATE TABLE IF NOT EXISTS lifetime (id INTEGER PRIMARY KEY);")
@@ -434,6 +439,18 @@ mod tests {
     }
 
     #[test]
+    fn wal_leases_are_rejected_instead_of_mistaking_a_writer_lock_for_exclusive_use() {
+        let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();
+        let (model, version) = fixture(&root, "wal", false);
+        let path = lease_path(&model, &version).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE lifetime (id INTEGER PRIMARY KEY); BEGIN; SELECT * FROM lifetime;").unwrap();
+        assert!(exclusive(&model, &version).unwrap_err().contains("journal mode"));
+        assert!(cleanup_locked(&root).is_err());
+        assert!(model.join(version).join("model.gguf").exists());
+    }
+
+    #[test]
     fn lease_child_process() {
         let Some(root) = std::env::var_os("CRISPSORTER_TEST_MODEL_LEASE_ROOT") else { return; };
         let root = PathBuf::from(root);
@@ -453,8 +470,10 @@ mod tests {
     fn another_process_keeps_old_generation_alive_until_it_exits() {
         let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();
         let (model, old) = fixture(&root, "shared", false); fixture(&root, "shared", true);
+        let module = module_path!().split_once("::").map(|(_, name)| name).unwrap();
+        let child_test = format!("{module}::lease_child_process");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "model_provisioning::storage::tests::lease_child_process", "--nocapture"])
+            .args(["--exact", child_test.as_str(), "--nocapture"])
             .env("CRISPSORTER_TEST_MODEL_LEASE_ROOT", &root)
             .env("CRISPSORTER_TEST_MODEL_LEASE_KEY", model.file_name().unwrap())
             .env("CRISPSORTER_TEST_MODEL_LEASE_VERSION", &old).spawn().unwrap();
