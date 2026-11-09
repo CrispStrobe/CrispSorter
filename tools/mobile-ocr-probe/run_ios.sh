@@ -67,3 +67,9 @@ python3 "$repo/scripts/ocr_mobile_build_receipt.py" --platform ios-simulator \
 python3 "$repo/scripts/mobile_simulator_smoke.py" \
   --platform ios --target "$simulator" --artifact "$app" \
   --output "$RUNNER_TEMP/ocr-mobile-evidence/app-startup"
+# Keep native/startup and workspace-navigation outcomes as separate CI steps.
+# The next step reuses these exact app bytes and the already booted simulator;
+# it compiles only the small independent UI-test host, not the OCR application.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  printf 'app=%s\nsimulator=%s\n' "$app" "$simulator" >> "$GITHUB_OUTPUT"
+fi

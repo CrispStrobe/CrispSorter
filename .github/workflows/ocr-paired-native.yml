@@ -26,6 +26,9 @@ on:
       - src-tauri/src/main.rs
       - src-tauri/src/cli/mod.rs
       - src-tauri/tauri.conf.json
+      - src/app.html
+      - src/app.css
+      - src/routes/+page.svelte
       - scripts/desktop_ocr_startup_smoke.py
       - scripts/generate-licenses.js
       - scripts/native_license_inventory.mjs
@@ -59,6 +62,9 @@ on:
       - src-tauri/src/main.rs
       - src-tauri/src/cli/mod.rs
       - src-tauri/tauri.conf.json
+      - src/app.html
+      - src/app.css
+      - src/routes/+page.svelte
       - scripts/desktop_ocr_startup_smoke.py
       - scripts/generate-licenses.js
       - scripts/native_license_inventory.mjs

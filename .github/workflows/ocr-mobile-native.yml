@@ -26,6 +26,7 @@ on:
       - 'scripts/validate_android_native_libs.py'
       - 'tools/mobile-ocr-probe/**'
       - 'tools/mobile-ort-probe/**'
+      - 'tools/ios-shell-probe/**'
       - 'tests/scripts/test_*mobile*'
       - 'src-tauri/Cargo.toml'
       - 'Cargo.lock'
@@ -48,6 +49,9 @@ on:
       - 'src-tauri/src/lib.rs'
       - 'src/lib/ocr/**'
       - 'src/lib/components/OcrWorkbench.svelte'
+      - 'src/app.html'
+      - 'src/app.css'
+      - 'src/routes/+page.svelte'
 
 permissions:
   contents: read
@@ -110,6 +114,7 @@ jobs:
           node --check scripts/mobile_ocr_quality.mjs
           node --test tests/scripts/test_mobile_ocr_*.mjs
           node --test tests/scripts/test_native_license_inventory.mjs
+          python3 -m py_compile tools/ios-shell-probe/run.py
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
@@ -397,6 +402,7 @@ jobs:
           disable-animations: true
           script: bash repos/CrispSorter/tools/mobile-ocr-probe/run_android.sh
       - name: Execute native OCR and app startup on iOS
+        id: ios_native
         if: runner.os == 'macOS'
         # Bound simulator hangs at the step level so the always-upload step
         # can preserve the compiled, explicitly unqualified bundle and logs.
@@ -404,6 +410,20 @@ jobs:
         working-directory: repos/CrispSorter
         shell: bash
         run: bash tools/mobile-ocr-probe/run_ios.sh
+      - name: Verify Tools to OCR workspace navigation in the actual iOS application
+        if: runner.os == 'macOS'
+        working-directory: repos/CrispSorter
+        shell: bash
+        timeout-minutes: 12
+        env:
+          OCR_IOS_APPLICATION: ${{ steps.ios_native.outputs.app }}
+          OCR_IOS_SIMULATOR: ${{ steps.ios_native.outputs.simulator }}
+        run: |
+          python3 tools/ios-shell-probe/run.py \
+            --app "$OCR_IOS_APPLICATION" \
+            --build-receipt "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json" \
+            --output "$RUNNER_TEMP/ocr-mobile-evidence/app-navigation" \
+            --simulator "$OCR_IOS_SIMULATOR" --application-source "$GITHUB_SHA"
       - name: Save native runtime, probe and application evidence
         if: always()
         uses: actions/upload-artifact@v4
