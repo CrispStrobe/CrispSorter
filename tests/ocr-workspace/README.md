@@ -41,11 +41,15 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
 The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
-`?scenario=queue-control`, `?scenario=extraction-delay`,
+`?scenario=queue-control`, `?scenario=batch-recovery`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
+The `batch-recovery` fixture stores an interrupted two-page selection with
+recognition settings that differ from the toolbar and an unrelated pending page.
+The adapter can also reject saves so the harness can verify recovery after a
+successful recognition result cannot be committed.
 
 ## Assertions
 
@@ -60,6 +64,17 @@ without relying on debounce timing.
   raster dimensions, source pixels, and text region geometry.
 - Batch errors remain attached to their pages; retry processes only failed work.
 - Pause/resume/stop never overlaps native operations or drops pending pages.
+- Interrupted batches use their original page selection and settings, retain
+  completed results, and leave unrelated pending pages untouched.
+- A failed result checkpoint halts further recognition without turning a good
+  result into an OCR error. Saving and resuming completes only unfinished pages.
+- Camera import rejects unsupported image formats before transferring bytes,
+  preserves a valid photo, and opens preparation without starting recognition.
+- Four-corner correction exposes touch-sized keyboard-operable handles, rejects
+  invalid geometry, invalidates stale text after correction, and restores the
+  original review evidence with Undo.
+- Measured tilt can be adjusted manually within bounds. Shadow cleanup uses the
+  corrected page without repeating geometric repair; both steps remain undoable.
 - Table model output becomes inert cell text, with active HTML removed.
 - Delayed extraction remains attached to its captured page after navigation;
   editing and undo restore both the visible cells and exported CSV.
@@ -67,15 +82,21 @@ without relying on debounce timing.
   current project flushes pending edits without rolling back text or its revision.
 - Confirmation dialogs suppress page navigation shortcuts and retain their target.
 - Replacing after a query change never applies stale offsets to another match.
-- Desktop and compact layouts produce screenshots and retain the review controls.
+- Desktop and phone layouts produce screenshots and retain the review controls.
+  On phones, Pages, Page image, and Text & tools each remain reachable; selecting
+  another page changes the reviewed text, and view controls have touch-sized
+  targets. The harness checks both 390-pixel and 320-pixel widths.
   Fit page keeps the complete paper within its viewport, fills one available axis,
   and requires no scrolling; this catches duplicate padding deductions.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same
-harness on feature-branch changes and attaches its JSON report and screenshots as
+harness on OCR changes pushed to `feat/ocr-document-studio` and on relevant pull
+requests, and attaches its JSON report and screenshots as
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.
 
 These tests validate interaction and integration contracts. They do not measure
 recognition accuracy or substitute for native engine, PDF conformance, or installed
-application testing.
+application testing. Photo input and transform responses are deterministic
+fixtures: the browser checks the actual production controls and state changes,
+while native geometry and actual text-quality tests remain separate.

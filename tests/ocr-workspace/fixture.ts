@@ -1,5 +1,7 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
 import type { ExportRequest, ProjectEnvelope, WorkspaceClient } from '../../src/lib/ocr/client';
+import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
+import { photoQuadError } from '../../src/lib/ocr/photo';
 
 const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
@@ -63,6 +65,7 @@ export interface SmokeControl {
     pendingExtractions: number;
     holdSaves: boolean;
     pendingSaves: number;
+    failSaves: boolean;
     failPages: number[];
     released: string[];
     releaseNext():boolean;
@@ -89,6 +92,18 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
         project=approvePage(project,project.pages[2].id);
     }
+    if(scenario==='batch-recovery') {
+        // The stored intent selects only the first two pages; the third stays
+        // pending and current toolbar settings intentionally differ.
+        project.pages[2]={...project.pages[2],status:'pending',regions:[],approved:false};
+        project=beginBatch(project,project.pages.slice(0,2).map(page=>page.id),{
+            profileId:'balanced',engine:'tesseract',language:'deu',config:{source_type:'photo'},
+        });
+        project=updateBatchPage(project,project.pages[0].id,'completed');
+        project=updateBatchPage(project,project.pages[1].id,'running');
+        project.pages[1]={...project.pages[1],status:'running'};
+        project.recognitionSettings={engine:'got',language:'eng',config:{source_type:'screenshot'}};
+    }
     const savedById=new Map<string,ProjectEnvelope>();
     const initialEnvelope:ProjectEnvelope={project:copy(project),revision:7,saved_at:Date.parse(stamp),path:'/fixtures/project.json'};
     savedById.set(project.id,initialEnvelope);
@@ -106,7 +121,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
-        holdSaves:false,pendingSaves:0,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
+        holdSaves:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
         releaseExtraction(){const release=pendingExtractions.shift();if(!release)return false;control.pendingExtractions=pendingExtractions.length;release();return true;},
         releaseSave(){const release=pendingSaves.shift();if(!release)return false;control.pendingSaves=pendingSaves.length;release();return true;},
@@ -119,7 +134,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         });
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,photo_tools:true,camera_import:true};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -127,12 +142,19 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.holdSaves)await new Promise<void>(release=>{
                 pendingSaves.push(release);control.pendingSaves=pendingSaves.length;
             });
+            if(control.failSaves)throw new Error('Disk full: the project checkpoint could not be saved.');
             const previous=savedById.get(snapshot.id)?.revision??0;
             if(previous!==expectedRevision)throw new Error(`Project revision conflict: expected ${previous}, received ${expectedRevision}`);
             const saved={project:copy(snapshot),revision:previous+1,saved_at:Date.now(),path:'/fixtures/project.json'};
             savedById.set(snapshot.id,saved);control.saves.push(copy(saved));control.lastSaved=copy(snapshot);return copy(saved);
         },
         async importDocument(locationUri){note('importDocument',{locationUri});return {source_uri:locationUri,name:locationUri.split('/').pop()!,pages:[{image_path:pagePath(4),width:1000,height:1400}]};},
+        async importImage(name,bytes){note('importImage',{name,byteLength:bytes.length});return {source_uri:'/fixtures/captured-photo.png',name,pages:[{image_path:'/fixtures/captured-photo.png',width:1000,height:1400}]};},
+        async assessPhoto(path){
+            note('assessPhoto',{pagePath:path});
+            return {width:1000,height:1400,sample_width:786,sample_height:1100,mean_luminance:173,contrast:58,sharpness:102,
+                ink_fraction:0.13,correction_degrees:-2.7,skew_confidence:0.91,warnings:['Uneven lighting: inspect the page after flattening shadows.']};
+        },
         async recognize(options){
             note('recognize',options);control.recognitions.push(options.pagePath);control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
             try {
@@ -145,6 +167,15 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             note('transform',options);
             if(options.operation==='split')return {pages:[{image_path:options.pagePath+'-left',width:500,height:1400},{image_path:options.pagePath+'-right',width:500,height:1400}]};
             if(options.operation==='rotate')return {pages:[{image_path:options.pagePath+'-rotated',width:1400,height:1000}]};
+            if(options.operation==='perspective') {
+                const error=photoQuadError(options.quad??[],1000,1400);
+                if(error)throw new Error(error);
+                return {pages:[{image_path:options.pagePath+'-perspective',width:900,height:1300,warnings:['Perspective corrected from four user-selected corners.']}]};
+            }
+            if(options.operation==='deskew') {
+                if(!Number.isFinite(options.angle)||Math.abs(options.angle??0)>15)throw new Error('Choose a finite angle between -15 and 15 degrees.');
+                return {pages:[{image_path:options.pagePath+'-deskewed',width:1065,height:1447,warnings:['Tilt corrected using the chosen angle.']}]};
+            }
             return {pages:[{image_path:options.pagePath+'-crop',width:Math.round(options.crop?.w??1000),height:Math.round(options.crop?.h??1400)}]};
         },
         async prepare(path,config,pageWidthPoints,pageHeightPoints){

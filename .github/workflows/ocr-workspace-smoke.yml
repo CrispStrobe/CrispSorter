@@ -2,6 +2,16 @@ name: OCR workspace browser verification
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio']
+    paths:
+      - src/lib/ocr/**
+      - src/lib/tabs.ts
+      - src/routes/+page.svelte
+      - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ocr/**
+      - tests/ocr-workspace/**
+      - .github/workflows/ocr-workspace-smoke.yml
   pull_request:
     paths:
       - src/lib/ocr/**
