@@ -393,9 +393,8 @@ pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]
 crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
-# Additive review snapshots are supplied by the paired OCR feature branch of
-# CrispEmbed. Existing release pins still build and run the workbench without
-# this optional provenance extension.
+# Additive review snapshots (CrispEmbed >= 0.17.16). Builds without this
+# feature still run the workspace, without the provenance extension.
 ocr-review-diagnostics = ["crispembed"]
 # Reviewed PDF output requires the matching native renderer with lossless
 # raster embedding, Unicode text, and document-sized page tables.
