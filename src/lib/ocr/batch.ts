@@ -8,6 +8,8 @@ export interface BatchOptions {
     config: Record<string, unknown>;
     engine: string;
     language: string;
+    /** Freeze the desktop CPU profile together with the engine for recovery. */
+    cpuPixelBudget?: boolean;
 }
 export interface BatchPage {
     pageId: string;
@@ -56,7 +58,8 @@ function replaceBatch(project: OcrProject, batch: RecognitionBatch): OcrProject 
 /** Freeze the exact selected order, source revisions, and recognition settings. */
 export function beginBatch(project: OcrProject, pageIds: readonly string[], options: BatchOptions): OcrProject {
     if (!pageIds.length || new Set(pageIds).size !== pageIds.length) throw new Error('Select unique pages for the recognition batch.');
-    if (!nonempty(options.profileId) || !object(options.config) || typeof options.engine !== 'string' || typeof options.language !== 'string') throw new Error('Recognition batch settings are invalid.');
+    if (!nonempty(options.profileId) || !object(options.config) || typeof options.engine !== 'string' || typeof options.language !== 'string' ||
+        (options.cpuPixelBudget !== undefined && typeof options.cpuPixelBudget !== 'boolean')) throw new Error('Recognition batch settings are invalid.');
     const pages = new Map(project.pages.map(page => [page.id, page]));
     const jobs: BatchPage[] = pageIds.map(pageId => {
         const page = pages.get(pageId);
@@ -124,7 +127,7 @@ export function resumeBatch(project: OcrProject, options: { retryFailed?: boolea
     }) : project;
     return {
         project: next, pageIds, completed, failed, conflicts: [],
-        options: copy({ profileId: batch.profileId, config: batch.config, engine: batch.engine, language: batch.language }),
+        options: copy({ profileId: batch.profileId, config: batch.config, engine: batch.engine, language: batch.language, cpuPixelBudget: batch.cpuPixelBudget }),
     };
 }
 
@@ -132,6 +135,7 @@ export function resumeBatch(project: OcrProject, options: { retryFailed?: boolea
 export function restoreBatch(input: unknown): RecognitionBatch {
     if (!object(input) || input.version !== 1 || !nonempty(input.id) || !phases.includes(input.phase as BatchPhase) ||
         !nonempty(input.profileId) || !object(input.config) || typeof input.engine !== 'string' || typeof input.language !== 'string' ||
+        (input.cpuPixelBudget !== undefined && typeof input.cpuPixelBudget !== 'boolean') ||
         typeof input.createdAt !== 'string' || typeof input.updatedAt !== 'string' || !Array.isArray(input.jobs) || input.jobs.length > 10000) {
         throw new Error('The saved recognition batch is invalid.');
     }

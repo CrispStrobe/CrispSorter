@@ -235,6 +235,16 @@ fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String
     sync_directory(parent)
 }
 
+/// Engines the workspace offers and accepts. All exist in the pinned CrispEmbed
+/// runtime and have registry defaults, so a stage needs no explicit model.
+/// `unified` (needs an explicit GGUF) and the env-gated experimental engines
+/// stay in Settings only.
+const WORKSPACE_ENGINES: &[&str] = &[
+    "auto", "dbnet_trocr", "tesseract", "tesseract_fraktur", "parseq", "ppocrv6", "easyocr",
+    "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision",
+    "lightonocr", "qwen3vl", "unlimited_ocr", "olmocr", "lfm2_vl",
+];
+
 #[tauri::command]
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
@@ -254,7 +264,10 @@ pub fn ocr_workspace_capabilities() -> Value {
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
-        "engines": if native { vec!["auto", "dbnet_trocr", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr"] } else { vec![] },
+        // Isolated low-memory Qwen2-VL worker (see `ocr_worker::run_cpu_budget`).
+        "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
+        "cpu_budget_pixels": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET,
+        "engines": if native { WORKSPACE_ENGINES.to_vec() } else { vec![] },
         "reason": if native { None } else { Some("Recognition and document models require a build with CrispEmbed. Project editing, import of images and TIFFs, and text exports remain available.") },
         "pdf_reason": if cfg!(feature = "pdf-render") { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
@@ -617,7 +630,7 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
         return Err("Unknown restoration task.".into());
     }
     for stage in &config.stages {
-        if !["dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract", "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr"].contains(&stage.engine.as_str())
+        if !["dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract", "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr", "unified", "tesseract_fraktur", "ppocrv6", "easyocr", "olmocr", "lfm2_vl"].contains(&stage.engine.as_str())
             || !["auto", "screenshot", "scanned_doc", "photo"].contains(&stage.source_type.as_str()) {
             return Err("Unknown OCR stage engine or source type.".into());
         }
@@ -655,7 +668,7 @@ pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfi
         }
     }
     if engine != "auto" {
-        if !["dbnet_trocr", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr"].contains(&engine) {
+        if !WORKSPACE_ENGINES.contains(&engine) {
             return Err(format!("Unsupported OCR engine: {engine}"));
         }
         let configured_stage = config.stages.iter().find(|s| s.engine == engine).cloned();
@@ -733,6 +746,7 @@ pub async fn ocr_workspace_recognize(
     zone: Option<PixelRect>,
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
+    cpu_pixel_budget: Option<bool>,
 ) -> Result<RecognizedPage, String> {
     if !cfg!(feature = "crispembed") { return Err("Recognition requires a build with CrispEmbed.".into()); }
     let root = workspace_root(&app)?;
@@ -743,12 +757,53 @@ pub async fn ocr_workspace_recognize(
         None => state.bg_ingest.lock().await.ocr_pipeline.clone(),
     };
     let (config, warnings) = recognition_config(config, engine.as_deref(), language.as_deref())?;
+    let cpu_budget = cpu_pixel_budget.unwrap_or(false);
+    if cpu_budget {
+        check_cpu_budget(&config)?;
+    }
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
-    tokio::task::spawn_blocking(move || recognize_page(&root, &path, &config, zone, warnings, size)).await
+    tokio::task::spawn_blocking(move || recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget)).await
         .map_err(|e| format!("Recognition worker: {e}"))?
 }
 
-fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>) -> Result<RecognizedPage, String> {
+/// The CPU pixel budget limits the Qwen2-VL vision input; it has no meaning
+/// for other engines, and the worker cannot run in sandboxed/mobile builds.
+fn check_cpu_budget(config: &crate::extractors::OcrPipelineConfig) -> Result<(), String> {
+    if !crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE {
+        return Err("The low-memory CPU profile requires a desktop build with sidecars enabled.".into());
+    }
+    if !(config.stages.len() == 1 && config.stages[0].engine == "qwen2vl") {
+        return Err("The low-memory CPU profile applies to the Qwen2 VL engine only. Choose that engine or turn the profile off.".into());
+    }
+    Ok(())
+}
+
+/// Recognize in the isolated low-memory worker and present the result with
+/// honest provenance: VLM regions carry no calibrated detector score, so only
+/// per-character recognition evidence is reported as a confidence.
+fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelineConfig) -> Result<crate::extractors::ocr_crispembed::OcrReviewResult, String> {
+    use crate::extractors::ocr_crispembed::{review_pipeline_config, OcrReviewRegion, OcrReviewResult};
+    let (width, height) = image::image_dimensions(path).map_err(|e| format!("Read page dimensions: {e}"))?;
+    let regions = crate::extractors::ocr_worker::run_cpu_budget(path, &review_pipeline_config(config))
+        .map_err(|e| format!("Low-memory CPU recognition: {e:#}"))?;
+    let regions = regions.into_iter().map(|r| {
+        let recognition = !r.char_conf.is_empty();
+        OcrReviewRegion {
+            text: r.text, x: r.x, y: r.y, w: r.w, h: r.h,
+            confidence: recognition.then_some(r.confidence),
+            confidence_basis: if recognition { "recognition" } else { "unknown" }.into(),
+            char_conf: r.char_conf, char_conf_unit: "unknown".into(), char_conf_aligned: false,
+            kind: "text".into(),
+        }
+    }).collect();
+    Ok(OcrReviewResult {
+        image_path: path.to_owned(), width, height, regions,
+        warnings: vec![format!("Low-memory CPU profile: the vision input was limited to {} pixels, so fine print may be missed. Review the result.", crate::extractors::ocr_worker::CPU_PIXEL_BUDGET)],
+        diagnostics: json!({"cpu_pixel_budget": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET, "isolated_worker": true}),
+    })
+}
+
+fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool) -> Result<RecognizedPage, String> {
     let started = std::time::Instant::now();
     let (page, recognition_path, offset) = if let Some(zone) = zone {
         // A zone result must align with the current whole page. Geometric
@@ -765,8 +820,12 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         let recognition_path = PathBuf::from(&prepared.page.image_path);
         (prepared.page, recognition_path, (0, 0))
     };
-    let mut result = crate::extractors::ocr_crispembed::ocr_regions_for_review(&recognition_path, config)
-        .map_err(|e| format!("Recognize page: {e:#}"))?;
+    let mut result = if cpu_budget {
+        recognize_with_cpu_budget(&recognition_path, config)?
+    } else {
+        crate::extractors::ocr_crispembed::ocr_regions_for_review(&recognition_path, config)
+            .map_err(|e| format!("Recognize page: {e:#}"))?
+    };
     warnings.append(&mut result.warnings);
     if result.regions.is_empty() {
         warnings.push("No text was returned. Verify whether this page is blank, or retry with a different engine. An empty result is not evidence of successful recognition.".into());
@@ -1693,6 +1752,44 @@ mod tests {
         let (got, warnings) = recognition_config(Default::default(), Some("got"), Some("de")).unwrap();
         assert!(got.stages[0].vlm_prompt.is_empty());
         assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn cpu_budget_is_limited_to_qwen2vl_in_spawn_capable_builds() {
+        let (qwen, _) = recognition_config(Default::default(), Some("qwen2vl"), None).unwrap();
+        let (trocr, _) = recognition_config(Default::default(), Some("dbnet_trocr"), None).unwrap();
+        if crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE {
+            assert!(check_cpu_budget(&qwen).is_ok());
+            assert!(check_cpu_budget(&trocr).unwrap_err().contains("Qwen2 VL engine only"));
+            assert!(check_cpu_budget(&Default::default()).is_err(), "automatic routing is not a single Qwen stage");
+        } else {
+            assert!(check_cpu_budget(&qwen).unwrap_err().contains("sidecars"));
+        }
+    }
+
+    #[test]
+    fn every_offered_engine_builds_a_single_stage_with_registry_defaults() {
+        for engine in WORKSPACE_ENGINES.iter().filter(|e| **e != "auto") {
+            let (config, _) = recognition_config(Default::default(), Some(engine), None)
+                .unwrap_or_else(|e| panic!("{engine}: {e}"));
+            assert_eq!(config.stages.len(), 1, "{engine}");
+            assert_eq!(config.stages[0].engine, *engine);
+        }
+        // Newly offered engines rely on the native per-engine defaults rather
+        // than inheriting the DBNet/TrOCR pair or another engine's weights.
+        for engine in ["ppocrv6", "easyocr", "tesseract_fraktur", "olmocr", "lfm2_vl"] {
+            let (config, _) = recognition_config(Default::default(), Some(engine), None).unwrap();
+            assert_eq!(config.stages[0].rec_model, None, "{engine}");
+        }
+        assert!(!WORKSPACE_ENGINES.contains(&"unified"), "unified needs an explicit GGUF");
+        // Every engine Settings can put in a pipeline stage must also pass the
+        // workspace's stored-config validation, or recognition fails for users
+        // who configured it there.
+        for engine in ["unified", "tesseract_fraktur", "ppocrv6", "easyocr", "olmocr", "lfm2_vl", "unlimited_ocr2", "minicpm_ocr"] {
+            let mut config = crate::extractors::OcrPipelineConfig::default();
+            config.stages.push(serde_json::from_value(json!({"engine": engine})).unwrap());
+            assert!(validate_config(&config).is_ok(), "{engine}");
+        }
     }
 
     #[test]

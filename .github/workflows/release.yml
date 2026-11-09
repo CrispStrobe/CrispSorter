@@ -33,9 +33,9 @@ env:
   # arrow in a comment should not be able to break a release build.
   PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.12   # keep equal to ci.yml's CRISPEMBED_REF
+  CRISPEMBED_REF: v0.17.15   # keep equal to ci.yml's CRISPEMBED_REF
   # Exact source of that tag; must equal scripts/crispembed-runtime-lock.json.
-  CRISPEMBED_COMMIT: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
+  CRISPEMBED_COMMIT: d28ca2ea43a95934d673d1a54177fdf721614ade
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.32  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
@@ -326,7 +326,7 @@ jobs:
           # lib. Same `build-flutter-bundle/` convention macOS uses.
           URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
           echo "Downloading $URL"
-          curl -fL -o crispasr-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispasr-libs.tar.gz "$URL"
           mkdir -p _sibling/CrispASR/build-flutter-bundle
           # Tarball top-level dir is `libcrispasr-<platform>/`; strip it
           # so contents land directly under build-flutter-bundle/.
@@ -364,7 +364,7 @@ jobs:
           # `<sibling>/build/` is enough.
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
           echo "Downloading $URL"
-          curl -fL -o crispembed-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispembed-libs.tar.gz "$URL"
           python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source _sibling/CrispEmbed
           mkdir -p _sibling/CrispEmbed/build
           tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
@@ -400,7 +400,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/download/${{ matrix.pdfium_asset }}"
           echo "Downloading $URL"
-          curl -fsSL "$URL" -o pdfium.tgz
+          curl -fsSL --retry 8 --retry-all-errors "$URL" -o pdfium.tgz
           mkdir -p _pdfium src-tauri/bin
           tar -xzf pdfium.tgz -C _pdfium
           cp "_pdfium/${{ matrix.pdfium_lib_glob }}" src-tauri/bin/
@@ -524,7 +524,7 @@ jobs:
           mkdir -p src-tauri/bin
           URL="https://github.com/ggml-org/llama.cpp/releases/download/b8340/${{ matrix.llama_asset }}"
           echo "Downloading $URL"
-          curl -fL -o llama.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o llama.tar.gz "$URL"
           mkdir -p llama-extract
           tar -xzf llama.tar.gz -C llama-extract
           SRV=$(find llama-extract -type f -name llama-server | head -n1)
@@ -1745,7 +1745,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz"
           echo "Downloading $URL"
-          curl -fsSL "$URL" -o pdfium.tgz
+          curl -fsSL --retry 8 --retry-all-errors "$URL" -o pdfium.tgz
           mkdir -p _pdfium src-tauri/bin
           tar -xzf pdfium.tgz -C _pdfium
           cp _pdfium/lib/libpdfium.dylib src-tauri/bin/
@@ -1840,7 +1840,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-macos-arm64.tar.gz"
           echo "Downloading $URL"
-          curl -fL -o crispembed-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispembed-libs.tar.gz "$URL"
           python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source _sibling/CrispEmbed
           mkdir -p _sibling/CrispEmbed/build
           tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
@@ -1852,7 +1852,7 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-macos-arm64.tar.gz"
           echo "Downloading $URL"
-          curl -fL -o crispasr-libs.tar.gz "$URL"
+          curl -fL --retry 8 --retry-all-errors -o crispasr-libs.tar.gz "$URL"
           mkdir -p _sibling/CrispASR/build-flutter-bundle
           tar -xzf crispasr-libs.tar.gz \
             -C _sibling/CrispASR/build-flutter-bundle --strip-components=1

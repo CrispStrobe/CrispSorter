@@ -51,15 +51,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ../CrispASR/build-flutter-bundle ../CrispEmbed/build src-tauri/bin
-          curl -fsSL https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.32/libcrispasr-macos-arm64.tar.gz -o /tmp/crispasr.tar.gz
+          curl -fsSL --retry 8 --retry-all-errors https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.32/libcrispasr-macos-arm64.tar.gz -o /tmp/crispasr.tar.gz
           tar -xzf /tmp/crispasr.tar.gz -C ../CrispASR/build-flutter-bundle --strip-components=1
-          curl -fsSL https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.11/crispembed-macos-arm64.tar.gz -o /tmp/crispembed.tar.gz
+          curl -fsSL --retry 8 --retry-all-errors https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.11/crispembed-macos-arm64.tar.gz -o /tmp/crispembed.tar.gz
           tar -xzf /tmp/crispembed.tar.gz -C ../CrispEmbed/build
-          curl -fsSL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz -o /tmp/pdfium.tgz
+          curl -fsSL --retry 8 --retry-all-errors https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz -o /tmp/pdfium.tgz
           mkdir -p /tmp/pdfium
           tar -xzf /tmp/pdfium.tgz -C /tmp/pdfium
           cp /tmp/pdfium/lib/libpdfium.dylib src-tauri/bin/
-          curl -fsSL https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.tar.gz -o /tmp/llama.tar.gz
+          curl -fsSL --retry 8 --retry-all-errors https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.tar.gz -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama
           tar -xzf /tmp/llama.tar.gz -C /tmp/llama
           server=$(find /tmp/llama -type f -name llama-server | head -1)

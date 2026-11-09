@@ -58,7 +58,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Basename of the file under the app data dir that records the user's
 /// choice. Deliberately *not* inside `settings.json`: the vault has to
@@ -404,7 +404,9 @@ pub fn default_app_data_dir() -> PathBuf {
 }
 
 /// Build the vault for `choice`, or say why it cannot be built.
-fn build(choice: &BackendChoice, dir: &Path) -> Result<Arc<dyn Vault>, Error> {
+///
+/// Callers go through [`build_guarded`], never this directly.
+fn build_unguarded(choice: &BackendChoice, dir: &Path) -> Result<Arc<dyn Vault>, Error> {
     match choice {
         BackendChoice::OsDefault => Ok(Arc::new(os_keyring::OsKeyring)),
         BackendChoice::Session => Ok(Arc::new(memory::MemoryVault::default())),
@@ -420,6 +422,122 @@ fn build(choice: &BackendChoice, dir: &Path) -> Result<Arc<dyn Vault>, Error> {
         BackendChoice::MacKeychain { .. } => Err(Error::Backend(
             "named keychains exist only on macOS".to_string(),
         )),
+    }
+}
+
+/// Text of a caught panic payload, for an error message.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
+/// Run `f`, turning a panic into an error. Native keychain/keyring code is
+/// the most likely thing in this module to misbehave on an unusual system,
+/// and a secret read must never take the app down with it.
+fn contain<T>(what: &str, f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => Err(Error::Backend(format!("{what} failed unexpectedly: {}", panic_message(payload.as_ref())))),
+    }
+}
+
+/// Build `choice`'s vault with every operation panic-contained.
+fn build_guarded(choice: &BackendChoice, dir: &Path) -> Result<Arc<dyn Vault>, Error> {
+    let vault = contain("opening the secret store", || build_unguarded(choice, dir))?;
+    Ok(Arc::new(Guarded(vault)))
+}
+
+/// Forwards to the real vault, converting panics into errors.
+struct Guarded(Arc<dyn Vault>);
+
+impl Vault for Guarded {
+    fn get(&self, service: &str, account: &str) -> Result<Option<String>, Error> {
+        contain("reading a secret", || self.0.get(service, account))
+    }
+    fn set(&self, service: &str, account: &str, value: &str) -> Result<(), Error> {
+        contain("saving a secret", || self.0.set(service, account, value))
+    }
+    fn delete(&self, service: &str, account: &str) -> Result<(), Error> {
+        contain("deleting a secret", || self.0.delete(service, account))
+    }
+    fn kind(&self) -> &'static str {
+        self.0.kind()
+    }
+    fn is_unlocked(&self) -> bool {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.0.is_unlocked())).unwrap_or(false)
+    }
+    fn unlock(&self, passphrase: &str) -> Result<(), Error> {
+        contain("unlocking the secret store", || self.0.unlock(passphrase))
+    }
+}
+
+/// Stands in while the chosen store cannot be opened.
+///
+/// Reads find nothing; writes are refused. Accepting writes into memory
+/// (the previous fallback) silently lost them at the next start, and on
+/// the way turned plain-text keys in settings.json into references to a
+/// store that no longer had them. The unopened store's contents stay
+/// untouched on disk; Retry or choosing another store resolves it.
+struct Unavailable {
+    reason: String,
+}
+
+impl Unavailable {
+    fn refuse(&self) -> Error {
+        Error::Backend(format!(
+            "not saved: the selected secret store is unavailable ({}). Retry, or choose another store in Settings.",
+            self.reason
+        ))
+    }
+}
+
+impl Vault for Unavailable {
+    fn get(&self, _service: &str, _account: &str) -> Result<Option<String>, Error> {
+        Ok(None)
+    }
+    fn set(&self, _service: &str, _account: &str, _value: &str) -> Result<(), Error> {
+        Err(self.refuse())
+    }
+    fn delete(&self, _service: &str, _account: &str) -> Result<(), Error> {
+        // Nothing can be deleted from a store that is not open; succeeding
+        // here would claim the secret is gone when it is still on disk.
+        Err(self.refuse())
+    }
+    fn kind(&self) -> &'static str {
+        "unavailable"
+    }
+}
+
+/// Decide the active vault from the environment override and the stored
+/// choice, falling back to [`Unavailable`] — never to the platform default
+/// (that would answer "your chosen store did not open" with "so we used the
+/// one you rejected", which on macOS brings back login-keychain dialogs).
+fn resolve(
+    dir: &Path,
+    env: Option<BackendChoice>,
+    stored: Option<BackendChoice>,
+    build: impl FnOnce(&BackendChoice, &Path) -> Result<Arc<dyn Vault>, Error>,
+) -> Slot {
+    let from_env = env.is_some();
+    let chosen = stored.is_some();
+    let choice = env.or(stored).unwrap_or_default();
+    let built = contain("opening the secret store", || build(&choice, dir));
+    match built {
+        Ok(vault) => Slot { choice, chosen, from_env, error: None, vault },
+        Err(e) => {
+            let reason = e.to_string();
+            eprintln!("secrets: the selected store ({}) is unavailable, continuing without it: {reason}", choice.kind());
+            Slot {
+                choice,
+                chosen,
+                from_env,
+                vault: Arc::new(Unavailable { reason: reason.clone() }),
+                error: Some(reason),
+            }
+        }
     }
 }
 
@@ -445,36 +563,21 @@ fn slot() -> &'static RwLock<Slot> {
                 .ok()
                 .as_deref()
                 .and_then(BackendChoice::parse_env);
-            let from_env = env.is_some();
             let stored = load_choice(&dir);
-            let chosen = stored.is_some();
-            let choice = env.or(stored).unwrap_or_default();
-
-            // A vault we cannot build must not take the app's secrets with
-            // it — but the fallback is memory, NOT the platform default.
-            // Falling back to the OS store would answer "your chosen store
-            // did not open" with "so we used the one you rejected", which
-            // on macOS means the login-keychain dialogs are back. Memory
-            // loses nothing: the unopened vault's contents stay on disk,
-            // and `status().error` tells the UI what to say.
-            match build(&choice, &dir) {
-                Ok(vault) => RwLock::new(Slot {
-                    choice,
-                    chosen,
-                    from_env,
-                    error: None,
-                    vault,
-                }),
-                Err(e) => RwLock::new(Slot {
-                    choice,
-                    chosen,
-                    from_env,
-                    error: Some(e.to_string()),
-                    vault: Arc::new(memory::MemoryVault::default()),
-                }),
-            }
+            RwLock::new(resolve(&dir, env, stored, build_guarded))
         }
     })
+}
+
+/// The slot, even if a thread panicked while holding it. A poisoned lock
+/// would otherwise turn one failure into a panic on every later secret
+/// access for the rest of the session.
+fn read_slot() -> RwLockReadGuard<'static, Slot> {
+    slot().read().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn write_slot() -> RwLockWriteGuard<'static, Slot> {
+    slot().write().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Swap the active vault without persisting anything.
@@ -486,13 +589,13 @@ fn slot() -> &'static RwLock<Slot> {
 /// loses it between two `Entry::new` calls for the same account.
 #[cfg(test)]
 pub fn install_for_tests(v: Arc<dyn Vault>) {
-    let mut s = slot().write().expect("vault slot poisoned");
+    let mut s = write_slot();
     s.vault = v;
 }
 
 /// The vault in force right now.
 pub fn active() -> Arc<dyn Vault> {
-    Arc::clone(&slot().read().expect("vault slot poisoned").vault)
+    Arc::clone(&read_slot().vault)
 }
 
 /// Resolve the vault eagerly against `dir`. Cheap, idempotent, and the
@@ -504,7 +607,7 @@ pub fn init(dir: PathBuf) {
 
 /// Everything the Settings pane needs to render the picker.
 pub fn status() -> Status {
-    let s = slot().read().expect("vault slot poisoned");
+    let s = read_slot();
     Status {
         choice: s.choice.clone(),
         chosen: s.chosen,
@@ -517,7 +620,7 @@ pub fn status() -> Status {
 
 /// Has the user ever answered the chooser?
 pub fn is_chosen() -> bool {
-    slot().read().expect("vault slot poisoned").chosen
+    read_slot().chosen
 }
 
 /// Switch vaults and persist the decision. Takes effect immediately —
@@ -530,15 +633,39 @@ pub fn is_chosen() -> bool {
 /// fail because the copy-out failed.
 pub fn select(choice: BackendChoice) -> Result<(), Error> {
     let dir = data_dir();
-    let vault = build(&choice, &dir)?;
+    let vault = build_guarded(&choice, &dir)?;
     save_choice(&dir, &choice)?;
     clear_denied();
-    let mut s = slot().write().expect("vault slot poisoned");
+    let mut s = write_slot();
     s.choice = choice;
     s.chosen = true;
     s.error = None;
     s.vault = vault;
     Ok(())
+}
+
+/// Try the chosen store again — e.g. after the volume holding a keychain
+/// was remounted — and switch to it if it opens now. Also lowers the
+/// "refused this session" latch. Never changes the stored choice.
+pub fn retry() -> Status {
+    clear_denied();
+    let failed = read_slot().error.is_some();
+    if failed {
+        let choice = read_slot().choice.clone();
+        let rebuilt = build_guarded(&choice, &data_dir());
+        let mut s = write_slot();
+        // Only replace the slot if nobody switched stores meanwhile.
+        if s.choice == choice {
+            match rebuilt {
+                Ok(vault) => {
+                    s.vault = vault;
+                    s.error = None;
+                }
+                Err(e) => s.error = Some(e.to_string()),
+            }
+        }
+    }
+    status()
 }
 
 /// Unlock the active vault with `passphrase`.
@@ -567,7 +694,7 @@ pub fn migrate(
     // most one dialog follows: the first denial re-latches and breaks the
     // loop below.
     clear_denied();
-    let source = build(from, &dir)?;
+    let source = build_guarded(from, &dir)?;
     let target = active();
     let (mut copied, mut skipped) = (0usize, 0usize);
     let mut failures = Vec::new();
@@ -752,6 +879,104 @@ pub fn suggested_keychain_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Startup when the chosen store is unavailable ──────────────────
+
+    fn file_choice() -> BackendChoice {
+        BackendChoice::File { key: FileKeySource::Device }
+    }
+
+    #[test]
+    fn unavailable_store_falls_back_without_panicking_and_refuses_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        // A device-key file that is not base64: the file vault refuses to open
+        // rather than overwrite a key that may protect real secrets.
+        std::fs::write(dir.path().join(file_vault::KEY_FILE), b"%%% not base64").unwrap();
+        let slot = resolve(dir.path(), None, Some(file_choice()), build_guarded);
+        assert_eq!(slot.choice, file_choice());
+        assert!(slot.chosen);
+        assert!(slot.error.as_deref().unwrap().contains("base64"));
+        assert_eq!(slot.vault.kind(), "unavailable");
+        assert_eq!(slot.vault.get("s", "a").unwrap(), None);
+        let refused = slot.vault.set("s", "a", "sk-secret").unwrap_err().to_string();
+        assert!(refused.contains("not saved") && refused.contains("unavailable"), "{refused}");
+        assert!(slot.vault.delete("s", "a").is_err(), "a delete must not claim success");
+        // The unopened store's files are left exactly as they were.
+        assert_eq!(std::fs::read(dir.path().join(file_vault::KEY_FILE)).unwrap(), b"%%% not base64");
+    }
+
+    #[test]
+    fn a_missing_named_keychain_falls_back_instead_of_failing_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let choice = BackendChoice::MacKeychain {
+            path: dir.path().join("unmounted-volume/CrispSorter.keychain-db"),
+            unlock: MacUnlock::AppManaged,
+        };
+        let slot = resolve(dir.path(), None, Some(choice.clone()), build_guarded);
+        assert_eq!(slot.choice, choice);
+        assert!(slot.error.is_some());
+        assert_eq!(slot.vault.kind(), "unavailable");
+    }
+
+    #[test]
+    fn an_unwritable_data_dir_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("file-in-the-way");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let slot = resolve(&not_a_dir, None, Some(file_choice()), build_guarded);
+        assert!(slot.error.is_some());
+        assert_eq!(slot.vault.kind(), "unavailable");
+    }
+
+    #[test]
+    fn a_panicking_backend_is_contained_at_startup_and_per_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = resolve(dir.path(), None, Some(file_choice()), |_, _| panic!("native keychain exploded"));
+        assert!(slot.error.as_deref().unwrap().contains("native keychain exploded"));
+        assert_eq!(slot.vault.kind(), "unavailable");
+
+        struct Exploding;
+        impl Vault for Exploding {
+            fn get(&self, _: &str, _: &str) -> Result<Option<String>, Error> { panic!("get exploded") }
+            fn set(&self, _: &str, _: &str, _: &str) -> Result<(), Error> { panic!("set exploded") }
+            fn delete(&self, _: &str, _: &str) -> Result<(), Error> { panic!("delete exploded") }
+            fn kind(&self) -> &'static str { "exploding" }
+            fn is_unlocked(&self) -> bool { panic!("status exploded") }
+        }
+        let guarded = Guarded(Arc::new(Exploding));
+        assert!(guarded.get("s", "a").unwrap_err().to_string().contains("get exploded"));
+        assert!(guarded.set("s", "a", "v").is_err());
+        assert!(guarded.delete("s", "a").is_err());
+        assert!(!guarded.is_unlocked());
+    }
+
+    #[test]
+    fn env_override_and_default_choice_still_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = resolve(dir.path(), Some(BackendChoice::Session), Some(file_choice()), build_guarded);
+        assert!(slot.from_env);
+        assert_eq!(slot.choice, BackendChoice::Session);
+        assert!(slot.error.is_none());
+        slot.vault.set("s", "a", "v").unwrap();
+        assert_eq!(slot.vault.get("s", "a").unwrap().as_deref(), Some("v"));
+        // A healthy file vault opens normally through the guarded builder.
+        let slot = resolve(dir.path(), None, Some(file_choice()), build_guarded);
+        assert!(slot.error.is_none(), "{:?}", slot.error);
+        assert_eq!(slot.vault.kind(), "file");
+    }
+
+    #[test]
+    fn a_poisoned_lock_is_recovered_instead_of_panicking_forever() {
+        let lock = std::sync::Arc::new(RwLock::new(1));
+        let poisoner = std::sync::Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.write().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(lock.is_poisoned());
+        assert_eq!(*lock.read().unwrap_or_else(std::sync::PoisonError::into_inner), 1);
+    }
 
     #[test]
     fn env_syntax_covers_every_backend() {

@@ -990,7 +990,7 @@ pub struct OcrReviewResult {
 /// Recognition must see exactly the pixels displayed by the reviewer. Cleanup
 /// and restoration happen explicitly before this call and produce a new asset;
 /// repeating them inside individual engine stages would invalidate the boxes.
-fn review_pipeline_config(cfg: &super::OcrPipelineConfig) -> super::OcrPipelineConfig {
+pub(crate) fn review_pipeline_config(cfg: &super::OcrPipelineConfig) -> super::OcrPipelineConfig {
     let mut config = cfg.clone();
     config.enabled = true;
     config.cleanup_enabled = false;
