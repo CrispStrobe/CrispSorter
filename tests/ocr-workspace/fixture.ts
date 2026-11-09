@@ -25,14 +25,16 @@ function recognition(path:string):RecognitionResult {
     };
 }
 
-function documentSvg(page:number, wordReview=false):string {
+function documentSvg(page:number, wordReview=false, nativeWord=false):string {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
       <rect width="1000" height="1400" fill="#fffefa"/>
       <rect x="78" y="58" width="66" height="7" fill="#2e6a80"/>
       <g fill="#263e50" font-family="Arial,sans-serif">
         <text x="80" y="122" font-size="31" font-weight="700" letter-spacing="2">NORTHSTAR SUPPLY CO.</text>
         <text x="80" y="204" font-size="37" font-weight="700">Service statement · page ${page}</text>
-        <text x="80" y="299" font-size="28">${wordReview ? '😀 ' : ''}Invoice NS-2026-1042</text>
+        ${nativeWord
+            ? '<text x="80" y="299" font-size="28">😀</text><text x="120" y="299" font-size="28" textLength="115" lengthAdjust="spacingAndGlyphs">Invoice</text><text x="250" y="299" font-size="28" textLength="240" lengthAdjust="spacingAndGlyphs">NS-2026-1042</text>'
+            : `<text x="80" y="299" font-size="28">${wordReview ? '😀 ' : ''}Invoice NS-2026-1042</text>`}
         <text x="80" y="354" font-size="25">Issued 08 November 2026</text>
         <text x="80" y="430" font-size="20" fill="#657485">BILL TO</text>
         <text x="80" y="470" font-size="26">Orchard Research Group</text>
@@ -106,6 +108,21 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             detection.char_conf=Array.from(detection.text,()=>0.99);
             detection.char_conf_unit='unicode_codepoint';detection.char_conf_aligned=true;
         }
+        if(scenario==='native-word') {
+            // Provider-shaped synthetic input tests the native evidence contract;
+            // only a separate live receipt can demonstrate actual OCR accuracy.
+            result.engine='system_tesseract';
+            const invoice=result.regions[2];
+            invoice.text='😀 Inv0ice NS-2026-1042';invoice.confidence=0.99;
+            invoice.char_conf=Array.from(invoice.text,()=>0.99);
+            invoice.char_conf_unit='unicode_codepoint';invoice.char_conf_aligned=true;
+            invoice.word_evidence={version:1,offset_unit:'utf16',source:'tesseract_tsv',words:[
+                {text:'Inv0ice',start:3,end:10,x:120,y:270,w:115,h:40,confidence:0.42,confidence_basis:'recognition'},
+                {text:'NS-2026-1042',start:11,end:23,x:250,y:270,w:240,h:40,confidence:null,confidence_basis:'recognition'},
+            ]};
+            // The native token includes its hyphens. Both its missing score and
+            // the first token's low score override the high character scores.
+        }
         project=applyRecognition(project,project.pages[0].id,result);
         project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
         project=approvePage(project,project.pages[2].id);
@@ -141,7 +158,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         });
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(scenario==='native-word'?['system_tesseract']:[])],...(scenario==='native-word'?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -197,7 +214,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
         async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
-        imageUrl(path){return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(pageNumber(path),scenario==='word-review'))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',scenario==='native-word'&&page===1))}`;},
     };
     return {client,initialProject:null};
 }

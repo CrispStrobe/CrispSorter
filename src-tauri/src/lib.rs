@@ -27,6 +27,7 @@ pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_reading_order;
+pub mod ocr_word_evidence;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;

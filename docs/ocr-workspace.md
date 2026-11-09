@@ -186,9 +186,18 @@ individual words.
 
 Click a word to select its exact text in the region editor, then type the
 correction. **Next word to check** cycles through words with missing scores or
-characters below the review threshold within the selected region. Use **Next
+scores below the review threshold within the selected region. Use **Next
 issue** or **F8** to continue through regions and pages. The source magnifier shows
-the selected region; word boxes are not inferred from a line's dimensions.
+the selected word when the recognizer supplies its genuine source box; otherwise
+it shows the selected region. Word boxes are not inferred from a line's dimensions.
+
+**System Tesseract · word evidence** uses an available local Tesseract installation
+and its language data to obtain word scores and source boxes. Its original word
+score controls the word's color directly. The tooltip identifies it as an
+**Original word recognition score**; it is not a character average or minimum.
+Native token boundaries, including punctuation within a token, are retained.
+When a native word has no score, it stays **Unscored** while retaining its box;
+other confidence values are not substituted for the missing score.
 
 When verified Unicode-codepoint recognition scores are available, the displayed
 word score is their **mean**, and the tooltip also reports the **lowest character
@@ -197,9 +206,9 @@ hide an uncertain glyph:
 
 | Color | Meaning |
 | --- | --- |
-| Green · High | Every character meets the project's review threshold, 85% by default. |
-| Amber · Medium | The weakest character is below the review threshold but at least 60%. |
-| Red · Low | The weakest character is below both 60% and the review threshold. |
+| Green · High | The native word score, or every aligned character score, meets the project's review threshold, 85% by default. |
+| Amber · Medium | The native word score, or weakest aligned character, is below the review threshold but at least 60%. |
+| Red · Low | The native word score, or weakest aligned character, is below both 60% and the review threshold. |
 | Gray · Unscored | Verified word confidence is unavailable. |
 | Blue · Edited | The text was manually changed; original scores do not measure the correction. |
 
@@ -207,26 +216,30 @@ A word with an 87% mean and one 20% character is therefore red, even at the
 default 85% review threshold. Changing the threshold in **Recognize → Review
 threshold** updates the colors and review flags together. The legend, optional
 score labels, and tooltips explain the colors. These are review signals, not
-calibrated word accuracy probabilities. Token scores, detector scores, invalid
-arrays, and contradictory alignment metadata cannot produce word scores.
+calibrated word accuracy probabilities. Generic model-token likelihoods, detector
+scores, invalid arrays, and contradictory alignment metadata cannot produce word
+scores. Valid native word evidence takes precedence over character-derived scores.
 
 The currently pinned native CrispEmbed integration does not supply verified word
 offsets or Unicode character alignment, so its words normally appear
-**Unscored**. Its region scores remain useful separately. Word scoring is available
-for recognition adapters that explicitly provide verified character alignment;
-the browser verification fixture exercises that contract. Providing scores for
-the deployed native engines requires matching native bindings and a library
-release that exports that alignment.
+**Unscored**. Its region scores remain useful separately. The separate System
+Tesseract provider supplies direct word evidence; adapters with verified character
+alignment can also supply derived word scores. The two browser fixtures exercise
+these contracts with synthetic inputs. Adding verified alignment to the other
+native engines requires matching bindings and a library release that exports it.
 
 After any text correction, the current region's words turn blue for **Edited**.
 **Original OCR** retains the original text and its available scores for
 comparison; its words are read-only because their offsets may no longer
 match the corrected text. Use **Tab** to focus an original word and **Enter** to
 inspect its available scores without selecting or changing the corrected text.
+When an original word has a source box, inspection also highlights and magnifies
+that saved box. Current words remain **Edited** after any change in the region;
+the app does not guess how original word spans map onto a rewritten passage.
 **Current text** returns to the editable word view.
 Corrections use the existing autosave, undo/redo, approval, and export workflow.
 Editing an approved region revokes approval, and source-image warnings follow the
-same review rules as the issue queue, including low character scores and
+same review rules as the issue queue, including low native word or character scores and
 unapproved corrections.
 
 ### Physical page sizes
@@ -368,3 +381,10 @@ reading order, tables, and formulas; independently validate archival output; and
 exercise large documents, low disk space, process interruption, and recovery on
 each supported desktop platform. Scanner drivers, exact typography reconstruction,
 and automatic layout equivalence are outside the implemented workspace contract.
+
+The [OCR workspace qualification guide](../tests/quality/ocr-workspace-qualification.md)
+and its receipt schema keep synthetic UI, native parser, native provider, real
+corpus, device, and standards results separate. A passing browser fixture does
+not qualify live recognition or an installed application. Each receipt records
+the actual source version, runtime and model identities, effective settings,
+input/output checksums, timings, and any blocked or unrun checks.

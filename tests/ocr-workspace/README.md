@@ -40,7 +40,7 @@ For interactive inspection:
 node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
-The fixture can be selected using `?scenario=review`, `?scenario=word-review`,
+The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `?scenario=native-word`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
@@ -56,6 +56,14 @@ mean score but one low character score; other words cover medium and high scores
 A leading emoji exercises UTF-16 text selection offsets, and punctuation and
 whitespace must survive the flowing colored-text display unchanged.
 
+The native-word scenario supplies synthetic `tesseract_tsv` word evidence with
+exact UTF-16 spans and full-page pixel boxes. It preserves a hyphenated native
+token and a leading emoji outside the measured words. A 42% native score and a
+null native score both take precedence over 99% character scores; the null score
+retains its source box without acquiring a fabricated percentage. This fixture
+does not execute Tesseract. Live engine output and parser qualification are
+recorded separately using the [workspace qualification guide](../quality/ocr-workspace-qualification.md).
+
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
 `diagnostics.effective_zone` identifies the exact crop. The zone-empty scenario
@@ -67,7 +75,7 @@ released, allowing page navigation before the result arrives.
 - A recovered three-page project retains page/source identities and revision leases.
 - Corrections preserve original recognition, undo/redo works, and editing invalidates
   page approval.
-- Words show numeric scores only for verified character recognition evidence.
+- Words show numeric scores only for validated native word evidence or verified character recognition evidence.
   Token, detector-only, and unaligned results remain unscored. The weakest
   character flags a word even when its mean and region score exceed the threshold.
 - Green/high, amber/medium, red/low, gray/unscored, and blue/edited words have
@@ -77,6 +85,12 @@ released, allowing page navigation before the result arrives.
 - Clicking a word or using Next word to check selects its exact Unicode text in
   the editor. Corrections clear scores for current text, preserve read-only
   original evidence, and survive save, undo/redo, and export without rerunning OCR.
+- Native words retain provider token boundaries, direct score semantics, and
+  their genuine source boxes. Selecting a word highlights and magnifies that
+  box; an unscored native word still has its box. Corrections clear stale source
+  selection. Keyboard inspection of original evidence restores the original
+  crop without changing the corrected text. Save, history, and JSON export keep
+  the original word envelope, with no current evidence attached to edited text.
 - Source overlays flag low character evidence and unapproved corrections
   consistently with the review queue. Word controls fit desktop and compact
   layouts, with dedicated screenshots for both.

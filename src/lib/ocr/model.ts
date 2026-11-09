@@ -1,4 +1,5 @@
 import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
+import { readWordEvidence, type WordEvidenceEnvelope } from './wordEvidence';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -15,6 +16,8 @@ export interface OcrRegion {
     confidence: number | null; char_conf: number[]; confidenceBasis: ConfidenceBasis;
     charConfidenceUnit: 'unicode_codepoint' | 'token' | 'unknown'; charConfidenceAligned: boolean;
     kind: RegionKind; review: ReviewStatus; excluded: boolean;
+    /** Immutable source word evidence, independently versioned for v1 projects. */
+    wordEvidence?: WordEvidenceEnvelope;
 }
 export interface OcrPage {
     id: string; documentId: string; sourcePage: number; name: string;
@@ -37,6 +40,7 @@ export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
     confidence?: number | null; char_conf?: number[];
     confidence_basis?: string; kind?: string; char_conf_aligned?: boolean; char_conf_unit?: string;
+    word_evidence?: unknown;
     [key: string]: unknown;
 }
 export interface RecognitionResult {
@@ -59,6 +63,7 @@ export interface ExportRegion {
     /** Character scores are attached to current text only with proven alignment. */
     char_conf_aligned: boolean; char_conf: number[];
     original_char_conf: number[]; original_char_conf_aligned: boolean;
+    word_evidence?: WordEvidenceEnvelope; original_word_evidence?: WordEvidenceEnvelope;
     review: ReviewStatus; kind: RegionKind;
 }
 export interface ExportPage {
@@ -158,6 +163,7 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
             confidence: score, char_conf: chars,
             confidenceBasis: regionBasis(region.confidence_basis ?? result.confidence_basis),
             charConfidenceUnit: unit === 'token' ? 'token' : unit === 'unicode_codepoint' ? 'unicode_codepoint' : 'unknown', charConfidenceAligned: aligned,
+            wordEvidence: readWordEvidence(region.word_evidence, region.text, result, region),
             kind: kinds.includes(region.kind as RegionKind) ? region.kind as RegionKind : 'text',
             review: 'unreviewed', excluded: false,
         };
@@ -184,7 +190,7 @@ export function updateRegion(project: OcrProject, pageId: string, regionId: stri
     let changed = false;
     const regions = page.regions.map((region) => {
         if (region.id !== regionId) return region;
-        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf };
+        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf, wordEvidence: region.wordEvidence };
         if (!hasBox(next, page)) throw new Error('Region must remain inside the page.');
         changed = true;
         // Any content/geometry/type edit invalidates approval, including exclusion.
@@ -380,6 +386,10 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
                 char_conf_unit:r.charConfidenceUnit, char_conf_aligned:currentAligned,
                 char_conf:currentAligned?[...r.char_conf]:[],
                 original_char_conf:[...r.char_conf], original_char_conf_aligned:originalAligned,
+                ...(r.wordEvidence ? {
+                    original_word_evidence: clone(r.wordEvidence),
+                    ...(r.text === r.originalText ? { word_evidence: clone(r.wordEvidence) } : {}),
+                } : {}),
                 review:r.review, kind:r.kind,
             };
         })});
@@ -449,6 +459,7 @@ export function parseProject(input: unknown): OcrProject {
             if (!['unicode_codepoint','token','unknown'].includes(region.charConfidenceUnit)) region.charConfidenceUnit='unknown';
             if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
             if (typeof region.text!=='string'||typeof region.originalText!=='string'||!hasBox(region,page)||!kinds.includes(region.kind)||!reviews.includes(region.review)||!bases.includes(region.confidenceBasis)||typeof region.excluded!=='boolean'||!Array.isArray(region.char_conf)||region.char_conf.some((c)=>confidence(c)===null)||(region.confidence!==null&&confidence(region.confidence)===null)) throw new Error('OCR project contains an invalid region.');
+            region.wordEvidence=readWordEvidence(region.wordEvidence,region.originalText,page);
         }
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
     }

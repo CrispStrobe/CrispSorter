@@ -1,7 +1,9 @@
 # Native OCR word evidence contract
 
-Status: scoped for OCR-01 in the [implementation roadmap](ocr-roadmap.md).
-This document defines the boundary; a schema alone is not engine support.
+Status: implemented for the explicit System Tesseract route in OCR-01; native
+compilation and browser results are tracked separately in the
+[implementation roadmap](ocr-roadmap.md). The other embedded engines do not gain
+word evidence merely by sharing this schema.
 
 ## First provider
 
@@ -99,6 +101,15 @@ upgrades must explicitly consume this evidence before advertising word-level
 geometry in every output format.
 
 ## Acceptance evidence
+
+The focused workflow [OCR System Tesseract evidence](../.github/workflows/ocr-system-tesseract.yml)
+compiles the actual production module in a small harness, exercises feature
+gates on Linux and Windows, and runs the real adapter on Linux. This avoids
+requiring unrelated model libraries for parser/runner checks. Full application
+binding and export integration remain in
+[OCR paired native integration](../.github/workflows/ocr-paired-native.yml).
+The recorded [external CLI smoke](../tests/quality/results/2026-11-09/system-tesseract-word-smoke/receipt.json)
+does not itself qualify either Rust path.
 
 - Parser fixtures cover Unicode, adjacent-script tokens, punctuation, missing
   scores, malformed TSV, invalid geometry, and disagreement between TXT and TSV.

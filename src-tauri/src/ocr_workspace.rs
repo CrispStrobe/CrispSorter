@@ -244,13 +244,17 @@ const WORKSPACE_ENGINES: &[&str] = &[
 #[tauri::command]
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
+    let system = crate::ocr_word_evidence::capabilities();
+    let mut engines = if native { WORKSPACE_ENGINES.to_vec() } else { vec![] };
+    if system.available { engines.push("system_tesseract"); }
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
     if cfg!(feature = "desktop") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
-        "ocr": native, "crispembed": native,
+        "ocr": native || system.available, "crispembed": native,
+        "system_tesseract": system,
         "pdf_import": cfg!(feature = "pdf-render"),
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
@@ -259,8 +263,8 @@ pub fn ocr_workspace_capabilities() -> Value {
         // Isolated low-memory Qwen2-VL worker (see `ocr_worker::run_cpu_budget`).
         "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
         "cpu_budget_pixels": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET,
-        "engines": if native { WORKSPACE_ENGINES.to_vec() } else { vec![] },
-        "reason": if native { None } else { Some("Recognition and document models require a build with CrispEmbed. Project editing, import of images and TIFFs, and text exports remain available.") },
+        "engines": engines,
+        "reason": if native || system.available { None } else { Some("Recognition requires CrispEmbed or an installed System Tesseract in a desktop sidecar build. Project editing, image/TIFF import, and text exports remain available.") },
         "pdf_reason": if cfg!(feature = "pdf-render") { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
     })
@@ -641,10 +645,23 @@ pub async fn ocr_workspace_recognize(
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
 ) -> Result<RecognizedPage, String> {
-    if !cfg!(feature = "crispembed") { return Err("Recognition requires a build with CrispEmbed.".into()); }
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
+    if engine.as_deref() == Some("system_tesseract") {
+        if cpu_pixel_budget.unwrap_or(false) {
+            return Err("The low-memory CPU profile applies to Qwen2 VL only. Turn it off for System Tesseract.".into());
+        }
+        let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+        return tokio::task::spawn_blocking(move || {
+            let mut result = recognize_system_tesseract_page(&root, &path, language.as_deref(), zone, size)?;
+            // This adapter never transforms the current working page. Keep the
+            // caller's exact identity after canonical-path validation for I/O.
+            result.page.image_path = page_path;
+            Ok(result)
+        }).await.map_err(|e| format!("System Tesseract worker: {e}"))?;
+    }
+    if !cfg!(feature = "crispembed") { return Err("This recognition engine requires CrispEmbed. Select System Tesseract if it is available.".into()); }
     let config = match config {
         Some(config) => config,
         None => state.bg_ingest.lock().await.ocr_pipeline.clone(),
@@ -695,6 +712,7 @@ fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelin
             confidence: recognition.then_some(r.confidence),
             confidence_basis: if recognition { "recognition" } else { "unknown" }.into(),
             char_conf: r.char_conf, char_conf_unit: "unknown".into(), char_conf_aligned: false,
+            word_evidence: None,
             kind: "text".into(),
         }
     }).collect();
@@ -703,6 +721,57 @@ fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelin
         warnings: vec![format!("Low-memory CPU profile: the vision input was limited to {} pixels, so fine print may be missed. Review the result.", crate::extractors::ocr_worker::CPU_PIXEL_BUDGET)],
         diagnostics: json!({"cpu_pixel_budget": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET, "isolated_worker": true}),
     })
+}
+
+/// Explicit external-engine route: recognize exactly the current pixels and
+/// translate both paragraph and word boxes once after a cropped invocation.
+fn recognize_system_tesseract_page(root: &Path, path: &Path, language: Option<&str>, zone: Option<PixelRect>, physical_size: Option<(f64, f64)>) -> Result<RecognizedPage, String> {
+    let started = std::time::Instant::now();
+    let (width, height) = checked_dimensions(path)?;
+    let (recognition_path, offset) = if let Some(zone) = zone {
+        let (x, y, w, h) = checked_rect(zone, width, height)?;
+        let crop = persist_image(root, &decode_page(path)?.crop_imm(x, y, w, h))?;
+        (PathBuf::from(crop.image_path), (x, y))
+    } else { (path.to_owned(), (0, 0)) };
+    let result = crate::ocr_word_evidence::recognize(&recognition_path, language)?;
+    let mut diagnostics = result.diagnostics;
+    diagnostics["full_text"] = json!(result.full_text);
+    diagnostics["engine"] = json!("system_tesseract");
+    diagnostics["preparation"] = json!("current_working_image");
+    diagnostics["recognition_image_path"] = json!(recognition_path.to_string_lossy());
+    if let Some(zone) = zone {
+        diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?;
+        diagnostics["effective_zone"] = json!({"x":offset.0,"y":offset.1,"w":result.width,"h":result.height});
+        diagnostics["region_offset"] = json!({"x":offset.0,"y":offset.1});
+    }
+    let regions = map_system_tesseract_regions(result.regions, offset, width, height)?;
+    let mut page = PageAsset { image_path:path.to_string_lossy().into_owned(), width, height,
+        page_width_points:None, page_height_points:None };
+    set_physical_size(&mut page, physical_size);
+    Ok(RecognizedPage { page, regions, elapsed_ms:started.elapsed().as_millis() as u64,
+        warnings:result.warnings, diagnostics })
+}
+
+fn map_system_tesseract_regions(source: Vec<crate::ocr_word_evidence::SystemTesseractRegion>, offset: (u32, u32), width: u32, height: u32) -> Result<Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, String> {
+    use crate::extractors::ocr_crispembed::OcrReviewRegion;
+    let mut regions = Vec::with_capacity(source.len());
+    for mut region in source {
+        region.x += offset.0 as f32;
+        region.y += offset.1 as f32;
+        for word in &mut region.word_evidence.words {
+            word.x += offset.0 as f32;
+            word.y += offset.1 as f32;
+        }
+        crate::ocr_word_evidence::validate_word_evidence(&region.word_evidence, &region.text, width, height)?;
+        checked_rect(PixelRect { x:region.x as f64, y:region.y as f64, w:region.w as f64, h:region.h as f64 }, width, height)?;
+        regions.push(OcrReviewRegion {
+            text:region.text, x:region.x, y:region.y, w:region.w, h:region.h,
+            confidence:None, confidence_basis:"unknown".into(),
+            char_conf:Vec::new(), char_conf_unit:"unknown".into(), char_conf_aligned:false,
+            word_evidence:Some(region.word_evidence), kind:"text".into(),
+        });
+    }
+    Ok(regions)
 }
 
 fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool) -> Result<RecognizedPage, String> {
@@ -738,6 +807,13 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     for region in &mut result.regions {
         region.x += offset.0 as f32;
         region.y += offset.1 as f32;
+        if let Some(evidence) = &mut region.word_evidence {
+            for word in &mut evidence.words {
+                word.x += offset.0 as f32;
+                word.y += offset.1 as f32;
+            }
+            crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, page.width, page.height)?;
+        }
         // A malformed native box must not reach a searchable export. Preserve
         // the previous frontend result by failing the whole replacement.
         checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, page.width, page.height)
@@ -979,6 +1055,10 @@ pub struct ExportRegion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_char_conf_aligned: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -1023,6 +1103,17 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
                 .map_err(|e| format!("Page {}, region {}: {e}", i + 1, j + 1))?;
             if region.confidence.is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score)) {
                 return Err(format!("Page {}, region {} has an invalid confidence.", i + 1, j + 1));
+            }
+            if let Some(evidence) = &region.original_word_evidence {
+                let original = region.original_text.as_deref().ok_or("Original word evidence requires its original text.")?;
+                crate::ocr_word_evidence::validate_word_evidence(evidence, original, width, height)?;
+            }
+            if let Some(evidence) = &region.word_evidence {
+                let original = region.original_text.as_deref().ok_or("Current word evidence requires its original text.")?;
+                if original != region.text {
+                    return Err("Edited text cannot retain the original word confidence or word boxes.".into());
+                }
+                crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, width, height)?;
             }
             if let Some(ch) = region.text.chars().find(|ch| *ch < ' ' && !['\t', '\n', '\r'].contains(ch)) {
                 return Err(format!("Page {}, region {} contains unsupported control character U+{:04X}. Remove it before exporting.", i + 1, j + 1, ch as u32));
@@ -1197,6 +1288,7 @@ mod tests {
             text: text.into(), x: 1.0, y: 1.0, w: 6.0, h: 2.0, confidence: Some(0.0), char_conf: vec![],
             id: None, original_text: None, confidence_basis: None, char_conf_unit: None,
             char_conf_aligned: None, original_char_conf: None, original_char_conf_aligned: None,
+            word_evidence: None, original_word_evidence: None,
             review: None, kind: None,
         }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None }
     }
@@ -1209,6 +1301,48 @@ mod tests {
         assert_eq!(first.image_path, second.image_path);
         assert_eq!(fs::read_dir(root.path().join("assets")).unwrap().count(), 1);
         assert_eq!(image::open(first.image_path).unwrap().to_rgb8(), image().to_rgb8());
+    }
+
+    #[test]
+    fn system_word_boxes_translate_from_crop_once_without_inventing_character_scores() {
+        let tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t100\t40\t-1\t\n5\t1\t1\t1\t1\t1\t2\t3\t30\t20\t42\tInv0ice\n";
+        let native = crate::ocr_word_evidence::parse_tesseract(tsv, "Inv0ice\n", 100, 40).unwrap();
+        let regions = map_system_tesseract_regions(native.regions.clone(), (70, 80), 200, 150).unwrap();
+        assert_eq!((regions[0].x, regions[0].y), (72.0, 83.0));
+        let word = &regions[0].word_evidence.as_ref().unwrap().words[0];
+        assert_eq!((word.x, word.y, word.start, word.end), (72.0, 83.0, 0, 7));
+        assert_eq!(word.confidence, Some(0.42));
+        assert!(regions[0].confidence.is_none());
+        assert!(regions[0].char_conf.is_empty());
+        assert!(!regions[0].char_conf_aligned);
+        assert!(map_system_tesseract_regions(native.regions, (190, 140), 200, 150).is_err());
+    }
+
+    #[test]
+    fn json_export_retains_original_word_evidence_but_rejects_stale_current_ranges() {
+        use crate::ocr_word_evidence::{NativeWordEvidence, WordEvidenceEnvelope};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "Hi");
+        let envelope = WordEvidenceEnvelope { version:1, offset_unit:"utf16".into(), source:"tesseract_tsv".into(), words:vec![
+            NativeWordEvidence { text:"Hi".into(), start:0, end:2, x:1.0, y:1.0, w:2.0, h:1.0,
+                confidence:None, confidence_basis:"recognition".into(), alternatives:None },
+        ] };
+        page.regions[0].original_text = Some("Hi".into());
+        page.regions[0].original_word_evidence = Some(envelope.clone());
+        page.regions[0].word_evidence = Some(envelope.clone());
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        page.regions[0].original_text = None;
+        page.regions[0].original_word_evidence = None;
+        assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("requires its original text"));
+        page.regions[0].original_text = Some("Hi".into());
+        page.regions[0].original_word_evidence = Some(envelope.clone());
+        page.regions[0].text = "Hello".into();
+        assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("Edited text"));
+        page.regions[0].word_evidence = None;
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        let json: Value = serde_json::from_slice(&export_bytes(&[page], "json", false).unwrap()).unwrap();
+        assert_eq!(json["pages"][0]["regions"][0]["original_word_evidence"], serde_json::to_value(envelope).unwrap());
+        assert!(json["pages"][0]["regions"][0].get("word_evidence").is_none());
     }
 
     #[test]

@@ -6,6 +6,7 @@ on:
     paths:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_reading_order.rs
+      - src-tauri/src/ocr_word_evidence.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
       - src-tauri/src/extractors/ocr_render.rs
@@ -99,6 +100,9 @@ jobs:
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_reading_order::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_word_evidence::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_render::tests -- --test-threads=1

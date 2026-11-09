@@ -25,6 +25,12 @@ export interface WorkspaceCapabilities {
   reason?: string;
   pdf_export_reason?: string;
   reasons?: Record<string, string>;
+  system_tesseract?: {
+    available: boolean;
+    version?: string | null;
+    languages: string[];
+    reason?: string | null;
+  };
 }
 export interface ProjectEnvelope extends SaveReceipt {
   project: OcrProject;

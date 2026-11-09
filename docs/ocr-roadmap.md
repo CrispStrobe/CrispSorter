@@ -84,7 +84,7 @@ units to implement and push one at a time.
 
 | ID | Priority | Work package | Principal dependency | Status |
 | --- | --- | --- | --- | --- |
-| OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | Planned |
+| OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | 01a–c implemented for System Tesseract; native CI pending |
 | OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | Planned |
 | OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | Planned |
 | OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | Planned |
@@ -116,12 +116,17 @@ the end.
 | Checkpoint | Delivered | Evidence and remaining boundary |
 | --- | --- | --- |
 | `12caadb` | Scoped OCR-01 through OCR-18; corrected capability and archival-output claims | Documentation audit; no new product capability claimed |
-| OCR-18a receipt contract (this checkpoint) | Versioned qualification receipt schema, recording guide, and a dated same-run Tesseract TSV/TXT capture | JSON Schema validation and artifact hashes checked. External Tesseract 5.5.0 produced five aligned words. Production Rust adapter, full app, real-scan corpus, devices, and output standards remain separate gates |
+| `fae6cc7` — OCR-18a | Versioned qualification receipt schema, recording guide, and a dated same-run Tesseract TSV/TXT capture | JSON Schema validation and artifact hashes checked. External Tesseract 5.5.0 produced five aligned words. Production Rust adapter, full app, real-scan corpus, devices, and output standards remain separate gates |
+| OCR-01a–c implementation (this checkpoint) | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests pass; Svelte check has 0 errors and 54 existing warnings. Added browser interaction and native crop/export checks. New focused Linux/Windows Rust workflow checks the actual module and feature gates, plus a real Linux adapter run. Browser and Rust execution on this checkpoint remain pending CI; local Chromium and Rust are unavailable |
 
 ## OCR-01: Native word evidence and honest capabilities
 
-**Status: Planned.** The UI can already show word scores from explicitly aligned
-character recognition scores. The pinned native path commonly lacks verified
+**Status: 01a–c implemented for System Tesseract; CI and broader qualification
+pending.** The explicit provider, validator, source-word inspection, and original
+evidence persistence are implemented in
+[`ocr_word_evidence.rs`](../src-tauri/src/ocr_word_evidence.rs) and the
+[word evidence contract](ocr-word-evidence.md). The UI also shows word scores from explicitly aligned
+character recognition scores. The pinned embedded path commonly lacks verified
 word offsets or Unicode character alignment, so real results may correctly show
 **Unscored**. See `hasAlignedCharacterConfidence` in
 [`confidence.ts`](../src/lib/ocr/confidence.ts), `getWordEvidence` in

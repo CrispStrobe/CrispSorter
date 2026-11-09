@@ -142,6 +142,19 @@
     untrack(() => initialProject)?.pages[0]?.id ?? null,
   );
   let selectedRegionId = $state<string | null>(null);
+  let wordInspection = $state<{
+    projectId: string;
+    pageId: string;
+    imagePath: string;
+    pageWidth: number;
+    pageHeight: number;
+    regionId: string;
+    currentText: string;
+    originalText: string;
+    regionGeometry: string;
+    source: "current" | "original";
+    word: WordEvidence;
+  } | null>(null);
   let checkedPages = $state<string[]>([]);
   let pageFilter = $state("all");
   let pageQuery = $state("");
@@ -249,6 +262,39 @@
   const region = $derived(
     activePage?.regions.find((r) => r.id === selectedRegionId),
   );
+  const inspectedWord = $derived.by(() => {
+    const selection = wordInspection;
+    if (
+      !selection || !activePage || !region || showOriginal ||
+      drawMode !== "select" || inspector !== "review" || textView !== "regions" ||
+      selection.projectId !== project.id || selection.pageId !== activePage.id ||
+      selection.imagePath !== activePage.imagePath ||
+      selection.pageWidth !== activePage.width || selection.pageHeight !== activePage.height ||
+      selection.regionId !== region.id || selection.currentText !== region.text ||
+      selection.originalText !== region.originalText ||
+      selection.regionGeometry !== `${region.x},${region.y},${region.w},${region.h}`
+    ) return null;
+    const text = selection.source === "original" ? region.originalText : region.text;
+    return text.slice(selection.word.start, selection.word.end) === selection.word.text
+      ? selection.word : null;
+  });
+  const wordSource = $derived(inspectedWord?.bounds ? {
+    text: inspectedWord.text,
+    start: inspectedWord.sourceStart ?? inspectedWord.start,
+    end: inspectedWord.sourceEnd ?? inspectedWord.end,
+    bounds: inspectedWord.bounds,
+  } : null);
+  const loupeViewBox = $derived.by(() => {
+    const box = wordSource?.bounds ?? region;
+    if (!box || !activePage) return "";
+    const x = Math.max(0, box.x - 10), y = Math.max(0, box.y - 6);
+    const right = Math.min(activePage.width, box.x + box.w + 10);
+    const bottom = Math.min(activePage.height, box.y + box.h + 6);
+    return `${x} ${y} ${right - x} ${bottom - y}`;
+  });
+  $effect(() => {
+    if (wordInspection && !inspectedWord) wordInspection = null;
+  });
   const metrics = $derived(getMetrics(project));
   const reviewIssues = $derived(getReviewIssues(project));
   const pageIssues = $derived(
@@ -332,6 +378,12 @@
   const language = $derived(
     typeof settings.language === "string" ? settings.language : "auto",
   );
+  const systemLanguages = $derived(capabilities.system_tesseract?.languages ?? []);
+  const recognitionAvailable = $derived(capabilities.ocr && (
+    engine === "system_tesseract"
+      ? (capabilities.system_tesseract?.available ?? capabilities.engines.includes(engine))
+      : capabilities.crispembed
+  ));
   // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
   const cpuBudget = $derived(
     settings.cpuPixelBudget === true &&
@@ -392,6 +444,7 @@
     parseq: "PARSeq scene text",
     surya: "Surya multilingual",
     tesseract: "Tesseract LSTM",
+    system_tesseract: "System Tesseract · word evidence",
     tesseract_fraktur: "Tesseract LSTM · Fraktur",
     ppocrv6: "PP-OCRv6 (CJK lines)",
     easyocr: "EasyOCR",
@@ -408,6 +461,12 @@
     lightonocr: "LightOnOCR",
     unlimited_ocr: "Unlimited OCR",
   };
+  const languageNames: Record<string, string> = {
+    eng: "English", deu: "German", fra: "French", spa: "Spanish",
+    ita: "Italian", por: "Portuguese", nld: "Dutch", pol: "Polish",
+    rus: "Russian", ara: "Arabic", chi_sim: "Chinese, simplified",
+    chi_tra: "Chinese, traditional", jpn: "Japanese", kor: "Korean",
+  };
   const regionsKinds: RegionKind[] = [
     "text",
     "title",
@@ -419,7 +478,7 @@
   ];
 
   const queue = new SequentialQueue<RecognitionResult>({
-    canStart: () => !busy && capabilities.ocr,
+    canStart: () => !busy && recognitionAvailable,
     isCurrent: (job) => project.pages.some((p) => p.id === job.id),
     onState: (state) => {
       queueState = { ...state, remainingIds: [...state.remainingIds] };
@@ -618,6 +677,7 @@
   function selectPage(id: string) {
     selectedPageId = id;
     selectedRegionId = null;
+    wordInspection = null;
     editGroup = null;
     showOriginal = false;
     drawMode = "select";
@@ -658,6 +718,7 @@
   }
   async function selectRegion(id: string) {
     selectedRegionId = id;
+    wordInspection = null;
     inspector = "review";
     textView = "regions";
     if (onlyIssues && !issueRegionIds.has(id)) onlyIssues = false;
@@ -668,15 +729,19 @@
   }
   async function selectWord(r: OcrRegion, word: WordEvidence) {
     if (!activePage || locked || r.excluded) return;
+    const projectId = project.id;
     const pageId = activePage.id;
+    const imagePath = activePage.imagePath;
     const sourceText = r.text;
     if (sourceText.slice(word.start, word.end) !== word.text) return;
+    currentMatch = null;
     await selectRegion(r.id);
     // The selection is valid only for the text version that supplied its
     // offsets. Navigation or an edit during the render must not target another
     // page, a changed word, or original OCR offsets in corrected text.
     if (
-      activePage?.id !== pageId ||
+      project.id !== projectId || activePage?.id !== pageId ||
+      activePage.imagePath !== imagePath || selectedRegionId !== r.id ||
       activePage.regions.find((item) => item.id === r.id)?.text !== sourceText
     ) return;
     const editor = editorPane?.querySelector<HTMLTextAreaElement>(
@@ -684,11 +749,41 @@
     );
     editor?.focus();
     editor?.setSelectionRange(word.start, word.end);
+    inspectWord(r, word, "current");
+  }
+  function inspectWord(r: OcrRegion, word: WordEvidence | null, source: "current" | "original") {
+    if (!word) {
+      wordInspection = null;
+      return;
+    }
+    const page = activePage;
+    const current = page?.regions.find((item) => item.id === r.id);
+    if (!page || !current || selectedRegionId !== r.id) return;
+    const text = source === "original" ? current.originalText : current.text;
+    if (
+      current.text !== r.text || current.originalText !== r.originalText ||
+      word.start < 0 || word.end <= word.start || word.end > text.length ||
+      text.slice(word.start, word.end) !== word.text
+    ) return;
+    const box = word.bounds;
+    const validBounds = box && [box.x, box.y, box.w, box.h].every(Number.isFinite) &&
+      box.x >= 0 && box.y >= 0 && box.w > 0 && box.h > 0 &&
+      box.x + box.w <= page.width && box.y + box.h <= page.height;
+    showOriginal = false;
+    drawMode = "select";
+    wordInspection = {
+      projectId: project.id, pageId: page.id, imagePath: page.imagePath,
+      pageWidth: page.width, pageHeight: page.height, regionId: current.id,
+      currentText: current.text, originalText: current.originalText,
+      regionGeometry: `${current.x},${current.y},${current.w},${current.h}`,
+      source, word: { ...word, bounds: validBounds ? { ...box } : undefined },
+    };
   }
   async function editPassage(r: OcrRegion) {
     if (!activePage || locked || r.excluded || r.kind === "picture") return;
     const pageId = activePage.id;
     currentMatch = null;
+    wordInspection = null;
     selectedRegionId = r.id;
     inspector = "review";
     textView = "text";
@@ -702,7 +797,7 @@
     editor?.scrollIntoView({ block: "nearest" });
   }
   function drawRecognitionArea() {
-    if (!activePage || locked || !capabilities.ocr) return;
+    if (!activePage || locked || !recognitionAvailable) return;
     drawMode = "recognize";
     showOriginal = false;
     notice = "Draw an area on the page. You can compare the new OCR text before using it.";
@@ -850,7 +945,7 @@
     confirmed = false,
     confirmedIds?: string[],
   ) {
-    if (locked || !capabilities.ocr) return;
+    if (locked || !recognitionAvailable) return;
     const pages = project.pages.filter(
       (p) =>
         !p.excluded &&
@@ -1029,7 +1124,7 @@
     }
   }
   async function prepareImage() {
-    if (!activePage || locked) return;
+    if (!activePage || locked || !capabilities.crispembed) return;
     const page = activePage;
     busy = "Repairing scan";
     error = "";
@@ -1086,7 +1181,7 @@
     }
   }
   async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
-    if (!pageId || locked || !capabilities.ocr) return;
+    if (!pageId || locked || !recognitionAvailable) return;
     error = "";
     try {
       const request = captureZoneReview(project, pageId, rect);
@@ -1690,7 +1785,7 @@
       onclick={() => recognize("current")}
       disabled={locked ||
         !activePage ||
-        !capabilities.ocr ||
+        !recognitionAvailable ||
         activePage.excluded}
       title="Recognize the current page using the selected profile"
       ><ScanLine size={16} /> Recognize page</button
@@ -1698,7 +1793,7 @@
     <button
       class="button"
       onclick={() => recognize(checkedPages.length ? "selected" : "pending")}
-      disabled={locked || !project.pages.length || !capabilities.ocr}
+      disabled={locked || !project.pages.length || !recognitionAvailable}
       ><Play size={14} />
       {checkedPages.length
         ? `Process ${checkedPages.length} selected`
@@ -2121,7 +2216,7 @@
                 value="picture">Draw picture region</option
               ><option value="formula">Draw formula region</option><option
                 value="recognize"
-                disabled={!capabilities.ocr}>Recognize a zone</option
+                disabled={!recognitionAvailable}>Recognize a zone</option
               ><option value="crop">Crop page</option></select
             >
           </div>
@@ -2130,7 +2225,7 @@
               class="button small subtle"
               class:active={drawMode === "recognize"}
               onclick={drawRecognitionArea}
-              disabled={locked || !activePage || !capabilities.ocr}
+              disabled={locked || !activePage || !recognitionAvailable}
               title="Draw an area to recognize again, then compare before replacing text"
               ><ScanLine size={15} /> Re-OCR area</button
             >
@@ -2185,6 +2280,7 @@
             page={activePage}
             imageUrl={client.imageUrl}
             selectedId={selectedRegionId}
+            sourceWord={wordSource}
             threshold={project.confidenceThreshold}
             mode={drawMode}
             {overlays}
@@ -2396,17 +2492,15 @@
           {#if region && !showOriginal}<div class="source-loupe">
               <div class="loupe-label">
                 <ScanText size={12} /> SOURCE DETAIL
-                <span
-                  >Region {(activePage?.regions.findIndex(
+                <span title={wordSource?.text}
+                  >{#if wordSource}Word: {wordSource.text}{:else}Region {(activePage?.regions.findIndex(
                     (r) => r.id === region.id,
-                  ) ?? 0) + 1}</span
+                  ) ?? 0) + 1}{/if}</span
                 >
               </div>
               <svg
-                viewBox="{Math.max(0, region.x - 10)} {Math.max(
-                  0,
-                  region.y - 6,
-                )} {region.w + 20} {region.h + 12}"
+                viewBox={loupeViewBox}
+                data-word-source-loupe={wordSource ? "true" : undefined}
                 role="img"
                 aria-label="Magnified selected source text"
                 ><image
@@ -2426,7 +2520,7 @@
                 <button
                   class="button"
                   onclick={() => recognize("current")}
-                  disabled={locked || !capabilities.ocr}
+                  disabled={locked || !recognitionAvailable}
                   ><RefreshCw size={14} /> Retry this page</button
                 >
               </div>
@@ -2442,7 +2536,7 @@
                 <button
                   class="button primary"
                   onclick={() => recognize("current")}
-                  disabled={locked || !capabilities.ocr}
+                  disabled={locked || !recognitionAvailable}
                   ><ScanLine size={15} /> Recognize page</button
                 >
               </div>
@@ -2451,9 +2545,10 @@
                   page={activePage}
                   selectedId={selectedRegionId}
                   disabled={locked}
-                  ocrAvailable={capabilities.ocr}
+                  ocrAvailable={recognitionAvailable}
                   onfocus={(id) => {
                     currentMatch = null;
+                    wordInspection = null;
                     selectedRegionId = id;
                   }}
                   onedit={editText}
@@ -2535,6 +2630,7 @@
                     value={r.text}
                     oninput={(e) => editText(r, e.currentTarget.value)}
                     onfocus={() => {
+                      wordInspection = null;
                       selectedRegionId = r.id;
                     }}
                     onblur={() => (editGroup = null)}
@@ -2562,7 +2658,7 @@
                       <button
                         class="text-button"
                         onclick={() => recognizeZone(r, activePage.id)}
-                        disabled={locked || r.excluded || !capabilities.ocr}
+                        disabled={locked || r.excluded || !recognitionAvailable}
                         title="Recognize this source region again and compare before replacing text"
                         ><ScanLine size={13} /> Re-OCR region</button
                       >
@@ -2572,6 +2668,7 @@
                       threshold={project.confidenceThreshold}
                       disabled={locked || r.excluded}
                       onselect={(word) => selectWord(r, word)}
+                      oninspect={(word, source) => inspectWord(r, word, source)}
                     />
                   {/if}
                   {#if r.id === selectedRegionId}<div class="region-actions">
@@ -2735,6 +2832,9 @@
             {#if !capabilities.ocr}<div class="inline-warning">
                 <AlertTriangle size={16} />{capabilities.reason ??
                   "Recognition is unavailable in this build."}
+              </div>{:else if !recognitionAvailable}<div class="inline-warning">
+                <AlertTriangle size={16} />The selected engine is unavailable.
+                Choose an installed engine below to recognize this page.
               </div>{/if}
             <label class="field-label"
               >Processing profile<select
@@ -2751,10 +2851,13 @@
                   value={engine}
                   onchange={(e) => setSetting("engine", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto">Automatic pipeline</option
+                  ><option value="auto" disabled={!capabilities.crispembed}>Automatic pipeline</option
                   >{#each capabilities.engines.filter((e) => e !== "auto") as e}<option
                       value={e}>{engineNames[e] ?? e}</option
-                    >{/each}</select
+                    >{/each}
+                  {#if engine === "system_tesseract" && !capabilities.engines.includes(engine)}
+                    <option value="system_tesseract" disabled>System Tesseract · unavailable</option>
+                  {/if}</select
                 ></label
               ><label class="field-label"
                 >Document language<select
@@ -2762,29 +2865,39 @@
                   onchange={(e) =>
                     setSetting("language", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto">Model default</option><option
-                    value="eng">English</option
-                  ><option value="deu">German</option><option value="fra"
-                    >French</option
-                  ><option value="spa">Spanish</option><option value="ita"
-                    >Italian</option
-                  ><option value="por">Portuguese</option><option value="nld"
-                    >Dutch</option
-                  ><option value="pol">Polish</option><option value="rus"
-                    >Russian</option
-                  ><option value="ara">Arabic</option><option value="chi_sim"
-                    >Chinese, simplified</option
-                  ><option value="chi_tra">Chinese, traditional</option><option
-                    value="jpn">Japanese</option
-                  ><option value="kor">Korean</option></select
+                  >{#if engine === "system_tesseract"}
+                    <option value="auto">English (eng) default</option>
+                    {#if language !== "auto" && !systemLanguages.includes(language)}
+                      <option value={language}>{language} (configured)</option>
+                    {/if}
+                    {#each systemLanguages as code}<option value={code}>{languageNames[code] ?? code} ({code})</option>{/each}
+                  {:else}
+                    <option value="auto">Model default</option>
+                    {#each Object.entries(languageNames) as [code, name]}<option value={code}>{name}</option>{/each}
+                  {/if}</select
                 ></label
               >
             </div>
-            <p class="field-hint">
+            {#if engine === "system_tesseract"}<p class="field-hint" data-system-tesseract-info>
+              System Tesseract{capabilities.system_tesseract?.version ? ` ${capabilities.system_tesseract.version}` : ""}
+              uses the current working image and supplies word scores and source
+              locations. Apply scan preparation first if needed. Pipeline cleanup,
+              layout, and the Qwen2 VL CPU budget are not applied during this step.
+              Choose an installed language; the default is English, without
+              automatic language detection.
+            </p>
+              {#if language === "auto" && capabilities.system_tesseract?.available && !systemLanguages.includes("eng")}<p class="field-hint">
+                English is not installed. Select one of the installed languages above.
+              </p>{/if}
+            {:else}<p class="field-hint">
               Language selects the language model for Tesseract LSTM. Other
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
-            </p>
+            </p>{/if}
+            {#if capabilities.system_tesseract && !capabilities.system_tesseract.available}<p class="field-hint">
+              System Tesseract word evidence is unavailable:
+              {capabilities.system_tesseract.reason ?? "Install Tesseract and a recognition language pack to use this engine."}
+            </p>{/if}
             {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
                 class="setting-toggle"
                 ><span
@@ -2814,7 +2927,7 @@
                     checked={!!config[option.key]}
                     onchange={(e) =>
                       setConfig(option.key, e.currentTarget.checked)}
-                    disabled={locked || !capabilities.ocr}
+                    disabled={locked || !capabilities.crispembed}
                   /></label
                 >{/each}
               <div class="field-grid two">
@@ -2823,7 +2936,7 @@
                     value={String(config.restore_engine ?? "restormer")}
                     onchange={(e) =>
                       setConfig("restore_engine", e.currentTarget.value)}
-                    disabled={locked || !config.restore}
+                    disabled={locked || !capabilities.crispembed || !config.restore}
                     ><option value="restormer">Restormer</option><option
                       value="scunet">SCUNet</option
                     ><option value="instructir">InstructIR</option></select
@@ -2833,7 +2946,7 @@
                     value={String(config.sr_engine ?? "pan")}
                     onchange={(e) =>
                       setConfig("sr_engine", e.currentTarget.value)}
-                    disabled={locked || !config.sr}
+                    disabled={locked || !capabilities.crispembed || !config.sr}
                     ><option value="pan">PAN · fast</option><option
                       value="esrgan">Real-ESRGAN · detail</option
                     ><option value="safmn">SAFMN · compact</option></select
@@ -2847,7 +2960,7 @@
                     value={String(config.restore_task ?? "denoise")}
                     onchange={(e) =>
                       setConfig("restore_task", e.currentTarget.value)}
-                    disabled={locked || !config.restore}
+                    disabled={locked || !capabilities.crispembed || !config.restore}
                   >
                     <option value="denoise">Remove noise</option>
                     <option value="deblur">Reduce blur</option>
@@ -2862,11 +2975,11 @@
               <button
                 class="button full"
                 onclick={prepareImage}
-                disabled={locked || !activePage || !capabilities.ocr}
+                disabled={locked || !activePage || !capabilities.crispembed}
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
               <p class="field-hint">
-                Recognition also applies enabled preparation. The prepared image
+                {#if engine === "system_tesseract"}Prepare the page before running System Tesseract.{:else}Recognition also applies enabled preparation.{/if} The prepared image
                 becomes the review and export image. Undo restores the previous
                 result.
               </p>
@@ -2930,9 +3043,10 @@
                 /></label
               >
               <p class="field-hint">
-                Engine scores guide review; they are not a guarantee of
-                accuracy. Regions without recognition scores always need a
-                visual check.
+                Engine scores guide review; they are not a guarantee of accuracy.
+                Review uses word evidence when available and region scores as a
+                fallback. Missing usable recognition evidence and corrected text
+                need a visual check.
               </p>
             </div>
             <details class="advanced-settings">
@@ -2982,12 +3096,12 @@
                 <button
                   class="button"
                   onclick={() => recognize("all")}
-                  disabled={locked || !capabilities.ocr}
+                  disabled={locked || !recognitionAvailable}
                   ><Play size={14} /> Recognize all</button
                 ><button
                   class="button"
                   onclick={() => recognize("failed")}
-                  disabled={locked || !metrics.failed || !capabilities.ocr}
+                  disabled={locked || !metrics.failed || !recognitionAvailable}
                   ><RefreshCw size={14} /> Retry failed</button
                 >
               </div>
@@ -4297,6 +4411,11 @@
   }
   .loupe-label > span {
     margin-left: auto;
+    min-width: 0;
+    max-width: 75%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     letter-spacing: 0;
     color: #a8bdd7;
   }

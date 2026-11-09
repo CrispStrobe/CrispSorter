@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -269,6 +269,103 @@ if (process.argv.includes('--serve')) {
             assert.deepEqual(exported.char_conf, []);
             assert.equal(exported.original_char_conf_aligned, true);
             assert.deepEqual(exported.original_char_conf, saved.regions[2].char_conf);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
+        await test('native word evidence selects genuine source boxes and survives correction without stale scores', 'native-word', async page => {
+            const original = '😀 Inv0ice NS-2026-1042';
+            const corrected = '😀 Invoice NS-2026-1042';
+            const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            const words = page.locator('[aria-label="Word confidence for selected region"]');
+            const invoice = words.getByRole('button', { name: 'Select word 1: Inv0ice', exact: true });
+            const compound = words.getByRole('button', { name: 'Select word 2: NS-2026-1042', exact: true });
+            await invoice.waitFor();
+            assert.equal(await words.locator('button[data-word-basis="word"]').count(), 2);
+            assert.equal(await wordReadingText(words), original);
+            await words.getByRole('checkbox', { name: 'Show scores', exact: true }).check();
+            assert.equal(await invoice.getAttribute('data-word-confidence'), '0.42');
+            assert.equal(await invoice.getAttribute('data-word-confidence-band'), 'low');
+            assert.equal(await compound.getAttribute('data-word-confidence'), null);
+            assert.equal(await compound.getAttribute('data-word-confidence-band'), 'unscored');
+            assert.equal(await compound.getAttribute('data-word-flagged'), 'true');
+            assert.equal(await invoice.locator('.word-score').innerText(), '42%');
+            assert.equal(await compound.locator('.word-score').innerText(), 'Unscored');
+            assert.match(await invoice.getAttribute('title'), /Original word recognition score: 42%/);
+            assert.doesNotMatch(await invoice.getAttribute('title'), /mean|lowest character/i);
+            assert.match(await page.getByRole('button', { name: /^Region 3, text, needs review:/ }).getAttribute('class'), /\blow\b/);
+            const source = page.locator('rect[data-word-source]');
+            async function assertSourceWord(expected) {
+                await page.waitForFunction(start => document.querySelector('rect[data-word-source]')?.getAttribute('data-word-source-start') === String(start), expected.start);
+                const actual = await source.evaluate(element => Object.fromEntries(
+                    ['x', 'y', 'width', 'height', 'data-word-source-start', 'data-word-source-end'].map(name => [name, Number(element.getAttribute(name))]),
+                ));
+                assert.deepEqual(actual, { x: expected.x, y: expected.y, width: expected.w, height: expected.h,
+                    'data-word-source-start': expected.start, 'data-word-source-end': expected.end });
+                const loupe = page.locator('[aria-label="Magnified selected source text"][data-word-source-loupe="true"]');
+                await loupe.waitFor();
+                const [x, y, w, h] = (await loupe.getAttribute('viewBox')).trim().split(/[\s,]+/).map(Number);
+                assert.ok(x <= expected.x && y <= expected.y && x + w >= expected.x + expected.w && y + h >= expected.y + expected.h);
+                assert.ok(w < 640 && h < 1400, 'The word loupe must crop the genuine word rather than the entire source passage');
+            }
+            const invoiceBox = { start: 3, end: 10, x: 120, y: 270, w: 115, h: 40 };
+            await invoice.click();
+            assert.deepEqual(await editor.evaluate(input => ({ start: input.selectionStart, end: input.selectionEnd,
+                text: input.value.slice(input.selectionStart, input.selectionEnd), focused: document.activeElement === input })),
+                { start: 3, end: 10, text: 'Inv0ice', focused: true });
+            await assertSourceWord(invoiceBox);
+            await page.screenshot({ path: path.join(output, 'ocr-native-word-review.png'), fullPage: true });
+            await compound.click();
+            assert.deepEqual(await editor.evaluate(input => [input.selectionStart, input.selectionEnd,
+                input.value.slice(input.selectionStart, input.selectionEnd)]), [11, 23, 'NS-2026-1042']);
+            await assertSourceWord({ start: 11, end: 23, x: 250, y: 270, w: 240, h: 40 });
+            const originalEvidence = await page.evaluate(() => window.ocrSmoke.initialProject.pages[0].regions[2].wordEvidence);
+            assert.equal(originalEvidence.source, 'tesseract_tsv');
+            assert.equal(originalEvidence.words.length, 2);
+            assert.ok(originalEvidence.words.every(word => !Object.hasOwn(word, 'alternatives')), 'No alternatives may be invented when the provider supplies none');
+
+            await invoice.click();
+            await page.keyboard.type('Invoice');
+            await editor.blur();
+            assert.equal(await editor.inputValue(), corrected);
+            assert.equal(await words.locator('button[data-word-basis="word"]').count(), 0);
+            assert.ok(await words.locator('button[data-word-basis="edited"]').count() > 0);
+            await source.waitFor({ state: 'detached' });
+            assert.equal(await page.locator('[data-word-source-loupe="true"]').count(), 0);
+            await words.getByRole('button', { name: 'Original OCR', exact: true }).click();
+            const originalWord = words.getByRole('button', { name: 'Inspect original word 1: Inv0ice', exact: true });
+            const priorSelection = await editor.evaluate(input => [input.selectionStart, input.selectionEnd]);
+            await originalWord.press('Enter');
+            await assertSourceWord(invoiceBox);
+            assert.match(await words.getByRole('status').innerText(), /Original word recognition score: 42%/);
+            assert.equal(await originalWord.evaluate(element => document.activeElement === element), true);
+            assert.equal(await editor.inputValue(), corrected);
+            assert.deepEqual(await editor.evaluate(input => [input.selectionStart, input.selectionEnd]), priorSelection);
+            await words.getByRole('button', { name: 'Current text', exact: true }).click();
+            await source.waitFor({ state: 'detached' });
+            const saved = await saveSnapshot(page);
+            assert.deepEqual(saved.pages[0].regions[2].wordEvidence, originalEvidence);
+            assert.equal(saved.pages[0].regions[2].originalText, original);
+
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.waitForFunction(value => document.querySelector('[aria-label="Text for region 3"]')?.value === value, original);
+            await page.getByRole('button', { name: 'Select region 3', exact: true }).click();
+            await invoice.click();
+            await assertSourceWord(invoiceBox);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            await page.waitForFunction(value => document.querySelector('[aria-label="Text for region 3"]')?.value === value, corrected);
+            await source.waitFor({ state: 'detached' });
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0].regions[2]);
+            assert.equal(exported.text, corrected);
+            assert.equal(exported.original_text, original);
+            assert.equal(Object.hasOwn(exported, 'word_evidence'), false);
+            assert.deepEqual(exported.original_word_evidence, originalEvidence);
             assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
         });
 
@@ -774,7 +871,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-passage-editor.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-passage-editor.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;
