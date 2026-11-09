@@ -102,6 +102,9 @@ declare global {
 }
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
+    const rtlExport = scenario.startsWith('export-rtl');
+    const archivalExport = scenario === 'export-archive' || rtlExport || scenario === 'export-unicode';
+    const wordExport = scenario !== 'export-rtl-limited';
     let project=scenario==='mobile-models'?createProject('New mobile scan'):addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
         pages:[1,2,3].map(page=>({image_path:pagePath(page),width:1000,height:1400})),
@@ -111,7 +114,10 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         const result=recognition(project.pages[0].imagePath);
         result.regions[2].text='Inv0ice NS-2026-1042';result.regions[2].confidence=0.42;
         project=applyRecognition(project,project.pages[0].id,result);
-        project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
+        const last = recognition(project.pages[2].imagePath);
+        if (rtlExport) last.regions[2].text = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
+        if (scenario === 'export-unicode') last.regions[2].text = 'Reviewed café 中文 😀 é';
+        project=applyRecognition(project,project.pages[2].id,last);
         project=approvePage(project,project.pages[2].id);
     }
     if(scenario==='batch-recovery') {
@@ -184,7 +190,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         if(control.failModelStorage)throw new Error('Fixture storage is busy in another application. Retry cleanup.');
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf',...(scenario==='export-archive'?['pdfa']:[]),'text','json','html','markdown','hocr','alto','docx'],archival_pdf_export:scenario==='export-archive',pdf_bidi_export:true,pdfa_export_reason:scenario==='export-archive'?undefined:'PDF/A-2b requires the archival-capable native renderer in this build.',engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf',...(archivalExport?['pdfa']:[]),'text','json','html','markdown','hocr','alto',...(wordExport?['docx']:[])],archival_pdf_export:archivalExport,pdf_bidi_export:!rtlExport,docx_export:wordExport,pdfa_export_reason:archivalExport?undefined:'PDF/A-2b requires the archival-capable native renderer in this build.',engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
         async modelStorage(){note('modelStorage');return copy(control.modelStorageReport);},
         async cleanModelStorage(){
             note('cleanModelStorage');await waitForStorage();

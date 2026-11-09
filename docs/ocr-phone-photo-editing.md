@@ -23,3 +23,5 @@ The complete run had **31 passed and 2 failed browser cases**, zero browser erro
 The [qualification receipt](../tests/results/ocr-mobile-ui/hosted-fbc03f74/qualification.json), unchanged [browser report](../tests/results/ocr-mobile-ui/hosted-fbc03f74/report.json), selected screenshots, and failure screenshots are retained with SHA-256 identities. The archive download matched `8e4a723a15fa4f7f2744ef8a3a6797a4b042084164dda6aaa443b903a50a5709`.
 
 ![Focused phone corner editor after a touch drag](../tests/results/ocr-mobile-ui/hosted-fbc03f74/ocr-phone-corner-focus.png)
+
+The desktop-selector follow-up, source `9e0f0fe19a7aa5dd6c536b1e1283aedc9f0f1171` in run `42634301391`, passed both the phone case and the desktop corner/Undo case. Its [separate receipt](../tests/results/ocr-mobile-ui/hosted-9e0f0fe1/qualification.json) preserves the **32 passed / 1 failed** outcome: this isolated branch still predates the archival assertion fix. The corner screenshot is byte-identical to the retained image above, SHA-256 `195a9306d743d0213a0896058fbb951c380ebfac9ca7a3d8873158f577967613`.

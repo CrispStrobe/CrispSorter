@@ -28,6 +28,7 @@ pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_photo;
 mod ocr_reading_order;
+mod ocr_text_export;
 pub mod model_provisioning;
 pub mod pdf_annots;
 pub mod pdf_base14;
