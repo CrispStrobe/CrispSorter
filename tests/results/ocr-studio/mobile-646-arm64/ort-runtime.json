@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kind": "ocr-mobile-ort-runtime",
+  "target": "android-arm64",
+  "version": "1.23.2",
+  "api_version": 23,
+  "rust_binding": "2.0.0-rc.11",
+  "archive": {
+    "url": "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar",
+    "filename": "onnxruntime-android-1.23.2.aar",
+    "bytes": 30241654,
+    "sha256": "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827"
+  },
+  "details": {
+    "abi": "arm64-v8a",
+    "dependencies": [
+      "libc.so",
+      "libdl.so",
+      "liblog.so",
+      "libm.so"
+    ],
+    "minimum_load_alignment": 16384
+  },
+  "files": {
+    "include/cpu_provider_factory.h": {
+      "bytes": 397,
+      "sha256": "0de52d129c718c07ee71a16b4953d8d483df019746a11caad77a0650a2f4ed47"
+    },
+    "include/nnapi_provider_factory.h": {
+      "bytes": 2646,
+      "sha256": "49f7e0952e57b7e2942f69d8df61a9d99836f05b49a89700e1f5a16278c945e2"
+    },
+    "include/onnxruntime_c_api.h": {
+      "bytes": 332350,
+      "sha256": "71125e66180a991d65c9bdbad4aa20daaa1f7a48c7a5c0fa5f18f250ac839a02"
+    },
+    "include/onnxruntime_cxx_api.h": {
+      "bytes": 144113,
+      "sha256": "08ae3698d11d90590a0a777ad97e58172b8735fcbe27edcc8a7b94aa018e5de9"
+    },
+    "include/onnxruntime_cxx_inline.h": {
+      "bytes": 130952,
+      "sha256": "226f883503ade7299f9474018a070dc94091c1541bcc6d419599eea0c2ee578e"
+    },
+    "include/onnxruntime_ep_c_api.h": {
+      "bytes": 45129,
+      "sha256": "b92778f50c36ecdf53d0344e0129a78b306afed653f81bba8a9597e3e6e9546f"
+    },
+    "include/onnxruntime_ep_device_ep_metadata_keys.h": {
+      "bytes": 889,
+      "sha256": "8054d3696514dfda8fcd93d4ec1257837e8ebb43e14d3f7012222d53e66be438"
+    },
+    "include/onnxruntime_float16.h": {
+      "bytes": 17860,
+      "sha256": "6c4db3d1954b266c4febe413351af86cac922e3448538e7e452e51d646e56a4a"
+    },
+    "include/onnxruntime_lite_custom_op.h": {
+      "bytes": 62226,
+      "sha256": "890f4918c1cdb5f8d1180b0c732c263d646d73d947ed69ce96b8047d85ede4c4"
+    },
+    "include/onnxruntime_run_options_config_keys.h": {
+      "bytes": 2952,
+      "sha256": "973037c14b0f1af0854ae25cd676776f79dbcfd2a6791f6ee17a5374c2a62550"
+    },
+    "include/onnxruntime_session_options_config_keys.h": {
+      "bytes": 26693,
+      "sha256": "a7ac653a6cce0b03aea2515685a162d2956a158cf88313f22e8157f098fd6f66"
+    },
+    "lib/libonnxruntime.so": {
+      "bytes": 19347616,
+      "sha256": "e40f09d07dc53726b8bfbf48a7907673b8f86718a057655a62790a39874a7302"
+    },
+    "notices/LICENSE": {
+      "bytes": 1073,
+      "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+    },
+    "notices/ThirdPartyNotices.txt": {
+      "bytes": 326866,
+      "sha256": "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc"
+    }
+  },
+  "lock_sha256": "81a67ed6f170e57a5aff5ce8f4497d8a277797413dd04d31ac5113506de35ad8",
+  "recorded_at": "2026-11-09T13:08:05.165979+00:00"
+}

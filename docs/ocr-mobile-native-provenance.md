@@ -60,6 +60,30 @@ duplicated, changed, or symlinked resources fail the gate. Android's independent
 mapped-section identity check still binds the packaged runtime after symbol
 stripping; the final APK's ELF load segments are also inspected.
 
+### Bounded debug-application inspection
+
+The first complete ARM64 OCR application built at source `646dbc48` produced a
+317,517,760-byte application library. Compilation, linking, APK packaging, and
+ZIP alignment completed, but the original receipt inspector rejected that
+member under its 256 MiB limit. The failed hosted result is retained alongside
+the later static replay in `tests/results/ocr-studio/mobile-646-arm64`.
+
+The inspector now streams each ZIP member to a private temporary file, checks
+its actual byte count against its declared size, and hashes it in 1 MiB chunks.
+ELF headers, tables, and section names have an 8 MiB metadata-read bound; mapped
+section hashes also stream. Application members have a 512 MiB ceiling, paired
+CrispEmbed/ORT inputs keep their 256 MiB ceiling, and the complete archive has a
+2 GiB uncompressed budget and a 20,000-member limit. Duplicate members,
+overlapping mapped file sections, truncated data, and budget violations fail.
+
+The exact retained 473,916,533-byte ARM64 APK passed this corrected static
+inspection. Its three native libraries have 16 KiB load alignment; the packaged
+native runtime and ORT hashes match their pinned source-build and official
+binary receipts. The complete identity replay used 19,572 KiB process maximum
+RSS and took about 1.32 seconds on the inspection host. These observations are
+for the archive inspector. They do not measure app memory, startup, recognition,
+or performance on a phone, and do not turn the original failed job into a pass.
+
 ## Qualification scope
 
 The source audit and exact input hashes are retained in
