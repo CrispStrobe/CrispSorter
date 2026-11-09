@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -22,6 +23,54 @@ class Response(io.BytesIO):
 
 
 class FixtureTests(unittest.TestCase):
+    def document_manifest(self, root):
+        data = b'%PDF-1.7\nfixture identity only; not a rendered document\n'
+        (root / 'two-pages.pdf').write_bytes(data)
+        manifest = {'schema_version': 1, 'filename': 'two-pages.pdf', 'bytes': len(data),
+                    'sha256': hashlib.sha256(data).hexdigest(), 'pages': []}
+        (root / 'manifest.json').write_text(json.dumps(manifest))
+        return manifest
+
+    def test_document_fixture_pin_is_checked_before_copying(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / 'source', root / 'output'
+            source.mkdir()
+            output.mkdir()
+            manifest = self.document_manifest(source)
+            result = probe.prepare_document_fixtures(output, source)
+            self.assertTrue(result['available'])
+            self.assertEqual(result['sha256'], manifest['sha256'])
+            self.assertEqual((output / manifest['filename']).read_bytes(), (source / manifest['filename']).read_bytes())
+
+    def test_document_fixture_mismatch_and_unsafe_path_are_not_copied(self):
+        for change in ({'sha256': '0' * 64}, {'filename': '../escape.pdf'}):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, output = root / 'source', root / 'output'
+                source.mkdir()
+                output.mkdir()
+                manifest = self.document_manifest(source)
+                manifest.update(change)
+                (source / 'manifest.json').write_text(json.dumps(manifest))
+                with self.assertRaises(ValueError):
+                    probe.prepare_document_fixtures(output, source)
+                self.assertEqual(list(output.iterdir()), [])
+
+    def test_document_fixture_does_not_follow_destination_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / 'source', root / 'output'
+            source.mkdir()
+            output.mkdir()
+            manifest = self.document_manifest(source)
+            protected = root / 'original.pdf'
+            protected.write_bytes(b'keep')
+            (output / manifest['filename']).symlink_to(protected)
+            with self.assertRaisesRegex(ValueError, 'Existing native document'):
+                probe.prepare_document_fixtures(output, source)
+            self.assertEqual(protected.read_bytes(), b'keep')
+
     def model(self, body=b'GGUF-synthetic'):
         return {'filename': 'fixture.gguf', 'url': 'https://example.invalid/model.gguf',
                 'sha256': hashlib.sha256(body).hexdigest()}

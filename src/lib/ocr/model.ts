@@ -27,7 +27,7 @@ export interface OcrPage {
     /** Opaque evidence version; queue progress and autosaves do not change it. */
     contentRevision?: string;
 }
-export interface OcrDocument { id: string; sourceUri: string; name: string; }
+export interface OcrDocument { id: string; sourceUri: string; archiveUri?: string; name: string; }
 export interface OcrProject {
     version: typeof PROJECT_VERSION; id: string; name: string; createdAt: string; updatedAt: string;
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
@@ -35,7 +35,14 @@ export interface OcrProject {
     batch?: RecognitionBatch;
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
-export interface ImportedDocument { source_uri: string; name: string; pages: ImportedPage[]; }
+export interface ImportedDocument { source_uri: string; archive_uri?: string; name: string; pages: ImportedPage[]; }
+
+/** Provider identities stay opaque; immutable archives identify a repeated file
+ * selected from another provider without changing its original source identity. */
+export function findSourceDocument(project: OcrProject, sourceUri: string, archiveUri?: string): OcrDocument | undefined {
+    return project.documents.find(document => document.sourceUri === sourceUri || document.archiveUri === sourceUri
+        || (!!archiveUri && document.archiveUri === archiveUri));
+}
 export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
     confidence?: number | null; char_conf?: number[];
@@ -72,7 +79,11 @@ export interface ExportPage {
 }
 export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
-export interface History { past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number; }
+export interface History {
+    past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number;
+    /** Sizes belong to the corresponding immutable history copies, not the editable present. */
+    pastBytes?: number[]; futureBytes?: number[];
+}
 
 export const PROFILES: readonly OcrProfile[] = [
     { id: 'balanced', name: 'Balanced document', description: 'Automatic routing with classical scan cleanup.', config: { enabled: true, router: true, cleanup_enabled: true } },
@@ -121,7 +132,9 @@ export function createProject(name = 'Untitled OCR project'): OcrProject {
 export function addDocument(project: OcrProject, imported: ImportedDocument): OcrProject {
     if (!imported.source_uri || !imported.pages.length) throw new Error('The document contains no readable pages.');
     if (imported.pages.some((page) => !page.image_path || !validDimension(page.width) || !validDimension(page.height))) throw new Error('Imported page dimensions or image paths are invalid.');
-    const document: OcrDocument = { id: id('document'), sourceUri: imported.source_uri, name: imported.name || imported.source_uri.split(/[\\/]/).pop() || 'Document' };
+    const document: OcrDocument = { id: id('document'), sourceUri: imported.source_uri,
+        ...(imported.archive_uri ? { archiveUri: imported.archive_uri } : {}),
+        name: imported.name || imported.source_uri.split(/[\\/]/).pop() || 'Document' };
     const pages: OcrPage[] = imported.pages.map((page, index) => ({
         id: id('page'), documentId: document.id, sourcePage: index + 1, name: `${document.name} · ${index + 1}`,
         imagePath: page.image_path, originalImagePath: page.image_path, width: page.width, height: page.height,
@@ -415,34 +428,70 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>activeRegions(p).map((r)=>r.text).join('\n')).join('\f')};
 }
 
+const historyEncoder = new TextEncoder();
+const historyEncodingBuffer = new Uint8Array(64 * 1024);
+const DEFAULT_HISTORY_BYTES = 24 * 1024 * 1024;
+
+// Count UTF-8 without allocating a second project-sized byte array. Text is
+// already serialized for the defensive copy, and the small scratch buffer is
+// reused synchronously. This also counts surrogate pairs consistently with
+// actual JSON serialization.
+function historyTextBytes(text: string): number {
+    if (!historyEncoder.encodeInto) return historyEncoder.encode(text).byteLength;
+    let offset = 0, bytes = 0;
+    while (offset < text.length) {
+        const chunk = historyEncoder.encodeInto(text.slice(offset), historyEncodingBuffer);
+        offset += chunk.read; bytes += chunk.written;
+    }
+    return bytes;
+}
+function historySizes(entries: OcrProject[], sizes?: number[]): number[] {
+    if (sizes?.length === entries.length && sizes.every((value) => Number.isSafeInteger(value) && value >= 0)) return sizes;
+    // Older in-memory callers may not yet carry accounting metadata.
+    return entries.map((entry) => historyTextBytes(JSON.stringify(entry)));
+}
+function historyCopy(project: OcrProject): { copy: OcrProject; bytes: number } {
+    const serialized = JSON.stringify(project);
+    return { copy: JSON.parse(serialized), bytes: historyTextBytes(serialized) };
+}
 /** History is bounded by count and UTF-8 snapshot bytes, excluding the live project. */
 export function createHistory(project: OcrProject, limit = 50, maxBytes = 24 * 1024 * 1024): History {
-    return {past:[],present:clone(project),future:[],limit:Math.max(1,Math.min(200,Math.floor(limit)||50)),maxBytes:Math.max(0,Math.floor(maxBytes))};
+    return {past:[],present:clone(project),future:[],pastBytes:[],futureBytes:[],limit:Math.max(1,Math.min(200,Math.floor(limit)||50)),maxBytes:Number.isFinite(maxBytes)?Math.max(0,Math.floor(maxBytes)):DEFAULT_HISTORY_BYTES};
 }
 function boundedHistory(history: History): History {
     const past = history.past.slice(-history.limit), future = history.future.slice(0,history.limit);
-    const encoder = new TextEncoder();
-    const size = (project:OcrProject) => encoder.encode(JSON.stringify(project)).byteLength;
-    const pastSizes=past.map(size), futureSizes=future.map(size);
+    const pastSizes=historySizes(history.past,history.pastBytes).slice(-history.limit);
+    const futureSizes=historySizes(history.future,history.futureBytes).slice(0,history.limit);
     let bytes=[...pastSizes,...futureSizes].reduce((sum,value)=>sum+value,0);
     while (bytes>history.maxBytes && (past.length || future.length)) {
         // Retain the nearest edit on each side for as long as possible.
         if (past.length >= future.length) { past.shift(); bytes-=pastSizes.shift()!; }
         else { future.pop(); bytes-=futureSizes.pop()!; }
     }
-    return {...history,past,future};
+    return {...history,past,future,pastBytes:pastSizes,futureBytes:futureSizes};
 }
 export function commitHistory(history: History, project: OcrProject): History {
-    if (project === history.present || JSON.stringify(project) === JSON.stringify(history.present)) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(project),future:[]});
+    if (project === history.present) return history;
+    const serialized=JSON.stringify(project), previous=JSON.stringify(history.present);
+    if (serialized === previous) return history;
+    const previousBytes=historyTextBytes(previous);
+    // A snapshot larger than the whole budget would evict all history anyway;
+    // avoid constructing that additional large object before discarding it.
+    if (previousBytes > history.maxBytes) return {...history,past:[],present:JSON.parse(serialized),future:[],pastBytes:[],futureBytes:[]};
+    return boundedHistory({...history,past:[...history.past,JSON.parse(previous)],present:JSON.parse(serialized),future:[],
+        pastBytes:[...historySizes(history.past,history.pastBytes),previousBytes],futureBytes:[]});
 }
 export function undoHistory(history: History): History {
     if (!history.past.length) return history;
-    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[clone(history.present),...history.future]});
+    const current=historyCopy(history.present);
+    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[current.copy,...history.future],
+        pastBytes:historySizes(history.past,history.pastBytes).slice(0,-1),futureBytes:[current.bytes,...historySizes(history.future,history.futureBytes)]});
 }
 export function redoHistory(history: History): History {
     if (!history.future.length) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(history.future[0]),future:history.future.slice(1)});
+    const current=historyCopy(history.present);
+    return boundedHistory({...history,past:[...history.past,current.copy],present:clone(history.future[0]),future:history.future.slice(1),
+        pastBytes:[...historySizes(history.past,history.pastBytes),current.bytes],futureBytes:historySizes(history.future,history.futureBytes).slice(1)});
 }
 
 /** Strict boundary validation; interrupted jobs return to pending on restore. */
@@ -462,6 +511,7 @@ export function parseProject(input: unknown): OcrProject {
         if (!record(document)) throw new Error('OCR document metadata is invalid.');
         checkId(document.id);
         if (typeof document.sourceUri!=='string'||typeof document.name!=='string') throw new Error('OCR document metadata is invalid.');
+        if (document.archiveUri!==undefined && (typeof document.archiveUri!=='string'||!document.archiveUri)) throw new Error('OCR document archive metadata is invalid.');
     }
     for (const page of p.pages) {
         if (!record(page)) throw new Error('OCR project contains an invalid page.');

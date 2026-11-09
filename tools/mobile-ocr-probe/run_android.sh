@@ -35,4 +35,5 @@ node "$repo/scripts/mobile_ocr_webview_smoke.mjs" \
   --inputs "$RUNNER_TEMP/ocr-mobile-inputs" \
   --output "$RUNNER_TEMP/ocr-mobile-evidence/app-native-commands" \
   --source-commit "$sorter_commit" --embed-commit "$embed_commit" \
+  --build-receipt "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json" \
   --runtime-receipt "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json"

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source_commit": "f2a0fec94d36af268c0d0c4bc8e0d0d39a258dfc",
+  "run_url": "https://github.com/CrispStrobe/CrispEmbed/actions/runs/42600802983",
+  "job_id": 129104483458,
+  "artifact_id": 13666804678,
+  "artifact_sha256": "72c870e48c4abfe99e4f9b907b4602f3131828bf33308f9a28318af42ebc487e",
+  "artifact_digest_verified": true,
+  "status": "passed",
+  "pipefail_negative_control": "passed",
+  "registry_control": {
+    "registry_entries": 406,
+    "companions": 1,
+    "local_only": 5
+  },
+  "asan_ubsan_control": {
+    "registry_entries": 406,
+    "companions": 1,
+    "local_only": 5
+  },
+  "rust_tests_passed": 4,
+  "rust_log": "\nrunning 4 tests\ntest exact_ocr_metadata_is_owned_and_pinned ... ok\ntest model_download::tests::absent_native_pin_stays_absent ... ok\ntest unknown_fuzzy_filename_and_nul_requests_do_not_resolve ... ok\ntest simultaneous_reads_preserve_separate_owned_results ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+  "scope": "Model download metadata ABI/ownership/integrity controls, not recognition or complete native application qualification."
+}

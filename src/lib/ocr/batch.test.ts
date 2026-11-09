@@ -19,6 +19,17 @@ function options(): BatchOptions {
 }
 
 describe('durable recognition batch intent', () => {
+    it('restores the frozen CPU profile even when later toolbar settings change', () => {
+        const p = fixture();
+        const saved = beginBatch(p, [p.pages[0].id], { ...options(), engine: 'qwen2vl', cpuPixelBudget: true });
+        saved.recognitionSettings = { engine: 'tesseract', cpuPixelBudget: false };
+        const restored = parseProject(JSON.stringify(saved));
+        expect(resumeBatch(restored).options).toMatchObject({ engine: 'qwen2vl', cpuPixelBudget: true });
+        expect(() => restoreBatch({ ...saved.batch, cpuPixelBudget: 'false' })).toThrow('invalid');
+        const legacy = beginBatch(p, [p.pages[0].id], options());
+        expect(resumeBatch(parseProject(JSON.stringify(legacy))).options).toEqual(options());
+    });
+
     it('freezes selected page order and deep recognition settings independently of later toolbar edits', () => {
         const p = fixture(), settings = options(), ids = [p.pages[2].id, p.pages[0].id];
         const saved = beginBatch(p, ids, settings);

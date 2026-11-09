@@ -2452,8 +2452,6 @@ pub struct EmbedderRegistryEntry {
 /// "Select" button for already-downloaded models and a "Download" button
 /// for the rest, without a separate round-trip.
 #[tauri::command]
-// Async with a `State` reference, so Tauri requires a `Result`; the list is
-// infallible, and the frontend receives the `Ok` value unchanged.
 pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<EmbedderRegistryEntry>, String> {
     #[cfg(feature = "crispembed")]
     {
@@ -2489,7 +2487,7 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<Em
                 }
             })
             .collect::<Vec<_>>()
-        }).await.unwrap_or_default())
+        }).await.map_err(|error| format!("Read model registry: {error}"))
     }
     #[cfg(not(feature = "crispembed"))]
     {

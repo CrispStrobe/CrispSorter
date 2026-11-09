@@ -8,7 +8,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
 vi.mock('../capabilities', () => ({ loadCapabilities }));
 
-import { workspaceClient, type ExportRequest, type ModelDownloadProgress } from './client';
+import { workspaceClient, importProgressLabel, type ExportRequest, type ModelDownloadProgress, type ImportProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
 
 const stagedPath = '/app/cache/ocr-exports/inspection.txt';
@@ -25,6 +25,21 @@ describe('OCR workspace platform transport', () => {
     beforeEach(() => {
         invoke.mockReset(); open.mockReset(); save.mockReset(); loadCapabilities.mockReset(); listen.mockReset();
         loadCapabilities.mockResolvedValue({ mobile: true });
+    });
+
+    it('passes the displayed version when removing a model and preserves stale-version failures', async () => {
+        const report = { bytes: 12, reclaimable_bytes: 4, models: [], warnings: [] };
+        invoke.mockResolvedValueOnce(report);
+        expect(await workspaceClient.modelStorage!()).toEqual(report);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_model_storage');
+        const cleaned = { removed_bytes: 4, removed_versions: 1, report };
+        invoke.mockResolvedValueOnce(cleaned);
+        expect(await workspaceClient.cleanModelStorage!()).toEqual(cleaned);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_clean_model_storage');
+        const stale = new Error('This model changed after the storage view was opened.');
+        invoke.mockRejectedValueOnce(stale);
+        await expect(workspaceClient.removeMobileModel!('tesseract-eng', 'displayed-version')).rejects.toBe(stale);
+        expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_remove_mobile_model', { name: 'tesseract-eng', expectedVersion: 'displayed-version' });
     });
 
     it('imports the exact provider URI and displayed filename, including unknown provider size', async () => {
@@ -235,5 +250,87 @@ describe('OCR workspace platform transport', () => {
         expect(invoke.mock.calls).toEqual([['ocr_workspace_export', exportRequest('/exports/Inspection.txt')]]);
         expect(open).toHaveBeenCalledOnce();
         expect(save).toHaveBeenCalledOnce();
+    });
+
+    it('uses actual platform codecs to enable PDFs and selectable phone formats', async () => {
+        invoke.mockImplementation(async command => {
+            if (command === 'ocr_workspace_capabilities') return { pdf_import: true, native_document_import: true, formats: ['text'] };
+            if (command === 'plugin:mobile-provider|document_capabilities') return { pdf: true, image_formats: ['heic', 'heif', 'not-a-codec'] };
+            if (command === 'plugin:mobile-provider|pick_files') return { cancelled: false, files: [{ uri: 'content://docs/heic', name: 'Capture.HEIC', size: 4096 }] };
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        expect(await workspaceClient.capabilities()).toMatchObject({ pdf_import: true, image_import_formats: ['heic', 'heif'] });
+        expect(await workspaceClient.pickDocuments()).toEqual(['content://docs/heic']);
+        invoke.mockImplementation(async command => {
+            if (command === 'ocr_workspace_capabilities') return { pdf_import: true, native_document_import: true };
+            throw new Error('Native bridge unavailable');
+        });
+        expect(await workspaceClient.capabilities()).toMatchObject({ pdf_import: false, image_import_formats: [], pdf_reason: expect.stringMatching(/unavailable/) });
+    });
+
+    it('does not advertise native image codecs on desktop', async () => {
+        invoke.mockResolvedValue({ pdf_import: true, native_document_import: false });
+        expect(await workspaceClient.capabilities()).toMatchObject({ pdf_import: true, image_import_formats: [] });
+        expect(invoke).toHaveBeenCalledOnce();
+    });
+
+    it('correlates native import progress and waits for cancellation before releasing its listener', async () => {
+        const controller = new AbortController();
+        const onProgress = vi.fn(), unlisten = vi.fn();
+        let receive!: (event: { payload: ImportProgress }) => void;
+        let requestId = '';
+        let finish!: (document: unknown) => void;
+        let started!: () => void;
+        const nativeStarted = new Promise<void>(resolve => { started = resolve; });
+        const nativeResult = new Promise(resolve => { finish = resolve; });
+        listen.mockImplementation(async (event, handler) => {
+            expect(event).toBe('ocr-workspace-import'); receive = handler; return unlisten;
+        });
+        invoke.mockImplementation((command, _payload, headers) => {
+            if (command === 'ocr_workspace_import_image') {
+                expect(listen).toHaveBeenCalledOnce();
+                requestId = decodeMetadata(headers).requestId;
+                started(); return nativeResult;
+            }
+            if (command === 'ocr_workspace_cancel_import') return Promise.resolve();
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const result = workspaceClient.importImage!('Photo.avif', new Uint8Array([1]), { signal: controller.signal, onProgress });
+        const cancelled = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+        await nativeStarted;
+        expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+        const progress: ImportProgress = { request_id: requestId, phase: 'rendering', completed: 1, total: 2 };
+        receive({ payload: { ...progress, request_id: 'another-import' } });
+        expect(onProgress).not.toHaveBeenCalled();
+        receive({ payload: progress }); expect(onProgress).toHaveBeenCalledWith(progress);
+        expect(importProgressLabel(progress)).toBe('Rendering pages: 1 of 2');
+        controller.abort();
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_cancel_import', { requestId });
+        expect(unlisten).not.toHaveBeenCalled();
+        receive({ payload: progress }); expect(onProgress).toHaveBeenCalledOnce();
+        finish({ source_uri: '/archive/photo.avif', name: 'Photo.avif', pages: [] });
+        await cancelled;
+        expect(unlisten).toHaveBeenCalledOnce();
+        receive({ payload: progress }); expect(onProgress).toHaveBeenCalledOnce();
+    });
+
+    it('avoids native work when stopped before subscription completes', async () => {
+        const controller = new AbortController(); const unlisten = vi.fn();
+        let subscribed!: (value: () => void) => void;
+        listen.mockReturnValue(new Promise(resolve => { subscribed = resolve; }));
+        const result = workspaceClient.importImage!('Photo.jpg', new Uint8Array([1]), { signal: controller.signal });
+        controller.abort(); subscribed(unlisten);
+        await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+        expect(invoke).not.toHaveBeenCalled(); expect(unlisten).toHaveBeenCalledOnce();
+        await expect(workspaceClient.importImage!('Photo.jpg', new Uint8Array([1]), { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+        expect(listen).toHaveBeenCalledOnce();
+    });
+
+    it('preserves an import failure and removes its progress listener even when teardown fails', async () => {
+        const failure = new Error('This PDF is password protected. Import an unlocked copy.');
+        listen.mockResolvedValue(() => { throw new Error('Bridge closed'); });
+        invoke.mockRejectedValue(failure);
+        loadCapabilities.mockResolvedValue({ mobile: false });
+        await expect(workspaceClient.importDocument('/scan/locked.pdf', { onProgress: vi.fn() })).rejects.toBe(failure);
     });
 });

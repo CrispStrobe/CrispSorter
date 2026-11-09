@@ -1,0 +1,99 @@
+# Mobile document import
+
+The OCR workspace uses Android `PdfRenderer` and iOS Core Graphics for mobile
+PDFs. Phone image conversion uses Android `ImageDecoder` or iOS Image I/O.
+Codec discovery controls the formats offered by the workspace: a platform that
+does not advertise HEIC, HEIF, or AVIF decoding does not advertise that format
+as an import option. The native layer still validates each actual source.
+
+## Preservation and limits
+
+Camera/provider bytes are identified by their signature and archived under a
+SHA-256 filename before decoding. The input filename cannot choose a decoder or
+an output path. `source_uri` retains the exact provider identity;
+`archive_uri` is the canonical absolute path of the private immutable original.
+The project stores them as `sourceUri` and `archiveUri`. Existing projects without
+an archive field remain compatible. Archive-aware duplicate checks do not rewrite
+provider URI case, escaping, or separators.
+
+| Boundary | Limit or behavior |
+| --- | --- |
+| Raw native import | Nonempty input, at most 32 MiB |
+| Document-provider transfer | At most 16 MiB; unknown sizes are enforced while reading |
+| PDF document | 1–10,000 pages; failure of any page rejects the entire document |
+| PDF physical page | Positive dimensions, each no larger than 14,400 points |
+| Mobile raster | At most 16 million pixels and 16,384 pixels along either axis |
+| Phone source image | At most 100 million encoded pixels before bounded decoding |
+| Rendered document | At most 512 MiB of PNG output |
+| Concurrency | One OCR import at a time in the app |
+| Protected PDF | Import an unlocked copy; no blank-success fallback |
+| Multi-image phone container | Primary still image only, with a visible import warning |
+
+PDF rendering targets 200 DPI. When the raster cap requires downsampling,
+physical paper dimensions remain independent of pixel dimensions and a warning
+asks the user to inspect small text. Phone image orientation is baked into the
+working pixels. Native rasters use sRGB and a white background; originals retain
+their encoded bytes, metadata, and orientation. Auxiliary images, depth planes,
+and animation frames are not turned into separate OCR pages.
+
+## Native boundary
+
+Only the Rust app can call `rasterize_ocr_document`; it is absent from the
+webview command and ACL list. The registered mobile plugin independently checks
+that the source is a hashed file under the private OCR `sources` directory and
+the output is an empty `import-staging/import-*` directory in the same workspace.
+Canonical-path checks reject symlink escapes and reused staging directories.
+
+Native code writes one complete PNG at a time, then releases that page's raster.
+It writes progress atomically and checks a cancellation marker between pages and
+while encoding. Rust waits for the native worker to finish even after a cancel,
+so it never removes staging under a running renderer. It then verifies every
+output path, PNG signature, full image decode, pixel count, physical dimensions,
+and total byte count before returning an imported document. Verified PNGs are
+streamed into content-addressed assets without retaining a decoded document in
+memory. Existing assets and originals are checked against their content hashes
+before reuse. Normal completion, failure, and cancellation release temporary
+staging; immutable original archives are retained.
+
+## UI and command contracts
+
+- `ocr_workspace_capabilities` reports `native_document_import` on mobile.
+- `plugin:mobile-provider|document_capabilities` reports native PDF and actual
+  image decoder support. If discovery fails, the workspace disables those
+  capabilities and gives a retry/import-images explanation.
+- `ocr_workspace_import_bytes` and `ocr_workspace_import_image` keep their raw
+  `Uint8Array` payloads. Their base64 UTF-8 `x-ocr-metadata` header accepts
+  `{name, sourceUri?, requestId?}`; camera imports do not accept a provider identity.
+- `ocr_workspace_import` accepts a local location plus optional `requestId`.
+- Progress events named `ocr-workspace-import` include `request_id`, `phase`,
+  `completed`, and `total`. Events are correlated before they update the UI.
+- `ocr_workspace_cancel_import({requestId})` also handles a cancel arriving just
+  before import registration. Early requests are bounded and expire.
+
+The Cancel control remains available while document actions are locked. It
+reports that stopping waits for the current step. Completed documents are
+saved individually; cancelling a later document does not remove earlier work.
+
+## Qualification
+
+`tests/fixtures/mobile-documents/manifest.json` pins byte counts and SHA-256
+digests for self-authored PDF, rotated PDF, password-protected PDF, EXIF-oriented
+JPEG, and AVIF fixtures. Binary fixtures use base64 text for reviewable transport.
+The copies in the Swift test bundle must match the canonical fixture directory.
+
+Android instrumentation and iOS simulator tests exercise actual platform
+decoders: page count, nonblank raster output, physical dimensions, rotation,
+oriented image pixels, source-byte preservation, bounded sizes, unsafe paths,
+locked/damaged PDFs, and cancellation before and between pages. AVIF tests skip
+when the runtime does not advertise the decoder. The iOS HEIC round-trip test
+requires both an encoder and a decoder and records a skip when either is absent.
+These tests do not establish physical-camera or physical-device qualification.
+
+Rust tests cover bounded ISO BMFF signature parsing, private archive identity,
+native result containment, corrupt/truncated rasters, hash mismatches, and pinned
+PDF source integrity. Client tests cover format gating, metadata transport,
+progress correlation, cancellation races, failure preservation, and archive
+identity after save/restore. The browser `import-control` scenario holds native
+responses to verify phone Cancel reachability, stop-state locking, and retention
+of completed documents; this scenario uses the synthetic adapter and does not
+replace native decoder tests.

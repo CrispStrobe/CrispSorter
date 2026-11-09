@@ -1,5 +1,5 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
-import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress } from '../../src/lib/ocr/client';
+import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress, ModelStorageReport, ImportOptions, ImportProgress } from '../../src/lib/ocr/client';
 import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
 import { photoQuadError } from '../../src/lib/ocr/photo';
 
@@ -72,8 +72,17 @@ export interface SmokeControl {
     installedModels: string[];
     pendingModelInstalls: number;
     failModelInstall: boolean;
+    modelStorageReport: ModelStorageReport;
+    holdModelStorage: boolean;
+    pendingModelStorage: number;
+    failModelStorage: boolean;
+    releaseModelStorage(): boolean;
     releaseModelInstall(): boolean;
     emitModelProgress(progress: ModelDownloadProgress): boolean;
+    pendingImports: number;
+    cancelledImports: number;
+    releaseImport(): boolean;
+    emitImportProgress(progress: ImportProgress): boolean;
     released: string[];
     releaseNext():boolean;
     releaseExtraction():boolean;
@@ -126,11 +135,25 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pendingExtractions:Array<()=>void>=[];
     const pendingSaves:Array<()=>void>=[];
     const pendingModelInstalls:Array<{release:()=>void;onProgress?:(progress:ModelDownloadProgress)=>void}>=[];
+    const pendingModelStorage:Array<()=>void>=[];
+    const pendingImports:Array<{release:()=>void;options?:ImportOptions}>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
+        modelStorageReport: scenario==='mobile-storage' ? {
+            bytes:16*1024**2,reclaimable_bytes:4*1024**2,warnings:['Unrecognized fixture metadata was kept for inspection.'],
+            models:[
+                {name:'dbnet-det',version:'11111111-1111-4111-8111-111111111111',bytes:8*1024**2,reclaimable_bytes:0,in_use:true},
+                {name:'tesseract-eng',version:'22222222-2222-4222-8222-222222222222',bytes:8*1024**2,reclaimable_bytes:4*1024**2,in_use:false},
+            ],
+        } : {bytes:0,reclaimable_bytes:0,models:[],warnings:[]},
+        holdModelStorage:false,pendingModelStorage:0,failModelStorage:false,
+        releaseModelStorage(){const release=pendingModelStorage.shift();if(!release)return false;control.pendingModelStorage=pendingModelStorage.length;release();return true;},
+        pendingImports:0,cancelledImports:0,
+        releaseImport(){const item=pendingImports.shift();if(!item)return false;control.pendingImports=pendingImports.length;item.release();return true;},
+        emitImportProgress(progress){const item=pendingImports[0];if(!item)return false;item.options?.onProgress?.(copy(progress));return true;},
         releaseModelInstall(){const item=pendingModelInstalls.shift();if(!item)return false;control.pendingModelInstalls=pendingModelInstalls.length;item.release();return true;},
         emitModelProgress(progress){const item=pendingModelInstalls[0];if(!item)return false;item.onProgress?.(copy(progress));return true;},
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
@@ -144,8 +167,32 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             pendingExtractions.push(release);control.pendingExtractions=pendingExtractions.length;
         });
     };
+    const waitForStorage=async()=>{
+        if(control.holdModelStorage)await new Promise<void>(release=>{
+            pendingModelStorage.push(release);control.pendingModelStorage=pendingModelStorage.length;
+        });
+        if(control.failModelStorage)throw new Error('Fixture storage is busy in another application. Retry cleanup.');
+    };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,photo_tools:true,camera_import:true,...(scenario==='mobile-models'?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{}),cpu_budget:true,cpu_budget_pixels:262144};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async modelStorage(){note('modelStorage');return copy(control.modelStorageReport);},
+        async cleanModelStorage(){
+            note('cleanModelStorage');await waitForStorage();
+            const removed_bytes=control.modelStorageReport.reclaimable_bytes;
+            control.modelStorageReport={...control.modelStorageReport,bytes:control.modelStorageReport.bytes-removed_bytes,reclaimable_bytes:0,
+                models:control.modelStorageReport.models.map(model=>({...model,bytes:model.bytes-model.reclaimable_bytes,reclaimable_bytes:0}))};
+            return {removed_bytes,removed_versions:removed_bytes?2:0,report:copy(control.modelStorageReport)};
+        },
+        async removeMobileModel(name,expectedVersion){
+            note('removeMobileModel',{name,expectedVersion});await waitForStorage();
+            const current=control.modelStorageReport.models.find(model=>model.name===name);
+            if(!current || current.version!==expectedVersion)throw new Error('This model changed after the storage view was opened. Refresh storage before removing it.');
+            if(current.in_use)throw new Error('This model is in use by OCR. Restart before removing it.');
+            control.modelStorageReport={...control.modelStorageReport,bytes:control.modelStorageReport.bytes-current.bytes,
+                reclaimable_bytes:control.modelStorageReport.reclaimable_bytes-current.reclaimable_bytes,
+                models:control.modelStorageReport.models.filter(model=>model.name!==name)};
+            return {removed_bytes:current.bytes,removed_versions:1,report:copy(control.modelStorageReport)};
+        },
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -159,7 +206,21 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             const saved={project:copy(snapshot),revision:previous+1,saved_at:Date.now(),path:'/fixtures/project.json'};
             savedById.set(snapshot.id,saved);control.saves.push(copy(saved));control.lastSaved=copy(snapshot);return copy(saved);
         },
-        async importDocument(locationUri){note('importDocument',{locationUri});return {source_uri:locationUri,name:locationUri.split('/').pop()!,pages:[{image_path:pagePath(4),width:1000,height:1400}]};},
+        async importDocument(locationUri,options){
+            note('importDocument',{locationUri});
+            if(scenario==='import-control'){
+                const onAbort=()=>{control.cancelledImports++;};
+                options?.signal?.addEventListener('abort',onAbort,{once:true});
+                control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
+                try{
+                    await new Promise<void>(release=>{pendingImports.push({release,options});control.pendingImports=pendingImports.length;});
+                    if(options?.signal?.aborted)throw new DOMException('Document import cancelled.','AbortError');
+                }finally{control.activeNative--;options?.signal?.removeEventListener('abort',onAbort);}
+                return {source_uri:locationUri,archive_uri:`/fixtures/archive/${locationUri.split('/').pop()}`,name:locationUri.split('/').pop()!,
+                    pages:[4,5].map(page=>({image_path:pagePath(page),width:1000,height:1400}))};
+            }
+            return {source_uri:locationUri,name:locationUri.split('/').pop()!,pages:[{image_path:pagePath(4),width:1000,height:1400}]};
+        },
         async importImage(name,bytes){note('importImage',{name,byteLength:bytes.length});return {source_uri:'/fixtures/captured-photo.png',name,pages:[{image_path:'/fixtures/captured-photo.png',width:1000,height:1400}]};},
         async assessPhoto(path){
             note('assessPhoto',{pagePath:path});
@@ -211,7 +272,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         async table(path){note('table',{path});await waitForExtraction();return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
         async math(path){note('math',{path});await waitForExtraction();return String.raw`E = mc^2`;},
         async reindex(sourceUri,text){note('reindex',{sourceUri,text});return {documents:1};},
-        async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
+        async pickDocuments(){note('pickDocuments');return scenario==='import-control'?['/fixtures/first.pdf','/fixtures/second.pdf','/fixtures/third.pdf']:['/fixtures/added-scan.png'];},
         async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
         async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
         imageUrl(path){return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(pageNumber(path)))}`;},

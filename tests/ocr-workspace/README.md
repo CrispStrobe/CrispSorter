@@ -42,7 +42,8 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 
 The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=batch-recovery`, `?scenario=extraction-delay`,
-`?scenario=project-recovery`, `?scenario=prepare-unchanged`, or `?scenario=mobile-models`. The queue and
+`?scenario=project-recovery`, `?scenario=prepare-unchanged`, `?scenario=mobile-models`,
+`?scenario=mobile-storage`, or `?scenario=import-control`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
@@ -53,6 +54,10 @@ successful recognition result cannot be committed.
 The `mobile-models` fixture starts with an empty project and no installed models.
 It holds explicit install requests so the harness can exercise progress, interruption,
 retry, and recognition readiness without network requests or real model weights.
+The `mobile-storage` fixture exposes installed, in-use and reclaimable versions.
+Cleanup can be held or failed, and the current generation can change after a
+confirmation dialog opens. These are UI boundary controls; real SQLite leases
+are exercised separately in the native model-storage contract lane.
 
 ## Assertions
 
@@ -78,8 +83,19 @@ retry, and recognition readiness without network requests or real model weights.
   shows byte progress and locks document actions; failure remains retryable, and
   successful installation is followed by recognition with the selected engine and
   language. The phone progress screen is captured as `ocr-phone-model-setup.png`.
+- Storage inspection never starts cleanup. Cleanup failure remains retryable,
+  concurrent storage controls stay disabled while work is pending, and successful
+  cleanup clears the old error while preserving installed models and corrected,
+  approved pages.
+- Model removal requires a confirmation, preserves Escape/Keep cancellation,
+  disables removal for in-use models, and submits the displayed exact generation.
+  A stale-generation rejection preserves the model until the user refreshes and
+  explicitly confirms again. Phone storage and confirmation screens are retained.
 - Camera import rejects unsupported image formats before transferring bytes,
   preserves a valid photo, and opens preparation without starting recognition.
+- Held document imports expose correlated progress and a reachable phone Cancel
+  control, stay locked until the current native step finishes, and save completed
+  documents while rejecting the cancelled document without starting later files.
 - Four-corner correction exposes touch-sized keyboard-operable handles, rejects
   invalid geometry, invalidates stale text after correction, and restores the
   original review evidence with Undo.
@@ -101,10 +117,16 @@ retry, and recognition readiness without network requests or real model weights.
   and requires no scrolling; this catches duplicate padding deductions.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same
-harness on OCR changes pushed to `feat/ocr-document-studio` and on relevant pull
+harness on OCR changes pushed to `feat/ocr-document-studio` or the dedicated
+`feat/ocr-native-validation` branch and on relevant pull
 requests, and attaches its JSON report and screenshots as
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.
+The same job runs `history-benchmark.mjs` and retains
+`test-results/ocr-history-benchmark.json`. That receipt measures the production
+history model against its pinned baseline in separate Node processes. Integrity,
+unchanged text/IDs and UTF-8 history-byte bounds are gates; wall-clock timings are
+observations, not a mobile rendering or native OCR benchmark.
 
 These tests validate interaction and integration contracts. They do not measure
 recognition accuracy or substitute for native engine, PDF conformance, or installed

@@ -8,7 +8,7 @@ export interface BatchOptions {
     config: Record<string, unknown>;
     engine: string;
     language: string;
-    /** Run Qwen2-VL in the isolated low-memory CPU worker (see the workspace toggle). */
+    /** Freeze the desktop CPU profile together with the engine for recovery. */
     cpuPixelBudget?: boolean;
 }
 export interface BatchPage {
@@ -58,7 +58,8 @@ function replaceBatch(project: OcrProject, batch: RecognitionBatch): OcrProject 
 /** Freeze the exact selected order, source revisions, and recognition settings. */
 export function beginBatch(project: OcrProject, pageIds: readonly string[], options: BatchOptions): OcrProject {
     if (!pageIds.length || new Set(pageIds).size !== pageIds.length) throw new Error('Select unique pages for the recognition batch.');
-    if (!nonempty(options.profileId) || !object(options.config) || typeof options.engine !== 'string' || typeof options.language !== 'string' || (options.cpuPixelBudget !== undefined && typeof options.cpuPixelBudget !== 'boolean')) throw new Error('Recognition batch settings are invalid.');
+    if (!nonempty(options.profileId) || !object(options.config) || typeof options.engine !== 'string' || typeof options.language !== 'string' ||
+        (options.cpuPixelBudget !== undefined && typeof options.cpuPixelBudget !== 'boolean')) throw new Error('Recognition batch settings are invalid.');
     const pages = new Map(project.pages.map(page => [page.id, page]));
     const jobs: BatchPage[] = pageIds.map(pageId => {
         const page = pages.get(pageId);
@@ -126,7 +127,7 @@ export function resumeBatch(project: OcrProject, options: { retryFailed?: boolea
     }) : project;
     return {
         project: next, pageIds, completed, failed, conflicts: [],
-        options: copy({ profileId: batch.profileId, config: batch.config, engine: batch.engine, language: batch.language, ...(batch.cpuPixelBudget ? { cpuPixelBudget: true } : {}) }),
+        options: copy({ profileId: batch.profileId, config: batch.config, engine: batch.engine, language: batch.language, cpuPixelBudget: batch.cpuPixelBudget }),
     };
 }
 

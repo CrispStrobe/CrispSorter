@@ -1,0 +1,51 @@
+name: OCR model storage contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio', 'feat/ocr-reliability-qualification']
+    paths:
+      - src-tauri/src/model_storage.rs
+      - src-tauri/src/model_storage_types.rs
+      - tests/model-storage-contract/**
+      - .github/workflows/ocr-model-storage.yml
+  pull_request:
+    paths:
+      - src-tauri/src/model_storage.rs
+      - src-tauri/src/model_storage_types.rs
+      - tests/model-storage-contract/**
+      - .github/workflows/ocr-model-storage.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-model-storage-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/model-storage-contract
+      - name: Test actual model storage and cross-process leases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          cargo test --manifest-path tests/model-storage-contract/Cargo.toml -- --test-threads=1 --nocapture 2>&1 | tee test-results/model-storage.log
+          sha256sum src-tauri/src/model_storage.rs src-tauri/src/model_storage_types.rs tests/model-storage-contract/Cargo.lock > test-results/model-storage-sources.sha256
+      - name: Retain exact native storage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-model-storage-contracts
+          path: |
+            test-results/model-storage*
+            tests/model-storage-contract/Cargo.lock
+          retention-days: 30

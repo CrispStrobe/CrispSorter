@@ -17,20 +17,23 @@ export interface WorkspaceCapabilities {
   ocr: boolean;
   crispembed: boolean;
   pdf_import: boolean;
+  native_document_import?: boolean;
+  image_import_formats?: string[];
+  pdf_reason?: string;
   formats: string[];
   engines: string[];
   layout: boolean;
   kie: boolean;
   table: boolean;
   math: boolean;
-  /** Isolated low-memory Qwen2-VL worker is available in this build. */
-  cpu_budget?: boolean;
-  cpu_budget_pixels?: number;
   photo_tools?: boolean;
   camera_import?: boolean;
   mobile_model_store?: boolean;
   default_engine?: string;
   default_language?: string;
+  /** Isolated low-memory Qwen2-VL worker is available in this build. */
+  cpu_budget?: boolean;
+  cpu_budget_pixels?: number;
   reason?: string;
   pdf_export_reason?: string;
   reasons?: Record<string, string>;
@@ -42,6 +45,40 @@ export interface ModelDownloadProgress {
   downloaded: number;
   total: number | null;
   request_id?: string;
+}
+export interface ModelStorageEntry {
+  name: string;
+  version: string | null;
+  bytes: number;
+  reclaimable_bytes: number;
+  in_use: boolean;
+}
+export interface ModelStorageReport {
+  bytes: number;
+  reclaimable_bytes: number;
+  models: ModelStorageEntry[];
+  warnings: string[];
+}
+export interface ModelStorageCleanup {
+  removed_bytes: number;
+  removed_versions: number;
+  report: ModelStorageReport;
+}
+export interface ImportProgress {
+  request_id: string;
+  phase: "archiving" | "rendering" | "verifying" | "complete";
+  completed: number;
+  total: number | null;
+}
+export interface ImportOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: ImportProgress) => void;
+}
+export function importProgressLabel(progress: ImportProgress): string {
+  if (progress.phase === "archiving") return "Preserving the original document…";
+  if (progress.phase === "complete") return "Document imported";
+  const action = progress.phase === "verifying" ? "Checking" : "Rendering";
+  return progress.total ? `${action} pages: ${progress.completed} of ${progress.total}` : `${action} document…`;
 }
 export function modelDownloadLabel(progress: ModelDownloadProgress): string {
   if (progress.phase === "checking") return `Checking ${progress.name}…`;
@@ -126,10 +163,13 @@ export interface WorkspaceClient {
   list(): Promise<ProjectSummary[]>;
   load(projectId?: string): Promise<ProjectEnvelope | null>;
   save(project: OcrProject, expectedRevision: number): Promise<ProjectEnvelope>;
-  importDocument(locationUri: string): Promise<ImportedDocument>;
-  importImage?(name: string, bytes: Uint8Array): Promise<ImportedDocument>;
+  importDocument(locationUri: string, options?: ImportOptions): Promise<ImportedDocument>;
+  importImage?(name: string, bytes: Uint8Array, options?: ImportOptions): Promise<ImportedDocument>;
   assessPhoto?(pagePath: string): Promise<PhotoAssessment>;
   installMobileModels?(language: string, onProgress?: (progress: ModelDownloadProgress) => void): Promise<string[]>;
+  modelStorage?(): Promise<ModelStorageReport>;
+  cleanModelStorage?(): Promise<ModelStorageCleanup>;
+  removeMobileModel?(name: string, expectedVersion: string): Promise<ModelStorageCleanup>;
   recognize(options: RecognitionOptions): Promise<RecognitionResult>;
   transform(options: TransformOptions): Promise<{ pages: ImportedPage[] }>;
   prepare(
@@ -167,12 +207,61 @@ export interface WorkspaceClient {
 const providerNames = new Map<string, string>();
 const mobileExports = new Map<string, string>();
 const documentExtensions = new Set(["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"]);
+let nativeImageFormats = new Set<string>();
+
+async function documentCapabilities(): Promise<WorkspaceCapabilities> {
+  const capabilities = await invoke<WorkspaceCapabilities>("ocr_workspace_capabilities");
+  nativeImageFormats = new Set();
+  if (!capabilities.native_document_import) return { ...capabilities, image_import_formats: [] };
+  try {
+    const native = await invoke<{ pdf: boolean; image_formats: string[] }>("plugin:mobile-provider|document_capabilities");
+    nativeImageFormats = new Set((native.image_formats ?? []).filter(format => ["heic", "heif", "avif"].includes(format)));
+    return { ...capabilities, pdf_import: native.pdf === true, image_import_formats: [...nativeImageFormats],
+      pdf_reason: native.pdf ? undefined : "PDF rendering is unavailable on this device. Import page images instead." };
+  } catch {
+    return { ...capabilities, pdf_import: false, image_import_formats: [],
+      pdf_reason: "The native document reader is unavailable. Restart the app or import JPEG, PNG, TIFF, BMP, or WebP pages." };
+  }
+}
+
+function importAborted(): DOMException { return new DOMException("Document import cancelled.", "AbortError"); }
+
+/** Register first so fast native imports cannot outrun progress/cancellation.
+ * A cancelled worker is awaited: staging must not be removed while it writes. */
+async function trackedImport(options: ImportOptions | undefined, run: (requestId?: string) => Promise<ImportedDocument>): Promise<ImportedDocument> {
+  if (!options) return run();
+  if (options.signal?.aborted) throw importAborted();
+  const requestId = crypto.randomUUID();
+  let active = true;
+  let started = false;
+  const cancel = () => {
+    if (started && active) void invoke("ocr_workspace_cancel_import", { requestId }).catch(() => {});
+  };
+  const unlisten = await listen<ImportProgress>("ocr-workspace-import", event => {
+    if (active && !options.signal?.aborted && event.payload.request_id === requestId) options.onProgress?.(event.payload);
+  });
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    if (options.signal?.aborted) throw importAborted();
+    started = true;
+    const result = await run(requestId);
+    if (options.signal?.aborted) throw importAborted();
+    return result;
+  } catch (error) {
+    if (options.signal?.aborted || String(error).includes("OCR_IMPORT_CANCELLED")) throw importAborted();
+    throw error;
+  } finally {
+    active = false;
+    options.signal?.removeEventListener("abort", cancel);
+    try { unlisten(); } catch { /* Preserve the import result after a closed event bridge. */ }
+  }
+}
 
 /** Raw IPC avoids expanding a camera JPEG into millions of JavaScript numbers.
  * Header metadata is UTF-8 encoded so provider identities stay byte-exact. */
-function importPayload(command: string, name: string, bytes: Uint8Array, sourceUri?: string): Promise<ImportedDocument> {
+function importPayload(command: string, name: string, bytes: Uint8Array, sourceUri?: string, requestId?: string): Promise<ImportedDocument> {
   if (!bytes.byteLength || bytes.byteLength > 32 * 1024 * 1024) return Promise.reject(new Error("Choose a nonempty document no larger than 32 MiB."));
-  const metadata = new TextEncoder().encode(JSON.stringify({ name, ...(sourceUri ? { sourceUri } : {}) }));
+  const metadata = new TextEncoder().encode(JSON.stringify({ name, ...(sourceUri ? { sourceUri } : {}), ...(requestId ? { requestId } : {}) }));
   if (metadata.byteLength > 12 * 1024) return Promise.reject(new Error("The document name or provider identity is too long."));
   const encoded = btoa(String.fromCharCode(...metadata));
   return invoke(command, bytes, { headers: { "x-ocr-metadata": encoded } });
@@ -195,24 +284,28 @@ async function completeMobileExport<T extends { saved_path: string; bytes: numbe
 }
 
 export const workspaceClient: WorkspaceClient = {
-  capabilities: () => invoke("ocr_workspace_capabilities"),
+  capabilities: documentCapabilities,
   list: () => invoke("ocr_workspace_list"),
   load: (projectId) =>
     invoke("ocr_workspace_load", { projectId: projectId ?? null }),
   save: (project, expectedRevision) =>
     invoke("ocr_workspace_save", { project, expectedRevision }),
-  importDocument: async (locationUri) => {
+  importDocument: (locationUri, options) => trackedImport(options, async requestId => {
     if (isProviderUri(locationUri) && (await loadCapabilities()).mobile) {
       const bytes = await readProviderFile(locationUri);
       const name = providerNames.get(locationUri) ?? "Imported document";
-      const result = await importPayload("ocr_workspace_import_bytes", name, bytes, locationUri);
+      if (options?.signal?.aborted) throw importAborted();
+      const result = await importPayload("ocr_workspace_import_bytes", name, bytes, locationUri, requestId);
       providerNames.delete(locationUri);
       return result;
     }
-    return invoke("ocr_workspace_import", { locationUri });
-  },
-  importImage: (name, bytes) => importPayload("ocr_workspace_import_image", name, bytes),
+    return invoke("ocr_workspace_import", { locationUri, ...(requestId ? { requestId } : {}) });
+  }),
+  importImage: (name, bytes, options) => trackedImport(options, requestId => importPayload("ocr_workspace_import_image", name, bytes, undefined, requestId)),
   assessPhoto: (pagePath) => invoke("ocr_workspace_assess_photo", { pagePath }),
+  modelStorage: () => invoke("ocr_workspace_model_storage"),
+  cleanModelStorage: () => invoke("ocr_workspace_clean_model_storage"),
+  removeMobileModel: (name, expectedVersion) => invoke("ocr_workspace_remove_mobile_model", { name, expectedVersion }),
   installMobileModels: async (language, onProgress) => {
     const requestId = crypto.randomUUID();
     const unlisten = await listen<ModelDownloadProgress>("crispembed-model-download", (event) => {
@@ -283,7 +376,7 @@ export const workspaceClient: WorkspaceClient = {
       if (selection.cancelled) return [];
       for (const file of selection.files) {
         const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-        if (!isProviderUri(file.uri) || !documentExtensions.has(extension)) throw new Error(`Unsupported OCR document: ${file.name}. Choose PDF, JPEG, PNG, TIFF, BMP or WebP.`);
+        if (!isProviderUri(file.uri) || (!documentExtensions.has(extension) && !nativeImageFormats.has(extension))) throw new Error(`Unsupported OCR document: ${file.name}. Choose PDF, JPEG, PNG, TIFF, BMP, WebP${nativeImageFormats.size ? `, or ${[...nativeImageFormats].map(format => format.toUpperCase()).join("/")}` : ""}.`);
         if (file.size > PROVIDER_MAX_BYTES) throw new Error(`${file.name} exceeds the 16 MiB mobile document-provider limit. Select a smaller document or import page photos.`);
       }
       for (const file of selection.files) providerNames.set(file.uri, file.name);

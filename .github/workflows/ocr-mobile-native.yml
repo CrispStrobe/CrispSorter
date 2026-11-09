@@ -3,7 +3,7 @@ name: OCR mobile native integration
 on:
   workflow_dispatch:
   push:
-    branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-build']
+    branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-build', 'feat/ocr-native-validation']
     paths:
       - '.github/workflows/ocr-mobile-native.yml'
       - 'scripts/build_mobile_crispembed.py'
@@ -11,13 +11,22 @@ on:
       - 'scripts/prepare_ocr_ios_project.py'
       - 'scripts/prepare_ocr_cargo_env.py'
       - 'scripts/mobile_ocr_webview_smoke.mjs'
+      - 'scripts/mobile_ocr_probe_utils.mjs'
+      - 'scripts/ocr_mobile_build_receipt.py'
+      - 'scripts/mobile_simulator_smoke.py'
       - 'scripts/validate_android_native_libs.py'
       - 'tools/mobile-ocr-probe/**'
       - 'tests/scripts/test_*mobile*'
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/tauri.ocr-mobile.conf.json'
       - 'src-tauri/src/model_provisioning.rs'
+      - 'src-tauri/src/model_storage.rs'
+      - 'src-tauri/src/model_storage_types.rs'
+      - 'src-tauri/src/index/tauri_commands.rs'
+      - 'src-tauri/src/model_provisioning/**'
+      - 'tests/fixtures/mobile-documents/**'
       - 'src-tauri/src/ocr_workspace.rs'
+      - 'src-tauri/src/ocr_document_import.rs'
       - 'src-tauri/src/ocr_photo.rs'
       - 'src-tauri/src/lib.rs'
       - 'src/lib/ocr/**'
@@ -71,8 +80,9 @@ jobs:
         working-directory: repos/CrispSorter
         run: |
           python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v
-          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py scripts/prepare_ocr_cargo_env.py tools/mobile-ocr-probe/prepare.py
+          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py scripts/prepare_ocr_cargo_env.py scripts/ocr_mobile_build_receipt.py scripts/mobile_simulator_smoke.py tools/mobile-ocr-probe/prepare.py
           node --check scripts/mobile_ocr_webview_smoke.mjs
+          node --test tests/scripts/test_mobile_ocr_probe_utils.mjs
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
@@ -192,7 +202,10 @@ jobs:
       - name: Prepare iOS project tools
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
           if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          if ! command -v protoc >/dev/null; then brew install protobuf; fi
+          protoc --version
       - name: Build matching native runtime
         working-directory: repos/CrispSorter
         run: |
@@ -201,11 +214,12 @@ jobs:
             --lock scripts/ocr-mobile-runtime-lock.json \
             --target '${{ matrix.runtime }}' --jobs 2
           echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
-      - name: Preserve the runtime path through nested Tauri and Xcode Cargo calls
+      - name: Preserve runtime and host compiler paths through nested mobile Cargo calls
         working-directory: repos/CrispSorter
         run: |
           python3 scripts/prepare_ocr_cargo_env.py --project . \
-            --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
+            --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR" \
+            --protoc "$(command -v protoc)"
       - name: Prepare immutable synthetic probe inputs
         if: matrix.probe
         working-directory: repos/CrispSorter
@@ -264,6 +278,10 @@ jobs:
           subprocess.run([str(pathlib.Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0/zipalign'),
                           '-c', '-P', '16', '4', str(target)], check=True)
           PY
+          python3 scripts/ocr_mobile_build_receipt.py --platform android \
+            --artifact "$RUNNER_TEMP/ocr-mobile-app/CrispSorter-ocr.apk" \
+            --runtime-receipt "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" \
+            --output "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json"
       - name: Build iOS OCR simulator application
         if: runner.os == 'macOS'
         working-directory: repos/CrispSorter

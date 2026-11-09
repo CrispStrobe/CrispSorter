@@ -59,11 +59,13 @@
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
+  import ModelStorage from "./ocr/ModelStorage.svelte";
   import { captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import {
     workspaceClient,
     modelDownloadLabel,
+    importProgressLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
@@ -101,6 +103,7 @@
     updateRegion,
     addRegion,
     deleteRegion,
+    findSourceDocument,
     moveRegion,
     movePage,
     removePage,
@@ -156,6 +159,7 @@
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
   let modelProgress = $state("");
+  let modelStorageRevision = $state(0);
   let modelSetupPanel = $state<HTMLElement>();
   let cameraInput = $state<HTMLInputElement>();
   let lastPhotoSource = "";
@@ -182,6 +186,8 @@
     error = $state(""),
     notice = $state("");
   let saveStatus = $state<SaveStatus>({ state: "saved" });
+  let importController = $state<AbortController | null>(null);
+  let importStopping = $state(false);
   let capabilities = $state<WorkspaceCapabilities>({
     ocr: false,
     crispembed: false,
@@ -581,19 +587,28 @@
     try {
       const selected = paths ?? (await client.pickDocuments());
       if (!selected.length) return;
+      const controller = new AbortController();
+      importController = controller;
+      importStopping = false;
       busy = "Importing documents";
       let added = 0;
       const errors: string[] = [];
       for (const path of selected) {
+        if (controller.signal.aborted) break;
         try {
-          if (project.documents.some((d) => d.sourceUri === path)) {
+          if (findSourceDocument(project, path)) {
             errors.push(
               `${path.split(/[\\/]/).pop()}: already in this project`,
             );
             continue;
           }
           busy = `Importing ${path.split(/[\\/]/).pop()}`;
-          const imported = await client.importDocument(path);
+          const imported = await client.importDocument(path, { signal: controller.signal,
+            onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); } });
+          if (findSourceDocument(project, imported.source_uri, imported.archive_uri)) {
+            errors.push(`${imported.name}: this original document is already in the project`);
+            continue;
+          }
           const next = addDocument(project, imported);
           if (!project.pages.length) {
             next.name = imported.name.replace(/\.[^.]+$/, "") || "OCR project";
@@ -603,14 +618,17 @@
           added += imported.pages.length;
           await autosave?.flush();
         } catch (e) {
+          if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) break;
           errors.push(`${path.split(/[\\/]/).pop()}: ${message(e)}`);
         }
       }
-      notice = `${added} ${added === 1 ? "page" : "pages"} added`;
+      notice = `${added} ${added === 1 ? "page" : "pages"} added${controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
     } catch (e) {
       fail(e);
     } finally {
+      importController = null;
+      importStopping = false;
       busy = "";
     }
   }
@@ -620,11 +638,23 @@
     input.value = "";
     if (!file || locked || !client.importImage) return;
     error = "";
-    const invalid = captureFileError(file);
+    const invalid = captureFileError(file, capabilities.image_import_formats);
     if (invalid) { error = invalid; return; }
     busy = "Importing photo";
+    const controller = new AbortController();
+    importController = controller;
+    importStopping = false;
     try {
-      const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()));
+      const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()), {
+        signal: controller.signal, onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); },
+      });
+      const existing = findSourceDocument(project, imported.source_uri, imported.archive_uri);
+      if (existing) {
+        const first = project.pages.find(page => page.documentId === existing.id);
+        if (first) selectPage(first.id);
+        notice = "This original photo is already in the project.";
+        return;
+      }
       const before = project.pages.length;
       const next = addDocument(project, imported);
       if (!before) next.name = imported.name.replace(/\.[^.]+$/, "") || "Photo project";
@@ -634,8 +664,17 @@
       mobileView = "image";
       await autosave?.flush();
       notice = "Photo added. Check its edges, tilt and lighting before recognition.";
-    } catch (failure) { fail(failure); }
-    finally { busy = ""; }
+    } catch (failure) {
+      if (controller.signal.aborted || (failure instanceof DOMException && failure.name === "AbortError")) notice = "Photo import cancelled.";
+      else fail(failure);
+    }
+    finally { busy = ""; importController = null; importStopping = false; }
+  }
+  function cancelImport() {
+    if (!importController || importStopping) return;
+    importStopping = true;
+    busy = "Stopping import after the current step…";
+    importController.abort();
   }
   async function assessPhoto() {
     const page = activePage;
@@ -692,7 +731,7 @@
     untrack(() => void openRequestedDocument(uri));
   });
   async function openRequestedDocument(uri: string) {
-    const existing = project.documents.find((d) => d.sourceUri === uri);
+    const existing = findSourceDocument(project, uri);
     const firstPage =
       existing && project.pages.find((p) => p.documentId === existing.id);
     if (firstPage) {
@@ -882,7 +921,10 @@
       const names = await client.installMobileModels(language === "auto" ? "eng" : language, (progress) => {
         if (mounted) modelProgress = modelDownloadLabel(progress);
       });
-      if (mounted) notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+      if (mounted) {
+        notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+        modelStorageRevision += 1;
+      }
     } catch (value) {
       if (mounted) fail(value);
     } finally {
@@ -967,7 +1009,7 @@
     error = "";
     selectedRegionId = null;
     showOriginal = false;
-    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, ...(cpuBudget ? { cpuPixelBudget: true } : {}) };
+    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudget };
     change(beginBatch(project, pages.map(page => page.id), options));
     await runPreparedBatch(pages.map(page => page.id), options);
   }
@@ -1001,8 +1043,7 @@
           if (!batchPageIsCurrent(project, id)) throw new Error("The saved page changed. Start a new recognition selection.");
           const current = project.pages.find(page => page.id === id)!;
           return client.recognize({ pagePath: current.imagePath, pageWidthPoints: current.widthPoints,
-            pageHeightPoints: current.heightPoints, config: options.config, engine: options.engine, language: options.language,
-            cpuPixelBudget: options.cpuPixelBudget === true });
+            pageHeightPoints: current.heightPoints, config: options.config, engine: options.engine, language: options.language, cpuPixelBudget: options.cpuPixelBudget ?? false });
         },
       })));
       if (!started) throw new Error("The recognition queue is already active.");
@@ -1695,6 +1736,7 @@
         .catch(fail);
     return () => {
       mounted = false;
+      importController?.abort();
       unlisten?.();
       unlistenClose?.();
       queue.cancel();
@@ -1716,6 +1758,7 @@
     </button>
     {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
     <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
+    <ModelStorage {client} disabled={locked} revision={modelStorageRevision} onerror={fail} onnotice={(value) => { notice = value; error = ""; }} />
   </section>
 {/if}
 {/snippet}
@@ -1967,7 +2010,7 @@
           onclick={() => importFiles()}
           disabled={locked}><Plus size={18} /> Add documents</button
         >
-        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP</div>
+        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP{#each capabilities.image_import_formats ?? [] as format} · {format.toUpperCase()}{/each}</div>
         {@render mobileModelSetup()}
         {#if !capabilities.ocr}<div class="capability-note">
             <AlertTriangle size={16} /><span
@@ -2873,6 +2916,7 @@
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
             </p>
+            {@render mobileModelSetup()}
             {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
                 class="setting-toggle"
                 ><span
@@ -2890,7 +2934,6 @@
                   disabled={locked}
                 /></label
               >{/if}
-            {@render mobileModelSetup()}
             <div class="settings-section">
               <h3><WandSparkles size={15} /> Scan preparation</h3>
               {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Image restoration", hint: "Repair the scan with the selected model and task." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label
@@ -3465,8 +3508,9 @@
     <span class="status-dot" class:working={!!busy || queueActive}></span><span
       class="status-message">{busy || notice || "Ready"}</span
     >
+    {#if importController}<button class="button cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
     <div class="toolbar-spacer"></div>
-    {#if project.pages.length}<span
+    {#if project.pages.length && !importController}<span
         >{metrics.recognized}/{metrics.included} recognized</span
       ><span class="status-divider"></span><span class="approved-stat"
         ><CheckCheck size={12} />{metrics.approved} approved</span
@@ -4966,6 +5010,11 @@
     border-top: 1px solid var(--line);
     font-size: 9px;
     color: #7f94b1;
+  }
+  .cancel-import {
+    min-height: 44px;
+    padding: 0 12px;
+    white-space: nowrap;
   }
   .status-dot {
     background: #4ab892;

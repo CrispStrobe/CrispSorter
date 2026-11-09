@@ -115,6 +115,44 @@ class CargoEnvironmentTests(unittest.TestCase):
         MODULE.prepare(self.project, self.runtime)
         self.assertEqual(tomllib.loads(self.config.read_text())["env"][MODULE.VARIABLE]["value"], str(self.runtime))
 
+    def make_protoc(self) -> Path:
+        executable = self.root / 'host tools' / 'protoc'
+        executable.parent.mkdir(exist_ok=True)
+        executable.write_text('#!/bin/sh\nexit 0\n')
+        executable.chmod(0o755)
+        return executable
+
+    def test_host_protoc_survives_nested_cargo_without_rewriting_existing_runtime(self) -> None:
+        MODULE.prepare(self.project, self.runtime)
+        original = self.config.read_bytes()
+        protoc = self.make_protoc()
+        alias = self.root / 'protoc-link'
+        alias.symlink_to(protoc)
+        MODULE.prepare(self.project, self.runtime, alias)
+        written = self.config.read_bytes()
+        self.assertTrue(written.startswith(original))
+        parsed = tomllib.loads(written.decode('utf-8'))
+        self.assertEqual(parsed['env']['PROTOC'], {'value': str(protoc), 'force': True})
+        self.assertEqual(parsed['env'][MODULE.VARIABLE], {'value': str(self.runtime), 'force': True})
+        MODULE.prepare(self.project, self.runtime, protoc)
+        self.assertEqual(self.config.read_bytes(), written)
+
+    def test_conflicting_protoc_refuses_entire_edit_before_runtime_is_added(self) -> None:
+        original = '[env]\nPROTOC = "/other/protoc"\n'
+        self.write_config(original)
+        with self.assertRaisesRegex(ValueError, 'PROTOC conflicts'):
+            MODULE.prepare(self.project, self.runtime, self.make_protoc())
+        self.assertEqual(self.config.read_text(), original)
+
+    def test_nonexecutable_or_relative_protoc_does_not_create_config(self) -> None:
+        protoc = self.make_protoc()
+        protoc.chmod(0o644)
+        for path in (protoc, Path('relative/protoc')):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValueError, 'executable'):
+                    MODULE.prepare(self.project, self.runtime, path)
+                self.assertFalse(self.config.parent.exists())
+
     def test_symlink_config_is_not_followed(self) -> None:
         self.config.parent.mkdir()
         outside = self.root / "external.toml"

@@ -2,8 +2,8 @@
 /**
  * Real Android WebView -> Tauri -> Rust -> CrispEmbed smoke.
  *
- * Run only on a dedicated, fresh x86_64 emulator after mobile_simulator_smoke.py
- * has installed and launched the debug APK. No fixture adapter, native mocks,
+ * Run on a dedicated, fresh emulator or an explicitly selected physical Android
+ * test device with the exact debug APK already installed and running. No fixture adapter, native mocks,
  * automatic consent, system save picker, data wipe, or physical-camera claim.
  *
  * Wry wry-v0.55.1 src/android/main_pipe.rs enables WebView debugging in debug
@@ -18,7 +18,9 @@
  * node scripts/mobile_ocr_webview_smoke.mjs --serial emulator-5554 \
  *   --apk path/to/debug.apk --inputs path/to/prepared-inputs \
  *   --output path/to/new-receipt-directory --source-commit <40hex> \
- *   --embed-commit <40hex> [--runtime-receipt path/to/native-build.json]
+ *   --embed-commit <40hex> --build-receipt path/to/build-receipt.json \
+ *   [--runtime-receipt path/to/native-build.json] [--device-kind physical] \
+ *   [--repeat-pages 8] [--max-rss-mib 1024]
  *
  * PLAYWRIGHT_MODULE_PATH must identify an installed playwright package directory
  * (version 1.62.1). The script reads no weights from the host fixture directory:
@@ -32,6 +34,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
+import { probeOptions, processMemory, summarizeMemory, textErrorRate } from './mobile_ocr_probe_utils.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
 const PLAYWRIGHT_VERSION = '1.62.1';
@@ -40,21 +43,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const hex = (value, length) => typeof value === 'string' && new RegExp('^[0-9a-f]{' + length + '}$', 'i').test(value);
 const stamp = () => new Date().toISOString();
-
-function options(argv) {
-  const allowed = new Set(['serial', 'apk', 'inputs', 'output', 'source-commit', 'embed-commit', 'runtime-receipt']);
-  const result = {};
-  for (let i = 0; i < argv.length; i += 2) {
-    const key = argv[i]?.replace(/^--/, '');
-    assert(argv[i]?.startsWith('--') && allowed.has(key), 'Unknown argument: ' + argv[i]);
-    assert(argv[i + 1] && !argv[i + 1].startsWith('--') && !(key in result), 'Missing or repeated argument: ' + key);
-    result[key] = argv[i + 1];
-  }
-  for (const key of allowed) if (key !== 'runtime-receipt') assert(result[key], 'Required: --' + key);
-  assert(/^emulator-\d+$/.test(result.serial), 'Select a dedicated Android emulator explicitly.');
-  assert(hex(result['source-commit'], 40) && hex(result['embed-commit'], 40), 'Full source and paired native commit IDs are required.');
-  return result;
-}
 
 async function fileHash(filename) {
   const hash = createHash('sha256');
@@ -78,6 +66,16 @@ function remotePath(value) {
   return value;
 }
 
+function archivedPath(document) {
+  let value = document.archive_uri ?? document.source_uri;
+  if (typeof value === 'string' && value.startsWith('file://')) {
+    const uri = new URL(value);
+    assert(['', 'localhost'].includes(uri.hostname) && !uri.search && !uri.hash, 'Unexpected private archive URI.');
+    value = decodeURIComponent(uri.pathname);
+  }
+  return remotePath(value);
+}
+
 function validateAsset(asset, appData) {
   assert(asset && Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Missing raster dimensions.');
   assert(asset.width > 0 && asset.height > 0 && asset.width * asset.height <= 100_000_000, 'Invalid raster size.');
@@ -88,7 +86,7 @@ function validateAsset(asset, appData) {
   return asset;
 }
 
-function validateRecognition(result, appData) {
+function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00') {
   validateAsset(result, appData);
   assert(Array.isArray(result.regions) && result.regions.length > 0, 'Real OCR returned no regions.');
   for (const region of result.regions) {
@@ -98,7 +96,9 @@ function validateRecognition(result, appData) {
     assert(region.x + region.w <= result.width + 0.01 && region.y + region.h <= result.height + 0.01, 'OCR box is outside the returned raster.');
   }
   const text = result.regions.map(region => region.text).join('\n');
-  assert(text.trim().length > 0 && /\b2048\b/.test(text), 'Actual OCR did not recognize the synthetic document number 2048: ' + text);
+  assert(text.trim().length > 0, 'Actual OCR returned empty text.');
+  const cer = textErrorRate(expected, text);
+  assert(cer <= 0.25, 'Actual OCR exceeded the fixture Unicode character error limit (0.25): ' + cer + '\n' + text);
   const config = result.diagnostics?.requested_config;
   assert(config && config.router === false && config.stages?.length === 1, 'The saved explicit engine settings did not reach native recognition.');
   assert.equal(config.stages[0].engine, 'tesseract');
@@ -121,18 +121,20 @@ function projectRegion(region) {
 }
 
 async function main() {
-  const opt = options(process.argv.slice(2));
+  const opt = probeOptions(process.argv.slice(2));
   const output = path.resolve(opt.output);
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.mkdir(output); // Never overwrite evidence from an earlier run.
   const receipt = {
     schema_version: 1, kind: 'android-webview-native-ocr', started_at: stamp(), status: 'running',
     synthetic_only: true, physical_camera_tested: false, corpus_quality_qualified: false,
-    system_save_picker_tested: false, ui_interactions_tested: false,
+    system_save_picker_tested: false, ui_interactions_tested: false, device_kind: opt['device-kind'],
+    physical_device_qualified: false,
     source: { sorter_commit: opt['source-commit'], crispembed_commit: opt['embed-commit'],
-      identity_basis: 'CI checkout arguments, installed APK SHA-256, and optional native build receipt',
+      identity_basis: 'Clean checkout build receipt, matched packaged native code/data, and exact installed APK SHA-256',
       github_run_id: process.env.GITHUB_RUN_ID ?? null, github_sha: process.env.GITHUB_SHA ?? null },
-    serial: opt.serial, package: PACKAGE, steps: [], cleanup_errors: [],
+    serial: opt.serial, package: PACKAGE, steps: [], cleanup_errors: [], memory_samples: [],
+    limits: { repeated_inference_pages: opt['repeat-pages'], maximum_process_rss_mib: opt['max-rss-mib'] },
   };
   const consoleLog = [];
   let browser, page, forwardPort, pid, privateRoot, appData, exportPath;
@@ -151,6 +153,59 @@ async function main() {
     execFileAsync('adb', ['-s', opt.serial, ...args], { timeout: budget(timeout, 'adb'), maxBuffer, encoding });
   const adbText = async (args, settings) => (await adb(args, settings)).stdout.trim();
   const runAs = (args, settings) => adb(['exec-out', 'run-as', PACKAGE, ...args], settings);
+  async function sampleMemory(label) {
+    assert(/^\d+$/.test(pid), 'Memory samples require the verified application PID.');
+    const values = await Promise.allSettled([
+      runAs(['cat', '/proc/' + pid + '/status'], { timeout: 10_000, maxBuffer: 128 * 1024 }),
+      adb(['shell', 'dumpsys', 'meminfo', pid], { timeout: 10_000, maxBuffer: 512 * 1024 }),
+    ]);
+    const status = values[0].status === 'fulfilled' ? values[0].value.stdout : '';
+    const meminfo = values[1].status === 'fulfilled' ? values[1].value.stdout : '';
+    const sample = { at: stamp(), label, pid, ...processMemory(status, meminfo),
+      errors: values.flatMap(item => item.status === 'rejected' ? [String(item.reason).slice(0, 2000)] : []) };
+    receipt.memory_samples.push(sample);
+    await fs.mkdir(path.join(output, 'memory'), { recursive: true });
+    await fs.writeFile(path.join(output, 'memory', String(receipt.memory_samples.length).padStart(4, '0') + '.txt'),
+      'Process status\n' + status + '\nDumpsys meminfo\n' + meminfo);
+    return sample;
+  }
+  async function measuredRecognition(label, work) {
+    const before = await sampleMemory(label + ':before');
+    assert(Number.isFinite(before.rss_kib) && Number.isFinite(before.pss_kib), 'Application RSS/PSS could not be measured before inference.');
+    const started = Date.now();
+    let pendingSample = null, samplingError = null, value, failure;
+    const timer = setInterval(() => {
+      if (pendingSample) return;
+      pendingSample = sampleMemory(label + ':during').catch(error => { samplingError = error; }).finally(() => { pendingSample = null; });
+    }, 5000);
+    try { value = await work(); }
+    catch (error) { failure = error; }
+    finally {
+      clearInterval(timer);
+      if (pendingSample) await pendingSample;
+    }
+    const elapsed = Date.now() - started;
+    if (value != null) {
+      assert(/^[a-z0-9-]+$/.test(label));
+      await fs.mkdir(path.join(output, 'native-observations'), { recursive: true });
+      await fs.writeFile(path.join(output, 'native-observations', label + '.json'), JSON.stringify(value, null, 2) + '\n');
+    }
+    let after = null, afterError = null;
+    try { after = await sampleMemory(label + ':after'); }
+    catch (error) { afterError = error; }
+    receipt.memory = summarizeMemory(receipt.memory_samples);
+    receipt.inference_observations ??= [];
+    receipt.inference_observations.push({ label, wall_ms: elapsed,
+      native_elapsed_ms: value?.elapsed_ms ?? null, before, after });
+    if (failure) throw failure;
+    if (samplingError) throw samplingError;
+    if (afterError) throw afterError;
+    assert(Number.isFinite(after.rss_kib) && Number.isFinite(after.pss_kib), 'Application RSS/PSS could not be measured after inference.');
+    assert(receipt.memory.process_high_water_rss_kib != null, 'Kernel peak RSS is unavailable; the memory gate cannot pass without it.');
+    assert(receipt.memory.process_high_water_rss_kib <= opt['max-rss-mib'] * 1024,
+      'Application peak RSS exceeded the explicit fixture-run limit of ' + opt['max-rss-mib'] + ' MiB.');
+    return value;
+  }
   async function privatePath(value) {
     remotePath(value);
     assert(value.startsWith(privateRoot + '/'), 'Refusing to inspect a file outside the dedicated test app.');
@@ -200,6 +255,16 @@ async function main() {
       ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args },
     ), milliseconds, command);
   };
+  const importBytes = (command, bytes, metadata, timeout = 90_000) => {
+    assert(['ocr_workspace_import_bytes', 'ocr_workspace_import_image'].includes(command));
+    return bounded(page.evaluate(async ({ command, base64, metadata }) => {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const header = btoa(Array.from(new TextEncoder().encode(JSON.stringify(metadata)), byte => String.fromCharCode(byte)).join(''));
+      return window.__TAURI_INTERNALS__.invoke(command, bytes, { headers: { 'x-ocr-metadata': header } });
+    }, { command, base64: bytes.toString('base64'), metadata }), budget(timeout, command), command);
+  };
 
   try {
     const prepared = await step('validate synthetic inputs and exact application build', async () => {
@@ -227,9 +292,27 @@ async function main() {
         assert(/^[A-Za-z0-9_-]+\.gguf$/.test(model.filename));
         assert(model.url.startsWith('https://'));
       }
-      assert.equal(await adbText(['shell', 'getprop', 'ro.kernel.qemu']), '1', 'Target is not an emulator.');
+      assert.equal(await adbText(['get-state']), 'device', 'Selected device is not connected and authorized.');
+      const qemu = await adbText(['shell', 'getprop', 'ro.kernel.qemu']);
+      if (opt['device-kind'] === 'emulator') assert.equal(qemu, '1', 'Target is not an emulator.');
+      else assert.notEqual(qemu, '1', 'An emulator cannot establish physical-device execution.');
       const abis = (await adbText(['shell', 'getprop', 'ro.product.cpu.abilist'])).split(',');
-      assert(abis.includes('x86_64'), 'This smoke requires the x86_64 runtime build.');
+      const buildBytes = await fs.readFile(opt['build-receipt']);
+      assert(buildBytes.length <= 1024 * 1024, 'Application build receipt exceeds 1 MiB.');
+      const build = JSON.parse(buildBytes);
+      assert.equal(build.schema_version, 1);
+      assert.equal(build.kind, 'ocr-mobile-app-build');
+      assert.equal(build.platform, 'android');
+      assert.equal(build.package, PACKAGE);
+      assert.equal(build.sorter_commit, opt['source-commit']);
+      assert.equal(build.crispembed_commit, opt['embed-commit']);
+      assert.equal(build.tracked_source_clean, true);
+      assert.equal(build.artifact.kind, 'apk');
+      assert.equal(build.artifact.paired_runtime_mapped_sections_match, true);
+      assert(build.artifact.abis.length === 1 && abis.includes(build.artifact.abis[0]), 'Installed APK ABI is unsupported by the selected device.');
+      if (opt['device-kind'] === 'emulator') assert.equal(build.runtime.target, 'android-x86_64');
+      await fs.writeFile(path.join(output, 'application-build-receipt.json'), buildBytes);
+      receipt.source.app_build_receipt_sha256 = digest(buildBytes);
       const reportedRoot = remotePath(await adbText(['exec-out', 'run-as', PACKAGE, 'pwd']));
       assert(['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE].includes(reportedRoot), 'Unexpected app sandbox.');
       privateRoot = remotePath((await runAs(['realpath', reportedRoot])).stdout.trim());
@@ -241,9 +324,13 @@ async function main() {
       assert(installedPath.startsWith('/data/app/') && installedPath.endsWith('/base.apk'));
       const installedHash = (await adbText(['shell', 'sha256sum', installedPath], { timeout: 60_000 })).match(/^([0-9a-f]{64})\s/i)?.[1];
       const apkHash = await fileHash(opt.apk);
+      assert.equal(apkHash, build.artifact.sha256, 'Supplied APK differs from its clean source build receipt.');
       assert.equal(installedHash?.toLowerCase(), apkHash, 'Running installation is not the supplied APK.');
       receipt.apk = { sha256: apkHash, installed_path: installedPath, abis };
       receipt.device = {
+        kind: opt['device-kind'], qemu_property: qemu,
+        model: await adbText(['shell', 'getprop', 'ro.product.model']),
+        manufacturer: await adbText(['shell', 'getprop', 'ro.product.manufacturer']),
         sdk: await adbText(['shell', 'getprop', 'ro.build.version.sdk']),
         fingerprint: await adbText(['shell', 'getprop', 'ro.build.fingerprint']),
       };
@@ -255,6 +342,7 @@ async function main() {
         const runtime = await fs.readFile(opt['runtime-receipt']);
         assert(runtime.length <= 1024 * 1024, 'Native build receipt exceeds 1 MiB.');
         JSON.parse(runtime);
+        assert.equal(digest(runtime), build.runtime_receipt_sha256, 'Native build receipt differs from the application build identity.');
         await fs.writeFile(path.join(output, 'native-build-receipt.json'), runtime);
         receipt.source.native_build_receipt_sha256 = digest(runtime);
       }
@@ -316,7 +404,7 @@ async function main() {
     const capabilities = await step('require the native mobile OCR profile and a fresh model store', async () => {
       const value = await invoke('ocr_workspace_capabilities');
       for (const flag of ['ocr', 'crispembed', 'photo_tools', 'mobile_model_store', 'review_diagnostics']) assert.equal(value[flag], true, flag);
-      assert.equal(value.pdf_import, false);
+      // Native PDF availability is verified below when this profile exposes it.
       assert.equal(value.default_engine, 'tesseract');
       assert.equal(value.default_language, 'eng');
       assert(value.formats.includes('pdf'), 'The paired reviewed-PDF renderer is unavailable.');
@@ -325,7 +413,7 @@ async function main() {
       appData = remotePath((await runAs(['realpath', rawAppData])).stdout.trim());
       assert(appData.startsWith(privateRoot + '/'), 'Native app data is outside the app sandbox.');
       const projects = await invoke('ocr_workspace_list');
-      assert.deepEqual(projects, [], 'Use a fresh emulator; existing projects must not be overwritten or erased.');
+      assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
       for (const model of prepared.inputs.models) {
         const entry = registry.find(item => item.name === model.name);
@@ -365,20 +453,13 @@ async function main() {
     }, 150_000);
 
     const imported = await step('import the synthetic PNG through the real raw binary IPC', async () => {
-      const importBudget = budget(60_000, 'raw image import');
-      const result = await bounded(page.evaluate(async ({ base64, name }) => {
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const metadata = btoa(JSON.stringify({ name })); // Fixed ASCII test name only.
-        return window.__TAURI_INTERNALS__.invoke('ocr_workspace_import_image', bytes, { headers: { 'x-ocr-metadata': metadata } });
-      }, { base64: prepared.bytes.toString('base64'), name: 'Synthetic mobile OCR.png' }), importBudget, 'raw image import');
+      const result = await importBytes('ocr_workspace_import_image', prepared.bytes, { name: 'Synthetic mobile OCR.png', requestId: randomUUID() }, 60_000);
       assert.equal(result.pages.length, 1);
       const asset = validateAsset(result.pages[0], appData);
       assert.equal(asset.width, prepared.inputs.fixture.width);
       assert.equal(asset.height, prepared.inputs.fixture.height);
-      assert(remotePath(result.source_uri).startsWith(appData + '/ocr-workspace/sources/'));
-      assert.equal(await privateDigest(result.source_uri), prepared.inputs.fixture.png_sha256, 'The archived original bytes changed during import.');
+      assert(archivedPath(result).startsWith(appData + '/ocr-workspace/sources/'));
+      assert.equal(await privateDigest(archivedPath(result)), prepared.inputs.fixture.png_sha256, 'The archived original bytes changed during import.');
       receipt.imported = result;
       receipt.original_asset_sha256 = await privateDigest(asset.image_path);
       return result;
@@ -454,10 +535,10 @@ async function main() {
       await step('recognize ' + (index === 0 ? 'original' : 'prepared') + ' pixels with saved Tesseract English settings', async () => {
         const target = saved.project.pages[index];
         const settings = saved.project.recognitionSettings;
-        const result = await invoke('ocr_workspace_recognize', {
+        const result = await measuredRecognition(index === 0 ? 'original' : 'prepared', () => invoke('ocr_workspace_recognize', {
           pagePath: target.imagePath, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
           pageWidthPoints: target.widthPoints, pageHeightPoints: target.heightPoints,
-        }, 180_000);
+        }, 180_000));
         // Keep the native diagnostics even when the text or geometry gate fails.
         await fs.writeFile(path.join(output, 'recognition-' + (index === 0 ? 'original' : 'prepared') + '.json'), JSON.stringify(result, null, 2) + '\n');
         const text = validateRecognition(result, appData);
@@ -481,6 +562,144 @@ async function main() {
           elapsed_ms: result.elapsed_ms, saved_revision: saved.revision, warnings: result.warnings });
       }, 220_000);
     }
+
+    receipt.native_documents = { status: 'not_supported', pdf_import: capabilities.pdf_import,
+      qualification: 'Actual app raw IPC and native document rasterizer; source-URI preservation here uses synthetic metadata and does not exercise a system provider grant.' };
+    if (capabilities.pdf_import && capabilities.native_document_import) {
+      const manifest = prepared.inputs.document_fixtures;
+      assert(manifest?.available === true, 'This native document profile requires the checked-in document fixture set.');
+      const nativeCapabilities = await invoke('plugin:mobile-provider|document_capabilities');
+      assert.equal(nativeCapabilities.pdf, true);
+      assert.equal(nativeCapabilities.max_source_bytes, 32 * 1024 * 1024);
+      assert.equal(nativeCapabilities.max_page_pixels, 16_000_000);
+      assert.equal(nativeCapabilities.max_pages, 10_000);
+      receipt.native_documents.capabilities = nativeCapabilities;
+      const pdf = await step('import the pinned multipage PDF through actual mobile rasterization', async () => {
+        assert.equal(manifest.filename, 'two-pages.pdf');
+        const bytes = await fs.readFile(path.join(opt.inputs, manifest.filename));
+        assert.equal(bytes.length, manifest.bytes);
+        assert.equal(digest(bytes), manifest.sha256);
+        const sourceUri = 'content://com.crispstrobe.native-ocr-fixture/Case%3APDF%2Ftwo-pages.pdf';
+        const result = await importBytes('ocr_workspace_import_bytes', bytes,
+          { name: 'Überblick-日本語.pdf', sourceUri, requestId: randomUUID() });
+        assert.equal(result.source_uri, sourceUri, 'Native import changed the supplied provider identity.');
+        assert.equal(result.name, 'Überblick-日本語.pdf', 'UTF-8 import metadata did not survive raw IPC.');
+        assert.equal(result.pages.length, manifest.pages.length);
+        assert.equal(await privateDigest(archivedPath(result)), manifest.sha256, 'Native PDF import rewrote original bytes.');
+        for (const [index, asset] of result.pages.entries()) {
+          validateAsset(asset, appData);
+          const expected = manifest.pages[index];
+          assert.equal(asset.page_width_points, expected.width_points);
+          assert.equal(asset.page_height_points, expected.height_points);
+          assert(Math.abs(asset.width - expected.width_points * 200 / 72) <= 1);
+          assert(Math.abs(asset.height - expected.height_points * 200 / 72) <= 1);
+          assert(asset.width * asset.height <= nativeCapabilities.max_page_pixels);
+          await fs.writeFile(path.join(output, 'native-pdf-page-' + (index + 1) + '.png'), await privateBytes(asset.image_path));
+        }
+        receipt.native_documents.imported_pdf = result;
+        receipt.native_documents.original_sha256 = manifest.sha256;
+        return result;
+      }, 150_000);
+      const documentId = 'document-' + randomUUID();
+      saved.project.documents.push({ id: documentId, sourceUri: pdf.source_uri, name: pdf.name });
+      receipt.native_documents.recognized_pages = [];
+      for (let index = 0; index < pdf.pages.length; index++) {
+        await step('recognize and persist actual native PDF page ' + (index + 1), async () => {
+          const asset = pdf.pages[index], settings = saved.project.recognitionSettings;
+          const result = await measuredRecognition('pdf-page-' + (index + 1), () => invoke('ocr_workspace_recognize', {
+            pagePath: asset.image_path, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
+            pageWidthPoints: asset.page_width_points, pageHeightPoints: asset.page_height_points,
+          }, 180_000));
+          const expected = manifest.pages[index].text.join('\n');
+          const text = validateRecognition(result, appData, expected);
+          const target = { ...saved.project.pages[0], id: 'page-' + randomUUID(), documentId, sourcePage: index + 1,
+            name: 'Native PDF page ' + (index + 1), imagePath: result.image_path, originalImagePath: asset.image_path,
+            width: result.width, height: result.height, widthPoints: asset.page_width_points, heightPoints: asset.page_height_points,
+            regions: result.regions.map(projectRegion), status: 'recognized', approved: false, elapsedMs: result.elapsed_ms,
+            contentRevision: randomUUID(), provenance: { syntheticNativeSmoke: true, nativePdfImport: true, diagnostics: result.diagnostics } };
+          saved.project.pages.push(target);
+          const committed = await invoke('ocr_workspace_save', { project: saved.project, expectedRevision: saved.revision });
+          assert.equal(committed.revision, saved.revision + 1);
+          saved = await invoke('ocr_workspace_load', { projectId: project.id });
+          assert.equal(saved.revision, committed.revision);
+          assert.equal(saved.project.pages.at(-1).id, target.id);
+          assert.equal(saved.project.pages.at(-1).regions.map(region => region.text).join('\n'), text);
+          receipt.native_documents.recognized_pages.push({ page: index + 1, text, expected,
+            unicode_cer: textErrorRate(expected, text), regions: result.regions.length, elapsed_ms: result.elapsed_ms });
+        }, 220_000);
+      }
+      receipt.native_documents.images = [];
+      for (const fixture of manifest.images ?? []) {
+        const extension = fixture.filename.split('.').at(-1);
+        if (!['jpg', 'jpeg'].includes(extension) && !nativeCapabilities.image_formats.includes(extension)) {
+          receipt.native_documents.images.push({ filename: fixture.filename, status: 'not_supported', advertised_formats: nativeCapabilities.image_formats });
+          continue;
+        }
+        await step('decode actual native image fixture ' + fixture.filename, async () => {
+          assert(/^[a-z0-9.-]+$/.test(fixture.filename));
+          const bytes = await fs.readFile(path.join(opt.inputs, fixture.filename));
+          assert.equal(bytes.length, fixture.bytes);
+          assert.equal(digest(bytes), fixture.sha256);
+          const sourceUri = 'content://com.crispstrobe.native-ocr-fixture/Photo%3A' + fixture.filename;
+          const result = await importBytes('ocr_workspace_import_bytes', bytes,
+            { name: fixture.filename, sourceUri, requestId: randomUUID() });
+          assert.equal(result.source_uri, sourceUri);
+          assert.equal(result.pages.length, 1);
+          const asset = validateAsset(result.pages[0], appData);
+          assert.equal(asset.width, fixture.display_width);
+          assert.equal(asset.height, fixture.display_height);
+          assert.equal(await privateDigest(archivedPath(result)), fixture.sha256);
+          await fs.writeFile(path.join(output, 'native-' + fixture.filename + '.png'), await privateBytes(asset.image_path));
+          receipt.native_documents.images.push({ filename: fixture.filename, status: 'passed', original_sha256: fixture.sha256,
+            orientation: fixture.orientation, asset });
+        }, 120_000);
+      }
+      await step('reject a malformed PDF through the native importer', async () => {
+        let rejection;
+        try {
+          await importBytes('ocr_workspace_import_bytes', Buffer.from('%PDF-1.7\ninvalid cross-reference and page tree\n'),
+            { name: 'malformed.pdf', requestId: randomUUID() }, 45_000);
+        } catch (error) { rejection = String(error); }
+        assert(rejection && !/timed out|Target closed|Session closed|Connection closed/i.test(rejection),
+          'A timeout or disconnected driver cannot establish malformed-document rejection.');
+        receipt.native_documents.malformed_pdf_rejection = rejection;
+      }, 60_000);
+      receipt.native_documents.status = 'passed';
+    }
+
+    const repeatStartPages = saved.project.pages.length;
+    receipt.repeated_inference = { requested_pages: opt['repeat-pages'], completed_pages: 0,
+      unique_source_rasters: 2, saved_page_ids: [],
+      qualification: 'Sequential actual native recognition and durable page saves, alternating two synthetic rasters. This does not establish diverse corpus accuracy or large-document capacity.' };
+    for (let index = 0; index < opt['repeat-pages']; index++) {
+      await step('repeat native recognition and durable page save ' + (index + 1) + '/' + opt['repeat-pages'], async () => {
+        const input = saved.project.pages[index % 2];
+        const settings = saved.project.recognitionSettings;
+        const result = await measuredRecognition('repeat-' + (index + 1), () => invoke('ocr_workspace_recognize', {
+          pagePath: input.imagePath, config: settings.config, engine: settings.engine, language: settings.language, zone: null,
+          pageWidthPoints: input.widthPoints, pageHeightPoints: input.heightPoints,
+        }, 180_000));
+        const text = validateRecognition(result, appData);
+        const pageId = 'page-' + randomUUID();
+        saved.project.pages.push({ ...input, id: pageId, name: 'Repeated native observation ' + (index + 1),
+          imagePath: result.image_path, width: result.width, height: result.height,
+          regions: result.regions.map(projectRegion), status: 'recognized', approved: false,
+          elapsedMs: result.elapsed_ms, contentRevision: randomUUID(),
+          provenance: { syntheticNativeSmoke: true, repeatedObservation: index + 1, diagnostics: result.diagnostics } });
+        saved.project.updatedAt = stamp();
+        const committed = await invoke('ocr_workspace_save', { project: saved.project, expectedRevision: saved.revision });
+        assert.equal(committed.revision, saved.revision + 1);
+        saved = await invoke('ocr_workspace_load', { projectId: project.id });
+        assert.equal(saved.revision, committed.revision);
+        assert.equal(saved.project.pages.length, repeatStartPages + index + 1);
+        assert.equal(saved.project.pages.at(-1).id, pageId);
+        assert.equal(saved.project.pages.at(-1).regions.map(region => region.text).join('\n'), text);
+        assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid, 'Application restarted during repeated native recognition.');
+        receipt.repeated_inference.completed_pages++;
+        receipt.repeated_inference.saved_page_ids.push(pageId);
+      }, 220_000);
+    }
+    receipt.repeated_inference.saved_project_pages = saved.project.pages.length;
 
     await step('render the supplied review text to a private PDF and discard its staging file', async () => {
       const result = recognized[1];
@@ -522,8 +741,79 @@ async function main() {
       exportPath = undefined;
     }, 130_000);
 
+    await step('hand a capture fixture through the actual workspace file input and recognize from its UI', async () => {
+      let opened = false;
+      for (const candidate of await page.getByRole('button', { name: 'OCR', exact: true }).all()) {
+        if (await candidate.isVisible()) { await candidate.click({ timeout: budget(15_000, 'open OCR workspace') }); opened = true; break; }
+      }
+      if (!opened) {
+        await page.getByRole('button', { name: 'Tools', exact: true }).click({ timeout: budget(15_000, 'open mobile tools') });
+        await page.locator('#mobile-tools-menu').getByRole('button', { name: 'OCR', exact: true })
+          .click({ timeout: budget(15_000, 'open mobile OCR workspace') });
+      }
+      const workspace = page.getByRole('region', { name: 'OCR document workspace', exact: true });
+      await workspace.waitFor({ state: 'visible', timeout: budget(30_000, 'workspace visible') });
+      await page.waitForFunction(name => {
+        const section = document.querySelector('section[aria-label="OCR document workspace"]');
+        return section?.querySelector('input[aria-label="Project name"]')?.value === name
+          && [...section.querySelectorAll('button')].some(button => button.textContent.includes('Capture photo') && !button.disabled);
+      }, saved.project.name, { timeout: budget(30_000, 'restore current project in the UI') });
+      const before = saved.project.pages.length;
+      const fileInput = workspace.getByLabel('Camera photo file', { exact: true });
+      assert.equal(await fileInput.getAttribute('capture'), 'environment');
+      assert.equal(await fileInput.getAttribute('accept'), 'image/*');
+      // This reaches the real capture handler, native image importer, project
+      // autosave and preparation UI. It deliberately does not claim that a
+      // system camera opened or produced the supplied synthetic PNG.
+      await fileInput.setInputFiles({ name: 'Capture handoff fixture.png', mimeType: 'image/png', buffer: prepared.bytes },
+        { timeout: budget(30_000, 'capture file handoff') });
+      let captured;
+      while (Date.now() < deadline) {
+        const loaded = await invoke('ocr_workspace_load', { projectId: project.id });
+        if (loaded.project.pages.length === before + 1) { saved = loaded; captured = loaded.project.pages.at(-1); break; }
+        assert.equal(loaded.project.pages.length, before, 'Capture UI unexpectedly replaced or duplicated the project.');
+        await delay(500);
+      }
+      assert(captured, 'Capture file handoff did not durably add a page.');
+      assert.equal(captured.status, 'pending');
+      assert.equal(captured.width, prepared.inputs.fixture.width);
+      assert.equal(captured.height, prepared.inputs.fixture.height);
+      assert.equal(captured.originalImagePath, captured.imagePath);
+      const document = saved.project.documents.find(item => item.id === captured.documentId);
+      assert(document && document.name === 'Capture handoff fixture.png');
+      assert.equal(await privateDigest(archivedPath({ source_uri: document.sourceUri })), prepared.inputs.fixture.png_sha256);
+      await page.screenshot({ path: path.join(output, 'actual-workspace-capture.png') });
+      const capturedId = captured.id;
+      const observed = await measuredRecognition('ui-capture', async () => {
+        await workspace.getByRole('button', { name: 'Recognize page', exact: true })
+          .click({ timeout: budget(15_000, 'recognize captured page from UI') });
+        while (Date.now() < deadline) {
+          const loaded = await invoke('ocr_workspace_load', { projectId: project.id });
+          const target = loaded.project.pages.find(item => item.id === capturedId);
+          assert(target, 'Captured page disappeared during UI recognition.');
+          assert.notEqual(target.status, 'failed', 'UI recognition failed: ' + target.error);
+          if (target.status === 'recognized') {
+            saved = loaded;
+            return { elapsed_ms: target.elapsedMs, page: target };
+          }
+          await delay(750);
+        }
+        throw new Error('UI recognition did not durably complete before its deadline.');
+      });
+      const text = observed.page.regions.map(region => region.text).join('\n');
+      const cer = textErrorRate(prepared.inputs.fixture.text, text);
+      assert(cer <= 0.25, 'Actual capture UI recognition exceeded the fixture Unicode CER limit: ' + cer);
+      assert.equal(observed.page.approved, false);
+      await page.screenshot({ path: path.join(output, 'actual-workspace-capture-recognized.png') });
+      receipt.ui_interactions_tested = true;
+      receipt.capture_handoff = { status: 'passed', supplied_fixture_sha256: prepared.inputs.fixture.png_sha256,
+        page_id: capturedId, saved_revision: saved.revision, text, unicode_cer: cer,
+        physical_camera_tested: false, system_camera_opened: false,
+        scope: 'Actual workspace file input, native import, autosave, preparation view and UI-triggered recognition with a supplied synthetic image.' };
+    }, 300_000);
+
     await step('verify originals remain unchanged and the app process survives', async () => {
-      assert.equal(await privateDigest(imported.source_uri), prepared.inputs.fixture.png_sha256);
+      assert.equal(await privateDigest(archivedPath(imported)), prepared.inputs.fixture.png_sha256);
       assert.equal(await privateDigest(original.image_path), receipt.original_asset_sha256);
       assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid, 'The app restarted or crashed during native OCR.');
       receipt.originals_preserved = true;

@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models, mobile-storage');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -470,6 +470,92 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].text), 'Inv0ice NS-2026-1042');
         });
 
+        await test('mobile storage cleanup is explicit, recovers from failure, and keeps models and reviewed pages', 'mobile-storage', async page => {
+            const correction = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await correction.fill('Invoice NS-2026-1042 · storage checkpoint');
+            await correction.blur();
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].approved === true &&
+                window.ocrSmoke.lastSaved.pages[0].regions[2].text.endsWith(' · storage checkpoint'));
+            const projectBefore = await page.evaluate(() => window.ocrSmoke.lastSaved);
+            await page.setViewportSize({ width: 390, height: 844 });
+            await page.getByRole('button', { name: 'OCR models', exact: true }).click();
+            const toggle = page.getByRole('button', { name: 'Manage model storage', exact: true });
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'modelStorage').length), 0);
+            await toggle.click();
+            const storage = page.getByRole('region', { name: 'OCR model storage', exact: true });
+            await storage.getByText('16.0 MiB downloaded · 4.0 MiB can be cleaned up', { exact: true }).waitFor();
+            await storage.getByText('Unrecognized fixture metadata was kept for inspection.', { exact: true }).waitFor();
+            assert.equal(await storage.getByRole('button', { name: 'Remove dbnet-det', exact: true }).isEnabled(), false);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'cleanModelStorage').length), 0);
+            const clean = storage.getByRole('button', { name: 'Clean unused downloads', exact: true });
+            await page.evaluate(() => { window.ocrSmoke.failModelStorage = true; });
+            await clean.click();
+            const error = page.getByText('Fixture storage is busy in another application. Retry cleanup.', { exact: true });
+            await error.waitFor();
+            assert.equal(await clean.isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.modelStorageReport.bytes), 16 * 1024 ** 2);
+            await page.evaluate(() => { window.ocrSmoke.failModelStorage = false; window.ocrSmoke.holdModelStorage = true; });
+            await clean.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingModelStorage === 1);
+            assert.equal(await storage.getAttribute('aria-busy'), 'true');
+            assert.equal(await clean.isEnabled(), false);
+            assert.equal(await toggle.isEnabled(), false);
+            assert.equal(await storage.getByRole('button', { name: 'Refresh model storage', exact: true }).isEnabled(), false);
+            assert.equal(await storage.getByRole('button', { name: 'Remove tesseract-eng', exact: true }).isEnabled(), false);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseModelStorage()), true);
+            await page.getByText('Freed 4.0 MiB of unused OCR downloads.', { exact: true }).waitFor();
+            await error.waitFor({ state: 'hidden' });
+            await storage.getByText('12.0 MiB downloaded · 0.0 MiB can be cleaned up', { exact: true }).waitFor();
+            assert.equal(await clean.isEnabled(), false);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelStorageReport.models.map(model => model.name)), ['dbnet-det', 'tesseract-eng']);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.lastSaved), projectBefore);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'removeMobileModel').length), 0);
+            await storage.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: path.join(output, 'ocr-phone-model-storage.png'), fullPage: true });
+        });
+
+        await test('model removal requires confirmation and the displayed exact generation, preserving cancellation and active models', 'mobile-storage', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            await page.getByRole('button', { name: 'OCR models', exact: true }).click();
+            await page.getByRole('button', { name: 'Manage model storage', exact: true }).click();
+            const storage = page.getByRole('region', { name: 'OCR model storage', exact: true });
+            const remove = storage.getByRole('button', { name: 'Remove tesseract-eng', exact: true });
+            await remove.waitFor();
+            assert.equal(await storage.getByRole('button', { name: 'Remove dbnet-det', exact: true }).isEnabled(), false);
+            await remove.click();
+            const dialog = page.getByRole('dialog', { name: 'Remove downloaded model?', exact: true });
+            await dialog.waitFor();
+            await page.keyboard.press('Escape');
+            await dialog.waitFor({ state: 'hidden' });
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'removeMobileModel').length), 0);
+            await remove.click();
+            await dialog.getByRole('button', { name: 'Keep model', exact: true }).click();
+            await dialog.waitFor({ state: 'hidden' });
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'removeMobileModel').length), 0);
+            await remove.click();
+            await page.evaluate(() => { window.ocrSmoke.modelStorageReport.models[1].version = '33333333-3333-4333-8333-333333333333'; });
+            await page.screenshot({ path: path.join(output, 'ocr-phone-model-removal-confirmation.png'), fullPage: true });
+            await dialog.getByRole('button', { name: 'Remove model', exact: true }).click();
+            await page.getByText('This model changed after the storage view was opened. Refresh storage before removing it.', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.modelStorageReport.models.length), 2);
+            const stale = await page.evaluate(() => window.ocrSmoke.calls.find(call => call.method === 'removeMobileModel').data);
+            assert.deepEqual(stale, { name: 'tesseract-eng', expectedVersion: '22222222-2222-4222-8222-222222222222' });
+            await storage.getByRole('button', { name: 'Refresh model storage', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.calls.filter(call => call.method === 'modelStorage').length === 2);
+            await page.waitForFunction(() => document.querySelector('[aria-label="OCR model storage"]')?.getAttribute('aria-busy') === 'false');
+            await remove.click();
+            await dialog.getByRole('button', { name: 'Remove model', exact: true }).click();
+            await page.getByText('Removed tesseract-eng and freed 8.0 MiB. Install it again before using this model for OCR.', { exact: true }).waitFor();
+            await remove.waitFor({ state: 'hidden' });
+            const calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'removeMobileModel').map(call => call.data));
+            assert.deepEqual(calls, [stale, { name: 'tesseract-eng', expectedVersion: '33333333-3333-4333-8333-333333333333' }]);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelStorageReport.models.map(model => model.name)), ['dbnet-det']);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'cleanModelStorage').length), 0);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.length), 0, 'Storage removal must not mutate the OCR project.');
+        });
+
         await test('mobile model setup is explicit, reports progress, locks work, and recovers after failure', 'mobile-models', async page => {
             await page.setViewportSize({ width: 390, height: 844 });
             const install = page.getByRole('button', { name: 'Install basic OCR models', exact: true });
@@ -527,6 +613,35 @@ if (process.argv.includes('--serve')) {
             assert.equal(request.language, 'eng');
             assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
             assert.equal(await page.evaluate(() => window.ocrSmoke.modelInstalls.length), 2);
+        });
+
+        await test('phone import progress stays cancellable and saves only completed documents', 'import-control', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            await page.getByRole('button', { name: 'Add documents', exact: true }).first().click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingImports === 1);
+            await page.evaluate(() => window.ocrSmoke.emitImportProgress({ request_id: 'fixture-import', phase: 'rendering', completed: 1, total: 2 }));
+            await page.getByText('Rendering pages: 1 of 2', { exact: true }).waitFor();
+            const cancel = page.getByRole('button', { name: 'Cancel import', exact: true });
+            const bounds = await cancel.boundingBox();
+            assert.ok(bounds && bounds.height >= 44 && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y + bounds.height <= 844, 'Phone cancel target must stay fully reachable');
+            assert.equal(await page.getByRole('button', { name: 'Add documents', exact: true }).first().isDisabled(), true);
+            await page.screenshot({ path: path.join(output, 'ocr-phone-import-progress.png'), fullPage: true });
+            await page.evaluate(() => window.ocrSmoke.releaseImport());
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 5 && window.ocrSmoke.pendingImports === 1);
+            await cancel.click();
+            const stopping = page.getByRole('button', { name: 'Stopping…', exact: true });
+            await stopping.waitFor(); assert.equal(await stopping.isDisabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.cancelledImports), 1);
+            await page.evaluate(() => window.ocrSmoke.emitImportProgress({ request_id: 'fixture-import', phase: 'rendering', completed: 2, total: 2 }));
+            await page.getByText('Stopping import after the current step…', { exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Add documents', exact: true }).first().isDisabled(), true);
+            await page.evaluate(() => window.ocrSmoke.releaseImport());
+            await page.getByText('2 pages added. Import cancelled; completed documents are saved.', { exact: true }).waitFor();
+            const final = await page.evaluate(() => ({ project: window.ocrSmoke.lastSaved, calls: window.ocrSmoke.calls.filter(call => call.method === 'importDocument'), max: window.ocrSmoke.maxNative }));
+            assert.equal(final.project.pages.length, 5); assert.equal(final.calls.length, 2); assert.equal(final.max, 1);
+            assert.equal(final.project.documents.at(-1).sourceUri, '/fixtures/first.pdf');
+            assert.equal(final.project.documents.at(-1).archiveUri, '/fixtures/archive/first.pdf');
+            assert.equal(await cancel.count(), 0);
         });
 
         await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {
@@ -670,7 +785,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

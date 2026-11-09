@@ -3,9 +3,10 @@
 
 Run in an isolated CI checkout after the runtime has been built and qualified.
 Tauri's iOS Xcode invocation replaces its environment, so an exported custom
-variable alone does not reach Cargo. Cargo's forced [env] value does. This
-helper only supplies the path; it does not qualify an archive, select a target,
-download a runtime, or change CrispEmbed's cross-compilation checks.
+variable alone does not reach Cargo. Cargo's forced [env] value does. The
+optional host protoc path also reaches dependency build scripts that compile
+protobuf schemas. This helper only supplies paths; it does not qualify an
+archive, select a target, download a runtime, or change cross-compilation checks.
 
 Use the repository workspace root for --project. npm-generated mobile build
 scripts run Cargo from that root, while direct CLI calls may run it from
@@ -28,8 +29,8 @@ VARIABLE = "CRISPEMBED_SYS_LIB_DIR"
 MARKER = "# Paired OCR runtime for this isolated CI checkout."
 
 
-def prepare(project: Path, runtime_lib_dir: Path) -> Path:
-    """Append one forced Cargo environment value without rewriting other TOML.
+def prepare(project: Path, runtime_lib_dir: Path, protoc: Path | None = None) -> Path:
+    """Append forced Cargo environment values without rewriting other TOML.
 
     An existing exact forced value is left byte-for-byte intact. Conflicting
     values, ambiguous legacy/current config files, and TOML that cannot be
@@ -45,6 +46,14 @@ def prepare(project: Path, runtime_lib_dir: Path) -> Path:
         raise ValueError("--runtime-lib-dir must be a directory")
     if not any((runtime_lib_dir / name).is_file() for name in ("libcrispembed.a", "libcrispembed.so")):
         raise ValueError("runtime directory must contain libcrispembed.a or libcrispembed.so")
+    requested_paths = {VARIABLE: runtime_lib_dir}
+    if protoc is not None:
+        if not protoc.is_absolute():
+            raise ValueError("--protoc must be an absolute host executable path")
+        protoc = protoc.resolve(strict=True)
+        if not protoc.is_file() or not os.access(protoc, os.X_OK):
+            raise ValueError("--protoc must name an executable file")
+        requested_paths["PROTOC"] = protoc
 
     cargo_dir = project / ".cargo"
     if cargo_dir.is_symlink() or (cargo_dir.exists() and not cargo_dir.is_dir()):
@@ -63,21 +72,26 @@ def prepare(project: Path, runtime_lib_dir: Path) -> Path:
     existing_env = parsed.get("env", {})
     if not isinstance(existing_env, dict):
         raise ValueError("existing Cargo env configuration is not a table")
-    requested = {"value": str(runtime_lib_dir), "force": True}
-    if VARIABLE in existing_env:
-        existing = existing_env[VARIABLE]
-        if isinstance(existing, dict) and existing == requested and existing.get("force") is True:
-            return config
-        raise ValueError(f"existing Cargo {VARIABLE} conflicts with the requested forced path")
+    missing = {}
+    for variable, path in requested_paths.items():
+        requested = {"value": str(path), "force": True}
+        if variable in existing_env:
+            existing = existing_env[variable]
+            if isinstance(existing, dict) and existing == requested and existing.get("force") is True:
+                continue
+            raise ValueError(f"existing Cargo {variable} conflicts with the requested forced path")
+        missing[variable] = requested
+    if not missing:
+        return config
 
     # A separate child table extends ordinary [env] tables without changing
     # comments, target settings, or unrelated variables. JSON string escaping
     # is valid for the path characters accepted by a TOML basic string here.
-    addition = (
-        f"\n\n{MARKER}\n"
-        f"[env.{VARIABLE}]\n"
-        f"value = {json.dumps(str(runtime_lib_dir), ensure_ascii=False)}\n"
+    addition = f"\n\n{MARKER}\n" + "\n".join(
+        f"[env.{variable}]\n"
+        f"value = {json.dumps(requested['value'], ensure_ascii=False)}\n"
         "force = true\n"
+        for variable, requested in missing.items()
     )
     candidate_text = original_text + addition
     try:
@@ -85,7 +99,7 @@ def prepare(project: Path, runtime_lib_dir: Path) -> Path:
     except tomllib.TOMLDecodeError as error:
         raise ValueError("Cargo config cannot be extended without rewriting existing TOML") from error
     expected = copy.deepcopy(parsed)
-    expected.setdefault("env", {})[VARIABLE] = requested
+    expected.setdefault("env", {}).update(missing)
     if result != expected:
         raise ValueError("refusing a Cargo config edit that changes unrelated settings")
 
@@ -110,12 +124,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True, help="Rust workspace root containing Cargo.toml; use . for the Tauri npm build")
     parser.add_argument("--runtime-lib-dir", type=Path, required=True, help="absolute directory of the qualified runtime")
+    parser.add_argument("--protoc", type=Path, help="absolute host protoc executable for dependency build scripts")
     args = parser.parse_args()
     try:
-        config = prepare(args.project, args.runtime_lib_dir)
+        config = prepare(args.project, args.runtime_lib_dir, args.protoc)
     except (OSError, UnicodeError, ValueError) as error:
         parser.error(str(error))
-    print(f"Pinned {VARIABLE} in {config}")
+    variables = f"{VARIABLE} and PROTOC" if args.protoc else VARIABLE
+    print(f"Pinned {variables} in {config}")
 
 
 if __name__ == "__main__":
