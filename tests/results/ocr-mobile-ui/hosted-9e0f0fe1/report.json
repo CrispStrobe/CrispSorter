@@ -1,0 +1,248 @@
+{
+  "synthetic_ui_only": true,
+  "tests": [
+    {
+      "name": "recover pages, correct text, undo, redo, and revoke page approval",
+      "status": "passed",
+      "duration_ms": 3112
+    },
+    {
+      "name": "a document sent from another tab is imported once and selected",
+      "status": "passed",
+      "duration_ms": 394
+    },
+    {
+      "name": "a document already in the project is selected instead of imported again",
+      "status": "passed",
+      "duration_ms": 375
+    },
+    {
+      "name": "next issue navigates from uncertain text to an unrecognized page",
+      "status": "passed",
+      "duration_ms": 460
+    },
+    {
+      "name": "unchanged preparation preserves corrections and approval while showing its warning",
+      "status": "passed",
+      "duration_ms": 716
+    },
+    {
+      "name": "the low-memory CPU profile is offered only for Qwen2 VL and reaches recognition",
+      "status": "passed",
+      "duration_ms": 623
+    },
+    {
+      "name": "export preflight blocks incomplete pages and exports explicit approved scope",
+      "status": "passed",
+      "duration_ms": 565
+    },
+    {
+      "name": "archival export keeps approved page geometry and sends an explicit PDF/A request",
+      "status": "passed",
+      "duration_ms": 496
+    },
+    {
+      "name": "unsupported archival output is disabled with its native capability reason",
+      "status": "failed",
+      "duration_ms": 466,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n\n    at file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:280:20\n    at async test (file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:81:17)\n    at async file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:276:9"
+    },
+    {
+      "name": "batch errors stay per page and retry only failed work",
+      "status": "passed",
+      "duration_ms": 513
+    },
+    {
+      "name": "pause, resume and stop preserve finished and pending pages without concurrent inference",
+      "status": "passed",
+      "duration_ms": 567
+    },
+    {
+      "name": "an interrupted batch resumes its saved selection and settings without rerunning completed pages",
+      "status": "passed",
+      "duration_ms": 460
+    },
+    {
+      "name": "a failed result save stops the batch and retry preserves completed recognition",
+      "status": "passed",
+      "duration_ms": 542
+    },
+    {
+      "name": "finishing a batch keeps project changes locked until the final checkpoint is durable",
+      "status": "passed",
+      "duration_ms": 467
+    },
+    {
+      "name": "stopping an already paused queue saves its stopped state without another native call",
+      "status": "passed",
+      "duration_ms": 501
+    },
+    {
+      "name": "table extraction renders cell text and strips active HTML",
+      "status": "passed",
+      "duration_ms": 471
+    },
+    {
+      "name": "delayed extraction follows its source page and undo restores visible and exported cells",
+      "status": "passed",
+      "duration_ms": 680
+    },
+    {
+      "name": "an invalid saved project leaves the current project and autosaver usable",
+      "status": "passed",
+      "duration_ms": 547
+    },
+    {
+      "name": "reopening the current project flushes pending edits without rollback or revision conflicts",
+      "status": "passed",
+      "duration_ms": 527
+    },
+    {
+      "name": "a confirmation blocks navigation shortcuts and removes only its captured page",
+      "status": "passed",
+      "duration_ms": 598
+    },
+    {
+      "name": "changing the search query cannot replace text at a stale match offset",
+      "status": "passed",
+      "duration_ms": 625
+    },
+    {
+      "name": "mobile storage cleanup is explicit, recovers from failure, and keeps models and reviewed pages",
+      "status": "passed",
+      "duration_ms": 737
+    },
+    {
+      "name": "model removal requires confirmation and the displayed exact generation, preserving cancellation and active models",
+      "status": "passed",
+      "duration_ms": 778
+    },
+    {
+      "name": "mobile model setup is explicit, reports progress, locks work, and recovers after failure",
+      "status": "passed",
+      "duration_ms": 738
+    },
+    {
+      "name": "phone import progress stays cancellable and saves only completed documents",
+      "status": "passed",
+      "duration_ms": 511
+    },
+    {
+      "name": "a failed import checkpoint stops further documents and Save retries the retained pages",
+      "status": "passed",
+      "duration_ms": 481
+    },
+    {
+      "name": "phone export progress waits for cancellation and a retry preserves the committed result",
+      "status": "passed",
+      "duration_ms": 711
+    },
+    {
+      "name": "phone export failures unlock retry and destination transfer belongs to the system dialog",
+      "status": "passed",
+      "duration_ms": 640
+    },
+    {
+      "name": "camera import validates the file and opens a preserved photo without starting recognition",
+      "status": "passed",
+      "duration_ms": 536
+    },
+    {
+      "name": "phone corner editing fits a usable page, accepts touch drags, and changes pixels only on Apply",
+      "status": "passed",
+      "duration_ms": 1292
+    },
+    {
+      "name": "corner controls reject invalid selections and perspective undo restores review evidence",
+      "status": "passed",
+      "duration_ms": 726
+    },
+    {
+      "name": "measured tilt and lighting preparation preserve the original and remain undoable",
+      "status": "passed",
+      "duration_ms": 662
+    },
+    {
+      "name": "desktop and compact layouts remain usable",
+      "status": "passed",
+      "duration_ms": 858
+    }
+  ],
+  "browserErrors": [],
+  "phoneCornerEvidence": {
+    "screen": {
+      "width": 390,
+      "height": 844
+    },
+    "viewport": {
+      "x": 0,
+      "y": 143,
+      "width": 390,
+      "height": 620
+    },
+    "paper": {
+      "x": 24,
+      "y": 213.59375,
+      "width": 342,
+      "height": 478.796875
+    },
+    "handles": [
+      {
+        "x": 2,
+        "y": 191.59375,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 343.65625,
+        "y": 191.59375,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 343.65625,
+        "y": 670.046875,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 2,
+        "y": 670.046875,
+        "width": 44,
+        "height": 44
+      }
+    ],
+    "drag": {
+      "screenDelta": {
+        "x": 36,
+        "y": 42
+      },
+      "imagePoint": {
+        "x": 105,
+        "y": 123
+      },
+      "events": [
+        {
+          "pointerType": "touch",
+          "trusted": true
+        }
+      ]
+    },
+    "transformsBeforeApply": 0
+  },
+  "passed": 32,
+  "failed": 1,
+  "screenshots": [
+    "ocr-workspace-desktop.png",
+    "ocr-workspace-compact.png",
+    "ocr-phone-model-setup.png",
+    "ocr-phone-model-storage.png",
+    "ocr-phone-model-removal-confirmation.png",
+    "ocr-phone-photo-preparation.png",
+    "ocr-phone-corner-focus.png",
+    "ocr-phone-import-progress.png",
+    "ocr-phone-export-progress.png",
+    "ocr-phone-text-review.png",
+    "ocr-phone-page-list.png"
+  ]
+}
