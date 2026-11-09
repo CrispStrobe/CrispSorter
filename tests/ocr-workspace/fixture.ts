@@ -1,5 +1,5 @@
 import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
-import type { ExportRequest, ProjectEnvelope, WorkspaceClient } from '../../src/lib/ocr/client';
+import type { ExportRequest, ProjectEnvelope, WorkspaceClient, ModelDownloadProgress } from '../../src/lib/ocr/client';
 import { beginBatch, updateBatchPage } from '../../src/lib/ocr/batch';
 import { photoQuadError } from '../../src/lib/ocr/photo';
 
@@ -68,6 +68,12 @@ export interface SmokeControl {
     pendingSaves: number;
     failSaves: boolean;
     failPages: number[];
+    modelInstalls: string[];
+    installedModels: string[];
+    pendingModelInstalls: number;
+    failModelInstall: boolean;
+    releaseModelInstall(): boolean;
+    emitModelProgress(progress: ModelDownloadProgress): boolean;
     released: string[];
     releaseNext():boolean;
     releaseExtraction():boolean;
@@ -81,12 +87,12 @@ declare global {
 }
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
-    let project=addDocument(createProject('Northstar · quarterly statement'),{
+    let project=scenario==='mobile-models'?createProject('New mobile scan'):addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
         pages:[1,2,3].map(page=>({image_path:pagePath(page),width:1000,height:1400})),
     });
     project.id=`ocr-fixture-${scenario}`;project.createdAt=stamp;project.updatedAt=stamp;
-    if(!scenario.startsWith('queue')) {
+    if(project.pages.length && !scenario.startsWith('queue')) {
         const result=recognition(project.pages[0].imagePath);
         result.regions[2].text='Inv0ice NS-2026-1042';result.regions[2].confidence=0.42;
         project=applyRecognition(project,project.pages[0].id,result);
@@ -119,10 +125,14 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pending:Array<{path:string;release:()=>void}>=[];
     const pendingExtractions:Array<()=>void>=[];
     const pendingSaves:Array<()=>void>=[];
+    const pendingModelInstalls:Array<{release:()=>void;onProgress?:(progress:ModelDownloadProgress)=>void}>=[];
     const control:SmokeControl={
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
+        modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
+        releaseModelInstall(){const item=pendingModelInstalls.shift();if(!item)return false;control.pendingModelInstalls=pendingModelInstalls.length;item.release();return true;},
+        emitModelProgress(progress){const item=pendingModelInstalls[0];if(!item)return false;item.onProgress?.(copy(progress));return true;},
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
         releaseExtraction(){const release=pendingExtractions.shift();if(!release)return false;control.pendingExtractions=pendingExtractions.length;release();return true;},
         releaseSave(){const release=pendingSaves.shift();if(!release)return false;control.pendingSaves=pendingSaves.length;release();return true;},
@@ -135,7 +145,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         });
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,photo_tools:true,camera_import:true};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,photo_tools:true,camera_import:true,...(scenario==='mobile-models'?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -156,9 +166,16 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             return {width:1000,height:1400,sample_width:786,sample_height:1100,mean_luminance:173,contrast:58,sharpness:102,
                 ink_fraction:0.13,correction_degrees:-2.7,skew_confidence:0.91,warnings:['Uneven lighting: inspect the page after flattening shadows.']};
         },
+        async installMobileModels(language,onProgress){
+            note('installMobileModels',{language});control.modelInstalls.push(language);
+            await new Promise<void>(release=>{pendingModelInstalls.push({release,onProgress});control.pendingModelInstalls=pendingModelInstalls.length;});
+            if(control.failModelInstall)throw new Error('Fixture model download interrupted. Retry the installation.');
+            const names=['dbnet-det',`tesseract-${language}`];control.installedModels=[...names];return names;
+        },
         async recognize(options){
             note('recognize',options);control.recognitions.push(options.pagePath);control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
             try {
+                if(scenario==='mobile-models' && !control.installedModels.includes(`tesseract-${options.language??'eng'}`))throw new Error('The requested OCR models are not installed.');
                 if(control.holdRecognition)await new Promise<void>(release=>pending.push({path:options.pagePath,release}));
                 if(control.failPages.includes(pageNumber(options.pagePath)))throw new Error('Fixture recognition failure on page 2');
                 return recognition(options.pagePath);

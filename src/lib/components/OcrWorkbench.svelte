@@ -156,6 +156,7 @@
   let photoAssessment = $state<PhotoAssessment | null>(null);
   let photoAngle = $state(0);
   let modelProgress = $state("");
+  let modelSetupPanel = $state<HTMLElement>();
   let cameraInput = $state<HTMLInputElement>();
   let lastPhotoSource = "";
   let inspector = $state<"review" | "recognition" | "extract" | "export">(
@@ -855,6 +856,12 @@
       recognitionSettings: { ...settings, [key]: value },
       updatedAt: new Date().toISOString(),
     });
+  }
+  async function openMobileModels() {
+    openInspector("recognition");
+    await tick();
+    modelSetupPanel?.scrollIntoView({ block: "nearest" });
+    modelSetupPanel?.querySelector<HTMLButtonElement>("button")?.focus();
   }
   async function installBasicModels() {
     if (locked || !capabilities.mobile_model_store || !client.installMobileModels) return;
@@ -1686,6 +1693,20 @@
   });
 </script>
 
+{#snippet mobileModelSetup()}
+{#if capabilities.mobile_model_store && client.installMobileModels}
+  <section bind:this={modelSetupPanel} class="model-install" aria-label="On-device OCR models">
+    <h3>On-device OCR models</h3>
+    <p class="field-hint">Install the text detector and selected Tesseract language before recognition. English is used for Model default. Downloads are verified and stored on this device.</p>
+    <button class="button" onclick={installBasicModels} disabled={locked}>
+      <Download size={16} /> Install basic OCR models
+    </button>
+    {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
+    <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
+  </section>
+{/if}
+{/snippet}
+
 <svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
 
 <section class="ocr-workspace" aria-label="OCR document workspace">
@@ -1759,7 +1780,7 @@
       disabled={locked}><Plus size={16} /> Add documents</button
     >
     {#if capabilities.camera_import && client.importImage}<button class="button" onclick={() => cameraInput?.click()} disabled={locked}><Camera size={16} /> Capture photo</button>{/if}
-    {#if capabilities.mobile_model_store && client.installMobileModels}<button class="button" onclick={() => openInspector("recognition")} disabled={locked}><Download size={16} /> OCR models</button>{/if}
+    {#if capabilities.mobile_model_store && client.installMobileModels}<button class="button" onclick={openMobileModels} disabled={locked}><Download size={16} /> OCR models</button>{/if}
     <div class="command-separator"></div>
     <button
       class="button"
@@ -1933,7 +1954,8 @@
           onclick={() => importFiles()}
           disabled={locked}><Plus size={18} /> Add documents</button
         >
-        <div class="supported">PDF · TIFF · PNG · JPEG · BMP · WebP</div>
+        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP</div>
+        {@render mobileModelSetup()}
         {#if !capabilities.ocr}<div class="capability-note">
             <AlertTriangle size={16} /><span
               >{capabilities.reason ??
@@ -2838,17 +2860,7 @@
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
             </p>
-            {#if capabilities.mobile_model_store && client.installMobileModels}
-              <section class="model-install" aria-label="On-device OCR models">
-                <h3>On-device OCR models</h3>
-                <p class="field-hint">Install the text detector and selected Tesseract language before recognition. English is used for Model default. Downloads are verified and stored on this device.</p>
-                <button class="button" onclick={installBasicModels} disabled={locked}>
-                  <Download size={16} /> Install basic OCR models
-                </button>
-                {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
-                <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
-              </section>
-            {/if}
+            {@render mobileModelSetup()}
             <div class="settings-section">
               <h3><WandSparkles size={15} /> Scan preparation</h3>
               {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Image restoration", hint: "Repair the scan with the selected model and task." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label

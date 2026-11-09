@@ -2567,6 +2567,10 @@ pub async fn embedder_download_registry_model(
 /// whether to show the confirmation dialog for any model — not a hardcoded list.
 #[tauri::command]
 pub fn embedder_model_license(name: String) -> Option<String> {
+    #[cfg(feature = "ocr-mobile")]
+    if let Ok(Some(info)) = crispembed::CrispEmbed::model_download_info(&name) {
+        if info.requires_license_acceptance { return Some(info.license); }
+    }
     let lic = crate::index::license_consent::license_for_registry_name(&name);
     lic.requires_consent().then(|| lic.label().to_string())
 }

@@ -29,6 +29,28 @@ const DEFAULT_MATH_MODEL: &str = "ppformulanet-l";
 /// Process-global lazy-loaded math OCR engine.
 #[cfg(feature = "crispembed")]
 static MATH_OCR: std::sync::OnceLock<Mutex<crispembed::MathOcr>> = std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static MATH_INIT: Mutex<()> = Mutex::new(());
+
+/// Missing mobile models are ordinary recoverable errors. A failed download or
+/// initialization must leave the cache empty so the user can install and retry.
+#[cfg(feature = "crispembed")]
+fn math_engine() -> Result<std::sync::MutexGuard<'static, crispembed::MathOcr>> {
+    if MATH_OCR.get().is_none() {
+        let _init = MATH_INIT.lock().map_err(|error| anyhow::anyhow!("Math OCR initialization lock poisoned: {error}"))?;
+        if MATH_OCR.get().is_none() {
+            let model = std::panic::catch_unwind(|| {
+                let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
+                    .map_err(anyhow::Error::msg)?;
+                crispembed::MathOcr::new(&resolved, 0)
+                    .map_err(|error| anyhow::anyhow!("Math OCR initialization failed: {error}"))
+            }).map_err(|_| anyhow::anyhow!("Math OCR initialization panicked"))??;
+            let _ = MATH_OCR.set(Mutex::new(model));
+        }
+    }
+    MATH_OCR.get().ok_or_else(|| anyhow::anyhow!("Math OCR was not initialized"))?
+        .lock().map_err(|error| anyhow::anyhow!("Math OCR lock poisoned: {error}"))
+}
 
 /// Check if math OCR is available at runtime.
 pub fn is_math_ocr_available() -> bool {
@@ -48,17 +70,7 @@ pub fn recognize_formula(image_path: &Path) -> Result<Option<String>> {
     let (w, h) = img.dimensions();
     let pixels = img.into_raw();
 
-    let engine = MATH_OCR.get_or_init(|| {
-        let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_MATH_MODEL.to_string());
-        let ocr = crispembed::MathOcr::new(&resolved, 0)
-            .expect("MathOcr model init failed");
-        Mutex::new(ocr)
-    });
-
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow::anyhow!("MathOcr lock poisoned: {e}"))?;
+    let mut guard = math_engine()?;
 
     Ok(guard.recognize(&pixels, w as i32, h as i32))
 }
@@ -70,17 +82,7 @@ pub fn recognize_formula_from_pixels(
     width: i32,
     height: i32,
 ) -> Result<Option<String>> {
-    let engine = MATH_OCR.get_or_init(|| {
-        let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_MATH_MODEL.to_string());
-        let ocr = crispembed::MathOcr::new(&resolved, 0)
-            .expect("MathOcr model init failed");
-        Mutex::new(ocr)
-    });
-
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow::anyhow!("MathOcr lock poisoned: {e}"))?;
+    let mut guard = math_engine()?;
 
     Ok(guard.recognize(pixels, width, height))
 }
@@ -102,7 +104,7 @@ pub fn recognize_formula_with_model(
     // consent instead of fetching it silently.
     crate::index::license_consent::ensure_registry_download_allowed(model_path)?;
     let resolved = crate::model_provisioning::resolve_model(model_path, Some(true))
-        .unwrap_or_else(|_| model_path.to_string());
+        .map_err(anyhow::Error::msg)?;
     let mut ocr = crispembed::MathOcr::new(&resolved, 0)
         .map_err(|e| anyhow::anyhow!("MathOcr init failed: {e}"))?;
 
@@ -123,17 +125,7 @@ pub fn recognize_formulas_in_layout(
         .to_rgb8();
     let (img_w, img_h) = img.dimensions();
 
-    let engine = MATH_OCR.get_or_init(|| {
-        let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
-            .unwrap_or_else(|_| DEFAULT_MATH_MODEL.to_string());
-        let ocr = crispembed::MathOcr::new(&resolved, 0)
-            .expect("MathOcr model init failed");
-        Mutex::new(ocr)
-    });
-
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow::anyhow!("MathOcr lock poisoned: {e}"))?;
+    let mut guard = math_engine()?;
 
     let mut results = Vec::new();
     for (i, region) in regions.iter().enumerate() {

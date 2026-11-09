@@ -165,7 +165,7 @@ mod mobile {
     fn validate_artifact(file: &Artifact) -> Result<(), String> {
         let name = &file.filename;
         if name.is_empty() || name.len() > 240 || name.starts_with('.')
-            || name.chars().any(|value| matches!(value, '/' | '\\' | ':' | '\0'))
+            || name.chars().any(|value| value.is_control() || matches!(value, '/' | '\\' | ':' | '\0'))
             || Path::new(name).components().count() != 1 {
             return Err("The model registry contains an unsafe artifact filename.".into());
         }
@@ -200,6 +200,9 @@ mod mobile {
         crate::index::license_consent::ensure_registry_download_allowed(name).map_err(|error| error.to_string())?;
         let info = crispembed::CrispEmbed::model_download_info(name)?
             .ok_or_else(|| format!("'{name}' is not an exact registered model name. Select a model from Settings or use an existing local GGUF path."))?;
+        if info.requires_license_acceptance && !crate::index::license_consent::is_accepted(&info.name) {
+            return Err(format!("Model '{}' requires acceptance of its {} licence. Review the model in the CrispEmbed registry in Settings before downloading.", info.name, info.license));
+        }
         let mut files = vec![Artifact {
             filename: info.primary.filename, url: info.primary.url,
             sha256: info.primary.sha256.unwrap_or_default(), primary: true,

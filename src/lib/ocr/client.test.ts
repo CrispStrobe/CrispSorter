@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { invoke, open, save, loadCapabilities } = vi.hoisted(() => ({
-    invoke: vi.fn(), open: vi.fn(), save: vi.fn(), loadCapabilities: vi.fn(),
+const { invoke, open, save, loadCapabilities, listen } = vi.hoisted(() => ({
+    invoke: vi.fn(), open: vi.fn(), save: vi.fn(), loadCapabilities: vi.fn(), listen: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) => `asset:${path}` }));
+vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
 vi.mock('../capabilities', () => ({ loadCapabilities }));
 
-import { workspaceClient, type ExportRequest } from './client';
+import { workspaceClient, type ExportRequest, type ModelDownloadProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
 
 const stagedPath = '/app/cache/ocr-exports/inspection.txt';
@@ -22,7 +23,7 @@ const decodeMetadata = (options: { headers: Record<string, string> }) => JSON.pa
 
 describe('OCR workspace platform transport', () => {
     beforeEach(() => {
-        invoke.mockReset(); open.mockReset(); save.mockReset(); loadCapabilities.mockReset();
+        invoke.mockReset(); open.mockReset(); save.mockReset(); loadCapabilities.mockReset(); listen.mockReset();
         loadCapabilities.mockResolvedValue({ mobile: true });
     });
 
@@ -160,6 +161,67 @@ describe('OCR workspace platform transport', () => {
         await expect(workspaceClient.exportDocument(exportRequest(path!))).rejects.toThrow(failure === 'render' ? 'Render failed' : 'Provider copy failed');
         expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_discard_export', { path: stagedPath });
         if (failure === 'render') expect(invoke.mock.calls.some(([command]) => command === 'plugin:mobile-provider|export_file')).toBe(false);
+    });
+
+    it('subscribes before installing, correlates progress, and releases the listener after completion', async () => {
+        let registered!: (unlisten: () => void) => void;
+        let installed!: (names: string[]) => void;
+        let invoked!: () => void;
+        let receive!: (event: { payload: ModelDownloadProgress }) => void;
+        const registration = new Promise<() => void>(resolve => { registered = resolve; });
+        const nativeResult = new Promise<string[]>(resolve => { installed = resolve; });
+        const nativeStarted = new Promise<void>(resolve => { invoked = resolve; });
+        const unlisten = vi.fn();
+        const progress = vi.fn();
+        let requestId = '';
+        listen.mockImplementation((event, handler) => {
+            expect(event).toBe('crispembed-model-download');
+            receive = handler;
+            return registration;
+        });
+        invoke.mockImplementation((command, args) => {
+            expect(command).toBe('ocr_workspace_install_mobile_models');
+            expect(args.language).toBe('deu');
+            expect(args.requestId).toMatch(/^[0-9a-f-]{36}$/i);
+            requestId = args.requestId;
+            invoked();
+            return nativeResult;
+        });
+        const result = workspaceClient.installMobileModels!('deu', progress);
+        expect(invoke).not.toHaveBeenCalled();
+        registered(unlisten);
+        await nativeStarted;
+        const update: ModelDownloadProgress = {
+            name: 'tesseract-deu', filename: 'tesseract-deu.gguf', phase: 'downloading',
+            downloaded: 1048576, total: 2097152,
+        };
+        receive({ payload: update });
+        receive({ payload: { ...update, request_id: 'another-install' } });
+        expect(progress).not.toHaveBeenCalled();
+        receive({ payload: { ...update, request_id: requestId } });
+        expect(progress).toHaveBeenCalledOnce();
+        expect(progress).toHaveBeenCalledWith({ ...update, request_id: requestId });
+        expect(unlisten).not.toHaveBeenCalled();
+        installed(['dbnet-det', 'tesseract-deu']);
+        expect(await result).toEqual(['dbnet-det', 'tesseract-deu']);
+        expect(unlisten).toHaveBeenCalledOnce();
+        expect(invoke).toHaveBeenCalledOnce();
+    });
+
+    it('preserves the native install failure when listener teardown also fails', async () => {
+        const failure = new Error('SHA-256 verification failed; previous installation preserved.');
+        const unlisten = vi.fn(() => { throw new Error('Event bridge closed'); });
+        listen.mockResolvedValue(unlisten);
+        invoke.mockRejectedValue(failure);
+        await expect(workspaceClient.installMobileModels!('eng')).rejects.toBe(failure);
+        expect(unlisten).toHaveBeenCalledOnce();
+    });
+
+    it('does not start a model download when progress subscription fails', async () => {
+        const failure = new Error('Event bridge unavailable');
+        listen.mockRejectedValue(failure);
+        await expect(workspaceClient.installMobileModels!('eng')).rejects.toBe(failure);
+        expect(invoke).not.toHaveBeenCalled();
     });
 
     it('keeps desktop file dialogs and direct atomic exports on the desktop path', async () => {

@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -66,10 +66,10 @@ if (process.argv.includes('--serve')) {
             page.on('pageerror', error => browserErrors.push({ scenario, message: error.message }));
             page.on('dialog', dialog => void dialog.dismiss());
             await page.goto(`${url}/?scenario=${scenario}`);
-            await page.waitForFunction(() => {
+            await page.waitForFunction(expectedName => {
                 const input = document.querySelector('[aria-label="Project name"]');
-                return input?.value === 'Northstar · quarterly statement' && !input.disabled;
-            });
+                return input?.value === expectedName && !input.disabled;
+            }, scenario === 'mobile-models' ? 'New mobile scan' : 'Northstar · quarterly statement');
             return page;
         }
         async function test(name, scenario, action) {
@@ -444,6 +444,65 @@ if (process.argv.includes('--serve')) {
             await page.getByRole('button', { name: 'Save', exact: true }).click();
             await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[5].text === 'Receipt EUR 1,250.00');
             assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].text), 'Inv0ice NS-2026-1042');
+        });
+
+        await test('mobile model setup is explicit, reports progress, locks work, and recovers after failure', 'mobile-models', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const install = page.getByRole('button', { name: 'Install basic OCR models', exact: true });
+            await install.waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelInstalls), []);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.installedModels), []);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+            await page.getByRole('button', { name: 'OCR models', exact: true }).click();
+            await page.waitForFunction(() => document.activeElement?.textContent?.includes('Install basic OCR models'));
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelInstalls), []);
+            await page.evaluate(() => { window.ocrSmoke.failModelInstall = true; });
+            await install.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingModelInstalls === 1);
+            for (const name of ['New', 'Projects', 'Add documents', 'OCR models']) {
+                const buttons = await page.getByRole('button', { name, exact: true }).all();
+                assert.ok(buttons.length > 0);
+                for (const button of buttons) assert.equal(await button.isEnabled(), false, name + ' must wait for installation');
+            }
+            assert.equal(await page.evaluate(() => window.ocrSmoke.emitModelProgress({
+                name: 'dbnet-det', filename: 'dbnet-det.gguf', phase: 'downloading', downloaded: 1048576, total: 2097152,
+            })), true);
+            await page.getByRole('region', { name: 'On-device OCR models', exact: true })
+                .getByRole('status').filter({ hasText: 'dbnet-det.gguf: 1.0 / 2.0 MiB' }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseModelInstall()), true);
+            await page.getByText('Fixture model download interrupted. Retry the installation.', { exact: true }).waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.installedModels), []);
+            assert.equal(await install.isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+            await page.evaluate(() => { window.ocrSmoke.failModelInstall = false; });
+            await page.getByRole('button', { name: 'Add documents', exact: true }).first().click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 1);
+            await page.getByRole('button', { name: 'OCR models', exact: true }).click();
+            assert.equal(await page.getByRole('combobox', { name: 'Recognition engine', exact: true }).inputValue(), 'tesseract');
+            assert.equal(await page.getByRole('combobox', { name: 'Document language', exact: true }).inputValue(), 'eng');
+            await install.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingModelInstalls === 1);
+            for (const name of ['Recognize page', 'Process pending', 'New']) {
+                assert.equal(await page.getByRole('button', { name, exact: true }).isEnabled(), false, name + ' must wait for installation');
+            }
+            await page.evaluate(() => window.ocrSmoke.emitModelProgress({
+                name: 'tesseract-eng', filename: 'tesseract-eng.gguf', phase: 'downloading', downloaded: 1048576, total: 2097152,
+            }));
+            const status = page.getByRole('region', { name: 'On-device OCR models', exact: true }).getByRole('status');
+            await status.filter({ hasText: 'tesseract-eng.gguf: 1.0 / 2.0 MiB' }).waitFor();
+            await status.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: path.join(output, 'ocr-phone-model-setup.png'), fullPage: true });
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseModelInstall()), true);
+            await page.getByText(/Basic OCR models are installed \(dbnet-det, tesseract-eng\)/).waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelInstalls), ['eng', 'eng']);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.installedModels), ['dbnet-det', 'tesseract-eng']);
+            await page.getByRole('button', { name: 'Recognize page', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'completed');
+            const request = await page.evaluate(() => window.ocrSmoke.calls.find(call => call.method === 'recognize').data);
+            assert.equal(request.engine, 'tesseract');
+            assert.equal(request.language, 'eng');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.modelInstalls.length), 2);
         });
 
         await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {

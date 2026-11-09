@@ -42,7 +42,7 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 
 The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=batch-recovery`, `?scenario=extraction-delay`,
-`?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
+`?scenario=project-recovery`, `?scenario=prepare-unchanged`, or `?scenario=mobile-models`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
@@ -50,6 +50,9 @@ The `batch-recovery` fixture stores an interrupted two-page selection with
 recognition settings that differ from the toolbar and an unrelated pending page.
 The adapter can also reject saves so the harness can verify recovery after a
 successful recognition result cannot be committed.
+The `mobile-models` fixture starts with an empty project and no installed models.
+It holds explicit install requests so the harness can exercise progress, interruption,
+retry, and recognition readiness without network requests or real model weights.
 
 ## Assertions
 
@@ -70,6 +73,11 @@ successful recognition result cannot be committed.
   result into an OCR error. Saving and resuming completes only unfinished pages.
 - Starting another batch, changing projects, and Undo remain locked until the
   final batch checkpoint has actually saved, even after the native calls finish.
+- Model setup is reachable in a new empty mobile workspace and never starts a
+  download merely by opening the workspace or model controls. Explicit installation
+  shows byte progress and locks document actions; failure remains retryable, and
+  successful installation is followed by recognition with the selected engine and
+  language. The phone progress screen is captured as `ocr-phone-model-setup.png`.
 - Camera import rejects unsupported image formats before transferring bytes,
   preserves a valid photo, and opens preparation without starting recognition.
 - Four-corner correction exposes touch-sized keyboard-operable handles, rejects
