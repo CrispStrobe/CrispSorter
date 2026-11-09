@@ -42,9 +42,10 @@ permissions:
 
 concurrency:
   group: ocr-paired-native-${{ github.ref }}
-  # Superseded checkpoints on this recovery branch must not block its current
-  # validation. Other branches retain the original build/cache policy.
-  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation"]'), github.head_ref || github.ref_name) }}
+  # Finish the active source-paired check so incremental saves retain useful
+  # native diagnostics and the build cache. GitHub keeps only the latest pending
+  # successor in this group; that source still needs its own complete result.
+  cancel-in-progress: false
 
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not

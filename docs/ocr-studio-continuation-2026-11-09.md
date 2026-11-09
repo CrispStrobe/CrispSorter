@@ -96,3 +96,12 @@ native harness specify the inputs, source/binary hashes, memory/timing measures,
 failure retention and explicit device selection needed to collect that evidence.
 An emulator, injected camera input or a native provider helper is never counted
 as physical capture.
+
+The source-pinned native application harness now also defines accented German
+recognition and an English page with a spanning heading and two columns. It
+installs the verified 513,952-byte German model through the real app command,
+retains Unicode CER and required diacritics, checks column order independently
+from text matching, and saves/reloads the resulting project. Input hashes are
+retained in `tests/results/ocr-studio/native-quality-inputs.json`; they are input
+verification, not a native recognition pass. The combined helper controls at
+`456cee5244db25d35b00dac3e2e8a66dd5e272d7` passed 62 Python and eight Node tests.
