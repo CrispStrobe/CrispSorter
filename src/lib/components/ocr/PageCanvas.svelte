@@ -63,6 +63,12 @@
     region?: OcrRegion;
     rect: Rectangle;
     pointer: number;
+    pageId: string;
+    imagePath: string;
+    pageWidth: number;
+    pageHeight: number;
+    mode: DrawMode;
+    original: boolean;
   } | null>(null);
   let cornerGesture = $state<{ index: number; pointer: number } | null>(null);
   let previousSource = "";
@@ -101,9 +107,28 @@
         : mode === "crop"
           ? "Draw the page area to keep. The original remains available."
           : mode === "recognize"
-            ? "Draw a zone to recognize. Existing text outside it is preserved."
+            ? "Draw an area to recognize again. Compare the new text before using it."
             : `Draw a ${mode} region on the page.`,
   );
+
+  function gestureMatchesSource(g: NonNullable<typeof gesture>) {
+    return !disabled &&
+      g.pageId === page.id &&
+      g.imagePath === page.imagePath &&
+      g.pageWidth === page.width &&
+      g.pageHeight === page.height &&
+      g.mode === mode &&
+      g.original === original;
+  }
+  function cancelGesture() {
+    const pointer = gesture?.pointer;
+    gesture = null;
+    if (pointer !== undefined && svg?.hasPointerCapture(pointer))
+      svg.releasePointerCapture(pointer);
+  }
+  $effect(() => {
+    if (gesture && !gestureMatchesSource(gesture)) cancelGesture();
+  });
 
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
@@ -136,6 +161,12 @@
       start,
       rect: { ...start, w: 0, h: 0 },
       pointer: event.pointerId,
+      pageId: page.id,
+      imagePath: page.imagePath,
+      pageWidth: page.width,
+      pageHeight: page.height,
+      mode,
+      original,
     };
     svg.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -151,12 +182,22 @@
       region,
       rect: { x: region.x, y: region.y, w: region.w, h: region.h },
       pointer: event.pointerId,
+      pageId: page.id,
+      imagePath: page.imagePath,
+      pageWidth: page.width,
+      pageHeight: page.height,
+      mode,
+      original,
     };
     svg.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
   function move(event: PointerEvent) {
     if (!gesture || gesture.pointer !== event.pointerId) return;
+    if (!gestureMatchesSource(gesture)) {
+      cancelGesture();
+      return;
+    }
     const at = point(event),
       g = gesture;
     if (g.kind === "draw") {
@@ -191,8 +232,9 @@
     gesture = null;
     if (svg.hasPointerCapture(event.pointerId))
       svg.releasePointerCapture(event.pointerId);
+    if (!gestureMatchesSource(g)) return;
     if (g.rect.w < 3 || g.rect.h < 3) return;
-    if (g.kind === "draw") onrectangle(g.rect, mode);
+    if (g.kind === "draw") onrectangle(g.rect, g.mode);
     else if (
       g.region &&
       Math.abs(g.rect.x - g.region.x) +
@@ -235,6 +277,10 @@
   }
 </script>
 
+<svelte:window onkeydown={(event) => {
+  if (event.key === "Escape") cancelGesture();
+}} />
+
 <div class="canvas-shell">
   <div class="canvas-hint">
     <MousePointer2 size={13} /><span>{hint}</span><span class="scale"
@@ -273,7 +319,7 @@
           onpointerdown={beginDraw}
           onpointermove={move}
           onpointerup={finish}
-          onpointercancel={() => (gesture = null)}
+          onpointercancel={cancelGesture}
         >
           {#if photoQuad}
             <path class="photo-mask" fill-rule="evenodd" d={`M0 0 H${page.width} V${page.height} H0 Z M${photoQuad.map(point => `${point.x} ${point.y}`).join(" L")} Z`} />

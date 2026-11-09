@@ -54,6 +54,7 @@ function documentSvg(page:number, wordReview=false):string {
 }
 
 export interface SmokeControl {
+    initialProject: OcrProject;
     calls: Array<{method:string; data:unknown}>;
     saves: ProjectEnvelope[];
     exports: ExportRequest[];
@@ -183,8 +184,9 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pendingImports:Array<{release:()=>void;options?:ImportOptions}>=[];
     const pendingExports:Array<{release:()=>void;options?:ExportOptions;phase:ExportProgress['phase'];cancelled:boolean}>=[];
     const control:SmokeControl={
+        initialProject:copy(project),
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
-        holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
+        holdRecognition:scenario==='queue-control'||scenario==='zone-delay',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
         modelStorageReport: scenario==='mobile-storage' || overlayAudit ? {
@@ -287,7 +289,17 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 if(scenario==='mobile-models' && !control.installedModels.includes(`tesseract-${options.language??'eng'}`))throw new Error('The requested OCR models are not installed.');
                 if(control.holdRecognition)await new Promise<void>(release=>pending.push({path:options.pagePath,release}));
                 if(control.failPages.includes(pageNumber(options.pagePath)))throw new Error('Fixture recognition failure on page 2');
-                return recognition(options.pagePath);
+                const result=recognition(options.pagePath);
+                if(options.zone) {
+                    const zone=options.zone;
+                    // Native partial OCR keeps full-page coordinates and reports
+                    // the actual crop; it must never send unrelated page text.
+                    result.regions=result.regions.filter(region=>region.x>=zone.x && region.y>=zone.y &&
+                        region.x+region.w<=zone.x+zone.w && region.y+region.h<=zone.y+zone.h);
+                    result.diagnostics={effective_zone:copy(zone)};
+                    if(scenario==='zone-empty')result.regions=[];
+                }
+                return result;
             } finally {control.activeNative--;}
         },
         async transform(options){
