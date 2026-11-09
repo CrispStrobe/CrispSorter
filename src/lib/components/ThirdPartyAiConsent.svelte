@@ -103,7 +103,12 @@
         align-items: center;
         justify-content: center;
         z-index: 10000;
-        padding: 20px;
+        /* Fixed overlays do not inherit the shell's safe-area padding. Center
+           the card in the usable rectangle, including asymmetric cutouts. */
+        padding: calc(12px + env(safe-area-inset-top, 0px))
+                 calc(12px + env(safe-area-inset-right, 0px))
+                 calc(12px + env(safe-area-inset-bottom, 0px))
+                 calc(12px + env(safe-area-inset-left, 0px));
     }
     .consent-card {
         background: #1e1e2e;
@@ -112,6 +117,12 @@
         padding: 22px 24px;
         max-width: 520px;
         width: 100%;
+        min-width: 0;
+        min-height: 0;
+        max-height: 100%;
+        overflow: auto;
+        overscroll-behavior: contain;
+        overflow-wrap: anywhere;
         color: #cdd6f4;
         box-shadow: 0 18px 50px #0009;
     }
@@ -154,6 +165,10 @@
         flex-wrap: wrap;
     }
     .consent-actions button {
+        min-height: 44px;
+        min-width: 0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
         border-radius: 8px;
         padding: 9px 16px;
         font-size: 0.88rem;

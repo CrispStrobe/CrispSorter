@@ -5317,8 +5317,9 @@
     right: 25px;
     top: 68px;
     width: 350px;
-    max-height: 500px;
+    max-height: min(500px, calc(100% - 80px));
     overflow: auto;
+    overscroll-behavior: contain;
     padding: 15px;
     background: #1b2a3e;
     border: 1px solid #405777;
@@ -5361,8 +5362,23 @@
     backdrop-filter: blur(3px);
   }
   .workspace-dialog {
+    /* Top-layer dialogs are positioned against the viewport, outside the
+       padded workspace. Inset all four edges before centering the dialog. */
+    position: fixed;
+    inset: calc(12px + env(safe-area-inset-top, 0px))
+      calc(12px + env(safe-area-inset-right, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-left, 0px));
+    margin: auto;
     width: 430px;
-    max-width: 100%;
+    height: fit-content;
+    max-width: calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    max-height: calc(100vh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+    overflow: auto;
+    overscroll-behavior: contain;
+    overflow-wrap: anywhere;
     background: #1a293d;
     border: 1px solid #3b587c;
     border-radius: 11px;
@@ -5383,10 +5399,13 @@
   }
   .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 24px;
   }
+  .workspace-dialog button { min-height: 44px; }
+  .workspace-dialog .icon-button { min-width: 44px; }
   .shortcuts {
     display: grid;
     grid-template-columns: 1fr auto;
