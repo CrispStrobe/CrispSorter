@@ -450,6 +450,8 @@ if (process.argv.includes('--serve')) {
             await page.setViewportSize({ width: 390, height: 844 });
             const camera = page.getByLabel('Camera photo file', { exact: true });
             assert.equal(await camera.getAttribute('capture'), 'environment');
+            // Wry's Android file chooser only offers the external camera for image/* plus capture.
+            assert.ok((await camera.getAttribute('accept')).split(',').map(type => type.trim()).includes('image/*'));
             await camera.setInputFiles({ name: 'inspection.HEIC', mimeType: 'image/heic', buffer: Buffer.from('unsupported fixture') });
             await page.getByText(/Export this photo as JPEG or PNG first/).waitFor();
             assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importImage').length), 0);

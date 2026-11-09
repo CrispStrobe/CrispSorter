@@ -114,6 +114,14 @@ an immutable working page before returning. An imported photo opens **Prepare
 photo** where the paired photo tools are available; recognition is a separate
 explicit action.
 
+The capture input requests `image/*` with `capture="environment"`, which is
+required by the locked Android webview's delegated camera path. Android declares
+the `IMAGE_CAPTURE` intent query for package visibility; no direct camera access
+permission is required for that external camera intent. The iOS configuration
+includes camera and photo-library purpose strings. These integration contracts
+are checked separately from simulated file selection; actual device capture is
+still part of release qualification below.
+
 A useful preparation sequence is:
 
 1. **Check photo quality.** Inspect the returned hints about resolution, lighting,

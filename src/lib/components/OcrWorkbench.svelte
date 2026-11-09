@@ -1672,7 +1672,9 @@
 <svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
 
 <section class="ocr-workspace" aria-label="OCR document workspace">
-  <input class="camera-input" bind:this={cameraInput} type="file" accept="image/jpeg,image/png,image/webp,image/bmp" capture="environment" aria-label="Camera photo file" onchange={capturePhoto} />
+  <!-- Android's native chooser requires the image/* token to enter camera capture.
+       Unsupported image formats are checked after selection, before import. -->
+  <input class="camera-input" bind:this={cameraInput} type="file" accept="image/*" capture="environment" aria-label="Camera photo file" onchange={capturePhoto} />
   <header class="workspace-header">
     <div class="workspace-mark"><ScanText size={22} /></div>
     <div class="workspace-title">

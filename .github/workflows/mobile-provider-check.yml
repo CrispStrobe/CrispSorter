@@ -13,7 +13,12 @@ on:
     paths:
       - 'crates/tauri-plugin-mobile-provider/**'
       - 'tools/mobile-provider-check/**'
+      - 'src-tauri/Info.ios.plist'
       - '.github/workflows/mobile-provider-check.yml'
+
+concurrency:
+  group: mobile-provider-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
 
 jobs:
   android-provider:
