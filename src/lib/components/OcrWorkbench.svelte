@@ -67,6 +67,7 @@
   import TableRepairDialog from "./ocr/TableRepairDialog.svelte";
   import TableJoinDialog from "./ocr/TableJoinDialog.svelte";
   import OfficeExportPanel from "./ocr/OfficeExportPanel.svelte";
+  import WorkbookExportPanel from "./ocr/WorkbookExportPanel.svelte";
   import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
   import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
@@ -118,6 +119,7 @@
   } from "$lib/ocr/extractionObjects";
   import { prepareExtractionExport } from "$lib/ocr/extractionExport";
   import { emptyOfficeExportOptions, type OfficeExportOptions } from "$lib/ocr/officeExport";
+  import { emptyWorkbookOptions, type WorkbookOptions } from "$lib/ocr/workbookExport";
   import {
     PROFILES,
     createProject,
@@ -302,6 +304,7 @@
     exportScope = $state("all"),
     requireReviewed = $state(true);
   let officeOptions = $state<OfficeExportOptions>(emptyOfficeExportOptions());
+  let workbookOptions = $state<WorkbookOptions>(emptyWorkbookOptions());
   let exportResultNotes = $state<{ path: string; format: string; warnings: string[] } | null>(null);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
@@ -496,7 +499,8 @@
   );
   const preflight = $derived(
     prepareExport(project, { pageIds: exportIds, requireReviewed, format: exportFormat,
-      ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions } : {}) }),
+      ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions } : {}),
+      ...(exportFormat === "xlsx" && capabilities.structured_xlsx ? { workbookOptions } : {}) }),
   );
   const pageText = $derived(
     joinRegionText(activePage?.regions.filter((r) => !r.excluded && r.kind !== "picture") ?? []),
@@ -518,6 +522,7 @@
     html: "HTML document",
     markdown: "Markdown",
     docx: "Word document",
+    xlsx: "Excel workbook",
   };
   const engineNames: Record<string, string> = {
     auto: "Automatic pipeline",
@@ -764,6 +769,7 @@
     checkedPages = [];
     extractionSelection = {};
     officeOptions = emptyOfficeExportOptions();
+    workbookOptions = emptyWorkbookOptions();
     exportResultNotes = null;
     lastReviewIssueKey = null;
     saveStatus = { state: "saved" };
@@ -1759,6 +1765,7 @@
               : preflight.pages,
           sourceUris: project.documents.map((d) => d.sourceUri),
           ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions: preflight.officeOptions ?? emptyOfficeExportOptions() } : {}),
+          ...(exportFormat === "xlsx" && capabilities.structured_xlsx ? { workbookOptions: preflight.workbookOptions ?? emptyWorkbookOptions() } : {}),
         }),
       ) as Omit<ExportRequest, "outputPath" | "overwrite">);
     const ext =
@@ -1785,7 +1792,11 @@
       });
       const warnings = [...new Set((result.warnings ?? []).filter((item): item is string => typeof item === "string" && !!item))];
       exportResultNotes = { path: result.saved_path, format: result.format, warnings };
-      notice = `Exported ${result.pages} pages · ${result.saved_path}${warnings.length ? ` · ${warnings.length} export notes` : ""}`;
+      const sheetCount = result.sheets ?? request.workbookOptions?.sheets.length ?? 0;
+      const exportedCount = result.format === "xlsx"
+        ? `${sheetCount} ${sheetCount === 1 ? "worksheet" : "worksheets"}`
+        : `${result.pages} pages`;
+      notice = `Exported ${exportedCount} · ${result.saved_path}${warnings.length ? ` · ${warnings.length} export notes` : ""}`;
     } catch (e) {
       if (
         !overwrite &&
@@ -1795,7 +1806,7 @@
         const chosen = target;
         confirmation(
           "Replace the existing export?",
-          `The file ${chosen} already exists. Replace it with the ${request.pages.length} pages selected for this export?`,
+          `The file ${chosen} already exists. Replace it with the ${request.format === "xlsx" ? `${request.workbookOptions?.sheets.length ?? 0} worksheets` : `${request.pages.length} pages`} selected for this export?`,
           "Replace export",
           () => exportProject(true, chosen, request),
         );
@@ -3713,6 +3724,8 @@
                       ? capabilities.structured_docx
                         ? "Editable Word structure: reviewed headings, styles, lists, reading columns and figures, with explicitly selected tables and formulas."
                         : "Editable text in page order. This build does not provide structured Word export."
+                      : exportFormat === "xlsx"
+                        ? "One worksheet for each explicitly selected saved table, with literal cell text, merged spans and your chosen tab order."
                       : exportFormat === "alto" || exportFormat === "hocr"
                         ? "Machine-readable text and page coordinates for downstream processing."
                         : exportFormat === "json"
@@ -3763,7 +3776,7 @@
             <label class="setting-toggle"
               ><span
                 ><strong>Require page approval</strong><small
-                  >Block export until every included page is approved.</small
+                  >{exportFormat === "xlsx" ? "Block export until the source pages of all selected tables are approved." : "Block export until every included page is approved."}</small
                 ></span
               ><input
                 type="checkbox"
@@ -3775,12 +3788,16 @@
               <OfficeExportPanel {project} pageIds={exportIds} value={officeOptions} disabled={locked}
                 onchange={(next) => (officeOptions = next)} />
             {/if}
+            {#if exportFormat === "xlsx" && capabilities.structured_xlsx}
+              <WorkbookExportPanel {project} pageIds={exportIds} value={workbookOptions} disabled={locked}
+                onchange={(next) => (workbookOptions = next)} />
+            {/if}
             <div class="preflight-card" class:ready={!preflight.errors.length}>
               <div class="section-heading">
                 {#if preflight.errors.length}<AlertTriangle size={17} /><strong
                     >{preflight.errors.length} checks need attention</strong
                   >{:else}<CircleCheck size={17} /><strong
-                    >Ready to export {preflight.pages.length} pages</strong
+                    >{exportFormat === "xlsx" ? `Ready to export ${preflight.workbookOptions?.sheets.length ?? 0} ${preflight.workbookOptions?.sheets.length === 1 ? "worksheet" : "worksheets"} from ${preflight.pages.length} ${preflight.pages.length === 1 ? "source page" : "source pages"}` : `Ready to export ${preflight.pages.length} pages`}</strong
                   >{/if}
               </div>
               {#if preflight.errors.length}<ul>
@@ -3789,8 +3806,14 @@
                     </li>{/each}
                 </ul>
                 {#if preflight.errors.length > 8}<p>
-                    And {preflight.errors.length - 8} more pages need attention.
-                  </p>{/if}{:else}<div class="preflight-check">
+                    And {preflight.errors.length - 8} more checks need attention.
+                  </p>{/if}{:else if exportFormat === "xlsx"}<div class="preflight-check">
+                  <Check size={14} /> Every selected table is accounted for
+                </div>
+                <div class="preflight-check"><Check size={14} /> Literal cell values and spans included</div>
+                <div class="preflight-check"><Check size={14} /> Worksheet names and limits checked</div>
+                {#if requireReviewed}<div class="preflight-check"><Check size={14} /> Selected table source pages approved</div>{/if}
+                {:else}<div class="preflight-check">
                   <Check size={14} /> Every selected page is accounted for
                 </div>
                 <div class="preflight-check">

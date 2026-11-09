@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - src-tauri/src/ocr_docx.rs
+      - src-tauri/src/ocr_xlsx.rs
       - src-tauri/src/ocr_office.rs
       - src-tauri/src/ocr_document.rs
       - src-tauri/src/ocr_workspace.rs
@@ -41,7 +42,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Execute production writer and independently inspect generated packages
-        run: python tools/quality/check_ocr_office.py --output target/ocr-office-qualification
+        run: |
+          python -m pip install openpyxl==3.1.5 et-xmlfile==2.0.0
+          python tools/quality/check_ocr_office.py --output target/ocr-office-qualification --require-openpyxl
       - name: Retain packages, exact inputs, logs, locks, and qualification receipt
         if: always()
         uses: actions/upload-artifact@v4

@@ -5,6 +5,8 @@
 use crate::ocr_document::{DocumentStructure, InlineRun, NoteReference, StructureBlock, StructureList, StructureSection};
 use crate::ocr_docx::{render_docx, DocxFigure, DocxPage, DocxRegion};
 use crate::ocr_office::{select_office_objects, OfficeObjectData, OfficeObjectSelection, OfficeOptions, OfficePlacement, OfficeSourcePage, OfficeSourceRegion, OfficeTableCell, OfficeTableData};
+use crate::ocr_office::{select_workbook_tables, WorkbookOptions, WorkbookSheetSelection};
+use crate::ocr_xlsx::{render_xlsx, XlsxSheet};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Cursor;
@@ -145,6 +147,83 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     fs::write(path, serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?).map_err(|error| error.to_string())
 }
 
+fn rectangular_table(rows: &[Vec<&str>], headers: bool) -> OfficeTableData {
+    OfficeTableData { version: 1, rows: rows.len(), columns: rows.first().map_or(0, Vec::len),
+        cells: rows.iter().enumerate().flat_map(|(row, values)| values.iter().enumerate().map(move |(column, text)|
+            cell(&format!("cell-{row}-{column}"), row, column, 1, 1, text, headers && row == 0))).collect() }
+}
+
+fn workbook_provenance(page_id: &str, object_id: &str, table: &OfficeTableData) -> Value {
+    let mut original = table.clone();
+    if let Some(first) = original.cells.first_mut() { first.text = "ORIGINAL_WORKBOOK_CELL_MUST_NOT_EXPORT".into(); }
+    let make = |id: &str, data: &OfficeTableData, excluded: bool| json!({
+        "version":1,"id":id,"kind":"table","name":id,
+        "createdAt":"2026-11-09T00:00:00.000Z","updatedAt":"2026-11-09T00:00:00.000Z",
+        "excluded":excluded,"review":"corrected",
+        "captures":[{"id":"capture","pageId":page_id,"documentId":"workbook-document","width":1000,"height":1000,
+            "imagePath":"/unavailable/historical-source.png","regionId":null,"bounds":null,"method":"pixels","text":null}],
+        "originalOutput":{"html":"RAW_WORKBOOK_OUTPUT_MUST_NOT_EXPORT"},"originalOutputKind":"model",
+        "originalData":original,"currentData":data
+    });
+    let mut unused = table.clone();
+    if let Some(first) = unused.cells.first_mut() { first.text = "UNSELECTED_WORKBOOK_CELL_MUST_NOT_EXPORT".into(); }
+    json!({"extractionObjects":{"version":1,"objects":[make(object_id, table, false), make("unselected-table", &unused, false), make("excluded-table", &unused, true)]}})
+}
+
+fn generate_workbooks(output: &Path) -> Result<(), String> {
+    let merged = OfficeTableData { version: 1, rows: 3, columns: 3, cells: vec![
+        cell("merged", 0, 0, 2, 2, "Valve\n0012", true), cell("quantity", 0, 2, 1, 1, "Qty", true),
+        cell("formula-text", 1, 2, 1, 1, "=2+2", false), cell("code", 2, 0, 1, 1, "03", false),
+        cell("identifier", 2, 1, 1, 1, "LOT-003", false), cell("empty", 2, 2, 1, 1, "", false),
+    ] };
+    let literals = rectangular_table(&[
+        vec!["Code", "Literal formulas", "Notes", "Blank"],
+        vec!["0012", "=2+2", "😀\tline\nnext", ""],
+        vec!["03-04", "+SUM(A1:A2)", "  A & <B>  ", "@value"],
+        vec!["-12.5", "1,250.00", "TRUE", "3.14e5"],
+    ], true);
+    let wide = OfficeTableData { version: 1, rows: 1, columns: 64,
+        cells: (0..64).map(|column| cell(&format!("wide-{column}"), 0, column, 1, 1, &format!("ID{:04}", column + 1), false)).collect() };
+    let escapes = rectangular_table(&[
+        vec!["Actual CR", "left\rright"], vec!["Actual CRLF", "a\r\nb"],
+        vec!["Literal escape", "_x000D_"], vec!["Literal underscore escape", "_x005F_"],
+        vec!["Adjacent literals", "_x000D__x005F_"], vec!["Mixed", "real\r literal _x000D_ and 😀"],
+        vec!["LF and tab", "\n\t"], vec!["Empty string", ""],
+    ], false);
+    let blank = OfficeTableData { version: 1, rows: 0, columns: 0, cells: vec![] };
+    let cases = vec![
+        ("reviewed-workbook", vec![("merged-page", "merged-object", "Parts & QA", merged), ("literal-page", "literal-object", "測定 values", literals), ("wide-page", "wide-object", "Wide identifiers", wide)], vec![1usize, 0, 2], Vec::<&str>::new()),
+        ("escaped-and-blank-workbook", vec![("escape-page", "escape-object", "Literal _x000D_", escapes), ("empty-page", "empty-object", "Blank table", blank)], vec![0usize, 1], vec!["empty"]),
+    ];
+    let mut fixtures = Vec::new();
+    let mut inputs = Vec::new();
+    for (name, tables, order, warning_substrings) in cases {
+        let provenance = tables.iter().map(|(page_id, object_id, _, table)| workbook_provenance(page_id, object_id, table)).collect::<Vec<_>>();
+        // A saved workbook uses table strings, even when captured image files
+        // and current OCR passages are unavailable. No provenance path is read.
+        let sources = tables.iter().zip(&provenance).map(|((page_id, _, _, _), value)|
+            OfficeSourcePage { id: page_id, provenance: Some(value), regions: vec![] }).collect::<Vec<_>>();
+        let options = WorkbookOptions { version: 1, sheets: order.iter().map(|index| {
+            let (page_id, object_id, sheet_name, _) = &tables[*index];
+            WorkbookSheetSelection { page_id: (*page_id).into(), object_id: (*object_id).into(), sheet_name: (*sheet_name).into() }
+        }).collect() };
+        let sheets = select_workbook_tables(&sources, &options)?.into_iter().map(|sheet|
+            XlsxSheet { page_id: sheet.page_id, object_id: sheet.object_id, name: sheet.name, table: sheet.table }).collect::<Vec<_>>();
+        let expected_sheets = order.iter().map(|index| {
+            let (page_id, object_id, sheet_name, table) = &tables[*index];
+            json!({"name":sheet_name,"pageId":page_id,"objectId":object_id,"table":table})
+        }).collect::<Vec<_>>();
+        let workbook = render_xlsx(&sheets)?;
+        let file = format!("{name}.xlsx");
+        fs::write(output.join(&file), workbook.bytes).map_err(|error| error.to_string())?;
+        inputs.push(json!({"name":name,"sourcePages":tables.iter().zip(&provenance).map(|((page_id, _, _, _), value)| json!({"id":page_id,"regions":[],"provenance":value})).collect::<Vec<_>>(),"options":options}));
+        fixtures.push(json!({"name":name,"file":file,"warnings":workbook.warnings,"expected":{"sheets":expected_sheets,
+            "warning_substrings":warning_substrings,"forbidden_text":["ORIGINAL_WORKBOOK_CELL_MUST_NOT_EXPORT","UNSELECTED_WORKBOOK_CELL_MUST_NOT_EXPORT","RAW_WORKBOOK_OUTPUT_MUST_NOT_EXPORT"]}}));
+    }
+    write_json(&output.join("workbook-inputs.json"), &json!({"version":1,"fixtures":inputs}))?;
+    write_json(&output.join("workbooks.json"), &json!({"version":1,"fixtures":fixtures}))
+}
+
 pub fn generate(output: &Path) -> Result<(), String> {
     fs::create_dir_all(output).map_err(|error| error.to_string())?;
     let image = image::RgbImage::from_fn(8, 4, |x, _| if x < 4 { image::Rgb([220, 40, 40]) } else { image::Rgb([40, 80, 220]) });
@@ -167,5 +246,6 @@ pub fn generate(output: &Path) -> Result<(), String> {
     }
     write_json(&output.join("inputs.json"), &json!({"version":1,"fixtures":inputs,"selectedObjectBoundary":selection_input}))?;
     write_json(&output.join("fixtures.json"), &json!({"version":1,"fixtures":manifest}))?;
+    generate_workbooks(output)?;
     Ok(())
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate real reviewed DOCX through production Rust modules and inspect OOXML.
+"""Generate real reviewed DOCX/XLSX through production Rust modules and inspect OOXML.
 
 This bounded synthetic qualification is separate from Word/LibreOffice rendering,
 an installed-app test, schema validation, OCR accuracy, and device qualification.
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -28,10 +29,11 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 NS = {"w": W, "r": R}
-SOURCE_PATHS = ["src-tauri/src/ocr_document.rs", "src-tauri/src/ocr_office.rs", "src-tauri/src/ocr_docx.rs",
+SOURCE_PATHS = ["src-tauri/src/ocr_document.rs", "src-tauri/src/ocr_office.rs", "src-tauri/src/ocr_docx.rs", "src-tauri/src/ocr_xlsx.rs",
                 "src-tauri/Cargo.toml", "Cargo.lock", "tools/quality/ocr_office_fixture.rs", "tools/quality/check_ocr_office.py"]
 
 
@@ -259,6 +261,168 @@ def inspect_docx(path: Path, expected: dict, warnings: list[str]) -> dict:
                 "warnings": warnings, "limitations": ["XML checks are not Office schema validation or rendered layout qualification."]}
 
 
+def decode_xstring(text: str) -> str:
+    """Decode the original encoded stream once; escaped underscores are literal.
+
+    Repeated replacement would corrupt a source string such as '_x000D_'. This
+    independent reader decodes Office escapes after the XML parser unescapes XML.
+    """
+    return re.sub(r"_x([0-9A-Fa-f]{4})_", lambda match: chr(int(match.group(1), 16)), text)
+
+
+def cell_reference(row: int, column: int) -> str:
+    result = ""
+    value = column + 1
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        result = chr(65 + remainder) + result
+    return result + str(row + 1)
+
+
+def inspect_xlsx(path: Path, expected: dict, warnings: list[str]) -> dict:
+    namespace = {"s": S}
+    with zipfile.ZipFile(path) as archive:
+        require(archive.testzip() is None, "XLSX ZIP CRC validation failed")
+        entries = archive.infolist()
+        require(len({entry.filename for entry in entries}) == len(entries), "duplicate XLSX package names")
+        files = {entry.filename: entry for entry in entries if not entry.is_dir()}
+        require(sum(entry.file_size for entry in files.values()) <= 32 * 1024 * 1024, "synthetic workbook unexpectedly exceeds 32 MB")
+        for name, entry in files.items():
+            require(not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts and "\\" not in name and not entry.flag_bits & 1, "unsafe/encrypted XLSX package member")
+            require(not any(fragment in name.lower() for fragment in ["vbaproject", "externallink", "calcchain", "sharedstrings"]), f"unexpected executable, linked or inferred workbook content: {name}")
+        require({"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/styles.xml"} <= files.keys(), "missing workbook package parts")
+        parsed = {}
+        for name in files:
+            if name.endswith((".xml", ".rels")):
+                raw = archive.read(name)
+                require(b"<!DOCTYPE" not in raw.upper() and b"<!ENTITY" not in raw.upper(), "unexpected XLSX DTD/entity declaration")
+                parsed[name] = ET.fromstring(raw)
+        relationships = {}
+        for name, tree in parsed.items():
+            if not name.endswith(".rels"):
+                continue
+            if name == "_rels/.rels":
+                owner = ""
+            else:
+                directory, basename = name.rsplit("/_rels/", 1)
+                owner = f"{directory}/{basename[:-5]}"
+            ids = {}
+            for relationship in tree.findall(f"{{{REL}}}Relationship"):
+                identifier, target = relationship.get("Id"), relationship.get("Target", "")
+                require(bool(identifier) and identifier not in ids, "missing or duplicate XLSX relationship ID")
+                require(relationship.get("TargetMode") != "External", "unexpected external workbook relationship")
+                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(owner), target)) if not target.startswith("/") else target.lstrip("/")
+                require(resolved in files, f"missing workbook relationship target: {target}")
+                ids[identifier] = {"path": resolved, "type": relationship.get("Type")}
+            relationships[owner] = ids
+        require(any(item["path"] == "xl/workbook.xml" and item["type"].endswith("/officeDocument") for item in relationships.get("", {}).values()), "root relationship does not identify workbook")
+        content_types = parsed["[Content_Types].xml"]
+        overrides = {item.get("PartName"): item.get("ContentType") for item in content_types if item.tag.endswith("}Override")}
+        require(overrides.get("/xl/workbook.xml") == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml", "workbook content type is incorrect")
+        workbook = parsed["xl/workbook.xml"]
+        sheets = workbook.findall("s:sheets/s:sheet", namespace)
+        require(len(sheets) == len(expected["sheets"]), "unexpected worksheet count")
+        sheet_ids, relation_ids, names = set(), set(), set()
+        styles = parsed["xl/styles.xml"]
+        cell_formats = styles.findall("s:cellXfs/s:xf", namespace)
+        fonts = styles.findall("s:fonts/s:font", namespace)
+        require(bool(cell_formats) and bool(fonts), "workbook styles missing")
+        reports = []
+        for sheet, wanted in zip(sheets, expected["sheets"]):
+            sheet_id, relationship_id = sheet.get("sheetId"), sheet.get(f"{{{R}}}id")
+            require(bool(sheet_id) and sheet_id not in sheet_ids and bool(relationship_id) and relationship_id not in relation_ids, "duplicate/missing sheet or worksheet relationship identity")
+            sheet_ids.add(sheet_id); relation_ids.add(relationship_id)
+            raw_name = sheet.get("name", "")
+            name = decode_xstring(raw_name)
+            require(name == wanted["name"], f"explicit sheet order/name changed: {name!r}")
+            require(name.strip() and len(name.encode("utf-16-le")) // 2 <= 31 and not any(character in name for character in '/\\?*:[]') and not name.startswith("'") and not name.endswith("'") and name.casefold() != "history", "invalid worksheet name escaped native validation")
+            require(name.casefold() not in names, "case-insensitive duplicate worksheet names")
+            names.add(name.casefold())
+            relation = relationships["xl/workbook.xml"].get(relationship_id)
+            require(relation is not None and relation["type"].endswith("/worksheet"), "sheet relationship is not a worksheet")
+            require(overrides.get("/" + relation["path"]) == "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml", "worksheet content type is incorrect")
+            worksheet = parsed[relation["path"]]
+            table = wanted["table"]
+            expected_cells = {cell_reference(cell["row"], cell["column"]): cell for cell in table["cells"]}
+            require(not worksheet.findall(".//s:f", namespace), "a literal cell was exported as a formula")
+            require(not worksheet.findall(".//s:hyperlink", namespace), "a literal cell was exported as an active hyperlink")
+            actual_cells, row_ids = {}, set()
+            raw_texts = {}
+            for row in worksheet.findall("s:sheetData/s:row", namespace):
+                row_number = int(row.get("r", "0"))
+                require(1 <= row_number <= table["rows"] and row_number not in row_ids, "invalid or repeated workbook row")
+                row_ids.add(row_number)
+                for cell in row.findall("s:c", namespace):
+                    address = cell.get("r", "")
+                    require(address in expected_cells and address not in actual_cells, f"duplicate, covered or out-of-grid cell: {address}")
+                    target = expected_cells[address]
+                    require(target["row"] + 1 == row_number and cell.get("t") == "inlineStr" and cell.find("s:v", namespace) is None, "cell uses inferred type or inconsistent row")
+                    text_node = cell.find("s:is/s:t", namespace)
+                    require(text_node is not None, "explicit literal/empty cell has no inline text node")
+                    raw_text = text_node.text or ""
+                    require(text_node.get("{http://www.w3.org/XML/1998/namespace}space") == "preserve", "cell text does not explicitly preserve whitespace")
+                    value = decode_xstring(raw_text)
+                    require(value == target["text"], f"literal cell changed at {name}!{address}: {value!r} != {target['text']!r}")
+                    require(len(value.encode("utf-16-le")) // 2 <= 32767 and value.count("\n") <= 253, "Excel cell limit escaped validation")
+                    style_index = int(cell.get("s", "0"))
+                    require(0 <= style_index < len(cell_formats), "cell style index missing")
+                    style = cell_formats[style_index]
+                    require(style.get("numFmtId") == "49", "literal cell lost explicit text number format")
+                    font_index = int(style.get("fontId", "0"))
+                    require(0 <= font_index < len(fonts), "cell font reference missing")
+                    if target.get("header"):
+                        require(fonts[font_index].find("s:b", namespace) is not None, "table header lost bold font")
+                    actual_cells[address] = value
+                    raw_texts[address] = raw_text
+            require(set(actual_cells) == set(expected_cells), "missing literal anchors, including blank strings")
+            expected_merges = {f"{cell_reference(cell['row'], cell['column'])}:{cell_reference(cell['row'] + cell['rowSpan'] - 1, cell['column'] + cell['columnSpan'] - 1)}" for cell in table["cells"] if cell["rowSpan"] > 1 or cell["columnSpan"] > 1}
+            merge_nodes = worksheet.findall("s:mergeCells/s:mergeCell", namespace)
+            merges = [item.get("ref") for item in merge_nodes]
+            require(len(set(merges)) == len(merges) and set(merges) == expected_merges, "merged rectangles differ from selected table")
+            occupied = set()
+            for cell in table["cells"]:
+                rectangle = {(row, column) for row in range(cell["row"], cell["row"] + cell["rowSpan"]) for column in range(cell["column"], cell["column"] + cell["columnSpan"])}
+                require(not occupied.intersection(rectangle), "fixture/table merge rectangles overlap")
+                occupied.update(rectangle)
+            require(occupied == {(row, column) for row in range(table["rows"]) for column in range(table["columns"])}, "table grid coverage incomplete")
+            for forbidden in expected["forbidden_text"]:
+                require(not any(forbidden in text for text in actual_cells.values()), "raw/original/unselected workbook text leaked")
+            reports.append({"name": name, "raw_name": raw_name, "rows": table["rows"], "columns": table["columns"], "cells": actual_cells, "raw_texts": raw_texts, "merges": sorted(expected_merges)})
+        for fragment in expected["warning_substrings"]:
+            require(any(fragment.lower() in warning.lower() for warning in warnings), f"workbook limitation warning missing: {fragment}")
+        return {"status": "passed", "file": path.name, "sheets": reports, "warnings": warnings,
+                "limitations": ["Independent ZIP/XML checks are separate from Excel rendering and schema validation."]}
+
+
+def inspect_with_openpyxl(path: Path, xml_report: dict) -> dict:
+    # Read original native output. No Python workbook writer or third-party
+    # resave is involved in fixture authorship or exact-source assertions.
+    import openpyxl
+    workbook = openpyxl.load_workbook(path, data_only=False, read_only=False)
+    exceptions, checked = [], 0
+    try:
+        require(len(workbook.worksheets) == len(xml_report["sheets"]), "openpyxl lost a worksheet")
+        for sheet, wanted in zip(workbook.worksheets, xml_report["sheets"]):
+            if sheet.title != wanted["name"]:
+                require(wanted["raw_name"] != wanted["name"] and sheet.title == wanted["raw_name"], "unexpected reader worksheet-name change")
+                exceptions.append({"sheet": wanted["name"], "kind": "xstring_sheet_name", "expected": wanted["name"], "observed": sheet.title})
+            require(sorted(str(value) for value in sheet.merged_cells.ranges) == wanted["merges"], "openpyxl lost or changed merged ranges")
+            for address, expected in wanted["cells"].items():
+                cell = sheet[address]
+                require(cell.data_type == "s", f"reader inferred a formula/number/date at {sheet.title}!{address}")
+                if cell.value != expected:
+                    raw = wanted["raw_texts"][address]
+                    require(raw != expected and cell.value == raw, f"unexpected reader literal mismatch at {sheet.title}!{address}")
+                    exceptions.append({"sheet": wanted["name"], "cell": address, "kind": "xstring_cell", "expected": expected, "observed": cell.value})
+                else:
+                    checked += 1
+        return {"status": "passed_with_known_limitations" if exceptions else "passed", "file": path.name,
+                "reader": f"openpyxl {openpyxl.__version__}", "exact_literal_cells": checked, "known_xstring_exceptions": exceptions,
+                "meaning": "Original generated file read only; exceptions are not claimed as exact reader roundtrips."}
+    finally:
+        workbook.close()
+
+
 def lock_packages(lock: Path) -> dict[tuple[str, str], dict]:
     with lock.open("rb") as stream:
         packages = tomllib.load(stream)["package"]
@@ -320,6 +484,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("target/ocr-office-qualification"), help="new or empty artifact directory")
     parser.add_argument("--target-dir", type=Path, default=Path("target/ocr-office-quality"), help="reusable Cargo build cache")
+    parser.add_argument("--require-openpyxl", action="store_true", help="fail if the independent XLSX reader is unavailable")
     args = parser.parse_args()
     repository = Path(__file__).resolve().parents[2]
     output = args.output.resolve()
@@ -327,9 +492,9 @@ def main() -> int:
     require(not output.exists() or not any(output.iterdir()), "output directory must be new or empty; retain prior receipts separately")
     output.mkdir(parents=True, exist_ok=True)
     receipt = {"schema": "crispsorter.ocr-office-qualification.v1", "recorded_at": datetime.now(timezone.utc).isoformat(),
-               "scope": "Synthetic production-module DOCX generation and independent ZIP/XML inspection",
+               "scope": "Synthetic production-module DOCX/XLSX generation and independent ZIP/XML inspection",
                "tools": {"python": sys.version, "platform": platform.platform()}, "commands": [], "sources": {},
-               "gates": {name: {"status": "not_run"} for name in ["production_unit_tests", "production_generation", "dependency_lock_match", "independent_package_xml", "independent_office_reader", "office_schema_validator", "installed_application", "live_ocr_corpus", "device_capture"]}}
+               "gates": {name: {"status": "not_run"} for name in ["production_unit_tests", "production_generation", "dependency_lock_match", "independent_package_xml", "independent_xlsx_package_xml", "independent_xlsx_reader", "independent_office_reader", "office_schema_validator", "installed_application", "live_ocr_corpus", "device_capture"]}}
     failed = None
     active_gate = None
     try:
@@ -344,7 +509,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="crispsorter-office-") as directory:
             harness = Path(directory)
             (harness / "Cargo.toml").write_text(harness_manifest(repository), encoding="utf-8")
-            modules = {"ocr_document": "src-tauri/src/ocr_document.rs", "ocr_office": "src-tauri/src/ocr_office.rs", "ocr_docx": "src-tauri/src/ocr_docx.rs", "ocr_office_fixture": "tools/quality/ocr_office_fixture.rs"}
+            modules = {"ocr_document": "src-tauri/src/ocr_document.rs", "ocr_office": "src-tauri/src/ocr_office.rs", "ocr_docx": "src-tauri/src/ocr_docx.rs", "ocr_xlsx": "src-tauri/src/ocr_xlsx.rs", "ocr_office_fixture": "tools/quality/ocr_office_fixture.rs"}
             (harness / "lib.rs").write_text("".join(f'#[path = {json.dumps((repository / path).as_posix(), ensure_ascii=False)}]\npub mod {name};\n' for name, path in modules.items()), encoding="utf-8")
             (harness / "main.rs").write_text('fn main() { let path = std::env::args_os().nth(1).expect("artifact output directory"); if let Err(error) = crispsorter_office_quality::ocr_office_fixture::generate(std::path::Path::new(&path)) { eprintln!("{error}"); std::process::exit(1); } }\n', encoding="utf-8")
             # Cargo prunes the unrelated application graph while retaining locked
@@ -358,7 +523,7 @@ def main() -> int:
             summaries = re.findall(r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored", test_log)
             require(bool(summaries), "Cargo did not report a native unit-test result")
             module_counts = {}
-            for module in ["ocr_document", "ocr_office", "ocr_docx"]:
+            for module in ["ocr_document", "ocr_office", "ocr_docx", "ocr_xlsx"]:
                 module_counts[module] = len(re.findall(rf"^test {module}::tests::\S+ \.\.\. ok$", test_log, re.MULTILINE))
                 require(module_counts[module] > 0, f"no actual {module} tests executed")
             receipt["gates"][active_gate] = {"status": "passed", "passed": sum(int(item[0]) for item in summaries), "module_counts": module_counts}
@@ -374,7 +539,9 @@ def main() -> int:
             execute(base + ["run", "--locked", "--manifest-path", str(harness / "Cargo.toml"), "--target-dir", str(target), "--bin", "ocr-office-fixtures", "--", str(output)], repository, output / "generation.log", receipt)
             fixture_manifest = json.loads((output / "fixtures.json").read_text(encoding="utf-8"))
             require(fixture_manifest.get("version") == 1 and len(fixture_manifest["fixtures"]) == 3, "fixture generation did not complete")
-            receipt["gates"][active_gate] = {"status": "passed", "documents": len(fixture_manifest["fixtures"])}
+            workbook_manifest = json.loads((output / "workbooks.json").read_text(encoding="utf-8"))
+            require(workbook_manifest.get("version") == 1 and len(workbook_manifest["fixtures"]) == 2, "workbook fixture generation did not complete")
+            receipt["gates"][active_gate] = {"status": "passed", "documents": len(fixture_manifest["fixtures"]), "workbooks": len(workbook_manifest["fixtures"]), "worksheets": sum(len(fixture["expected"]["sheets"]) for fixture in workbook_manifest["fixtures"])}
             active_gate = "independent_package_xml"
             reports = []
             for fixture in fixture_manifest["fixtures"]:
@@ -382,6 +549,27 @@ def main() -> int:
                 reports.append(report)
             write_json(output / "package-xml-report.json", {"validator": "Python stdlib zipfile + ElementTree; independent of docx-rs", "fixtures": reports})
             receipt["gates"][active_gate] = {"status": "passed", "documents": len(reports)}
+            active_gate = "independent_xlsx_package_xml"
+            workbook_reports = [inspect_xlsx(output / fixture["file"], fixture["expected"], fixture["warnings"]) for fixture in workbook_manifest["fixtures"]]
+            write_json(output / "xlsx-package-xml-report.json", {"validator": "Python stdlib ZIP/XML plus independent one-pass Office Xstring decoding", "fixtures": workbook_reports})
+            receipt["gates"][active_gate] = {"status": "passed", "workbooks": len(workbook_reports), "worksheets": sum(len(report["sheets"]) for report in workbook_reports)}
+            active_gate = "independent_xlsx_reader"
+            try:
+                receipt["tools"]["openpyxl"] = importlib.metadata.version("openpyxl")
+            except importlib.metadata.PackageNotFoundError:
+                receipt["gates"][active_gate] = {"status": "not_run", "reason": "openpyxl is not installed"}
+                require(not args.require_openpyxl, "required independent openpyxl reader is not installed")
+            else:
+                for dependency in ["et-xmlfile", "lxml"]:
+                    try:
+                        receipt["tools"][dependency] = importlib.metadata.version(dependency)
+                    except importlib.metadata.PackageNotFoundError:
+                        pass
+                reader_reports = [inspect_with_openpyxl(output / report["file"], report) for report in workbook_reports]
+                write_json(output / "xlsx-openpyxl-report.json", {"fixtures": reader_reports})
+                exceptions = sum(len(report["known_xstring_exceptions"]) for report in reader_reports)
+                receipt["gates"][active_gate] = {"status": "passed_with_known_limitations" if exceptions else "passed", "workbooks": len(reader_reports), "exact_literal_cells": sum(report["exact_literal_cells"] for report in reader_reports), "known_xstring_exceptions": exceptions,
+                                                "meaning": "Xstring exceptions are explicitly recorded and are not exact reader-roundtrip passes."}
             active_gate = None
     except Exception as error:
         failed = f"{type(error).__name__}: {error}"
@@ -395,8 +583,8 @@ def main() -> int:
         write_json(output / "receipt.json", receipt)
     if failed:
         return 1
-    print(f"Native generation and package/XML checks passed for 3 documents. Receipt: {output / 'receipt.json'}")
-    print("Independent Office rendering, schema validation, installed app, live corpus and device gates remain not_run.")
+    print(f"Native generation and package/XML checks passed for 3 DOCX documents and 2 XLSX workbooks. Receipt: {output / 'receipt.json'}")
+    print("See the separate XLSX reader gate for its status and Xstring exceptions; Office rendering, schema validation, installed app, live corpus and device gates remain not_run.")
     return 0
 
 

@@ -24,7 +24,11 @@ Word export now consumes reviewed headings, lists, styles, columns, current
 pictures, and explicitly selected tables/formulas. It warns about unsupported
 Word semantics and preserves literal values. Native package generation and
 independent-reader results are recorded separately in the roadmap. Literal table
-workbooks and saved export profiles are next. Hardware support, trained
+workbooks now provide explicit named sheets, preserved merges and current saved
+values, with historical-source export independent of current page OCR. The
+checkpoint passed 39 native module tests and 449 frontend tests; reader
+limitations and pending full-application/browser gates are recorded separately.
+Saved export profiles are next. Hardware support, trained
 recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
 evidence requirements.
 

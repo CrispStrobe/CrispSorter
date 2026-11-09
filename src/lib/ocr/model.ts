@@ -8,6 +8,7 @@ import { readStructureHistory, archiveReplacedStructure } from './structureHisto
 import { readPageTextDraft, pageTextDraftSourceIsCurrent, type PageTextDraft } from './pageTextDraft';
 import { getExtractionObjects, readExtractionObjects, extractionObjectFreshness } from './extractionObjects';
 import { MAX_DOCX_PAGE_POINTS, prepareOfficeExport, type OfficeExportOptions } from './officeExport';
+import { prepareWorkbookExport, type WorkbookOptions } from './workbookExport';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -69,7 +70,7 @@ export interface OcrProfile {
 }
 export interface ReviewIssue { pageId: string; regionId: string | null; reason: 'failed' | 'pending' | 'empty' | 'low-confidence' | 'unknown-confidence' | 'changed'; message: string; }
 export interface TextMatch { pageId: string; regionId: string; start: number; end: number; text: string; }
-export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; format?: string; officeOptions?: OfficeExportOptions; }
+export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; format?: string; officeOptions?: OfficeExportOptions; workbookOptions?: WorkbookOptions; }
 export interface ExportRegion {
     id: string; text: string; original_text: string;
     x: number; y: number; w: number; h: number;
@@ -92,7 +93,7 @@ export interface ExportPage {
     /** Source geometry for included figures, separate from the plain-text projection. */
     figure_regions?: ExportRegion[];
 }
-export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; officeOptions?: OfficeExportOptions; }
+export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; officeOptions?: OfficeExportOptions; workbookOptions?: WorkbookOptions; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
 export interface History { past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number; }
 
@@ -446,6 +447,23 @@ function exportRegion(r:OcrRegion):ExportRegion {
 
 /** Preflight returns no payload on error. A mixed project can never silently lose pages. */
 export function prepareExport(project: OcrProject, options: ExportOptions = {}): ExportPreflight {
+    if (options.format?.toLowerCase() === 'xlsx') {
+        const workbook = prepareWorkbookExport(project, options.pageIds, options.workbookOptions);
+        const errors = [...workbook.errors], warnings = [...workbook.warnings];
+        const sources = new Map(project.documents.map(document => [document.id, document.sourceUri]));
+        const payload = workbook.ownerPages.map((page): ExportPage => {
+            if (options.requireReviewed && !page.approved) errors.push(`${page.name}: page review is required for its selected tables.`);
+            if (!page.approved) warnings.push(`${page.name}: the source page has not been approved.`);
+            const provenance = clone(page.provenance);
+            provenance.extractionObjects = clone(getExtractionObjects(page).collection);
+            // A workbook reads saved table values, not current OCR or pixels.
+            // Only selected owners are sent, in source-page order; the explicit
+            // worksheet array separately determines tab order.
+            return { id: page.id, name: page.name, source_uri: sources.get(page.documentId), source_page: page.sourcePage,
+                approved: page.approved, provenance, image_path: page.imagePath, width: page.width, height: page.height, regions: [] };
+        });
+        return { pages: errors.length ? [] : payload, errors, warnings: [...new Set(warnings)], text: '', workbookOptions: workbook.options };
+    }
     const errors: string[] = [], warnings: string[] = [];
     const docx = options.format?.toLowerCase() === 'docx';
     const selectedIds = options.pageIds ? new Set(options.pageIds) : null;

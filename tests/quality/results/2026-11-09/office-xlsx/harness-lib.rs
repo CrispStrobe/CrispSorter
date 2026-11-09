@@ -1,0 +1,10 @@
+#[path = "/workspace/scratch/82243b18126c/CrispSorter/src-tauri/src/ocr_document.rs"]
+pub mod ocr_document;
+#[path = "/workspace/scratch/82243b18126c/CrispSorter/src-tauri/src/ocr_office.rs"]
+pub mod ocr_office;
+#[path = "/workspace/scratch/82243b18126c/CrispSorter/src-tauri/src/ocr_docx.rs"]
+pub mod ocr_docx;
+#[path = "/workspace/scratch/82243b18126c/CrispSorter/src-tauri/src/ocr_xlsx.rs"]
+pub mod ocr_xlsx;
+#[path = "/workspace/scratch/82243b18126c/CrispSorter/tools/quality/ocr_office_fixture.rs"]
+pub mod ocr_office_fixture;

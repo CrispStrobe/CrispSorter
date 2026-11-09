@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, table-continuation, office-export, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, structure, page-draft, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, extraction-objects, table-continuation, office-export, workbook-export, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -1320,6 +1320,121 @@ if (process.argv.includes('--serve')) {
             assert.equal(calls.at(-1).cpuPixelBudget, false);
         });
 
+        await test('workbook export preserves explicit sheet names, saved strings and captured request scope', 'workbook-export', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const first = initial.pages[0], second = initial.pages[1];
+            const objects = first.provenance.extractionObjects.objects;
+            const table = objects.find(object => object.name === 'Reviewed parts');
+            const blank = objects.find(object => object.name === 'Blank ledger');
+            const excluded = objects.find(object => object.name === 'Excluded ledger');
+            const energy = objects.find(object => object.name === 'Energy formula');
+            const continuation = second.provenance.extractionObjects.objects[0];
+            assert.equal(second.status, 'pending');
+            assert.equal(initial.pages[2].status, 'pending');
+            assert.equal(second.regions.length, 0);
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            const scope = page.getByRole('combobox', { name: /^Pages/ });
+            const format = page.getByRole('combobox', { name: /^Output format/ });
+            await scope.selectOption('current');
+            await format.selectOption('docx');
+            await page.locator(`[data-office-candidate][data-office-object-id="${energy.id}"]`).getByRole('checkbox').check();
+            await format.selectOption('xlsx');
+            await scope.selectOption('all');
+            const panel = page.locator('[data-workbook-export-options]');
+            await panel.waitFor();
+            const candidate = object => panel.locator(`[data-workbook-candidate][data-workbook-object-id="${object.id}"]`);
+            const sheet = object => panel.locator(`[data-workbook-sheet][data-workbook-object-id="${object.id}"]`);
+            const sheetName = object => sheet(object).getByRole('textbox', { name: /^Worksheet name for / });
+            const saveWorkbook = page.getByRole('button', { name: 'Save Excel workbook', exact: true });
+            assert.equal(await panel.locator('[data-workbook-sheet]').count(), 0);
+            assert.equal(await saveWorkbook.isDisabled(), true);
+            assert.equal(await panel.locator('[data-workbook-candidate]').count(), 4);
+            assert.equal(await candidate(excluded).getByRole('checkbox').isDisabled(), true);
+            assert.equal(await candidate(energy).count(), 0);
+            assert.equal(await panel.getByText('Vendor fields', { exact: true }).count(), 0);
+            await candidate(table).getByRole('checkbox').check();
+            await sheetName(table).fill('Reviewed parts');
+            await sheetName(table).blur();
+            // Only selected owners need approval. Pending unselected pages do
+            // not make this approved saved table depend on fresh OCR.
+            await page.getByText(/Ready to export 1 worksheet/).waitFor();
+            assert.equal(await saveWorkbook.isEnabled(), true);
+            await candidate(blank).getByRole('checkbox').check();
+            await sheetName(blank).fill('reviewed PARTS');
+            await sheetName(blank).blur();
+            await sheet(blank).getByText(/already used/).waitFor();
+            assert.equal(await saveWorkbook.isDisabled(), true);
+            const tooLong = 'X'.repeat(32);
+            await sheetName(blank).fill(tooLong);
+            await sheetName(blank).blur();
+            await sheet(blank).getByText(/at most 31/).waitFor();
+            assert.equal(await sheetName(blank).inputValue(), tooLong);
+            await sheetName(blank).fill('Blank table');
+            await sheetName(blank).blur();
+            await sheet(blank).getByText(/empty worksheet/).waitFor();
+            await candidate(continuation).getByRole('checkbox').check();
+            await sheetName(continuation).fill('Continuation');
+            await sheetName(continuation).blur();
+            assert.equal(await saveWorkbook.isDisabled(), true);
+            await page.getByRole('checkbox', { name: /^Require page approval/ }).uncheck();
+            await page.getByText(/Ready to export 3 worksheets/).waitFor();
+            await sheet(continuation).getByRole('button', { name: 'Move worksheet Continuation earlier', exact: true }).click();
+            assert.deepEqual(await panel.locator('[data-workbook-sheet]').evaluateAll(cards => cards.map(card => card.dataset.workbookObjectId)), [table.id, continuation.id, blank.id]);
+            await saveWorkbook.click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.deepEqual(request.workbookOptions, { version: 1, sheets: [
+                { pageId: first.id, objectId: table.id, sheetName: 'Reviewed parts' },
+                { pageId: second.id, objectId: continuation.id, sheetName: 'Continuation' },
+                { pageId: first.id, objectId: blank.id, sheetName: 'Blank table' },
+            ] });
+            assert.equal(request.officeOptions, undefined);
+            assert.deepEqual(request.pages.map(item => item.id), [first.id, second.id]);
+            for (const owner of request.pages) {
+                assert.deepEqual(owner.regions, []);
+                assert.equal(owner.structure, undefined);
+                assert.equal(owner.figure_regions, undefined);
+                assert.deepEqual(owner.provenance.extractionObjects, initial.pages.find(item => item.id === owner.id).provenance.extractionObjects);
+            }
+            const exportedTable = request.pages[0].provenance.extractionObjects.objects.find(object => object.id === table.id);
+            assert.equal(exportedTable.currentData.cells.find(cell => cell.row === 1 && cell.column === 0).text, '0012\n=2+2');
+            await page.locator('.status-message').filter({ hasText: /3 worksheets/ }).waitFor();
+            await page.locator('[data-office-export-warnings]').getByText(/empty worksheet/).waitFor();
+
+            await scope.selectOption('current');
+            await sheet(continuation).getByText(/outside the selected scope/).waitFor();
+            assert.equal(await saveWorkbook.isDisabled(), true);
+            await sheet(continuation).getByRole('button', { name: /from workbook$/ }).click();
+            await page.evaluate(() => { window.ocrSmoke.holdExportPick = true; });
+            await saveWorkbook.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingExportPicks === 1);
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            assert.match(await page.locator('button[aria-current="page"]').getAttribute('aria-label'), /^Page 3:/);
+            await page.evaluate(() => { window.ocrSmoke.holdExportPick = false; window.ocrSmoke.releaseExportPick(); });
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 2);
+            const frozen = await page.evaluate(() => window.ocrSmoke.exports[1]);
+            assert.deepEqual(frozen.pages.map(item => item.id), [first.id]);
+            assert.deepEqual(frozen.workbookOptions.sheets.map(item => item.objectId), [table.id, blank.id]);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+
+            await page.getByRole('button', { name: /^Page 1:/ }).click();
+            await page.setViewportSize({ width: 390, height: 844 });
+            await sheet(blank).scrollIntoViewIfNeeded();
+            const dimensions = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
+            assert.ok(dimensions.documentWidth <= dimensions.width + 2, 'Workbook controls overflow compact layout');
+            await page.screenshot({ path: path.join(output, 'ocr-workbook-export-compact.png'), fullPage: true });
+            await format.selectOption('docx');
+            assert.equal(await panel.count(), 0);
+            assert.deepEqual(await page.locator('[data-office-selection]').evaluateAll(cards => cards.map(card => card.dataset.officeObjectId)), [energy.id]);
+            await page.getByRole('button', { name: 'Save Word document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 3);
+            const word = await page.evaluate(() => window.ocrSmoke.exports[2]);
+            assert.equal(word.workbookOptions, undefined);
+            assert.deepEqual(word.officeOptions.objects, [{ pageId: first.id, objectId: energy.id, placement: 'append' }]);
+            const saved = await saveSnapshot(page);
+            assert.deepEqual(saved.pages, initial.pages);
+        });
+
         await test('Word export uses explicit object placement and scope without altering saved source evidence', 'office-export', async page => {
             const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
             const first = initial.pages[0], second = initial.pages[1];
@@ -2068,7 +2183,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png', 'ocr-table-continuation-preview.png', 'ocr-office-export-compact.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-structure-formatting.png', 'ocr-structure-links.png', 'ocr-page-draft-editor.png', 'ocr-page-draft-preview.png', 'ocr-partial-review.png', 'ocr-extraction-objects.png', 'ocr-table-repair-compact.png', 'ocr-table-continuation-preview.png', 'ocr-office-export-compact.png', 'ocr-workbook-export-compact.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

@@ -32,6 +32,8 @@ pub mod ocr_document;
 pub mod ocr_office;
 #[cfg(feature = "ocr-office")]
 pub mod ocr_docx;
+#[cfg(feature = "ocr-office")]
+pub mod ocr_xlsx;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;

@@ -250,7 +250,7 @@ pub fn ocr_workspace_capabilities() -> Value {
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
-    if cfg!(feature = "ocr-office") { formats.push("docx"); }
+    if cfg!(feature = "ocr-office") { formats.extend(["docx", "xlsx"]); }
     json!({
         "schema_version": PROJECT_VERSION,
         "ocr": native || system.available, "crispembed": native,
@@ -260,6 +260,7 @@ pub fn ocr_workspace_capabilities() -> Value {
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
         "structured_docx": cfg!(feature = "ocr-office"),
+        "structured_xlsx": cfg!(feature = "ocr-office"),
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
         // Isolated low-memory Qwen2-VL worker (see `ocr_worker::run_cpu_budget`).
         "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
@@ -1347,6 +1348,25 @@ fn export_docx(pages: &[ExportPage], options: &crate::ocr_office::OfficeOptions)
     crate::ocr_docx::render_docx(&document)
 }
 
+/// A workbook contains only saved table strings. Current page images and OCR
+/// geometry are deliberately not inputs, so historical tables remain exportable
+/// after a source image is removed or a page is waiting for recognition.
+#[cfg(feature = "ocr-office")]
+fn export_xlsx(pages: &[ExportPage], options: &crate::ocr_office::WorkbookOptions) -> Result<crate::ocr_xlsx::XlsxOutput, String> {
+    use crate::ocr_office::{OfficeSourcePage, select_workbook_tables};
+    let sources = pages.iter().map(|page| {
+        Ok(OfficeSourcePage {
+            id: page.id.as_deref().ok_or("Workbook selections require supplied stable page identities. Reopen the project and select the tables again.")?,
+            provenance: page.provenance.as_ref(), regions: vec![],
+        })
+    }).collect::<Result<Vec<_>, String>>()?;
+    let selected = select_workbook_tables(&sources, options)?;
+    let sheets = selected.into_iter().map(|sheet| crate::ocr_xlsx::XlsxSheet {
+        page_id: sheet.page_id, object_id: sheet.object_id, name: sheet.name, table: sheet.table,
+    }).collect::<Vec<_>>();
+    crate::ocr_xlsx::render_xlsx(&sheets)
+}
+
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
     if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
     if OcrOutputFormat::from_name(format).is_some_and(|format| format.needs_render_binding()) && pages.iter().any(has_shared_source_overlap) {
@@ -1386,6 +1406,8 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
 pub struct WorkspaceExportResult {
     pub saved_path: String, pub bytes: usize, pub pages: usize, pub format: String,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheets: Option<usize>,
 }
 
 #[tauri::command]
@@ -1398,30 +1420,48 @@ pub async fn ocr_workspace_export(
     overwrite: Option<bool>,
     source_uris: Option<Vec<String>>,
     office_options: Option<crate::ocr_office::OfficeOptions>,
+    workbook_options: Option<crate::ocr_office::WorkbookOptions>,
 ) -> Result<WorkspaceExportResult, String> {
     let root = workspace_root(&app)?;
     tokio::task::spawn_blocking(move || {
-        for page in &pages { managed_page(&root, &page.image_path)?; }
-        validate_export_pages(&pages)?;
-        let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
         if office_options.is_some() && format != "docx" {
             return Err("Word object placement options are only supported for DOCX export.".into());
         }
-        let (bytes, warnings) = if format == "docx" && !pdfa {
+        if workbook_options.is_some() && format != "xlsx" {
+            return Err("Workbook worksheet choices are only supported for XLSX export.".into());
+        }
+        if format != "xlsx" {
+            for page in &pages { managed_page(&root, &page.image_path)?; }
+            validate_export_pages(&pages)?;
+        } else if pages.is_empty() || pages.len() > MAX_PAGES {
+            return Err("Select saved tables from 1–10,000 source pages for this workbook.".into());
+        }
+        let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
+        let (bytes, warnings, sheets, exported_pages) = if format == "xlsx" && !pdfa {
+            #[cfg(feature = "ocr-office")]
+            {
+                let options = workbook_options.ok_or("Select at least one saved table for this workbook.")?;
+                let output = export_xlsx(&pages, &options)?;
+                let owners = options.sheets.iter().map(|sheet| sheet.page_id.as_str()).collect::<HashSet<_>>().len();
+                (output.bytes, output.warnings, Some(options.sheets.len()), owners)
+            }
+            #[cfg(not(feature = "ocr-office"))]
+            { return Err("Workbook export is unavailable in this build. Install a build with Office export support.".into()); }
+        } else if format == "docx" && !pdfa {
             #[cfg(feature = "ocr-office")]
             {
                 let output = export_docx(&pages, &office_options.unwrap_or_default())?;
-                (output.bytes, output.warnings)
+                (output.bytes, output.warnings, None, pages.len())
             }
             #[cfg(not(feature = "ocr-office"))]
             { return Err("Word export is unavailable in this build. Install a build with Office export support.".into()); }
-        } else { (export_bytes(&pages, &format, pdfa)?, vec![]) };
+        } else { (export_bytes(&pages, &format, pdfa)?, vec![], None, pages.len()) };
         if bytes.is_empty() && !["text", "txt", "plain"].contains(&format.as_str()) { return Err("The renderer produced an empty document.".into()); }
         atomic_write(&path, &bytes, overwrite.unwrap_or(false))?;
         Ok(WorkspaceExportResult {
-            saved_path: path.to_string_lossy().into_owned(), bytes: bytes.len(), pages: pages.len(),
+            saved_path: path.to_string_lossy().into_owned(), bytes: bytes.len(), pages: exported_pages,
             format: if pdfa { "pdfa".into() } else { format },
-            warnings,
+            warnings, sheets,
         })
     }).await.map_err(|e| format!("Export worker: {e}"))?
 }
@@ -1764,6 +1804,8 @@ mod tests {
         assert_eq!(formats.iter().any(|format| format == "pdf"), reviewed_pdf_available());
         assert_eq!(formats.iter().any(|format| format == "docx"), cfg!(feature = "ocr-office"));
         assert_eq!(capabilities["structured_docx"], json!(cfg!(feature = "ocr-office")));
+        assert_eq!(formats.iter().any(|format| format == "xlsx"), cfg!(feature = "ocr-office"));
+        assert_eq!(capabilities["structured_xlsx"], json!(cfg!(feature = "ocr-office")));
         if !reviewed_pdf_available() { assert!(capabilities["pdf_export_reason"].as_str().is_some()); }
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "reviewed")];
@@ -1866,6 +1908,60 @@ mod tests {
         let plain = String::from_utf8(office_part(&unselected.bytes, "word/document.xml")).unwrap();
         assert!(plain.contains("OCR table passage omitted"));
         assert!(!plain.contains("0012 =SUM(A1)"));
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn xlsx_adapter_exports_saved_tables_without_current_image_or_ocr_dependencies() {
+        use crate::ocr_office::{WorkbookOptions, WorkbookSheetSelection};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "UNSELECTED_OCR_PASSAGE_MUST_NOT_EXPORT");
+        page.id = Some("page".into());
+        // The current image/geometry are not workbook input. Historical capture
+        // metadata is validated, but its path is never read either.
+        page.image_path = root.path().join("missing-current-image.png").to_string_lossy().into_owned();
+        page.width = 0; page.height = 0; page.page_width_points = Some(9_000.0);
+        let table = |text: &str| json!({"version":1,"rows":1,"columns":1,"cells":[{"id":"cell","row":0,"column":0,"rowSpan":1,"columnSpan":1,"text":text,"header":true}]});
+        let object = |id: &str, current: Value| json!({
+            "version":1,"id":id,"kind":"table","name":id,"createdAt":"2026-11-09T00:00:00.000Z","updatedAt":"2026-11-09T00:00:00.000Z",
+            "excluded":false,"review":"corrected","captures":[{"id":"capture","pageId":"older-page","documentId":"document","width":8,"height":4,
+                "imagePath":"/never-read/missing-source.png","regionId":null,"bounds":null,"method":"pixels","text":null}],
+            "originalOutputKind":"model","originalOutput":"ORIGINAL_MODEL_OUTPUT_MUST_NOT_EXPORT","originalData":table("ORIGINAL_CELL_MUST_NOT_EXPORT"),"currentData":current
+        });
+        page.provenance = Some(json!({"extractionObjects":{"version":1,"objects":[
+            object("literal",table(" 0012 =2+2 & < > ")),object("blank",json!({"version":1,"rows":0,"columns":0,"cells":[]}))
+        ]}}));
+        let options=WorkbookOptions{version:1,sheets:vec![
+            WorkbookSheetSelection{page_id:"page".into(),object_id:"blank".into(),sheet_name:"Empty capture".into()},
+            WorkbookSheetSelection{page_id:"page".into(),object_id:"literal".into(),sheet_name:"Measurements".into()},
+        ]};
+        let output=export_xlsx(&[page],&options).unwrap();
+        let workbook=String::from_utf8(office_part(&output.bytes,"xl/workbook.xml")).unwrap();
+        assert!(workbook.find("Empty capture").unwrap()<workbook.find("Measurements").unwrap());
+        let blank=String::from_utf8(office_part(&output.bytes,"xl/worksheets/sheet1.xml")).unwrap();
+        let literal=String::from_utf8(office_part(&output.bytes,"xl/worksheets/sheet2.xml")).unwrap();
+        assert!(!blank.contains("<c "));
+        assert!(literal.contains(" 0012 =2+2 &amp; &lt; &gt; "));
+        assert!(literal.contains("t=\"inlineStr\""));
+        assert!(!literal.contains("<f>") && !literal.contains("MUST_NOT_EXPORT"));
+        assert!(!output.warnings.is_empty());
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn xlsx_adapter_requires_real_selected_page_identity_and_saved_table_data() {
+        use crate::ocr_office::{WorkbookOptions, WorkbookSheetSelection};
+        let root=tempfile::tempdir().unwrap();
+        let mut page=export_page(root.path(),"Source text");
+        let mut options=WorkbookOptions{version:1,sheets:vec![WorkbookSheetSelection{
+            page_id:"legacy-page-1".into(),object_id:"table".into(),sheet_name:"Values".into(),
+        }]};
+        assert!(export_xlsx(std::slice::from_ref(&page),&options).unwrap_err().contains("supplied stable page identities"));
+        page.id=Some("real-page".into());
+        assert!(export_xlsx(std::slice::from_ref(&page),&options).unwrap_err().contains("scope"));
+        options.sheets[0].page_id="real-page".into();
+        assert!(export_xlsx(std::slice::from_ref(&page),&options).unwrap_err().contains("table data is missing"));
+        assert!(export_xlsx(&[page],&WorkbookOptions::default()).unwrap_err().contains("1–512"));
     }
 
     #[test]

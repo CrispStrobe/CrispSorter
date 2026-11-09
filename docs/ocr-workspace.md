@@ -590,6 +590,7 @@ source evidence.
 | HTML | Escaped corrected text grouped by page | All builds |
 | JSON | Structured page/region data and review evidence | All builds |
 | DOCX | Reviewed headings, styles, lists, columns and figures; explicitly chosen editable tables and literal LaTeX | `ocr-office` builds, included in desktop |
+| XLSX | One explicitly named worksheet per selected saved table, with literal strings and merged cells | `ocr-office` builds, included in desktop |
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
 | Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
@@ -658,9 +659,57 @@ The current writer has explicit limits:
 
 Review notes appear before export and native writer warnings remain visible
 after a successful save. The actual production writer is exercised separately
-from the browser adapter by the [native package qualification harness](../tests/ocr-workspace/README.md#native-word-package-qualification).
+from the browser adapter by the [native package qualification harness](../tests/ocr-workspace/README.md#native-office-package-qualification).
 Its package/XML checks, independent reader rendering, installed-app integration,
 and accessibility/schema qualification are recorded as separate results.
+
+### Saved tables as an Excel workbook
+
+Choose **Excel workbook**, then select the saved tables to include. Each selected
+table becomes one worksheet. Tables from multiple pages can share a workbook,
+and the order in the worksheet list determines the tab order. No table is selected
+automatically; formulas, field sets, and OCR passage text are outside this export.
+Excluded tables must be included again in Extract before selection.
+
+Give each sheet an explicit name and use **Move worksheet earlier/later** to
+change its order. A starter name appears only after selecting a table. Entered
+names are preserved exactly and are never silently shortened or repaired.
+Names must be unique without regard to case and fit within 31 UTF-16 units
+(some emoji count as two units). Names cannot contain `/ \\ ? * : [ ]`, control
+characters, or an apostrophe at either end; **History** is reserved. Correct an
+invalid name in the list before saving.
+
+The page scope controls which table owners can be selected. A previously selected
+table stays visible when its owner moves outside that scope, and saving is
+blocked until the choice or scope is corrected. **Require page approval** applies
+only to owners of the selected tables. Pending OCR on unrelated pages does not
+block a workbook. Saved table strings also remain exportable when a table's
+current page image has changed or its OCR is pending; the historical source
+notice identifies that condition. Workbook export does not open current or
+captured image files.
+
+Every cell is written as literal text. Leading zeroes, date-like identifiers,
+decimal-looking values, and strings beginning with `=`, `+`, `-` or `@` remain
+strings rather than executable formulas or inferred numbers. Tabs, line breaks,
+emoji, and leading/trailing spaces are preserved. Header cells are bold and
+explicit merged rectangles remain merged. A merged value appears only at its
+anchor. A 0 by 0 table produces a named empty worksheet and a visible notice.
+
+The workbook supports the table editor's bounded grids, including more than
+Word's 63 columns. Excel-specific cell limits are checked before export:
+32,767 UTF-16 units and 253 LF line breaks per cell. The exporter rejects
+unsupported control characters and oversized selections with an actionable
+message; it does not truncate or drop values. Source objects, raw model output,
+original cell data, and captured evidence remain unchanged in the project.
+
+Carriage returns and literal Office escape-shaped text use the spreadsheet
+format's escaped-string representation, including in sheet names. The native
+qualification separately checks exact decoding of these values. Some readers,
+including the qualified openpyxl 3.1.5 read path, leave these escapes encoded;
+the receipt lists those reader limitations explicitly. This does not establish
+full Excel rendering or standards conformance. Word and workbook selection
+options are independent, and the final export result reports worksheet count
+with any native warnings.
 
 The reviewed PDF renderer rejects right-to-left text and directional controls
 with an actionable error. Its current text mapping cannot preserve their logical
@@ -668,8 +717,10 @@ order consistently across PDF readers. Such documents can still be reviewed and
 exported as text, JSON, hOCR, or ALTO without publishing a reversed searchable
 layer. Full bidirectional PDF support needs a separately validated renderer.
 
-All exports validate dimensions, finite coordinates, nonempty page selection,
-and asset availability. Existing output files require explicit replacement.
+Export validation follows the chosen format. Formats using source images check
+their dimensions, coordinates and availability. Workbook export validates the
+explicit selected table owners, names, cell data and merged grids without
+requiring current OCR or image files. Existing output files require explicit replacement.
 Original source files and workspace assets remain protected even when replacing
 an existing export. Writes are staged atomically; a failed render does not
 truncate an existing file.

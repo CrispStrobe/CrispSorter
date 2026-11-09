@@ -1,0 +1,232 @@
+{
+  "fixtures": [
+    {
+      "expected": {
+        "body_paragraphs": [
+          "Maintenance checklist",
+          "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+          "7. Retain literal marker",
+          "Nested item",
+          "Right column paragraph",
+          "Source header 0012",
+          "[1] Keep the original note.",
+          "Source footer"
+        ],
+        "column_breaks": 1,
+        "column_counts": [
+          2,
+          1
+        ],
+        "forbidden_text": [],
+        "images": [],
+        "lists": [
+          {
+            "format": "decimal",
+            "level": 0,
+            "start": 7,
+            "text": "7. Retain literal marker"
+          },
+          {
+            "format": "bullet",
+            "level": 1,
+            "text": "Nested item"
+          }
+        ],
+        "marks": [
+          {
+            "bold": true,
+            "paragraph": "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+            "text": "Equipment"
+          },
+          {
+            "italic": true,
+            "paragraph": "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+            "text": "safety"
+          },
+          {
+            "paragraph": "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+            "text": "0012",
+            "underline": true
+          }
+        ],
+        "minimum_page_breaks": 1,
+        "native_footnotes": false,
+        "paragraph_styles": [
+          {
+            "style": "Heading2",
+            "text": "Maintenance checklist"
+          },
+          {
+            "style": "FootnoteText",
+            "text": "[1] Keep the original note."
+          }
+        ],
+        "plain_fragments": [
+          {
+            "paragraph": "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+            "text": "😀 "
+          },
+          {
+            "paragraph": "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+            "text": " & "
+          }
+        ],
+        "table_grids": [],
+        "warning_substrings": [
+          "note",
+          "header/footer",
+          "literal bullets/numbers"
+        ]
+      },
+      "file": "semantic-text.docx",
+      "name": "semantic-text",
+      "warnings": [
+        "Footnote text and exact note markers remain in body reading order. Automatic Word footnotes/custom markers are not generated.",
+        "Lists use Word numbering or bullets. Existing literal bullets/numbers in reviewed text are preserved and may appear beside the generated markers.",
+        "Page header/footer regions are preserved in body reading order, not converted into repeating Word header/footer parts."
+      ]
+    },
+    {
+      "expected": {
+        "body_paragraphs": [
+          "  A 😀 B\tC\nD   ",
+          "After blank source page"
+        ],
+        "column_breaks": 0,
+        "column_counts": [
+          1,
+          1,
+          1
+        ],
+        "forbidden_text": [],
+        "images": [],
+        "lists": [],
+        "marks": [],
+        "minimum_page_breaks": 2,
+        "native_footnotes": false,
+        "paragraph_styles": [],
+        "plain_fragments": [],
+        "table_grids": [],
+        "warning_substrings": [
+          "CRLF"
+        ]
+      },
+      "file": "whitespace-blank-pages.docx",
+      "name": "whitespace-blank-pages",
+      "warnings": [
+        "CRLF and lone CR characters are represented as single Word line breaks. Their visible lines are preserved; original newline bytes remain in the project and JSON."
+      ]
+    },
+    {
+      "expected": {
+        "body_paragraphs": [
+          "Reviewed selected objects",
+          "Figure 1. Captured color test",
+          "\\frac{0012}{03} + x_{LOT-003}"
+        ],
+        "column_breaks": 0,
+        "column_counts": [
+          1
+        ],
+        "forbidden_text": [
+          "ORIGINAL_MODEL_CELL_MUST_NOT_EXPORT",
+          "UNSELECTED_TABLE_MUST_NOT_EXPORT",
+          "RAW_MODEL_OUTPUT_MUST_NOT_EXPORT",
+          "ORIGINAL_FORMULA_MUST_NOT_EXPORT",
+          "RAW_FORMULA_MUST_NOT_EXPORT",
+          "OCR_TABLE_TEXT_MUST_BE_REPLACED"
+        ],
+        "images": [
+          {
+            "height": 4,
+            "width": 8
+          }
+        ],
+        "lists": [],
+        "marks": [],
+        "minimum_page_breaks": 0,
+        "native_footnotes": false,
+        "paragraph_styles": [
+          {
+            "style": "Caption",
+            "text": "Figure 1. Captured color test"
+          }
+        ],
+        "plain_fragments": [],
+        "table_grids": [
+          {
+            "cells": [
+              {
+                "column": 0,
+                "columnSpan": 2,
+                "header": true,
+                "id": "merged",
+                "row": 0,
+                "rowSpan": 2,
+                "text": "Valve\n0012"
+              },
+              {
+                "column": 2,
+                "columnSpan": 1,
+                "header": true,
+                "id": "quantity",
+                "row": 0,
+                "rowSpan": 1,
+                "text": "Qty"
+              },
+              {
+                "column": 2,
+                "columnSpan": 1,
+                "id": "literal-formula",
+                "row": 1,
+                "rowSpan": 1,
+                "text": "=2+2"
+              },
+              {
+                "column": 0,
+                "columnSpan": 1,
+                "id": "leading-zero",
+                "row": 2,
+                "rowSpan": 1,
+                "text": "03"
+              },
+              {
+                "column": 1,
+                "columnSpan": 1,
+                "id": "identifier",
+                "row": 2,
+                "rowSpan": 1,
+                "text": "LOT-003"
+              },
+              {
+                "column": 2,
+                "columnSpan": 1,
+                "id": "xml-literal",
+                "row": 2,
+                "rowSpan": 1,
+                "text": " & < > "
+              }
+            ],
+            "columns": 3,
+            "rows": 3
+          }
+        ],
+        "warning_substrings": [
+          "repeated",
+          "LaTeX",
+          "alternative text",
+          "cross-reference"
+        ]
+      },
+      "file": "selected-table-figure-formula.docx",
+      "name": "selected-table-figure-formula",
+      "warnings": [
+        "Table header cells are bold. Automatic repeated table header rows are not supported by this DOCX writer.",
+        "Figure alternative text and decorative metadata remain in the project/JSON; docx-rs 0.4.20 does not write those accessibility attributes.",
+        "Caption text and source order are preserved; caption-to-figure/table links are not converted into Word cross-reference fields.",
+        "Selected formula objects are exported as literal editable LaTeX; they are not converted into Word equation objects (OMML)."
+      ]
+    }
+  ],
+  "version": 1
+}

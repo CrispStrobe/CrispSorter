@@ -1,0 +1,90 @@
+[
+  {
+    "file": "reviewed-workbook.pdf",
+    "pageCount": 18,
+    "pages": [
+      {
+        "page": 1,
+        "text": "Code\nLiteral formulas\nNotes\nBlank\n0012\n=2+2\n03-04\n+SUM(A1:A2)\n  A & <B>  \n@value\n-12.5\n1,250.00\nTRUE\n3.14e5\n😀line\nnext\n"
+      },
+      {
+        "page": 2,
+        "text": "Qty\n=2+2\n03\nLOT-003\nValve\n0012\n"
+      },
+      {
+        "page": 3,
+        "text": "ID0001\nID0002\nID0003\nID0004\n"
+      },
+      {
+        "page": 4,
+        "text": "ID0005\nID0006\nID0007\nID0008\n"
+      },
+      {
+        "page": 5,
+        "text": "ID0009\nID0010\nID0011\nID0012\n"
+      },
+      {
+        "page": 6,
+        "text": "ID0013\nID0014\nID0015\nID0016\n"
+      },
+      {
+        "page": 7,
+        "text": "ID0017\nID0018\nID0019\nID0020\n"
+      },
+      {
+        "page": 8,
+        "text": "ID0021\nID0022\nID0023\nID0024\n"
+      },
+      {
+        "page": 9,
+        "text": "ID0025\nID0026\nID0027\nID0028\n"
+      },
+      {
+        "page": 10,
+        "text": "ID0029\nID0030\nID0031\nID0032\n"
+      },
+      {
+        "page": 11,
+        "text": "ID0033\nID0034\nID0035\nID0036\n"
+      },
+      {
+        "page": 12,
+        "text": "ID0037\nID0038\nID0039\nID0040\n"
+      },
+      {
+        "page": 13,
+        "text": "ID0041\nID0042\nID0043\nID0044\n"
+      },
+      {
+        "page": 14,
+        "text": "ID0045\nID0046\nID0047\nID0048\n"
+      },
+      {
+        "page": 15,
+        "text": "ID0049\nID0050\nID0051\nID0052\n"
+      },
+      {
+        "page": 16,
+        "text": "ID0053\nID0054\nID0055\nID0056\n"
+      },
+      {
+        "page": 17,
+        "text": "ID0057\nID0058\nID0059\nID0060\n"
+      },
+      {
+        "page": 18,
+        "text": "ID0061\nID0062\nID0063\nID0064\n"
+      }
+    ]
+  },
+  {
+    "file": "escaped-and-blank-workbook.pdf",
+    "pageCount": 1,
+    "pages": [
+      {
+        "page": 1,
+        "text": "Actual CR\nleftright\nActual CRLF\nLiteral escape\n_x000D_\n_x005F_\nAdjacent literals\n_x000D__x005F_\nMixed\nLF and tab\nEmpty string\na\nb\nLiteral underscore \nescape\nreal\n literal _x000D_ and 😀\n"
+      }
+    ]
+  }
+]

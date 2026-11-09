@@ -11,6 +11,7 @@ import type { SaveReceipt } from "./autosave";
 import { getSetting, saveSetting } from "../store";
 import { readProofreadingData, type ProofreadingData } from "./proofreadingData";
 import type { OfficeExportOptions } from "./officeExport";
+import type { WorkbookOptions } from "./workbookExport";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -24,6 +25,8 @@ export interface WorkspaceCapabilities {
   math: boolean;
   /** Native editable Word structure is available in this build. */
   structured_docx?: boolean;
+  /** Saved tables can be exported as literal editable workbook cells. */
+  structured_xlsx?: boolean;
   /** Isolated low-memory Qwen2-VL worker is available in this build. */
   cpu_budget?: boolean;
   cpu_budget_pixels?: number;
@@ -81,6 +84,7 @@ export interface ExportResult {
   pages: number;
   format: string;
   warnings?: string[];
+  sheets?: number;
 }
 export interface ExportRequest {
   outputPath: string;
@@ -90,6 +94,7 @@ export interface ExportRequest {
   overwrite: boolean;
   sourceUris: string[];
   officeOptions?: OfficeExportOptions;
+  workbookOptions?: WorkbookOptions;
 }
 
 /** Explicit adapter makes the complete review workflow testable without model downloads. */

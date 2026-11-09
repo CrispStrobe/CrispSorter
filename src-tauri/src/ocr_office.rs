@@ -11,6 +11,8 @@ const MAX_COLLECTION_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RAW_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TEXT: usize = 1_000_000;
 pub const MAX_OFFICE_OBJECTS: usize = 512;
+pub const MAX_WORKBOOK_GRID_POSITIONS: usize = 1_000_000;
+pub const MAX_WORKBOOK_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -53,6 +55,23 @@ pub struct OfficeObjectSelection {
 pub struct OfficeOptions { pub version: u32, pub objects: Vec<OfficeObjectSelection> }
 impl Default for OfficeOptions {
     fn default() -> Self { Self { version: 1, objects: vec![] } }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkbookSheetSelection {
+    pub page_id: String, pub object_id: String, pub sheet_name: String,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkbookOptions { pub version: u32, pub sheets: Vec<WorkbookSheetSelection> }
+impl Default for WorkbookOptions {
+    fn default() -> Self { Self { version: 1, sheets: vec![] } }
+}
+/// Resolved table strings only. No current or historical image is needed for a
+/// workbook, and tab order is the explicit selection order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OfficeWorkbookSheet {
+    pub page_id: String, pub object_id: String, pub name: String, pub table: OfficeTableData,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum OfficePlacement { Append, ReplaceRegion { region_id: String } }
@@ -478,6 +497,62 @@ pub fn select_office_objects(pages: &[OfficeSourcePage<'_>], options: &OfficeOpt
     Ok(result)
 }
 
+/// Resolve an explicit table-only workbook without inspecting current page
+/// pixels or requiring current OCR passages. The writer applies Excel-specific
+/// name/cell limits; this shared boundary applies provenance and scope rules.
+pub fn select_workbook_tables(pages: &[OfficeSourcePage<'_>], options: &WorkbookOptions) -> Result<Vec<OfficeWorkbookSheet>, String> {
+    if options.version != 1 || options.sheets.is_empty() || options.sheets.len() > MAX_OFFICE_OBJECTS {
+        return Err(error("workbook options must use version 1 and select 1–512 saved tables"));
+    }
+    if pages.len() > 10_000 { return Err(error("workbook source scope exceeds 10,000 pages")); }
+    let mut page_ids = HashSet::new();
+    for page in pages {
+        if !valid_id(page.id) || !page_ids.insert(page.id) { return Err(error("workbook page identities are missing or repeated")); }
+    }
+    let mut collections: HashMap<&str, Vec<ValidatedExtractionObject>> = HashMap::new();
+    let mut selected = HashSet::new();
+    let mut result = Vec::with_capacity(options.sheets.len());
+    let mut grid_positions = 0usize;
+    let mut text_bytes = 0usize;
+    for choice in &options.sheets {
+        if !valid_id(&choice.page_id) || !valid_id(&choice.object_id) || !selected.insert((choice.page_id.as_str(), choice.object_id.as_str())) {
+            return Err(error("workbook table identities are invalid or repeated"));
+        }
+        if !valid_text(&choice.sheet_name, 1_000) { return Err(error("worksheet name is invalid or exceeds the input bound")); }
+        validate_office_text(&choice.sheet_name)?;
+        let page = pages.iter().find(|page| page.id == choice.page_id)
+            .ok_or_else(|| error("a selected table belongs to a page outside this workbook scope"))?;
+        if !collections.contains_key(page.id) {
+            let value = page.provenance.and_then(|provenance| provenance.get("extractionObjects"))
+                .ok_or_else(|| error("selected workbook table data is missing; reopen the selection"))?;
+            let requested: HashSet<_> = options.sheets.iter().filter(|choice| choice.page_id == page.id)
+                .map(|choice| choice.object_id.as_str()).collect();
+            let objects = read_extraction_collection(value)?.into_iter()
+                .filter(|object| requested.contains(object.id.as_str())).collect();
+            collections.insert(page.id, objects);
+        }
+        let object = collections[page.id].iter().find(|object| object.id == choice.object_id)
+            .ok_or_else(|| error("selected workbook table no longer exists"))?;
+        if object.excluded { return Err(error("an excluded table cannot be selected for workbook export")); }
+        let Some(OfficeObjectData::Table(table)) = &object.data else {
+            return Err(error("workbook worksheets require saved tables; formulas and field sets are not tables"));
+        };
+        grid_positions = grid_positions.saturating_add(table.rows * table.columns);
+        if grid_positions > MAX_WORKBOOK_GRID_POSITIONS {
+            return Err(error("selected tables exceed 1,000,000 total grid positions; export fewer tables"));
+        }
+        for cell in &table.cells {
+            validate_office_text(&cell.text)?;
+            text_bytes = text_bytes.saturating_add(cell.text.len());
+            if text_bytes > MAX_WORKBOOK_TEXT_BYTES {
+                return Err(error("selected workbook cell text exceeds 64 MiB; export fewer tables"));
+            }
+        }
+        result.push(OfficeWorkbookSheet { page_id: page.id.to_owned(), object_id: object.id.clone(), name: choice.sheet_name.clone(), table: table.clone() });
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +568,74 @@ mod tests {
     fn collection(entry: Value) -> Value { json!({"version":1,"objects":[entry]}) }
     fn selection(placement: &str, region: Option<&str>) -> OfficeOptions {
         OfficeOptions { version: 1, objects: vec![OfficeObjectSelection { page_id: "page".into(), object_id: "table".into(), placement: placement.into(), region_id: region.map(str::to_owned) }] }
+    }
+    fn workbook_selection(page_id: &str, object_id: &str, sheet_name: &str) -> WorkbookSheetSelection {
+        WorkbookSheetSelection { page_id: page_id.into(), object_id: object_id.into(), sheet_name: sheet_name.into() }
+    }
+    #[test]
+    fn workbook_selects_only_current_literal_tables_in_explicit_tab_order() {
+        let literal = " 0012\t=SUM(A1)\r\n_x000D_ 😀 & < > ";
+        let first = json!({"extractionObjects":collection(object(literal))});
+        let mut empty = object("old");
+        empty["currentData"] = json!({"version":1,"rows":0,"columns":0,"cells":[]});
+        let second = json!({"extractionObjects":collection(empty)});
+        let malformed_unselected = json!({"extractionObjects":{"version":999}});
+        let pages = [OfficeSourcePage { id:"page", provenance:Some(&first), regions:vec![] },
+            OfficeSourcePage { id:"empty-page", provenance:Some(&second), regions:vec![] },
+            OfficeSourcePage { id:"unselected-page", provenance:Some(&malformed_unselected), regions:vec![] }];
+        let options = WorkbookOptions { version:1, sheets:vec![
+            workbook_selection("empty-page","table","Empty capture"), workbook_selection("page","table","Measurements"),
+        ] };
+        let result = select_workbook_tables(&pages, &options).unwrap();
+        assert_eq!(result.iter().map(|sheet| sheet.name.as_str()).collect::<Vec<_>>(), ["Empty capture","Measurements"]);
+        assert_eq!((result[0].table.rows,result[0].table.columns,result[0].table.cells.len()),(0,0,0));
+        assert_eq!(result[1].table.cells[0].text,literal);
+        assert_eq!(result[1].page_id,"page");
+        assert_eq!(result[1].object_id,"table");
+        assert_eq!(first["extractionObjects"]["objects"][0]["originalData"]["cells"][0]["text"],"original");
+    }
+    #[test]
+    fn workbook_retains_tables_wider_than_word_without_inventing_source_cells() {
+        let mut entry = object("original");
+        entry["currentData"] = json!({"version":1,"rows":1,"columns":64,"cells":(0..64).map(|column|
+            json!({"id":format!("cell-{column}"),"row":0,"column":column,"rowSpan":1,"columnSpan":1,"text":format!("{column:04}")})).collect::<Vec<_>>()});
+        let provenance=json!({"extractionObjects":collection(entry)});
+        let pages=[OfficeSourcePage{id:"page",provenance:Some(&provenance),regions:vec![]}];
+        let options=WorkbookOptions{version:1,sheets:vec![workbook_selection("page","table","Wide")]};
+        let result=select_workbook_tables(&pages,&options).unwrap();
+        assert_eq!(result[0].table.columns,64);
+        assert_eq!(result[0].table.cells[63].text,"0063");
+    }
+    #[test]
+    fn workbook_rejects_scope_exclusion_non_tables_and_bad_identities() {
+        let options=WorkbookOptions{version:1,sheets:vec![workbook_selection("page","table","Values")]};
+        assert!(select_workbook_tables(&[],&options).unwrap_err().contains("scope"));
+        let mut excluded=object("value");excluded["excluded"]=json!(true);
+        let provenance=json!({"extractionObjects":collection(excluded)});
+        let pages=[OfficeSourcePage{id:"page",provenance:Some(&provenance),regions:vec![]}];
+        assert!(select_workbook_tables(&pages,&options).unwrap_err().contains("excluded"));
+        let mut formula=object("value");formula["kind"]=json!("formula");
+        formula["originalData"]=json!({"version":1,"latex":"x"});formula["currentData"]=json!({"version":1,"latex":"y"});
+        let provenance=json!({"extractionObjects":collection(formula)});
+        let pages=[OfficeSourcePage{id:"page",provenance:Some(&provenance),regions:vec![]}];
+        assert!(select_workbook_tables(&pages,&options).unwrap_err().contains("formulas and field sets"));
+        let missing=[OfficeSourcePage{id:"",provenance:None,regions:vec![]}];
+        assert!(select_workbook_tables(&missing,&options).unwrap_err().contains("identities"));
+        let duplicated=[OfficeSourcePage{id:"page",provenance:None,regions:vec![]},OfficeSourcePage{id:"page",provenance:None,regions:vec![]}];
+        assert!(select_workbook_tables(&duplicated,&options).unwrap_err().contains("identities"));
+    }
+    #[test]
+    fn workbook_requires_versioned_bounded_explicit_choices() {
+        assert!(serde_json::from_value::<WorkbookOptions>(json!({"version":1,"sheets":[],"objects":[]})).is_err());
+        assert!(serde_json::from_value::<WorkbookOptions>(json!({"version":1,"sheets":[{"pageId":"page","objectId":"table","sheetName":"Values","placement":"append"}]})).is_err());
+        let provenance=json!({"extractionObjects":collection(object("literal"))});
+        let pages=[OfficeSourcePage{id:"page",provenance:Some(&provenance),regions:vec![]}];
+        let choice=workbook_selection("page","table","Values");
+        for options in [WorkbookOptions::default(),WorkbookOptions{version:2,sheets:vec![choice.clone()]},
+            WorkbookOptions{version:1,sheets:vec![choice.clone();513]}] {
+            assert!(select_workbook_tables(&pages,&options).unwrap_err().contains("1–512"));
+        }
+        assert!(select_workbook_tables(&pages,&WorkbookOptions{version:1,sheets:vec![choice.clone(),choice]}).unwrap_err().contains("repeated"));
     }
     #[test]
     fn exports_literal_current_values_without_reading_capture_paths() {

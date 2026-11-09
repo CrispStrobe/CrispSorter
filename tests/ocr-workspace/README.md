@@ -45,7 +45,7 @@ The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `
 `?scenario=text-repair`, `?scenario=structure`, `?scenario=page-draft`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`, `?scenario=extraction-objects`,
-`?scenario=table-continuation`, `?scenario=office-export`,
+`?scenario=table-continuation`, `?scenario=office-export`, `?scenario=workbook-export`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
@@ -114,6 +114,14 @@ export warnings. This fixture validates choices, placement, scope, immutable
 source data, and warning presentation; its synthetic `exportDocument` adapter
 does not create or qualify a Word package. The native harness below does.
 
+The workbook-export scenario adds a corrected literal `0012\n=2+2` cell and a
+table repaired to 0 by 0. Another saved table belongs to a page whose current
+image/OCR has been replaced and is pending; a third pending page has no selected
+table. This distinguishes selected-owner approval from unrelated OCR readiness.
+The export picker can be held during page navigation to verify a frozen request.
+The browser adapter reports synthetic worksheet counts and warnings; only the
+production native harness generates the actual spreadsheets.
+
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
 `diagnostics.effective_zone` identifies the exact crop. The zone-empty scenario
@@ -130,6 +138,14 @@ released, allowing page navigation before the result arrives.
   choices never modify source text, extraction history, or approval. Native
   warnings remain visible after export, and JSON requests do not inherit Word
   placement options. Compact placement controls remain within the viewport.
+- Workbook export selects saved tables explicitly, preserves entered worksheet
+  names without truncation, blocks case-insensitive duplicates, and retains
+  invalid choices when the page scope changes. Worksheet order is independent
+  of page order. Only selected owner pages enter the payload or approval gate;
+  pending unrelated pages and historical source images do not prevent saved
+  table export. The held picker keeps the captured options/pages after navigation.
+  Empty tables remain named blank worksheets, literal strings survive the
+  request, and workbook choices stay independent of Word placement choices.
 - Enabling versioned structure retains legacy passage text, geometry, source IDs,
   and original OCR evidence. Roles, heading/list properties, alignment, and breaks
   save separately from the text.
@@ -305,25 +321,29 @@ navigates to Review explicitly. It does not infer a browser pass. The original
 [report and screenshots](https://github.com/CrispStrobe/CrispSorter/actions/runs/42701880471/artifacts/13713598457)
 retain the failed-run evidence.
 
-The OCR-05c continuation-join checkpoint passed **421 unit tests in 45 files**,
-including 12 new join-core cases and four lifecycle cases, and the Svelte
-typecheck with **0 errors and the same 54 existing warnings**. Its final browser
-harness passes JavaScript syntax and whitespace checks.
+The OCR-05c continuation-join checkpoint `e112040` passed **421 unit tests in
+45 files**, including 12 new join-core cases and four lifecycle cases, and the
+Svelte typecheck with **0 errors and the same 54 existing warnings**. Its
+[browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42705066725/job/129464958437)
+completed with **35 flows passed and 2 failed**. The new continuation-join flow
+passed. The two failures were the same missing Review-tab navigation and compact
+Save accessible name already corrected in `b10cf4`; this earlier run does not
+qualify the correction or constitute a complete browser pass.
 
-The harness now contains **38 browser flows**. The corrected extraction-object,
-table-repair, continuation-join, and Word export flows require a successful browser run against
+The harness now contains **39 browser flows**. The corrected extraction-object,
+table-repair, Word export, and workbook export flows require a successful browser run against
 their own source revision before they can be reported as passing. No browser-pass
 evidence has yet been recorded for the hotfix or OCR-05b revisions. These tests validate interaction and integration
 contracts; they do not measure recognition accuracy or substitute for native
 engine, PDF conformance, or installed application testing.
 
-## Native Word package qualification
+## Native Office package qualification
 
 Run the standalone production-module harness from the repository root with
 Python 3.11 or later and the Rust toolchain on `PATH`:
 
 ```sh
-python tools/quality/check_ocr_office.py --output target/ocr-office-qualification
+python tools/quality/check_ocr_office.py --output target/ocr-office-qualification --require-openpyxl
 ```
 
 The output directory must be new or empty so one run cannot inherit another's
@@ -335,7 +355,7 @@ first docx-rs/image compilation and generation. Artifacts are uploaded even afte
 a failed command.
 
 The temporary Rust crate imports the actual `ocr_document.rs`, `ocr_office.rs`,
-and `ocr_docx.rs` modules. It runs each module's native tests and then invokes
+`ocr_docx.rs`, and `ocr_xlsx.rs` modules. It runs each module's native tests and then invokes
 the production boundary and writer from `ocr_office_fixture.rs`. It pins the
 reviewed docx-rs 0.4.20 API and the application's image/ZIP/Unicode dependencies,
 seeds its lock from the repository lock, and verifies that resolved registry
@@ -351,12 +371,38 @@ replacement, and appended literal LaTeX. Raw, original, and unselected extractio
 sentinels must be absent. Expected limitation warnings are authored independently
 from the writer's returned warnings.
 
+Two native XLSX workbooks add five explicitly named worksheets. The ordinary
+workbook preserves the requested tab order, merged rectangles, leading zeros,
+formula/date/number-looking strings, empty literal anchors, tabs, LF, emoji, and
+XML-special characters. Its 64-column worksheet proves the Word-specific column
+limit is not applied to spreadsheets. The second workbook contains actual CR and
+CRLF, literal Office escape-shaped strings and a matching worksheet name, plus
+a named 0 by 0 table. Both use the real strict `select_workbook_tables` boundary
+before the production renderer; historical image paths are never opened.
+
 Python's ZIP and XML readers independently verify package CRCs, unique safe
 paths, relationship targets, defined style and numbering references, exact text
 and range formatting, section boundaries, complete table spans with empty
 vertical continuations, and image dimensions/references. ZIP directory entries
 are not counted as images. These are focused package checks, not an OOXML schema
 validator or a rendered-layout result.
+
+The separate XLSX validator resolves workbook/sheet relationships, rejects
+duplicate IDs and unexpected formulas, hyperlinks, external links or shared
+strings, and checks every selected anchor, literal text type, header style and
+merged rectangle. Its one-pass Office Xstring decoder preserves literal
+`_xHHHH_` text without recursively interpreting the escaped underscore. Exact
+blank anchors are distinct from omitted positions covered by merged cells.
+
+For the independent spreadsheet reader, install `openpyxl==3.1.5` and
+`et-xmlfile==2.0.0`; the focused workflow pins both. The harness reads the original
+native packages without rewriting them. Ordinary strings, cell types, tab order,
+and merges must match exactly. This reader leaves Xstring escapes encoded in
+some cell values and sheet names. Those exact observed differences are listed
+as `known_xstring_exceptions`, with a `passed_with_known_limitations` gate;
+they are not counted as exact reader round trips. Standards-correct package
+encoding is checked independently. `--require-openpyxl` fails if the reader is
+missing; without it the reader gate is explicitly `not_run`.
 
 `receipt.json` records the actual checkout SHA, changed producer files and their
 hashes, PR head/workflow SHA when available, tool versions, commands, timing,
@@ -377,3 +423,18 @@ collision and corrected rerun are retained separately. The full frontend suite
 passed 433 tests in 46 files with 0 Svelte errors and 54 existing warnings.
 The 38-flow browser run and complete workspace adapter execution remain pending
 their own CI result; this local module run does not substitute for either.
+
+The [dated OCR-06b run](../quality/results/2026-11-09/office-xlsx/README.md)
+passed **39 native module tests** (2 document, 13 Office boundary, 11 DOCX and
+13 XLSX), with all **112 registry package tuples** matching the production lock.
+It generated the three DOCX files and two XLSX files with five worksheets; both
+independent package/XML gates passed. The original native XLSX files were read
+with **openpyxl 3.1.5**: **96 literal cells matched exactly**, while **7 known
+Xstring exceptions** remained explicit (six cell values and one sheet name).
+The ordinary three-sheet workbook passed its reader comparisons; the escape
+workbook is recorded with known reader limitations, not as a complete exact
+round trip. The full frontend suite passed **449 tests in 47 files**, with
+**0 Svelte errors and 54 existing warnings**. The 39-flow browser suite and full
+application/paired workspace-adapter CI still require their own execution
+results. Package checks and the openpyxl read do not qualify those gates or
+establish Excel rendering, OOXML schema validation, or accessibility conformance.

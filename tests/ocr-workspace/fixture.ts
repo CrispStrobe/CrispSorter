@@ -1,8 +1,8 @@
-import { addDocument, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
+import { addDocument, applyPageImage, applyRecognition, approvePage, createProject, type OcrProject, type RecognitionResult } from '../../src/lib/ocr/model';
 import type { ExportRequest, ProjectEnvelope, WorkspaceClient } from '../../src/lib/ocr/client';
 import { emptyProofreadingData, type ProofreadingData } from '../../src/lib/ocr/proofreadingData';
 import { initializePageStructure, setBlockProperties, setCaptionAnchor, setFootnoteReference, setInlineMarks } from '../../src/lib/ocr/structure';
-import { appendExtractionObject, captureExtractionRequest, updateExtractionObject } from '../../src/lib/ocr/extractionObjects';
+import { appendExtractionObject, captureExtractionRequest, editExtractionCell, getExtractionObjects, replaceExtractionTableData, updateExtractionObject } from '../../src/lib/ocr/extractionObjects';
 
 const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
@@ -137,11 +137,14 @@ export interface SmokeControl {
     pendingExtractions: number;
     holdSaves: boolean;
     pendingSaves: number;
+    holdExportPick: boolean;
+    pendingExportPicks: number;
     failPages: number[];
     released: string[];
     releaseNext():boolean;
     releaseExtraction():boolean;
     releaseSave():boolean;
+    releaseExportPick():boolean;
     writes: Array<{outputPath:string;text:string;sourceUris:string[]}>;
     lastSaved: OcrProject | null;
     userProofreading: ProofreadingData;
@@ -157,6 +160,7 @@ declare global {
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
     const nativeWord=scenario==='native-word'||scenario.startsWith('proofreading');
     const structureFixture=scenario==='structure'||scenario==='page-draft';
+    const officeFixture=scenario==='office-export'||scenario==='workbook-export';
     let project=addDocument(createProject('Northstar · quarterly statement'),{
         source_uri:sourceUri,name:'Northstar service statement.pdf',
         pages:[1,2,3].map(page=>({image_path:pagePath(page),width:1000,height:1400})),
@@ -224,7 +228,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
                 char_conf_unit:'unicode_codepoint',char_conf_aligned:true};
             });
         }
-        if(scenario==='extraction-objects'||scenario==='office-export') {
+        if(scenario==='extraction-objects'||officeFixture) {
             // Multiple independent object sources exercise persistence and
             // editing contracts, not native table/formula model accuracy.
             result.engine='fixture-verified-character-adapter';
@@ -251,7 +255,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             const marker=text.indexOf('[1]');
             project=setFootnoteReference(project,page.id,blocks[1].id,{start:marker,end:marker+3},blocks[7].id);
         }
-        if(scenario==='office-export') {
+        if(officeFixture) {
             // Real model helpers seed explicit choices. The browser validates
             // the request/UI contract; the Rust quality harness generates DOCX.
             const first=project.pages[0];
@@ -272,6 +276,20 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             project=appendExtractionObject(project,continuation,'table',copy(continuationTables[1].output),{name:'Continuation ledger'});
             project=approvePage(project,first.id);
             project=approvePage(project,second.id);
+            if(scenario==='workbook-export') {
+                const reviewed=getExtractionObjects(project.pages[0]).collection.objects.find(object=>object.name==='Reviewed parts');
+                if(!reviewed||reviewed.kind!=='table')throw new Error('Workbook fixture table is missing');
+                const value=reviewed.currentData.cells.find(cell=>cell.row===1&&cell.column===0)!;
+                project=editExtractionCell(project,first.id,reviewed.id,value.id,'0012\n=2+2');
+                const blank=captureExtractionRequest(project,first.id,first.regions[1].id,'pixels');
+                project=appendExtractionObject(project,blank,'table',copy(extractionTables[0]),{name:'Blank ledger'});
+                project=replaceExtractionTableData(project,first.id,blank.objectId,{version:1,rows:0,columns:0,cells:[]});
+                project=approvePage(project,first.id);
+                // Saved table values remain exportable after current OCR/pixels
+                // are invalidated; unselected pending pages are not blockers.
+                project=applyPageImage(project,second.id,{image_path:'/fixtures/unavailable-current-page-2.png',width:1000,height:1400},'fixture-replaced-source');
+                project=applyPageImage(project,project.pages[2].id,{image_path:'/fixtures/unavailable-current-page-3.png',width:1000,height:1400},'fixture-replaced-source');
+            }
         }
     }
     const savedById=new Map<string,ProjectEnvelope>();
@@ -288,6 +306,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
     const pending:Array<{path:string;release:()=>void}>=[];
     const pendingExtractions:Array<()=>void>=[];
     const pendingSaves:Array<()=>void>=[];
+    const pendingExportPicks:Array<()=>void>=[];
     const userProofreading=emptyProofreadingData();
     if(scenario==='proofreading-save-failure'||scenario==='proofreading-load-failure') {
         userProofreading.entries.push({id:'fixture-existing-user-term',text:'RetainedTerm',language:'und',kind:'word',caseSensitive:true});
@@ -296,10 +315,11 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         initialProject:copy(project),
         calls:[],saves:[],exports:[],recognitions:[],activeNative:0,maxNative:0,
         holdRecognition:scenario==='queue-control'||scenario==='zone-delay',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
-        holdSaves:false,pendingSaves:0,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
+        holdSaves:false,pendingSaves:0,holdExportPick:false,pendingExportPicks:0,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         releaseNext(){const item=pending.shift();if(!item)return false;control.released.push(item.path);item.release();return true;},
         releaseExtraction(){const release=pendingExtractions.shift();if(!release)return false;control.pendingExtractions=pendingExtractions.length;release();return true;},
         releaseSave(){const release=pendingSaves.shift();if(!release)return false;control.pendingSaves=pendingSaves.length;release();return true;},
+        releaseExportPick(){const release=pendingExportPicks.shift();if(!release)return false;control.pendingExportPicks=pendingExportPicks.length;release();return true;},
         userProofreading:copy(userProofreading),userProofreadingSaves:[],
         failUserProofreadingLoads:scenario==='proofreading-load-failure'?1:0,
         failUserProofreadingSaves:scenario==='proofreading-save-failure'?1:0,
@@ -312,7 +332,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         });
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(nativeWord?['system_tesseract']:[])],...(nativeWord?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,structured_docx:true,cpu_budget:true,cpu_budget_pixels:262144};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf','text','json','html','markdown','hocr','alto','docx','xlsx'],engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2',...(nativeWord?['system_tesseract']:[])],...(nativeWord?{system_tesseract:{available:true,version:'synthetic fixture',languages:['eng']}}:{}),layout:true,kie:true,table:true,math:true,structured_docx:true,structured_xlsx:true,cpu_budget:true,cpu_budget_pixels:262144};},
         async list(){note('list');return [...savedById.values()].map(saved=>({id:saved.project.id,name:saved.project.name,updated_at:saved.saved_at,page_count:saved.project.pages.length,revision:saved.revision}));},
         async load(projectId){note('load',{projectId});return copy(savedById.get(projectId??project.id)??null);},
         async save(snapshot,expectedRevision){
@@ -359,14 +379,14 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             };
             return {image_path:path+'-prepared',width:1000,height:1400};
         },
-        async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format,...(scenario==='office-export'&&request.format==='docx'?{warnings:['Selected formula objects are exported as literal editable LaTeX; they are not converted into Word equation objects (OMML).','Table header cells are bold. Automatic repeated table header rows are not supported by this DOCX writer.']}:{} )};},
+        async exportDocument(request){note('exportDocument',request);control.exports.push(copy(request));return {saved_path:request.outputPath,bytes:1024,pages:request.pages.length,format:request.format,...(scenario==='office-export'&&request.format==='docx'?{warnings:['Selected formula objects are exported as literal editable LaTeX; they are not converted into Word equation objects (OMML).','Table header cells are bold. Automatic repeated table header rows are not supported by this DOCX writer.']}:{}),...(request.format==='xlsx'?{sheets:request.workbookOptions?.sheets.length??0,warnings:['Blank ledger creates an empty worksheet; saved table strings are retained.']}:{} )};},
         async extractFields(text,labels,threshold){note('extractFields',{text,labels,threshold});await waitForExtraction();return [{label:'vendor',value:'Northstar Supply Co.',score:0.97},{label:'total',value:'EUR 1,250.00',score:0.95}];},
         async layoutFields(pagePath,labels,threshold){note('layoutFields',{pagePath,labels,threshold});await waitForExtraction();return [{label:'invoice number',value:'NS-2026-1042',score:0.94}];},
         async table(path){note('table',{path});const index=control.calls.filter(call=>call.method==='table').length-1;await waitForExtraction();if(scenario==='extraction-objects')return copy(extractionTables[index%extractionTables.length]);if(scenario==='table-continuation')return copy((continuationTables[pageNumber(path)-1]??continuationTables[0]).output);return {html:'<table><tr><th>Item</th><th>Value</th></tr><tr><td><img src="bad" onerror="window.__ocrInjected=true">Secure cell</td><td><a href="javascript:window.__ocrInjected=true">EUR 1,250.00</a></td></tr></table><script>window.__ocrInjected=true</script>',rows:2,cols:2};},
         async math(path){note('math',{path});const index=control.calls.filter(call=>call.method==='math').length-1;await waitForExtraction();if(scenario==='extraction-objects')return extractionFormulas[index%extractionFormulas.length];return String.raw`E = mc^2`;},
         async reindex(sourceUri,text){note('reindex',{sourceUri,text});return {documents:1};},
         async pickDocuments(){note('pickDocuments');return ['/fixtures/added-scan.png'];},
-        async pickExport(name,extension){note('pickExport',{name,extension});return `/fixtures/${name}.${extension}`;},
+        async pickExport(name,extension){note('pickExport',{name,extension});if(control.holdExportPick)await new Promise<void>(release=>{pendingExportPicks.push(release);control.pendingExportPicks=pendingExportPicks.length;});return `/fixtures/${name}.${extension}`;},
         async writeText(outputPath,text,sourceUris){const request={outputPath,text,sourceUris};note('writeText',request);control.writes.push(copy(request));return {saved_path:outputPath,bytes:new TextEncoder().encode(text).length};},
         async loadUserProofreading(){
             note('loadUserProofreading');
@@ -378,7 +398,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
             control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
         },
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1,(scenario==='extraction-objects'||scenario==='office-export')&&page===1,(scenario==='table-continuation'&&page<=3)||(scenario==='office-export'&&page===2)))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1,structureFixture&&page===1,(scenario==='extraction-objects'||officeFixture)&&page===1,(scenario==='table-continuation'&&page<=3)||(officeFixture&&page===2)))}`;},
     };
     return {client,initialProject:null};
 }
