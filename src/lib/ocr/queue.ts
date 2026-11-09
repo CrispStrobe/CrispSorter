@@ -10,6 +10,11 @@ export interface QueueCallbacks<R> {
     onStart?: (job: QueueJob<R>) => void | Promise<void>;
     onResult?: (job: QueueJob<R>, result: R) => void | Promise<void>;
     onError?: (job: QueueJob<R>, error: unknown) => void | Promise<void>;
+    /** A lifecycle checkpoint failed, not the recognition operation. The run
+     * stops with its current/pending IDs retained; a saved batch decides which
+     * pages need retry after the writer recovers. Never replace a good result
+     * with a recognition error merely because saving it failed. */
+    onCheckpointError?: (error: unknown, job: QueueJob<R>, stage: 'start' | 'result' | 'error') => void | Promise<void>;
     /** Checked immediately before starting a job and again before applying results. */
     isCurrent?: (job: QueueJob<R>) => boolean;
     /** Synchronous gate; false prevents an entire run from starting. */
@@ -113,6 +118,16 @@ export class SequentialQueue<R> {
         this.publish();
     }
 
+    private async checkpoint(job: QueueJob<R>, stage: 'start' | 'result' | 'error', action: () => void | Promise<void>): Promise<boolean> {
+        try { await action(); return true; }
+        catch (error) {
+            // A failed notification must not unlock a second native invocation
+            // or allow the next page to overtake an uncommitted checkpoint.
+            try { await this.callbacks.onCheckpointError?.(error, job, stage); } catch { /* the run still stops */ }
+            return false;
+        }
+    }
+
     private async run(token: number): Promise<void> {
         let terminal: QueuePhase = 'completed';
         while (true) {
@@ -123,29 +138,28 @@ export class SequentialQueue<R> {
             if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
             this.value = { ...this.value, currentId: job.id, remainingIds: this.jobs.slice(this.next + 1).map((item) => item.id) };
             this.publish();
-            let stale = false;
+            if (!await this.checkpoint(job, 'start', () => this.callbacks.onStart?.(job))) { terminal = 'cancelled'; break; }
+            if (!this.isCurrent(token, job) || this.value.phase === 'cancelling') { terminal = 'cancelled'; break; }
+            // A user may pause or stop while the start checkpoint is saving.
+            // Honor that request before entering the expensive native call.
+            if (this.value.phase === 'pausing') { terminal = 'paused'; break; }
+            let result: R;
             try {
-                await this.callbacks.onStart?.(job);
-                if (!this.isCurrent(token, job)) { stale = true; }
-                else {
-                    const result = await job.run();
-                    if (!this.isCurrent(token, job)) stale = true;
-                    else {
-                        await this.callbacks.onResult?.(job, result);
-                        if (!this.isCurrent(token, job)) stale = true;
-                        else this.value = { ...this.value, completed: this.value.completed + 1 };
-                    }
-                }
+                result = await job.run();
             } catch (error) {
-                if (!this.isCurrent(token, job)) stale = true;
-                else {
-                    this.value = { ...this.value, failed: this.value.failed + 1 };
-                    // An error handler failure cannot strand all subsequent pages.
-                    try { await this.callbacks.onError?.(job, error); } catch { /* original job remains failed */ }
-                    if (!this.isCurrent(token, job)) stale = true;
-                }
+                if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
+                this.value = { ...this.value, failed: this.value.failed + 1 };
+                if (!await this.checkpoint(job, 'error', () => this.callbacks.onError?.(job, error))) { terminal = 'cancelled'; break; }
+                if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
+                this.next += 1;
+                this.value = { ...this.value, currentId: null, remainingIds: this.jobs.slice(this.next).map((item) => item.id) };
+                this.publish();
+                continue;
             }
-            if (stale) { terminal = 'cancelled'; break; }
+            if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
+            if (!await this.checkpoint(job, 'result', () => this.callbacks.onResult?.(job, result))) { terminal = 'cancelled'; break; }
+            if (!this.isCurrent(token, job)) { terminal = 'cancelled'; break; }
+            this.value = { ...this.value, completed: this.value.completed + 1 };
             this.next += 1;
             this.value = { ...this.value, currentId: null, remainingIds: this.jobs.slice(this.next).map((item) => item.id) };
             this.publish();
