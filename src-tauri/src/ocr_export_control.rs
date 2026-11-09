@@ -12,6 +12,8 @@ pub(super) const CANCELLED: &str = "OCR_EXPORT_CANCELLED";
 const RUNNING: u8 = 0;
 const STOPPED: u8 = 1;
 const COMMITTING: u8 = 2;
+const REQUEST_HISTORY_LIMIT: usize = 64;
+const REQUEST_HISTORY_TTL: Duration = Duration::from_secs(300);
 
 fn cancelled() -> io::Error { io::Error::new(io::ErrorKind::Interrupted, CANCELLED) }
 
@@ -45,14 +47,23 @@ impl ExportControl {
 struct Registry {
     active: Option<(String, ExportControl)>,
     pending: VecDeque<(String, Instant)>,
+    completed: VecDeque<(String, Instant)>,
 }
 
 impl Registry {
+    fn expire_history(&mut self) {
+        self.pending.retain(|(_, started)| started.elapsed() < REQUEST_HISTORY_TTL);
+        self.completed.retain(|(_, finished)| finished.elapsed() < REQUEST_HISTORY_TTL);
+    }
+
     fn begin(&mut self, id: &str) -> Result<ExportControl, String> {
+        self.expire_history();
+        if self.completed.iter().any(|(completed, _)| completed == id) {
+            return Err("This export request has already finished. Start a new export with a new request ID.".into());
+        }
         if self.active.is_some() {
             return Err("Another document is exporting. Wait for it to finish or cancel it first.".into());
         }
-        self.pending.retain(|(_, started)| started.elapsed() < Duration::from_secs(300));
         let control = ExportControl::default();
         if let Some(index) = self.pending.iter().position(|(pending, _)| pending == id) {
             self.pending.remove(index);
@@ -66,16 +77,27 @@ impl Registry {
         if let Some((_, control)) = self.active.as_ref().filter(|(active, _)| active == id) {
             return control.cancel();
         }
+        self.expire_history();
+        // A completed worker may still have an IPC response in flight. Its
+        // late stop must not become a before-start stop for a future job.
+        if self.completed.iter().any(|(completed, _)| completed == id) { return false; }
         // A stop can reach IPC before its export. Keep a bounded, expiring
         // tombstone so that ordering does not lose the user's cancellation.
-        self.pending.retain(|(pending, started)| pending != id && started.elapsed() < Duration::from_secs(300));
-        while self.pending.len() >= 64 { self.pending.pop_front(); }
+        self.pending.retain(|(pending, _)| pending != id);
+        while self.pending.len() >= REQUEST_HISTORY_LIMIT { self.pending.pop_front(); }
         self.pending.push_back((id.to_owned(), Instant::now()));
         true
     }
 
     fn finish(&mut self, id: &str) {
-        if self.active.as_ref().is_some_and(|(active, _)| active == id) { self.active = None; }
+        if self.active.as_ref().is_some_and(|(active, _)| active == id) {
+            self.active = None;
+            self.expire_history();
+            self.pending.retain(|(pending, _)| pending != id);
+            self.completed.retain(|(completed, _)| completed != id);
+            while self.completed.len() >= REQUEST_HISTORY_LIMIT { self.completed.pop_front(); }
+            self.completed.push_back((id.to_owned(), Instant::now()));
+        }
     }
 }
 
@@ -196,6 +218,72 @@ mod tests {
         assert!(!saving.cancel());
         assert!(saving.check().is_ok());
         assert!(saving.begin_commit().is_err());
+    }
+
+    #[test]
+    fn late_stop_after_finished_publication_is_refused_and_cannot_reuse_its_id() {
+        let mut registry = Registry::default();
+        let published = registry.begin("published").unwrap();
+        published.begin_commit().unwrap();
+        assert!(!registry.cancel("published"));
+        registry.finish("published");
+        assert!(!registry.cancel("published"));
+        assert!(!registry.cancel("published"));
+        assert!(registry.pending.is_empty());
+        assert!(registry.begin("published").is_err());
+
+        let next = registry.begin("next").unwrap();
+        assert!(!registry.cancel("published"));
+        registry.finish("published");
+        assert!(registry.active.as_ref().is_some_and(|(id, _)| id == "next"));
+        assert!(next.check().is_ok());
+        next.begin_commit().unwrap();
+    }
+
+    #[test]
+    fn before_start_stops_survive_but_finished_cancelled_or_failed_jobs_stay_terminal() {
+        let mut registry = Registry::default();
+        assert!(registry.cancel("before-start"));
+        let stopped = registry.begin("before-start").unwrap();
+        assert_eq!(stopped.check().unwrap_err().to_string(), CANCELLED);
+        registry.finish("before-start");
+        assert!(!registry.cancel("before-start"));
+        assert!(registry.begin("before-start").is_err());
+
+        let failed = registry.begin("failed-before-commit").unwrap();
+        assert!(failed.check().is_ok());
+        // A validation or writer error finishes without entering publication.
+        registry.finish("failed-before-commit");
+        assert!(!registry.cancel("failed-before-commit"));
+        assert!(registry.begin("failed-before-commit").is_err());
+        assert!(registry.pending.is_empty());
+        assert!(registry.begin("fresh-attempt").unwrap().check().is_ok());
+    }
+
+    #[test]
+    fn completed_ids_are_bounded_and_expire_without_extending_on_late_stops() {
+        let mut registry = Registry::default();
+        for index in 0..100 {
+            let id = index.to_string();
+            registry.begin(&id).unwrap().begin_commit().unwrap();
+            registry.finish(&id);
+        }
+        assert_eq!(registry.completed.len(), REQUEST_HISTORY_LIMIT);
+        let finished = registry.completed.back().unwrap().1;
+        assert!(!registry.cancel("99"));
+        assert_eq!(registry.completed.back().unwrap().1, finished);
+        assert_eq!(registry.completed.len(), REQUEST_HISTORY_LIMIT);
+        assert!(registry.begin("99").is_err());
+
+        // An evicted ID is outside the retained history; a new ID remains the
+        // caller's normal choice. Verify both eviction and time expiry bounds.
+        assert!(registry.begin("0").unwrap().check().is_ok());
+        registry.finish("0");
+        assert_eq!(registry.completed.len(), REQUEST_HISTORY_LIMIT);
+        registry.completed.push_back(("expired".into(), Instant::now() - Duration::from_secs(301)));
+        assert!(registry.begin("expired").unwrap().check().is_ok());
+        assert_eq!(registry.completed.len(), REQUEST_HISTORY_LIMIT);
+        assert!(registry.cancel("expired"));
     }
 
     #[test]
