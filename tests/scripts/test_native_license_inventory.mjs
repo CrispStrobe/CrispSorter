@@ -45,6 +45,10 @@ test('native license inventory follows the resolved app graph and retains SPDX a
     const alias = path.join(f.root, 'project-alias');
     symlinkSync(f.project, alias, 'dir');
     assert.deepEqual(loadBackendMetadata(f.filename, alias, 'aarch64-linux-android', 'ocr-mobile').entries, entries);
+    const mobileFeatures = 'ocr-mobile,tauri/custom-protocol';
+    writeFileSync(f.filename, JSON.stringify(snapshot(f.metadata, f.project, 'aarch64-linux-android', mobileFeatures, 'cargo test-fixture')));
+    assert.deepEqual(loadBackendMetadata(f.filename, alias, 'aarch64-linux-android', 'tauri/custom-protocol,ocr-mobile').entries, entries);
+    assert.throws(() => loadBackendMetadata(f.filename, alias, 'aarch64-linux-android', 'ocr-mobile'));
   } finally { f.clean(); }
 });
 
