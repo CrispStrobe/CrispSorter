@@ -7,6 +7,8 @@ on:
     paths:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_document_import.rs
+      - src-tauri/src/ocr_atomic_output.rs
+      - src-tauri/src/ocr_asset_store.rs
       - tests/fixtures/mobile-documents/**
       - src-tauri/src/ocr_photo.rs
       - src-tauri/src/model_provisioning.rs
@@ -29,6 +31,8 @@ on:
     paths:
       - src-tauri/src/ocr_workspace.rs
       - src-tauri/src/ocr_document_import.rs
+      - src-tauri/src/ocr_atomic_output.rs
+      - src-tauri/src/ocr_asset_store.rs
       - tests/fixtures/mobile-documents/**
       - src-tauri/src/ocr_photo.rs
       - src-tauri/src/model_provisioning.rs
