@@ -13,6 +13,12 @@ the committed `Cargo.lock` without installing another scanner. The metadata
 snapshot records the source commit, lock and manifest hashes, Cargo version,
 target, features, and the complete metadata digest.
 
+The mobile profile includes `tauri/custom-protocol` as well as `ocr-mobile`:
+the pinned Tauri CLI 2.10.1 adds that dependency feature in its
+[packaged build options](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.10.1/crates/tauri-cli/src/interface/rust.rs).
+The direct Cargo desktop gate uses `desktop,ocr-workspace`. The application's
+default feature list is empty in both cases.
+
 The inventory starts at the actual `src-tauri/Cargo.toml` application package and
 follows its resolved normal and build dependencies. Test-only and disconnected
 workspace/target packages are excluded. CrispEmbed, its bindings, ORT, and its

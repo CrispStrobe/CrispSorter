@@ -1,0 +1,38 @@
+{
+  "artifact_id": 13680572109,
+  "artifact_bytes": 137552791,
+  "artifact_sha256": "32dbd5b35d3ee43e065332409eb5df314ddd1aa265070923941b97ccf21e4e34",
+  "zip_crc_checked": true,
+  "members": [
+    {
+      "path": "ocr-mobile-runtime/runtime-build.json",
+      "bytes": 270,
+      "compressed_bytes": 194,
+      "sha256": "f21466a9edc58f39760ba06d999967a1afdf7a4a5a209b423f956120064659f5"
+    },
+    {
+      "path": "ocr-mobile-ort/ort-runtime.json",
+      "bytes": 2969,
+      "compressed_bytes": 1251,
+      "sha256": "5ff52261374bf3ab0de55536b459d59486534ec2221d848956a128edff6ba440"
+    },
+    {
+      "path": "mobile-ort-probe",
+      "bytes": 1111224,
+      "compressed_bytes": 311342,
+      "sha256": "1382700b6ce7f818baadf721ea2a5eb65b3817ee7d3a6c83ea5f01a73a8cd257"
+    },
+    {
+      "path": "ocr-mobile-inputs/inputs.json",
+      "bytes": 7208,
+      "compressed_bytes": 2241,
+      "sha256": "d750f4a4740dda0c1578c07575b24e4e3648b30d65df3c65bfa4b4a95c1ba521"
+    },
+    {
+      "path": "ocr-mobile-app/CrispSorter-ocr.apk",
+      "bytes": 480126508,
+      "compressed_bytes": 137236987,
+      "sha256": "d0132b290d6cfaca099cf4f65e2b5fafa3c23590449552340bb18d58f24e81cb"
+    }
+  ]
+}

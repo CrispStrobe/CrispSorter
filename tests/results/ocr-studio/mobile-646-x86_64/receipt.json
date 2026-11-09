@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "kind": "audited-mobile-build-with-replayed-static-inspection",
+  "audit_utc": "2026-11-09T14:16:23.825587+00:00",
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388",
+  "job_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/job/129170291516",
+  "sorter_commit": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "crispembed_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+  "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "target": "x86_64-linux-android",
+  "profile": "debug, ocr-mobile",
+  "hosted_result": {
+    "conclusion": "failure",
+    "native_runtime_build": "passed",
+    "application_compile_and_link": "passed",
+    "apk_packaging": "passed",
+    "apk_zipalign_16k": "passed",
+    "build_receipt": "failed: APK native library exceeds the evidence size bound",
+    "installed_or_executed": false,
+    "native_probe_execution": "skipped",
+    "app_command_and_webview_execution": "skipped",
+    "cache_on_failure": false,
+    "backend_license_inventory": {
+      "frontend": 19,
+      "backend": 0,
+      "reason": "Optional cargo-license executable was absent; the old generator continued."
+    }
+  },
+  "original_failure": {
+    "member": "lib/x86_64/libtauri_app_lib.so",
+    "bytes": 324170112,
+    "old_member_bound_bytes": 268435456,
+    "classification": "Inspection harness bound rejected a successfully built debug application; not a compiler or native runtime link failure."
+  },
+  "artifact": {
+    "id": 13680572109,
+    "name": "ocr-mobile-android-x86_64",
+    "bytes": 137552791,
+    "sha256": "32dbd5b35d3ee43e065332409eb5df314ddd1aa265070923941b97ccf21e4e34",
+    "downloaded_digest_and_zip_crc_verified": true,
+    "apk_bytes": 480126508,
+    "apk_sha256": "d0132b290d6cfaca099cf4f65e2b5fafa3c23590449552340bb18d58f24e81cb",
+    "aggregate_uncompressed_apk_bytes": 488505115
+  },
+  "inspection_replay": {
+    "result": "passed",
+    "identity": "android-identity-replay.json",
+    "fix_commit": "176d4f30aab672086d6a1a847398e2971a7ab5df",
+    "helper_git_blob": "bde45670730c6e7ccf3f1f2b1ead7ffe6b7ea5f3",
+    "helper_sha256": "f67a3d4586522fc08404aecdf0ab507d5d55c52c857d7cc2737090b822b19b77",
+    "native_library_hashes_match_build_and_official_ort_pins": true,
+    "all_packaged_native_load_alignments": 16384,
+    "dynamic_library_closure": "The actual DT_NEEDED entries name only the two packaged runtimes and Android system libraries.",
+    "scope": "Static inspection only. Original runtime bytes were recovered from the APK only after exact hash equality with the independently retained source-build receipt. No native code executed."
+  },
+  "limitations": [
+    "The hosted job remains failed; the separate local replay does not rewrite that result.",
+    "The emulator install, native inference, real app command, German/two-column quality, provider UI and export gates were skipped after the inspection failure.",
+    "The archive inspector process memory measurements do not describe application memory or performance.",
+    "This debug APK is not a release package size qualification.",
+    "The final integrated source needs its own corrected receipt and actual target execution gates."
+  ]
+}

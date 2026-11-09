@@ -56,7 +56,7 @@ export function snapshot(metadata, project, target, features, cargoVersion) {
   project = realpathSync(project);
   assert(/^[A-Za-z0-9_-]+$/.test(target), 'A specific Cargo target is required.');
   const selectedFeatures = featureList(features);
-  assert(selectedFeatures.length && selectedFeatures.every(x => /^[A-Za-z0-9_-]+$/.test(x)), 'Select explicit native application features.');
+  assert(selectedFeatures.length && selectedFeatures.every(x => /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)?$/.test(x)), 'Select explicit native application features.');
   const entries = backendEntries(metadata, project);
   return { schema_version: 1, kind: 'locked-native-license-metadata',
     source_commit: gitHead(project), cargo_lock_sha256: sha256(readFileSync(path.join(project, 'Cargo.lock'))),

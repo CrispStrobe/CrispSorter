@@ -144,7 +144,8 @@ jobs:
       IPHONEOS_DEPLOYMENT_TARGET: '16.0'
       LICENSES_REQUIRE: '1'
       LICENSES_CARGO_TARGET: ${{ matrix.rust }}
-      LICENSES_CARGO_FEATURES: ocr-mobile
+      # The pinned Tauri CLI adds tauri/custom-protocol for packaged mobile builds.
+      LICENSES_CARGO_FEATURES: ocr-mobile,tauri/custom-protocol
       LICENSES_CARGO_METADATA: ${{ runner.temp }}/ocr-mobile-licenses/cargo-metadata.json
     steps:
       - uses: actions/checkout@v4
