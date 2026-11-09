@@ -78,6 +78,17 @@ peaks; `VmHWM` reports the process RSS high-water mark. The bounded repeat case
 alternates two synthetic rasters and durably saves each recognition result. Its
 page count is not a diverse-corpus or large-document capacity claim.
 
+The defined native quality cases add German diacritics and an English page with
+two columns under a spanning heading. Their source spec, rendered bytes, font,
+installed model and application/native commits are recorded. The German model
+adds 513,952 pinned bytes; the column case uses native connected components
+without another layout model. A 0.25 Unicode CER ceiling is supplemented by
+required accented words and observed column geometry, so a tolerant text score
+cannot hide lost diacritics or interleaved columns. Exact native results are
+saved and reloaded without test-side text repair. These checks remain defined
+until an actual application execution receipt passes; even then they cover
+only the named synthetic cases.
+
 No connected Android tools/device or Apple toolchain/device was available in
 the recovery workspace when this protocol was added. The protocol itself is
 not an execution receipt. On iOS, use a normally provisioned device build and

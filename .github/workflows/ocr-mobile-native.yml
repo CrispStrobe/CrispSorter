@@ -14,6 +14,7 @@ on:
       - 'scripts/prepare_ocr_cargo_env.py'
       - 'scripts/mobile_ocr_webview_smoke.mjs'
       - 'scripts/mobile_ocr_probe_utils.mjs'
+      - 'scripts/mobile_ocr_quality.mjs'
       - 'scripts/mobile_document_picker.py'
       - 'scripts/ocr_mobile_build_receipt.py'
       - 'scripts/mobile_simulator_smoke.py'
@@ -92,7 +93,8 @@ jobs:
           assert (source / 'add_model.h').read_text() == fixture['generated_header']()
           PY
           node --check scripts/mobile_ocr_webview_smoke.mjs
-          node --test tests/scripts/test_mobile_ocr_probe_utils.mjs
+          node --check scripts/mobile_ocr_quality.mjs
+          node --test tests/scripts/test_mobile_ocr_*.mjs
           bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
