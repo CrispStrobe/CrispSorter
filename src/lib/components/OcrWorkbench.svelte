@@ -2120,6 +2120,7 @@
     </div>
     <div
       class="save-state"
+      data-save-state={visibleSaveStatus.state}
       class:save-error={visibleSaveStatus.state === "error"}
       title={visibleSaveStatus.error ??
         "Project, corrections, and vocabulary are saved on this device"}
@@ -2154,7 +2155,7 @@
         ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
       ><button class="button subtle" onclick={newProject} disabled={locked}
         ><Plus size={15} /> New</button
-      ><button class="button subtle" onclick={flush} disabled={booting}
+      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save" title="Save project"
         ><Save size={15} /><span class="optional-label">Save</span></button
       >
     </div>

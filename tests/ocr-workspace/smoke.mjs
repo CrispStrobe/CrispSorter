@@ -126,7 +126,7 @@ if (process.argv.includes('--serve')) {
         }
         async function saveSnapshot(page) {
             await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.locator('.save-state').getByText('All changes saved', { exact: true }).waitFor();
+            await page.waitForFunction(() => document.querySelector('.save-state')?.getAttribute('data-save-state') === 'saved');
             await page.getByText('Project saved', { exact: true }).waitFor();
             return page.evaluate(() => window.ocrSmoke.lastSaved ?? window.ocrSmoke.initialProject);
         }
@@ -1540,6 +1540,7 @@ if (process.argv.includes('--serve')) {
                 assert.deepEqual(reviewedObjects[index].captures, originalObjects[index].captures);
             }
             assert.deepEqual(reviewed.pages[0].regions, sourcePage.regions);
+            await page.getByRole('tab', { name: 'Review', exact: true }).click();
             await page.getByRole('button', { name: 'Approve page', exact: true }).click();
             await page.getByRole('tab', { name: 'Export', exact: true }).click();
             await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');

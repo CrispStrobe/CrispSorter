@@ -277,10 +277,18 @@ existing warnings**. Script syntax and whitespace checks passed. Local Chromium
 still cannot create its required Unix socket; no interaction pass is claimed
 from that launch attempt.
 
-The OCR-05b table-repair checkpoint passed **405 unit tests in 43 files**, including
-23 new operation cases, and the Svelte typecheck with **0 errors and the same 54
-existing warnings**. The browser harness passes the JavaScript syntax check;
-its new interaction has not yet run in CI.
+The OCR-05b table-repair checkpoint `691be05` passed **405 unit tests in 43 files**,
+including 23 new operation cases, and the Svelte typecheck with **0 errors and the
+same 54 existing warnings**, both locally and in CI. Its
+[browser job](https://github.com/CrispStrobe/CrispSorter/actions/runs/42701880471/job/129452159224)
+passed **34 interactions and failed two**. The lifecycle test had not switched
+from Extract to Review before approving the page. The compact repair test exposed
+a Save button whose hidden label removed its accessible name; its status wait
+also assumed the full-width status text was visible. The correction gives Save a
+stable accessible name, exposes the actual save-state value for the harness, and
+navigates to Review explicitly. It does not infer a browser pass. The original
+[report and screenshots](https://github.com/CrispStrobe/CrispSorter/actions/runs/42701880471/artifacts/13713598457)
+retain the failed-run evidence.
 
 The OCR-05c continuation-join checkpoint passed **421 unit tests in 45 files**,
 including 12 new join-core cases and four lifecycle cases, and the Svelte
