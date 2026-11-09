@@ -95,9 +95,9 @@ mod mobile {
     use std::collections::{HashMap, HashSet};
     use std::io::{Read, Write};
     use std::sync::{Mutex, OnceLock};
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
     #[cfg(feature = "ocr-mobile")]
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     const MAX_MODEL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
     const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -168,6 +168,9 @@ mod mobile {
             || name.chars().any(|value| value.is_control() || matches!(value, '/' | '\\' | ':' | '\0'))
             || Path::new(name).components().count() != 1 {
             return Err("The model registry contains an unsafe artifact filename.".into());
+        }
+        if file.url.is_empty() {
+            return Err(format!("No download is registered for {}. Select an existing local GGUF file or choose a downloadable model.", file.filename));
         }
         let url = reqwest::Url::parse(&file.url).map_err(|error| format!("Invalid model URL: {error}"))?;
         if url.scheme() != "https" || url.host_str().is_none() || !url.username().is_empty()
@@ -370,6 +373,36 @@ mod mobile {
         })
     }
 
+    fn download_client_builder() -> reqwest::blocking::ClientBuilder {
+        reqwest::blocking::Client::builder()
+            .https_only(true).redirect(reqwest::redirect::Policy::limited(10))
+            .connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(30 * 60))
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn with_android_roots(builder: reqwest::blocking::ClientBuilder) -> Result<reqwest::blocking::ClientBuilder, String> {
+        // reqwest 0.13 otherwise uses rustls-platform-verifier, which needs a
+        // separately initialized Android JVM/Kotlin component. The installer
+        // uses the pinned Mozilla public root bundle instead. Rustls still
+        // verifies the certificate chain, validity period, and server name;
+        // no custom verifier or dangerous validation override is installed.
+        // User/private Android trust anchors are not included in this client.
+        let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter()
+            .map(|certificate| reqwest::Certificate::from_der(certificate.as_ref()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Load bundled model-download trust roots: {error}"))?;
+        if roots.is_empty() { return Err("The bundled model-download trust store is empty.".into()); }
+        Ok(builder.tls_backend_rustls().tls_certs_only(roots))
+    }
+
+    #[cfg(feature = "ocr-mobile")]
+    fn download_client() -> Result<reqwest::blocking::Client, String> {
+        let builder = download_client_builder();
+        #[cfg(target_os = "android")]
+        let builder = with_android_roots(builder)?;
+        builder.build().map_err(|error| format!("Initialize model download: {error}"))
+    }
+
     #[cfg(feature = "ocr-mobile")]
     pub(super) fn download(name: &str, progress: impl Fn(DownloadProgress)) -> Result<String, String> {
         let files = artifacts(name)?;
@@ -384,10 +417,7 @@ mod mobile {
         let model_dir = model_directory(root, name, true)?.ok_or("The model directory is unavailable.")?;
         let staging = tempfile::Builder::new().prefix("incoming-").tempdir_in(&model_dir)
             .map_err(|error| format!("Create model staging directory: {error}"))?;
-        let client = reqwest::blocking::Client::builder()
-            .https_only(true).redirect(reqwest::redirect::Policy::limited(10))
-            .connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(30 * 60))
-            .build().map_err(|error| format!("Initialize model download: {error}"))?;
+        let client = download_client()?;
         for file in &files {
             let emit = |phase, downloaded, total| progress(DownloadProgress {
                 name: name.to_owned(), filename: file.filename.clone(), phase, downloaded, total, request_id: None,
@@ -413,6 +443,17 @@ mod mobile {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn android_root_bundle_builds_and_http_is_rejected_before_io() {
+            let client = with_android_roots(download_client_builder())
+                .unwrap().timeout(Duration::from_millis(200)).build().unwrap();
+            // The real reqwest HTTPS-only gate runs before DNS or a socket.
+            // A missing gate would instead return a connection error and fail
+            // this assertion; the short timeout also bounds that regression.
+            let error = client.get("http://127.0.0.1:9/model.gguf").send().unwrap_err();
+            assert!(error.is_builder(), "HTTP was not rejected before I/O: {error}");
+            assert_eq!(error.url().map(|url| url.scheme()), Some("http"));
+        }
         fn artifact(bytes: &[u8]) -> Artifact {
             Artifact { filename: "ocr-test.gguf".into(), url: "https://example.com/ocr-test.gguf".into(),
                 sha256: format!("{:x}", Sha256::digest(bytes)), primary: true }

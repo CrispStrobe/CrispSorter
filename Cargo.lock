@@ -2458,6 +2458,7 @@ dependencies = [
  "usls",
  "uuid 1.23.3",
  "walkdir",
+ "webpki-root-certs",
  "zeroize",
  "zip 7.2.0",
  "zpdf",

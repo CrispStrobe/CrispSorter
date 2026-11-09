@@ -394,6 +394,11 @@ timeout. It checks length, digest, and the primary GGUF header before publicatio
 It respects the existing offline flags and model licence-consent checks. It never
 uses a shell downloader or changes the process environment on mobile.
 
+Android model downloads use the pinned public TLS root bundle and normal Rustls
+certificate/hostname verification; this client does not consult user/private
+Android trust anchors. The independent artifact SHA-256 check is still required
+before a model becomes ready.
+
 Each model has its own directory, so companion filenames cannot collide across
 models. A complete verified version is published through an atomic manifest;
 interrupted downloads and failed companion downloads leave the previous version

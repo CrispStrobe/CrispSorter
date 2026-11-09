@@ -117,6 +117,12 @@ engines remain selectable; models without published pins or with unmet license
 requirements produce a visible error. Model versions are retained; automatic
 model-cache garbage collection is not implemented.
 
+On Android, this installer's Rustls client uses the pinned public certificate
+roots from webpki-root-certs 1.0.8. It verifies certificate chains and hostnames
+without requiring an uninitialized JVM certificate-verifier component. Android
+user/private trust anchors are not consulted by this client. HTTPS-only transport
+and the registry's separate SHA-256 artifact checks both remain required.
+
 Use a clean sibling CrispEmbed checkout and initialized ggml submodule at the
 exact commits in scripts/ocr-mobile-runtime-lock.json. The native builder
 checks both identities and refuses a dirty or mismatched source tree. Do not
