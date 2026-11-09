@@ -668,7 +668,9 @@
     .mobile-tools-menu {
         position: fixed;
         bottom: calc(64px + env(safe-area-inset-bottom, 0px));
-        right: max(12px, env(safe-area-inset-right, 0px));
+        right: calc(12px + env(safe-area-inset-right, 0px));
+        max-width: calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+        max-height: calc(100vh - 100px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
         max-height: calc(100dvh - 100px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
         overflow-y: auto;
         background: #18181b;
