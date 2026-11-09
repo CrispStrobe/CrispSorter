@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { CORNER_NAMES, movePhotoCorner, type PhotoQuad } from "$lib/ocr/photo";
   import { ScanLine, MousePointer2 } from "lucide-svelte";
   import {
     normalizeRectangle,
@@ -30,6 +31,8 @@
     onselect,
     onrectangle,
     ongeometry,
+    photoQuad = null,
+    onphotoquad,
   }: {
     page: OcrPage;
     imageUrl: (path: string) => string;
@@ -44,6 +47,8 @@
     onselect: (id: string) => void;
     onrectangle: (rect: Rectangle, mode: DrawMode) => void;
     ongeometry: (id: string, rect: Rectangle) => void;
+    photoQuad?: PhotoQuad | null;
+    onphotoquad?: (quad: PhotoQuad) => void;
   } = $props();
   let viewport: HTMLDivElement;
   let svg = $state<SVGSVGElement>()!;
@@ -58,6 +63,18 @@
     rect: Rectangle;
     pointer: number;
   } | null>(null);
+  let cornerGesture = $state<{ index: number; pointer: number } | null>(null);
+  let previousSource = "";
+  $effect(() => {
+    const source = `${page.id}:${page.imagePath}:${page.originalImagePath}`;
+    if (source !== previousSource) {
+      previousSource = source;
+      gesture = null;
+      cornerGesture = null;
+      originalWidth = 0;
+      originalHeight = 0;
+    }
+  });
   const width = $derived(
     original && originalWidth ? originalWidth : page.width,
   );
@@ -76,6 +93,8 @@
   const hint = $derived(
     original
       ? "Original image · overlays hidden"
+      : photoQuad
+        ? "Drag each handle to a paper corner. Arrow keys adjust; Shift moves 10 pixels."
       : mode === "select"
         ? "Select a region to proofread. Drag to move; use the corner to resize."
         : mode === "crop"
@@ -109,7 +128,7 @@
     };
   }
   function beginDraw(event: PointerEvent) {
-    if (!canDraw || mode === "select" || event.button !== 0) return;
+    if (!canDraw || photoQuad || mode === "select" || event.button !== 0) return;
     const start = point(event);
     gesture = {
       kind: "draw",
@@ -121,7 +140,7 @@
     event.preventDefault();
   }
   function beginRegion(event: PointerEvent, region: OcrRegion, resize = false) {
-    if (mode !== "select") return;
+    if (mode !== "select" || photoQuad) return;
     event.stopPropagation();
     onselect(region.id);
     if (!canDraw || event.button !== 0) return;
@@ -183,6 +202,33 @@
     )
       ongeometry(g.region.id, g.rect);
   }
+  function cornerPoint(event: PointerEvent) {
+    const rect = svg.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) * page.width / rect.width, y: (event.clientY - rect.top) * page.height / rect.height };
+  }
+  function beginCorner(event: PointerEvent, index: number) {
+    if (!canDraw || !photoQuad || event.button !== 0) return;
+    event.stopPropagation(); event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    cornerGesture = { index, pointer: event.pointerId };
+  }
+  function moveCorner(event: PointerEvent) {
+    if (!cornerGesture || cornerGesture.pointer !== event.pointerId || !photoQuad || !canDraw) return;
+    onphotoquad?.(movePhotoCorner(photoQuad, cornerGesture.index, cornerPoint(event), page.width, page.height));
+  }
+  function finishCorner(event: PointerEvent) {
+    if (!cornerGesture || cornerGesture.pointer !== event.pointerId) return;
+    moveCorner(event);
+    cornerGesture = null;
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
+  }
+  function keyCorner(event: KeyboardEvent, index: number) {
+    if (!photoQuad || !canDraw || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    const step = event.shiftKey ? 10 : 1, point = photoQuad[index];
+    onphotoquad?.(movePhotoCorner(photoQuad, index, { x: point.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), y: point.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0) }, page.width, page.height));
+  }
   function low(region: OcrRegion) {
     return (
       region.review !== "approved" &&
@@ -233,7 +279,11 @@
           onpointerup={finish}
           onpointercancel={() => (gesture = null)}
         >
-          {#if overlays || mode !== "select"}
+          {#if photoQuad}
+            <path class="photo-mask" fill-rule="evenodd" d={`M0 0 H${page.width} V${page.height} H0 Z M${photoQuad.map(point => `${point.x} ${point.y}`).join(" L")} Z`} />
+            <polygon class="photo-outline" points={photoQuad.map(point => `${point.x},${point.y}`).join(" ")} />
+          {/if}
+          {#if !photoQuad && (overlays || mode !== "select")}
             {#each page.regions as region, index (region.id)}
               {@const box =
                 gesture?.region?.id === region.id ? gesture.rect : region}
@@ -304,6 +354,14 @@
             />
           {/if}
         </svg>
+      {/if}
+      {#if !original && photoQuad}
+        {#each photoQuad as corner, index}
+          <button class="photo-corner" style:left={`${corner.x * scale}px`} style:top={`${corner.y * scale}px`}
+            disabled={disabled} aria-label={`${CORNER_NAMES[index]} corner`} title={`${CORNER_NAMES[index]}: ${Math.round(corner.x)}, ${Math.round(corner.y)} pixels`}
+            onpointerdown={(event) => beginCorner(event, index)} onpointermove={moveCorner} onpointerup={finishCorner} onpointercancel={() => (cornerGesture = null)}
+            onkeydown={(event) => keyCorner(event, index)}>{index + 1}</button>
+        {/each}
       {/if}
       {#if page.status === "running"}<div class="recognizing">
           <ScanLine size={20} /><span>Recognizing page…</span>
@@ -436,6 +494,11 @@
     vector-effect: non-scaling-stroke;
     cursor: nwse-resize;
   }
+  .photo-mask { fill: #08121a99; pointer-events: none; }
+  .photo-outline { fill: transparent; stroke: #80c2ff; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .photo-corner { position: absolute; width: 44px; height: 44px; min-width: 44px; min-height: 44px; transform: translate(-50%, -50%); border: 2px solid #d9efff; border-radius: 50%; color: #fff; background: #236ebdcc; box-shadow: 0 2px 8px #0009; font-size: 14px; font-weight: 700; touch-action: none; cursor: grab; }
+  .photo-corner:focus-visible { outline: 3px solid #f5c77a; outline-offset: 3px; }
+  .photo-corner:active { cursor: grabbing; }
   .recognizing {
     position: absolute;
     inset: 0;

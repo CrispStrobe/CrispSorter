@@ -163,16 +163,82 @@ describe('sequential OCR queue', () => {
         expect(queue.canStart).toBe(true);
     });
 
-    it('handles result/error observer failures without stranding later pages', async () => {
-        const errors=vi.fn(()=>{throw new Error('Cannot render error');});
-        const queue=new SequentialQueue<number>({onState:()=>{throw new Error('Cannot render state');},onResult:(job)=>{if(job.id==='one')throw new Error('Cannot apply result');},onError:errors});
-        queue.start([{id:'one',run:async()=>1},{id:'two',run:async()=>2}]);
+    it('stops after a result checkpoint fails without misreporting successful recognition', async () => {
+        const applied:number[]=[];
+        const errors=vi.fn();
+        const second=vi.fn(async()=>2);
+        const checkpointError=vi.fn();
+        const queue=new SequentialQueue<number>({
+            onState:()=>{throw new Error('Cannot render state');},
+            onResult:(_job,value)=>{applied.push(value);throw new Error('Disk full');},
+            onError:errors,onCheckpointError:checkpointError,
+        });
+        queue.start([{id:'one',run:async()=>1},{id:'two',run:second}]);
         await queue.whenSettled();
-        expect(queue.state.phase).toBe('completed');
-        expect(queue.state.failed).toBe(1);
-        expect(queue.state.completed).toBe(1);
-        expect(errors).toHaveBeenCalledTimes(1);
+        expect(applied).toEqual([1]);
+        expect(errors).not.toHaveBeenCalled();
+        expect(second).not.toHaveBeenCalled();
+        expect(checkpointError).toHaveBeenCalledWith(expect.objectContaining({message:'Disk full'}),expect.objectContaining({id:'one'}),'result');
+        expect(queue.state).toEqual({phase:'cancelled',total:2,completed:0,failed:0,currentId:null,remainingIds:['one','two']});
         expect(queue.canStart).toBe(true);
+    });
+
+    it('never starts native work when its durable start checkpoint fails', async () => {
+        const first=vi.fn(async()=>1),second=vi.fn(async()=>2),errors=vi.fn();
+        const checkpointError=vi.fn(()=>{throw new Error('Detached UI');});
+        const queue=new SequentialQueue<number>({onStart:()=>{throw new Error('Revision conflict');},onError:errors,onCheckpointError:checkpointError});
+        queue.start([{id:'one',run:first},{id:'two',run:second}]);
+        await queue.whenSettled();
+        expect(first).not.toHaveBeenCalled();
+        expect(second).not.toHaveBeenCalled();
+        expect(errors).not.toHaveBeenCalled();
+        expect(checkpointError).toHaveBeenCalledWith(expect.objectContaining({message:'Revision conflict'}),expect.objectContaining({id:'one'}),'start');
+        expect(queue.state.remainingIds).toEqual(['one','two']);
+        expect(queue.state.phase).toBe('cancelled');
+    });
+
+    it('suppresses a late checkpoint failure after the project generation changes', async () => {
+        const saving=gate<void>(),run=vi.fn(async()=>1),checkpointError=vi.fn();
+        const queue=new SequentialQueue<number>({onStart:()=>saving.promise,onCheckpointError:checkpointError});
+        queue.start([{id:'obsolete-page',run}]);
+        await started();
+        queue.invalidate();
+        expect(queue.canStart).toBe(false);
+        saving.reject(new Error('The old project could not save'));
+        await queue.whenSettled();
+        expect(run).not.toHaveBeenCalled();
+        expect(checkpointError).not.toHaveBeenCalled();
+        expect(queue.state.remainingIds).toEqual(['obsolete-page']);
+        expect(queue.state.phase).toBe('cancelled');
+    });
+
+    it('stops when saving a recognition failure fails instead of losing its retry evidence', async () => {
+        const second=vi.fn(async()=>2),checkpointError=vi.fn();
+        const queue=new SequentialQueue<number>({onError:()=>{throw new Error('Storage unavailable');},onCheckpointError:checkpointError});
+        queue.start([{id:'one',run:async()=>{throw new Error('Unreadable image');}},{id:'two',run:second}]);
+        await queue.whenSettled();
+        expect(second).not.toHaveBeenCalled();
+        expect(queue.state.failed).toBe(1);
+        expect(queue.state.remainingIds).toEqual(['one','two']);
+        expect(checkpointError).toHaveBeenCalledWith(expect.objectContaining({message:'Storage unavailable'}),expect.objectContaining({id:'one'}),'error');
+    });
+
+    it.each(['pause','cancel'] as const)('honors %s while the start checkpoint is in flight', async action => {
+        const checkpoint=gate<void>(),run=vi.fn(async()=>1);
+        const queue=new SequentialQueue<number>({onStart:()=>checkpoint.promise});
+        queue.start([{id:'one',run}]);
+        await started();
+        queue[action]();
+        checkpoint.resolve();
+        await queue.whenSettled();
+        expect(run).not.toHaveBeenCalled();
+        expect(queue.state.remainingIds).toEqual(['one']);
+        expect(queue.state.phase).toBe(action==='pause'?'paused':'cancelled');
+        if(action==='pause') {
+            expect(queue.resume()).toBe(true);
+            await queue.whenSettled();
+            expect(run).toHaveBeenCalledTimes(1);
+        }
     });
 
     it('does not expose mutable internal state or allow synchronous observer reentrancy', async () => {

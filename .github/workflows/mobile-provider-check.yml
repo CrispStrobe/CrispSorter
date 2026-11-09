@@ -3,12 +3,22 @@ name: Mobile provider checks
 on:
   workflow_dispatch:
   push:
-    branches: ['mobile-provider-check-*']
+    branches: ['mobile-provider-check-*', 'feat/ocr-document-studio']
+    paths:
+      - 'crates/tauri-plugin-mobile-provider/**'
+      - 'tools/mobile-provider-check/**'
+      - 'src-tauri/Info.ios.plist'
+      - '.github/workflows/mobile-provider-check.yml'
   pull_request:
     paths:
       - 'crates/tauri-plugin-mobile-provider/**'
       - 'tools/mobile-provider-check/**'
+      - 'src-tauri/Info.ios.plist'
       - '.github/workflows/mobile-provider-check.yml'
+
+concurrency:
+  group: mobile-provider-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
 
 jobs:
   android-provider:
@@ -91,6 +101,8 @@ jobs:
           cp Cargo.lock "$RUNNER_TEMP/provider-crate/Cargo.lock"
           export IPHONEOS_DEPLOYMENT_TARGET=16.0
           cargo check --manifest-path "$RUNNER_TEMP/provider-crate/Cargo.toml" --target aarch64-apple-ios
+      - name: Verify camera purpose string in the tracked mobile configuration
+        run: /usr/libexec/PlistBuddy -c 'Print NSCameraUsageDescription' src-tauri/Info.ios.plist
       - name: Exercise iOS bookmark records and bounded reads
         shell: bash
         working-directory: ${{ runner.temp }}/provider-crate/ios

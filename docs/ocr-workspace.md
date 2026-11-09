@@ -40,6 +40,23 @@ modified. The workspace stays alive across tab changes, so its queue and save wr
 another saved project; **New** starts a fresh one after flushing the current
 project. Interrupted running pages return to pending when a project is restored.
 
+A recognition batch also saves its exact selected page order, working-image and
+review revisions, profile, engine, language, and configuration before the first
+native invocation. **Resume saved batch** continues only its unfinished entries;
+other pending pages and later toolbar settings do not change that selection.
+**Retry saved failures** includes failed entries when continuing the saved batch.
+Completed entries are retained. A source, inclusion, or reviewed-text change blocks
+continuation with an explanation, so a new explicit selection is required for
+changed pages.
+
+Page-start, result, and error checkpoints finish saving before the next native
+call. If a checkpoint cannot be saved, processing stops and the current result
+stays in memory. Resolve the reported problem, use **Save**, and resume the saved
+batch. A successful OCR result is not converted into a recognition failure merely
+because its save failed. Pause and Stop also take effect while a start checkpoint
+is saving, before entering native inference. The workspace stays locked through
+the final batch save; interruption recovery does not depend on the in-memory queue.
+
 Writes use a same-directory staging file, filesystem synchronization, atomic
 replacement, a previous-revision recovery copy, and an expected-revision check.
 A SQLite write lock serializes separate application processes. A stale writer
@@ -79,6 +96,89 @@ image.
 - Find/replace works across included pages, handles literal Unicode text, and
   treats replacement text literally. Replace-all is undoable and invalidates
   approvals on changed pages.
+
+## Phone capture and photo preparation
+
+On a phone, **Pages**, **Page image**, and **Text & tools** switch between the
+page list, source image, and full review/settings/extraction/export controls.
+The page list supports the same selection, filtering, ordering, exclusion, and
+removal actions as desktop. Choosing a page opens its image; selecting a text
+region or following a review issue opens the text tools. Desktop retains the
+side-by-side workspace.
+
+**Capture photo** uses the camera/photo selection supplied by the system webview.
+Available choices depend on the platform. It accepts JPEG, PNG, WebP, and BMP
+images up to 32 MiB. Convert HEIC, HEIF, or AVIF to JPEG/PNG before import. The
+native import archives original bytes, applies image orientation, and creates
+an immutable working page before returning. An imported photo opens **Prepare
+photo** where the paired photo tools are available; recognition is a separate
+explicit action.
+
+The capture input requests `image/*` with `capture="environment"`, which is
+required by the locked Android webview's delegated camera path. Android declares
+the `IMAGE_CAPTURE` intent query for package visibility; no direct camera access
+permission is required for that external camera intent. The iOS configuration
+includes camera and photo-library purpose strings. These integration contracts
+are checked separately from simulated file selection; actual device capture is
+still part of release qualification below.
+
+A useful preparation sequence is:
+
+1. **Check photo quality.** Inspect the returned hints about resolution, lighting,
+   contrast, and focus. A measured tilt populates the correction field, but
+   neither image measurements nor angle estimates are calibrated probabilities
+   of OCR accuracy. An absent estimate can mean an aligned page or insufficient
+   evidence; inspect text baselines before deciding to rotate.
+2. **Correct perspective.** Place the four handles on the paper corners, in
+   clockwise order from top left. Drag with a mouse or touch; arrow keys move a
+   focused handle by one image pixel and Shift moves it by ten. Exact coordinates
+   are also editable. Crossed, concave, collapsed, or out-of-image selections
+   cannot be applied. This is manual corner selection with a true projective
+   warp, not automatic border detection.
+3. **Apply tilt correction.** Review the suggested angle or enter a value between
+   −20° and +20°. Positive values rotate clockwise. Native processing uses bounded
+   analysis while sampling the full-resolution source for the output.
+4. **Flatten shadows** when lighting remains uneven. This action uses the existing
+   background-whitening primitive without additional deskew, border cropping,
+   binarization, or learned restoration. Inspect the result: rotation alone can
+   make shadowed text harder to recognize when new white margins meet a dark
+   photographed background.
+5. Compare **Original** with the working page, use **Undo** for any unwanted
+   change, then recognize and review. Changed pixels invalidate old recognition
+   geometry and approval. Byte-identical operations preserve reviewed text and
+   approval. Original comparison hides working-image overlays and exits corner
+   editing.
+
+Photo assessment and correction keep their captured source page even if the
+user navigates while a native call is running. Assessment results are discarded
+when that page is no longer selected; pixel operations remain attached to their
+captured page. Navigation to a different source resets corner and angle controls.
+
+On mobile, **Add documents** uses the native document-provider picker. The
+provider bridge currently limits each document to 16 MiB; larger documents must
+be reduced or imported as smaller page images. Export renders into private
+staging, opens the native save picker, and reports success only after the
+provider copy completes. The system picker owns external destination selection
+and any replacement confirmation; a user-confirmed replacement may overwrite
+that selected external file. The imported original bytes and immutable workspace
+images remain preserved inside the application. Cancelling the picker reports
+cancellation. Temporary export staging is removed after completion, cancellation,
+or failure.
+
+The **Prepare photo** controls are advertised only with `ocr-photo-tools`,
+included in `ocr-workspace`, and require the matching CrispEmbed source and native
+library. Camera byte import and ordinary image review remain available without
+that feature. The app calls explicit native photo APIs; it does not change
+process-wide experimental geometry flags for unrelated OCR operations.
+
+The paired geometry tests use generated text pages with rotation, perspective,
+lighting gradients, noise, and JPEG compression, then measure text through an
+independent reader. They support the declared synthetic cases and retain the
+negative deskew-only shadow results. They do not qualify physical phone cameras,
+all native recognition models, or every document type. Physical-device capture,
+provider round trips, and representative real-camera documents remain release
+qualification work. See the paired CrispEmbed
+[phone-photo evidence and repeatable checks](https://github.com/CrispStrobe/CrispEmbed/blob/feat/ocr-photo-preprocessing/docs/ocr-phone-photo.md).
 
 ## Recognition and scan repair
 
@@ -203,8 +303,9 @@ layer. Full bidirectional PDF support needs a separately validated renderer.
 
 All exports validate dimensions, finite coordinates, nonempty page selection,
 and asset availability. Existing output files require explicit replacement.
-Original source files and workspace assets remain protected even when replacing
-an existing export. Writes are staged atomically; a failed render does not
+For direct filesystem exports, original source paths and workspace assets remain
+protected even when replacing an existing export. Mobile external destination
+replacement is controlled by the system save picker, as described above. Writes are staged atomically; a failed render does not
 truncate an existing file.
 
 ## Keyboard shortcuts
@@ -224,17 +325,26 @@ available for project-level changes while a text field has focus.
 
 ## Development and verification
 
+The [9 November checkpoint](ocr-studio-checkpoint-2026-11-09.md) records exact
+tested revisions, retained phone-photo results, corrected CI evidence, and the
+remaining native application and physical-device gates.
+
 The main implementation is split between:
 
 - `src/lib/ocr/model.ts`: versioned state, geometry, approvals, search, history,
   and export preflight;
-- `src/lib/ocr/queue.ts`: sequential native work with cooperative pause/stop;
+- `src/lib/ocr/queue.ts`: sequential native work with cooperative pause/stop and awaited durable checkpoints;
+- `src/lib/ocr/batch.ts`: persisted selection, frozen settings, source checks, and interruption recovery;
+- `src/lib/ocr/photo.ts`: capture validation and four-corner geometry;
 - `src/lib/ocr/autosave.ts`: serialized, revision-aware save coordinator;
 - `src/lib/ocr/client.ts`: typed Tauri transport and test adapter;
 - `src/lib/components/OcrWorkbench.svelte` and `ocr/PageCanvas.svelte`: workspace
   and source-image editing;
+- `src/lib/components/ocr/PhotoPreparation.svelte`: capture guidance, measured/manual
+  tilt, perspective selection, and background whitening;
 - `src-tauri/src/ocr_workspace.rs`: durable assets/projects, import, transforms,
   processing, extraction, and atomic export;
+- `src-tauri/src/ocr_photo.rs`: bounded capture measurements and paired native photo geometry;
 - `src-tauri/src/extractors/ocr_crispembed.rs`: configuration-keyed native
   pipelines and review provenance.
 
@@ -266,3 +376,42 @@ reading order, tables, and formulas; independently validate archival output; and
 exercise large documents, low disk space, process interruption, and recovery on
 each supported desktop platform. Scanner drivers, exact typography reconstruction,
 and automatic layout equivalence are outside the implemented workspace contract.
+
+## Mobile OCR model installation
+
+The paired `ocr-mobile` Cargo profile enables image and TIFF OCR, photo correction,
+review diagnostics, and searchable PDF export. It deliberately omits `pdf-render`:
+PDF import needs a separately packaged mobile rasterizer, and this profile reports
+PDF import as unavailable. Release defaults and release runtime pins are unchanged.
+
+The mobile profile provisions models in the application's private `ocr-models`
+store. Downloads are explicit user actions; recognition only loads an installed,
+verified model or a user-supplied local GGUF path. The workbench's basic installer
+uses `dbnet-det` and `tesseract-<language>` (English by default). Other registered
+engines use the existing Settings model browser and the same installer.
+
+The installer reads exact-name download metadata from the paired CrispEmbed
+registry. Every primary and declared companion file needs a real SHA-256 pin;
+unpinned entries fail with an actionable error. Rust streams HTTPS responses with
+a 64 KiB buffer, a 2 GiB limit per file, bounded redirects, and a 30-minute request
+timeout. It checks length, digest, and the primary GGUF header before publication.
+It respects the existing offline flags and model licence-consent checks. It never
+uses a shell downloader or changes the process environment on mobile.
+
+Android model downloads use the pinned public TLS root bundle and normal Rustls
+certificate/hostname verification; this client does not consult user/private
+Android trust anchors. The independent artifact SHA-256 check is still required
+before a model becomes ready.
+
+Each model has its own directory, so companion filenames cannot collide across
+models. A complete verified version is published through an atomic manifest;
+interrupted downloads and failed companion downloads leave the previous version
+intact. Readiness validates every declared artifact, with verification cached only
+while the immutable file's size and modification time match. Explicit local GGUF
+paths retain the existing behavior and are outside the managed download limit.
+
+These provisioning tests use tiny synthetic streams, including corruption,
+interruption, size/length failures, incomplete companion sets, and symlink escapes.
+They do not download production weights. A source/link check alone does not prove
+mobile inference, and simulator inference does not qualify physical camera capture,
+memory pressure, thermal behavior, or recognition accuracy on real phone photos.

@@ -1,3 +1,3 @@
 [default]
-description = "Read documents explicitly selected through the mobile system picker."
-permissions = ["allow-pick-files", "allow-pick-folder", "allow-read-file"]
+description = "Read selected mobile documents and save reviewed exports through the system picker."
+permissions = ["allow-pick-files", "allow-pick-folder", "allow-read-file", "allow-export-file"]

@@ -2,6 +2,16 @@ name: OCR workspace browser verification
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio']
+    paths:
+      - src/lib/ocr/**
+      - src/lib/tabs.ts
+      - src/routes/+page.svelte
+      - src/lib/components/OcrWorkbench.svelte
+      - src/lib/components/ocr/**
+      - tests/ocr-workspace/**
+      - .github/workflows/ocr-workspace-smoke.yml
   pull_request:
     paths:
       - src/lib/ocr/**
@@ -17,7 +27,7 @@ permissions:
 
 concurrency:
   group: ocr-workspace-browser-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
 
 jobs:
   browser:
@@ -36,8 +46,12 @@ jobs:
         run: npm install --prefix "$RUNNER_TEMP/ocr-browser-tools" --no-save --package-lock=false playwright@1.62.1
       - name: Install Chromium
         run: node "$RUNNER_TEMP/ocr-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
-      - name: Test OCR model, queue, and durable save logic
-        run: npm test -- --run src/lib/ocr
+      - name: Check full frontend types
+        run: npm run check
+      - name: Test the full frontend suite
+        run: npm test -- --run
+      - name: Build the production frontend
+        run: npm run build
       - name: Verify production workspace interactions
         env:
           PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/ocr-browser-tools/node_modules/playwright

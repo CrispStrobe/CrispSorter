@@ -8,6 +8,7 @@
 use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
 use crate::index::tauri_commands::{KieFieldDto, OcrExportResult};
 use crate::AppState;
+use crate::ocr_photo::{PhotoAssessment, PhotoPoint};
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +26,7 @@ const MAX_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PAGE_PIXELS: u64 = 100_000_000;
 const MAX_PAGES: usize = 10_000;
 const MAX_REGIONS: usize = 100_000;
+const MAX_CAPTURE_BYTES: usize = 32 * 1024 * 1024;
 static PROJECT_WRITER: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +172,9 @@ fn persist_image(root: &Path, image: &DynamicImage) -> Result<PageAsset, String>
         .map_err(|e| format!("Create page snapshot: {e}"))?;
     // A recognizer that asks for RGB drops alpha, whereas the preview browser
     // composites it. Flatten onto white paper once so both see identical pixels.
-    let canonical = opaque_page(image);
+    let canonical = if image.color().has_alpha() {
+        std::borrow::Cow::Owned(opaque_page(image))
+    } else { std::borrow::Cow::Borrowed(image) };
     canonical.write_to(staging.as_file_mut(), image::ImageFormat::Png)
         .map_err(|e| format!("Encode page snapshot: {e}"))?;
     staging.as_file_mut().flush().map_err(|e| e.to_string())?;
@@ -251,6 +255,10 @@ pub fn ocr_workspace_capabilities() -> Value {
     json!({
         "schema_version": PROJECT_VERSION,
         "ocr": native, "crispembed": native,
+        "camera_import": true, "photo_tools": cfg!(feature = "ocr-photo-tools"),
+        "mobile_model_store": crate::model_provisioning::enabled(),
+        "default_engine": if crate::model_provisioning::enabled() { "tesseract" } else { "auto" },
+        "default_language": if crate::model_provisioning::enabled() { "eng" } else { "auto" },
         "pdf_import": cfg!(feature = "pdf-render"),
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
@@ -276,6 +284,98 @@ pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String) -
     let path = local_file(&location_uri)?;
     tokio::task::spawn_blocking(move || import_document(&root, &path)).await
         .map_err(|e| format!("Import worker: {e}"))?
+}
+
+/// Camera and provider bytes never become paths supplied by the webview. Keep
+/// their originals by content hash before creating the oriented page assets.
+#[tauri::command]
+pub async fn ocr_workspace_import_image(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
+    let (metadata, bytes) = import_request(&request)?;
+    let root = workspace_root(&app)?;
+    tokio::task::spawn_blocking(move || import_bytes(&root, &metadata.name, &bytes, false, None)).await
+        .map_err(|e| format!("Camera import worker: {e}"))?
+}
+
+#[tauri::command]
+pub async fn ocr_workspace_import_bytes(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
+    let (metadata, bytes) = import_request(&request)?;
+    let root = workspace_root(&app)?;
+    tokio::task::spawn_blocking(move || import_bytes(&root, &metadata.name, &bytes, true, metadata.source_uri.as_deref())).await
+        .map_err(|e| format!("Provider import worker: {e}"))?
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportMetadata {
+    name: String,
+    source_uri: Option<String>,
+}
+
+fn import_request(request: &tauri::ipc::Request<'_>) -> Result<(ImportMetadata, Vec<u8>), String> {
+    use base64::Engine;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Photo import requires a raw binary payload.".into());
+    };
+    if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
+        return Err("Choose a nonempty document no larger than 32 MiB.".into());
+    }
+    let header = request.headers().get("x-ocr-metadata").ok_or("Missing photo import metadata.")?;
+    if header.as_bytes().len() > 16 * 1024 { return Err("Photo import metadata is too large.".into()); }
+    let json = base64::engine::general_purpose::STANDARD.decode(header.as_bytes())
+        .map_err(|_| "Photo import metadata is invalid.")?;
+    let metadata = serde_json::from_slice(&json).map_err(|_| "Photo import metadata is invalid.")?;
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(bytes.len()).map_err(|_| "Not enough memory to import this photo. Try a smaller capture.")?;
+    owned.extend_from_slice(bytes);
+    Ok((metadata, owned))
+}
+
+fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_uri: Option<&str>) -> Result<ImportedDocument, String> {
+    if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
+        return Err("Choose a nonempty document no larger than 32 MiB.".into());
+    }
+    if source_uri.is_some_and(|uri| !uri.starts_with("content://") && !uri.starts_with("file://")) {
+        return Err("The imported provider identity must be a document provider URI.".into());
+    }
+    let extension = if allow_pdf && bytes.starts_with(b"%PDF-") { "pdf" } else {
+        match image::guess_format(bytes).map_err(|_| "This image format is unsupported. Export the photo as JPEG or PNG and try again.")? {
+            image::ImageFormat::Png => "png", image::ImageFormat::Jpeg => "jpg",
+            image::ImageFormat::Tiff => "tiff", image::ImageFormat::Bmp => "bmp",
+            image::ImageFormat::WebP => "webp",
+            _ => return Err("Import JPEG, PNG, TIFF, BMP or WebP page images.".into()),
+        }
+    };
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).map_err(|e| format!("Create source archive: {e}"))?;
+    let path = sources.join(format!("{:x}.{extension}", Sha256::digest(bytes)));
+    let mut staging = tempfile::NamedTempFile::new_in(&sources).map_err(|e| format!("Stage imported source: {e}"))?;
+    staging.write_all(bytes).map_err(|e| format!("Archive imported source: {e}"))?;
+    staging.as_file().sync_all().map_err(|e| e.to_string())?;
+    match staging.persist_noclobber(&path) {
+        Ok(_) => sync_directory(&sources)?,
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(e) => return Err(format!("Commit imported source: {}", e.error)),
+    }
+    let mut document = import_document(root, &path)?;
+    document.name = name.rsplit(['/', '\\']).next().unwrap_or("")
+        .chars().filter(|c| !c.is_control()).take(240).collect::<String>();
+    if document.name.trim().is_empty() { document.name = format!("Captured page.{extension}"); }
+    if let Some(uri) = source_uri {
+        document.source_uri = uri.to_owned();
+    }
+    Ok(document)
+}
+
+#[tauri::command]
+pub async fn ocr_workspace_assess_photo(app: tauri::AppHandle, page_path: String) -> Result<PhotoAssessment, String> {
+    let root = workspace_root(&app)?;
+    let path = managed_page(&root, &page_path)?;
+    tokio::task::spawn_blocking(move || {
+        let image = decode_page(&path)?;
+        if image.color().has_alpha() { crate::ocr_photo::assess(&opaque_page(&image)) }
+        else { crate::ocr_photo::assess(&image) }
+    }).await
+        .map_err(|e| format!("Photo assessment worker: {e}"))?
 }
 
 fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String> {
@@ -336,17 +436,23 @@ pub async fn ocr_workspace_transform(
     degrees: Option<i32>,
     crop: Option<PixelRect>,
     split_x: Option<u32>,
+    quad: Option<Vec<PhotoPoint>>,
+    angle: Option<f64>,
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
 ) -> Result<TransformedPages, String> {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
-    tokio::task::spawn_blocking(move || transform_page(&root, &path, &operation, degrees, crop, split_x, size)).await
+    tokio::task::spawn_blocking(move || transform_page_with_photo(&root, &path, &operation, degrees, crop, split_x, size, quad, angle)).await
         .map_err(|e| format!("Page transform worker: {e}"))?
 }
 
 fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>, physical_size: Option<(f64, f64)>) -> Result<TransformedPages, String> {
+    transform_page_with_photo(root, path, operation, degrees, crop, split_x, physical_size, None, None)
+}
+
+fn transform_page_with_photo(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>, physical_size: Option<(f64, f64)>, quad: Option<Vec<PhotoPoint>>, angle: Option<f64>) -> Result<TransformedPages, String> {
     let image = decode_page(path)?;
     let output = match operation {
         "rotate" => vec![match degrees.unwrap_or(90).rem_euclid(360) {
@@ -362,6 +468,7 @@ fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32
             if x == 0 || x >= image.width() { return Err("The split must be inside the page.".into()); }
             vec![image.crop_imm(0, 0, x, image.height()), image.crop_imm(x, 0, image.width() - x, image.height())]
         },
+        "perspective" | "deskew" => vec![crate::ocr_photo::transform(&image, operation, quad, angle)?],
         _ => return Err(format!("Unknown page operation: {operation}")),
     };
     let mut pages = output.iter().map(|img| persist_image(root, img)).collect::<Result<Vec<_>, _>>()?;
@@ -470,7 +577,7 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
 #[cfg(feature = "crispembed")]
 fn cleanup_image(image: DynamicImage, config: &crate::extractors::OcrPipelineConfig, recipe: &crate::extractors::OcrCleanupSpec, classical: bool, denoise: bool) -> Result<DynamicImage, String> {
     let model = if denoise {
-        Some(crispembed::CrispEmbed::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(true))
+        Some(crate::model_provisioning::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(true))
             .map_err(|e| format!("Load denoising model: {e}"))?)
     } else { None };
     let engine = crispembed::CrispScanCleanup::new(model.as_deref(), 0).map_err(|e| format!("Initialize scan cleanup: {e}"))?;
@@ -551,7 +658,7 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
     Ok(())
 }
 
-fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
+pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
     let engine = engine.filter(|s| !s.is_empty()).unwrap_or("auto");
     let language = language.filter(|s| !s.is_empty() && *s != "auto");
     let mut warnings = Vec::new();
@@ -1119,6 +1226,49 @@ pub async fn ocr_workspace_export(
     }).await.map_err(|e| format!("Export worker: {e}"))?
 }
 
+/// Create a private render destination before showing the mobile save picker.
+/// Its own directory preserves the requested display name without collisions.
+#[tauri::command]
+pub fn ocr_workspace_export_target(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    if name.is_empty() || name.len() > 240 || name.contains(['/', '\\']) || name.chars().any(char::is_control)
+        || name == "." || name == ".." {
+        return Err("Choose a short filename without directory separators.".into());
+    }
+    let directory = app.path().app_cache_dir().map_err(|e| e.to_string())?
+        .join("ocr-exports").join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&directory).map_err(|e| format!("Create export staging directory: {e}"))?;
+    Ok(directory.join(name).to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn ocr_workspace_discard_export(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let root = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("ocr-exports");
+    discard_staged_export(&root, Path::new(&path))
+}
+
+fn discard_staged_export(root: &Path, path: &Path) -> Result<(), String> {
+    let cache = fs::canonicalize(root.parent().ok_or("Invalid export staging root.")?).map_err(|e| e.to_string())?;
+    let expected_root = cache.join("ocr-exports");
+    let root = fs::canonicalize(root).map_err(|e| format!("Open export staging: {e}"))?;
+    if root != expected_root { return Err("Export staging must remain in the application cache.".into()); }
+    let directory = path.parent().ok_or("Invalid staged export.")?;
+    let directory = fs::canonicalize(directory).map_err(|e| format!("Open staged export directory: {e}"))?;
+    if directory.parent() != Some(root.as_path())
+        || directory.file_name().and_then(|v| v.to_str()).and_then(|v| uuid::Uuid::parse_str(v).ok()).is_none() {
+        return Err("Only temporary OCR export files can be discarded.".into());
+    }
+    let name = path.file_name().ok_or("Invalid staged export filename.")?;
+    let file = directory.join(name);
+    if file.exists() {
+        let canonical = fs::canonicalize(&file).map_err(|e| e.to_string())?;
+        if canonical.parent() != Some(directory.as_path()) { return Err("A staged export cannot point outside its directory.".into()); }
+        fs::remove_file(file).map_err(|e| format!("Remove staged export: {e}"))?;
+    }
+    // Only an empty, single-export directory is removed; never recursive.
+    let _ = fs::remove_dir(directory);
+    Ok(())
+}
+
 /// Save extracted fields, table markup/CSV or formula source with the same
 /// source protection and atomic write behavior as document export.
 #[tauri::command]
@@ -1171,6 +1321,75 @@ pub async fn ocr_workspace_extract_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_bytes_are_archived_and_imported_by_signature_without_modifying_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(24, 32, image::Rgb([230, 220, 210])));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        let bytes = encoded.into_inner();
+        let captured = import_bytes(root.path(), "../camera\0.jpg", &bytes, false, None).unwrap();
+        assert_eq!(captured.name, "camera.jpg");
+        assert_eq!(captured.pages.len(), 1);
+        assert_eq!((captured.pages[0].width, captured.pages[0].height), (24, 32));
+        assert!(captured.source_uri.ends_with(".png"));
+        assert_eq!(fs::read(&captured.source_uri).unwrap(), bytes);
+        assert_ne!(captured.source_uri, captured.pages[0].image_path);
+        let again = import_bytes(root.path(), "another.png", &bytes, false, None).unwrap();
+        assert_eq!(again.source_uri, captured.source_uri);
+        assert_eq!(again.pages[0].image_path, captured.pages[0].image_path);
+        let provider = import_bytes(root.path(), "Selected scan.png", &bytes, true, Some("content://provider/Case%3AA%2FB")).unwrap();
+        assert_eq!(provider.source_uri, "content://provider/Case%3AA%2FB");
+        assert_eq!(provider.pages[0].image_path, captured.pages[0].image_path);
+        assert_eq!(fs::read(&captured.source_uri).unwrap(), bytes);
+    }
+
+    #[test]
+    fn capture_rejects_empty_unsupported_and_nonprovider_input_before_archiving() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(import_bytes(root.path(), "page.jpg", &[], false, None).is_err());
+        assert!(import_bytes(root.path(), "page.jpg", b"%PDF-1.7", false, None).is_err());
+        assert!(import_bytes(root.path(), "page.jpg", b"invalid", true, Some("https://example.com/page")).is_err());
+        assert!(!root.path().join("sources").exists());
+    }
+
+    #[test]
+    fn export_cleanup_only_removes_a_private_staged_file() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = cache.path().join("ocr-exports");
+        let directory = root.join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&directory).unwrap();
+        let original = cache.path().join("source.pdf");
+        fs::write(&original, b"original source").unwrap();
+        assert!(discard_staged_export(&root, &original).is_err());
+        let file = directory.join("Reviewed.txt");
+        fs::write(&file, b"reviewed").unwrap();
+        discard_staged_export(&root, &file).unwrap();
+        assert!(!directory.exists());
+        assert_eq!(fs::read(&original).unwrap(), b"original source");
+    }
+
+    #[cfg(feature = "ocr-photo-tools")]
+    #[test]
+    fn explicit_photo_geometry_keeps_identity_and_rejects_invalid_corners() {
+        let root = tempfile::tempdir().unwrap();
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_fn(80, 100, |x, y| image::Rgb([x as u8, y as u8, 210])));
+        let original = persist_image(root.path(), &image).unwrap();
+        let quad = vec![PhotoPoint { x: 0.0, y: 0.0 }, PhotoPoint { x: 79.0, y: 0.0 }, PhotoPoint { x: 79.0, y: 99.0 }, PhotoPoint { x: 0.0, y: 99.0 }];
+        let path = Path::new(&original.image_path);
+        let corrected = transform_page_with_photo(root.path(), path, "perspective", None, None, None, Some((80.0, 100.0)), Some(quad.clone()), None).unwrap();
+        assert_eq!(corrected.pages[0].image_path, original.image_path);
+        let no_rotation = transform_page_with_photo(root.path(), path, "deskew", None, None, None, Some((80.0, 100.0)), None, Some(0.0)).unwrap();
+        assert_eq!(no_rotation.pages[0].image_path, original.image_path);
+        let rotated = transform_page_with_photo(root.path(), path, "deskew", None, None, None, Some((80.0, 100.0)), None, Some(8.0)).unwrap();
+        assert!(rotated.pages[0].width > 80 && rotated.pages[0].height > 100);
+        assert_eq!(rotated.pages[0].page_width_points, Some(f64::from(rotated.pages[0].width)));
+        let mut crossed = quad; crossed.swap(1, 2);
+        assert!(transform_page_with_photo(root.path(), path, "perspective", None, None, None, None, Some(crossed), None).is_err());
+        assert!(transform_page_with_photo(root.path(), path, "deskew", None, None, None, None, None, Some(f64::NAN)).is_err());
+        assert_eq!(decode_page(path).unwrap().to_rgb8(), image.to_rgb8());
+    }
 
     fn image() -> DynamicImage {
         DynamicImage::ImageRgb8(image::RgbImage::from_fn(8, 4, |x, y| image::Rgb([x as u8, y as u8, 255])))

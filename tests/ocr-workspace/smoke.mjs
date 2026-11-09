@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, queue-failure, queue-control, batch-recovery, extraction-delay, project-recovery, prepare-unchanged, mobile-models');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -66,10 +66,10 @@ if (process.argv.includes('--serve')) {
             page.on('pageerror', error => browserErrors.push({ scenario, message: error.message }));
             page.on('dialog', dialog => void dialog.dismiss());
             await page.goto(`${url}/?scenario=${scenario}`);
-            await page.waitForFunction(() => {
+            await page.waitForFunction(expectedName => {
                 const input = document.querySelector('[aria-label="Project name"]');
-                return input?.value === 'Northstar · quarterly statement' && !input.disabled;
-            });
+                return input?.value === expectedName && !input.disabled;
+            }, scenario === 'mobile-models' ? 'New mobile scan' : 'Northstar · quarterly statement');
             return page;
         }
         async function test(name, scenario, action) {
@@ -287,6 +287,75 @@ if (process.argv.includes('--serve')) {
             assert.deepEqual(saved.pages.map(item => item.status), ['recognized', 'recognized', 'pending']);
         });
 
+        await test('an interrupted batch resumes its saved selection and settings without rerunning completed pages', 'batch-recovery', async page => {
+            await page.getByRole('button', { name: 'Resume saved batch', exact: true }).click();
+            await page.getByText('Batch complete', { exact: true }).waitFor();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'completed');
+            const data = await page.evaluate(() => ({
+                recognitions: window.ocrSmoke.calls.filter(call => call.method === 'recognize').map(call => call.data),
+                project: window.ocrSmoke.lastSaved,
+            }));
+            assert.equal(data.recognitions.length, 1);
+            assert.equal(data.recognitions[0].pagePath, '/fixtures/northstar-page-2.png');
+            assert.equal(data.recognitions[0].engine, 'tesseract');
+            assert.equal(data.recognitions[0].language, 'deu');
+            assert.deepEqual(data.recognitions[0].config, { source_type: 'photo' });
+            assert.deepEqual(data.project.batch.jobs.map(job => job.state), ['completed', 'completed']);
+            assert.deepEqual(data.project.pages.map(item => item.status), ['recognized', 'recognized', 'pending']);
+        });
+
+        await test('a failed result save stops the batch and retry preserves completed recognition', 'queue-control', async page => {
+            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1 && window.ocrSmoke.lastSaved?.batch?.jobs[0]?.state === 'running');
+            await page.evaluate(() => { window.ocrSmoke.failSaves = true; window.ocrSmoke.releaseNext(); });
+            await page.getByText('Queue stopped', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
+            assert.match(await page.getByRole('button', { name: /^Page 1:/ }).innerText(), /Recognized/);
+            assert.match(await page.getByRole('button', { name: /^Page 2:/ }).innerText(), /Pending/);
+            await page.evaluate(() => { window.ocrSmoke.failSaves = false; window.ocrSmoke.holdRecognition = false; });
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.jobs[0]?.state === 'completed');
+            await page.getByRole('button', { name: 'Resume saved batch', exact: true }).click();
+            await page.getByText('Batch complete', { exact: true }).waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.recognitions), [
+                '/fixtures/northstar-page-1.png', '/fixtures/northstar-page-2.png', '/fixtures/northstar-page-3.png',
+            ]);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
+        });
+
+        await test('finishing a batch keeps project changes locked until the final checkpoint is durable', 'queue-control', async page => {
+            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.evaluate(() => {
+                window.ocrSmoke.holdFinalSave = true;
+                window.ocrSmoke.holdRecognition = false;
+                window.ocrSmoke.releaseNext();
+            });
+            await page.waitForFunction(() => window.ocrSmoke.recognitions.length === 3 && window.ocrSmoke.pendingSaves === 1);
+            await page.getByText('Batch complete', { exact: true }).waitFor();
+            for (const name of ['Process pending', 'New', 'Projects', 'Undo']) {
+                assert.equal(await page.getByRole('button', { name, exact: true }).isEnabled(), false, `${name} must wait for the final checkpoint`);
+            }
+            await page.evaluate(() => { window.ocrSmoke.holdFinalSave = false; window.ocrSmoke.releaseSave(); });
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'completed' && !document.querySelector('[aria-label="Project name"]').disabled);
+            assert.equal(await page.getByRole('button', { name: 'New', exact: true }).isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
+        });
+
+        await test('stopping an already paused queue saves its stopped state without another native call', 'queue-control', async page => {
+            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.getByRole('button', { name: 'Pause', exact: true }).click();
+            await page.evaluate(() => window.ocrSmoke.releaseNext());
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'paused');
+            await page.getByRole('button', { name: 'Stop', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'stopped');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.lastSaved.pages.map(item => item.status)), ['recognized', 'pending', 'pending']);
+            assert.equal(await page.getByRole('button', { name: 'Resume saved batch', exact: true }).isEnabled(), true);
+        });
+
         await test('table extraction renders cell text and strips active HTML', 'review', async page => {
             await page.getByRole('tab', { name: 'Extract', exact: true }).click();
             await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -401,16 +470,198 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].text), 'Inv0ice NS-2026-1042');
         });
 
+        await test('mobile model setup is explicit, reports progress, locks work, and recovers after failure', 'mobile-models', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const install = page.getByRole('button', { name: 'Install basic OCR models', exact: true });
+            await install.waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelInstalls), []);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.installedModels), []);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+            await page.getByRole('button', { name: 'OCR models', exact: true }).click();
+            await page.waitForFunction(() => document.activeElement?.textContent?.includes('Install basic OCR models'));
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelInstalls), []);
+            await page.evaluate(() => { window.ocrSmoke.failModelInstall = true; });
+            await install.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingModelInstalls === 1);
+            for (const name of ['New', 'Projects', 'Add documents', 'OCR models']) {
+                const buttons = await page.getByRole('button', { name, exact: true }).all();
+                assert.ok(buttons.length > 0);
+                for (const button of buttons) assert.equal(await button.isEnabled(), false, name + ' must wait for installation');
+            }
+            assert.equal(await page.evaluate(() => window.ocrSmoke.emitModelProgress({
+                name: 'dbnet-det', filename: 'dbnet-det.gguf', phase: 'downloading', downloaded: 1048576, total: 2097152,
+            })), true);
+            await page.getByRole('region', { name: 'On-device OCR models', exact: true })
+                .getByRole('status').filter({ hasText: 'dbnet-det.gguf: 1.0 / 2.0 MiB' }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseModelInstall()), true);
+            await page.getByText('Fixture model download interrupted. Retry the installation.', { exact: true }).waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.installedModels), []);
+            assert.equal(await install.isEnabled(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+            await page.evaluate(() => { window.ocrSmoke.failModelInstall = false; });
+            await page.getByRole('button', { name: 'Add documents', exact: true }).first().click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 1);
+            await page.getByRole('button', { name: 'OCR models', exact: true }).click();
+            assert.equal(await page.getByRole('combobox', { name: 'Recognition engine', exact: true }).inputValue(), 'tesseract');
+            assert.equal(await page.getByRole('combobox', { name: 'Document language', exact: true }).inputValue(), 'eng');
+            await install.click();
+            await page.waitForFunction(() => window.ocrSmoke.pendingModelInstalls === 1);
+            for (const name of ['Recognize page', 'Process pending', 'New']) {
+                assert.equal(await page.getByRole('button', { name, exact: true }).isEnabled(), false, name + ' must wait for installation');
+            }
+            await page.evaluate(() => window.ocrSmoke.emitModelProgress({
+                name: 'tesseract-eng', filename: 'tesseract-eng.gguf', phase: 'downloading', downloaded: 1048576, total: 2097152,
+            }));
+            const status = page.getByRole('region', { name: 'On-device OCR models', exact: true }).getByRole('status');
+            await status.filter({ hasText: 'tesseract-eng.gguf: 1.0 / 2.0 MiB' }).waitFor();
+            await status.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: path.join(output, 'ocr-phone-model-setup.png'), fullPage: true });
+            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseModelInstall()), true);
+            await page.getByText(/Basic OCR models are installed \(dbnet-det, tesseract-eng\)/).waitFor();
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.modelInstalls), ['eng', 'eng']);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.installedModels), ['dbnet-det', 'tesseract-eng']);
+            await page.getByRole('button', { name: 'Recognize page', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.batch?.phase === 'completed');
+            const request = await page.evaluate(() => window.ocrSmoke.calls.find(call => call.method === 'recognize').data);
+            assert.equal(request.engine, 'tesseract');
+            assert.equal(request.language, 'eng');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.modelInstalls.length), 2);
+        });
+
+        await test('camera import validates the file and opens a preserved photo without starting recognition', 'review', async page => {
+            await page.setViewportSize({ width: 390, height: 844 });
+            const camera = page.getByLabel('Camera photo file', { exact: true });
+            assert.equal(await camera.getAttribute('capture'), 'environment');
+            // Wry's Android file chooser only offers the external camera for image/* plus capture.
+            assert.ok((await camera.getAttribute('accept')).split(',').map(type => type.trim()).includes('image/*'));
+            await camera.setInputFiles({ name: 'inspection.HEIC', mimeType: 'image/heic', buffer: Buffer.from('unsupported fixture') });
+            await page.getByText(/Export this photo as JPEG or PNG first/).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importImage').length), 0);
+            const photo = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZ8AAAAASUVORK5CYII=', 'base64');
+            await camera.setInputFiles({ name: 'inspection.png', mimeType: 'image/png', buffer: photo });
+            await page.getByRole('region', { name: 'Photo preparation', exact: true }).waitFor();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 4);
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
+            const imported = saved.pages[3];
+            assert.equal(imported.imagePath, '/fixtures/captured-photo.png');
+            assert.equal(imported.originalImagePath, imported.imagePath);
+            assert.equal(imported.status, 'pending');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.find(call => call.method === 'importImage').data.byteLength), photo.length);
+            const nav = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            assert.equal(await nav.getByRole('button', { name: 'Page image', exact: true }).getAttribute('aria-pressed'), 'true');
+            await page.getByRole('button', { name: 'Check photo quality', exact: true }).click();
+            await page.getByText('Suggested correction: -2.7°', { exact: true }).waitFor();
+            assert.equal(await page.getByRole('spinbutton', { name: /^Tilt correction \(degrees\)/ }).inputValue(), '-2.7');
+            await page.screenshot({ path: path.join(output, 'ocr-phone-photo-preparation.png'), fullPage: true });
+        });
+
+        await test('corner controls reject invalid selections and perspective undo restores review evidence', 'review', async page => {
+            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await text.fill('Invoice reviewed before photo correction');
+            await text.blur();
+            await page.getByRole('button', { name: 'Prepare photo', exact: true }).click();
+            await page.getByRole('button', { name: 'Correct perspective', exact: true }).click();
+            const corner = page.getByRole('button', { name: 'Top left corner', exact: true });
+            const box = await corner.boundingBox();
+            assert.ok(box && box.width >= 44 && box.height >= 44, 'Photo corner targets must remain at least 44 CSS pixels');
+            await corner.focus();
+            await page.keyboard.press('ArrowRight');
+            await page.keyboard.press('Shift+ArrowDown');
+            await page.getByText('Exact corner positions', { exact: true }).click();
+            const x = page.getByRole('spinbutton', { name: 'Top left corner X', exact: true });
+            const y = page.getByRole('spinbutton', { name: 'Top left corner Y', exact: true });
+            assert.equal(await x.inputValue(), '1');
+            assert.equal(await y.inputValue(), '10');
+            await x.fill('999');
+            assert.equal(await page.getByRole('button', { name: 'Apply perspective', exact: true }).isEnabled(), false);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0);
+            await x.fill('40');
+            await y.fill('40');
+            await page.getByRole('button', { name: 'Apply perspective', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath.endsWith('-perspective'));
+            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(saved.originalImagePath, '/fixtures/northstar-page-1.png');
+            assert.deepEqual([saved.width, saved.height], [900, 1300]);
+            assert.equal(saved.status, 'pending');
+            assert.equal(saved.regions.length, 0);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await text.waitFor();
+            assert.equal(await text.inputValue(), 'Invoice reviewed before photo correction');
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath === '/fixtures/northstar-page-1.png');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].originalText), 'Inv0ice NS-2026-1042');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
+        await test('measured tilt and lighting preparation preserve the original and remain undoable', 'review', async page => {
+            await page.getByRole('button', { name: 'Prepare photo', exact: true }).click();
+            await page.getByRole('button', { name: 'Check photo quality', exact: true }).click();
+            const angle = page.getByRole('spinbutton', { name: /^Tilt correction \(degrees\)/ });
+            await page.waitForFunction(() => [...document.querySelectorAll('input[type="number"]')].some(input => input.value === '-2.7'));
+            await angle.fill('30');
+            assert.equal(await page.getByRole('button', { name: 'Apply tilt correction', exact: true }).isEnabled(), false);
+            await angle.fill('-2.7');
+            await page.getByRole('button', { name: 'Apply tilt correction', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath.endsWith('-deskewed'));
+            const corrected = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(corrected.originalImagePath, '/fixtures/northstar-page-1.png');
+            assert.equal(corrected.regions.length, 0);
+            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.calls.find(call => call.method === 'transform').data.angle), -2.7);
+            await page.getByRole('button', { name: 'Flatten shadows', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath.endsWith('-prepared'));
+            const preparation = await page.evaluate(() => window.ocrSmoke.calls.find(call => call.method === 'prepare').data);
+            assert.equal(preparation.path, corrected.imagePath);
+            assert.equal(preparation.config.stages[0].cleanup.whiten_background, true);
+            assert.equal(preparation.config.stages[0].cleanup.deskew, false);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath.endsWith('-deskewed'));
+            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].originalImagePath), corrected.originalImagePath);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
         await test('desktop and compact layouts remain usable', 'review', async page => {
             await page.getByRole('button', { name: 'Next issue', exact: true }).click();
             await assertFitPage(page, 'Desktop');
             await page.screenshot({ path: path.join(output, 'ocr-workspace-desktop.png'), fullPage: true });
             await page.setViewportSize({ width: 390, height: 844 });
+            const nav = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await nav.getByRole('button', { name: 'Page image', exact: true }).click();
             await assertFitPage(page, 'Compact');
             await page.screenshot({ path: path.join(output, 'ocr-workspace-compact.png'), fullPage: true });
             const sizes = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
             assert.ok(sizes.documentWidth <= sizes.width + 2, `Compact layout overflows: ${sizes.documentWidth} > ${sizes.width}`);
-            assert.ok(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).isVisible());
+            await nav.getByRole('button', { name: /^Pages\b/ }).click();
+            await page.getByRole('complementary', { name: 'Document pages', exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            await nav.getByRole('button', { name: 'Text & tools', exact: true }).click();
+            assert.equal(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).inputValue(), 'Invoice NS-2026-1042');
+            await page.screenshot({ path: path.join(output, 'ocr-phone-text-review.png'), fullPage: true });
+            await nav.getByRole('button', { name: /^Pages\b/ }).click();
+            await page.screenshot({ path: path.join(output, 'ocr-phone-page-list.png'), fullPage: true });
+            for (const button of await nav.getByRole('button').all()) {
+                const bounds = await button.boundingBox();
+                assert.ok(bounds && bounds.height >= 44, 'Phone view navigation must have touch-sized targets');
+            }
+            await page.setViewportSize({ width: 320, height: 667 });
+            await nav.getByRole('button', { name: 'Page image', exact: true }).click();
+            const narrow = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
+            assert.ok(narrow.documentWidth <= narrow.width + 2, `Narrow phone layout overflows: ${narrow.documentWidth} > ${narrow.width}`);
+            assert.ok((await page.locator('.canvas-shell .viewport').boundingBox())?.height >= 80, 'Narrow phone retains room for the page image');
+            await page.setViewportSize({ width: 844, height: 390 });
+            await assertFitPage(page, 'Phone landscape');
+            const landscape = await page.evaluate(() => {
+                const preview = document.querySelector('.canvas-shell .viewport').getBoundingClientRect();
+                return { width: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth, previewTop: preview.top, previewBottom: preview.bottom };
+            });
+            assert.ok(landscape.documentWidth <= landscape.width + 2, 'Landscape phone must not overflow horizontally');
+            assert.ok(landscape.previewTop >= 0 && landscape.previewBottom <= landscape.height, 'Landscape page preview must remain within the screen');
         });
     } catch (error) {
         results.push({ name: 'browser setup', status: 'failed', error: error.stack ?? String(error) });
@@ -419,7 +670,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

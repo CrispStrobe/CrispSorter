@@ -1,0 +1,317 @@
+name: OCR mobile native integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-build']
+    paths:
+      - '.github/workflows/ocr-mobile-native.yml'
+      - 'scripts/build_mobile_crispembed.py'
+      - 'scripts/ocr-mobile-runtime-lock.json'
+      - 'scripts/prepare_ocr_ios_project.py'
+      - 'scripts/prepare_ocr_cargo_env.py'
+      - 'scripts/mobile_ocr_webview_smoke.mjs'
+      - 'scripts/validate_android_native_libs.py'
+      - 'tools/mobile-ocr-probe/**'
+      - 'tests/scripts/test_*mobile*'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/tauri.ocr-mobile.conf.json'
+      - 'src-tauri/src/model_provisioning.rs'
+      - 'src-tauri/src/ocr_workspace.rs'
+      - 'src-tauri/src/ocr_photo.rs'
+      - 'src-tauri/src/lib.rs'
+      - 'src/lib/ocr/**'
+      - 'src/lib/components/OcrWorkbench.svelte'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-mobile-native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_NET_RETRY: '10'
+  CARGO_HTTP_MULTIPLEXING: 'false'
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+      - name: Read immutable feature runtime source
+        id: runtime
+        working-directory: repos/CrispSorter
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re
+          value = json.load(open('scripts/ocr-mobile-runtime-lock.json'))['source_commit']
+          assert re.fullmatch('[0-9a-f]{40}', value)
+          print('source=' + value)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: ${{ steps.runtime.outputs.source }}
+          path: repos/CrispEmbed
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify build and fixture contracts
+        working-directory: repos/CrispSorter
+        run: |
+          python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v
+          python3 -m py_compile scripts/build_mobile_crispembed.py scripts/prepare_ocr_ios_project.py scripts/prepare_ocr_cargo_env.py tools/mobile-ocr-probe/prepare.py
+          node --check scripts/mobile_ocr_webview_smoke.mjs
+          bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
+          c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
+
+  mobile:
+    # The infrastructure work branch runs contracts while the app integration
+    # is prepared. The primary feature branch runs the complete target matrix.
+    if: github.ref_name == 'feat/ocr-document-studio' || github.event_name == 'workflow_dispatch'
+    needs: contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            runtime: android-arm64
+            rust: aarch64-linux-android
+            cli: aarch64
+            abi: arm64-v8a
+            probe: false
+          - runner: ubuntu-24.04
+            runtime: android-x86_64
+            rust: x86_64-linux-android
+            cli: x86_64
+            abi: x86_64
+            probe: true
+          - runner: macos-15
+            runtime: ios-sim-arm64
+            rust: aarch64-apple-ios-sim
+            cli: aarch64-sim
+            abi: arm64
+            probe: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+      - name: Read immutable feature runtime source
+        id: runtime
+        working-directory: repos/CrispSorter
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re
+          value = json.load(open('scripts/ocr-mobile-runtime-lock.json'))['source_commit']
+          assert re.fullmatch('[0-9a-f]{40}', value)
+          print('source=' + value)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: ${{ steps.runtime.outputs.source }}
+          submodules: recursive
+          path: repos/CrispEmbed
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispASR
+          ref: v0.8.32
+          path: repos/CrispASR
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-docx
+          ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
+          path: repos/crisp-docx
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+          shared-key: ocr-mobile-${{ matrix.runtime }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        if: runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        if: runner.os == 'Linux'
+        with:
+          packages: 'platform-tools'
+      - name: Configure Android native toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build pkg-config protobuf-compiler fonts-dejavu-core
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+          ndk="$ANDROID_HOME/ndk/27.2.12479018"
+          ndk_bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          rust_target='${{ matrix.rust }}'
+          rust_key="${rust_target//-/_}"
+          upper_key="${rust_key^^}"
+          {
+            echo "ANDROID_NDK_HOME=$ndk"
+            echo "NDK_HOME=$ndk"
+            echo "OCR_NDK_BIN=$ndk_bin"
+            echo "CC_${rust_key}=$ndk_bin/${rust_target}24-clang"
+            echo "CXX_${rust_key}=$ndk_bin/${rust_target}24-clang++"
+            echo "AR_${rust_key}=$ndk_bin/llvm-ar"
+            echo "RANLIB_${rust_key}=$ndk_bin/llvm-ranlib"
+            echo "CARGO_TARGET_${upper_key}_LINKER=$ndk_bin/${rust_target}24-clang"
+            echo "RUSTFLAGS=-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+          } >> "$GITHUB_ENV"
+          for tool in ranlib ar strip nm objdump readelf; do
+            ln -sf "$ndk_bin/llvm-$tool" "$ndk_bin/${rust_target}-$tool"
+          done
+          echo "$ndk_bin" >> "$GITHUB_PATH"
+      - name: Prepare iOS project tools
+        if: runner.os == 'macOS'
+        run: |
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+      - name: Build matching native runtime
+        working-directory: repos/CrispSorter
+        run: |
+          python3 scripts/build_mobile_crispembed.py \
+            --source ../CrispEmbed --output "$RUNNER_TEMP/ocr-mobile-runtime" \
+            --lock scripts/ocr-mobile-runtime-lock.json \
+            --target '${{ matrix.runtime }}' --jobs 2
+          echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
+      - name: Preserve the runtime path through nested Tauri and Xcode Cargo calls
+        working-directory: repos/CrispSorter
+        run: |
+          python3 scripts/prepare_ocr_cargo_env.py --project . \
+            --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
+      - name: Prepare immutable synthetic probe inputs
+        if: matrix.probe
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install 'Pillow==11.3.0'
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            font=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          else
+            font=/System/Library/Fonts/Supplemental/Arial.ttf
+          fi
+          python3 tools/mobile-ocr-probe/prepare.py --output "$RUNNER_TEMP/ocr-mobile-inputs" --font "$font"
+      - name: Link actual target photo and inference probe
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            "$OCR_NDK_BIN/${{ matrix.rust }}24-clang++" -std=c++17 -static-libstdc++ \
+              -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp \
+              -L "$CRISPEMBED_SYS_LIB_DIR" -lcrispembed \
+              -Wl,--no-undefined -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 \
+              -o "$RUNNER_TEMP/ocr-mobile-probe"
+          else
+            sdk_path=$(xcrun --sdk iphonesimulator --show-sdk-path)
+            xcrun --sdk iphonesimulator clang++ -std=c++17 \
+              -target arm64-apple-ios16.0-simulator -isysroot "$sdk_path" \
+              -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp \
+              "$CRISPEMBED_SYS_LIB_DIR/libcrispembed.a" -lc++ \
+              -framework Foundation -framework Metal -framework MetalKit -framework Accelerate \
+              -o "$RUNNER_TEMP/ocr-mobile-probe"
+          fi
+      - name: Build Android OCR application
+        if: runner.os == 'Linux'
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          mkdir -p src-tauri/bin
+          cp "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" src-tauri/bin/ocr-mobile-runtime.json
+          npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
+          CRISPEMBED_BUILD_DIR="$CRISPEMBED_SYS_LIB_DIR" \
+            bash scripts/bundle_android_native_libs.sh --abi '${{ matrix.abi }}' --require-crispembed
+          npx tauri android build --target '${{ matrix.cli }}' --features ocr-mobile \
+            --debug --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json
+          mkdir -p "$RUNNER_TEMP/ocr-mobile-app"
+          python3 - <<'PY'
+          import os, pathlib, shutil, subprocess
+          apks = [p for p in pathlib.Path('src-tauri/gen/android').rglob('*.apk') if 'androidTest' not in str(p)]
+          if len(apks) != 1:
+              raise SystemExit(f'Expected one debug APK, found {len(apks)}')
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 'ocr-mobile-app/CrispSorter-ocr.apk'
+          shutil.copy2(apks[0], target)
+          subprocess.run([str(pathlib.Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0/zipalign'),
+                          '-c', '-P', '16', '4', str(target)], check=True)
+          PY
+      - name: Build iOS OCR simulator application
+        if: runner.os == 'macOS'
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          mkdir -p src-tauri/bin
+          cp "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" src-tauri/bin/ocr-mobile-runtime.json
+          npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
+          python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml
+          npx tauri ios build --target aarch64-sim --features ocr-mobile \
+            --debug --ci --config src-tauri/tauri.ocr-mobile.conf.json
+      - name: Install pinned Android WebView test driver
+        if: matrix.runtime == 'android-x86_64'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ocr-webview-tools" --no-save --package-lock=false 'playwright@1.62.1'
+          echo "PLAYWRIGHT_MODULE_PATH=$RUNNER_TEMP/ocr-webview-tools/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Enable Android emulator acceleration
+        if: matrix.runtime == 'android-x86_64'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Execute native OCR, real app model installation and review export on Android
+        if: matrix.runtime == 'android-x86_64'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash repos/CrispSorter/tools/mobile-ocr-probe/run_android.sh
+      - name: Execute native OCR and app startup on iOS
+        if: runner.os == 'macOS'
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: bash tools/mobile-ocr-probe/run_ios.sh
+      - name: Save native runtime, probe and application evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-mobile-${{ matrix.runtime }}
+          path: |
+            ${{ runner.temp }}/ocr-mobile-runtime/runtime-build.json
+            ${{ runner.temp }}/ocr-mobile-inputs/inputs.json
+            ${{ runner.temp }}/ocr-mobile-evidence/
+            ${{ runner.temp }}/ocr-mobile-app/
+          if-no-files-found: warn
+          retention-days: 14

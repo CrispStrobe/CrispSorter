@@ -265,6 +265,8 @@ usls = { version = "=0.2.0-alpha.3", default-features = false, features = ["visi
 
 [dev-dependencies]
 sysinfo = "0.33"
+# Exercise the Android installer's real trust-bundle configuration on host CI.
+webpki-root-certs = "=1.0.8"
 # Mock HTTP server for unit tests covering the cloud-backup and
 # CrispLens wire commands.  Async API — `Server::new_async()` + the
 # `match_query` / `match_header` predicates fit the existing
@@ -400,7 +402,14 @@ ocr-review-diagnostics = ["crispembed"]
 # raster embedding, Unicode text, and document-sized page tables.
 ocr-reviewed-pdf = ["ocr-review-diagnostics"]
 # Complete paired OCR workspace without imposing desktop-only integrations.
-ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf"]
+# Requires the matching native photo API and Rust binding from the paired build.
+# Keep ordinary released-library builds independent of the additive ABI.
+ocr-photo-tools = ["crispembed"]
+ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools"]
+# Paired mobile OCR includes app-private model provisioning and image/TIFF import.
+# Searchable PDF export uses CrispEmbed's writer; PDF import requires a separately
+# packaged mobile PDF rasterizer and is deliberately not advertised here.
+ocr-mobile = ["crispembed", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools", "dep:webpki-root-certs"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
 crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
@@ -446,6 +455,11 @@ crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
 # Cross-platform clipboard access — desktop only (arboard has no Android/iOS backend).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 arboard = "3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The model installer uses public roots without an uninitialized JVM verifier.
+# This version is already pinned transitively in the workspace lockfile.
+webpki-root-certs = { version = "=1.0.8", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows

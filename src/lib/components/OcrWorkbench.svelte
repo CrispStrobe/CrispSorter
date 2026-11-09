@@ -55,16 +55,22 @@
     PanelLeftOpen,
     ScanLine,
     ShieldCheck,
+    Camera,
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
+  import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
+  import { captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
+  import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import {
     workspaceClient,
+    modelDownloadLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
     type ExtractionField,
     type TransformOptions,
     type ExportRequest,
+    type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
@@ -143,6 +149,16 @@
   let pageWindowStart = $state(0);
   const pageWindowSize = 100;
   let pageRail = $state(true);
+  let mobileView = $state<"pages" | "image" | "tools">("image");
+  let photoOpen = $state(false);
+  let perspective = $state(false);
+  let photoQuad = $state<PhotoQuad>(initialPhotoQuad(100, 100));
+  let photoAssessment = $state<PhotoAssessment | null>(null);
+  let photoAngle = $state(0);
+  let modelProgress = $state("");
+  let modelSetupPanel = $state<HTMLElement>();
+  let cameraInput = $state<HTMLInputElement>();
+  let lastPhotoSource = "";
   let inspector = $state<"review" | "recognition" | "extract" | "export">(
     "review",
   );
@@ -196,7 +212,9 @@
     currentId: null,
     remainingIds: [],
   });
-  let queuePromise: Promise<void> | null = null;
+  let queuePromise = $state<Promise<void> | null>(null);
+  let runningProjectId = "", runningBatchId = "";
+  let checkpointFailed = false;
   let autosave: ProjectAutosave<OcrProject> | null = null;
   let mounted = true;
   let editGroup: string | null = null;
@@ -236,6 +254,17 @@
   const activePage = $derived(
     project.pages.find((p) => p.id === selectedPageId) ?? project.pages[0],
   );
+  $effect(() => {
+    const key = `${project.id}:${activePage?.id}:${activePage?.imagePath}`;
+    if (key === lastPhotoSource) return;
+    lastPhotoSource = key;
+    photoAssessment = null;
+    photoAngle = 0;
+    perspective = false;
+    photoQuad = initialPhotoQuad(activePage?.width ?? 100, activePage?.height ?? 100);
+  });
+  const savedBatchPending = $derived(project.batch?.jobs.filter(job => job.state === "pending" || job.state === "running").length ?? 0);
+  const savedBatchFailed = $derived(project.batch?.jobs.filter(job => job.state === "failed").length ?? 0);
   const pageIndex = $derived(
     activePage ? project.pages.findIndex((p) => p.id === activePage.id) : -1,
   );
@@ -304,6 +333,7 @@
   const recognitionWarnings = $derived([
     ...new Set(
       [
+        activePage?.provenance.importWarnings,
         activePage?.provenance.warnings,
         activePage?.provenance.preparationWarnings,
       ]
@@ -317,13 +347,13 @@
   const queueActive = $derived(
     ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
   );
-  const locked = $derived(booting || closing || !!busy || queueActive);
+  const locked = $derived(booting || closing || !!busy || queueActive || queuePromise !== null);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
-    typeof settings.engine === "string" ? settings.engine : "auto",
+    typeof settings.engine === "string" ? settings.engine : (capabilities.default_engine ?? "auto"),
   );
   const language = $derived(
-    typeof settings.language === "string" ? settings.language : "auto",
+    typeof settings.language === "string" ? settings.language : (capabilities.default_language ?? "auto"),
   );
   // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
   const cpuBudget = $derived(
@@ -413,31 +443,31 @@
 
   const queue = new SequentialQueue<RecognitionResult>({
     canStart: () => !busy && capabilities.ocr,
-    isCurrent: (job) => project.pages.some((p) => p.id === job.id),
+    isCurrent: (job) => project.id === runningProjectId && project.batch?.id === runningBatchId && batchPageIsCurrent(project, job.id),
     onState: (state) => {
       queueState = { ...state, remainingIds: [...state.remainingIds] };
     },
-    onStart: (job) => {
-      change(
-        updatePage(project, job.id, { status: "running", error: null }),
-        false,
-      );
+    onStart: async (job) => {
+      change(updateBatchPage(updatePage(project, job.id, { status: "running", error: null }), job.id, "running"), false);
+      await autosave?.flush();
     },
-    onResult: (job, result) => {
-      change(
-        applyRecognition(project, job.id, result, project.profileId),
-        false,
-      );
+    onResult: async (job, result) => {
+      const next = applyRecognition(project, job.id, result, project.batch?.profileId ?? project.profileId);
+      change(updateBatchPage(next, job.id, "completed"), false);
+      await autosave?.flush();
     },
-    onError: (job, failure) => {
-      change(
-        updatePage(project, job.id, {
-          status: "failed",
-          error: message(failure),
-          approved: false,
-        }),
-        false,
-      );
+    onError: async (job, failure) => {
+      const next = updatePage(project, job.id, { status: "failed", error: message(failure), approved: false });
+      change(updateBatchPage(next, job.id, "failed", message(failure)), false);
+      await autosave?.flush();
+    },
+    onCheckpointError: (failure, job, stage) => {
+      checkpointFailed = true;
+      let next = project;
+      if (stage === "start") next = updateBatchPage(updatePage(next, job.id, { status: "pending" }), job.id, "pending");
+      change(updateBatchPhase(next, "stopped"), false);
+      const reason = saveStatus.state === "error" ? "its project checkpoint could not be saved" : "a recognition result or checkpoint could not be accepted";
+      error = `Recognition stopped because ${reason}. Your current results remain in this workspace. Resolve the reported problem, save the project, then resume the saved batch. ${message(failure)}`;
     },
   });
 
@@ -584,6 +614,73 @@
       busy = "";
     }
   }
+  async function capturePhoto(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || locked || !client.importImage) return;
+    error = "";
+    const invalid = captureFileError(file);
+    if (invalid) { error = invalid; return; }
+    busy = "Importing photo";
+    try {
+      const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()));
+      const before = project.pages.length;
+      const next = addDocument(project, imported);
+      if (!before) next.name = imported.name.replace(/\.[^.]+$/, "") || "Photo project";
+      change(next);
+      selectPage(next.pages[before].id);
+      photoOpen = true;
+      mobileView = "image";
+      await autosave?.flush();
+      notice = "Photo added. Check its edges, tilt and lighting before recognition.";
+    } catch (failure) { fail(failure); }
+    finally { busy = ""; }
+  }
+  async function assessPhoto() {
+    const page = activePage;
+    if (!page || locked || !client.assessPhoto) return;
+    busy = "Checking photo quality";
+    error = "";
+    try {
+      const result = await client.assessPhoto(page.imagePath);
+      if (activePage?.id !== page.id || activePage.imagePath !== page.imagePath) return;
+      photoAssessment = result;
+      photoAngle = result.correction_degrees ?? 0;
+      notice = result.correction_degrees === null ? "Inspect the page and adjust tilt manually if needed." : "Tilt estimated. Apply the correction, then inspect the preview.";
+    } catch (failure) { fail(failure); }
+    finally { busy = ""; }
+  }
+  function showPhotoTools() {
+    photoOpen = !photoOpen;
+    mobileView = "image";
+    showOriginal = false;
+    drawMode = "select";
+    if (!photoOpen) perspective = false;
+  }
+  function setPerspective(enabled: boolean) {
+    perspective = enabled;
+    showOriginal = false;
+    drawMode = "select";
+    mobileView = "image";
+  }
+  async function applyPerspective() {
+    if (!activePage) return;
+    const invalid = photoQuadError(photoQuad, activePage.width, activePage.height);
+    if (invalid) { error = invalid; return; }
+    await transform("perspective", { quad: photoQuad.map(point => ({ ...point })) as PhotoQuad });
+  }
+  async function flattenShadows() {
+    await prepareImage({
+      denoise: false, dewarp: false, restore: false, sr: false, cleanup_enabled: true,
+      stages: [{ cleanup: { enabled: true, deskew: false, crop_borders: false, whiten_background: true,
+        binarize: false, despeckle: false, blackfilter: false, auto_crop: false, page_split: false } }],
+    });
+  }
+  function openInspector(panel: typeof inspector) {
+    inspector = panel;
+    mobileView = "tools";
+  }
   // Handle each hand-off once, after the last project has been restored (so
   // the document joins it instead of being replaced by it) and while no batch,
   // save or import holds the workspace (`locked` also covers booting).
@@ -650,6 +747,7 @@
     if (next) selectPage(next.id);
   }
   async function selectRegion(id: string) {
+    mobileView = "tools";
     selectedRegionId = id;
     inspector = "review";
     textView = "regions";
@@ -740,7 +838,7 @@
     const issue = reviewIssues[(current + 1) % reviewIssues.length];
     selectPage(issue.pageId);
     if (issue.regionId) void selectRegion(issue.regionId);
-    else inspector = "review";
+    else openInspector("review");
   }
   function approveRegion() {
     if (activePage && region) {
@@ -769,6 +867,27 @@
       recognitionSettings: { ...settings, [key]: value },
       updatedAt: new Date().toISOString(),
     });
+  }
+  async function openMobileModels() {
+    openInspector("recognition");
+    await tick();
+    modelSetupPanel?.scrollIntoView({ block: "nearest" });
+    modelSetupPanel?.querySelector<HTMLButtonElement>("button")?.focus();
+  }
+  async function installBasicModels() {
+    if (locked || !capabilities.mobile_model_store || !client.installMobileModels) return;
+    busy = "Installing OCR models";
+    error = ""; notice = ""; modelProgress = "Checking model installation…";
+    try {
+      const names = await client.installMobileModels(language === "auto" ? "eng" : language, (progress) => {
+        if (mounted) modelProgress = modelDownloadLabel(progress);
+      });
+      if (mounted) notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+    } catch (value) {
+      if (mounted) fail(value);
+    } finally {
+      if (mounted) { busy = ""; modelProgress = ""; }
+    }
   }
   function setConfig(key: string, value: unknown) {
     setSetting("config", {
@@ -848,69 +967,88 @@
     error = "";
     selectedRegionId = null;
     showOriginal = false;
-    const configSnapshot = JSON.parse(JSON.stringify(config)),
-      engineSnapshot = engine,
-      languageSnapshot = language,
-      cpuBudgetSnapshot = cpuBudget,
-      projectId = project.id;
-    // One undo boundary covers the entire batch. Each page result is still autosaved.
-    change(
-      updatePage(project, pages[0].id, { status: "running", error: null }),
-    );
+    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, ...(cpuBudget ? { cpuPixelBudget: true } : {}) };
+    change(beginBatch(project, pages.map(page => page.id), options));
+    await runPreparedBatch(pages.map(page => page.id), options);
+  }
+  async function finishQueueSegment() {
+    const phase = queueState.phase === "paused" ? "paused" : queueState.phase === "cancelled" ? "stopped" : "completed";
+    let next = project;
+    for (const id of queueState.remainingIds) {
+      if (next.pages.find(page => page.id === id)?.status === "running") {
+        next = updateBatchPage(updatePage(next, id, { status: "pending" }), id, "pending");
+      }
+    }
+    change(updateBatchPhase(next, phase), false);
+    if (checkpointFailed) return;
+    await autosave?.flush();
+    notice = phase === "paused" ? "Queue paused. Completed pages are saved." : phase === "stopped"
+      ? "Queue stopped. Resume the saved batch to finish its original selection."
+      : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
+  }
+  async function runPreparedBatch(pageIds: string[], options: BatchOptions) {
+    busy = "Saving recognition batch";
+    checkpointFailed = false;
     try {
-      const started = queue.start(
-        pages.map((p) => ({
-          id: p.id,
-          run: async () => {
-            if (project.id !== projectId)
-              throw new Error("The active project changed.");
-            const current = project.pages.find((page) => page.id === p.id);
-            if (!current) throw new Error("The page was removed.");
-            return client.recognize({
-              pagePath: current.imagePath,
-              pageWidthPoints: current.widthPoints,
-              pageHeightPoints: current.heightPoints,
-              config: configSnapshot,
-              engine: engineSnapshot,
-              language: languageSnapshot,
-              cpuPixelBudget: cpuBudgetSnapshot,
-            });
-          },
-        })),
-      );
+      // Persist exact intent and settings before the first native invocation.
+      await autosave?.flush();
+      runningProjectId = project.id;
+      runningBatchId = project.batch?.id ?? "";
+      busy = "";
+      const started = queue.start(pageIds.map(id => ({
+        id,
+        run: async () => {
+          if (!batchPageIsCurrent(project, id)) throw new Error("The saved page changed. Start a new recognition selection.");
+          const current = project.pages.find(page => page.id === id)!;
+          return client.recognize({ pagePath: current.imagePath, pageWidthPoints: current.widthPoints,
+            pageHeightPoints: current.heightPoints, config: options.config, engine: options.engine, language: options.language,
+            cpuPixelBudget: options.cpuPixelBudget === true });
+        },
+      })));
       if (!started) throw new Error("The recognition queue is already active.");
       queuePromise = queue.whenSettled();
       await queuePromise;
-      await autosave?.flush();
-      notice =
-        queueState.phase === "paused"
-          ? "Queue paused. Completed pages are saved."
-          : queueState.phase === "cancelled"
-            ? "Queue stopped. Completed pages are saved; remaining pages are ready to resume."
-            : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
-    } catch (e) {
-      fail(e);
-    } finally {
-      queuePromise = null;
-    }
+      await finishQueueSegment();
+    } catch (failure) {
+      change(updateBatchPhase(project, "stopped"), false);
+      fail(failure);
+    } finally { busy = ""; queuePromise = null; }
+  }
+  async function resumeSavedBatch(retryFailed = false) {
+    if (locked || !capabilities.ocr) return;
+    error = "";
+    const plan = resumeBatch(project, { retryFailed });
+    if (plan.conflicts.length) { error = plan.conflicts.join("\n"); return; }
+    if (!plan.pageIds.length || !plan.options) { notice = "No unfinished pages in the saved batch"; return; }
+    change(plan.project);
+    await runPreparedBatch(plan.pageIds, plan.options);
+  }
+  async function stopQueue() {
+    const paused = queue.state.phase === "paused";
+    // The previous segment owns its final checkpoint until it clears this lock.
+    if (paused && queuePromise) return;
+    queue.cancel();
+    if (!paused) return; // A running segment saves its stopped phase on settlement.
+    const stopped = Promise.resolve().then(() => finishQueueSegment());
+    queuePromise = stopped;
+    try { await stopped; }
+    catch (failure) { fail(failure); }
+    finally { if (queuePromise === stopped) queuePromise = null; }
   }
   async function resumeQueue() {
-    if (!queue.resume()) return;
-    queuePromise = queue.whenSettled();
+    if (busy || queuePromise) return;
+    busy = "Saving recognition checkpoint";
+    checkpointFailed = false;
     try {
-      await queuePromise;
+      change(updateBatchPhase(project, "running"), false);
       await autosave?.flush();
-      notice =
-        queueState.phase === "paused"
-          ? "Queue paused"
-          : queueState.phase === "cancelled"
-            ? "Queue stopped. Completed pages are saved."
-            : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed` : ""}`;
-    } catch (e) {
-      fail(e);
-    } finally {
-      queuePromise = null;
-    }
+      busy = "";
+      if (!queue.resume()) return;
+      queuePromise = queue.whenSettled();
+      await queuePromise;
+      await finishQueueSegment();
+    } catch (failure) { change(updateBatchPhase(project, "paused"), false); fail(failure); }
+    finally { busy = ""; queuePromise = null; }
   }
   function persistExtraction() {
     if (!activePage || locked || extractionPageId !== activePage.id) return;
@@ -963,6 +1101,8 @@
         operation,
         ...options,
       });
+      const first = result.pages[0];
+      const pixelsChanged = result.pages.length !== 1 || !first || first.image_path !== page.imagePath || first.width !== page.width || first.height !== page.height;
       if (result.pages.length > 1) {
         const before = project.pages.findIndex((p) => p.id === page.id);
         change(splitPage(project, page.id, result.pages));
@@ -973,14 +1113,16 @@
       } else throw new Error("The operation produced no pages.");
       showOriginal = false;
       drawMode = "select";
-      notice = "Page updated. Recognize the new pixels before export.";
+      notice = pixelsChanged
+        ? "Page updated. Recognize the new pixels before export."
+        : "The page pixels are unchanged. Reviewed text and approval were retained.";
     } catch (e) {
       fail(e);
     } finally {
       busy = "";
     }
   }
-  async function prepareImage() {
+  async function prepareImage(override?: Record<string, unknown>) {
     if (!activePage || locked) return;
     const page = activePage;
     busy = "Repairing scan";
@@ -988,7 +1130,7 @@
     try {
       const result = await client.prepare(
         page.imagePath,
-        config,
+        override ?? config,
         page.widthPoints,
         page.heightPoints,
       );
@@ -1211,7 +1353,7 @@
         outputPath: target,
         overwrite,
       });
-      notice = `Exported ${result.pages} pages · ${result.saved_path}`;
+      notice = result.cancelled ? "Export cancelled" : `Exported ${result.pages} pages · ${result.saved_path}`;
     } catch (e) {
       if (
         !overwrite &&
@@ -1377,7 +1519,7 @@
       );
       if (!outputPath) return;
       const result = await client.writeText(outputPath, text, sources);
-      notice = `Saved ${result.saved_path}`;
+      notice = result.cancelled ? "Export cancelled" : `Saved ${result.saved_path}`;
     } catch (e) {
       fail(e);
     } finally {
@@ -1424,6 +1566,7 @@
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       searchOpen = true;
+      openInspector("review");
       return;
     }
     if (
@@ -1451,6 +1594,7 @@
     }
     if (event.key === "Escape") {
       drawMode = "select";
+      perspective = false;
       confirm = null;
       helpOpen = false;
       recentOpen = false;
@@ -1469,7 +1613,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (queueActive || busy || autosave?.hasUnsavedChanges()) {
+    if (queueActive || queuePromise || busy || autosave?.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1518,7 +1662,7 @@
             event.preventDefault();
             return;
           }
-          if (busy || (queueActive && queueState.phase !== "paused")) {
+          if (busy || queuePromise || (queueActive && queueState.phase !== "paused")) {
             event.preventDefault();
             await nativeMessage(
               "A document operation is still running. Stop the recognition queue or wait for the current operation to finish, then close the window again. Completed pages are saved automatically.",
@@ -1527,7 +1671,10 @@
             return;
           }
           closing = true;
-          if (queueState.phase === "paused") queue.cancel();
+          if (queueState.phase === "paused") {
+            queue.cancel();
+            change(updateBatchPhase(project, "stopped"), false);
+          }
           try {
             // Tauri waits for this handler before honoring the user's close.
             await autosave?.flush();
@@ -1559,9 +1706,26 @@
   });
 </script>
 
+{#snippet mobileModelSetup()}
+{#if capabilities.mobile_model_store && client.installMobileModels}
+  <section bind:this={modelSetupPanel} class="model-install" aria-label="On-device OCR models">
+    <h3>On-device OCR models</h3>
+    <p class="field-hint">Install the text detector and selected Tesseract language before recognition. English is used for Model default. Downloads are verified and stored on this device.</p>
+    <button class="button" onclick={installBasicModels} disabled={locked}>
+      <Download size={16} /> Install basic OCR models
+    </button>
+    {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
+    <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
+  </section>
+{/if}
+{/snippet}
+
 <svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
 
 <section class="ocr-workspace" aria-label="OCR document workspace">
+  <!-- Android's native chooser requires the image/* token to enter camera capture.
+       Unsupported image formats are checked after selection, before import. -->
+  <input class="camera-input" bind:this={cameraInput} type="file" accept="image/*" capture="environment" aria-label="Camera photo file" onchange={capturePhoto} />
   <header class="workspace-header">
     <div class="workspace-mark"><ScanText size={22} /></div>
     <div class="workspace-title">
@@ -1616,7 +1780,7 @@
         ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
       ><button class="button subtle" onclick={newProject} disabled={locked}
         ><Plus size={15} /> New</button
-      ><button class="button subtle" onclick={flush} disabled={booting}
+      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save"
         ><Save size={15} /><span class="optional-label">Save</span></button
       >
     </div>
@@ -1628,6 +1792,8 @@
       onclick={() => importFiles()}
       disabled={locked}><Plus size={16} /> Add documents</button
     >
+    {#if capabilities.camera_import && client.importImage}<button class="button" onclick={() => cameraInput?.click()} disabled={locked}><Camera size={16} /> Capture photo</button>{/if}
+    {#if capabilities.mobile_model_store && client.installMobileModels}<button class="button" onclick={openMobileModels} disabled={locked}><Download size={16} /> OCR models</button>{/if}
     <div class="command-separator"></div>
     <button
       class="button"
@@ -1650,8 +1816,7 @@
     >
     <button
       class="button subtle"
-      onclick={() =>
-        (inspector = inspector === "recognition" ? "review" : "recognition")}
+      onclick={() => openInspector(inspector === "recognition" ? "review" : "recognition")}
       class:active={inspector === "recognition"}
       title="Recognition settings"
       ><SlidersHorizontal size={15} /><span class="optional-label"
@@ -1676,7 +1841,7 @@
     </div>
     <button
       class="button export-button"
-      onclick={() => (inspector = "export")}
+      onclick={() => openInspector("export")}
       disabled={!project.pages.length}
       ><Download size={15} /> Export <ChevronRight size={14} /></button
     >
@@ -1752,7 +1917,8 @@
       {#if queueActive}<div class="queue-actions">
           {#if queueState.phase === "paused"}<button
               class="button small"
-              onclick={resumeQueue}><Play size={13} /> Resume</button
+              onclick={resumeQueue}
+              disabled={!!busy || queuePromise !== null}><Play size={13} /> Resume</button
             >{:else}<button
               class="button small"
               onclick={() => queue.pause()}
@@ -1760,8 +1926,8 @@
               ><Pause size={13} /> Pause</button
             >{/if}<button
             class="button small"
-            onclick={() => queue.cancel()}
-            disabled={queueState.phase === "cancelling"}
+            onclick={stopQueue}
+            disabled={queueState.phase === "cancelling" || (queueState.phase === "paused" && queuePromise !== null)}
             ><Square size={12} /> Stop</button
           >
         </div>{:else if queueState.failed}<button
@@ -1772,6 +1938,13 @@
     </div>
   {/if}
 
+  {#if !queueActive && project.batch && (savedBatchPending || savedBatchFailed)}
+    <div class="batch-recovery" role="region" aria-label="Saved recognition batch">
+      <div><strong>{project.batch.phase === "interrupted" ? "Interrupted batch recovered" : "Saved recognition batch"}</strong><span>{savedBatchPending} unfinished · {savedBatchFailed} failed · original selection and settings retained</span></div>
+      {#if savedBatchPending}<button class="button small" onclick={() => resumeSavedBatch()} disabled={locked || !capabilities.ocr}><Play size={13} /> Resume saved batch</button>{/if}
+      {#if savedBatchFailed}<button class="button small" onclick={() => resumeSavedBatch(true)} disabled={locked || !capabilities.ocr}><RefreshCw size={13} /> Retry saved failures</button>{/if}
+    </div>
+  {/if}
   {#if booting}
     <div class="loading-state">
       <LoaderCircle size={30} class="spin" />
@@ -1794,7 +1967,8 @@
           onclick={() => importFiles()}
           disabled={locked}><Plus size={18} /> Add documents</button
         >
-        <div class="supported">PDF · TIFF · PNG · JPEG · BMP · WebP</div>
+        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP</div>
+        {@render mobileModelSetup()}
         {#if !capabilities.ocr}<div class="capability-note">
             <AlertTriangle size={16} /><span
               >{capabilities.reason ??
@@ -1834,13 +2008,18 @@
       </div>
     </div>
   {:else}
-    <div class="work-area" class:rail-hidden={!pageRail}>
-      {#if pageRail}
+    <nav class="mobile-workspace-nav" aria-label="Workspace views">
+      <button class:active={mobileView === "pages"} aria-pressed={mobileView === "pages"} onclick={() => { mobileView = "pages"; pageRail = true; }}><Layers size={16} /> Pages <span>{project.pages.length}</span></button>
+      <button class:active={mobileView === "image"} aria-pressed={mobileView === "image"} onclick={() => (mobileView = "image")}><Image size={16} /> Page image</button>
+      <button class:active={mobileView === "tools"} aria-pressed={mobileView === "tools"} onclick={() => (mobileView = "tools")}><FileText size={16} /> Text & tools</button>
+    </nav>
+    <div class="work-area" class:rail-hidden={!pageRail} data-mobile-view={mobileView}>
+      {#if pageRail || mobileView === "pages"}
         <aside class="page-rail" aria-label="Document pages">
           <div class="rail-heading">
             <strong>Pages <span>{project.pages.length}</span></strong><button
               class="icon-button"
-              onclick={() => (pageRail = false)}
+              onclick={() => { pageRail = false; mobileView = "image"; }}
               aria-label="Hide page list"><PanelLeftClose size={16} /></button
             >
           </div>
@@ -1907,7 +2086,7 @@
                 />
                 <button
                   class="page-card-main"
-                  onclick={() => selectPage(page.id)}
+                  onclick={() => { selectPage(page.id); mobileView = "image"; }}
                   aria-label={`Page ${number}: ${page.name}`}
                   aria-current={activePage?.id === page.id ? "page" : undefined}
                 >
@@ -2045,7 +2224,7 @@
         <div class="image-toolbar">
           {#if !pageRail}<button
               class="icon-button"
-              onclick={() => (pageRail = true)}
+              onclick={() => { pageRail = true; mobileView = "pages"; }}
               aria-label="Show page list"><PanelLeftOpen size={16} /></button
             >{/if}
           <div class="tool-group">
@@ -2110,10 +2289,17 @@
           ><button
             class="button small subtle"
             class:active={showOriginal}
-            onclick={() => (showOriginal = !showOriginal)}
+            onclick={() => { showOriginal = !showOriginal; perspective = false; }}
             title="Compare with the preserved original image">Original</button
           >
         </div>
+        {#if activePage && capabilities.photo_tools}
+          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
+          {#if photoOpen}<PhotoPreparation width={activePage.width} height={activePage.height} assessment={photoAssessment} assessing={busy === "Checking photo quality"} disabled={locked}
+            {perspective} quad={photoQuad} angle={photoAngle} canWhiten={capabilities.ocr} onassess={assessPhoto} onperspective={setPerspective} onquad={(quad) => (photoQuad = quad)}
+            onangle={(angle) => (photoAngle = angle)} onapplyperspective={applyPerspective} onapplyangle={() => transform("deskew", { angle: photoAngle })} onwhiten={flattenShadows}
+            onclose={() => { photoOpen = false; perspective = false; }} />{/if}
+        {/if}
         {#if activePage}
           <PageCanvas
             page={activePage}
@@ -2121,6 +2307,8 @@
             selectedId={selectedRegionId}
             threshold={project.confidenceThreshold}
             mode={drawMode}
+            photoQuad={perspective ? photoQuad : null}
+            onphotoquad={(quad) => (photoQuad = quad)}
             {overlays}
             original={showOriginal}
             {zoom}
@@ -2200,25 +2388,25 @@
           <button
             role="tab"
             aria-selected={inspector === "review"}
-            onclick={() => (inspector = "review")}
+            onclick={() => openInspector("review")}
             class:active={inspector === "review"}
             ><CheckCheck size={15} /> Review</button
           ><button
             role="tab"
             aria-selected={inspector === "recognition"}
-            onclick={() => (inspector = "recognition")}
+            onclick={() => openInspector("recognition")}
             class:active={inspector === "recognition"}
             ><SlidersHorizontal size={15} /> Recognize</button
           ><button
             role="tab"
             aria-selected={inspector === "extract"}
-            onclick={() => (inspector = "extract")}
+            onclick={() => openInspector("extract")}
             class:active={inspector === "extract"}
             ><Braces size={15} /> Extract</button
           ><button
             role="tab"
             aria-selected={inspector === "export"}
-            onclick={() => (inspector = "export")}
+            onclick={() => openInspector("export")}
             class:active={inspector === "export"}
             ><Download size={15} /> Export</button
           >
@@ -2702,6 +2890,7 @@
                   disabled={locked}
                 /></label
               >{/if}
+            {@render mobileModelSetup()}
             <div class="settings-section">
               <h3><WandSparkles size={15} /> Scan preparation</h3>
               {#each [{ key: "cleanup_enabled", label: "Deskew & clean", hint: "Correct tilt and clean the background." }, { key: "denoise", label: "Learned denoise", hint: "Remove noise with NAFNet." }, { key: "dewarp", label: "Straighten curved pages", hint: "Recover text near book spines and folds." }, { key: "restore", label: "Image restoration", hint: "Repair the scan with the selected model and task." }, { key: "sr", label: "Upscale small scans", hint: "Super-resolve low-resolution input." }] as option}<label
@@ -2761,7 +2950,7 @@
               {/if}
               <button
                 class="button full"
-                onclick={prepareImage}
+                onclick={() => prepareImage()}
                 disabled={locked || !activePage || !capabilities.ocr}
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
@@ -4554,6 +4743,15 @@
     color: #f1aaa2;
     font-size: 10px;
   }
+  .model-install {
+    margin: 14px 0;
+    padding: 14px;
+    border: 1px solid var(--ocr-border, #3b414b);
+    border-radius: 8px;
+  }
+  .model-install h3 { margin: 0 0 8px; font-size: 13px; }
+  .model-install .button { min-height: 44px; white-space: normal; width: 100%; justify-content: center; }
+  .model-progress { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
   .inline-warning {
     font-size: 10px;
     line-height: 1.7;
@@ -5394,6 +5592,62 @@
     .image-footer {
       height: 35px;
     }
+  }
+  .camera-input { display: none; }
+  .mobile-workspace-nav { display: none; }
+  .photo-tool-toggle { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #152030; flex: none; }
+  .photo-tool-toggle > span { font-size: 10px; color: var(--muted); }
+  .batch-recovery { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: #1d2d3e; border-bottom: 1px solid #3a526c; flex: none; }
+  .batch-recovery > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .batch-recovery span { color: #adbed2; font-size: 10px; }
+  @media (max-width: 780px) {
+    .mobile-workspace-nav { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid #3b526c; background: #131f2f; flex: none; }
+    .mobile-workspace-nav button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 48px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #aabdd4; font-size: 11px; padding: 8px 3px; }
+    .mobile-workspace-nav button.active { color: #c9e4ff; background: #243a56; border-bottom-color: #70aeff; }
+    .mobile-workspace-nav span { border-radius: 4px; padding: 1px 4px; background: #324960; }
+    .work-area, .work-area.rail-hidden { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    .work-area .page-rail, .work-area .document-pane, .work-area .inspector { display: none; height: 100%; min-height: 0; flex: 1; min-width: 0; overflow: hidden; }
+    .work-area[data-mobile-view="pages"] .page-rail, .work-area[data-mobile-view="image"] .document-pane, .work-area[data-mobile-view="tools"] .inspector { display: flex; }
+    .work-area .inspector { border: 0; }
+    .work-area .document-pane :global(.canvas-shell) { min-height: 120px; flex: 1; }
+    .work-area :global(.canvas-hint) { padding: 0 10px; }
+    .work-area :global(.viewport) { padding: 24px; }
+    .region-list { min-height: 0; max-height: none; flex: 1; }
+    .panel-scroll { overflow: auto; min-height: 0; }
+    .page-card { padding: 10px 12px; min-height: 100px; }
+    .page-card-info > strong { font-size: 13px; }
+    .page-filename, .page-state { font-size: 11px; }
+    .thumbnail { width: 48px; height: 70px; }
+    .page-card-main { gap: 12px; }
+    .page-checkbox { width: 22px !important; height: 22px !important; margin: 22px 9px 0 0 !important; }
+    .ocr-workspace .button, .ocr-workspace .icon-button, .ocr-workspace .text-button { min-height: 44px; }
+    .ocr-workspace .icon-button { min-width: 44px; padding: 8px; }
+    .command-bar .undo-group .icon-button { min-width: 44px; }
+    .workspace-header .header-actions .button { min-height: 44px; }
+    .command-bar { column-gap: 5px; row-gap: 4px; padding: 5px 8px; }
+    .command-bar .button { font-size: 10px; }
+    .command-bar .undo-group { margin-left: auto; }
+    .command-bar .toolbar-spacer { display: none; }
+    .image-toolbar { min-height: 48px; flex: none; overflow-x: auto; justify-content: flex-start; gap: 6px; }
+    .image-toolbar .tool-group { flex: none; }
+    .work-area .document-pane .image-toolbar > .button { display: inline-flex; flex: none; }
+    .image-toolbar select { max-width: 140px; min-height: 44px; font-size: 12px !important; }
+    .image-footer { height: auto; min-height: 48px; flex: none; gap: 2px; padding: 3px 5px; }
+    .image-footer .icon-button { min-width: 36px; }
+    .image-footer select { max-width: 92px; }
+    .photo-tool-toggle { padding: 3px 10px; }
+    .photo-tool-toggle .button { min-height: 40px; }
+    .inspector-tabs > button { min-height: 48px; font-size: 11px; }
+    .batch-recovery { flex-wrap: wrap; padding: 8px 10px; gap: 5px; }
+    .batch-recovery > div { flex-basis: 100%; }
+    .queue-bar { flex-wrap: wrap; }
+    .queue-label { min-width: 0; }
+    .queue-label strong { font-size: 11px; }
+    .queue-actions .button { min-height: 40px; }
+    .approval-bar .button { font-size: 11px; }
+    .ocr-workspace :global(textarea), .ocr-workspace :global(input:not([type="checkbox"]):not([type="range"])), .ocr-workspace :global(select) { font-size: 16px; }
+    .workspace-title input { font-size: 14px !important; }
+    .photo-tool-toggle > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   }
   @media (prefers-reduced-motion: reduce) {
     .button {

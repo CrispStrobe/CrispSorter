@@ -102,6 +102,7 @@
     import { stat, remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
+    import { modelDownloadLabel, type ModelDownloadProgress } from '$lib/ocr/client';
     import AutomationPanel from './AutomationPanel.svelte';
     import SyncPairPanel from './SyncPairPanel.svelte';
     import WallabagImport from './WallabagImport.svelte';
@@ -933,7 +934,11 @@
         }
         registryDownloadBusy = name;
         registryDownloadMsg  = '';
+        let stopProgress: (() => void) | undefined;
         try {
+            stopProgress = await listen<ModelDownloadProgress>('crispembed-model-download', (event) => {
+                if (event.payload.name === name) registryDownloadMsg = modelDownloadLabel(event.payload);
+            });
             await invoke('embedder_download_registry_model', { name, acceptLicense: accepted });
             // Refresh the registry list so `cached` flags update.
             embedderRegistry = await invoke<EmbedderRegistryEntry[]>('embedder_registry_list');
@@ -941,6 +946,7 @@
         } catch (e: any) {
             registryDownloadMsg = String(e);
         } finally {
+            try { stopProgress?.(); } catch { /* The window may have closed during installation. */ }
             registryDownloadBusy = '';
         }
     }
@@ -4123,7 +4129,7 @@
                             </div>
                         {/if}
                         {#if registryDownloadMsg}
-                            <div style="font-size:11px; color: #6b7280; margin-bottom:4px;">{registryDownloadMsg}</div>
+                            <div role="status" aria-live="polite" style="font-size:11px; color: #6b7280; margin-bottom:4px; overflow-wrap:anywhere;">{registryDownloadMsg}</div>
                         {/if}
                         <ul style="margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px;">
                             {#each embedderRegistry as entry}

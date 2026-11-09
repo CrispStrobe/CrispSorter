@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "scope": "Immutable model fixtures for mobile native OCR verification, not the application model registry",
+  "models": [
+    {
+      "name": "dbnet-det",
+      "filename": "dbnet-ic15-q8_0.gguf",
+      "url": "https://huggingface.co/cstr/dbnet-ic15-GGUF/resolve/main/dbnet-ic15-q8_0.gguf",
+      "sha256": "163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "tesseract-eng",
+      "filename": "tesseract-eng-q8_0.gguf",
+      "url": "https://huggingface.co/cstr/tesseract-lstm-GGUF/resolve/main/tesseract-eng-q8_0.gguf",
+      "sha256": "dffd3f05d23d3eed979d1c4dd3b7555192c2b0e16c494e6146a9a232e9fe7e74",
+      "license": "Apache-2.0"
+    }
+  ]
+}

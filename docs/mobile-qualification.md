@@ -2,10 +2,11 @@
 
 The desktop browser suite uses simulated Tauri responses. A narrow viewport is
 not an Android or iOS build, and a successful archive/signature inspection does
-not establish that an app has launched on a device. The mobile build's native
-CrispEmbed capability is currently absent. Real on-device performance and OCR
-parity remain unqualified until the native runtime, model files and app bindings
-have been built and exercised on the target.
+not establish that an app has launched on a device. The standard release recipes still omit native CrispEmbed. The OCR feature
+branch adds an explicit `ocr-mobile` profile and a paired build/execution lane,
+while leaving release pins unchanged. Physical-device performance and full mobile
+parity remain unqualified until the runtime, model files and app bindings have
+been exercised on representative devices.
 
 `scripts/mobile_simulator_smoke.py` provides a minimal **native startup** check
 for an already booted, explicitly selected emulator or simulator. It installs
@@ -76,7 +77,11 @@ provider. The Android instrumentation covers nested folders, case-sensitive
 document IDs, reads, unavailable access, size limits and folder cycles. The iOS
 simulator tests cover bookmark-record identity and bounded reads. They do not
 exercise either system picker, a real provider's persistent grants, or the
-complete apps. The [qualification run](https://github.com/CrispStrobe/CrispSorter/actions/runs/40838687391) passed four Android emulator tests and three iOS simulator tests, along with Rust and Swift cross-checks. The device checks below remain necessary before qualifying complete provider workflows.
+complete apps. The [latest provider run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42586987764)
+passed ten Android emulator tests and eight iOS simulator tests at source de40879f,
+along with Rust and Swift checks. The additional export controls cover exact-byte
+copy completion/failure and private staging protection. The device checks below
+remain necessary before qualifying complete provider workflows.
 
 For qualification, use a dedicated device or emulator and disposable local and
 cloud-provider fixtures. Record the build and OS/device, and verify picker
@@ -89,7 +94,116 @@ original. The historical `mobile_fs` module and `android-src/SAFBridge.kt` are
 not registered and still contain stubs; they are not the implementation used by
 this flow.
 
-## Remaining native integration blockers
+## Paired OCR mobile feature builds
+
+The optional **ocr-mobile** profile enables native image recognition, explicit
+photo assessment/perspective/tilt operations, confidence-aware review, and
+reviewed PDF/text/structured exports without desktop helper processes. It omits
+PDFium-dependent PDF import; the UI reports this capability limit instead of
+offering an unavailable importer. Standard releases keep their existing profile.
+
+The OCR workspace uses the native provider picker directly for JPEG, PNG, TIFF,
+BMP and WebP images, with the provider's 16 MiB read limit. That differs from the
+general batch extraction format list above. The system picker may show additional
+file types, but the workspace validates each selection. PDF rasterization remains
+unavailable in the default mobile OCR profile; camera/photo selection has its
+separate 32 MiB byte limit.
+
+A fresh mobile installation uses the compact native Tesseract/English default.
+The workspace's **OCR models** controls explicitly install the detector and the
+selected language model. Opening the workspace never starts a download. The
+installer uses Rust HTTPS streaming and the exact paired registry's immutable
+SHA-256 pins, writes a complete primary/companion set into a private version
+directory, and atomically publishes its manifest. Recognition reads installed
+models without spawning curl/wget or changing a process-wide cache environment.
+Failed downloads preserve the previous complete installation. Other provisioned
+engines remain selectable; models without published pins or with unmet license
+requirements produce a visible error. Model versions are retained; automatic
+model-cache garbage collection is not implemented.
+
+On Android, this installer's Rustls client uses the pinned public certificate
+roots from webpki-root-certs 1.0.8. It verifies certificate chains and hostnames
+without requiring an uninitialized JVM certificate-verifier component. Android
+user/private trust anchors are not consulted by this client. HTTPS-only transport
+and the registry's separate SHA-256 artifact checks both remain required.
+
+Use a clean sibling CrispEmbed checkout and initialized ggml submodule at the
+exact commits in scripts/ocr-mobile-runtime-lock.json. The native builder
+checks both identities and refuses a dirty or mismatched source tree. Do not
+substitute older released libraries for the paired bindings. Install the normal
+Tauri platform toolchain and npm dependencies before the following commands.
+
+For Android, with the NDK configured:
+
+```sh
+python3 scripts/build_mobile_crispembed.py \
+  --source ../CrispEmbed --output ../ocr-native-android \
+  --lock scripts/ocr-mobile-runtime-lock.json --target android-arm64
+export CRISPEMBED_SYS_LIB_DIR="$(cd ../ocr-native-android/lib && pwd)"
+export RUSTFLAGS="-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+python3 scripts/prepare_ocr_cargo_env.py --project . \
+  --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
+npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
+CRISPEMBED_BUILD_DIR="$CRISPEMBED_SYS_LIB_DIR" \
+  bash scripts/bundle_android_native_libs.sh --abi arm64-v8a --require-crispembed
+npx tauri android build --target aarch64 --features ocr-mobile --debug --apk \
+  --ci --config src-tauri/tauri.ocr-mobile.conf.json
+```
+
+Preserve any additional target-specific Rust flags required by your own build.
+For an Apple Silicon iOS simulator:
+
+```sh
+python3 scripts/build_mobile_crispembed.py \
+  --source ../CrispEmbed --output ../ocr-native-ios \
+  --lock scripts/ocr-mobile-runtime-lock.json --target ios-sim-arm64
+export CRISPEMBED_SYS_LIB_DIR="$(cd ../ocr-native-ios/lib && pwd)"
+python3 scripts/prepare_ocr_cargo_env.py --project . \
+  --runtime-lib-dir "$CRISPEMBED_SYS_LIB_DIR"
+npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
+python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml
+npx tauri ios build --target aarch64-sim --features ocr-mobile --debug \
+  --ci --config src-tauri/tauri.ocr-mobile.conf.json
+```
+
+The Android workflow also checks APK native-library alignment. The iOS profile
+supplies the system frameworks used by the merged native archive, and the
+generated-project helper links C++ while disabling signing only for the
+simulator SDK. Device builds still require normal Apple provisioning.
+
+The Cargo environment helper writes the exact native-library directory into the
+isolated workspace root's Cargo configuration, which is found from either the
+npm package root or the nested Rust project. This is required because the locked
+iOS build launcher replaces the inherited environment before invoking Xcode.
+Existing unrelated Cargo settings are preserved; a conflicting native-library
+path is rejected. Do not commit the generated machine-specific configuration.
+Android retains the inherited environment, but the locked Tauri launcher supplies
+its own target-specific Rust flags. The explicit flags above therefore retain
+both its three Android libraries and the 16 KiB page-alignment arguments.
+
+The [paired mobile workflow](../.github/workflows/ocr-mobile-native.yml) builds
+Android ARM64/x86_64 and an iOS ARM64
+simulator application against the same source lock. Its standalone native probe
+runs known-angle correction and real baseline recognition on generated text,
+with model and fixture hashes and failure observations preserved. Native and
+application startup receipts are separate. These checks are defined in the
+branch; inspect the exact workflow revision and results before treating a build
+as qualified. A green browser fixture, link probe, native smoke, or startup
+check does not establish physical camera capture, picker interaction, corpus
+accuracy, or low-memory performance on a real phone.
+
+The Android x86_64 lane additionally drives the actual debug application's Tauri
+commands through its own WebView socket. It checks the installed APK hash,
+explicitly downloads the baseline through the app's private installer, verifies
+the installed model hashes independently, imports a PNG through raw IPC, prepares
+and recognizes original/modified pages, reloads saved recognition settings, and
+renders and discards a private reviewed PDF. Raw recognition and failure evidence
+are retained. This synthetic command test does not open the system camera or save
+picker, exercise user interactions, or validate the extracted PDF text layer.
+The iOS lane defines native inference and startup checks; it does not yet define
+an equivalent application-command test.
+
+## Released runtime integration constraints
 
 The release recipes currently build Android and iOS without the `crispembed`
 Cargo feature. The CrispEmbed `-sys` build script used by the pinned runtime
@@ -126,6 +240,8 @@ The locked iOS `libcrispembed-static.a` also lacks the separately linked core
 and ggml closure. `scripts/build_mobile_crispembed.py` prepares source-pinned
 Android, iOS device, and iOS simulator builds without unpinned sibling sources.
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
-was queued at handoff; inspect its results before using its outputs. A successful
-link alone does not qualify the runtime or enable mobile inference. See
+completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.
+That older run built native libraries and linked probes; it did not execute
+inference or build an OCR-enabled application. The paired OCR lane above supplies
+separate app and execution gates. See
 [HANDOFF_2026-10-29.md](HANDOFF_2026-10-29.md) for exact remaining steps.

@@ -52,7 +52,7 @@ fn get_encoder() -> Result<std::sync::MutexGuard<'static, crispembed::CrispEmbed
             // Catch unwinding initialization panics while holding the lock, so
             // the cache remains empty and later calls can retry safely.
             let model = std::panic::catch_unwind(|| {
-                let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_OMNI_MODEL, Some(true))
+                let resolved = crate::model_provisioning::resolve_model(DEFAULT_OMNI_MODEL, Some(true))
                     .map_err(|e| anyhow::anyhow!("BidirLM-Omni model resolution failed: {e}"))?;
                 crispembed::CrispEmbed::new(&resolved, super::embedder::crispembed_threads())
                     .map_err(|e| anyhow::anyhow!("BidirLM-Omni model init failed: {e}"))

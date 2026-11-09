@@ -2,9 +2,21 @@ name: OCR paired native integration
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/ocr-document-studio']
+    paths:
+      - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_photo.rs
+      - src-tauri/src/model_provisioning.rs
+      - src-tauri/src/lib.rs
+      - src-tauri/Cargo.toml
+      - .github/workflows/ocr-paired-native.yml
   pull_request:
     paths:
       - src-tauri/src/ocr_workspace.rs
+      - src-tauri/src/ocr_photo.rs
+      - src-tauri/src/model_provisioning.rs
+      - src-tauri/src/lib.rs
       - src-tauri/src/ocr_reading_order.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
@@ -18,14 +30,14 @@ permissions:
 
 concurrency:
   group: ocr-paired-native-${{ github.ref }}
-  # Finish the running source build so incremental branch saves retain its
-  # test evidence and dependency cache; GitHub keeps only the latest pending run.
-  cancel-in-progress: false
+  # Superseded checkpoints on this recovery branch must not block its current
+  # validation. Other branches retain the original build/cache policy.
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' }}
 
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: e4ee71937a68f1ff9d28f4d7cdbd66bda68ba05a  # CrispEmbed v0.17.16
+  OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75  # Paired photo/model APIs with audited, failure-propagating native contracts.
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -92,6 +104,12 @@ jobs:
             ocr_workspace::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
+            ocr_photo::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            model_provisioning::mobile::tests -- --test-threads=1
+          cargo test -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
             extractors::ocr_crispembed::tests -- --test-threads=1
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
@@ -102,6 +120,8 @@ jobs:
           cargo test -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_render::tests -- --test-threads=1
+          cargo check -p crispsorter --lib --no-default-features \
+            --features ocr-mobile
           cargo check -p crispsorter --lib --no-default-features \
             --features desktop,ocr-workspace
       - name: Save native diagnostics library

@@ -2452,7 +2452,7 @@ pub struct EmbedderRegistryEntry {
 /// "Select" button for already-downloaded models and a "Download" button
 /// for the rest, without a separate round-trip.
 #[tauri::command]
-pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
+pub async fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
     #[cfg(feature = "crispembed")]
     {
         use std::path::PathBuf;
@@ -2469,12 +2469,15 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
             }
         };
 
+        tokio::task::spawn_blocking(move || {
         crispembed::CrispEmbed::list_models()
             .into_iter()
             .map(|m| {
-                let cached = cache_dir.as_ref().map_or(false, |d| {
-                    d.join(&m.filename).exists()
-                });
+                let cached = if crate::model_provisioning::enabled() {
+                    crate::model_provisioning::is_installed(&m.name)
+                } else {
+                    cache_dir.as_ref().map_or(false, |d| d.join(&m.filename).exists())
+                };
                 EmbedderRegistryEntry {
                     name: m.name,
                     desc: m.desc,
@@ -2483,7 +2486,8 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
                     cached,
                 }
             })
-            .collect()
+            .collect::<Vec<_>>()
+        }).await.unwrap_or_default()
     }
     #[cfg(not(feature = "crispembed"))]
     {
@@ -2498,6 +2502,7 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
 /// a no-op.  Returns `Ok(path)` with the resolved cache path on success.
 #[tauri::command]
 pub async fn embedder_download_registry_model(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: String,
     accept_license: Option<bool>,
@@ -2508,8 +2513,19 @@ pub async fn embedder_download_registry_model(
         crate::index::license_consent::accept(&name);
     }
     crate::index::license_consent::ensure_for_registry_name(&name).map_err(|e| e.to_string())?;
-    #[cfg(feature = "crispembed")]
+    #[cfg(feature = "ocr-mobile")]
     {
+        use tauri::Emitter;
+        let _ = state;
+        return tokio::task::spawn_blocking(move || {
+            crate::model_provisioning::download(&name, |update| {
+                let _ = app.emit(crate::model_provisioning::PROGRESS_EVENT, update);
+            })
+        }).await.map_err(|error| format!("Model installer: {error}"))?;
+    }
+    #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
+    {
+        let _ = app;
         use std::path::PathBuf;
         let cache_dir: Option<PathBuf> = {
             if let Ok(lock) = state.index.try_lock() {
@@ -2539,7 +2555,7 @@ pub async fn embedder_download_registry_model(
     }
     #[cfg(not(feature = "crispembed"))]
     {
-        let _ = (state, name);
+        let _ = (app, state, name);
         Err("crispembed feature not enabled".into())
     }
 }
@@ -2551,6 +2567,10 @@ pub async fn embedder_download_registry_model(
 /// whether to show the confirmation dialog for any model — not a hardcoded list.
 #[tauri::command]
 pub fn embedder_model_license(name: String) -> Option<String> {
+    #[cfg(feature = "ocr-mobile")]
+    if let Ok(Some(info)) = crispembed::CrispEmbed::model_download_info(&name) {
+        if info.requires_license_acceptance { return Some(info.license); }
+    }
     let lic = crate::index::license_consent::license_for_registry_name(&name);
     lic.requires_consent().then(|| lic.label().to_string())
 }
