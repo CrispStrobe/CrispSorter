@@ -245,7 +245,7 @@ pub fn ocr_workspace_capabilities() -> Value {
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
     if crate::extractors::ocr_render::reviewed_archival_pdf_available() { formats.push("pdfa"); }
-    if cfg!(feature = "desktop") { formats.push("docx"); }
+    if cfg!(feature = "ocr-text-export") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
         "ocr": native, "crispembed": native,
@@ -258,6 +258,9 @@ pub fn ocr_workspace_capabilities() -> Value {
         "pdf_export_reason": if reviewed_pdf_available() { None } else { Some("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Export hOCR, ALTO, text, or JSON with this build.") },
         "archival_pdf_export": crate::extractors::ocr_render::reviewed_archival_pdf_available(),
         "pdf_bidi_export": crate::extractors::ocr_render::reviewed_bidi_pdf_available(),
+        "pdf_bidi_export_reason": if crate::extractors::ocr_render::reviewed_bidi_pdf_available() { None } else { Some(crate::ocr_text_export::PDF_BIDI_UNAVAILABLE) },
+        "docx_export": cfg!(feature = "ocr-text-export"),
+        "docx_export_reason": if cfg!(feature = "ocr-text-export") { None } else { Some("Word export requires the OCR text export feature in this build. Plain text and HTML document remain available.") },
         "pdfa_conformance": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { Some("PDF/A-2b") } else { None },
         "pdfa_export_reason": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { None } else { Some("PDF/A-2b export requires a matching native renderer with archival resources. Choose another available output format with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
@@ -1149,12 +1152,8 @@ fn output_path(path: &str, pages: &[ExportPage], source_uris: &[String], root: &
     Ok(resolved)
 }
 
-fn joined_text(pages: &[ExportPage]) -> String {
-    pages.iter().map(|p| p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n")).collect::<Vec<_>>().join("\u{000c}")
-}
-
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+fn export_text_pages(pages: &[ExportPage]) -> Vec<Vec<&str>> {
+    pages.iter().map(|page| page.regions.iter().map(|region| region.text.as_str()).collect()).collect()
 }
 
 fn transcription_confidence(region: &ExportRegion) -> f32 {
@@ -1173,6 +1172,19 @@ fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
         return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
     }
+    if format == "docx" && !cfg!(feature = "ocr-text-export") {
+        return Err("Word export requires the OCR text export feature in this build. Choose Plain text or HTML document.".into());
+    }
+    Ok(())
+}
+
+fn validate_export_text(pages: &[ExportPage], format: &str) -> Result<(), String> {
+    if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
+        && !crate::extractors::ocr_render::reviewed_bidi_pdf_available()
+        && pages.iter().any(|page| page.regions.iter().any(|region| crate::ocr_text_export::needs_bidirectional_pdf(&region.text))) {
+        return Err(crate::ocr_text_export::PDF_BIDI_UNAVAILABLE.into());
+    }
+    if format == "docx" { crate::ocr_text_export::validate_docx(&export_text_pages(pages))?; }
     Ok(())
 }
 
@@ -1188,23 +1200,19 @@ fn reviewed_render_pages(pages: &[ExportPage]) -> Vec<RenderPage> {
 
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
     validate_export_format(format, pdfa)?;
+    validate_export_text(pages, format)?;
     match format {
+        "text" | "txt" | "plain" => Ok(crate::ocr_text_export::text(&export_text_pages(pages)).into_bytes()),
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
         "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
         "html" => {
-            let body = pages.iter().enumerate().map(|(i, page)| format!("<section aria-label=\"Page {}\"><h2>Page {}</h2>{}</section>", i + 1, i + 1, page.regions.iter().map(|r| format!("<p>{}</p>", escape_html(&r.text))).collect::<Vec<_>>().join("\n"))).collect::<Vec<_>>().join("\n");
-            Ok(format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>Reviewed OCR document</title><style>body{{font:16px/1.6 system-ui,sans-serif;max-width:72ch;margin:3rem auto;padding:0 1rem}}p{{white-space:pre-wrap}}section{{break-after:page}}section:last-child{{break-after:auto}}h2{{font-size:1rem;color:#555}}</style></head><body>{body}</body></html>").into_bytes())
+            Ok(crate::ocr_text_export::html(&export_text_pages(pages)).into_bytes())
         },
         "docx" => {
-            #[cfg(feature = "desktop")]
-            {
-                let file = tempfile::Builder::new().suffix(".docx").tempfile().map_err(|e| e.to_string())?;
-                let body = joined_text(pages).replace('\u{000c}', "\n\n");
-                crate::extractors::export::export_to_docx("", &body, file.path())?;
-                fs::read(file.path()).map_err(|e| format!("Read generated Word document: {e}"))
-            }
-            #[cfg(not(feature = "desktop"))]
-            { Err("Word export requires a desktop build.".into()) }
+            #[cfg(feature = "ocr-text-export")]
+            { crate::ocr_text_export::docx(&export_text_pages(pages)) }
+            #[cfg(not(feature = "ocr-text-export"))]
+            { Err("Word export requires the OCR text export feature in this build.".into()) }
         },
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
@@ -1234,6 +1242,7 @@ fn write_export(
 ) -> Result<usize, String> {
     control.check().map_err(|error| error.to_string())?;
     validate_export_format(format, pdfa)?;
+    validate_export_text(pages, format)?;
     let streaming_pdf = OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)
         && crate::extractors::ocr_render::reviewed_streaming_pdf_available();
     atomic_write_with(path, overwrite, |file| {
@@ -1861,6 +1870,22 @@ mod tests {
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&amp;"));
+        assert!(html.contains("<p dir=\"auto\">"));
+        assert!(html.contains("name=\"viewport\""));
+    }
+
+    #[test]
+    fn text_export_keeps_reviewed_newlines_spaces_and_logical_unicode() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "  مَرْحَبًا ABC 123\t\r\n\nשָׁלוֹם e\u{301}  \n";
+        let pages = vec![export_page(root.path(), text)];
+        for format in ["text", "txt", "plain"] {
+            assert_eq!(export_bytes(&pages, format, false).unwrap(), text.as_bytes());
+        }
+        if !crate::extractors::ocr_render::reviewed_bidi_pdf_available() {
+            assert_eq!(validate_export_text(&pages, "pdf").unwrap_err(), crate::ocr_text_export::PDF_BIDI_UNAVAILABLE);
+        }
+        for format in ["text", "html", "docx"] { assert!(validate_export_text(&pages, format).is_ok()); }
     }
 
     #[test]

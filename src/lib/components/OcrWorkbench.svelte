@@ -77,7 +77,7 @@
     type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
-  import { resolveExportFormat } from "$lib/ocr/export";
+  import { checkExportText, resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
     expandRecognitionZone,
@@ -399,6 +399,8 @@
   const preflight = $derived(
     prepareExport(project, { pageIds: exportIds, requireReviewed }),
   );
+  const exportTextCheck = $derived(checkExportText(exportFormat, capabilities, preflight.pages));
+  const exportErrors = $derived([...preflight.errors, ...exportTextCheck.errors]);
   const pageText = $derived(
     activePage?.regions
       .filter((r) => !r.excluded && r.kind !== "picture")
@@ -1387,8 +1389,12 @@
       try { exportMode = resolveExportFormat(exportFormat, capabilities); }
       catch (cause) { error = cause instanceof Error ? cause.message : String(cause); return; }
     }
-    if (!snapshot && preflight.errors.length) {
-      error = preflight.errors.join("\n");
+    const textCheck = snapshot
+      ? checkExportText(snapshot.pdfa ? "pdfa" : snapshot.format, capabilities, snapshot.pages)
+      : exportTextCheck;
+    const errors = [...(!snapshot ? preflight.errors : []), ...textCheck.errors];
+    if (errors.length) {
+      error = errors.join("\n");
       return;
     }
     if (
@@ -3531,21 +3537,21 @@
                 disabled={locked}
               /></label
             >
-            <div class="preflight-card" class:ready={!preflight.errors.length}>
+            <div class="preflight-card" class:ready={!exportErrors.length}>
               <div class="section-heading">
-                {#if preflight.errors.length}<AlertTriangle size={17} /><strong
-                    >{preflight.errors.length} checks need attention</strong
+                {#if exportErrors.length}<AlertTriangle size={17} /><strong
+                    >{exportErrors.length} checks need attention</strong
                   >{:else}<CircleCheck size={17} /><strong
                     >Ready to export {preflight.pages.length} pages</strong
                   >{/if}
               </div>
-              {#if preflight.errors.length}<ul>
-                  {#each preflight.errors.slice(0, 8) as problem}<li>
+              {#if exportErrors.length}<ul>
+                  {#each exportErrors.slice(0, 8) as problem}<li>
                       {problem}
                     </li>{/each}
                 </ul>
-                {#if preflight.errors.length > 8}<p>
-                    And {preflight.errors.length - 8} more pages need attention.
+                {#if exportErrors.length > 8}<p>
+                    And {exportErrors.length - 8} more checks need attention.
                   </p>{/if}{:else}<div class="preflight-check">
                   <Check size={14} /> Every selected page is accounted for
                 </div>
@@ -3558,6 +3564,17 @@
                 {#if requireReviewed}<div class="preflight-check">
                     <Check size={14} /> All selected pages approved
                   </div>{/if}{/if}
+              {#if exportTextCheck.affectedPages.length}<p class="field-hint">
+                  Affected pages: {exportTextCheck.affectedPages.slice(0, 5).join(", ")}{exportTextCheck.affectedPages.length > 5 ? ` and ${exportTextCheck.affectedPages.length - 5} more` : ""}.
+                </p>{/if}
+              {#if exportTextCheck.alternatives.length}<div class="export-alternatives">
+                  <p>Your page selection and reviewed text stay the same. Choose an available text format:</p>
+                  <div class="button-grid">
+                    {#each exportTextCheck.alternatives as format}<button class="button" disabled={locked}
+                        onclick={() => { exportFormat = format; error = ""; }}>Use {formatNames[format] ?? format}</button>{/each}
+                  </div>
+                </div>{/if}
+              {#each exportTextCheck.warnings as warning}<p class="inline-warning" role="status">{warning}</p>{/each}
               {#if preflight.warnings.length}<details>
                   <summary>{preflight.warnings.length} review notes</summary>
                   <ul>
@@ -3570,7 +3587,7 @@
             <button
               class="button primary full large"
               onclick={() => exportProject()}
-              disabled={locked || !!preflight.errors.length}
+              disabled={locked || !!exportErrors.length}
               ><Download size={17} /> Save {formatNames[exportFormat] ??
                 exportFormat}</button
             >
@@ -5095,6 +5112,14 @@
     gap: 7px;
     align-items: center;
     padding: 4px 0;
+  }
+  .export-alternatives .button-grid {
+    flex-wrap: wrap;
+  }
+  .export-alternatives .button {
+    min-height: 44px;
+    flex-basis: 130px;
+    white-space: normal;
   }
   .muted {
     color: #8296b3;

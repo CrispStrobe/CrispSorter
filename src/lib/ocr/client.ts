@@ -38,6 +38,9 @@ export interface WorkspaceCapabilities {
   pdf_export_reason?: string;
   archival_pdf_export?: boolean;
   pdf_bidi_export?: boolean;
+  pdf_bidi_export_reason?: string;
+  docx_export?: boolean;
+  docx_export_reason?: string;
   pdfa_conformance?: "PDF/A-2b";
   pdfa_export_reason?: string;
   reasons?: Record<string, string>;

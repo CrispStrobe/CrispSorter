@@ -57,6 +57,7 @@ if (process.argv.includes('--serve')) {
     const browserPath = process.env.OCR_SMOKE_CHROMIUM ?? [chromium.executablePath(), '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
     const results = [];
     const browserErrors = [];
+    const textExportEvidence = [];
     let phoneCornerEvidence = null;
     let browser;
     try {
@@ -321,6 +322,108 @@ if (process.argv.includes('--serve')) {
             evidence.export_calls = await page.evaluate(() => window.ocrSmoke.exports.length);
             await writeFile(receipt, JSON.stringify(evidence, null, 2));
             assert.equal(evidence.export_calls, 0);
+        });
+
+        const rtlReviewedText = '  مَرْحَبًا ABC 123\t\n\nשָׁלוֹם é 𞤀𞤢  ';
+        const bidiUnavailable = 'PDF export for right-to-left text or directional formatting is unavailable in this build. Choose a text format to preserve the reviewed reading order.';
+        async function recordTextExport(evidence) {
+            textExportEvidence.push(evidence);
+            await writeFile(path.join(output, 'text-alternatives.json'), JSON.stringify(textExportEvidence, null, 2));
+        }
+        async function selectedExport(page, mobile = false) {
+            await page.getByRole('button', { name: /^Page 3:/ }).click();
+            if (mobile) {
+                await page.setViewportSize({ width: 390, height: 844 });
+                await page.getByRole('navigation', { name: 'Workspace views', exact: true }).getByRole('button', { name: 'Text & tools', exact: true }).click();
+            }
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+        }
+        await test('RTL PDF preflight offers lossless text alternatives before any destination picker', 'export-rtl', async page => {
+            await selectedExport(page);
+            const selector = page.getByRole('combobox', { name: /^Output format/ });
+            const requests = [];
+            for (const [index, [format, name]] of [['text', 'Plain text'], ['html', 'HTML document'], ['docx', 'Word document']].entries()) {
+                await selector.selectOption(index === 1 ? 'pdfa' : 'pdf');
+                await page.getByText(bidiUnavailable, { exact: true }).waitFor();
+                assert.equal(await page.getByText(/^Ready to export/).count(), 0);
+                assert.equal(await page.getByRole('button', { name: /^Save (Searchable PDF|Archival PDF\/A-2b)$/ }).isDisabled(), true);
+                assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'pickExport').length), index);
+                await page.getByRole('button', { name: `Use ${name}`, exact: true }).click();
+                assert.equal(await selector.inputValue(), format);
+                await page.getByRole('button', { name: `Save ${name}`, exact: true }).click();
+                await page.waitForFunction(count => window.ocrSmoke.exports.length === count, index + 1);
+                const request = await page.evaluate(() => window.ocrSmoke.exports.at(-1));
+                requests.push(request);
+                assert.equal(request.format, format);
+                assert.equal(request.pdfa, false);
+                assert.equal(request.pages.length, 1);
+                assert.equal(request.pages[0].regions[2].text, rtlReviewedText);
+                assert.equal(request.pages[0].regions[2].original_text, rtlReviewedText);
+                assert.equal(request.pages[0].approved, true);
+                assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
+                if (index) assert.deepEqual(request.pages, requests[0].pages);
+            }
+            await selector.selectOption('pdf');
+            await page.getByRole('button', { name: /^Page 1:/ }).click();
+            await page.getByRole('checkbox', { name: /^Require page approval/ }).uncheck();
+            assert.equal(await page.getByText(bidiUnavailable, { exact: true }).count(), 0);
+            assert.equal(await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).isDisabled(), false);
+            await recordTextExport({ scenario: 'desktop-rtl', picker_calls: 3, requests, latin_scope_available: true });
+        });
+
+        await test('phone can choose Word for reviewed RTL text without changing its source or selection', 'export-rtl-mobile', async page => {
+            await selectedExport(page, true);
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdfa');
+            await page.getByText(bidiUnavailable, { exact: true }).waitFor();
+            const targets = [];
+            for (const name of ['Plain text', 'HTML document', 'Word document']) {
+                const button = page.getByRole('button', { name: `Use ${name}`, exact: true });
+                await button.scrollIntoViewIfNeeded();
+                const bounds = await button.boundingBox();
+                assert.ok(bounds && bounds.height >= 44 && bounds.x >= 0 && bounds.x + bounds.width <= 391);
+                targets.push({ name, bounds });
+            }
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'pickExport').length), 0);
+            await page.screenshot({ path: path.join(output, 'ocr-phone-rtl-alternatives.png'), fullPage: true });
+            await page.getByRole('button', { name: 'Use Word document', exact: true }).click();
+            await page.getByRole('button', { name: 'Save Word document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'docx');
+            assert.equal(request.pages[0].regions[2].text, rtlReviewedText);
+            assert.equal(request.pages[0].image_path, '/fixtures/northstar-page-3.png');
+            assert.deepEqual([request.pages[0].width, request.pages[0].height], [1000, 1400]);
+            assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
+            await recordTextExport({ scenario: 'mobile-rtl-word', targets, request });
+        });
+
+        await test('older phone builds offer only their available RTL text alternatives', 'export-rtl-limited', async page => {
+            await selectedExport(page, true);
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdf');
+            await page.getByText(bidiUnavailable, { exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Use Word document', exact: true }).count(), 0);
+            assert.equal(await page.locator('select option[value="docx"]').count(), 0);
+            await page.getByRole('button', { name: 'Use HTML document', exact: true }).click();
+            await page.getByRole('button', { name: 'Save HTML document', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.format, 'html');
+            assert.equal(request.pages[0].regions[2].text, rtlReviewedText);
+            await recordTextExport({ scenario: 'limited-mobile-rtl-html', request });
+        });
+
+        await test('supplementary PDF text retains export with a visible reader search limitation', 'export-unicode', async page => {
+            await selectedExport(page);
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdf');
+            const advisory = page.getByText(/Some PDF readers cannot find supplementary characters/);
+            await advisory.waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).isDisabled(), false);
+            await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(request.pages[0].regions[2].text, 'Reviewed café 中文 😀 é');
+            await recordTextExport({ scenario: 'supplementary-pdf', advisory: await advisory.innerText(), request });
         });
 
         await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
