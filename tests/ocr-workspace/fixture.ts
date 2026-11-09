@@ -102,6 +102,7 @@ declare global {
 }
 
 export function createFixtureClient(scenario:string): {client:WorkspaceClient;initialProject:OcrProject|null} {
+    const overlayAudit = scenario === 'safe-overlays';
     const rtlExport = scenario.startsWith('export-rtl');
     const archivalExport = scenario === 'export-archive' || rtlExport || scenario === 'export-unicode' || scenario === 'export-invalid-text';
     const wordExport = scenario !== 'export-rtl-limited';
@@ -137,8 +138,15 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         project.recognitionSettings={engine:'got',language:'eng',config:{source_type:'screenshot'}};
     }
     const savedById=new Map<string,ProjectEnvelope>();
+    if (overlayAudit) project.pages[0].name = `${'Reviewed original with a long source filename '.repeat(35)}final.png`;
     const initialEnvelope:ProjectEnvelope={project:copy(project),revision:7,saved_at:Date.parse(stamp),path:'/fixtures/project.json'};
     savedById.set(project.id,initialEnvelope);
+    if (overlayAudit) for (let index = 1; index <= 20; index++) {
+        const saved = copy(project);
+        saved.id = `ocr-overlay-saved-${index}`;
+        saved.name = `Saved overlay project ${String(index).padStart(2, '0')}`;
+        savedById.set(saved.id, { ...initialEnvelope, project: saved });
+    }
     if(scenario==='project-recovery') {
         // Simulate a visible saved project from an unsupported future format.
         // The adapter intentionally returns invalid input at this trust boundary.
@@ -159,11 +167,11 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         holdRecognition:scenario==='queue-control',holdExtraction:scenario==='extraction-delay',pendingExtractions:0,
         holdSaves:false,holdFinalSave:false,pendingSaves:0,failSaves:false,failPages:scenario==='queue-failure'?[2]:[],released:[],writes:[],lastSaved:null,
         modelInstalls:[],installedModels:[],pendingModelInstalls:0,failModelInstall:false,
-        modelStorageReport: scenario==='mobile-storage' ? {
+        modelStorageReport: scenario==='mobile-storage' || overlayAudit ? {
             bytes:16*1024**2,reclaimable_bytes:4*1024**2,warnings:['Unrecognized fixture metadata was kept for inspection.'],
             models:[
                 {name:'dbnet-det',version:'11111111-1111-4111-8111-111111111111',bytes:8*1024**2,reclaimable_bytes:0,in_use:true},
-                {name:'tesseract-eng',version:'22222222-2222-4222-8222-222222222222',bytes:8*1024**2,reclaimable_bytes:4*1024**2,in_use:false},
+                {name:overlayAudit ? `${'archive language model '.repeat(35)}end` : 'tesseract-eng',version:'22222222-2222-4222-8222-222222222222',bytes:8*1024**2,reclaimable_bytes:4*1024**2,in_use:false},
             ],
         } : {bytes:0,reclaimable_bytes:0,models:[],warnings:[]},
         holdModelStorage:false,pendingModelStorage:0,failModelStorage:false,
@@ -194,7 +202,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         if(control.failModelStorage)throw new Error('Fixture storage is busy in another application. Retry cleanup.');
     };
     const client:WorkspaceClient={
-        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf',...(archivalExport?['pdfa']:[]),'text','json','html','markdown','hocr','alto',...(wordExport?['docx']:[])],archival_pdf_export:archivalExport,pdf_bidi_export:!rtlExport,docx_export:wordExport,pdfa_export_reason:archivalExport?undefined:'PDF/A-2b requires the archival-capable native renderer in this build.',engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
+        async capabilities(){note('capabilities');return {ocr:true,crispembed:true,pdf_import:true,formats:['pdf',...(archivalExport?['pdfa']:[]),'text','json','html','markdown','hocr','alto',...(wordExport?['docx']:[])],archival_pdf_export:archivalExport,pdf_bidi_export:!rtlExport,docx_export:wordExport,pdfa_export_reason:archivalExport?undefined:'PDF/A-2b requires the archival-capable native renderer in this build.',engines:['dbnet_trocr','surya','tesseract','got','glm','qwen2vl','qwen3vl','internvl2'],layout:true,kie:true,table:true,math:true,cpu_budget:true,cpu_budget_pixels:262144,photo_tools:true,camera_import:true,...(['mobile-models','mobile-storage','safe-overlays'].includes(scenario)?{mobile_model_store:true,default_engine:'tesseract',default_language:'eng',pdf_import:false}:{})};},
         async modelStorage(){note('modelStorage');return copy(control.modelStorageReport);},
         async cleanModelStorage(){
             note('cleanModelStorage');await waitForStorage();
