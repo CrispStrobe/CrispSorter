@@ -57,6 +57,7 @@ if (process.argv.includes('--serve')) {
     const browserPath = process.env.OCR_SMOKE_CHROMIUM ?? [chromium.executablePath(), '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
     const results = [];
     const browserErrors = [];
+    let phoneCornerEvidence = null;
     let browser;
     try {
         browser = await chromium.launch({ headless: true, ...(browserPath ? { executablePath: browserPath } : {}) });
@@ -802,8 +803,122 @@ if (process.argv.includes('--serve')) {
             assert.equal(await nav.getByRole('button', { name: 'Page image', exact: true }).getAttribute('aria-pressed'), 'true');
             await page.getByRole('button', { name: 'Check photo quality', exact: true }).click();
             await page.getByText('Suggested correction: -2.7°', { exact: true }).waitFor();
+            await page.getByRole('navigation', { name: 'Photo tools', exact: true }).getByRole('button', { name: 'Lighting', exact: true }).click();
             assert.equal(await page.getByRole('spinbutton', { name: /^Tilt correction \(degrees\)/ }).inputValue(), '-2.7');
+            await page.getByRole('navigation', { name: 'Photo tools', exact: true }).getByRole('button', { name: 'Check', exact: true }).click();
             await page.screenshot({ path: path.join(output, 'ocr-phone-photo-preparation.png'), fullPage: true });
+        });
+
+        await test('phone corner editing fits a usable page, accepts touch drags, and changes pixels only on Apply', 'review', async page => {
+            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
+            await text.fill('Invoice reviewed before phone correction');
+            await text.blur();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === 'Invoice reviewed before phone correction');
+            const before = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            await page.setViewportSize({ width: 390, height: 844 });
+            const views = page.getByRole('navigation', { name: 'Workspace views', exact: true });
+            await views.getByRole('button', { name: 'Page image', exact: true }).click();
+            await page.getByRole('combobox', { name: 'Page zoom', exact: true }).selectOption('2');
+            await page.getByRole('button', { name: 'Prepare photo', exact: true }).click();
+            const tools = page.getByRole('navigation', { name: 'Photo tools', exact: true });
+            for (const button of await tools.getByRole('button').all()) {
+                const box = await button.boundingBox();
+                assert.ok(box && box.width >= 44 && box.height >= 44, 'Photo steps must have touch-sized targets');
+            }
+            assert.equal(await tools.getByRole('button', { name: 'Check', exact: true }).getAttribute('aria-pressed'), 'true');
+            assert.equal(await page.getByRole('button', { name: 'Correct perspective', exact: true }).isVisible(), false);
+            await tools.getByRole('button', { name: 'Lighting', exact: true }).click();
+            assert.equal(await page.getByRole('button', { name: 'Flatten shadows', exact: true }).isVisible(), true);
+            assert.equal(await page.getByRole('button', { name: 'Check photo quality', exact: true }).isVisible(), false);
+            await tools.getByRole('button', { name: 'Corners', exact: true }).click();
+            const back = page.getByRole('button', { name: 'Back to photo tools', exact: true });
+            await back.waitFor();
+            await page.waitForFunction(canvasFitState, false);
+            assert.equal(await page.getByRole('combobox', { name: 'Page zoom', exact: true }).inputValue(), 'page', 'Entering corner editing resets a previous custom zoom to Fit page');
+            for (const selector of ['.workspace-header', '.command-bar', '.mobile-workspace-nav', '.image-toolbar', '.photo-tool-toggle', '.photo-preparation']) {
+                assert.equal(await page.locator(selector).isVisible(), false, `${selector} must give its space to the page while choosing corners`);
+            }
+            for (const name of ['Back to photo tools', 'Apply perspective', 'Zoom out', 'Zoom in', 'Fit page']) {
+                const box = await page.getByRole('button', { name, exact: true }).boundingBox();
+                assert.ok(box && box.width >= 44 && box.height >= 44 && box.y >= 0 && box.y + box.height <= 844, `${name} must stay reachable at 390×844`);
+            }
+            // Zoom still works in focus mode, and Fit page restores all four handles.
+            await page.getByRole('combobox', { name: 'Page zoom', exact: true }).selectOption('1');
+            await assertFitPage(page, 'Phone corner editor');
+            const geometry = await page.evaluate(() => {
+                const rect = element => { const b = element.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height }; };
+                return {
+                    screen: { width: innerWidth, height: innerHeight },
+                    viewport: rect(document.querySelector('.canvas-shell .viewport')),
+                    paper: rect(document.querySelector('.canvas-shell .paper')),
+                    handles: [...document.querySelectorAll('.photo-corner')].map(rect),
+                };
+            });
+            assert.ok(geometry.viewport.height >= 540, `Corner editing needs a usable canvas: ${JSON.stringify(geometry)}`);
+            assert.ok(geometry.paper.width >= 300 && geometry.paper.height >= 420, `The fitted portrait page must be large enough to place corners: ${JSON.stringify(geometry)}`);
+            assert.equal(geometry.handles.length, 4);
+            for (const box of geometry.handles) {
+                assert.ok(box.width >= 44 && box.height >= 44, 'Each corner handle remains at least 44 CSS pixels');
+                assert.ok(box.x >= geometry.viewport.x && box.y >= geometry.viewport.y && box.x + box.width <= geometry.viewport.x + geometry.viewport.width && box.y + box.height <= geometry.viewport.y + geometry.viewport.height, 'Every fitted corner handle must be entirely inside the canvas');
+                assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 390 && box.y + box.height <= 844, 'Every fitted corner handle must be entirely on screen');
+            }
+            const corner = page.getByRole('button', { name: 'Top left corner', exact: true });
+            const initialImage = await page.getByRole('img', { name: /^Working page:/ }).getAttribute('src');
+            await page.evaluate(() => {
+                window.ocrCornerTouches = [];
+                document.querySelector('.photo-corner').addEventListener('pointerdown', event => window.ocrCornerTouches.push({ pointerType: event.pointerType, trusted: event.isTrusted }), { capture: true });
+            });
+            const session = await page.context().newCDPSession(page);
+            try {
+                await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+                const box = geometry.handles[0];
+                const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+                const touch = (x, y) => ({ x, y, radiusX: 6, radiusY: 6, force: 1, id: 1 });
+                await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [touch(start.x, start.y)] });
+                for (let step = 1; step <= 4; step++) {
+                    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [touch(start.x + 36 * step / 4, start.y + 42 * step / 4)] });
+                }
+                await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+            } finally { await session.detach(); }
+            await page.waitForFunction(() => document.querySelector('.photo-corner')?.title !== 'Top left: 0, 0 pixels');
+            const moved = (await corner.getAttribute('title')).match(/^Top left: (\d+), (\d+) pixels$/);
+            assert.ok(moved, 'The moved corner exposes its actual image coordinates');
+            assert.ok(Math.abs(Number(moved[1]) - 36 * before.width / geometry.paper.width) <= 2, 'A touch drag must map horizontal screen movement to source-image coordinates');
+            assert.ok(Math.abs(Number(moved[2]) - 42 * before.height / geometry.paper.height) <= 2, 'A touch drag must map vertical screen movement to source-image coordinates');
+            const touches = await page.evaluate(() => window.ocrCornerTouches);
+            assert.deepEqual(touches, [{ pointerType: 'touch', trusted: true }], 'The browser must deliver a trusted touch pointer rather than a synthetic mouse event');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0);
+            assert.equal(await page.getByRole('img', { name: /^Working page:/ }).getAttribute('src'), initialImage);
+            phoneCornerEvidence = { ...geometry, drag: { screenDelta: { x: 36, y: 42 }, imagePoint: { x: Number(moved[1]), y: Number(moved[2]) }, events: touches }, transformsBeforeApply: 0 };
+            await page.screenshot({ path: path.join(output, 'ocr-phone-corner-focus.png'), fullPage: true });
+            await back.click();
+            await page.getByRole('textbox', { name: 'Project name', exact: true }).waitFor();
+            await tools.waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Correct perspective', exact: true }).isVisible(), true);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0, 'Back must leave the source image unchanged');
+            await tools.getByRole('button', { name: 'Corners', exact: true }).click();
+            await back.waitFor();
+            await page.keyboard.press('Escape');
+            await views.waitFor();
+            await tools.waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 0, 'Escape must leave the source image unchanged');
+            await tools.getByRole('button', { name: 'Corners', exact: true }).click();
+            await page.getByRole('button', { name: 'Apply perspective', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath.endsWith('-perspective'));
+            const applied = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(applied.originalImagePath, before.originalImagePath);
+            assert.deepEqual([applied.width, applied.height], [900, 1300]);
+            assert.equal(applied.status, 'pending');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'transform').length), 1);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            await page.getByRole('button', { name: 'Save', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].imagePath === '/fixtures/northstar-page-1.png');
+            const restored = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0]);
+            assert.equal(restored.originalImagePath, before.originalImagePath);
+            assert.deepEqual(restored.regions, before.regions, 'Undo restores reviewed text and original recognition evidence');
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
         });
 
         await test('corner controls reject invalid selections and perspective undo restores review evidence', 'review', async page => {
@@ -919,7 +1034,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { synthetic_ui_only: true, tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-import-progress.png', 'ocr-phone-export-progress.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { synthetic_ui_only: true, tests: results, browserErrors, phoneCornerEvidence, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-phone-model-setup.png', 'ocr-phone-model-storage.png', 'ocr-phone-model-removal-confirmation.png', 'ocr-phone-photo-preparation.png', 'ocr-phone-corner-focus.png', 'ocr-phone-import-progress.png', 'ocr-phone-export-progress.png', 'ocr-phone-text-review.png', 'ocr-phone-page-list.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;
