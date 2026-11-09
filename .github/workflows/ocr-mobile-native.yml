@@ -146,8 +146,10 @@ jobs:
       LICENSES_CARGO_TARGET: ${{ matrix.rust }}
       # The pinned Tauri CLI adds tauri/custom-protocol for packaged mobile builds.
       LICENSES_CARGO_FEATURES: ocr-mobile,tauri/custom-protocol
-      LICENSES_CARGO_METADATA: ${{ runner.temp }}/ocr-mobile-licenses/cargo-metadata.json
     steps:
+      - name: Set native license metadata path on the runner
+        shell: bash
+        run: echo "LICENSES_CARGO_METADATA=$RUNNER_TEMP/ocr-mobile-licenses/cargo-metadata.json" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           path: repos/CrispSorter
