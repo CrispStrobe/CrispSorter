@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "recorded_date_utc": "2026-11-09",
+  "source": {
+    "executed_commit": "7b5a7791c592e2e178b85724cb8cd26c5ac3558a",
+    "branch": "feat/ocr-document-studio",
+    "actual_checkout_verified_in_log": true
+  },
+  "browser": {
+    "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42608320490",
+    "job_id": 129129867349,
+    "status": "passed",
+    "log_checked": true,
+    "synthetic_ui_only": true,
+    "tests_passed": 27,
+    "tests_failed": 0,
+    "browser_errors": 0,
+    "unit_tests_passed": 218,
+    "unit_test_files": 28,
+    "type_errors": 0,
+    "type_warnings": 54,
+    "type_warning_files": 8,
+    "production_build": "passed",
+    "artifact_id": 13670561017,
+    "artifact_sha256": "62aa5e405dbed00b57e176466122004c67618365fcb9a4817a904783a1c07c60",
+    "artifact_bytes": 595781,
+    "artifact_digest_verified": true,
+    "screenshots_visually_inspected": 9,
+    "retained_files": [
+      {
+        "path": "history-benchmark.json",
+        "bytes": 3319,
+        "sha256": "a3d46084343f623fc21a34d5d382b7c2158214afa5dbebd80dfd46c7aa32a699"
+      },
+      {
+        "path": "ocr-phone-import-progress.png",
+        "bytes": 50679,
+        "sha256": "6bbba00753178b2e550410860b98c07e43b7659d02508ba5ea831b9360695838"
+      },
+      {
+        "path": "ocr-phone-model-removal-confirmation.png",
+        "bytes": 60196,
+        "sha256": "435a77ca167f918554d82d60095a1abd1248323df6bcfcd4eb6db5e2011337e5"
+      },
+      {
+        "path": "ocr-phone-model-setup.png",
+        "bytes": 69348,
+        "sha256": "c89d28ebc421c5e6d959c072474206d4bbf77a41a442e43250cc45cd8f0b8f11"
+      },
+      {
+        "path": "ocr-phone-model-storage.png",
+        "bytes": 62974,
+        "sha256": "d7017c72c6f04c377bac6ef2b14f4b96cc5b0aa1d3dc419cf54952984ffc69a5"
+      },
+      {
+        "path": "ocr-phone-page-list.png",
+        "bytes": 51706,
+        "sha256": "14d34c71b00deee4e7d0791033d0b1e13d07c2c6550808ec7e70eff58939d611"
+      },
+      {
+        "path": "ocr-phone-photo-preparation.png",
+        "bytes": 59522,
+        "sha256": "04fc189b214daa397b0e63ff5c7b6762e694e0ef36d696905bbdd18bb65f4c0b"
+      },
+      {
+        "path": "ocr-phone-text-review.png",
+        "bytes": 50114,
+        "sha256": "8ba65648efcf7f6ff9244aa9044c1e52a1305af333552d75e60384b1d2e233eb"
+      },
+      {
+        "path": "ocr-workspace-compact.png",
+        "bytes": 54798,
+        "sha256": "6f685c16df5dffe60b1edb1cf5062cb363571e6b85e005c07c72ea605aa7b35f"
+      },
+      {
+        "path": "ocr-workspace-desktop.png",
+        "bytes": 152916,
+        "sha256": "9b48c796ec0222a718ecfe753cb837551969c9c1adfc634d63b5f76c3886dd1e"
+      },
+      {
+        "path": "report.json",
+        "bytes": 4724,
+        "sha256": "9fc92a45d6fbb371d65da20eb9209d609ea2a690310e2b5fc4357d0b4bb67659"
+      }
+    ],
+    "report_note": "The original report lists eight screenshots. The import-progress PNG is present in the artifact, visually inspected, and retained here; the original report is preserved unchanged."
+  },
+  "history": {
+    "scope": "Node model/history CPU and memory receipt; excludes WebView rendering, page pixels and native model inference.",
+    "integrity": "passed",
+    "history_byte_budgets": "passed",
+    "timing_gate": "No fragile wall-clock threshold. Integrity and history-byte bounds are required.",
+    "memory_observation": "The 1,000-page optimized process had higher sampled and high-water memory than baseline. The 5,000-page optimized process had lower sampled and high-water memory. No universal memory reduction is claimed.",
+    "interpretation": "Single hosted Node benchmark receipt; no WebView paint, page pixels or native model inference. Compare exact measurements in history-benchmark.json."
+  },
+  "limits": {
+    "native_ocr_application_qualified": false,
+    "physical_devices_tested": false,
+    "physical_camera_tested": false,
+    "system_picker_tested": false,
+    "recognition_quality_qualified": false,
+    "note": "This exact integrated source passed the production frontend harness using synthetic native adapters. Later feature commits require their own qualification."
+  }
+}
