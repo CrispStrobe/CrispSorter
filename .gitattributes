@@ -8,3 +8,5 @@ tests/results/ocr-studio/storage-cancel-d90c/native.log -whitespace
 tests/results/ocr-studio/paired-7104a35c/log-excerpt.txt -whitespace
 tests/results/ocr-studio/storage-cancel-8ea0/native.log -whitespace
 tests/results/ocr-studio/mobile-646-x86_64/log-excerpt.txt -whitespace
+# Preserve the complete verified frontend logs, including the runner's final blank line.
+tests/results/ocr-studio/combined-text-5382/*.log -text -whitespace

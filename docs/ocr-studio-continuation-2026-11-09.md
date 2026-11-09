@@ -8,8 +8,12 @@ No release qualification is inferred from a source change or a queued workflow.
 
 The combined application candidate is saved on `feat/ocr-document-studio` at
 `b876fb43eb19cc7de44760400e50735aa27c2c78`. Its native runtime and bindings both
-pin `9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a`. Additional evidence checkpoints
-remain on `feat/ocr-streaming-export` while that immutable app source runs.
+pin `9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a`. Further integrated source is saved on `feat/ocr-streaming-export` at
+`0437d26d1ee631b977e3be88865d99461b329f42` while that immutable app source runs.
+It adds mobile Word/text export, early format checks, exact import-cancellation
+classification and preservation of compiled iOS artifacts before simulator checks.
+CrispEmbed's main OCR feature branch is saved at `4c98a9f864166e0c09f77d9a9a289e92a6f1c28f`,
+including verified retained-camera results; its runtime pin remains unchanged.
 
 ## Implemented since the first checkpoint
 
@@ -25,6 +29,9 @@ remain on `feat/ocr-streaming-export` while that immutable app source runs.
 | Export lifecycle | Reviewed PDFs can stream into a staged file with bounded writes; cancellation and progress follow the worker until it finishes. Publication is atomic, existing outputs need explicit replacement, and late stops cannot cancel a completed result. Mobile destination handoff is explicit. |
 | Asset integrity | Reusing an existing content-addressed page requires a bounded byte comparison and regular-file checks. Truncated, corrupted or aliased assets fail without replacing the source. |
 | Phone corner editing | A focused view gives the page most of the screen, with 44-pixel touch handles, zoom, exact numeric coordinates and reachable Back/Apply controls. Leaving the editor preserves the image until Apply; Undo restores the original geometry and review data. |
+| Reviewed text alternatives | Selected-page preflight rejects unsupported bidirectional PDF and invalid rich-document controls before opening a destination picker. Available Text, HTML and Word alternatives preserve the reviewed logical text. The portable Word feature is enabled by mobile and desktop profiles. |
+| Import error identity | Only an exact native cancellation marker becomes cancellation. Password, permission and provider errors retain their identity even when a source filename contains that marker. |
+| iOS artifact retention | The exact compiled app is archived with an unqualified source/hash receipt before simulator startup. A later simulator failure cannot discard the completed build or imply runtime qualification. |
 | Native dependency notices | Packaged builds derive their dependency inventory from the actual locked Cargo graph, target and enabled features. The mobile profile includes the protocol feature added by the pinned CLI. Missing or inconsistent native entries fail packaging. |
 | Native build recovery | The async registry command now returns the Tauri-compatible result type. The iOS build retains the host protobuf compiler and native dependency paths through Xcode's nested Cargo invocation. |
 
@@ -42,11 +49,12 @@ change does not turn these into tests of a different binary.
 
 | Gate | Result and source | Evidence scope |
 | --- | --- | --- |
-| Combined frontend | 239 tests passed; Svelte check: zero errors, 54 existing warnings in eight other files | Exact integrated source `e37fa4372b20a681234e4b5b66b0ada3e568d908`; includes exact cancellation-error classification and focused phone controls |
-| Build/probe helper contracts | 89 Python tests and 17 Node tests passed | Same integrated source; these validate helper behavior, packaging, receipts and dependency inventories, not target execution |
+| Combined frontend | 250 tests passed across 29 files; Svelte check: zero errors, 54 existing warnings in eight other files | [Exact merged source and complete logs](../tests/results/ocr-studio/combined-text-5382/receipt.json), based on `ebcc9b5a` plus `5382ccc5`; the saved `0437d26d` source includes the same tested modules |
+| Build/probe helper contracts | 89 Python tests and 17 Node tests passed | Integrated source `e37fa437`; these validate helper behavior, packaging, receipts and dependency inventories, not target execution |
 | Hosted browser | 28 scenarios and 218 unit tests passed; production build passed; nine screenshots retained | [Run 42613157935](https://github.com/CrispStrobe/CrispSorter/actions/runs/42613157935), exact source `5b0ab78d7ec70a051ae415b56066e90495c40484`; includes failed-import-save recovery; native adapters remain synthetic |
-| Focused phone editor | Trusted touch, numeric validation, Apply/Back/Escape and Undo passed; page measured 342×478.8 within a 390×620 canvas at a 390×844 viewport | [Run 42631253524](https://github.com/CrispStrobe/CrispSorter/actions/runs/42631253524), source `fbc03f74`; overall 31 scenarios passed and two failed. Both failed selectors are retained and repaired in the combined candidate; this is not a whole-browser pass. |
-| Export progress in browser | Both new phone export lifecycle scenarios passed | [Run 42625583821](https://github.com/CrispStrobe/CrispSorter/actions/runs/42625583821), source `d0f9baa9`; overall 31 passed and one archival-option assertion failed. Native DOM state and keyboard behavior replace that ambiguous query in the next source. |
+| Focused phone editor | Trusted touch, numeric validation, Apply/Back/Escape and Undo passed; page measured 342×478.8 within a 390×620 canvas at a 390×844 viewport. Both phone and desktop corner paths pass after the desktop selector correction. | [Run 42634301391](https://github.com/CrispStrobe/CrispSorter/actions/runs/42634301391), source `9e0f0fe1`; overall 32 passed and one older archival-option assertion failed. The original 31/2 run and its screenshots remain retained. |
+| Archival format availability | All 32 browser scenarios and 233 unit tests passed; zero browser errors. Native disabled-option state, exact reason, keyboard skipping and zero accidental exports verified. | [Run 42633072468](https://github.com/CrispStrobe/CrispSorter/actions/runs/42633072468), source `76bf5d8`; [receipt](../tests/results/ocr-studio/archival-option-76bf5d8.json). This isolated source predates the newest phone and text changes. |
+| Export progress in browser | Both new phone export lifecycle scenarios passed | [Run 42625583821](https://github.com/CrispStrobe/CrispSorter/actions/runs/42625583821), source `d0f9baa9`; overall 31 passed and one archival-option assertion failed. Native DOM state and keyboard behavior replace that ambiguous query in the separately passing `76bf5d8` source. |
 | Paired native application modules | 100 Rust cases passed; 15 live/model cases explicitly ignored; native renderer 51/51 | [Run 42614585554](https://github.com/CrispStrobe/CrispSorter/actions/runs/42614585554), Sorter `7104a35c` with Embed `d49a8967`; successful Rust test links and two metadata-only feature checks, not a complete app build |
 | Model storage and export control | 25 native tests passed, zero failed/ignored: ten storage, six atomic output and nine cancellation | [Run 42627812221](https://github.com/CrispStrobe/CrispSorter/actions/runs/42627812221), exact source `8ea0a7e7`; actual production modules, including late completed/failed request IDs and bounded expiry |
 | JPEG integrity | Six actual decoder/guard controls passed | [Run 42616849573](https://github.com/CrispStrobe/CrispSorter/actions/runs/42616849573), source `8dad704`; three damaged JPEGs accepted by the decoder are rejected by the guard; three valid controls retain exact pixels |
@@ -58,6 +66,8 @@ change does not turn these into tests of a different binary.
 | Android app compilation and package identity | ARM64 and x86_64 apps compiled and packaged; corrected bounded inspection independently confirms native hashes, load alignment and dependency closure | Same `646dbc48` run; both hosted jobs failed at the old receipt size limit before emulator execution. The corrected inspector is in the combined source. Neither APK is counted as a runtime/inference pass. |
 
 Downloaded artifact hashes and source digests are retained under
+`tests/results/ocr-studio/combined-text-5382/`,
+`tests/results/ocr-studio/archival-option-76bf5d8.json`,
 `tests/results/ocr-studio/hosted-5b0ab78d/`,
 `tests/results/ocr-studio/paired-7104a35c/`,
 `tests/results/ocr-studio/storage-cancel-d90c/`,
@@ -80,9 +90,26 @@ improved from 14.5228% to 1.2448% CER. The shadowed results include background
 whitening: deskew alone made those two rotation cases worse. The report retains
 all arms and distinguishes public-API output from internal geometry experiments.
 
-These results cover the declared synthetic images and independently measured
-text. They do not establish native mobile model quality, a camera-produced corpus,
-or multilingual accuracy.
+The [retained photographic-input job](https://github.com/CrispStrobe/CrispEmbed/actions/runs/42635475023/job/129222355005)
+also passes at `8021ca2`, with production geometry hashes identical to the pinned
+`9c44a69` runtime. An existing iPhone 7 photo rectifies to 755×1259 pixels and
+matches independent OpenCV mapping at mean channel error 0.104874/255 (99th
+percentile 1/255). Both photographs recover the independently added −4.2° and
++6.7° rotations relative to their original estimates.
+
+| Printed-page input | Raw CER | Deskew-only CER | Deskew + whitening CER |
+| --- | ---: | ---: | ---: |
+| Original | 0.1677% | 0.4696% | 0.3690% |
+| −4.2° added tilt | 12.2442% | 0.2348% | 0.4025% |
+| +6.7° added tilt | 61.4894% | 0.3355% | 0.5032% |
+
+The prepared arm was declared before execution; every arm's actual text, TSV and
+scores is retained in the [verified receipt](https://github.com/CrispStrobe/CrispEmbed/blob/4c98a9f864166e0c09f77d9a9a289e92a6f1c28f/tests/results/ocr-phone-photo/camera-8021/artifact-identity.json).
+The original was already readable, and whitening slightly worsened it. Cleanup
+therefore remains an explicit operation with original comparison and undo.
+The historical Fraktur/manuscript photo supplies geometry evidence only; it has
+no invented OCR transcript. These bounded cases do not establish a new physical
+capture, broad document corpus or native mobile recognition-model quality.
 
 ### History performance
 
@@ -101,7 +128,10 @@ Exact application source `b876fb43` has accepted
 [paired desktop/native](https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608358),
 [mobile target](https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608233), and
 [browser](https://github.com/CrispStrobe/CrispSorter/actions/runs/42634608257)
-workflows. Their creation is not a pass. The earlier invalid-workflow records,
+workflows. The native library, actual locked desktop inventory/production frontend
+and whole-crate writer steps have passed; application Rust verification continues.
+Both Android architectures have entered actual app compilation, while iOS is
+queued. These intermediate steps do not constitute completed application gates. The earlier invalid-workflow records,
 caused by a runner context in a job-level environment, are preserved in
 `tests/results/ocr-studio/native-scheduling-e37/`; the correction resolves the
 path in a runner step. The full gates include the real writer crate, application
@@ -109,8 +139,10 @@ exports, Linux executable link/startup, corrected Android package inspection,
 mobile native loading/inference and the actual dependency inventory.
 
 The retained iOS startup screenshot shows Inbox without visible app navigation.
-A small simulator UI-test probe is separately checking the unchanged installed
-app's accessibility frames and Tools → OCR reachability before any layout claim.
+A small simulator UI-test probe is now running against the unchanged installed
+app to check accessibility frames and Tools → OCR reachability before any layout
+claim. An earlier attempt timed out during host simulator discovery before app
+installation, and its original failure evidence remains saved.
 Neither a native probe nor browser adapters substitute for this application path.
 
 CrispEmbed's final native component `9c44a69` passed 70 C controls, ten ordinary
@@ -120,9 +152,12 @@ Rust writer contracts plus the separate large-file case, 11 artifact methods,
 independent image checks passed. Observed hosted peak RSS was 59,128 KiB and
 elapsed time 10.48 seconds for that bounded case, not a mobile memory guarantee.
 The [source-bound writer receipt](https://github.com/CrispStrobe/CrispEmbed/blob/b16df2c4607bc8b2264fb57ae096985e78e641d1/tests/results/ocr-render/writer-9c44a69.json)
-retains the exact scope. PDFium supplementary-character search, a dense-page
-Poppler stress case and general bidirectional reader interoperability remain
-explicit compatibility limits. The bidi capability stays disabled; the prior
+retains the exact scope. The final strict reader diagnostic has also completed:
+five supplementary-search assertions and the unchanged dense Poppler page fail.
+A valid independent producer reproduces the full-scalar search failure with
+exact copied Unicode; the original dense page returns the exact first 50,000
+of 65,542 characters in that Poppler version. These and general bidirectional
+reader interoperability remain explicit compatibility limits. The bidi capability stays disabled; the prior
 failed whole workflows and all experimental reader outcomes remain available.
 See [streaming export](ocr-streaming-export.md) and
 [export controls](ocr-export-control.md).
@@ -134,11 +169,20 @@ controls and four independently read PDFs with exact image pixels. The
 binds the binaries, inputs and verified artifact. This qualifies file I/O and
 rendering on that Windows job, not the entire Windows application.
 
-A separate retained-camera fixture lane at CrispEmbed `8021ca2` adds existing
-iPhone 7 photographic pixels, independent perspective mapping, known added-tilt
-controls and paired English/French text scores. Its hosted result is pending.
-The [protocol](https://github.com/CrispStrobe/CrispEmbed/blob/8021ca2603ba84f948057b30bb3adf88e1afd04a/docs/ocr-retained-camera-fixtures.md)
-distinguishes an existing phone photograph from a newly observed capture.
+The retained-camera results above have passed. A later `fe0e279` run separately
+checks enhanced identity-PNG preservation; the original job's identity assertion
+passed but its identity PNG was omitted. The complete original text/TSV evidence
+and all image hashes remain saved without reclassifying that omission.
+
+The new mobile Word/text module at `5382ccc5` has accepted
+[portable/Android/iOS contracts](https://github.com/CrispStrobe/CrispSorter/actions/runs/42640418541)
+and [browser preflight](https://github.com/CrispStrobe/CrispSorter/actions/runs/42640418500)
+runs, currently queued. These checks compile the actual production writer and
+independently read DOCX/HTML/plain-text artifacts. A separate Android WebView
+probe is being extended to save/reload reviewed text, export Word through the
+actual app command and read the saved OOXML independently. None of these pending
+checks is reported as a completed mobile Word round-trip. See the
+[text-export contract](ocr-text-export-compatibility.md).
 
 Physical devices are not connected to this workspace. Actual camera capture,
 cloud-provider lifetime/revocation, low-memory and thermal behavior, sustained

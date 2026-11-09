@@ -29,6 +29,24 @@ rerunning completed recognition.
    approval is required by default and can be relaxed explicitly. Choose the
    output filename. Corrected text is used directly; export never reruns OCR.
 
+### Choose an output format
+
+Searchable PDF preserves current page images and reviewed text geometry. Archival
+PDF/A-2b additionally embeds its required font, color and metadata resources when
+the matching renderer advertises that capability. Preflight checks the selected
+text before the destination picker; text requiring an unavailable bidirectional
+PDF path receives a reason and buttons for the supported alternatives.
+
+Word exports editable paragraphs in reviewed reading order, with text direction,
+tabs, empty paragraphs and source-page breaks. Complex page layout becomes flowing
+text. It is available in the desktop and mobile OCR build profiles. Plain text
+keeps region characters and line endings exactly, including trailing whitespace;
+HTML supplies mobile-readable paragraphs with automatic text direction. JSON
+preserves reviewed region text and geometry. Invalid rich-document characters
+receive an explicit Text/JSON alternative instead of silently disappearing.
+See [text-export compatibility](ocr-text-export-compatibility.md) for the exact
+format rules and qualification scope.
+
 ### Projects and recovery
 
 Projects save automatically after edits and after processing results. **Save**
