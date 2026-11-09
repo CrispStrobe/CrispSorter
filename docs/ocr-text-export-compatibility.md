@@ -16,6 +16,14 @@ diagnostic shows that copying correct Unicode does not imply that every PDF
 reader can find that text with its search function. No universal PDF search or
 right-to-left copy claim is made.
 
+A selection-aware density advisory also appears when any included page reaches
+50,000 Unicode scalars of reviewed text. Counting stops at that threshold and
+does not allocate a character array. The retained dense-page control demonstrates
+a limit in one reader for very small text advances; this is not a universal
+50,000-character PDF limit. PDF and PDF/A remain available, with direct buttons
+for the advertised text alternatives. Excluded regions and unselected pages do
+not contribute to the advisory, and counts are per page rather than per export.
+
 ## Text alternatives
 
 | Format | Text and line breaks | Availability |

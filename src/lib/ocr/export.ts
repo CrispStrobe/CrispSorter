@@ -5,6 +5,15 @@ export const PDF_BIDI_UNAVAILABLE =
 
 const MAX_DOCX_TEXT_BYTES = 16 * 1024 * 1024;
 const MAX_DOCX_STRUCTURAL_ITEMS = 100_000;
+const DENSE_PDF_PAGE_SCALARS = 50_000;
+
+function reachesPdfReaderDensity(regions: readonly { text: string }[]): boolean {
+  let scalars = 0;
+  for (const region of regions) for (const _character of region.text) {
+    if (++scalars >= DENSE_PDF_PAGE_SCALARS) return true;
+  }
+  return false;
+}
 
 /** Match the qualified native renderer's conservative script/control guard.
  * This is availability preflight, not a Unicode layout implementation.
@@ -76,6 +85,10 @@ export function checkExportText(
   }
   if (pages.some(page => page.regions.some(region => /[\u{10000}-\u{10ffff}]/u.test(region.text)))) {
     result.warnings.push("Some PDF readers cannot find supplementary characters, such as emoji, with text search. The characters remain in the PDF. Choose Plain text or HTML document when exact text search is required.");
+  }
+  if (pages.some(page => reachesPdfReaderDensity(page.regions))) {
+    result.warnings.push("At least one selected page contains 50,000 or more reviewed characters. Some PDF readers limit copying or searching text on very dense pages. PDF export remains available; choose an available text format when access to the complete reviewed text is essential.");
+    result.alternatives = ["text", "html", "docx"].filter(format => capabilities.formats.includes(format) && (format !== "docx" || capabilities.docx_export !== false));
   }
   return result;
 }
