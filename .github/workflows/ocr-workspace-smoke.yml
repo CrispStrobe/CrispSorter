@@ -8,6 +8,8 @@ on:
       - src/lib/ocr/**
       - src/lib/tabs.ts
       - src/routes/+page.svelte
+      - src/app.html
+      - src/app.css
       - src/lib/components/OcrWorkbench.svelte
       - src/lib/components/ocr/**
       - tests/ocr-workspace/**
@@ -17,6 +19,8 @@ on:
       - src/lib/ocr/**
       - src/lib/tabs.ts
       - src/routes/+page.svelte
+      - src/app.html
+      - src/app.css
       - src/lib/components/OcrWorkbench.svelte
       - src/lib/components/ocr/**
       - tests/ocr-workspace/**
