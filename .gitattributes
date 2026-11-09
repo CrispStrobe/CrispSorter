@@ -10,3 +10,6 @@ tests/results/ocr-studio/storage-cancel-8ea0/native.log -whitespace
 tests/results/ocr-studio/mobile-646-x86_64/log-excerpt.txt -whitespace
 # Preserve the complete verified frontend logs, including the runner's final blank line.
 tests/results/ocr-studio/combined-text-5382/*.log -text -whitespace
+# Hashed native and UI evidence must retain its original bytes on all platforms.
+tests/results/ocr-studio/** -text -whitespace
+tests/results/ocr-ios-shell/** -text -whitespace
