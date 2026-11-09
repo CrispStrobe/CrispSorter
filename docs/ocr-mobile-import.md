@@ -112,6 +112,16 @@ preserves both source revisions, test-level results, failures, and artifact
 digests. These outcomes cover the registered provider's framework decoders and
 access controls; the complete application-command path is a separate gate.
 
+The subsequent [shared-fixture run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42612700801)
+at `76de6dad49f9474aa1034e3030f95cd3f4a6d144` passed 19 of 20 Android tests
+(the same unsupported-AVIF skip) and all 19 iOS tests. Both native decoders
+accepted the identical, independently decoded HEIC fixture, produced its expected
+120 × 80 dimensions and corner colors, and preserved the original bytes. Both
+downloaded test artifacts were checked against their SHA-256 digests; the receipt
+retains their exact test lists and source identity. The provider's JPEG-helper
+checks alone do not establish completeness checking in the application's
+separate shared Rust JPEG import path.
+
 Rust tests cover bounded ISO BMFF signature parsing, private archive identity,
 native result containment, corrupt/truncated rasters, hash mismatches, and pinned
 PDF source integrity. Client tests cover format gating, metadata transport,

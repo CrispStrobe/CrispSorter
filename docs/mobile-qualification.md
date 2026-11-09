@@ -77,19 +77,21 @@ provider. The Android instrumentation covers nested folders, case-sensitive
 document IDs, reads, unavailable access, size limits and folder cycles. The iOS
 simulator tests cover bookmark-record identity and bounded reads. They do not
 exercise either system picker, a real provider's persistent grants, or the
-complete apps. The [corrected provider run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42609744777)
-at source `dd8d9b1419e5b5d339c8a432118cb94218cdbce3` passed Rust/Swift plugin
-checks, 18 Android emulator tests, and all 18 iOS simulator tests. The Android
-suite contained 19 tests: its AVIF case skipped because the Android 10/API 29
+complete apps. The [shared-fixture provider run](https://github.com/CrispStrobe/CrispSorter/actions/runs/42612700801)
+at source `76de6dad49f9474aa1034e3030f95cd3f4a6d144` passed Rust/Swift plugin
+checks, 19 Android emulator tests, and all 19 iOS simulator tests. The Android
+suite contained 20 tests: its AVIF case skipped because the Android 10/API 29
 runtime did not advertise that decoder. The iOS run used Xcode 16.4 and the
 iPhoneSimulator 18.5 SDK; its HEIC encode/decode, AVIF, and EXIF cases ran and
-passed. Both platforms exercised PDF page count, nonblank pixels, dimensions,
+passed. Both platforms decoded the same pinned HEIC fixture and checked its
+dimensions, pixel colors, and unchanged original bytes. They also exercised PDF page count, nonblank pixels, dimensions,
 rotation, protected/damaged input rejection, source preservation, cancellation,
 and private-path/output limits. Export controls also cover exact-byte copying
 and staging protection. The [qualification receipt](../tests/results/ocr-mobile-import/qualification.json)
 retains every test result, artifact digest, and the earlier iOS failures fixed
-before this rerun. These are provider/decoder results; complete-app and physical
-device qualification still require the separate checks below.
+in `dd8d9b1`. These are provider/decoder results; complete-app and physical
+device qualification still require the separate checks below. The provider's
+JPEG helper tests do not qualify the application's shared Rust JPEG importer.
 
 For qualification, use a dedicated device or emulator and disposable local and
 cloud-provider fixtures. Record the build and OS/device, and verify picker
@@ -251,8 +253,14 @@ explicitly downloads the baseline through the app's private installer, verifies
 the installed model hashes independently, imports PNG and multi-page PDF fixtures
 through raw IPC, prepares and recognizes original/modified pages, reloads saved recognition settings, and
 renders and discards a private reviewed PDF. Raw recognition and failure evidence
-are retained. This synthetic command test does not open the system camera or save
-picker, exercise user interactions, or validate the extracted PDF text layer.
+are retained. Its workspace UI gate supplies a synthetic image to the actual
+camera-file input, saves the imported page, and triggers recognition through the
+UI. The Android emulator gate also opens the real DocumentsUI picker, checks
+cancellation, selects a pinned local PDF, verifies its provider URI/read grant,
+and checks durable page import. These are defined gates; inspect their actual
+run receipts before claiming execution. They do not establish physical-camera
+capture, cloud-provider access, provider grants after restart/revocation, the
+export save picker, or the extracted PDF text layer.
 The iOS lane defines native inference and startup checks; it does not yet define
 an equivalent application-command test.
 
