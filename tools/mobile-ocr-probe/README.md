@@ -52,12 +52,26 @@ orientation fixtures. The fixtures are supplied by
 `tests/fixtures/mobile-documents/manifest.json`; no host PDF renderer can satisfy
 these app assertions.
 
-The final UI case opens the real OCR workspace, supplies a synthetic image to
-its camera file input, verifies native import/autosave and the preparation
-view, then starts recognition from the actual workspace button. This is a
+The UI case opens the real OCR workspace and creates/saves a separate project
+using its actual controls. This preserves the first project's results and
+respects source deduplication. It supplies a synthetic image to the camera file
+input, verifies native import/autosave and the preparation view, then starts
+recognition from the actual workspace button. This is a
 capture **file handoff**, not a claim that the system camera opened or produced
-the fixture. Actual system picker/camera and representative corpus qualification
-remain separate. PDF signature checks do not establish text-layer accuracy.
+the fixture.
+
+On the dedicated Android emulator, the next case stages the pinned PDF under
+one unique name in Downloads. **Add documents** opens the actual system picker.
+The case cancels once and checks that the project is unchanged, then selects
+only the exact observed fixture filename. Fresh UI Automator XML and screen
+captures precede every tap; unexpected packages/permission prompts, ambiguous
+filenames, missing controls and unsupported layouts fail the case. It checks
+the returned content URI, reads bytes through the actual provider grant, checks
+the private archive hash and verifies both natively rendered pages in the saved
+project. The driver removes only its uniquely named staged file and XML scratch
+file. Physical devices never enter this automatic picker case. Cloud providers,
+provider access after restart, physical camera capture and representative corpus
+qualification remain separate. PDF signature checks do not establish text-layer accuracy.
 The iOS lane currently executes the standalone native probe and app startup;
 it does not claim the Android application's command coverage.
 

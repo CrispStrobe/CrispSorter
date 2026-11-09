@@ -606,6 +606,14 @@
     let indexEmbedderModel  = $state<string>('bge_m3');
     let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+    // A catalog or saved preference may have come from a desktop. Reflect
+    // the mobile ONNX runtime's actual CPU provider in the selected value.
+    $effect(() => {
+        if ($caps.mobile && indexEmbedderBackend === 'onnx'
+            && (indexDevice === 'metal' || indexDevice === 'cuda')) {
+            indexDevice = 'cpu';
+        }
+    });
     /** Master switch for vector capabilities. When false, no embedder is
      *  ever loaded — saves multi-GB downloads + minutes of init time when
      *  the user only wants offline file cataloguing (L1 + L2) and
@@ -4877,9 +4885,12 @@
                     <select id="index-device-select" bind:value={indexDevice} class="styled-select">
                         <option value="auto">{i18n.t.settings.index.device_auto}</option>
                         <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
-                        {#if isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
-                        <option value="cuda">{i18n.t.settings.index.device_cuda}</option>
+                        {#if !$caps.mobile && isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
+                        {#if !$caps.mobile}<option value="cuda">{i18n.t.settings.index.device_cuda}</option>{/if}
                     </select>
+                    {#if $caps.mobile}
+                        <p class="hint">ONNX embeddings run on this device's CPU. Desktop GPU preferences use CPU here.</p>
+                    {/if}
                 {:else}
                     <!-- GGUF: CPU is always available; the linked GPU
                          backend (or `null` if CrispEmbed itself is off) is
