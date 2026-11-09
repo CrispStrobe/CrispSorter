@@ -21,6 +21,14 @@ set to 28 points. This is a native WebKit font preference, not a claim about a
 physical device's accessibility settings. A popup hidden with the mobile
 navigation in landscape is checked as hidden; it is not reported as visible.
 
+A separate pinned Chromium control measures desktop and phone layouts, including
+a 740 × 360 landscape viewport with asymmetric 62/34 point side insets and a
+21 point bottom inset supplied through CDP's real CSS safe-area override. It
+asserts that computed padding matches those values and that every popup action
+can be scrolled into its bounded menu and focused. A 32px text-style stress case
+also requires the popup to remain above the navigation's actual enlarged
+height. This browser case does not stand in for native WebKit inset behavior.
+
 Receipts, source HTML, raw metrics, accessibility trees, screenshots, Xcode logs
 and result bundles are retained on both success and failure. Building this
 small Swift fixture does not rebuild Rust or CrispSorter. The complete
