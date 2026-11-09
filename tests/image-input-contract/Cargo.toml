@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "ocr-image-input-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dev-dependencies]
+base64 = "=0.22.1"
+image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }

@@ -146,6 +146,8 @@ fn checked_dimensions(path: &Path) -> Result<(u32, u32), String> {
 }
 
 fn decode_page(path: &Path) -> Result<DynamicImage, String> {
+    crate::extractors::image_input::validate_file(path)
+        .map_err(|e| format!("Validate page source ({}): {e}", path.display()))?;
     checked_dimensions(path)?;
     image::open(path).map_err(|e| format!("Decode page ({}): {e}", path.display()))
 }
@@ -1361,6 +1363,63 @@ mod tests {
         assert!(import_bytes(root.path(), "page.jpg", b"%PDF-1.7", false, None).is_err());
         assert!(import_bytes(root.path(), "page.jpg", b"invalid", true, Some("https://example.com/page")).is_err());
         assert!(!root.path().join("sources").exists());
+    }
+
+    fn pinned_oriented_jpeg() -> Vec<u8> {
+        use base64::Engine;
+        let encoded = include_str!("../../tests/fixtures/mobile-documents/oriented.jpg.b64")
+            .split_whitespace().collect::<String>();
+        base64::engine::general_purpose::STANDARD.decode(encoded).unwrap()
+    }
+
+    #[test]
+    fn jpeg_file_and_camera_imports_reject_incomplete_sources_before_persisting_pixels() {
+        let complete = pinned_oriented_jpeg();
+        let missing_end = complete[..complete.len() - 2].to_vec();
+        let truncated_scan = complete[..complete.len() - 100].to_vec();
+        let mut metadata_end = vec![0xff, 0xd8, 0xff, 0xef, 0, 4, 0xff, 0xd9];
+        metadata_end.extend_from_slice(&complete[2..complete.len() - 100]);
+        for broken in [missing_end, truncated_scan, metadata_end] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("phone.jpg");
+            fs::write(&source, &broken).unwrap();
+            let error = import_document(root.path(), &source).unwrap_err();
+            assert!(error.contains("JPEG source is incomplete or malformed"), "{error}");
+            let error = import_bytes(root.path(), "phone.jpg", &broken, false, None).unwrap_err();
+            assert!(error.contains("JPEG source is incomplete or malformed"), "{error}");
+            assert_eq!(fs::read(&source).unwrap(), broken);
+            let archives: Vec<_> = fs::read_dir(root.path().join("sources")).unwrap().collect();
+            assert_eq!(archives.len(), 1);
+            assert_eq!(fs::read(archives[0].as_ref().unwrap().path()).unwrap(), broken);
+            let assets = root.path().join("assets");
+            assert!(!assets.exists() || fs::read_dir(assets).unwrap().next().is_none());
+        }
+    }
+
+    #[test]
+    fn complete_jpeg_metadata_and_trailing_bytes_keep_archive_identity_and_orientation() {
+        let complete = pinned_oriented_jpeg();
+        let mut trailing = complete.clone();
+        trailing.extend_from_slice(b"trailing camera metadata");
+        let mut metadata_end = vec![0xff, 0xd8, 0xff, 0xef, 0, 4, 0xff, 0xd9];
+        metadata_end.extend_from_slice(&complete[2..]);
+        for bytes in [complete, trailing, metadata_end] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("phone.jpg");
+            fs::write(&source, &bytes).unwrap();
+            let local = import_document(root.path(), &source).unwrap();
+            let imported = import_bytes(root.path(), "phone.jpg", &bytes, true,
+                Some("content://provider/Photo%3ACase.jpg")).unwrap();
+            assert_eq!(imported.source_uri, "content://provider/Photo%3ACase.jpg");
+            assert_eq!(imported.pages.len(), 1);
+            assert_eq!((imported.pages[0].width, imported.pages[0].height), (80, 120));
+            assert_eq!(local.pages[0].image_path, imported.pages[0].image_path);
+            let pixels = decode_page(Path::new(&imported.pages[0].image_path)).unwrap().to_rgb8();
+            let top_left = pixels.get_pixel(10, 10);
+            assert!(top_left[2] > 180 && top_left[0] < 70);
+            assert_eq!(fs::read(imported.archive_uri.unwrap()).unwrap(), bytes);
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+        }
     }
 
     #[test]
