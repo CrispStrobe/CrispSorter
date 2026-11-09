@@ -1,5 +1,7 @@
 import { applyRecognition, updatePage, type OcrPage, type OcrProject, type OcrRegion, type RecognitionResult } from './model';
 import { effectiveRecognitionZone, expandRecognitionZone, mergeZoneRegions, regionsInRecognitionZone, zoneContains, type PixelRectangle } from './zones';
+import { collectSourceComponents, withSourceComponents, validatePageSourceComponents } from './passageData';
+import { joinRegionText } from './text';
 
 export interface ZoneReviewRequest {
     projectId: string;
@@ -34,7 +36,7 @@ export function captureZoneReview(project: OcrProject, pageId: string, rectangle
     return {
         projectId: project.id, page: clone(page), zone,
         affectedRegionIds: affected.map(region => region.id),
-        previousText: affected.map(region => region.text).join('\n'),
+        previousText: joinRegionText(affected),
     };
 }
 
@@ -70,11 +72,20 @@ export function prepareZoneReview(project: OcrProject, request: ZoneReviewReques
     }
     // Reuse the normal geometry/evidence boundary, but keep its result local
     // until the user chooses the concrete replacement shown in the preview.
-    const recognized = applyRecognition(project, page.id, result, profileId).pages.find(candidate => candidate.id === page.id)!;
+    const recognized = applyRecognition(project, page.id, result, profileId, {preserveSourceHistory:false}).pages.find(candidate => candidate.id === page.id)!;
+    const previousSources = collectSourceComponents(page,page.regions.filter(region=>request.affectedRegionIds.includes(region.id) && region.sourceComponents?.length));
+    if (previousSources.length) recognized.regions=recognized.regions.map(region=>withSourceComponents(page,region,previousSources));
+    // The boundary before the covered text belongs to the surrounding document,
+    // not to the recognizer. In particular, re-OCR of one split half must not
+    // introduce a newline that the split explicitly omitted.
+    const boundary = page.regions.find(region=>request.affectedRegionIds.includes(region.id))?.separatorBefore;
+    if (boundary !== undefined && recognized.regions.length) recognized.regions[0]={...recognized.regions[0],separatorBefore:boundary};
+    const candidatePage={...page,regions:mergeZoneRegions(page,request.zone,recognized.regions)};
+    validatePageSourceComponents(candidatePage);
     validateReplacement(request, recognized.regions);
     return {
         request, regions: recognized.regions, provenance: recognized.provenance,
-        replacementText: recognized.regions.filter(region => !region.excluded && region.kind !== 'picture').map(region => region.text).join('\n'),
+        replacementText: joinRegionText(recognized.regions.filter(region => !region.excluded && region.kind !== 'picture')),
         warnings: warningStrings(result.warnings),
     };
 }
@@ -83,6 +94,7 @@ export function prepareZoneReview(project: OcrProject, request: ZoneReviewReques
 export function applyZoneReview(project: OcrProject, preview: ZoneReviewPreview): OcrProject {
     const page = currentPage(project, preview.request);
     validateReplacement(preview.request, preview.regions);
+    validatePageSourceComponents({...page,regions:mergeZoneRegions(page,preview.request.zone,preview.regions)});
     const { extraction: _staleExtraction, ...provenance } = page.provenance;
     return updatePage(project, page.id, {
         regions: mergeZoneRegions(page, preview.request.zone, preview.regions),

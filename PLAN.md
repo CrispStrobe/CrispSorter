@@ -1,5 +1,21 @@
 # CrispSorter — Development Plan
 
+## OCR review and document workflows — 9 November 2026
+
+The [OCR roadmap](docs/ocr-roadmap.md) scopes OCR-01 through OCR-18 with
+dependencies, lettered delivery increments, acceptance tests, and qualification
+boundaries. It is the current source of status for this programme. Work is
+committed and pushed incrementally to `feat/ocr-word-review` through
+[draft PR #36](https://github.com/CrispStrobe/CrispSorter/pull/36).
+
+Native word evidence and source inspection, project/personal vocabulary and
+reviewable correction rules, and passage split/merge/repair have implementation
+checkpoints. The roadmap records which unit, browser, and native checks actually
+passed. Document structure and formatting is the next package, followed by
+multiple extraction objects and structured exports. Hardware support, trained
+recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
+evidence requirements.
+
 ## Follow-up improvement programme — 29 October 2026
 
 **Handoff:** [exact open tasks, run links, evidence and next steps](docs/HANDOFF_2026-10-29.md).

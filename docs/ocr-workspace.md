@@ -103,6 +103,46 @@ needing another OCR run. Undo/redo works through the toolbar, and edits revoke
 the affected approval. Use **Regions** for confidence-colored words, geometry,
 region types, or reading-order changes.
 
+### Split, merge, and repair passages
+
+Place the caret inside a passage and choose **Split passage**. The preview keeps
+the text on both sides exactly, including whitespace. Choose **Shared source
+bounds** when both passages refer to the same image area, or **Divide source
+area** to specify an explicit cut and which side contains the first passage.
+The app does not infer a source boundary from a newline or invent word boxes
+from your cut. The split requires nonempty text on both sides of a complete
+character; a selected range is not treated as permission to discard text.
+
+**Merge next passage** combines the immediately following compatible passage in
+reading order. It cannot jump over excluded content, tables, pictures, or formulas.
+Inspect **Merged passage preview** and choose **No separator**, **Space**, **Line
+break**, or **Blank line**. No separator preserves the exact concatenation, which
+is useful for restoring a split whose second passage begins with whitespace.
+Each split or merge is one undoable operation and reopens the affected approval.
+
+Structural edits retain **Source components** containing the original text,
+recognition scores, native word evidence when present, and captured source image
+coverage. Expand a component to compare its raw OCR and source crop. Repeated
+split/merge operations reuse these original records rather than nesting or
+duplicating their history. The new passage has manual confidence; original
+scores remain attached to their source records. Text exports preserve explicit
+passage separators; JSON exports also retain the source components.
+
+**Shared source area** means the text passages have unresolved overlapping image
+coverage. Text and JSON remain available, while spatial exports require distinct
+coverage or merging the shared passages back together. A manually divided area
+describes your chosen coverage, not newly measured recognition geometry.
+
+**Repair passage text** proposes one operation at a time: normalize line endings,
+trim trailing spaces, collapse inline spaces, join lines, or remove eligible
+end-of-line hyphens. Inspect **Current passage** and **Proposed passage**, then
+select the exact changes to apply. Spacing changes, line joins, and dehyphenation
+start unchecked because alignment and intentional hyphens may carry meaning.
+The conservative proposals retain tabs, indentation, paragraph breaks, lists,
+numbers, and identifiers; they do not provide semantic paragraph reconstruction.
+Cancel preserves the text, and one Undo restores an accepted repair. Original
+recognition evidence remains available after a repair.
+
 ### Recognize only the text that needs another pass
 
 Select **Re-OCR region** on a region or passage, or use **Re-OCR area** in the
@@ -116,6 +156,11 @@ changing the project. **Use new OCR text** replaces only the covered source
 regions, preserves other corrections, and requires renewed review. Undo restores
 the previous text and evidence. Recognition never overwrites the current text
 before this comparison.
+
+When the covered passages already have source components, an accepted new OCR
+result retains those originals and adds the new recognition snapshot. Current
+word scores describe the new result; earlier evidence remains in its own source
+record.
 
 Empty recognition, failed inference, invalid crop coordinates, or a result for a
 different page image leave the existing text intact. If you navigate while OCR

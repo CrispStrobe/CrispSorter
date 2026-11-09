@@ -84,9 +84,9 @@ units to implement and push one at a time.
 
 | ID | Priority | Work package | Principal dependency | Status |
 | --- | --- | --- | --- | --- |
-| OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | 01a–c implemented for System Tesseract; native CI pending |
+| OCR-01 | P0 | Native word evidence and honest capabilities | A verified engine result/offset contract | 01a–c implemented for System Tesseract; focused native, paired application, and browser CI passed |
 | OCR-02 | P0 | Dictionaries, suggestions, and reusable corrections | Stable text ranges; OCR-01 for engine alternatives | 02a–c implemented; 02d feasibility documented; training blocked |
-| OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | Planned |
+| OCR-03 | P0 | Passage split/merge and text repair | Existing project/history model | 03a–c implemented; new native/browser integration checks pending |
 | OCR-04 | P1 | Document structure and formatting editor | OCR-03 semantics and versioned migration | Planned |
 | OCR-05 | P1 | Multiple tables/formulas and structural repair | Stable region IDs; OCR-04 shared block links | Planned |
 | OCR-06 | P1 | Structured DOCX/XLSX and export profiles | OCR-04 and OCR-05 | Planned |
@@ -117,13 +117,15 @@ the end.
 | --- | --- | --- |
 | `12caadb` | Scoped OCR-01 through OCR-18; corrected capability and archival-output claims | Documentation audit; no new product capability claimed |
 | `fae6cc7` — OCR-18a | Versioned qualification receipt schema, recording guide, and a dated same-run Tesseract TSV/TXT capture | JSON Schema validation and artifact hashes checked. External Tesseract 5.5.0 produced five aligned words. Production Rust adapter, full app, real-scan corpus, devices, and output standards remain separate gates |
-| `349725a` — OCR-01a–c | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests pass; Svelte check has 0 errors and 54 existing warnings. Focused Windows production-module parser/feature-gate tests passed (12 no-sidecars; 11 plus one ignored live case with sidecars; 12 sidecars+MAS). Linux live adapter, paired full application, and browser checks remain pending CI |
-| OCR-02 implementation (this checkpoint) | Project and personal vocabulary, protected terms, occurrence ignores, labeled suggestions, literal rules, selective stale-safe correction previews, import/export, and serialized retryable preference saves | 253 unit tests pass, including 18 new proofreading/store cases; Svelte check has 0 errors and the same 54 unrelated warnings. Four browser flows added (28 total), execution pending CI. Training feasibility is documented; no recognizer training or automatic native lexicon change is claimed |
+| `349725a` — OCR-01a–c | Strict UTF-16 word evidence, explicit installed System Tesseract provider, direct score colors, exact source-word highlight/magnifier, immutable original evidence in projects and JSON | 235 unit tests passed; Svelte check had 0 errors and 54 existing warnings. [Focused Linux/Windows CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42682663208) and [paired application CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42682663303) passed. The Linux run exercised the actual Rust adapter against installed Tesseract; Windows exercised parser/feature gates. Corpus accuracy and device qualification remain separate |
+| `6330227` — OCR-02a–c and 02d feasibility | Project and personal vocabulary, protected terms, occurrence ignores, labeled suggestions, literal rules, selective stale-safe correction previews, import/export, and serialized retryable preference saves | 253 unit tests passed; Svelte check had 0 errors and the same 54 unrelated warnings. [Browser CI](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730) passed the 28-interaction suite, including native-evidence UI and proofreading. No recognizer training or automatic native lexicon change is claimed |
+| OCR-03 implementation (this checkpoint) | Grapheme-safe passage split, explicit source coverage, adjacent merge with exact separators, selectable repair proposals, inspectable immutable source components, and preservation through later re-OCR | 280 unit tests pass, including 27 new passage/source/integration cases; Svelte check has 0 errors and the same 54 existing warnings. Source history, export separators, partial-OCR boundaries, stale previews, Unicode caret mapping, and shared-box export guards are covered. Two browser flows added (30 total); the new native export tests and browser interactions await this checkpoint's CI |
 
 ## OCR-01: Native word evidence and honest capabilities
 
-**Status: 01a–c implemented for System Tesseract; CI and broader qualification
-pending.** The explicit provider, validator, source-word inspection, and original
+**Status: 01a–c implemented for System Tesseract; focused Linux/Windows, paired
+application, and browser CI passed. Broader corpus qualification remains open.**
+The explicit provider, validator, source-word inspection, and original
 evidence persistence are implemented in
 [`ocr_word_evidence.rs`](../src-tauri/src/ocr_word_evidence.rs) and the
 [word evidence contract](ocr-word-evidence.md). The UI also shows word scores from explicitly aligned
@@ -164,7 +166,7 @@ native evidence.
 
 ## OCR-02: Dictionaries, suggestions, and reusable corrections
 
-**Status: 02a–c implemented; browser execution pending. 02d feasibility decision
+**Status: 02a–c implemented; browser CI passed. 02d feasibility decision
 documented; training remains blocked on its data/toolchain/evaluation gates.**
 The [workspace guide](ocr-workspace.md#vocabulary-and-correction-rules) describes
 the shipped controls. Versioned project/personal preferences and captured
@@ -205,9 +207,18 @@ workflow reference, not evidence that CrispEmbed exposes the same facility.
 
 ## OCR-03: Passage split/merge and text repair
 
-**Status: Planned.** `addRegion`, `deleteRegion`, `moveRegion`, and `editRegion`
-exist in [`model.ts`](../src/lib/ocr/model.ts). The passage editor changes full
-multiline text but does not split or merge source regions.
+**Status: 03a–c implemented; this checkpoint's browser and native export checks
+remain pending.** The [passage guide](ocr-workspace.md#split-merge-and-repair-passages)
+describes the controls. [`passages.ts`](../src/lib/ocr/passages.ts) captures and
+revalidates split/merge/repair previews; [`passageData.ts`](../src/lib/ocr/passageData.ts)
+retains flat source records with their own image, original text, and evidence.
+New structural passages carry manual confidence. Explicit separators preserve
+the exact text of a split through copying, search projections, and export.
+Shared coverage blocks spatial export while exported siblings overlap; a manual
+source division or complete merge resolves it. Existing source records also
+survive accepted partial/full re-OCR and image changes. Automatic repairs are
+restricted to included text-like passages and reviewable literal ranges; they
+do not infer semantic paragraph structure or change table/formula content.
 
 **Increments**
 

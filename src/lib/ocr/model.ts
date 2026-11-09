@@ -1,6 +1,8 @@
 import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
 import { readWordEvidence, type WordEvidenceEnvelope } from './wordEvidence';
 import { readProofreadingData, type ProofreadingData } from './proofreadingData';
+import { readSourceComponents, readSharedSourceGroups, collectSourceComponents, mergeSourceComponents, withSourceComponents, validatePageSourceComponents, type SourceComponent } from './passageData';
+import { joinRegionText, hasUnresolvedSharedGeometry, type PassageSeparator } from './text';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -19,6 +21,9 @@ export interface OcrRegion {
     kind: RegionKind; review: ReviewStatus; excluded: boolean;
     /** Immutable source word evidence, independently versioned for v1 projects. */
     wordEvidence?: WordEvidenceEnvelope;
+    sourceComponents?: SourceComponent[];
+    separatorBefore?: PassageSeparator;
+    sharedSourceGroups?: string[];
 }
 export interface OcrPage {
     id: string; documentId: string; sourcePage: number; name: string;
@@ -55,7 +60,7 @@ export interface OcrProfile {
 }
 export interface ReviewIssue { pageId: string; regionId: string | null; reason: 'failed' | 'pending' | 'empty' | 'low-confidence' | 'unknown-confidence' | 'changed'; message: string; }
 export interface TextMatch { pageId: string; regionId: string; start: number; end: number; text: string; }
-export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; }
+export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; format?: string; }
 export interface ExportRegion {
     id: string; text: string; original_text: string;
     x: number; y: number; w: number; h: number;
@@ -66,6 +71,7 @@ export interface ExportRegion {
     char_conf_aligned: boolean; char_conf: number[];
     original_char_conf: number[]; original_char_conf_aligned: boolean;
     word_evidence?: WordEvidenceEnvelope; original_word_evidence?: WordEvidenceEnvelope;
+    source_components?: SourceComponent[]; separator_before?: PassageSeparator; shared_source_groups?: string[];
     review: ReviewStatus; kind: RegionKind;
 }
 export interface ExportPage {
@@ -140,7 +146,7 @@ export function updatePage(project: OcrProject, pageId: string, patch: Partial<O
     return touch(project, project.pages.map((page) => page.id === pageId ? { ...page, ...patch, id: page.id, documentId: page.documentId } : page));
 }
 
-export function applyRecognition(project: OcrProject, pageId: string, result: RecognitionResult, profileId = project.profileId): OcrProject {
+export function applyRecognition(project: OcrProject, pageId: string, result: RecognitionResult, profileId = project.profileId, options: {preserveSourceHistory?:boolean} = {}): OcrProject {
     if (!validDimension(result.width) || !validDimension(result.height)) throw new Error('Recognition returned invalid page dimensions.');
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) throw new Error('The page is no longer in this project.');
@@ -173,13 +179,19 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
         return normalized;
     });
     const { regions: _regions, ...metadata } = result;
-    return updatePage(project, pageId, {
+    const previousSources = options.preserveSourceHistory === false ? [] : passageSources(page);
+    const imagePage = {...page,width:result.width,height:result.height,imagePath:result.image_path || page.imagePath};
+    const preservedRegions = previousSources.length ? regions.map(region=>withSourceComponents(imagePage,region,previousSources)) : regions;
+    const next = updatePage(project, pageId, {
         width: result.width, height: result.height, imagePath: result.image_path || page.imagePath,
         ...importedPhysicalSize(result, pagePhysicalSize(page)),
-        regions, status: 'recognized', approved: false, error: null,
+        regions:preservedRegions, status: 'recognized', approved: false, error: null,
         elapsedMs: finite(result.elapsed_ms) ? result.elapsed_ms : null,
-        provenance: { ...metadata, recognizedAt: now(), profileId }, profileId,
+        provenance: { ...metadata, recognizedAt: now(), profileId,
+            ...(!preservedRegions.length && previousSources.length ? {passageSources:previousSources} : {}) }, profileId,
     });
+    validatePageSourceComponents(next.pages.find(candidate=>candidate.id===pageId)!);
+    return next;
 }
 
 export function editRegion(project: OcrProject, pageId: string, regionId: string, text: string): OcrProject {
@@ -192,11 +204,11 @@ export function updateRegion(project: OcrProject, pageId: string, regionId: stri
     let changed = false;
     const regions = page.regions.map((region) => {
         if (region.id !== regionId) return region;
-        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf, wordEvidence: region.wordEvidence };
+        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf, wordEvidence: region.wordEvidence, sourceComponents: region.sourceComponents };
         if (!hasBox(next, page)) throw new Error('Region must remain inside the page.');
         changed = true;
         // Any content/geometry/type edit invalidates approval, including exclusion.
-        const contentChanged = ['text','x','y','w','h','kind','excluded'].some((key) => key in patch && patch[key as keyof OcrRegion] !== region[key as keyof OcrRegion]);
+        const contentChanged = ['text','x','y','w','h','kind','excluded','separatorBefore'].some((key) => key in patch && patch[key as keyof OcrRegion] !== region[key as keyof OcrRegion]);
         if (contentChanged) next.review = next.text === next.originalText && region.confidenceBasis !== 'manual' ? 'unreviewed' : 'corrected';
         return next;
     });
@@ -233,7 +245,7 @@ export function removePage(project: OcrProject, pageId: string): OcrProject { re
 export function approvePage(project: OcrProject, pageId: string, approved = true): OcrProject {
     const page = project.pages.find((p) => p.id === pageId);
     if (!page || page.status !== 'recognized') return project;
-    return updatePage(project, pageId, { approved, regions: page.regions.map((region) => ({...region, review: approved ? 'approved' : region.text !== region.originalText ? 'corrected' : 'unreviewed'})) });
+    return updatePage(project, pageId, { approved, regions: page.regions.map((region) => ({...region, review: approved ? 'approved' : region.text !== region.originalText || region.confidenceBasis === 'manual' ? 'corrected' : 'unreviewed'})) });
 }
 
 /** Pointer coordinates are already converted to image pixels by the view. */
@@ -254,6 +266,15 @@ function withoutExtraction(provenance: Record<string, unknown>): Record<string, 
     return next;
 }
 
+function passageSources(page: OcrPage): SourceComponent[] {
+    return mergeSourceComponents(readSourceComponents(page.provenance.passageSources) ?? [],
+        collectSourceComponents(page,page.regions.filter(region=>region.sourceComponents?.length)));
+}
+function archivePassageSources(page: OcrPage): Record<string, unknown> {
+    const sources=passageSources(page);
+    return {...withoutExtraction(page.provenance),...(sources.length ? {passageSources:sources} : {})};
+}
+
 /** Transforming page pixels invalidates recognition rather than warping stale boxes. */
 export function applyPageImage(project: OcrProject, pageId: string, image: ImportedPage, operation: string): OcrProject {
     if (!validDimension(image.width) || !validDimension(image.height) || !image.image_path) throw new Error('Invalid transformed page.');
@@ -265,7 +286,7 @@ export function applyPageImage(project: OcrProject, pageId: string, image: Impor
         : operation === 'crop'
             ? {widthPoints:priorSize.widthPoints * image.width / page.width,heightPoints:priorSize.heightPoints * image.height / page.height}
             : priorSize;
-    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, ...importedPhysicalSize(image,fallback), regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...withoutExtraction(page.provenance), lastImageOperation: operation, transformedAt: now() } });
+    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, ...importedPhysicalSize(image,fallback), regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...archivePassageSources(page), lastImageOperation: operation, transformedAt: now() } });
 }
 
 /** Replace one spread with independently recognizable pages in reading order. */
@@ -274,12 +295,13 @@ export function splitPage(project: OcrProject, pageId: string, images: ImportedP
     if (!source) return project;
     if (images.length < 2 || images.some((image) => !image.image_path || !validDimension(image.width) || !validDimension(image.height))) throw new Error('Page split must produce at least two valid images.');
     const priorSize = pagePhysicalSize(source);
+    const provenance = archivePassageSources(source);
     const children = images.map((image, index): OcrPage => ({
         ...source, id: id('page'), name: `${source.name} · part ${index+1}`,
         imagePath: image.image_path, width: image.width, height: image.height,
         ...importedPhysicalSize(image,{widthPoints:priorSize.widthPoints * image.width / source.width,heightPoints:priorSize.heightPoints * image.height / source.height}),
         regions: [], status: 'pending', approved: false, error: null, elapsedMs: null,
-        provenance: {...withoutExtraction(source.provenance), splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
+        provenance: {...provenance, splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
     }));
     return touch(project, project.pages.flatMap((page) => page.id === pageId ? children : [page]));
 }
@@ -370,6 +392,9 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
         if (!validPagePoints(physicalSize.widthPoints) || !validPagePoints(physicalSize.heightPoints)) errors.push(`${page.name}: physical page dimensions must be positive and no greater than ${MAX_PAGE_POINTS} points.`);
         if (options.requireReviewed && !page.approved) errors.push(`${page.name}: page review is required.`);
         const regions = activeRegions(page);
+        if (options.format && ['pdf','hocr','alto','xml'].includes(options.format.toLowerCase()) && hasUnresolvedSharedGeometry(regions)) {
+            errors.push(`${page.name}: passages share overlapping source areas. Divide their boxes or merge them before a spatial export; text and JSON preserve the exact edited text.`);
+        }
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
         if (!regions.some((r)=>r.text.trim())) warnings.push(`${page.name}: this page contains no text and will be retained as an image page.`);
         if (!page.approved) warnings.push(`${page.name}: the page has not been approved.`);
@@ -392,11 +417,14 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
                     original_word_evidence: clone(r.wordEvidence),
                     ...(r.text === r.originalText ? { word_evidence: clone(r.wordEvidence) } : {}),
                 } : {}),
+                ...(r.sourceComponents?.length ? {source_components:clone(r.sourceComponents)} : {}),
+                ...(r.separatorBefore !== undefined ? {separator_before:r.separatorBefore} : {}),
+                ...(r.sharedSourceGroups?.length ? {shared_source_groups:[...r.sharedSourceGroups]} : {}),
                 review:r.review, kind:r.kind,
             };
         })});
     }
-    return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>activeRegions(p).map((r)=>r.text).join('\n')).join('\f')};
+    return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>joinRegionText(activeRegions(p))).join('\f')};
 }
 
 /** History is bounded by count and UTF-8 snapshot bytes, excluding the live project. */
@@ -463,7 +491,11 @@ export function parseProject(input: unknown): OcrProject {
             if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
             if (typeof region.text!=='string'||typeof region.originalText!=='string'||!hasBox(region,page)||!kinds.includes(region.kind)||!reviews.includes(region.review)||!bases.includes(region.confidenceBasis)||typeof region.excluded!=='boolean'||!Array.isArray(region.char_conf)||region.char_conf.some((c)=>confidence(c)===null)||(region.confidence!==null&&confidence(region.confidence)===null)) throw new Error('OCR project contains an invalid region.');
             region.wordEvidence=readWordEvidence(region.wordEvidence,region.originalText,page);
+            region.sourceComponents=readSourceComponents(region.sourceComponents);
+            if (region.separatorBefore!==undefined && !['',' ','\n','\n\n'].includes(region.separatorBefore)) throw new Error('OCR passage separator is invalid.');
+            region.sharedSourceGroups=readSharedSourceGroups(region.sharedSourceGroups);
         }
+        validatePageSourceComponents(page);
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
     }
     return p;

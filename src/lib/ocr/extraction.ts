@@ -1,6 +1,7 @@
 import type { ExtractionField } from "./client";
 import type { OcrPage, OcrRegion } from "./model";
 import type { PixelRectangle } from "./zones";
+import { joinRegionText } from "./text";
 
 export type ExtractionKind = "fields" | "table" | "formula";
 export interface ExtractionSource {
@@ -46,10 +47,7 @@ export function tableToCsv(rows: readonly (readonly string[])[]): string {
 }
 
 const pageText = (page: OcrPage) =>
-  page.regions
-    .filter((r) => !r.excluded && r.kind !== "picture")
-    .map((r) => r.text)
-    .join("\n");
+  joinRegionText(page.regions.filter((r) => !r.excluded && r.kind !== "picture"));
 export function captureExtractionSource(
   page: OcrPage,
   region: OcrRegion | undefined,

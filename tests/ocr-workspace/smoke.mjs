@@ -30,7 +30,7 @@ const url = `http://127.0.0.1:${typeof address === 'object' && address ? address
 
 if (process.argv.includes('--serve')) {
     console.log(`OCR workspace fixture: ${url}`);
-    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
+    console.log('Scenarios: ?scenario=review, word-review, native-word, proofreading, proofreading-save-failure, proofreading-load-failure, text-repair, zone-empty, zone-delay, queue-failure, queue-control, extraction-delay, project-recovery, prepare-unchanged');
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await server.close(); process.exit(0); });
 } else {
     await mkdir(output, { recursive: true });
@@ -626,6 +626,176 @@ if (process.argv.includes('--serve')) {
             assert.equal(exported.image_path, before.pages[0].imagePath);
         });
 
+        await test('passage splits and adjacent merges preserve exact text and flat original source components', 'native-word', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject.pages[0]);
+            const original = initial.regions[2];
+            const originalText = original.text;
+            let component;
+            let roundTrip;
+            async function passage() {
+                await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+                return page.locator('[data-passage-id]').nth(2);
+            }
+            for (let iteration = 0; iteration < 2; iteration++) {
+                const card = await passage();
+                await card.getByRole('textbox', { name: 'Passage 3 text', exact: true }).evaluate(input => {
+                    input.focus(); input.setSelectionRange(10, 10);
+                });
+                await card.getByRole('button', { name: 'Split passage', exact: true }).click();
+                const split = page.getByRole('dialog', { name: 'Split passage at caret', exact: true });
+                assert.equal(await split.getByRole('button', { name: 'Apply split', exact: true }).isDisabled(), true);
+                await split.getByRole('radio', { name: 'Shared source bounds', exact: true }).check();
+                await split.getByRole('button', { name: 'Apply split', exact: true }).click();
+                await split.waitFor({ state: 'hidden' });
+                const divided = (await saveSnapshot(page)).pages[0];
+                assert.equal(divided.regions.length, initial.regions.length + 1);
+                assert.deepEqual(divided.regions.slice(2, 4).map(region => region.text), [originalText.slice(0, 10), originalText.slice(10)]);
+                assert.equal(divided.regions[3].separatorBefore, '');
+                for (const region of divided.regions.slice(2, 4)) {
+                    assert.deepEqual([region.x, region.y, region.w, region.h], [original.x, original.y, original.w, original.h]);
+                    assert.equal(region.confidenceBasis, 'manual');
+                    assert.equal(region.confidence, null);
+                    assert.equal(region.wordEvidence, undefined);
+                    assert.equal(region.sourceComponents.length, 1);
+                    assert.ok(region.sharedSourceGroups.length > 0);
+                }
+                assert.deepEqual(divided.regions[2].sharedSourceGroups, divided.regions[3].sharedSourceGroups);
+                const captured = divided.regions[2].sourceComponents[0];
+                assert.equal(captured.id, original.id);
+                assert.equal(captured.sourceRegionId, original.id);
+                assert.equal(captured.originalText, original.originalText);
+                assert.equal(captured.textAtCapture, original.text);
+                assert.deepEqual(captured.wordEvidence, original.wordEvidence);
+                assert.deepEqual(captured.char_conf, original.char_conf);
+                if (component) assert.deepEqual(captured, component);
+                else component = captured;
+                const left = await passage();
+                await left.locator('[data-shared-source-groups]').waitFor();
+                if (iteration === 0) {
+                    const sources = left.locator('[data-passage-sources]');
+                    await sources.getByText('Source components (1)', { exact: true }).click();
+                    const source = sources.locator(`[data-source-component="${component.id}"]`);
+                    await source.getByText('Source component 1', { exact: true }).click();
+                    assert.equal(await source.locator('[data-source-original-text]').inputValue(), original.originalText);
+                    await source.getByText('Original word evidence (2)', { exact: true }).click();
+                    await source.getByRole('button', { name: 'Inspect source component 1 word 1: Inv0ice', exact: true }).waitFor();
+                    assert.match(await source.locator('[data-source-word-evidence]').innerText(), /Inv0ice/);
+                    await source.locator('[data-source-component-image]').waitFor();
+                    await page.screenshot({ path: path.join(output, 'ocr-passage-structure.png'), fullPage: true });
+                }
+                await left.getByRole('button', { name: 'Merge next passage', exact: true }).click();
+                const merge = page.getByRole('dialog', { name: 'Merge adjacent passages', exact: true });
+                await merge.getByRole('combobox', { name: 'Passage separator', exact: true }).selectOption('');
+                assert.equal(await merge.getByRole('textbox', { name: 'Merged passage preview', exact: true }).inputValue(), originalText);
+                await merge.getByRole('button', { name: 'Apply merge', exact: true }).click();
+                await merge.waitFor({ state: 'hidden' });
+                roundTrip = (await saveSnapshot(page)).pages[0];
+                assert.equal(roundTrip.regions.length, initial.regions.length);
+                assert.equal(roundTrip.regions[2].text, originalText);
+                assert.deepEqual(roundTrip.regions[2].sourceComponents, [component]);
+            }
+            const card = await passage();
+            await card.getByRole('button', { name: 'Merge next passage', exact: true }).click();
+            const merge = page.getByRole('dialog', { name: 'Merge adjacent passages', exact: true });
+            await merge.getByRole('combobox', { name: 'Passage separator', exact: true }).selectOption({ label: 'Blank line' });
+            const joined = `${originalText}\n\n${initial.regions[3].text}`;
+            assert.equal(await merge.getByRole('textbox', { name: 'Merged passage preview', exact: true }).inputValue(), joined);
+            await merge.getByRole('button', { name: 'Apply merge', exact: true }).click();
+            await merge.waitFor({ state: 'hidden' });
+            const combined = (await saveSnapshot(page)).pages[0];
+            assert.equal(combined.regions.length, initial.regions.length - 1);
+            assert.equal(combined.regions[2].text, joined);
+            const components = combined.regions[2].sourceComponents;
+            assert.equal(components.length, 2);
+            assert.equal(new Set(components.map(source => source.id)).size, 2);
+            assert.deepEqual(components.find(source => source.id === original.id), component);
+            assert.equal(components.find(source => source.sourceRegionId === initial.regions[3].id).originalText, initial.regions[3].originalText);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].regions, roundTrip.regions);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].regions, combined.regions);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0]);
+            assert.deepEqual(exported.regions[2].source_components, components);
+            assert.equal(exported.regions[2].word_evidence, undefined);
+            const exportedText = exported.regions.map((region, index) => `${index ? region.separator_before ?? '\n' : ''}${region.text}`).join('');
+            assert.equal(exportedText, [initial.regions[0].text, initial.regions[1].text, joined, initial.regions[4].text, initial.regions[5].text].join('\n'));
+        });
+
+        await test('text repairs require selected proposals and preserve intentional punctuation, source evidence and undo', 'text-repair', async page => {
+            const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
+            const original = initial.pages[0].regions[0];
+            const collapsed = original.text.replace('Quarterly  equipment', 'Quarterly equipment');
+            const dehyphenated = original.text.replace('preven-\ntive', 'preventive');
+            async function openRepair(kind) {
+                await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+                const card = page.locator('[data-passage-id]').first();
+                await card.locator('textarea[data-passage-text]').focus();
+                await card.getByRole('button', { name: 'Repair passage text', exact: true }).click();
+                const dialog = page.getByRole('dialog', { name: 'Repair passage text', exact: true });
+                await dialog.getByRole('combobox', { name: 'Repair operation', exact: true }).selectOption(kind);
+                return dialog;
+            }
+            const preview = await openRepair('collapse-inline-spaces');
+            assert.equal(await preview.getByRole('textbox', { name: 'Current passage', exact: true }).inputValue(), original.text);
+            assert.equal(await preview.getByRole('button', { name: 'Apply text repair', exact: true }).isDisabled(), true);
+            assert.equal(await preview.getByRole('checkbox', { name: 'Apply text repair 1', exact: true }).isChecked(), false);
+            await preview.getByRole('checkbox', { name: 'Select all text repairs', exact: true }).check();
+            assert.equal(await preview.getByRole('textbox', { name: 'Proposed passage', exact: true }).inputValue(), collapsed);
+            await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].regions, initial.pages[0].regions);
+            await openRepair('collapse-inline-spaces');
+            await preview.getByRole('checkbox', { name: 'Select all text repairs', exact: true }).check();
+            await preview.getByRole('button', { name: 'Apply text repair', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            const cleaned = await saveSnapshot(page);
+            assert.equal(cleaned.pages[0].regions[0].text, collapsed);
+            assert.equal(cleaned.pages[0].regions[0].originalText, original.originalText);
+            assert.deepEqual(cleaned.pages[0].regions[0].char_conf, original.char_conf);
+            assert.equal(cleaned.pages[0].regions[0].review, 'corrected');
+            assert.deepEqual(cleaned.pages[2], initial.pages[2]);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].regions, initial.pages[0].regions);
+            await openRepair('join-lines');
+            assert.equal(await preview.getByRole('button', { name: 'Apply text repair', exact: true }).isDisabled(), true);
+            assert.equal(await preview.getByRole('checkbox', { name: 'Apply text repair 1', exact: true }).isChecked(), false);
+            await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
+            await openRepair('dehyphenate');
+            assert.equal(await preview.getByRole('button', { name: 'Apply text repair', exact: true }).isDisabled(), true);
+            assert.equal(await preview.getByRole('checkbox', { name: /^Apply text repair / }).count(), 1);
+            await preview.getByRole('checkbox', { name: 'Apply text repair 1', exact: true }).check();
+            assert.equal(await preview.getByRole('textbox', { name: 'Proposed passage', exact: true }).inputValue(), dehyphenated);
+            await page.screenshot({ path: path.join(output, 'ocr-text-repair-preview.png'), fullPage: true });
+            await preview.getByRole('button', { name: 'Apply text repair', exact: true }).click();
+            await preview.waitFor({ state: 'hidden' });
+            const repaired = await saveSnapshot(page);
+            assert.equal(repaired.pages[0].regions[0].text, dehyphenated);
+            assert.deepEqual(repaired.pages[0].regions[0].char_conf, original.char_conf);
+            assert.equal(repaired.pages[0].regions[0].originalText, original.originalText);
+            assert.deepEqual(repaired.pages[2], initial.pages[2]);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            assert.deepEqual((await saveSnapshot(page)).pages[0].regions, initial.pages[0].regions);
+            await page.getByRole('button', { name: 'Redo', exact: true }).click();
+            assert.equal((await saveSnapshot(page)).pages[0].regions[0].text, dehyphenated);
+            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
+            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('json');
+            await page.getByRole('button', { name: 'Save Structured JSON', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0].pages[0].regions[0]);
+            assert.equal(exported.text, dehyphenated);
+            assert.equal(exported.original_text, original.originalText);
+            assert.deepEqual(exported.original_char_conf, original.char_conf);
+            assert.deepEqual(exported.char_conf, []);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
+        });
+
         await test('partial OCR previews replacements, preserves cancellation and expands drawn areas to full passages', 'review', async page => {
             const editor = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
             const current = 'Manually checked invoice number';
@@ -1024,7 +1194,7 @@ if (process.argv.includes('--serve')) {
         await browser?.close();
         await server.close();
     }
-    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
+    const report = { tests: results, browserErrors, passed: results.filter(item => item.status === 'passed').length, failed: results.filter(item => item.status === 'failed').length, screenshots: ['ocr-workspace-desktop.png', 'ocr-workspace-compact.png', 'ocr-word-review-desktop.png', 'ocr-word-review-compact.png', 'ocr-native-word-review.png', 'ocr-proofreading-preview.png', 'ocr-passage-editor.png', 'ocr-passage-structure.png', 'ocr-text-repair-preview.png', 'ocr-partial-review.png'].filter(name => existsSync(path.join(output, name))) };
     await writeFile(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(`Browser verification: ${report.passed} passed, ${report.failed} failed. Report: ${path.join(output, 'report.json')}`);
     if (report.failed || browserErrors.length) process.exitCode = 1;

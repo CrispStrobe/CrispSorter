@@ -58,7 +58,7 @@ export function wordSpans(text: string): WordSpan[] {
  */
 export function getWordEvidence(region: OcrRegion, source: 'current' | 'original' = 'current'): WordEvidence[] {
     const text = source === 'original' ? region.originalText : region.text;
-    const edited = source === 'current' && region.text !== region.originalText;
+    const edited = region.confidenceBasis === 'manual' || (source === 'current' && region.text !== region.originalText);
     const aligned = !edited && hasAlignedCharacterConfidence(region);
     if (edited) return wordSpans(text).map(word => ({
         ...word, confidence: null, minConfidence: null, basis: 'edited',

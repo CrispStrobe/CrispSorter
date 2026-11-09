@@ -21,7 +21,7 @@ export type RegionReviewReason = 'changed' | 'unknown-confidence' | 'low-confide
 /** Shared by the review queue and image overlays so neither hides an issue. */
 export function regionReviewReason(region: OcrRegion, threshold: number): RegionReviewReason | null {
     if (region.excluded || region.kind === 'picture' || region.review === 'approved') return null;
-    if (region.review === 'corrected') return 'changed';
+    if (region.review === 'corrected' || region.confidenceBasis === 'manual') return 'changed';
     const words = region.wordEvidence?.words ?? [];
     if (words.length) {
         if (words.some(word => word.confidence_basis !== 'recognition' || !isConfidenceScore(word.confidence))) return 'unknown-confidence';

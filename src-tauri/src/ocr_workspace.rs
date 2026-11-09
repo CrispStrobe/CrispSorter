@@ -1028,6 +1028,64 @@ pub async fn ocr_workspace_list(app: tauri::AppHandle) -> Result<Vec<ProjectSumm
     }).await.map_err(|e| format!("Project list worker: {e}"))?
 }
 
+/// Immutable source coverage and evidence, kept separate from a manual passage.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PassageSourceComponent {
+    pub version: u32,
+    pub id: String,
+    pub source_region_id: String,
+    pub page_id: String,
+    pub image_path: String,
+    pub width: u32,
+    pub height: u32,
+    pub bounds_at_capture: PixelRect,
+    pub kind: String,
+    pub original_text: String,
+    pub text_at_capture: String,
+    pub confidence: Option<f32>,
+    pub confidence_basis: String,
+    #[serde(rename = "char_conf")]
+    pub char_conf: Vec<f32>,
+    pub char_confidence_unit: String,
+    pub char_confidence_aligned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+}
+
+fn validate_source_components(components: &[PassageSourceComponent]) -> Result<usize, String> {
+    let bytes = serde_json::to_vec(components).map_err(|e| e.to_string())?.len();
+    if components.is_empty() || components.len() > 128 || bytes > 8 * 1024 * 1024 {
+        return Err("Passage source history exceeds 128 components or 8 MB. No evidence was truncated.".into());
+    }
+    let valid_id = |value: &str| !value.trim().is_empty() && value.encode_utf16().count() <= 200 && !value.contains('\0');
+    let score = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
+    let mut ids = HashSet::new();
+    for source in components {
+        if source.version != 1 || !valid_id(&source.id) || !ids.insert(&source.id) ||
+            !valid_id(&source.source_region_id) || !valid_id(&source.page_id) ||
+            source.image_path.is_empty() || source.image_path.encode_utf16().count() > 10_000 || source.image_path.contains('\0') ||
+            source.width == 0 || source.height == 0 || source.width > 100_000 || source.height > 100_000 ||
+            u64::from(source.width) * u64::from(source.height) > MAX_PAGE_PIXELS ||
+            !["text","title","table","picture","formula","header","footer"].contains(&source.kind.as_str()) ||
+            !["recognition","detection","unknown","manual"].contains(&source.confidence_basis.as_str()) ||
+            source.confidence.is_some_and(|value| !score(value)) || source.char_conf.len() > 1_000_000 ||
+            source.char_conf.iter().any(|value| !score(*value)) ||
+            !["unicode_codepoint","token","unknown"].contains(&source.char_confidence_unit.as_str()) {
+            return Err("Passage source history contains invalid metadata.".into());
+        }
+        checked_rect(source.bounds_at_capture, source.width, source.height)?;
+        if source.char_confidence_aligned && (source.char_confidence_unit != "unicode_codepoint" ||
+            source.char_conf.is_empty() || source.char_conf.len() != source.original_text.chars().count()) {
+            return Err("Passage source character evidence does not match its original text.".into());
+        }
+        if let Some(words) = &source.word_evidence {
+            crate::ocr_word_evidence::validate_word_evidence(words, &source.original_text, source.width, source.height)?;
+        }
+    }
+    Ok(bytes)
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ExportRegion {
     pub text: String,
@@ -1058,6 +1116,12 @@ pub struct ExportRegion {
     pub word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_components: Option<Vec<PassageSourceComponent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separator_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_source_groups: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1098,6 +1162,11 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
         checked_physical_size(page.page_width_points, page.page_height_points)
             .map_err(|e| format!("Page {}: {e}", i + 1))?;
         if page.regions.len() > MAX_REGIONS { return Err(format!("Page {} has too many regions.", i + 1)); }
+        let mut source_bytes = 0;
+        if let Some(archived) = page.provenance.as_ref().and_then(|value| value.get("passageSources")) {
+            let components: Vec<PassageSourceComponent> = serde_json::from_value(archived.clone()).map_err(|e| format!("Invalid archived passage sources: {e}"))?;
+            source_bytes += validate_source_components(&components)?;
+        }
         for (j, region) in page.regions.iter().enumerate() {
             checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, width, height)
                 .map_err(|e| format!("Page {}, region {}: {e}", i + 1, j + 1))?;
@@ -1114,6 +1183,20 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
                     return Err("Edited text cannot retain the original word confidence or word boxes.".into());
                 }
                 crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, width, height)?;
+            }
+            if let Some(components) = &region.source_components {
+                source_bytes += validate_source_components(components)?;
+            }
+            if source_bytes > 16 * 1024 * 1024 { return Err("Page source history exceeds 16 MB. No evidence was truncated.".into()); }
+            if region.separator_before.as_ref().is_some_and(|separator| !["", " ", "\n", "\n\n"].contains(&separator.as_str())) {
+                return Err("Invalid passage separator.".into());
+            }
+            if let Some(groups) = &region.shared_source_groups {
+                let unique: HashSet<_> = groups.iter().collect();
+                if groups.len() > 128 || unique.len() != groups.len() || groups.iter().any(|group|
+                    group.trim().is_empty() || group.encode_utf16().count() > 200 || group.contains('\0')) {
+                    return Err("Invalid shared source groups.".into());
+                }
             }
             if let Some(ch) = region.text.chars().find(|ch| *ch < ' ' && !['\t', '\n', '\r'].contains(ch)) {
                 return Err(format!("Page {}, region {} contains unsupported control character U+{:04X}. Remove it before exporting.", i + 1, j + 1, ch as u32));
@@ -1143,7 +1226,29 @@ fn output_path(path: &str, pages: &[ExportPage], source_uris: &[String], root: &
 }
 
 fn joined_text(pages: &[ExportPage]) -> String {
-    pages.iter().map(|p| p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n")).collect::<Vec<_>>().join("\u{000c}")
+    pages.iter().map(|page| joined_page_text(page, "\n")).collect::<Vec<_>>().join("\u{000c}")
+}
+
+fn joined_page_text(page: &ExportPage, default_separator: &str) -> String {
+    let mut text = String::new();
+    for (index, region) in page.regions.iter().enumerate() {
+        if index > 0 { text.push_str(region.separator_before.as_deref().unwrap_or(default_separator)); }
+        text.push_str(&region.text);
+    }
+    text
+}
+
+fn has_shared_source_overlap(page: &ExportPage) -> bool {
+    let mut groups: std::collections::HashMap<&str, Vec<&ExportRegion>> = std::collections::HashMap::new();
+    for region in &page.regions {
+        for id in region.shared_source_groups.iter().flatten() {
+            let members = groups.entry(id.as_str()).or_default();
+            if members.iter().any(|other| (other.x + other.w).min(region.x + region.w) > other.x.max(region.x)
+                && (other.y + other.h).min(region.y + region.h) > other.y.max(region.y)) { return true; }
+            members.push(region);
+        }
+    }
+    false
 }
 
 fn escape_html(text: &str) -> String {
@@ -1160,14 +1265,18 @@ fn transcription_confidence(region: &ExportRegion) -> f32 {
 
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
     if pdfa { return Err("PDF/A output is unavailable because archival conformance has not been validated. Export a standard document and convert it with a validated archival workflow.".into()); }
+    if OcrOutputFormat::from_name(format).is_some_and(|format| format.needs_render_binding()) && pages.iter().any(has_shared_source_overlap) {
+        return Err("Passages share overlapping source areas. Divide their boxes or merge the passages before exporting PDF, hOCR, or ALTO. Text and JSON retain the exact edited text.".into());
+    }
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
         return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
     }
+    if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Text) { return Ok(joined_text(pages).into_bytes()); }
     match format {
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
-        "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
+        "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, joined_page_text(p, "\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
         "html" => {
-            let body = pages.iter().enumerate().map(|(i, page)| format!("<section aria-label=\"Page {}\"><h2>Page {}</h2>{}</section>", i + 1, i + 1, page.regions.iter().map(|r| format!("<p>{}</p>", escape_html(&r.text))).collect::<Vec<_>>().join("\n"))).collect::<Vec<_>>().join("\n");
+            let body = pages.iter().enumerate().map(|(i, page)| format!("<section aria-label=\"Page {}\"><h2>Page {}</h2><p>{}</p></section>", i + 1, i + 1, escape_html(&joined_page_text(page, "\n\n")))).collect::<Vec<_>>().join("\n");
             Ok(format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>Reviewed OCR document</title><style>body{{font:16px/1.6 system-ui,sans-serif;max-width:72ch;margin:3rem auto;padding:0 1rem}}p{{white-space:pre-wrap}}section{{break-after:page}}section:last-child{{break-after:auto}}h2{{font-size:1rem;color:#555}}</style></head><body>{body}</body></html>").into_bytes())
         },
         "docx" => {
@@ -1289,6 +1398,7 @@ mod tests {
             id: None, original_text: None, confidence_basis: None, char_conf_unit: None,
             char_conf_aligned: None, original_char_conf: None, original_char_conf_aligned: None,
             word_evidence: None, original_word_evidence: None,
+            source_components: None, separator_before: None, shared_source_groups: None,
             review: None, kind: None,
         }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None }
     }
@@ -1343,6 +1453,47 @@ mod tests {
         let json: Value = serde_json::from_slice(&export_bytes(&[page], "json", false).unwrap()).unwrap();
         assert_eq!(json["pages"][0]["regions"][0]["original_word_evidence"], serde_json::to_value(envelope).unwrap());
         assert!(json["pages"][0]["regions"][0].get("word_evidence").is_none());
+    }
+
+    #[test]
+    fn manual_passage_separators_and_original_sources_survive_export() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "Hel");
+        let source: PassageSourceComponent = serde_json::from_value(json!({
+            "version":1,"id":"source-a","sourceRegionId":"original-a","pageId":"page-a",
+            "imagePath":page.image_path,"width":8,"height":4,
+            "boundsAtCapture":{"x":1,"y":1,"w":6,"h":2},"kind":"text",
+            "originalText":"Hell0","textAtCapture":"Hello","confidence":null,"confidenceBasis":"unknown",
+            "char_conf":[],"charConfidenceUnit":"unknown","charConfidenceAligned":false,
+            "wordEvidence":{"version":1,"offset_unit":"utf16","source":"fixture","words":[
+                {"text":"Hell0","start":0,"end":5,"x":1,"y":1,"w":6,"h":2,"confidence":0.42,"confidence_basis":"recognition"}
+            ]}
+        })).unwrap();
+        page.regions[0].source_components = Some(vec![source.clone()]);
+        page.regions[0].shared_source_groups = Some(vec!["shared-a".into()]);
+        let mut second = export_page(root.path(), "lo").regions.remove(0);
+        second.source_components = Some(vec![source]);
+        second.shared_source_groups = Some(vec!["shared-a".into()]);
+        second.separator_before = Some(String::new());
+        page.regions.push(second);
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        assert_eq!(export_bytes(std::slice::from_ref(&page), "text", false).unwrap(), b"Hello");
+        let html = String::from_utf8(export_bytes(std::slice::from_ref(&page), "html", false).unwrap()).unwrap();
+        assert!(html.contains("<p>Hello</p>"));
+        let json: Value = serde_json::from_slice(&export_bytes(std::slice::from_ref(&page), "json", false).unwrap()).unwrap();
+        assert_eq!(json["pages"][0]["regions"][1]["separator_before"], "");
+        assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["originalText"], "Hell0");
+        assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["textAtCapture"], "Hello");
+        assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["wordEvidence"]["words"][0]["text"], "Hell0");
+        for format in ["pdf","hocr","alto","XML"] {
+            assert!(export_bytes(std::slice::from_ref(&page), format, false).unwrap_err().contains("overlapping source areas"));
+        }
+        page.regions[0].w = 3.0;
+        page.regions[1].x = 4.0;
+        page.regions[1].w = 3.0;
+        assert!(!has_shared_source_overlap(&page));
+        page.regions[1].separator_before = Some("malformed".into());
+        assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("separator"));
     }
 
     #[test]

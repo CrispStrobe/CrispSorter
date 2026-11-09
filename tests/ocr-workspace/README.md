@@ -42,6 +42,7 @@ node tests/ocr-workspace/smoke.mjs --serve --port=4178
 
 The fixture can be selected using `?scenario=review`, `?scenario=word-review`, `?scenario=native-word`,
 `?scenario=proofreading`, `?scenario=proofreading-save-failure`, `?scenario=proofreading-load-failure`,
+`?scenario=text-repair`,
 `?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
 `?scenario=queue-control`, `?scenario=extraction-delay`,
 `?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
@@ -70,6 +71,12 @@ user-vocabulary storage. Failure scenarios retain an existing user term while
 failing the first load or save. The harness can inspect successful user saves
 separately from project autosaves, so project Undo cannot masquerade as a global
 preference rollback and failed loads cannot silently replace existing vocabulary.
+
+The text-repair scenario contains a single synthetic multiline passage with extra
+inline spaces, a tab, a lowercase end-of-line hyphen, a paragraph break, a
+hyphenated name, an identifier, and a list item with a negative number. Repairs
+must preserve unselected content and original character evidence; the fixture
+does not imply semantic proofreading or model retraining.
 
 Partial OCR fixtures honor the requested crop: returned regions remain in
 full-page coordinates, only contained regions are included, and
@@ -113,6 +120,16 @@ released, allowing page navigation before the result arrives.
   layouts, with dedicated screenshots for both.
 - The passage editor accepts multiline sentences and paragraphs, while save,
   undo/redo, and export preserve their source geometry and original evidence.
+- A caret split requires an explicit source-coverage choice. Shared children keep
+  exact text, including leading whitespace, and an empty boundary separator.
+  Repeated split/merge operations retain the same flat source components without
+  duplication. The source inspector exposes original text, native word evidence,
+  and the captured image. Adjacent merges preview their chosen separator and
+  preserve exact strings and source records through history, save, and JSON export.
+- Text-repair previews do not alter a passage until accepted. Spacing changes,
+  line joins, and dehyphenation begin unchecked. The selected repair preserves
+  tabs, paragraph breaks, names, identifiers, list markers, and negative numbers;
+  one Undo restores the original, with source scores retained in JSON export.
 - Partial OCR presents current and proposed text before applying changes.
   Cancel preserves corrections; acceptance replaces only the covered regions;
   Undo restores the prior result. Drawing a small area expands to its complete
@@ -143,6 +160,15 @@ The `OCR workspace browser verification` GitHub Actions workflow runs the same
 harness on feature-branch changes and attaches its JSON report and screenshots as
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.
+
+The [recorded browser run for commit `6330227f4483aa94a871b33a1464d6834594c6a0`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730/job/129393863561)
+completed on 2026-11-09 with **28 browser interactions passed, 0 failed** and
+**148 OCR unit tests passed**. It includes native word selection/source evidence,
+vocabulary decisions, scoped correction previews, and user-preference save/load
+failure recovery. Its report and screenshots are available in
+[artifact `13704873615`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42685445730/artifacts/13704873615).
+This result is specific to that source revision; later passage-structure and
+repair assertions require their own browser run.
 
 These tests validate interaction and integration contracts. They do not measure
 recognition accuracy or substitute for native engine, PDF conformance, or installed

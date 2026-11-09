@@ -5,6 +5,7 @@ import { emptyProofreadingData, type ProofreadingData } from '../../src/lib/ocr/
 const copy = <T>(value:T):T => JSON.parse(JSON.stringify(value));
 const stamp = '2026-11-08T12:00:00.000Z';
 const sourceUri = '/fixtures/northstar-statement.pdf';
+const repairText = 'Quarterly  equipment\ninspection\tand preven-\ntive maintenance.\n\nKeep Smith-Jones and NS-2026-1042.\n- Item -12.5 V';
 const pagePath = (page:number) => `/fixtures/northstar-page-${page}.png`;
 const pageNumber = (path:string) => Number(path.match(/page-(\d+)/)?.[1] ?? 1);
 
@@ -26,7 +27,11 @@ function recognition(path:string):RecognitionResult {
     };
 }
 
-function documentSvg(page:number, wordReview=false, nativeWord=false):string {
+function documentSvg(page:number, wordReview=false, nativeWord=false, textRepair=false):string {
+    if(textRepair) return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
+      <rect width="1000" height="1400" fill="#fffefa"/>
+      <g fill="#263e50" font-family="Arial,sans-serif" font-size="22" xml:space="preserve" style="white-space:pre">${repairText.split('\n').map((line,index)=>`<text x="80" y="${292+index*28}">${line}</text>`).join('')}</g>
+    </svg>`;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1400" viewBox="0 0 1000 1400">
       <rect width="1000" height="1400" fill="#fffefa"/>
       <rect x="78" y="58" width="66" height="7" fill="#2e6a80"/>
@@ -128,6 +133,12 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             ]};
             // The native token includes its hyphens. Both its missing score and
             // the first token's low score override the high character scores.
+        }
+        if(scenario==='text-repair') {
+            result.engine='fixture-verified-character-adapter';
+            result.regions=[{text:repairText,x:80,y:270,w:840,h:190,confidence:0.99,
+                confidence_basis:'recognition',char_conf:Array.from(repairText,()=>0.99),
+                char_conf_unit:'unicode_codepoint',char_conf_aligned:true}];
         }
         project=applyRecognition(project,project.pages[0].id,result);
         project=applyRecognition(project,project.pages[2].id,recognition(project.pages[2].imagePath));
@@ -237,7 +248,7 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
             if(control.failUserProofreadingSaves>0){control.failUserProofreadingSaves--;throw new Error('Fixture user vocabulary save failure');}
             control.userProofreading=copy(data);control.userProofreadingSaves.push(copy(data));
         },
-        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1))}`;},
+        imageUrl(path){const page=pageNumber(path);return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(documentSvg(page,scenario==='word-review',nativeWord&&page===1,scenario==='text-repair'&&page===1))}`;},
     };
     return {client,initialProject:null};
 }

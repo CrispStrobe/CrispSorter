@@ -27,6 +27,7 @@
   let original = $state(false);
   let showScores = $state(false);
   let selectedStart = $state<number | null>(null);
+  const manual = $derived(region.confidenceBasis === "manual");
   const edited = $derived(region.text !== region.originalText);
   const source = $derived(original && edited ? "original" : "current");
   const evidenceText = $derived(source === "original" ? region.originalText : region.text);
@@ -78,7 +79,7 @@
       : " Source detail shows the containing region; no verified word location is available.";
     return source === "current"
       ? `${evidence}${sourceDetail} Select this word in the text editor to correct it.`
-      : `${evidence}${sourceDetail} Original OCR evidence is read-only.`;
+      : `${evidence}${sourceDetail} ${manual ? "The text before later edits" : "Original OCR evidence"} is read-only.`;
   }
   function selectWord(word: WordEvidence) {
     if (!canSelect) return;
@@ -120,11 +121,16 @@
   {#if edited}
     <div class="evidence-source" aria-label="Word evidence source">
       <button type="button" aria-pressed={source === "current"} onclick={() => (original = false)}>Current text</button>
-      <button type="button" aria-pressed={source === "original"} onclick={() => (original = true)}>Original OCR</button>
+      <button type="button" aria-pressed={source === "original"} onclick={() => (original = true)}>{manual ? "Before later edits" : "Original OCR"}</button>
     </div>
   {/if}
   <p class="word-help">
-    {#if edited && source === "current"}
+    {#if manual}
+      This passage was created manually. Its words have no recognition score.
+      {#if region.sourceComponents?.length}Source passages retain the original OCR
+        text and evidence separately.{/if}
+      {#if edited}Before later edits shows the manual passage's starting text.{/if}
+    {:else if edited && source === "current"}
       This text was edited. Original OCR scores do not apply to corrections.
       Select Original OCR to inspect the saved evidence.
     {:else if nativeWords}
@@ -174,7 +180,7 @@
             data-word-basis={word.basis}
             data-word-confidence={word.confidence ?? undefined}
             data-word-flagged={wordNeedsReview(word, threshold)}
-            aria-label={`Inspect original word ${index + 1}: ${word.text}`}
+            aria-label={`Inspect ${manual ? "baseline" : "original"} word ${index + 1}: ${word.text}`}
             aria-describedby={`ocr-word-${region.id}-${source}-${word.start}`}
             title={description(word)}
             onclick={() => inspectOriginal(word)}

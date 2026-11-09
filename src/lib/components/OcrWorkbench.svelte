@@ -60,6 +60,8 @@
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import WordReview from "./ocr/WordReview.svelte";
   import PageTextEditor from "./ocr/PageTextEditor.svelte";
+  import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
+  import PassageSources from "./ocr/PassageSources.svelte";
   import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
   import WordSuggestions from "./ocr/WordSuggestions.svelte";
   import CorrectionPreviewPanel from "./ocr/CorrectionPreview.svelte";
@@ -74,6 +76,11 @@
   import { createProofreadingWriter, type ProofreadingSaveStatus } from "$lib/ocr/proofreadingStore";
   import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
   import type { WordEvidence } from "$lib/ocr/words";
+  import { joinRegionText, sourceOffsetForTextarea } from "$lib/ocr/text";
+  import {
+    passageEligibility, isPassageBoundary, applyPassagePreview, applyPassageRepair,
+    type PassagePreview, type RepairPreview,
+  } from "$lib/ocr/passages";
   import {
     workspaceClient,
     type WorkspaceClient,
@@ -192,6 +199,13 @@
     replacement = $state(""),
     matchCase = $state(false);
   let currentMatch = $state<TextMatch | null>(null);
+  let passageAction = $state<{
+    project: OcrProject;
+    pageId: string;
+    regionId: string;
+    mode: "split" | "merge" | "repair";
+    offset?: number;
+  } | null>(null);
   let proofreadingOpen = $state(false);
   let userProofreading = $state<ProofreadingData>(emptyProofreadingData());
   let userProofreadingLoad = $state<"loading" | "ready" | "error" | "unavailable">("loading");
@@ -259,6 +273,7 @@
   $effect(() => {
     if (!active) {
       confirm = null;
+      passageAction = null;
       helpOpen = false;
       recentOpen = false;
     }
@@ -289,6 +304,7 @@
   const region = $derived(
     activePage?.regions.find((r) => r.id === selectedRegionId),
   );
+  const selectedPassageEligibility = $derived(activePage && region ? passageEligibility(activePage, region.id) : null);
   const inspectedWord = $derived.by(() => {
     const selection = wordInspection;
     if (
@@ -459,22 +475,16 @@
         : undefined,
   );
   const preflight = $derived(
-    prepareExport(project, { pageIds: exportIds, requireReviewed }),
+    prepareExport(project, { pageIds: exportIds, requireReviewed, format: exportFormat }),
   );
   const pageText = $derived(
-    activePage?.regions
-      .filter((r) => !r.excluded && r.kind !== "picture")
-      .map((r) => r.text)
-      .join("\n") ?? "",
+    joinRegionText(activePage?.regions.filter((r) => !r.excluded && r.kind !== "picture") ?? []),
   );
   const allText = $derived(
     project.pages
       .filter((p) => !p.excluded)
       .map((p) =>
-        p.regions
-          .filter((r) => !r.excluded && r.kind !== "picture")
-          .map((r) => r.text)
-          .join("\n"),
+        joinRegionText(p.regions.filter((r) => !r.excluded && r.kind !== "picture")),
       )
       .join("\f"),
   );
@@ -915,7 +925,7 @@
       activePage.regions.find((item) => item.id === r.id)?.text !== sourceText
     ) return;
     const editor = editorPane?.querySelector<HTMLTextAreaElement>(
-      `[data-region-id="${r.id}"] textarea`,
+      `[data-region-id="${r.id}"] textarea[data-region-text]`,
     );
     editor?.focus();
     editor?.setSelectionRange(word.start, word.end);
@@ -962,10 +972,83 @@
     await tick();
     if (activePage?.id !== pageId || selectedRegionId !== r.id) return;
     const editor = editorPane?.querySelector<HTMLTextAreaElement>(
-      `[data-passage-id="${r.id}"] textarea`,
+      `[data-passage-id="${r.id}"] textarea[data-passage-text]`,
     );
     editor?.focus();
     editor?.scrollIntoView({ block: "nearest" });
+  }
+  function readRegionCaret(id: string) {
+    const article = Array.from(editorPane?.querySelectorAll<HTMLElement>("[data-region-id]") ?? [])
+      .find((item) => item.dataset.regionId === id);
+    const editor = article?.querySelector<HTMLTextAreaElement>("textarea[data-region-text]");
+    return editor ? { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value } : null;
+  }
+  function openPassageAction(
+    mode: "split" | "merge" | "repair",
+    target: OcrRegion,
+    caret: { start: number; end: number; text: string } | null = null,
+  ) {
+    const page = activePage;
+    if (!page || locked || confirm || passageAction) return;
+    const current = page.regions.find((item) => item.id === target.id);
+    if (!current) return;
+    try {
+      const eligibility = passageEligibility(page, current.id);
+      let splitOffset: number | null = null;
+      if (mode === "split") {
+        if (!eligibility.splitAllowed) throw new Error(eligibility.reasons.join(" "));
+        splitOffset = caret ? sourceOffsetForTextarea(current.text, caret.text, caret.start) : null;
+        if (!caret || caret.start !== caret.end || splitOffset === null ||
+          !isPassageBoundary(current.text, splitOffset) ||
+          !current.text.slice(0, splitOffset).trim() || !current.text.slice(splitOffset).trim())
+          throw new Error("Place the caret inside this passage, with no text selected and complete text on both sides, then choose Split passage.");
+      } else if (mode === "merge" && !eligibility.nextMergeId) {
+        throw new Error("Merge needs the immediately following included passage of the same kind, with no intervening region.");
+      } else if (mode === "repair" && (page.excluded || current.excluded || !current.text.trim() || !["text", "title", "header", "footer"].includes(current.kind))) {
+        throw new Error("Choose an included, nonempty text passage to repair.");
+      }
+      // Keep the selected source frozen while preview options change. Applying
+      // compares this exact page snapshot with the current project again.
+      const capturedPage = JSON.parse(JSON.stringify(page)) as OcrPage;
+      passageAction = {
+        project: { ...project, pages: project.pages.map((item) => item.id === page.id ? capturedPage : item) },
+        pageId: page.id, regionId: current.id, mode,
+        ...(mode === "split" && splitOffset !== null ? { offset: splitOffset } : {}),
+      };
+      currentMatch = null;
+      wordInspection = null;
+      editGroup = null;
+      error = "";
+    } catch (failure) { fail(failure); }
+  }
+  function finishPassageChange(pageId: string, regionId: string, text: string) {
+    selectedPageId = pageId;
+    selectedRegionId = regionId;
+    currentMatch = null;
+    wordInspection = null;
+    drawMode = "select";
+    showOriginal = false;
+    inspector = "review";
+    proofreadingOpen = false;
+    passageAction = null;
+    error = "";
+    notice = text;
+  }
+  function applyStructuralPassage(preview: PassagePreview): string | null {
+    if (locked) return "Wait for the current operation to finish, then apply the passage edit.";
+    try {
+      change(applyPassagePreview(project, preview));
+      finishPassageChange(preview.page.id, preview.regions[0].id, preview.request.kind === "split" ? "Passage split. Original sources are available in Source components." : "Passages merged. Original sources are available in Source components.");
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function applyTextRepair(preview: RepairPreview, selectedIds: string[]): string | null {
+    if (locked) return "Wait for the current operation to finish, then apply the text repair.";
+    try {
+      change(applyPassageRepair(project, preview, selectedIds));
+      finishPassageChange(preview.page.id, preview.regionIds[0], `${selectedIds.length} text repair${selectedIds.length === 1 ? "" : "s"} applied. Undo restores the previous text.`);
+      return null;
+    } catch (failure) { return message(failure); }
   }
   function drawRecognitionArea() {
     if (!activePage || locked || !recognitionAvailable) return;
@@ -1438,7 +1521,7 @@
     proofreadingOpen = false;
     await tick();
     const field = editorPane?.querySelector<HTMLTextAreaElement>(
-      `[data-region-id="${match.regionId}"] textarea`,
+      `[data-region-id="${match.regionId}"] textarea[data-region-text]`,
     );
     field?.focus();
     field?.setSelectionRange(match.start, match.end);
@@ -1734,7 +1817,7 @@
     }
   }
   function keydown(event: KeyboardEvent) {
-    if (!active || confirm || helpOpen) return;
+    if (!active || confirm || helpOpen || passageAction) return;
     const target = event.target as HTMLElement;
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
@@ -1829,7 +1912,7 @@
     // Native drag/drop supplies real filesystem paths; web File names are not paths.
     if (client === workspaceClient)
       void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
-        if (active && !locked) void importFiles(event.payload.paths);
+        if (active && !locked && !passageAction) void importFiles(event.payload.paths);
       })
         .then((fn) => {
           if (mounted) unlisten = fn;
@@ -2762,6 +2845,10 @@
                   onedit={editText}
                   onblur={() => (editGroup = null)}
                   onrecognize={(r) => recognizeZone(r, activePage.id)}
+                  onsplit={(r, caret) => openPassageAction("split", r, caret)}
+                  onmerge={(r) => openPassageAction("merge", r)}
+                  onrepair={(r) => openPassageAction("repair", r)}
+                  imageUrl={client.imageUrl}
                 />
                 <button
                   class="button small"
@@ -2821,6 +2908,11 @@
                       >{:else if r.review === "corrected"}<span
                         class="edited-badge">Edited</span
                       >{/if}
+                    {#if r.sharedSourceGroups?.length}<span
+                        class="shared-source-badge"
+                        data-shared-source-groups={r.sharedSourceGroups.join(" ")}
+                        title="Passages in this source family may share image coverage. Spatial exports require their source areas to stop overlapping, or the passages to be merged again."
+                      >Shared source area</span>{/if}
                   </div>
                   {#if hasAlignedCharacterConfidence(r)}<div
                       class="character-evidence"
@@ -2834,6 +2926,7 @@
                         >{/each}
                     </div>{/if}
                   <textarea
+                    data-region-text
                     aria-label={`Text for region ${regionIndex + 1}`}
                     value={r.text}
                     oninput={(e) => editText(r, e.currentTarget.value)}
@@ -2870,6 +2963,27 @@
                         title="Recognize this source region again and compare before replacing text"
                         ><ScanLine size={13} /> Re-OCR region</button
                       >
+                      <button
+                        class="text-button"
+                        onclick={() => openPassageAction("split", r, readRegionCaret(r.id))}
+                        disabled={locked || !selectedPassageEligibility?.splitAllowed}
+                        title="Place the caret where the passage should split, then choose the source coverage"
+                        ><Scissors size={13} /> Split passage</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => openPassageAction("merge", r)}
+                        disabled={locked || !selectedPassageEligibility?.nextMergeId}
+                        title={selectedPassageEligibility?.nextMergeId ? "Preview a merge with the immediately following passage" : "Merge needs the immediately following included passage of the same kind"}
+                        ><Layers size={13} /> Merge next passage</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => openPassageAction("repair", r)}
+                        disabled={locked || activePage.excluded || r.excluded || !r.text.trim() || !["text", "title", "header", "footer"].includes(r.kind)}
+                        title="Review proposed whitespace, line-break, or hyphenation changes"
+                        ><WandSparkles size={13} /> Repair passage text</button
+                      >
                     </div>
                     <WordReview
                       region={r}
@@ -2895,6 +3009,7 @@
                         onremember={rememberCorrection}
                       />
                     {/if}
+                    {#if r.sourceComponents?.length}<PassageSources components={r.sourceComponents} imageUrl={client.imageUrl} />{/if}
                   {/if}
                   {#if r.id === selectedRegionId}<div class="region-actions">
                       <button
@@ -3014,14 +3129,14 @@
                 >
               </div>
               {#if region.text !== region.originalText}<details>
-                  <summary>Original recognition</summary>
+                  <summary>{region.confidenceBasis === "manual" ? "Before later edits" : "Original recognition"}</summary>
                   <p class="original-text">
                     {region.originalText || "(Manually created region)"}
                   </p>
                   <button
                     class="text-button"
                     onclick={() => patchRegion({ text: region.originalText })}
-                    disabled={locked}>Restore original text</button
+                    disabled={locked}>{region.confidenceBasis === "manual" ? "Restore creation text" : "Restore original text"}</button
                   >
                 </details>{/if}
             </div>{/if}
@@ -3727,6 +3842,20 @@
       >{/if}
   </footer>
 </section>
+
+{#if passageAction}
+  <PassageToolsDialog
+    project={passageAction.project}
+    pageId={passageAction.pageId}
+    regionId={passageAction.regionId}
+    mode={passageAction.mode}
+    offset={passageAction.offset}
+    imageUrl={client.imageUrl}
+    onapply={applyStructuralPassage}
+    onrepair={applyTextRepair}
+    onclose={() => (passageAction = null)}
+  />
+{/if}
 
 {#if confirm}<dialog
     class="workspace-dialog"
@@ -4736,6 +4865,7 @@
     color: #95bded;
     font-size: 9px;
   }
+  .shared-source-badge { color: #e3c48e; font-size: 9px; }
   .region-card textarea {
     border: 0 !important;
     border-top: 1px solid #2e3c5055 !important;
