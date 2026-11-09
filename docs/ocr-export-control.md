@@ -76,3 +76,9 @@ The combined app must include both the frontend transport and matching native
 command/event registration. Hosted run receipts must identify the exact source
 under test; a newly added browser scenario is not a passing result until that
 run completes.
+
+## Retained hosted phone evidence
+
+Both phone export cases passed on source `d0f9baa9d424a4aaa3d439ae08965191de715cc8`, run `42625583821`: progress and cancellation waited for simulated native completion, retry preserved the committed result, failures unlocked retry, and in-app cancellation was disabled during destination transfer. These are production-component interaction tests using a synthetic client; they do not execute native PDF rendering or an operating-system picker.
+
+The complete historical browser run had **31 passed and 1 failed case**, with zero browser errors; all 233 frontend tests and the production build passed. The failure was the archival-format negative assertion's disabled-state query, retained unchanged and addressed separately by `76bf5d8d`. The [qualification receipt](../tests/results/ocr-mobile-ui/hosted-d0f9baa9/qualification.json), original report, export-progress screenshot, and failure screenshot retain this scope and outcome. The downloaded artifact SHA-256 is `a0ac91d50aafc3a8ee06f416a94148a0c3dc958835cffbb55e0069ab2e98835e`.

@@ -1,10 +1,11 @@
 # Streamed reviewed PDF export
 
-This implementation is saved on `feat/ocr-streaming-export`. It requires the
-matching CrispEmbed writer API and remains separate from the primary OCR feature
-branch until the exact paired native build passes. The runtime lock must move
-together with the native source; a capability check cannot compensate for a
-missing native symbol at link time.
+This implementation is integrated into `feat/ocr-document-studio` at
+`b876fb43eb19cc7de44760400e50735aa27c2c78`. Its native runtime and bindings both
+pin `9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a`; the full application build is
+qualifying that exact pair. The native component writer/archive checks have
+passed independently. A capability check cannot compensate for a missing native
+symbol at link time, so source and bindings must move together.
 
 ## Output transaction
 
@@ -75,19 +76,18 @@ gate; streaming does not repair a reader's text-order behavior.
 
 ## Cancellation contract evidence
 
-Hosted [run 42622751482](https://github.com/CrispStrobe/CrispSorter/actions/runs/42622751482)
-at `d90c4612dbbd53c938737ef42501b8bd68f09385` passed all 22 portable native
-contracts: ten storage, six atomic-output and six cancellation cases, with no
-failures or ignored tests. The [retained receipt](../tests/results/ocr-studio/storage-cancel-d90c/receipt.json)
-records the exact source hashes, verified 8,179-byte artifact ZIP and raw log.
+Hosted [run 42627812221](https://github.com/CrispStrobe/CrispSorter/actions/runs/42627812221)
+at `8ea0a7e75c93bc285b98976590aea2f86e1b51c4` passed all 25 portable native
+contracts: ten storage, six atomic-output and nine cancellation cases, with no
+failures or ignored tests. The [retained receipt](../tests/results/ocr-studio/storage-cancel-8ea0/receipt.json)
+records the exact source hashes, verified 8,361-byte artifact ZIP and raw log.
 This exercises the production Rust modules independently of Tauri and the
-native renderer. The full application and a late post-completion stop regression
-remain separate qualification gates.
+native renderer. The earlier 22-case receipt remains available. Full application
+and native-renderer integration remain separate qualification gates.
 
 Completed request IDs are also retained for five minutes, capped at 64 entries.
 A stop arriving while a completed worker response is still in flight returns
 false; it cannot create a before-start cancellation for that same ID. Reusing a
 retained completed ID is rejected. Each new export uses a fresh UUID. Three
 regressions exercise completed publication, finished cancelled/failed workers,
-and the bounded expiry rule; their hosted execution is tracked separately from
-the earlier 22-test receipt.
+and the bounded expiry rule; all three passed in the 25-test run above.
