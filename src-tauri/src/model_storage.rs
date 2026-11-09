@@ -32,6 +32,20 @@ fn private_directory(path: &Path) -> Result<(), String> {
 }
 
 fn open_lock(path: &Path) -> Result<Connection, String> {
+    // SQLite may open journal sidecars before returning the connection. Reject
+    // pre-existing links there as well as at the database itself.
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string(); name.push(suffix);
+        let sidecar = PathBuf::from(name);
+        match sidecar.symlink_metadata() {
+            Ok(meta) if !meta.is_file() || meta.file_type().is_symlink()
+                || sidecar.canonicalize().ok().as_deref() != Some(sidecar.as_path()) =>
+                return Err("The model storage lock has an unsafe journal file.".into()),
+            Ok(_) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(format!("Inspect model storage journal: {error}")),
+        }
+    }
     match path.symlink_metadata() {
         Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 1024 * 1024 =>
             return Err("The model storage lock is not a regular private file.".into()),
@@ -232,7 +246,7 @@ pub(super) fn report_locked(root: &Path) -> Result<ModelStorageReport, String> {
         }
         report.bytes += entry.bytes;
         report.reclaimable_bytes += entry.reclaimable_bytes;
-        report.models.push(entry);
+        if entry.bytes > 0 || entry.version.is_some() { report.models.push(entry); }
     }
     report.models.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(report)
@@ -246,6 +260,20 @@ fn remove_payload(candidate: &Candidate) -> Result<(), String> {
         std::fs::remove_file(path).map_err(|error| format!("Remove unused model artifact: {error}"))?;
     }
     std::fs::remove_dir(&candidate.path).map_err(|error| format!("Remove unused model generation: {error}"))
+}
+
+fn remove_unused_lease(model: &Path, candidate: &Candidate, warnings: &mut Vec<String>) {
+    if candidate.staging || candidate.path.exists() { return; }
+    // All callers still hold the store lock and have dropped their exclusive
+    // lease connection. The payload no longer exists, so no compliant reader
+    // can acquire a new lease for this UUID. Keep metadata bounded as well.
+    let result = (|| {
+        let path = lease_path(model, &candidate.version)?;
+        let meta = path.symlink_metadata().map_err(|error| error.to_string())?;
+        if !meta.is_file() || meta.file_type().is_symlink() { return Err("Unsafe unused model lease was preserved.".into()); }
+        std::fs::remove_file(path).map_err(|error| format!("Remove unused model lease: {error}"))
+    })();
+    if let Err(error) = result { warnings.push(error); }
 }
 
 pub(super) fn cleanup_locked(root: &Path) -> Result<ModelStorageCleanup, String> {
@@ -263,8 +291,7 @@ pub(super) fn cleanup_locked(root: &Path) -> Result<ModelStorageCleanup, String>
                 Err(error) => warnings.push(error),
             }
             drop(lock);
-            // Lease databases are tiny and deliberately retain a stable inode.
-            // They are not payload bytes and can never alias a later UUID.
+            remove_unused_lease(&model.path, candidate, &mut warnings);
         }
     }
     let mut report = report_locked(root)?;
@@ -305,6 +332,7 @@ pub(super) fn remove_model_locked(root: &Path, name: &str, expected_version: &st
         }
     }
     drop(locks);
+    for candidate in &entry.candidates { remove_unused_lease(&model, candidate, &mut warnings); }
     let mut report = report_locked(root)?;
     report.warnings.extend(warnings);
     Ok(ModelStorageCleanup { removed_bytes, removed_versions, report })
@@ -342,6 +370,7 @@ mod tests {
         assert_eq!(result.removed_bytes, 16);
         assert!(model.join(&current).exists()); assert!(model.join(&old).exists());
         assert!(!model.join(&obsolete).exists()); assert!(!staging.exists());
+        assert!(!model.join(".leases").join(format!("{obsolete}.sqlite")).exists());
         assert!(result.report.models[0].in_use); assert_eq!(result.report.reclaimable_bytes, 0);
         drop(usage);
         assert_eq!(cleanup_locked(&root).unwrap().removed_versions, 1);
@@ -361,7 +390,7 @@ mod tests {
         drop(usage);
         let result = remove_model_locked(&root, "test", &current).unwrap();
         assert_eq!(result.removed_versions, 2); assert!(!model.join("current.json").exists());
-        assert_eq!(result.report.bytes, 0);
+        assert_eq!(result.report.bytes, 0); assert!(result.report.models.is_empty());
     }
 
     #[test]
@@ -388,6 +417,10 @@ mod tests {
         assert_eq!(cleanup_locked(&root).unwrap().removed_versions, 0);
         assert_eq!(std::fs::read(outside.path()).unwrap(), b"preserve");
         std::os::unix::fs::symlink(outside.path(), root.join("storage-lock.sqlite")).unwrap();
+        assert!(lock_store(&root).is_err());
+        assert_eq!(std::fs::read(outside.path()).unwrap(), b"preserve");
+        std::fs::remove_file(root.join("storage-lock.sqlite")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("storage-lock.sqlite-journal")).unwrap();
         assert!(lock_store(&root).is_err());
         assert_eq!(std::fs::read(outside.path()).unwrap(), b"preserve");
     }
