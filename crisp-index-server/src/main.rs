@@ -16,6 +16,7 @@
 ///   GET  /v1/stats                — row/doc count (auth required)
 ///   POST /v1/ingest               — store a pre-embedded chunk (auth required)
 ///   POST /v1/search               — text / vector / hybrid search (auth required)
+///   POST /v1/passages/read        — exact stored passage inspection (auth required)
 ///   DELETE /v1/docs/:id           — delete all chunks for a document (auth required)
 ///   POST /v1/docs/:id/location    — update stored location URI (auth required)
 ///   POST /v1/admin/build-ivf-pq   — build IVF-PQ index (auth required)
@@ -142,6 +143,7 @@ async fn main() -> Result<()> {
         .route("/ingest/batch", post(routes::ingest::ingest_batch))
         .route("/tasks/{task_id}", get(routes::tasks::task_status))
         .route("/search", post(routes::search::search))
+        .route("/passages/read", post(routes::passages::read_passage))
         .route("/docs/{doc_id}", delete(routes::docs::delete_doc))
         .route(
             "/docs/location/by-uri",

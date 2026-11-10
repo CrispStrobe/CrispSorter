@@ -34,6 +34,8 @@ use crisp_index_protocol::{
     BatchIngestResponse, IngestBatch, IngestChunk, SearchCapabilities, SearchRequest,
     TaskStatusResponse, UpdateLocationBody, UpdateLocationByUriBody, QUERY_LANGUAGE_VERSION,
     QUERY_VERSION_HEADER, METADATA_FILTER_VERSION, METADATA_FILTER_VERSION_HEADER,
+    StoredPassage, StoredPassageRequest, STORED_PASSAGE_VERSION, STORED_PASSAGE_VERSION_HEADER,
+    MAX_STORED_PASSAGE_RESPONSE_BYTES,
 };
 use reqwest::Client;
 use serde::Serialize;
@@ -49,6 +51,25 @@ pub struct RemoteClient {
     base_url: String,
     api_key: String,
     client: Client,
+}
+
+async fn bounded_response_json<T: serde::de::DeserializeOwned>(mut response: reqwest::Response, limit: usize) -> Result<T> {
+    let status = response.status();
+    let limit = if status.is_success() { limit } else { limit.min(16 * 1024) };
+    if response.content_length().is_some_and(|length| length > limit as u64) {
+        return Err(anyhow!("Remote passage response exceeds the supported byte limit"));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(anyhow!("Remote passage response exceeds the supported byte limit"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(anyhow!("remote index {status}: {}", String::from_utf8_lossy(&bytes)));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 impl RemoteClient {
@@ -183,6 +204,37 @@ impl RemoteClient {
             }
         }
         Ok(response)
+    }
+
+    /// Read exact stored source text only after negotiating its version and
+    /// validating the response identity. A legacy server never receives a
+    /// request it could silently interpret as an unscoped document lookup.
+    pub async fn read_passage(&self, doc_id: &str, owner_id: &str, chunk_index: i32) -> Result<StoredPassage> {
+        let request = StoredPassageRequest { passage_version: STORED_PASSAGE_VERSION,
+            doc_id: doc_id.to_owned(), owner_id: owner_id.to_owned(), chunk_index };
+        request.validate().map_err(|error| anyhow!(error))?;
+        let capabilities = self.client.get(self.url("/v1/capabilities"))
+            .bearer_auth(&self.api_key).send().await?;
+        if capabilities.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!("This remote server does not advertise stored passage inspection. Upgrade the server to inspect its stored text."));
+        }
+        let capabilities: SearchCapabilities = bounded_response_json(capabilities, 64 * 1024).await?;
+        if capabilities.api_version != 1 || !capabilities.fts_ready
+            || capabilities.stored_passage_version != STORED_PASSAGE_VERSION {
+            return Err(anyhow!("The remote index is not ready or does not support versioned stored passage inspection. Finish its rebuild or upgrade the server."));
+        }
+        let response = self.client.post(self.url("/v1/passages/read"))
+            .bearer_auth(&self.api_key).json(&request).send().await?;
+        if response.status().is_success() {
+            let reported = response.headers().get(STORED_PASSAGE_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<u32>().ok());
+            if reported != Some(STORED_PASSAGE_VERSION) {
+                return Err(anyhow!("The server did not confirm the negotiated stored passage version; its text was not accepted."));
+            }
+        }
+        let passage: StoredPassage = bounded_response_json(response, MAX_STORED_PASSAGE_RESPONSE_BYTES).await?;
+        passage.validate_for(&request).map_err(|error| anyhow!(error))?;
+        Ok(passage)
     }
 
     fn document_url(

@@ -3,6 +3,7 @@ pub mod capabilities;
 pub mod docs;
 pub mod health;
 pub mod ingest;
+pub mod passages;
 pub mod search;
 pub mod stats;
 pub mod sync;

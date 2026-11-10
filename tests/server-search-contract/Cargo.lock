@@ -4850,6 +4850,7 @@ dependencies = [
  "axum",
  "crisp-index-protocol",
  "crisp-search-query",
+ "futures",
  "futures-util",
  "lance",
  "lancedb",

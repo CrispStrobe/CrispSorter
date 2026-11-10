@@ -18,17 +18,30 @@ pub async fn index_read_passage(
     state: State<'_, AppState>,
     doc_id: String,
     chunk_index: i32,
+    owner_id: Option<String>,
 ) -> Result<InspectedPassage, String> {
     if doc_id.trim().is_empty() || doc_id.len() > 4096 || chunk_index < 0 {
         return Err("Choose an indexed text passage; filename-only results have no stored passage".into());
     }
     let lock = state.index.lock().await;
     if !lock.config.enabled { return Err("Enable the search index to inspect stored passages".into()); }
-    let local = lock.local.clone().ok_or("Stored passage inspection requires a local index")?;
-    let fts = lock.fts.clone().ok_or("The local text index is not ready")?;
+    let local = lock.local.clone();
+    let fts = lock.fts.clone();
+    let config = lock.config.clone();
     drop(lock);
+    if config.backend_type == super::BackendType::Remote {
+        let owner = owner_id.as_deref().ok_or("Select a search result with its owner identity to inspect a remote passage")?;
+        let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
+        let remote = super::remote_client::RemoteClient::new_with_proxy(
+            config.remote_url.ok_or("Remote index URL is missing")?,
+            config.remote_api_key.unwrap_or_default(), &proxy,
+        ).map_err(|error| error.to_string())?;
+        return remote.read_passage(&doc_id, owner, chunk_index).await.map_err(|error| error.to_string());
+    }
+    let local = local.ok_or("The local index is not ready")?;
+    let fts = fts.ok_or("The local text index is not ready")?;
     let _consistent = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
-    passage::read_passage(local.table_ref(), &doc_id, chunk_index).await.map_err(|e| e.to_string())
+    passage::read_passage_scoped(local.table_ref(), &doc_id, owner_id.as_deref(), chunk_index).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

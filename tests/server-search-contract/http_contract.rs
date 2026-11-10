@@ -15,6 +15,7 @@ fn capabilities() -> SearchCapabilities {
     SearchCapabilities {
         api_version: 1,
         metadata_filter_version: crisp_index_protocol::METADATA_FILTER_VERSION,
+        stored_passage_version: crisp_index_protocol::STORED_PASSAGE_VERSION,
         query_language_version: QUERY_LANGUAGE_VERSION,
         fts_schema_version: FTS_SCHEMA_VERSION,
         fts_ready: true,

@@ -15,6 +15,7 @@
 //! POST   /v1/ingest/batch    IngestBatch → BatchIngestResponse (202)
 //! GET    /v1/tasks/:id                  — TaskStatusResponse
 //! POST   /v1/search       SearchRequest → Vec<SearchHit>
+//! POST   /v1/passages/read StoredPassageRequest → StoredPassage
 //! DELETE /v1/docs/:id                   — DeleteResponse
 //! POST   /v1/docs/:id/location  UpdateLocationBody → UpdateLocationResponse
 //! POST   /v1/admin/build-ivf-pq         — { "built": true }
@@ -44,6 +45,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod sync;
 pub use sync::{SyncCursor, SyncDeletion, SyncPage, SYNC_CURSOR_VERSION};
+pub mod passage;
+pub use passage::{StoredPassage, StoredPassageRequest, MAX_STORED_DOCUMENT_CHUNKS,
+    MAX_STORED_PASSAGE_BYTES, MAX_STORED_PASSAGE_RESPONSE_BYTES,
+    STORED_PASSAGE_VERSION, STORED_PASSAGE_VERSION_HEADER};
 
 // ── Ingest ──────────────────────────────────────────────────────────────────
 
@@ -214,6 +219,9 @@ pub struct SearchCapabilities {
     /// Missing on legacy servers, which must not receive extended filters.
     #[serde(default)]
     pub metadata_filter_version: u32,
+    /// Missing on legacy servers, which cannot serve verified stored passages.
+    #[serde(default)]
+    pub stored_passage_version: u32,
     /// Exact Boolean, field, phrase, fuzzy, wildcard, and proximity grammar.
     pub query_language_version: u32,
     /// Active full-text index schema generation.

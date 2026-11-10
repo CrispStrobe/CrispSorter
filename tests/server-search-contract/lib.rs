@@ -3,6 +3,8 @@
 mod fts;
 #[path = "../../crisp-index-server/src/index.rs"]
 mod index;
+#[path = "../../crisp-index-server/src/auth.rs"]
+mod auth;
 #[cfg(test)]
 #[path = "../../crisp-index-protocol/src/lib.rs"]
 mod protocol_contract;
@@ -29,6 +31,8 @@ pub mod embedder {
 }
 #[cfg(test)]
 mod http_contract;
+#[cfg(test)]
+mod passage_contract;
 #[path = "../../crisp-index-server/src/queue.rs"]
 mod queue;
 #[path = "../../crisp-index-server/src/routes/mod.rs"]

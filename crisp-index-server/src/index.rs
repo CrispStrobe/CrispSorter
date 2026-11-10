@@ -30,6 +30,9 @@ use lancedb::{
 };
 
 const MAX_AFFECTED_CHUNKS: usize = 65_536;
+#[path = "../../shared/stored_passage.rs"]
+mod stored_passage;
+pub use stored_passage::PassageReadError;
 
 #[derive(Debug)]
 pub struct AmbiguousDocument;
@@ -823,6 +826,13 @@ impl SearchIndex {
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
         self.fts.capabilities()
+    }
+
+    /// Return one exact owner's stored chunk after repairing pending writes.
+    pub async fn read_passage(&self, request: &crisp_index_protocol::StoredPassageRequest) -> Result<crisp_index_protocol::StoredPassage> {
+        request.validate().map_err(|error| anyhow!(error))?;
+        let _guard = self.read_guard().await?;
+        stored_passage::read_passage(&self.vector.table, &request.doc_id, Some(&request.owner_id), request.chunk_index).await
     }
 
     /// Validate all syntax and actual dictionary expansions before model work.
