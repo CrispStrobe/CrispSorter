@@ -4,6 +4,7 @@ use crisp_index_protocol::{SyncCursor, SYNC_CURSOR_VERSION};
 fn wire(owner: &str, id: &str, text: &str) -> IngestChunk {
     IngestChunk {
         doc_id: id.into(),
+        source_identity_version: None,
         owner_id: owner.into(),
         chunk_index: 0,
         chunk_total: Some(1),
@@ -58,7 +59,11 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
         .execute()
         .await
         .unwrap();
-    let first = index.vector.rows_since(0, None, 2).await.unwrap();
+    let first = index
+        .vector
+        .rows_since(&index.fts, 0, None, 2)
+        .await
+        .unwrap();
     assert!(first.has_more);
     assert_eq!(
         first
@@ -88,7 +93,11 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
         .execute()
         .await
         .unwrap();
-    let second = index.vector.rows_since(0, Some(&cursor), 2).await.unwrap();
+    let second = index
+        .vector
+        .rows_since(&index.fts, 0, Some(&cursor), 2)
+        .await
+        .unwrap();
     assert_eq!(second.snapshot_version, Some(snapshot));
     assert_eq!(
         second
@@ -99,7 +108,11 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
         vec![("a", "z"), ("a'owner", "quoted'id")]
     );
     let next: SyncCursor = serde_json::from_str(second.next_cursor.as_ref().unwrap()).unwrap();
-    let final_page = index.vector.rows_since(0, Some(&next), 2).await.unwrap();
+    let final_page = index
+        .vector
+        .rows_since(&index.fts, 0, Some(&next), 2)
+        .await
+        .unwrap();
     assert_eq!(
         final_page
             .rows
@@ -115,7 +128,7 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
     // preceding the old cursor remain visible on the next snapshot.
     let replay = index
         .vector
-        .rows_since(final_page.max_indexed_at, None, 100)
+        .rows_since(&index.fts, final_page.max_indexed_at, None, 100)
         .await
         .unwrap();
     assert_eq!(replay.rows.len(), 6);
@@ -140,14 +153,27 @@ async fn sync_cursor_validates_boundaries_and_uses_exact_has_more() {
         })
         .await
         .unwrap();
-    let page = index.vector.rows_since(0, None, 2).await.unwrap();
+    let page = index
+        .vector
+        .rows_since(&index.fts, 0, None, 2)
+        .await
+        .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert!(!page.has_more && page.next_cursor.is_none());
-    assert!(index.vector.rows_since(0, None, 0).await.is_err());
-    assert!(index.vector.rows_since(0, None, 1001).await.is_err());
+    assert!(index
+        .vector
+        .rows_since(&index.fts, 0, None, 0)
+        .await
+        .is_err());
+    assert!(index
+        .vector
+        .rows_since(&index.fts, 0, None, 1001)
+        .await
+        .is_err());
     let mut cursor = SyncCursor {
         version: SYNC_CURSOR_VERSION,
         snapshot_version: u64::MAX,
+        tombstone_horizon: i64::MAX,
         since_ms: 0,
         indexed_at: 0,
         owner_id: "a".into(),
@@ -155,14 +181,99 @@ async fn sync_cursor_validates_boundaries_and_uses_exact_has_more() {
     };
     let error = index
         .vector
-        .rows_since(0, Some(&cursor), 2)
+        .rows_since(&index.fts, 0, Some(&cursor), 2)
         .await
         .unwrap_err();
     assert!(error
         .downcast_ref::<sync_cursor::SyncSnapshotUnavailable>()
         .is_some());
     cursor.version += 1;
-    assert!(index.vector.rows_since(0, Some(&cursor), 2).await.is_err());
+    assert!(index
+        .vector
+        .rows_since(&index.fts, 0, Some(&cursor), 2)
+        .await
+        .is_err());
     cursor.version = SYNC_CURSOR_VERSION;
-    assert!(index.vector.rows_since(1, Some(&cursor), 2).await.is_err());
+    assert!(index
+        .vector
+        .rows_since(&index.fts, 1, Some(&cursor), 2)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn sync_pages_freeze_deletion_horizon_and_newer_reingest_suppresses_tombstone() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![
+                wire("a", "first", "first"),
+                wire("a", "middle", "middle"),
+                wire("a", "third", "third"),
+            ],
+        })
+        .await
+        .unwrap();
+    let first = index
+        .vector
+        .rows_since(&index.fts, 0, None, 1)
+        .await
+        .unwrap();
+    let cursor: SyncCursor = serde_json::from_str(first.next_cursor.as_ref().unwrap()).unwrap();
+    index.delete_scoped_doc("middle", Some("a")).await.unwrap();
+    let second = index
+        .vector
+        .rows_since(&index.fts, 0, Some(&cursor), 1)
+        .await
+        .unwrap();
+    assert_eq!(second.rows[0].doc_id, "middle");
+    assert!(second.deletions.is_empty());
+    let next: SyncCursor = serde_json::from_str(second.next_cursor.as_ref().unwrap()).unwrap();
+    let final_page = index
+        .vector
+        .rows_since(&index.fts, 0, Some(&next), 1)
+        .await
+        .unwrap();
+    assert_eq!(final_page.rows[0].doc_id, "third");
+    assert!(final_page.deletions.is_empty() && !final_page.has_more);
+    let current = index
+        .vector
+        .rows_since(&index.fts, final_page.max_indexed_at, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(current.deletions.len(), 1);
+    assert_eq!(current.deletions[0].doc_id, "middle");
+    assert!(current.deletions[0].indexed_at > cursor.tombstone_horizon);
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![wire("a", "middle", "restored")],
+        })
+        .await
+        .unwrap();
+    let restored = index
+        .vector
+        .rows_since(&index.fts, 0, None, 100)
+        .await
+        .unwrap();
+    assert!(restored.deletions.is_empty());
+    assert!(restored.rows.iter().any(|row| row.doc_id == "middle"));
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![wire("b", "middle", "other owner")],
+        })
+        .await
+        .unwrap();
+    index.delete_scoped_doc("middle", Some("a")).await.unwrap();
+    let scoped = index
+        .vector
+        .rows_since(&index.fts, 0, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(scoped.deletions.len(), 1);
+    assert_eq!(scoped.deletions[0].owner_id, "a");
+    assert!(scoped
+        .rows
+        .iter()
+        .any(|row| row.doc_id == "middle" && row.owner_id == "b"));
 }

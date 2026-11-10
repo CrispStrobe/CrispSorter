@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'crates/crisp-search-query/**'
+      - 'shared/source_identity.rs'
       - 'crisp-index-protocol/**'
       - 'crisp-index-server/**'
       - 'src-tauri/src/index/**'

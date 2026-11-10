@@ -1,10 +1,13 @@
 //! A stable, bounded document scan over one immutable table version.
-use super::{batches_to_results, sql_escape, VectorStore, TABLE_NAME};
+use super::{
+    batches_to_results, keys_sql, sql_escape, DocumentKey, FtsStore, VectorStore, TABLE_NAME,
+};
 use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::{Array, StringArray, TimestampMillisecondArray};
-use crisp_index_protocol::{SyncCursor, SyncPage, SYNC_CURSOR_VERSION};
+use crisp_index_protocol::{SyncCursor, SyncDeletion, SyncPage, SYNC_CURSOR_VERSION};
 use futures_util::TryStreamExt;
 use lance::dataset::scanner::ColumnOrdering;
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 
 #[derive(Debug)]
 pub(crate) struct SyncSnapshotUnavailable;
@@ -22,6 +25,7 @@ impl std::error::Error for SyncSnapshotUnavailable {}
 impl VectorStore {
     pub(super) async fn read_sync_page(
         &self,
+        fts: &FtsStore,
         since_ms: i64,
         cursor: Option<&SyncCursor>,
         limit: usize,
@@ -41,6 +45,10 @@ impl VectorStore {
         // Opening a new handle is intentional: Table::clone shares its mutable
         // checkout state and would make the live writer read-only.
         let table = self._db.open_table(TABLE_NAME).execute().await?;
+        let tombstone_horizon = match cursor {
+            Some(cursor) => cursor.tombstone_horizon,
+            None => fts.sync_horizon()?,
+        };
         let snapshot_version = match cursor {
             Some(cursor) => cursor.snapshot_version,
             None => self.table.version().await?,
@@ -59,7 +67,7 @@ impl VectorStore {
             dataset.scan()
         };
         let mut filter =
-            format!("chunk_index = 0 AND indexed_at >= to_timestamp_millis({since_ms})");
+            format!("chunk_index = 0 AND indexed_at >= to_timestamp_millis({since_ms}) AND indexed_at <= to_timestamp_millis({tombstone_horizon})");
         if let Some(cursor) = cursor {
             let time = cursor.indexed_at;
             let owner = sql_escape(&cursor.owner_id);
@@ -87,6 +95,7 @@ impl VectorStore {
             "language",
             "chunk_index",
             "indexed_at",
+            "source_hash",
         ])?;
         let batches = scanner
             .try_into_stream()
@@ -122,23 +131,96 @@ impl VectorStore {
                 ));
             }
         }
-        let mut rows = batches_to_results(&batches, None, false)?;
+        let rows = batches_to_results(&batches, None, false)?;
         ensure!(
             rows.len() == positions.len(),
             "Sync projection omitted a stored row"
         );
-        let has_more = rows.len() > limit;
-        rows.truncate(limit);
-        positions.truncate(limit);
-        let max_indexed_at = positions.last().map_or(
+        let mut changes: Vec<_> = positions
+            .into_iter()
+            .zip(rows.into_iter().map(Ok::<_, SyncDeletion>))
+            .collect();
+
+        // Tombstone history is append-only. The horizon belongs to the same
+        // gated instant as the Lance snapshot, so later deletes cannot shift
+        // an already-started page sequence. Re-ingested identities suppress
+        // their older tombstones in this pinned snapshot.
+        let mut deleted = Vec::new();
+        let mut after = cursor.cloned();
+        while deleted.len() <= limit {
+            let candidates =
+                fts.tombstones_page(since_ms, tombstone_horizon, after.as_ref(), 256)?;
+            if candidates.is_empty() {
+                break;
+            }
+            let keys: Vec<_> = candidates
+                .iter()
+                .map(|deletion| DocumentKey {
+                    owner_id: deletion.owner_id.clone(),
+                    doc_id: deletion.doc_id.clone(),
+                })
+                .collect();
+            let mut stream = table
+                .query()
+                .only_if(keys_sql(&keys))
+                .select(Select::columns(&["owner_id", "doc_id"]))
+                .execute()
+                .await?;
+            let mut live = std::collections::HashSet::new();
+            while let Some(batch) = stream.try_next().await? {
+                let owners = super::string_column(&batch, "owner_id")?;
+                let docs = super::string_column(&batch, "doc_id")?;
+                for row in 0..batch.num_rows() {
+                    live.insert(DocumentKey {
+                        owner_id: owners.value(row).into(),
+                        doc_id: docs.value(row).into(),
+                    });
+                }
+            }
+            let last = candidates.last().expect("nonempty candidate page");
+            after = Some(SyncCursor {
+                version: SYNC_CURSOR_VERSION,
+                snapshot_version,
+                tombstone_horizon,
+                since_ms,
+                indexed_at: last.indexed_at,
+                owner_id: last.owner_id.clone(),
+                doc_id: last.doc_id.clone(),
+            });
+            let exhausted = candidates.len() < 256;
+            deleted.extend(candidates.into_iter().filter(|deletion| {
+                !live.contains(&DocumentKey {
+                    owner_id: deletion.owner_id.clone(),
+                    doc_id: deletion.doc_id.clone(),
+                })
+            }));
+            if exhausted {
+                break;
+            }
+        }
+        for deletion in deleted.into_iter().take(limit + 1) {
+            changes.push((
+                (
+                    deletion.indexed_at,
+                    deletion.owner_id.clone(),
+                    deletion.doc_id.clone(),
+                ),
+                Err(deletion),
+            ));
+        }
+        changes.sort_by(|left, right| left.0.cmp(&right.0));
+        let has_more = changes.len() > limit;
+        changes.truncate(limit);
+        let max_indexed_at = changes.last().map_or(
             cursor.map_or(since_ms, |cursor| cursor.indexed_at),
-            |position| position.0,
+            |change| change.0 .0,
         );
         let next_cursor = if has_more {
-            let (indexed_at, owner_id, doc_id) = positions.last().expect("a nonempty page");
+            let (indexed_at, owner_id, doc_id) = &changes.last().expect("a nonempty page").0;
             Some(serde_json::to_string(&SyncCursor {
                 version: SYNC_CURSOR_VERSION,
                 snapshot_version,
+                tombstone_horizon,
                 since_ms,
                 indexed_at: *indexed_at,
                 owner_id: owner_id.clone(),
@@ -147,8 +229,18 @@ impl VectorStore {
         } else {
             None
         };
+        let mut rows = Vec::new();
+        let mut deletions = Vec::new();
+        for (_, change) in changes {
+            match change {
+                Ok(row) => rows.push(row),
+                Err(deletion) => deletions.push(deletion),
+            }
+        }
         Ok(SyncPage {
+            sync_version: SYNC_CURSOR_VERSION,
             rows,
+            deletions,
             max_indexed_at,
             has_more,
             next_cursor,

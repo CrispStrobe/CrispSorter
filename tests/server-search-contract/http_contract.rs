@@ -194,3 +194,105 @@ async fn actual_search_route_rejects_invalid_requests_before_embedding_and_confi
         .is_empty());
     server.abort();
 }
+
+#[tokio::test]
+async fn scoped_http_mutations_encode_ids_and_preserve_other_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(
+        crate::index::VectorStore::open_or_create(dir.path(), 2)
+            .await
+            .unwrap(),
+    );
+    let fts = Arc::new(crate::fts::FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = Arc::new(crate::index::SearchIndex::new(vector, fts));
+    index.ensure_ready().await.unwrap();
+    let id = "shared /?id";
+    let chunks=["owner'a","owner-b"].into_iter().map(|owner|serde_json::from_value(serde_json::json!({
+        "doc_id":id,"chunk_index":0,"chunk_total":1,"full_text":"alpha body","embedding":[1.0,0.0],
+        "filename":"copy.txt","title":owner,"ext":"txt","language":"en","location_uri":format!("test://{owner}"),
+        "owner_id":owner,"source_hash":"identical content"
+    })).unwrap()).collect();
+    index
+        .ingest_batch(&crisp_index_protocol::IngestBatch { chunks })
+        .await
+        .unwrap();
+    let state = Arc::new(crate::state::SharedState {
+        index: index.clone(),
+        queue: crate::queue::TaskQueue::open_or_create(dir.path(), Default::default()).unwrap(),
+        embedder: None,
+        config: crate::state::ServerConfig {
+            api_key: "".into(),
+            port: 0,
+            data_dir: dir.path().to_owned(),
+            embed_dims: 2,
+            server_embed_enabled: false,
+            queue_lease_secs: 30,
+            queue_retry_base_ms: 1000,
+            queue_max_attempts: 3,
+        },
+    });
+    let router = Router::new()
+        .route(
+            "/v1/capabilities",
+            get(crate::routes::capabilities::capabilities),
+        )
+        .route("/v1/search", post(crate::routes::search::search))
+        .route(
+            "/v1/docs/{doc_id}",
+            axum::routing::delete(crate::routes::docs::delete_doc),
+        )
+        .route(
+            "/v1/docs/{doc_id}/location",
+            post(crate::routes::docs::update_location),
+        )
+        .with_state(state);
+    let (url, server) = serve(router).await;
+    let client = RemoteClient::new(url, "");
+    assert!(client
+        .delete_doc(id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("409"));
+    assert!(client
+        .update_location(id, "test://ambiguous")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("409"));
+    client
+        .update_location_scoped(id, "test://moved", Some("owner'a"))
+        .await
+        .unwrap();
+    let a = SearchFilters {
+        owner_id: Some("owner'a".into()),
+        ..Default::default()
+    };
+    let b = SearchFilters {
+        owner_id: Some("owner-b".into()),
+        ..Default::default()
+    };
+    let changed = client.search_text("alpha", &a, 20).await.unwrap();
+    assert_eq!(changed[0].location_uri, "test://moved");
+    assert!(changed[0].indexed_at > 0);
+    assert_eq!(
+        client.search_text("alpha", &b, 20).await.unwrap()[0].location_uri,
+        "test://owner-b"
+    );
+    client.delete_doc_scoped(id, Some("owner'a")).await.unwrap();
+    assert!(client
+        .search_text("alpha", &a, 20)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(client.search_text("alpha", &b, 20).await.unwrap().len(), 1);
+    assert_eq!(
+        index
+            .fts
+            .tombstones_page(0, index.fts.sync_horizon().unwrap(), None, 10)
+            .unwrap()[0]
+            .owner_id,
+        "owner'a"
+    );
+    server.abort();
+}

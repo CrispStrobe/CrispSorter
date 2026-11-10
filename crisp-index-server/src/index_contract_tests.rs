@@ -10,6 +10,7 @@ fn wire(
 ) -> IngestChunk {
     IngestChunk {
         doc_id: id.into(),
+        source_identity_version: None,
         owner_id: owner.into(),
         chunk_index: index,
         chunk_total: total,
@@ -93,12 +94,27 @@ async fn complete_replacements_remove_tails_and_duplicates_and_preserve_other_ow
             .len(),
         1
     );
-    assert!(index.delete_doc("same").await.unwrap_err().downcast_ref::<AmbiguousDocument>().is_some());
-    assert!(index.update_location("same","test://ambiguous").await.is_err());
-    index.delete_scoped_doc("same",Some("a")).await.unwrap();
-    assert_eq!(index.vector.count().await.unwrap(),1);
-    assert_eq!(index.search_text("other",&owner("b"),20).await.unwrap().len(),1);
-    index.delete_scoped_doc("same",Some("b")).await.unwrap();
+    assert!(index
+        .delete_doc("same")
+        .await
+        .unwrap_err()
+        .downcast_ref::<AmbiguousDocument>()
+        .is_some());
+    assert!(index
+        .update_location("same", "test://ambiguous")
+        .await
+        .is_err());
+    index.delete_scoped_doc("same", Some("a")).await.unwrap();
+    assert_eq!(index.vector.count().await.unwrap(), 1);
+    assert_eq!(
+        index
+            .search_text("other", &owner("b"), 20)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    index.delete_scoped_doc("same", Some("b")).await.unwrap();
     assert_eq!(index.vector.count().await.unwrap(), 0);
     assert!(index
         .search_text("replacement OR other", &Default::default(), 20)
@@ -337,65 +353,554 @@ async fn finite_embedding_validation_and_unicode_snippets_are_safe() {
 
 #[tokio::test]
 async fn migration_canonicalizes_legacy_metadata_and_embeddings_with_equal_timestamps() {
-    let dir=tempfile::tempdir().unwrap();
-    let vector=Arc::new(VectorStore::open_or_create(dir.path(),2).await.unwrap());
-    let mut old=wire("a","legacy",0,"obsolete body",None,None);
-    old.title=Some("Old title".into());old.location_uri="test://old".into();old.embedding=vec![1.0,0.0];
-    let mut current=wire("a","legacy",0,"current body",None,None);
-    current.title=Some("Current title".into());current.location_uri="test://current".into();current.embedding=vec![0.0,1.0];
-    let neighbor=wire("a","neighbor",0,"neighbor text",None,None);
-    let schema=build_lance_schema(2);
-    let mut batches=Vec::new();
-    for chunk in [&old,&current,&neighbor] {
-        let batch=chunk_to_record_batch(chunk,2,&schema).unwrap();
-        let mut columns=batch.columns().to_vec();
-        columns[schema.index_of("indexed_at").unwrap()]=Arc::new(TimestampMillisecondArray::from(vec![1_000]));
-        batches.push(RecordBatch::try_new(schema.clone(),columns).unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(VectorStore::open_or_create(dir.path(), 2).await.unwrap());
+    let mut old = wire("a", "legacy", 0, "obsolete body", None, None);
+    old.title = Some("Old title".into());
+    old.location_uri = "test://old".into();
+    old.embedding = vec![1.0, 0.0];
+    let mut current = wire("a", "legacy", 0, "current body", None, None);
+    current.title = Some("Current title".into());
+    current.location_uri = "test://current".into();
+    current.embedding = vec![0.0, 1.0];
+    let neighbor = wire("a", "neighbor", 0, "neighbor text", None, None);
+    let schema = build_lance_schema(2);
+    let mut batches = Vec::new();
+    for chunk in [&old, &current, &neighbor] {
+        let batch = chunk_to_record_batch(chunk, 2, &schema).unwrap();
+        let mut columns = batch.columns().to_vec();
+        columns[schema.index_of("indexed_at").unwrap()] =
+            Arc::new(TimestampMillisecondArray::from(vec![1_000]));
+        batches.push(RecordBatch::try_new(schema.clone(), columns).unwrap());
     }
-    let reader=arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok::<RecordBatch,arrow_schema::ArrowError>),schema);
+    let reader = arrow_array::RecordBatchIterator::new(
+        batches
+            .into_iter()
+            .map(Ok::<RecordBatch, arrow_schema::ArrowError>),
+        schema,
+    );
     vector.table.add(reader).execute().await.unwrap();
-    let fts=Arc::new(FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
-    let index=SearchIndex::new(vector,fts);index.ensure_ready().await.unwrap();
-    assert_eq!(index.vector.count().await.unwrap(),2);
-    let hit=index.search_text("current",&owner("a"),20).await.unwrap().remove(0);
-    assert_eq!(hit.title.as_deref(),Some("Current title"));assert_eq!(hit.location_uri,"test://current");
-    assert!(index.search_text("obsolete",&owner("a"),20).await.unwrap().is_empty());
-    let nearest=index.search_vector(&[1.0,0.0],&owner("a"),20).await.unwrap();
-    assert_eq!(nearest[0].doc_id,"neighbor");
-    assert_eq!(nearest.iter().find(|hit|hit.doc_id=="legacy").unwrap().snippet,"current body");
+    let fts = Arc::new(FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = SearchIndex::new(vector, fts);
+    index.ensure_ready().await.unwrap();
+    assert_eq!(index.vector.count().await.unwrap(), 2);
+    let hit = index
+        .search_text("current", &owner("a"), 20)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(hit.title.as_deref(), Some("Current title"));
+    assert_eq!(hit.location_uri, "test://current");
+    assert!(index
+        .search_text("obsolete", &owner("a"), 20)
+        .await
+        .unwrap()
+        .is_empty());
+    let nearest = index
+        .search_vector(&[1.0, 0.0], &owner("a"), 20)
+        .await
+        .unwrap();
+    assert_eq!(nearest[0].doc_id, "neighbor");
+    assert_eq!(
+        nearest
+            .iter()
+            .find(|hit| hit.doc_id == "legacy")
+            .unwrap()
+            .snippet,
+        "current body"
+    );
 }
 
 #[tokio::test]
 async fn failed_legacy_rebuild_preserves_existing_index_and_vector_data() {
-    let dir=tempfile::tempdir().unwrap();
-    let vector=Arc::new(VectorStore::open_or_create(dir.path(),2).await.unwrap());
-    let mut invalid=wire("a","invalid",0,"broken offsets",None,Some(0));invalid.chunk_end_char=Some(2);
-    let schema=build_lance_schema(2);let batch=chunk_to_record_batch(&invalid,2,&schema).unwrap();
-    vector.table.add(arrow_array::RecordBatchIterator::new(vec![Ok(batch)],schema)).execute().await.unwrap();
-    let legacy=dir.path().join("fts");std::fs::create_dir(&legacy).unwrap();std::fs::write(legacy.join("prior"),"preserved").unwrap();
-    let fts=Arc::new(FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
-    let index=SearchIndex::new(vector,fts);
-    assert!(index.ensure_ready().await.is_err());assert!(index.fts.needs_rebuild().unwrap());
-    assert_eq!(index.vector.count().await.unwrap(),1);
-    assert_eq!(std::fs::read_to_string(legacy.join("prior")).unwrap(),"preserved");
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(VectorStore::open_or_create(dir.path(), 2).await.unwrap());
+    let mut invalid = wire("a", "invalid", 0, "broken offsets", None, Some(0));
+    invalid.chunk_end_char = Some(2);
+    let schema = build_lance_schema(2);
+    let batch = chunk_to_record_batch(&invalid, 2, &schema).unwrap();
+    vector
+        .table
+        .add(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema,
+        ))
+        .execute()
+        .await
+        .unwrap();
+    let legacy = dir.path().join("fts");
+    std::fs::create_dir(&legacy).unwrap();
+    std::fs::write(legacy.join("prior"), "preserved").unwrap();
+    let fts = Arc::new(FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = SearchIndex::new(vector, fts);
+    assert!(index.ensure_ready().await.is_err());
+    assert!(index.fts.needs_rebuild().unwrap());
+    assert_eq!(index.vector.count().await.unwrap(), 1);
+    assert_eq!(
+        std::fs::read_to_string(legacy.join("prior")).unwrap(),
+        "preserved"
+    );
 }
 
 #[tokio::test]
 async fn partial_updates_and_scoped_location_moves_advance_a_durable_document_clock() {
-    let dir=tempfile::tempdir().unwrap();let index=open(dir.path()).await;
-    let future=i64::try_from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()).unwrap()+86_400_000;
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let future = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+        + 86_400_000;
     index.fts.observe_timestamp(future).unwrap();
-    index.ingest_batch(&IngestBatch{chunks:vec![wire("a","one",0,"alpha",Some(2),None),wire("a","one",1,"beta",Some(2),None)]}).await.unwrap();
-    let key=DocumentKey{owner_id:"a".into(),doc_id:"one".into()};
-    let rows=index.vector.fetch_by_keys(std::slice::from_ref(&key)).await.unwrap();
-    let before=stored_chunks(&rows[0]).unwrap()[0].indexed_at;assert!(before>future);
-    index.ingest_batch(&IngestBatch{chunks:vec![wire("a","one",1,"gamma",Some(2),None)]}).await.unwrap();
-    let rows=index.vector.fetch_by_keys(std::slice::from_ref(&key)).await.unwrap();
-    let chunks=rows.iter().flat_map(|batch|stored_chunks(batch).unwrap()).collect::<Vec<_>>();
-    let updated=chunks[0].indexed_at;assert!(updated>before);assert!(chunks.iter().all(|chunk|chunk.indexed_at==updated));
-    index.update_scoped_location("one","test://moved",Some("a")).await.unwrap();
-    let rows=index.vector.fetch_by_keys(std::slice::from_ref(&key)).await.unwrap();
-    assert!(rows.iter().flat_map(|batch|stored_chunks(batch).unwrap()).all(|chunk|chunk.indexed_at>updated));
-    assert_eq!(index.search_text("alpha",&owner("a"),20).await.unwrap()[0].location_uri,"test://moved");
-    assert_eq!(index.stats().await.unwrap(),(2,1));
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![
+                wire("a", "one", 0, "alpha", Some(2), None),
+                wire("a", "one", 1, "beta", Some(2), None),
+            ],
+        })
+        .await
+        .unwrap();
+    let key = DocumentKey {
+        owner_id: "a".into(),
+        doc_id: "one".into(),
+    };
+    let rows = index
+        .vector
+        .fetch_by_keys(std::slice::from_ref(&key))
+        .await
+        .unwrap();
+    let before = stored_chunks(&rows[0]).unwrap()[0].indexed_at;
+    assert!(before > future);
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![wire("a", "one", 1, "gamma", Some(2), None)],
+        })
+        .await
+        .unwrap();
+    let rows = index
+        .vector
+        .fetch_by_keys(std::slice::from_ref(&key))
+        .await
+        .unwrap();
+    let chunks = rows
+        .iter()
+        .flat_map(|batch| stored_chunks(batch).unwrap())
+        .collect::<Vec<_>>();
+    let updated = chunks[0].indexed_at;
+    assert!(updated > before);
+    assert!(chunks.iter().all(|chunk| chunk.indexed_at == updated));
+    index
+        .update_scoped_location("one", "test://moved", Some("a"))
+        .await
+        .unwrap();
+    let rows = index
+        .vector
+        .fetch_by_keys(std::slice::from_ref(&key))
+        .await
+        .unwrap();
+    assert!(rows
+        .iter()
+        .flat_map(|batch| stored_chunks(batch).unwrap())
+        .all(|chunk| chunk.indexed_at > updated));
+    assert_eq!(
+        index.search_text("alpha", &owner("a"), 20).await.unwrap()[0].location_uri,
+        "test://moved"
+    );
+    assert_eq!(index.stats().await.unwrap(), (2, 1));
+}
+
+#[tokio::test]
+async fn deletion_receipts_survive_interruption_after_vector_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![
+                wire("a", "gone", 0, "before", Some(1), Some(0)),
+                wire("b", "gone", 0, "retained", Some(1), Some(0)),
+            ],
+        })
+        .await
+        .unwrap();
+    let key = DocumentKey {
+        owner_id: "a".into(),
+        doc_id: "gone".into(),
+    };
+    let deleted_at = index.fts.next_write_timestamp().unwrap();
+    index
+        .fts
+        .mark_pending_delete(std::slice::from_ref(&key), deleted_at)
+        .unwrap();
+    index
+        .vector
+        .delete_keys(std::slice::from_ref(&key))
+        .await
+        .unwrap();
+    drop(index);
+    let index = open(dir.path()).await;
+    let receipts = index
+        .fts
+        .tombstones_page(0, index.fts.sync_horizon().unwrap(), None, 100)
+        .unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].owner_id, "a");
+    assert_eq!(receipts[0].doc_id, "gone");
+    assert_eq!(receipts[0].indexed_at, deleted_at);
+    assert!(index
+        .search_text("before", &owner("a"), 20)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        index
+            .search_text("retained", &owner("b"), 20)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(index.fts.pending().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn uncommitted_delete_intents_do_not_emit_false_removals() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![wire("a", "present", 0, "retained", Some(1), Some(0))],
+        })
+        .await
+        .unwrap();
+    let key = DocumentKey {
+        owner_id: "a".into(),
+        doc_id: "present".into(),
+    };
+    index
+        .fts
+        .mark_pending_delete(&[key], index.fts.next_write_timestamp().unwrap())
+        .unwrap();
+    drop(index);
+    let index = open(dir.path()).await;
+    assert!(index
+        .fts
+        .tombstones_page(0, index.fts.sync_horizon().unwrap(), None, 100)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        index
+            .search_text("retained", &owner("a"), 20)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn deletion_history_keeps_older_cursor_horizons_after_reingest() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let batch = IngestBatch {
+        chunks: vec![wire("a", "repeat", 0, "body", Some(1), Some(0))],
+    };
+    index.ingest_batch(&batch).await.unwrap();
+    index.delete_scoped_doc("repeat", Some("a")).await.unwrap();
+    let first_horizon = index.fts.sync_horizon().unwrap();
+    let first = index
+        .fts
+        .tombstones_page(0, first_horizon, None, 100)
+        .unwrap()
+        .remove(0);
+    index.ingest_batch(&batch).await.unwrap();
+    index.delete_scoped_doc("repeat", Some("a")).await.unwrap();
+    let second = index
+        .fts
+        .tombstones_page(0, index.fts.sync_horizon().unwrap(), None, 100)
+        .unwrap()
+        .remove(0);
+    assert!(second.indexed_at > first.indexed_at);
+    let old_page = index
+        .fts
+        .tombstones_page(0, first_horizon, None, 100)
+        .unwrap();
+    assert_eq!(old_page.len(), 1);
+    assert_eq!(old_page[0].indexed_at, first.indexed_at);
+    assert!(index
+        .fts
+        .tombstones_page(0, first_horizon, None, 1002)
+        .is_err());
+}
+
+fn ordinary(owner_id: &str, uri: &str, hash: &str, text: &str) -> IngestChunk {
+    let id = crate::source_identity::occurrence_id(owner_id, uri, hash);
+    let mut chunk = wire(owner_id, &id, 0, text, Some(1), Some(0));
+    chunk.source_identity_version = Some(1);
+    chunk.location_uri = uri.into();
+    chunk.source_hash = hash.into();
+    chunk
+}
+
+#[tokio::test]
+async fn ordinary_sources_keep_identical_bytes_at_distinct_locations_and_refresh_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let a = ordinary("a", "test://first", "same bytes", "shared text");
+    let b = ordinary("a", "test://second", "same bytes", "shared text");
+    let other = ordinary("b", "test://first", "same bytes", "shared text");
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![a.clone(), b.clone(), other],
+        })
+        .await
+        .unwrap();
+    assert_eq!(index.stats().await.unwrap(), (3, 3));
+    assert_ne!(a.doc_id, b.doc_id);
+    let replacement = ordinary("a", "test://first", "changed bytes", "replacement text");
+    assert_eq!(replacement.doc_id, a.doc_id);
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![replacement],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        index.search_text("shared", &owner("a"), 20).await.unwrap()[0].doc_id,
+        b.doc_id
+    );
+    assert_eq!(
+        index
+            .search_text("replacement", &owner("a"), 20)
+            .await
+            .unwrap()[0]
+            .doc_id,
+        a.doc_id
+    );
+    assert_eq!(
+        index
+            .search_text("shared", &owner("b"), 20)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn ordinary_refresh_retains_unique_legacy_ids_and_explicit_ids_remain_authoritative() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let mut legacy = wire("a", "retained-review-id", 0, "before", Some(1), Some(0));
+    legacy.location_uri = "test://legacy".into();
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![legacy],
+        })
+        .await
+        .unwrap();
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![ordinary("a", "test://legacy", "new hash", "after")],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        index.search_text("after", &owner("a"), 20).await.unwrap()[0].doc_id,
+        "retained-review-id"
+    );
+    let mut explicit = wire(
+        "a",
+        "external-authoritative-id",
+        0,
+        "external",
+        Some(1),
+        Some(0),
+    );
+    explicit.location_uri = "test://legacy".into();
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![explicit],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        index
+            .search_text("external", &owner("a"), 20)
+            .await
+            .unwrap()[0]
+            .doc_id,
+        "external-authoritative-id"
+    );
+    assert!(index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![ordinary("a", "test://legacy", "another hash", "ambiguous")]
+        })
+        .await
+        .is_err());
+    assert_eq!(index.stats().await.unwrap(), (2, 2));
+}
+
+#[tokio::test]
+async fn reusing_a_moved_sources_old_address_allocates_a_distinct_stable_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let original = ordinary("a", "test://original", "first", "moved body");
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![original.clone()],
+        })
+        .await
+        .unwrap();
+    index
+        .update_scoped_location(&original.doc_id, "test://moved", Some("a"))
+        .await
+        .unwrap();
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![ordinary("a", "test://original", "second", "new body")],
+        })
+        .await
+        .unwrap();
+    let new = index
+        .search_text("new", &owner("a"), 20)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_ne!(new.doc_id, original.doc_id);
+    assert_eq!(new.doc_id.len(), 64);
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![ordinary("a", "test://original", "third", "updated body")],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        index.search_text("updated", &owner("a"), 20).await.unwrap()[0].doc_id,
+        new.doc_id
+    );
+    assert_eq!(
+        index.search_text("moved", &owner("a"), 20).await.unwrap()[0].location_uri,
+        "test://moved"
+    );
+    assert_eq!(index.stats().await.unwrap(), (2, 2));
+}
+
+#[tokio::test]
+async fn legacy_location_collisions_split_only_the_selected_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(VectorStore::open_or_create(dir.path(), 2).await.unwrap());
+    let mut first = wire("a", "legacy-collision", 0, "first legacy", None, None);
+    first.location_uri = "test://first".into();
+    let mut second = wire("a", "legacy-collision", 1, "second retained", None, None);
+    second.location_uri = "test://second".into();
+    let schema = build_lance_schema(2);
+    let batches = [first, second]
+        .iter()
+        .map(|chunk| chunk_to_record_batch(chunk, 2, &schema))
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    vector
+        .table
+        .add(arrow_array::RecordBatchIterator::new(
+            batches
+                .into_iter()
+                .map(Ok::<RecordBatch, arrow_schema::ArrowError>),
+            schema,
+        ))
+        .execute()
+        .await
+        .unwrap();
+    let fts = Arc::new(FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = SearchIndex::new(vector, fts);
+    index.ensure_ready().await.unwrap();
+    assert!(index
+        .delete_scoped_doc("legacy-collision", Some("a"))
+        .await
+        .is_err());
+    assert!(index
+        .update_scoped_location("legacy-collision", "test://unsafe", Some("a"))
+        .await
+        .is_err());
+    let replacement = ordinary("a", "test://first", "first hash", "refreshed first");
+    let expected = replacement.doc_id.clone();
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![replacement],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        index
+            .search_text("refreshed", &owner("a"), 20)
+            .await
+            .unwrap()[0]
+            .doc_id,
+        expected
+    );
+    let retained = index
+        .search_text("retained", &owner("a"), 20)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(retained.doc_id, "legacy-collision");
+    assert_eq!(retained.location_uri, "test://second");
+    assert_eq!(index.stats().await.unwrap(), (2, 2));
+}
+
+#[tokio::test]
+async fn partial_updates_publish_coherent_metadata_and_filtered_vector_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![
+                wire("a", "one", 0, "alpha", Some(2), None),
+                wire("a", "one", 1, "beta", Some(2), None),
+            ],
+        })
+        .await
+        .unwrap();
+    let mut update = wire("a", "one", 1, "gamma", Some(2), None);
+    update.language = "fr".into();
+    update.year = Some(2026);
+    update.title = Some("Current title".into());
+    index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![update],
+        })
+        .await
+        .unwrap();
+    let filters = SearchFilters {
+        owner_id: Some("a".into()),
+        language: Some("fr".into()),
+        year_min: Some(2026),
+        year_max: Some(2026),
+    };
+    for hits in [
+        index
+            .search_vector(&[1.0, 0.0], &filters, 20)
+            .await
+            .unwrap(),
+        index
+            .search_hybrid("unrelated natural query", &[1.0, 0.0], &filters, 20)
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].language.as_deref(), Some("fr"));
+        assert_eq!(hits[0].year, Some(2026));
+        assert_eq!(hits[0].title.as_deref(), Some("Current title"));
+    }
+    assert_eq!(
+        index
+            .search_text("alpha", &filters, 20)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }

@@ -78,7 +78,7 @@ pub async fn since(
     let page = state
         .index
         .vector
-        .rows_since(since_ms, cursor.as_ref(), limit)
+        .rows_since(&state.index.fts, since_ms, cursor.as_ref(), limit)
         .await
         .map_err(|error| {
             if error.downcast_ref::<SyncSnapshotUnavailable>().is_some() {
@@ -93,7 +93,9 @@ pub async fn since(
                 )
             }
         })?;
-    if page.has_more && query.cursor_version != Some(SYNC_CURSOR_VERSION) {
+    if (page.has_more || !page.deletions.is_empty())
+        && query.cursor_version != Some(SYNC_CURSOR_VERSION)
+    {
         // Older clients that can consume the entire delta still work. Refuse a
         // truncated timestamp-only page, which could silently skip tied rows.
         return Err((

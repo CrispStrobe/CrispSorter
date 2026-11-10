@@ -711,12 +711,8 @@ async fn catalog_set_active(
 
 // ── Background ingest commands (PLAN P7.4.2b) ────────────────────────────
 
-/// Push paths into the background ingest queue and start the worker
-/// if it isn't already running. Each path goes through the per-filetype
-/// extractor (P7.4.1) → embed → write to LanceDB cycle.
-///
-/// Idempotent: re-enqueueing the same path is harmless — the underlying
-/// ingest dedups by source_hash. Returns the post-enqueue status snapshot.
+/// Attach durable scheduler state and run its blocking storage operation
+/// without occupying an async runtime worker.
 async fn with_background_storage<T, F>(
     app: tauri::AppHandle,
     background: Arc<Mutex<bg_ingest::BackgroundIngest>>,

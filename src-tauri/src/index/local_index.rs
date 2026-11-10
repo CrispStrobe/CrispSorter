@@ -38,6 +38,10 @@ use super::IndexBackend;
 
 const TABLE_NAME: &str = "documents";
 
+#[path = "occurrence.rs"]
+mod occurrence;
+pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
+
 fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
     anyhow::ensure!(!chunks.is_empty(), "A document replacement cannot be empty");
     let mut row_ids = std::collections::BTreeSet::new();
@@ -51,11 +55,7 @@ fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
         let count = totals.entry(&chunk.doc_id).or_insert((chunk.chunk_total, 0));
         anyhow::ensure!(count.0 == chunk.chunk_total, "Inconsistent document chunk count");
         count.1 += 1;
-        predicates.insert(format!("doc_id = '{}'", chunk.doc_id.replace('\'', "''")));
-        if !chunk.location_uri.is_empty() {
-            predicates.insert(format!("(location_uri = '{}' AND owner_id = '{}')",
-                chunk.location_uri.replace('\'', "''"), chunk.owner_id.replace('\'', "''")));
-        }
+        predicates.insert(SourceOccurrence::from_chunk(chunk).filter());
     }
     anyhow::ensure!(totals.values().all(|(total, actual)| *total as usize == *actual),
         "Document replacement is missing chunks");
@@ -379,6 +379,15 @@ impl LocalIndex {
         super::ingest::apply_imported_chunks(self, fts, &[], &[doc_id.to_owned()]).await
     }
 
+    /// Apply a remotely requested deletion only if policy inspected this exact
+    /// durable local revision. A concurrent local edit leaves the document intact.
+    pub async fn delete_document_if_version_with_fts(
+        &self, doc_id: &str, expected_version: u64, fts: &super::fts_index::FtsIndex,
+    ) -> Result<bool> {
+        super::ingest::apply_imported_chunks_if_version(
+            self, fts, &[], &[doc_id.to_owned()], Some(expected_version)).await
+    }
+
     pub(crate) async fn documents_absent(&self, doc_ids: &[String]) -> Result<bool> {
         self.table.checkout_latest().await?;
         if doc_ids.is_empty() { return Ok(true); }
@@ -573,33 +582,21 @@ impl LocalIndex {
         let mut scopes = std::collections::BTreeSet::new();
         let mut identities = std::collections::BTreeSet::new();
         for chunk in chunks {
-            anyhow::ensure!(identities.insert(&chunk.id), "Duplicate metadata identity in one batch");
-            let mut scope = format!("doc_id = '{}'", chunk.doc_id.replace('\'', "''"));
-            if !chunk.location_uri.is_empty() {
-                scope.push_str(&format!(" OR (location_uri = '{}' AND owner_id = '{}')",
-                    chunk.location_uri.replace('\'', "''"), chunk.owner_id.replace('\'', "''")));
-            }
-            let scope = format!("({scope})");
+            let chunk = self.metadata_occurrence(chunk).await?;
+            anyhow::ensure!(identities.insert(chunk.id.clone()), "Duplicate metadata identity in one batch");
+            let scope = SourceOccurrence::from_chunk(&chunk).filter();
             let existing: Vec<RecordBatch> = self.table.query()
                 .only_if(format!("{scope} AND chunk_index = 0"))
                 .select(lancedb::query::Select::Columns(vec!["doc_id".into(), "metadata_json".into()]))
                 .limit(1).execute().await?.try_collect().await?;
-            if let Some(batch) = existing.iter().find(|b| b.num_rows() > 0) {
+            if existing.iter().any(|b| b.num_rows() > 0) {
                 // A failed refresh keeps the previously searchable body and
                 // vectors, but records the failed attempt for the UI. A plain
                 // catalog scan leaves extracted content and metadata intact.
                 let attempted: serde_json::Value = chunk.metadata_json.as_deref()
                     .map(serde_json::from_str).transpose()?.unwrap_or(serde_json::Value::Null);
                 if let Some(failure) = attempted.get("extraction_failure") {
-                    let old_id = str_col_opt(batch, "doc_id").ok_or_else(|| anyhow!("Missing document identity"))?.value(0);
-                    let mut metadata: serde_json::Value = str_col_opt(batch, "metadata_json")
-                        .filter(|m| !m.is_null(0)).map(|m| serde_json::from_str(m.value(0)))
-                        .transpose()?.unwrap_or_else(|| serde_json::json!({}));
-                    metadata["extraction_failure"] = failure.clone();
-                    metadata["failed_source_hash"] = chunk.source_hash.clone().into();
-                    let serialized = metadata.to_string().replace('\'', "''");
-                    self.table.update().only_if(format!("doc_id = '{}'", old_id.replace('\'', "''")))
-                        .column("metadata_json", format!("'{serialized}'")).execute().await?;
+                    self.annotate_occurrence_failure(&SourceOccurrence::from_chunk(&chunk), failure, &chunk.source_hash).await?;
                 }
                 continue;
             }
@@ -1259,6 +1256,8 @@ impl LocalIndex {
     /// Update the `location_uri` column for all rows of a document.
     pub async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
         let _guard = self.write_guard().await?;
+        anyhow::ensure!(self.document_occurrences(doc_id).await?.len() <= 1,
+            "This legacy identity represents multiple source occurrences; refresh or select an exact source before moving it");
         let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
         let new_val = format!("'{}'", new_uri.replace('\'', "''"));
         self.table
@@ -1402,6 +1401,11 @@ impl LocalIndex {
         let batches: Vec<RecordBatch> = self.table.query()
             .only_if(format!("doc_id = '{}'", doc_id.replace('\'', "''")))
             .execute().await?.try_collect().await?;
+        let previous_time = batches.iter().filter_map(|batch| batch.column_by_name("indexed_at")
+            .and_then(|column| column.as_any().downcast_ref::<TimestampMillisecondArray>()))
+            .flat_map(|column| column.values().iter().copied()).max().unwrap_or(0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as i64;
+        let updated_at = now.max(previous_time.checked_add(1).ok_or_else(|| anyhow!("Metadata timestamp overflow"))?);
         let mut row_ids = std::collections::BTreeSet::new();
         let mut prepared = Vec::with_capacity(batches.len());
         for batch in batches {
@@ -1428,6 +1432,7 @@ impl LocalIndex {
             }
             let schema = batch.schema();
             let mut columns = batch.columns().to_vec();
+            columns[schema.index_of("indexed_at")?] = Arc::new(TimestampMillisecondArray::from(vec![updated_at; batch.num_rows()]));
             columns[schema.index_of("metadata_json")?] = Arc::new(StringArray::from(updated_metadata));
             for (name, value) in [("title", title), ("author", author), ("language", language)] {
                 if let Some(value) = value {
@@ -2716,10 +2721,19 @@ impl LocalIndex {
         &self,
         location_uri: &str,
     ) -> Result<Option<IndexedState>> {
-        let pred = format!(
+        self.indexed_state_for_scope(location_uri, None).await
+    }
+
+    pub async fn indexed_state_for_owner_uri(&self, location_uri: &str, owner_id: &str) -> Result<Option<IndexedState>> {
+        self.indexed_state_for_scope(location_uri, Some(owner_id)).await
+    }
+
+    async fn indexed_state_for_scope(&self, location_uri: &str, owner_id: Option<&str>) -> Result<Option<IndexedState>> {
+        let mut pred = format!(
             "location_uri = '{}' AND chunk_index <= 0",
             location_uri.replace('\'', "''")
         );
+        if let Some(owner) = owner_id { pred.push_str(&format!(" AND owner_id = '{}'", owner.replace('\'', "''"))); }
         let batches: Vec<RecordBatch> = self
             .table
             .query()

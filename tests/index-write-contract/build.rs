@@ -10,7 +10,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", file.display());
     let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
     let functions = ["replacement_filter", "chunks_to_record_batch", "str_col_opt", "is_table_not_found", "table_embedding_dims", "migrate_add_parent_dir_column", "migrate_add_volume_id_column", "sql_values", "import_replacement_ids", "search_result_columns", "record_batches_to_search_results", "parse_volume_id_from_metadata", "str_col", "str_val", "str_col_val_opt", "list_str_col_val", "i32_col", "i32_col_opt", "f32_col_opt", "ts_ms_col_opt"];
-    let methods = ["open_or_create", "table_ref", "ingest_batch", "ingest_journal_path", "replacement_doc_ids", "replace_documents", "upsert_metadata_rows", "generation_committed", "document_metadata", "fetch_full_text", "delete_doc", "clear_extraction_failure", "indexed_state_for_uri", "parse_indexed_state", "append_legacy_rows_for_test", "read_guard", "write_guard", "ingest_batch_with_fts", "delete_document_with_fts", "documents_absent", "prepare_imported_chunks", "replace_imported_rows", "fts_inputs_after_import", "row_generation_committed", "update_l2_fields", "prepare_metadata_update", "apply_metadata_columns", "fts_inputs_for_docs", "fts_inputs_for_doc_changes", "fetch_document_summary", "fetch_document_summary_for_uri"];
+    let methods = ["open_or_create", "table_ref", "ingest_batch", "ingest_journal_path", "replacement_doc_ids", "replace_documents", "upsert_metadata_rows", "generation_committed", "document_metadata", "fetch_full_text", "delete_doc", "clear_extraction_failure", "indexed_state_for_uri", "indexed_state_for_owner_uri", "indexed_state_for_scope", "parse_indexed_state", "append_legacy_rows_for_test", "read_guard", "write_guard", "ingest_batch_with_fts", "delete_document_with_fts", "delete_document_if_version_with_fts", "update_location", "documents_absent", "prepare_imported_chunks", "replace_imported_rows", "fts_inputs_after_import", "row_generation_committed", "update_l2_fields", "prepare_metadata_update", "apply_metadata_columns", "fts_inputs_for_docs", "fts_inputs_for_doc_changes", "fetch_document_summary", "fetch_document_summary_for_uri"];
     let mut generated = String::from(r#"
 use std::{path::Path, sync::Arc};
 use anyhow::{anyhow, Context, Result};
@@ -37,6 +37,20 @@ const TABLE_NAME: &str = "documents";
     }
     for expected in methods { assert!(selected.iter().any(|s| s == expected), "production method missing: {expected}"); }
     fs::write(out.join("local_index.rs"), generated).unwrap();
+    println!("cargo:rerun-if-changed={}", root.join("occurrence.rs").display());
+
+    let file = root.join("fields.rs");
+    println!("cargo:rerun-if-changed={}", file.display());
+    let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+    let mut generated = String::from("use serde::{Serialize,Deserialize}; use sha2::{Digest,Sha256};");
+    for item in parsed.items {
+        match item {
+            syn::Item::Struct(s) if s.ident == "FieldEvidence" => generated.push_str(&s.into_token_stream().to_string()),
+            syn::Item::Fn(f) if ["from_extraction", "read", "preserve_reviews", "tag", "attach"].contains(&f.sig.ident.to_string().as_str()) => generated.push_str(&f.into_token_stream().to_string()),
+            _ => {}
+        }
+    }
+    fs::write(out.join("fields.rs"), generated).unwrap();
 
     let file = root.join("ingest.rs");
     println!("cargo:rerun-if-changed={}", file.display());

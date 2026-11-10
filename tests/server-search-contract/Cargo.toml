@@ -10,6 +10,7 @@ publish = false
 path = "lib.rs"
 
 [dependencies]
+sha2 = "0.10"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"

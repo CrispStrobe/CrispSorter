@@ -11,7 +11,7 @@
 /// ## Remote backend path
 ///
 ///   `index_init`             → builds Embedder (locally) + RemoteClient
-///   `index_ingest_document`  → chunk + embed locally → push per-chunk via HTTP to server
+///   `index_ingest_document`  → chunk + embed → durable complete-document HTTP batch
 ///   `index_search`           → embed query locally → send text + embedding to server → server does FTS+ANN+RRF
 ///   `index_build_ivf_pq`     → error (not supported for remote backend)
 ///   `index_build_scalar_index` → error (not supported for remote backend)
@@ -540,7 +540,8 @@ pub struct DocumentIngestInput {
     pub owner_id: String,
     pub source_hash: String,
     /// SHA-256 of the original local file bytes, captured before extraction.
-    /// Separate from source_hash, which some callers derive from reviewed text.
+    /// When present, this verified byte digest also becomes source_hash so
+    /// content provenance stays independent of the document's location/ID.
     #[serde(default)]
     pub source_fingerprint: Option<String>,
     pub tags: Vec<String>,
@@ -563,6 +564,27 @@ fn source_receipt(input: &DocumentIngestInput) -> Result<Option<(std::path::Path
     };
     if !path.is_absolute() { return Err("Source verification requires an absolute local path".into()); }
     Ok(Some((path, hash.to_ascii_lowercase())))
+}
+
+async fn fingerprint_local_source(path: &std::path::Path) -> Result<String, String> {
+    let source = path.to_owned();
+    tokio::task::spawn_blocking(move || super::ingest::hash_local_source(&source))
+        .await.map_err(|e| format!("Source fingerprint worker failed: {e}"))?
+        .map_err(|e| format!("Reading source {}: {e}", path.display()))
+}
+
+fn local_source_owner(location_uri: &str, requested: Option<String>) -> Result<String, String> {
+    if let Some(owner) = requested {
+        if owner.trim().is_empty() { return Err("Source owner cannot be empty".into()); }
+        return Ok(owner);
+    }
+    if location_uri.starts_with("crisp+local://") {
+        if let super::FileLocation::Local { user_id, .. } = super::FileLocation::from_uri(location_uri)
+            .map_err(|e| e.to_string())? {
+            return Ok(user_id.to_string());
+        }
+    }
+    Ok("local".into())
 }
 
 async fn verify_remote_sources(sources: Vec<(std::path::PathBuf, String)>) -> Result<(), String> {
@@ -723,25 +745,28 @@ pub async fn index_ingest_document(
 /// (P12 step 13): the cb-manifest L1 import dispatches one batch
 /// per HARD_BATCH chunks of cloud-backup file_manifest rows.
 ///
-/// Local-backend only; remote-mode bulk-ingest is P11 step 4 and goes
-/// through `crisp_index_protocol::IngestBatch` over HTTP. Calling this
-/// against `BackendType::Remote` returns an error today; callers
-/// should fall back to per-doc `index_ingest_document` against the
-/// remote backend, or wait for step 4.
+/// The local backend commits complete documents through the paired index
+/// journal. The remote backend submits one durable `IngestBatch`, verifies
+/// original-file fingerprints before upload, and waits for its terminal state.
 #[tauri::command]
 pub async fn index_ingest_batch(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    inputs: Vec<DocumentIngestInput>,
+    mut inputs: Vec<DocumentIngestInput>,
 ) -> Result<IngestStats, String> {
     if inputs.is_empty() {
-        return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
+        return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0, doc_ids: Vec::new() });
     }
     if inputs.iter().any(|input| input.full_text.trim().is_empty()) {
         return Err("No searchable text was extracted. Retry extraction or use metadata indexing.".into());
     }
     let sources: Vec<_> = inputs.iter().map(source_receipt)
         .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect();
+    for input in &mut inputs {
+        if let Some(fingerprint) = &input.source_fingerprint {
+            input.source_hash = fingerprint.to_ascii_lowercase();
+        }
+    }
     let progress_filename = if inputs.len() == 1 { inputs[0].filename.clone() }
         else { format!("(batch of {})", inputs.len()) };
 
@@ -933,6 +958,7 @@ pub async fn index_ingest_batch(
         for (i, tc) in text_chunks.iter().enumerate() {
             chunks.push(RemoteIngestChunk {
                 doc_id: doc_id.clone(),
+                source_identity_version: Some(1),
                 chunk_index: tc.chunk_index,
                 chunk_total: Some(i32::try_from(text_chunks.len()).map_err(|_| "Too many document chunks")?),
                 chunk_start_char: Some(i32::try_from(tc.start_char).map_err(|_| "Document offset exceeds supported range")?),
@@ -1073,6 +1099,9 @@ pub async fn index_ingest_batch(
         chunk_count: status.completed_chunks,
         embed_time_ms,
         write_time_ms,
+        // Older servers do not report their legacy occurrence-ID resolution.
+        // Never claim that a generated request ID is the committed server ID.
+        doc_ids: Vec::new(),
     })
 }
 
@@ -1597,9 +1626,8 @@ fn parse_l1_meta(meta_json: &Option<String>) -> (u64, u32) {
 /// `location_uri`, runs the full audio extractor (decode +
 /// transcribe + symphonia probe) with `ingest_audio_level=l3`
 /// regardless of the IndexConfig setting, then re-ingests through
-/// the standard pipeline (existing `reingest_document` deletes
-/// the old chunks first, then writes the fresh transcript +
-/// embeddings + audio_* columns + FTS body).
+/// the standard pipeline, which prepares the fresh transcript and embeddings
+/// before atomically replacing the old chunks and repairing the text index.
 ///
 /// Used by the "Transcribe" search-result action that surfaces
 /// on L1/L2 audio rows in the frontend.  Returns the
@@ -1615,7 +1643,9 @@ fn parse_l1_meta(meta_json: &Option<String>) -> (u64, u32) {
 pub async fn index_audio_promote_l3(
     state: State<'_, AppState>,
     location_uri: String,
+    owner_id: Option<String>,
 ) -> Result<IngestStats, String> {
+    let owner_id = local_source_owner(&location_uri, owner_id)?;
     // Map URI → local path via the existing helper.  Reusing the
     // images-side helper keeps the URI grammar identical across
     // surfaces (crisp+local:// / file:// / bare absolute path).
@@ -1634,6 +1664,8 @@ pub async fn index_audio_promote_l3(
         ));
     }
 
+    let source_hash = fingerprint_local_source(&path).await?;
+
     // Run the audio extractor with explicit L3 — overrides the
     // IndexConfig.ingest_audio_level setting because the whole
     // point of "promote" is to transcribe regardless of the
@@ -1648,9 +1680,8 @@ pub async fn index_audio_promote_l3(
             .map_err(|e| format!("{e:#}"))?
     };
 
-    // Re-build the RawDocument and feed through the standard
-    // ingest pipeline.  reingest_document deletes existing rows
-    // for the doc_id (via source_hash) and writes fresh ones.
+    // Prepare the replacement before taking the writer lease. The writer
+    // verifies the same source bytes again before changing either index.
     let lock = state.index.lock().await;
     if !lock.config.enabled {
         return Err("Index is disabled in settings".to_owned());
@@ -1662,18 +1693,6 @@ pub async fn index_audio_promote_l3(
     drop(lock);
 
     let p_meta = std::fs::metadata(&path).ok();
-    let source_hash = {
-        let p = path.clone();
-        tokio::task::spawn_blocking(move || -> Result<String, String> {
-            use sha2::{Digest, Sha256};
-            let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
-            let mut h = Sha256::new();
-            h.update(&bytes);
-            Ok(hex::encode(h.finalize()))
-        })
-        .await
-        .map_err(|e| format!("source_hash spawn_blocking: {e}"))??
-    };
 
     let raw = RawDocument {
         full_text: extracted.full_text.clone(),
@@ -1690,7 +1709,7 @@ pub async fn index_audio_promote_l3(
         language: extracted.language.clone().unwrap_or_default(),
         source_hash,
         location_uri: location_uri.clone(),
-        owner_id: "local".to_string(),
+        owner_id,
         tags: vec![],
         mtime_unix: p_meta
             .as_ref()
@@ -1725,7 +1744,7 @@ pub async fn index_audio_promote_l3(
     };
 
     pipeline
-        .reingest_document(raw)
+        .ingest_verified_document(raw, path)
         .await
         .map_err(|e| format!("re-ingest after L3 promote failed: {e:#}"))
 }
@@ -1745,7 +1764,9 @@ pub async fn index_audio_promote_l3(
 pub async fn index_image_promote_l3(
     state: State<'_, AppState>,
     location_uri: String,
+    owner_id: Option<String>,
 ) -> Result<IngestStats, String> {
+    let owner_id = local_source_owner(&location_uri, owner_id)?;
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
             format!(
@@ -1760,6 +1781,8 @@ pub async fn index_image_promote_l3(
             path.display()
         ));
     }
+
+    let source_hash = fingerprint_local_source(&path).await?;
 
     // Force L3 + OCR + master-switch on for this single row.  Mirrors
     // the audio promote — the user explicitly asked, so per-row
@@ -1806,18 +1829,6 @@ pub async fn index_image_promote_l3(
     drop(lock);
 
     let p_meta = std::fs::metadata(&path).ok();
-    let source_hash = {
-        let p = path.clone();
-        tokio::task::spawn_blocking(move || -> Result<String, String> {
-            use sha2::{Digest, Sha256};
-            let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
-            let mut h = Sha256::new();
-            h.update(&bytes);
-            Ok(hex::encode(h.finalize()))
-        })
-        .await
-        .map_err(|e| format!("source_hash spawn_blocking: {e}"))??
-    };
 
     let raw = RawDocument {
         full_text: extracted.full_text.clone(),
@@ -1834,7 +1845,7 @@ pub async fn index_image_promote_l3(
         language: extracted.language.clone().unwrap_or_default(),
         source_hash,
         location_uri: location_uri.clone(),
-        owner_id: "local".to_string(),
+        owner_id,
         tags: vec![],
         mtime_unix: p_meta
             .as_ref()
@@ -1868,7 +1879,7 @@ pub async fn index_image_promote_l3(
     };
 
     pipeline
-        .reingest_document(raw)
+        .ingest_verified_document(raw, path)
         .await
         .map_err(|e| format!("re-ingest after image L3 promote failed: {e:#}"))
 }
@@ -1879,6 +1890,8 @@ pub async fn index_image_promote_l3(
 pub async fn index_delete_document(
     state: State<'_, AppState>,
     doc_id: String,
+    owner_id: Option<String>,
+    location_uri: Option<String>,
 ) -> Result<(), String> {
     let lock = state.index.lock().await;
 
@@ -1886,20 +1899,28 @@ pub async fn index_delete_document(
         return Ok(());
     }
 
-    let local = lock
-        .local
-        .as_ref()
-        .ok_or("Local index not available for delete")?
-        .clone();
-    let fts = lock
-        .fts
-        .as_ref()
-        .ok_or("FTS index not available for delete")?
-        .clone();
-
+    let local = lock.local.clone();
+    let fts = lock.fts.clone();
+    let config = lock.config.clone();
     drop(lock);
 
-    local.delete_document_with_fts(&doc_id, &fts).await.map_err(|e| e.to_string())?;
+    if let Some(local) = local {
+        let fts = fts.ok_or("FTS index not available for delete")?;
+        match (owner_id.as_deref(), location_uri.as_deref()) {
+            (Some(owner), Some(uri)) => local.delete_occurrence_with_fts(&doc_id, owner, uri, &fts).await,
+            (None, None) => local.delete_document_with_fts(&doc_id, &fts).await,
+            _ => return Err("Select both the owner and location when deleting a source occurrence".into()),
+        }.map_err(|e| e.to_string())?;
+    } else if config.backend_type == super::BackendType::Remote {
+        let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
+        let remote = super::remote_client::RemoteClient::new_with_proxy(
+            config.remote_url.ok_or("Remote index URL is missing")?,
+            config.remote_api_key.unwrap_or_default(), &proxy,
+        ).map_err(|e| e.to_string())?;
+        remote.delete_doc_scoped(&doc_id, owner_id.as_deref()).await.map_err(|e| e.to_string())?;
+    } else {
+        return Err("Index not initialised for deletion".into());
+    }
 
     // Audit trail
     if let Ok(dir) = state.data_dir.lock().await.as_ref().ok_or(()) {
@@ -1983,6 +2004,7 @@ pub async fn index_update_location(
     state: State<'_, AppState>,
     doc_id: String,
     new_location_uri: String,
+    owner_id: Option<String>,
 ) -> Result<(), String> {
     let lock = state.index.lock().await;
 
@@ -1995,9 +2017,18 @@ pub async fn index_update_location(
         .as_ref()
         .ok_or("Index backend not initialised")?
         .clone();
-
+    let config = lock.config.clone();
     drop(lock);
 
+    if config.backend_type == super::BackendType::Remote {
+        let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
+        let remote = super::remote_client::RemoteClient::new_with_proxy(
+            config.remote_url.ok_or("Remote index URL is missing")?,
+            config.remote_api_key.unwrap_or_default(), &proxy,
+        ).map_err(|e| e.to_string())?;
+        return remote.update_location_scoped(&doc_id, &new_location_uri, owner_id.as_deref())
+            .await.map_err(|e| e.to_string());
+    }
     backend
         .update_location(&doc_id, &new_location_uri)
         .await
@@ -3367,21 +3398,19 @@ async fn promote_path(
     original_path: String,
     location_uri: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use sha2::{Digest, Sha256};
-
     let pipeline = state.index.lock().await.pipeline.clone()
         .ok_or("No local ingest pipeline")?;
-
-    let bytes = tokio::task::spawn_blocking({
-        let p = restored_path.clone();
-        move || std::fs::read(&p)
-    }).await
-    .map_err(|e| format!("read join: {e}"))?
-    .map_err(|e| format!("read: {e}"))?;
-
-    let mut h = Sha256::new();
-    h.update(&bytes);
-    let source_hash = hex::encode(h.finalize());
+    let original = {
+        let _consistent = pipeline.vector.read_guard(&pipeline.fts).await.map_err(|e| e.to_string())?;
+        if pipeline.vector.document_occurrences(&doc_id).await.map_err(|e| e.to_string())?.len() > 1 {
+            return Err("The legacy document identity refers to multiple sources. Reindex the selected owner and location before promoting its archive reference.".into());
+        }
+        pipeline.vector.fetch_document_summary(&doc_id).await.map_err(|e| e.to_string())?
+    };
+    if original.as_ref().is_some_and(|row| row.owner_id != owner) {
+        return Err("The selected source belongs to another owner; refresh the source selection before promoting it".into());
+    }
+    let source_hash = fingerprint_local_source(&restored_path).await?;
 
     let extracted = tokio::task::spawn_blocking({
         let p = restored_path.clone();
@@ -3401,18 +3430,18 @@ async fn promote_path(
         full_text: extracted.full_text,
         full_text_md: String::new(),
         headings: extracted.headings,
-        title: None,
-        author: None,
-        year: None,
-        filename: restored_path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        title: original.as_ref().and_then(|row| row.title.clone()),
+        author: original.as_ref().and_then(|row| row.author.clone()),
+        year: original.as_ref().and_then(|row| row.year),
+        filename: original.as_ref().and_then(|row| row.filename.clone())
+            .unwrap_or_else(|| restored_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
         ext: extracted.ext,
-        language: String::new(),
+        language: extracted.language.or_else(|| original.as_ref().and_then(|row| row.language.clone())).unwrap_or_default(),
         source_hash,
-        location_uri: location_uri.unwrap_or_else(|| loc.to_uri()),
+        location_uri: location_uri.or_else(|| original.as_ref().map(|row| row.location_uri.clone()))
+            .unwrap_or_else(|| loc.to_uri()),
         owner_id: owner,
-        tags: vec![],
+        tags: original.as_ref().map(|row| row.tags.clone()).unwrap_or_default(),
         mtime_unix: bg_meta.as_ref()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -3446,15 +3475,16 @@ async fn promote_path(
         embedding_vit: None,
     };
 
-    // Keep the metadata row until extraction and indexing succeed. The
-    // content-derived ID may differ from the original drive-location ID.
-    let indexed_doc_id = crate::index::ingest::doc_id_for(&raw);
-    let stats = pipeline.ingest_document(raw).await.map_err(|e| e.to_string())?;
-    if doc_id != indexed_doc_id {
-        if let Some(local) = state.index.lock().await.local.clone() {
-            local.delete_doc(&doc_id).await.map_err(|e| e.to_string())?;
-        }
-    }
+    // A selected archive reference must remain that occurrence. The writer
+    // checks the expected ID under its lease, including changes made while
+    // extraction was running, before recording any mutation intent.
+    let stats = if let Some(original) = &original {
+        pipeline.ingest_verified_document_for_occurrence(raw, restored_path, original.doc_id.clone()).await
+    } else {
+        pipeline.ingest_verified_document(raw, restored_path).await
+    }.map_err(|e| e.to_string())?;
+    let indexed_doc_id = stats.doc_ids.first().cloned()
+        .ok_or("The index writer did not return the committed document identity")?;
     Ok(serde_json::json!({
         "doc_id": indexed_doc_id,
         "chunks": stats.chunk_count,
@@ -4695,7 +4725,9 @@ pub async fn ocr_workbench_reingest(
     state: State<'_, AppState>,
     location_uri: String,
     text: String,
+    owner_id: Option<String>,
 ) -> Result<IngestStats, String> {
+    let owner_id = local_source_owner(&location_uri, owner_id)?;
     let path = workbench_resolve(&location_uri)?;
 
     let lock = state.index.lock().await;
@@ -4709,18 +4741,7 @@ pub async fn ocr_workbench_reingest(
     drop(lock);
 
     let p_meta = std::fs::metadata(&path).ok();
-    let source_hash = {
-        let p = path.clone();
-        tokio::task::spawn_blocking(move || -> Result<String, String> {
-            use sha2::{Digest, Sha256};
-            let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
-            let mut h = Sha256::new();
-            h.update(&bytes);
-            Ok(hex::encode(h.finalize()))
-        })
-        .await
-        .map_err(|e| format!("source_hash spawn_blocking: {e}"))??
-    };
+    let source_hash = fingerprint_local_source(&path).await?;
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let raw = RawDocument {
@@ -4735,7 +4756,7 @@ pub async fn ocr_workbench_reingest(
         language: String::new(),
         source_hash,
         location_uri: location_uri.clone(),
-        owner_id: "local".to_string(),
+        owner_id,
         tags: vec![],
         mtime_unix: p_meta
             .as_ref()
@@ -4765,7 +4786,7 @@ pub async fn ocr_workbench_reingest(
         embedding_vit: None,
     };
     pipeline
-        .reingest_document(raw)
+        .ingest_verified_document(raw, path)
         .await
         .map_err(|e| format!("workbench re-ingest failed: {e:#}"))
 }
@@ -5249,6 +5270,60 @@ async fn get_template_store(state: &State<'_, AppState>) -> Result<super::templa
     super::templates::TemplateStore::open_or_create(dir).map_err(|e| e.to_string())
 }
 
+
+#[cfg(test)]
+mod source_receipt_boundary_tests {
+    use super::{local_source_owner, source_receipt, DocumentIngestInput};
+
+    fn input(location_uri: &str, fingerprint: Option<&str>) -> DocumentIngestInput {
+        DocumentIngestInput {
+            full_text: "searchable source".into(), full_text_md: String::new(),
+            headings: Vec::new(), title: None, author: None, year: None,
+            filename: "source.txt".into(), ext: "txt".into(), language: "en".into(),
+            location_uri: location_uri.into(), owner_id: "local".into(),
+            source_hash: "legacy-text-derived-id".into(),
+            source_fingerprint: fingerprint.map(str::to_owned), tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn source_receipts_accept_absolute_files_and_normalize_digest_case() {
+        let path = if cfg!(windows) { r"C:\fixtures\source.txt" } else { "/fixtures/source.txt" };
+        let fingerprint = "AB".repeat(32);
+        let receipt = source_receipt(&input(path, Some(&fingerprint))).unwrap().unwrap();
+        assert_eq!(receipt.0, std::path::PathBuf::from(path));
+        assert_eq!(receipt.1, "ab".repeat(32));
+    }
+
+    #[test]
+    fn source_receipts_reject_remote_and_relative_paths() {
+        let fingerprint = "ab".repeat(32);
+        for path in ["source.txt", "../source.txt", "https://example.invalid/source.txt", "s3://bucket/source.txt"] {
+            assert!(source_receipt(&input(path, Some(&fingerprint))).is_err(), "accepted {path}");
+        }
+    }
+
+    #[test]
+    fn source_receipts_reject_malformed_digests() {
+        for fingerprint in [String::new(), "ab".repeat(31), "ab".repeat(33), "zz".repeat(32)] {
+            assert!(source_receipt(&input("/fixtures/source.txt", Some(&fingerprint))).is_err());
+        }
+    }
+
+    #[test]
+    fn generated_text_without_source_bytes_has_no_file_receipt() {
+        assert!(source_receipt(&input("https://example.invalid/imported", None)).unwrap().is_none());
+    }
+
+    #[test]
+    fn promotion_preserves_explicit_owner_and_scoped_uri_owner() {
+        let uri = "crisp+local://00000000-0000-0000-0000-000000000000@00000000-0000-0000-0000-000000000000/fixtures/source.txt";
+        assert_eq!(local_source_owner(uri, Some("another-owner".into())).unwrap(), "another-owner");
+        assert_eq!(local_source_owner(uri, None).unwrap(), uuid::Uuid::nil().to_string());
+        assert_eq!(local_source_owner("/fixtures/source.txt", None).unwrap(), "local");
+        assert!(local_source_owner(uri, Some(" ".into())).is_err());
+    }
+}
 
 #[cfg(test)]
 mod search_filter_boundary_tests {

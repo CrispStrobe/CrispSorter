@@ -16,14 +16,8 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  # Native builds can take longer than the interval between saved checkpoints.
-  # Let the running build finish so it can expose compiler/test failures. For a
-  # PR or branch GitHub retains only the newest pending run in this group; stale
-  # queued checkpoints do not all consume another complete platform build.
-  # Main keeps a distinct group per commit so every merged revision is checked.
-  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: false
+# Platform jobs keep their own latest pending revision. A slow platform must
+# not block a newer revision from reaching another platform's compiler.
 
 env:
   # Sibling repos referenced by src-tauri/Cargo.toml as path deps:
@@ -78,6 +72,9 @@ jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
   # Tauri builds live in release.yml and only fire on version tags.
   frontend:
+    concurrency:
+      group: ci-frontend-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: Frontend check + licenses
     runs-on: ubuntu-latest
@@ -196,6 +193,9 @@ jobs:
   # on one developer's machine, against a target directory on a disk that
   # periodically fills up.
   rust:
+    concurrency:
+      group: ci-rust-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     name: Rust tests + CLI verification
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -418,6 +418,9 @@ jobs:
   # feature-gated native paths are already covered on Linux; what is *not*
   # covered anywhere else is "does this run on Windows at all".
   windows:
+    concurrency:
+      group: ci-windows-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: Windows lib tests + CLI smoke
     runs-on: windows-2025
@@ -602,6 +605,9 @@ jobs:
           Write-Host "  ok: ingest of a missing path fails loudly (exit $($p.ExitCode))"
 
   macos:
+    concurrency:
+      group: ci-macos-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: macOS lib tests + secret-store smoke
     runs-on: macos-15
@@ -794,6 +800,9 @@ jobs:
             "$EXE" --format json secrets --data-dir "$DATA" status | grep -q '"session"'
 
   cloud-backends:
+    concurrency:
+      group: ci-cloud-backends-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: Native cloud crates
     runs-on: ubuntu-24.04
@@ -862,6 +871,9 @@ jobs:
           cargo package -p crisp-filen --allow-dirty
 
   cloud-facade:
+    concurrency:
+      group: ci-cloud-facade-${{ matrix.os }}-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: crisp-cloud-rs (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -903,6 +915,9 @@ jobs:
         run: cargo package -p crisp-cloud-rs --allow-dirty
 
   cloud-live:
+    concurrency:
+      group: ci-cloud-live-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     name: Gated cloud live matrix
     if: github.event_name == 'workflow_dispatch' && inputs.cloud_live
     runs-on: ubuntu-24.04

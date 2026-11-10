@@ -15,7 +15,7 @@ use crisp_search_query::{text_analyzer, translate, SearchFields};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, Query, RangeQuery, TermQuery, TermSetQuery};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, RangeQuery, TermQuery, TermSetQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, INDEXED, STORED, STRING,
 };
@@ -83,7 +83,9 @@ impl FtsDocument {
             );
             ensure!(chunk.chunk_index >= 0, "Stored chunk index is negative");
             match latest.get(&chunk.chunk_index) {
-                Some(previous) if (previous.indexed_at,previous.row_order) > (chunk.indexed_at,chunk.row_order) => {}
+                Some(previous)
+                    if (previous.indexed_at, previous.row_order)
+                        > (chunk.indexed_at, chunk.row_order) => {}
                 _ => {
                     latest.insert(chunk.chunk_index, chunk);
                 }
@@ -280,7 +282,10 @@ impl FtsStore {
         };
         let db = result.state()?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);\
-            CREATE TABLE IF NOT EXISTS pending_documents (owner_id TEXT NOT NULL, doc_id TEXT NOT NULL, PRIMARY KEY(owner_id,doc_id));")?;
+            CREATE TABLE IF NOT EXISTS pending_documents (owner_id TEXT NOT NULL, doc_id TEXT NOT NULL, PRIMARY KEY(owner_id,doc_id));
+            CREATE TABLE IF NOT EXISTS pending_deletions (owner_id TEXT NOT NULL, doc_id TEXT NOT NULL, indexed_at INTEGER NOT NULL, PRIMARY KEY(owner_id,doc_id));
+            CREATE TABLE IF NOT EXISTS deletion_events (owner_id TEXT NOT NULL, doc_id TEXT NOT NULL, indexed_at INTEGER NOT NULL, PRIMARY KEY(owner_id,doc_id,indexed_at));
+            CREATE INDEX IF NOT EXISTS deletion_event_order ON deletion_events(indexed_at,owner_id,doc_id);")?;
         let active: Option<String> = db
             .query_row(
                 "SELECT value FROM metadata WHERE key='active_generation'",
@@ -339,21 +344,30 @@ impl FtsStore {
     }
 
     pub fn seal_rebuild(&self, mut builder: GenerationBuilder) -> Result<SealedGeneration> {
-        builder.writer.commit().context("Commit rebuilt full-text generation")?;
+        builder
+            .writer
+            .commit()
+            .context("Commit rebuilt full-text generation")?;
         builder.writer.wait_merging_threads()?;
         let generation = Arc::new(Generation::open(&self.root.join(&builder.id))?);
         #[cfg(unix)]
         std::fs::File::open(&self.root)?.sync_all()?;
-        Ok(SealedGeneration { id: builder.id, generation })
+        Ok(SealedGeneration {
+            id: builder.id,
+            generation,
+        })
     }
 
     pub fn publish_generation(&self, sealed: SealedGeneration) -> Result<()> {
         let mut db = self.state()?;
         let transaction = db.transaction()?;
         transaction.execute("INSERT INTO metadata(key,value) VALUES('active_generation',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&sealed.id])?;
-        transaction.execute("DELETE FROM pending_documents", [])?;
+        transaction.execute("DELETE FROM pending_documents WHERE NOT EXISTS (SELECT 1 FROM pending_deletions WHERE pending_deletions.owner_id=pending_documents.owner_id AND pending_deletions.doc_id=pending_documents.doc_id)", [])?;
         transaction.commit()?;
-        *self.active.write().map_err(|_| anyhow!("Full-text generation lock poisoned"))? = Some(sealed.generation);
+        *self
+            .active
+            .write()
+            .map_err(|_| anyhow!("Full-text generation lock poisoned"))? = Some(sealed.generation);
         Ok(())
     }
 
@@ -364,22 +378,40 @@ impl FtsStore {
     /// A persisted server clock keeps delta watermarks safe across fast writes
     /// and wall-clock corrections. Reserving a value without a write is harmless.
     pub fn next_write_timestamp(&self) -> Result<i64> {
-        let now=i64::try_from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis())?;
-        self.advance_timestamp(now,true)
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis(),
+        )?;
+        self.advance_timestamp(now, true)
     }
 
-    pub fn observe_timestamp(&self, observed:i64) -> Result<()> {
-        self.advance_timestamp(observed,false)?;
+    pub fn observe_timestamp(&self, observed: i64) -> Result<()> {
+        self.advance_timestamp(observed, false)?;
         Ok(())
     }
 
-    fn advance_timestamp(&self, observed:i64, increment:bool) -> Result<i64> {
-        let mut db=self.state()?;
-        let transaction=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let last:Option<String>=transaction.query_row("SELECT value FROM metadata WHERE key='last_write_time'",[],|row|row.get(0)).optional()?;
-        let last=last.map(|value|value.parse::<i64>()).transpose()?.unwrap_or(0);
-        let minimum=if increment {last.checked_add(1).ok_or_else(||anyhow!("Server write clock overflow"))?}else{last};
-        let next=observed.max(minimum);
+    fn advance_timestamp(&self, observed: i64, increment: bool) -> Result<i64> {
+        let mut db = self.state()?;
+        let transaction = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let last: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM metadata WHERE key='last_write_time'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let last = last
+            .map(|value| value.parse::<i64>())
+            .transpose()?
+            .unwrap_or(0);
+        let minimum = if increment {
+            last.checked_add(1)
+                .ok_or_else(|| anyhow!("Server write clock overflow"))?
+        } else {
+            last
+        };
+        let next = observed.max(minimum);
         transaction.execute("INSERT INTO metadata(key,value) VALUES('last_write_time',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         transaction.commit()?;
         Ok(next)
@@ -396,6 +428,74 @@ impl FtsStore {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Record deletion intent before Lance publication. Recovery emits a feed
+    /// event only after the vector store confirms the document is absent.
+    pub fn mark_pending_delete(&self, keys: &[DocumentKey], indexed_at: i64) -> Result<()> {
+        ensure!(indexed_at > 0, "Deletion timestamp must be positive");
+        let mut db = self.state()?;
+        let transaction = db.transaction()?;
+        for key in keys {
+            transaction.execute(
+                "INSERT OR IGNORE INTO pending_documents(owner_id,doc_id) VALUES(?1,?2)",
+                params![key.owner_id, key.doc_id],
+            )?;
+            transaction.execute("INSERT INTO pending_deletions(owner_id,doc_id,indexed_at) VALUES(?1,?2,?3) ON CONFLICT(owner_id,doc_id) DO UPDATE SET indexed_at=excluded.indexed_at",params![key.owner_id,key.doc_id,indexed_at])?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn sync_horizon(&self) -> Result<i64> {
+        let db = self.state()?;
+        let value: Option<String> = db
+            .query_row(
+                "SELECT value FROM metadata WHERE key='last_write_time'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.map(|value| value.parse()).transpose()?.unwrap_or(0))
+    }
+
+    /// Latest deletion per identity within the frozen feed horizon. History is
+    /// append-only so an older cursor still sees its original deletion event.
+    pub fn tombstones_page(
+        &self,
+        since_ms: i64,
+        horizon: i64,
+        after: Option<&crisp_index_protocol::SyncCursor>,
+        limit: usize,
+    ) -> Result<Vec<crisp_index_protocol::SyncDeletion>> {
+        ensure!(
+            since_ms >= 0 && horizon >= 0,
+            "Sync timestamps cannot be negative"
+        );
+        ensure!(
+            (1..=1001).contains(&limit),
+            "Deletion page limit must be between 1 and 1001"
+        );
+        let db = self.state()?;
+        let mut query=db.prepare("WITH latest AS (SELECT owner_id,doc_id,MAX(indexed_at) AS indexed_at FROM deletion_events WHERE indexed_at>=?1 AND indexed_at<=?2 GROUP BY owner_id,doc_id) SELECT owner_id,doc_id,indexed_at FROM latest WHERE ?3 IS NULL OR (indexed_at,owner_id,doc_id)>(?3,?4,?5) ORDER BY indexed_at,owner_id,doc_id LIMIT ?6")?;
+        let rows = query.query_map(
+            params![
+                since_ms,
+                horizon,
+                after.map(|cursor| cursor.indexed_at),
+                after.map(|cursor| cursor.owner_id.as_str()),
+                after.map(|cursor| cursor.doc_id.as_str()),
+                limit as i64
+            ],
+            |row| {
+                Ok(crisp_index_protocol::SyncDeletion {
+                    owner_id: row.get(0)?,
+                    doc_id: row.get(1)?,
+                    indexed_at: row.get(2)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn pending(&self) -> Result<Vec<DocumentKey>> {
@@ -429,7 +529,14 @@ impl FtsStore {
         generation.reader.reload()?;
         let mut db = self.state()?;
         let transaction = db.transaction()?;
-        for (key, _) in documents {
+        for (key, document) in documents {
+            if document.is_none() {
+                transaction.execute("INSERT OR IGNORE INTO deletion_events(owner_id,doc_id,indexed_at) SELECT owner_id,doc_id,indexed_at FROM pending_deletions WHERE owner_id=?1 AND doc_id=?2",params![key.owner_id,key.doc_id])?;
+            }
+            transaction.execute(
+                "DELETE FROM pending_deletions WHERE owner_id=?1 AND doc_id=?2",
+                params![key.owner_id, key.doc_id],
+            )?;
             transaction.execute(
                 "DELETE FROM pending_documents WHERE owner_id=?1 AND doc_id=?2",
                 params![key.owner_id, key.doc_id],
@@ -460,16 +567,29 @@ impl FtsStore {
     }
 
     pub fn prepare(&self, text: &str, filters: &SearchFilters) -> Result<PreparedSearch> {
+        self.prepare_optional(Some(text), filters)
+    }
+
+    pub fn prepare_filters(&self, filters: &SearchFilters) -> Result<PreparedSearch> {
+        self.prepare_optional(None, filters)
+    }
+
+    fn prepare_optional(
+        &self,
+        text: Option<&str>,
+        filters: &SearchFilters,
+    ) -> Result<PreparedSearch> {
         ensure!(
             self.pending()?.is_empty(),
             "Pending full-text writes must be repaired before searching"
         );
         let generation = self.generation()?;
         let searcher = generation.reader.searcher();
-        let mut clauses = vec![(
-            Occur::Must,
-            translate(text, &searcher, &generation.fields.search)?,
-        )];
+        let query: Box<dyn Query> = match text {
+            Some(text) => translate(text, &searcher, &generation.fields.search)?,
+            None => Box::new(AllQuery),
+        };
+        let mut clauses = vec![(Occur::Must, query)];
         for (value, field) in [
             (&filters.owner_id, generation.fields.owner),
             (&filters.language, generation.fields.language),

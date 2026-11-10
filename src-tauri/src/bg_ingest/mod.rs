@@ -738,7 +738,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         // switch today — turning it on must backfill documents ingested while
         // it was off, exactly once (their row then records the flag).
         let indexed_state = local
-            .indexed_state_for_uri(&probe_uri)
+            .indexed_state_for_owner_uri(&probe_uri, &owner_probe)
             .await
             .ok()
             .flatten();

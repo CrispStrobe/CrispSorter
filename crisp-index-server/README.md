@@ -1,6 +1,6 @@
 # crisp-index-server
 
-Self-hosted vector + full-text search backend for [CrispSorter](https://github.com/your-org/CrispSorter).
+Self-hosted vector + full-text search backend for [CrispSorter](https://github.com/CrispStrobe/CrispSorter).
 
 CrispSorter embeds documents locally using fastembed (BGE-M3 or similar) and sends the pre-computed dense vectors to this server. The server stores them in **LanceDB** (ANN) and **Tantivy** (BM25 full-text), then handles hybrid search with Reciprocal Rank Fusion (RRF, k=60).
 
@@ -29,7 +29,8 @@ CrispSorter (client)
 
 ## Requirements
 
-- Rust 1.77+ (`rustup update stable`)
+- Current stable Rust (`rustup update stable`) and a C/C++ build toolchain
+- Protocol Buffers compiler (`protoc`) on `PATH`, or an explicit `PROTOC` path before running Cargo
 - Linux x86_64 or macOS (ARM or x86)
 - ~200 MB disk for the binary; data dir grows with indexed documents
 
@@ -61,7 +62,7 @@ All configuration is via environment variables. Create a `.env` file in the work
 |---|---|---|
 | `PORT` | `8473` | TCP port to listen on |
 | `CRISP_API_KEY` | *(empty)* | Bearer token for authenticated endpoints. If empty, any token is accepted — **set this in production** |
-| `LANCE_DATA_DIR` | `./data` | Directory where `lance/` (LanceDB) and `fts/` (Tantivy) subdirectories are created |
+| `LANCE_DATA_DIR` | `./data` | Directory containing `lance/`, versioned `fts-v2/`, and the durable queue; the legacy `fts/` directory is preserved |
 | `EMBED_DIMS` | `1024` | Embedding dimension — **must match the embedder used by the CrispSorter client** |
 | `RUST_LOG` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 | `SERVER_EMBED` | `0` | When `1` / `true`, load a server-side BGE-M3 embedder and allow ingest chunks with empty `embedding` arrays, plus query-side embedding for `vector` / `hybrid` search |
@@ -169,8 +170,10 @@ Store a single pre-embedded chunk.
 - `embedding` — pre-computed dense vector; length must equal `EMBED_DIMS`
 - if `SERVER_EMBED=1`, you may instead send `embedding: []` and the server will compute the vector with BGE-M3 before writing
 - `full_text_md` and `headings` are optional
-- Full-text indexing (Tantivy) only happens for `chunk_index == 0` to avoid duplicate BM25 entries
-- The endpoint is **idempotent**: re-ingesting the same `doc_id` + `chunk_index` overwrites the previous record
+- Every chunk contributes to one full-text document per owner and document identifier; headings and titles are indexed separately
+- The endpoint is **idempotent**: retrying the same owner, document identifier, and chunk index replaces that chunk
+- Include `chunk_total`, `chunk_start_char`, and `chunk_end_char` when known. Despite their historical names, start/end are UTF-8 **byte** offsets into the original text
+- A batch containing every chunk `0..chunk_total-1` replaces the complete document and removes stale trailing chunks. Partial requests retain untouched siblings
 
 **Response 200:**
 ```json
@@ -490,7 +493,7 @@ Back up the entire `LANCE_DATA_DIR` to preserve the index. Restoring is just cop
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `embedding length X != expected Y` on ingest | Client embedder dimension doesn't match `EMBED_DIMS` | Set `EMBED_DIMS` to match the client model |
-| Search returns no results | Index is empty or FTS not committed | Wait for Tantivy auto-commit (1 s) or restart server |
+| Search returns no results | Index is empty or FTS not committed | Check the ingest task/error and pending repair status; successful publication reloads the full-text reader before returning |
 | Vector search slow on large index | IVF-PQ index not built | Call `POST /v1/admin/build-ivf-pq` after bulk ingest |
 | `CRISP_API_KEY is not set` warning | Missing env var | Set `CRISP_API_KEY` in `.env` or systemd unit |
 | `address already in use` | Port 8473 taken | Set `PORT=<other>` |
@@ -500,3 +503,114 @@ Back up the entire `LANCE_DATA_DIR` to preserve the index. Restoring is just cop
 ## License
 
 MIT
+
+
+## Query contract and versioned upgrades
+
+The desktop and server use the same bounded query parser and text analyzer.
+Adjacent unquoted words require all words. Boolean `AND`, `OR`, and `NOT`, grouped
+expressions, exact quoted phrases, `*` / `?` wildcards, and fuzzy terms such as
+`report~1` are supported. Fields are `title`, `body` (alias `text`), and `headings`
+(alias `h`); field scopes can contain a phrase or a group, for example
+`title:"annual report"` or `body:(budget OR forecast)`.
+
+`alpha pre/2 beta` requires alpha before beta with at most two intervening words.
+`alpha w/2 beta` permits either order with the same distance bound. `/0` means
+adjacent. Positional operands may be words, exact phrases, OR alternatives, or
+bounded wildcard/fuzzy expansions. Unsupported or malformed combinations return
+an error instead of changing the query's meaning. The parser bounds query size,
+nesting, distance, and dictionary expansion.
+
+In hybrid mode, explicit syntax constrains every vector candidate using the same
+owner-filtered full-text snapshot. Plain natural-language questions can still
+retrieve semantic matches. Search results contain one result per owner/document,
+with stable score tie-breaking and snippets from matching text when available.
+
+Clients negotiate `GET /v1/capabilities` before lexical search. The response
+advertises API, grammar, and schema versions, readiness, searchable fields, and
+chunk-boundary behavior. A negotiated `POST /v1/search` includes
+`query_language_version`; successful responses confirm it through
+`x-crisp-query-version`. Older servers remain usable for plain queries. Explicit
+syntax requires a compatible ready server, and clients reject results that do
+not confirm the negotiated version.
+
+Run one server per data directory. On upgrade, stop the previous process and
+start the new binary with the same `LANCE_DATA_DIR`. Before accepting requests,
+the server streams all stored chunks into a disk spool, builds and verifies a
+new full-text generation, canonicalizes legacy duplicate vector rows, and
+publishes the generation through durable SQLite state. The legacy `fts/`
+directory and earlier Lance versions remain retained. Provision disk space for
+the new generation and temporary spool as well as the retained data. A rebuild
+failure stops startup and reports its cause; it does not publish a partially
+built full-text generation.
+
+When byte offsets are available, verified overlapping chunks reconstruct the
+original positional text. Legacy chunks without offsets remain separate
+positional regions: words anywhere in the document are searchable, while a
+phrase or proximity query cannot invent adjacency between unknown boundaries.
+Re-ingest the source with offsets to recover cross-boundary positional matching.
+The server has no translated field; a translated-field query returns an explicit
+error.
+
+Each mutation records a repair intent before atomically replacing its Lance
+rows. Search and metadata reads repair interrupted publication before returning
+results. Successful writes reload the full-text snapshot. Queue acknowledgments
+and repair state use SQLite full synchronization. A process lock prevents two
+current servers from opening the same full-text directory.
+
+Document identifiers can be shared across owners. Delete and location-update
+requests accept `?owner_id=...`. A bare identifier that belongs to multiple owners
+returns HTTP 409 without changing either document. Scoped requests modify only
+the selected owner's rows.
+
+## Storage and HTTP contract tests
+
+From the repository root:
+
+```bash
+cargo test --locked --manifest-path tests/server-search-contract/Cargo.toml
+```
+
+The isolated harness compiles the production server stores, queue, protocol,
+routes, shared query engine, and desktop HTTP client. It exercises real LanceDB,
+Tantivy, SQLite, and loopback HTTP, including failed/retried publication, migration,
+owner collisions, strict hybrid constraints, Unicode text, and capability
+negotiation. Model loading and platform proxy setup are adapters in this harness;
+model quality and full packaged application behavior require their separate
+checks.
+
+### Occurrence identity and deletion-aware synchronization
+
+Ordinary per-file uploads use the shared owner-and-source-URI identity and send
+`source_identity_version: 1`. These requests must contain a complete declared
+chunk sequence. Re-reading changed bytes at the same source updates that
+occurrence; identical bytes at another URI or under another owner remain
+separate. A unique legacy identifier at the exact source is reused to retain
+existing references. A legacy identifier shared across locations is split only
+for the selected source. Ambiguous legacy identities produce an explicit error.
+Explicit API/import identifiers without the marker retain their supplied
+identity. When a moved occurrence retains an identifier derived from its former
+address, a new file at that address receives a distinct identifier, which later
+refreshes reuse.
+
+`GET /v1/sync/since` accepts `cursor_version=2`, an inclusive `ts` watermark,
+`limit` (1–1000), and an opaque `cursor` continuation. Each page contains a bounded
+combined set of live `rows` and `deletions`, ordered by write time, owner, and
+document identifier. The cursor pins both the Lance snapshot and a deletion
+history horizon. Concurrent updates and removals are picked up by the following
+cycle; same-timestamp rows cannot be skipped at a page boundary.
+
+Deletion receipts are committed after the paired stores confirm absence. An
+interrupted deletion is repaired before a feed page is served; an intent that
+never reached the vector store does not emit a false removal. Append-only
+history keeps earlier cursors repeatable, and a newer live occurrence suppresses
+an obsolete deletion receipt in the current snapshot. Each live row carries its
+actual `indexed_at` timestamp so metadata conflict policies can compare the
+correct document version.
+
+Clients advance their durable cursor only after local application succeeds.
+Saved version-1 continuation state is migrated by replaying its last completed
+timestamp. Older clients can receive complete, deletion-free deltas; a page that
+requires continuation or deletion support returns an upgrade error. Applying a
+remote deletion removes the paired index records according to the configured
+conflict policy while retaining local source files.

@@ -72,6 +72,8 @@ pub struct PendingConflict {
     pub local_doc_id: String,
     pub local_hash: String,
     pub remote_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_operation: Option<String>,
     pub local_title: Option<String>,
     pub remote_title: Option<String>,
     pub remote_indexed_at: i64,
@@ -252,7 +254,7 @@ impl SyncManager {
         )?;
         let rows = stmt.query_map([], |r| Ok(PendingConflict {
             id: r.get(0)?, path: r.get(1)?, local_doc_id: r.get(2)?,
-            local_hash: r.get(3)?, remote_hash: r.get(4)?,
+            local_hash: r.get(3)?, remote_hash: r.get(4)?, remote_operation: None,
             local_title: r.get(5)?, remote_title: r.get(6)?,
             remote_indexed_at: r.get(7)?, created_at: r.get(8)?,
         }))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -297,46 +299,48 @@ impl SyncManager {
         let batch = self.claim_batch(64)?;
         if batch.is_empty() { return Ok((0, 0)); }
 
-        let client = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
+        let remote = crate::index::remote_client::RemoteClient::new_with_proxy(remote_url, api_key, proxy)?;
         let mut pushed = 0;
         let mut failed = 0;
-
         for entry in &batch {
-            let endpoint = match entry.op.as_str() {
-                "ingest" => format!("{}/v1/ingest/batch", remote_url.trim_end_matches('/')),
-                "delete" => format!("{}/v1/docs", remote_url.trim_end_matches('/')),
-                "move"   => format!("{}/v1/docs/location", remote_url.trim_end_matches('/')),
-                _        => { self.mark_error(entry.id, "unknown op").ok(); failed += 1; continue; }
-            };
-
-            let payload: serde_json::Value = match serde_json::from_str(&entry.payload) {
-                Ok(v) => v,
-                Err(e) => { self.mark_error(entry.id, &e.to_string()).ok(); failed += 1; continue; }
-            };
-
-            let mut req = client.post(&endpoint).json(&payload);
-            if !api_key.is_empty() { req = req.bearer_auth(api_key); }
-
-            match req.send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    self.mark_done(entry.id).ok();
+            let result: Result<()> = async {
+                let payload: serde_json::Value = serde_json::from_str(&entry.payload)?;
+                let owner = payload.get("owner_id").map(|value|
+                    value.as_str().map(str::to_owned).context("Queued owner_id must be a string"))
+                    .transpose()?;
+                match entry.op.as_str() {
+                    "ingest" => {
+                        let batch = serde_json::from_value::<crisp_index_protocol::IngestBatch>(payload)?;
+                        remote.ingest_batch(&batch).await?;
+                    }
+                    "delete" => {
+                        let doc_id = payload.get("doc_id").and_then(|value| value.as_str())
+                            .filter(|id| !id.is_empty()).context("Queued deletion is missing doc_id")?;
+                        remote.delete_doc_scoped(doc_id, owner.as_deref()).await?;
+                    }
+                    "move" => {
+                        let doc_id = payload.get("doc_id").and_then(|value| value.as_str())
+                            .filter(|id| !id.is_empty()).context("Queued move is missing doc_id")?;
+                        let new_uri = payload.get("new_uri").and_then(|value| value.as_str())
+                            .context("Queued move is missing new_uri")?;
+                        remote.update_location_scoped(doc_id, new_uri, owner.as_deref()).await?;
+                    }
+                    _ => anyhow::bail!("Unknown queued operation"),
+                }
+                Ok(())
+            }.await;
+            match result {
+                Ok(()) => {
+                    self.mark_done(entry.id)?;
                     pushed += 1;
                 }
-                Ok(resp) => {
-                    let msg = format!("HTTP {}", resp.status());
-                    self.mark_error(entry.id, &msg).ok();
-                    failed += 1;
-                }
-                Err(e) => {
-                    self.mark_error(entry.id, &e.to_string()).ok();
+                Err(error) => {
+                    self.mark_error(entry.id, &format!("{error:#}"))?;
                     failed += 1;
                 }
             }
         }
-
-        if pushed > 0 {
-            self.set_state("last_push_ts", &now_ms().to_string()).ok();
-        }
+        if pushed > 0 { self.set_state("last_push_ts", &now_ms().to_string())?; }
         Ok((pushed, failed))
     }
 
@@ -521,6 +525,25 @@ mod tests {
         drop(m1);
         let m2 = SyncManager::open(tmp.path()).unwrap();
         assert_eq!(m2.pending_count().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn outbox_delete_and_move_use_scoped_document_routes_before_acknowledging() {
+        let mut server = mockito::Server::new_async().await;
+        let (_dir, manager) = fresh();
+        manager.enqueue("delete", r#"{"doc_id":"removed","owner_id":"owner"}"#).unwrap();
+        manager.enqueue("move", r#"{"doc_id":"moved","owner_id":"owner","new_uri":"test://new"}"#).unwrap();
+        let deletion = server.mock("DELETE", "/v1/docs/removed")
+            .match_query(mockito::Matcher::UrlEncoded("owner_id".into(), "owner".into()))
+            .with_status(200).with_body(r#"{"deleted":true}"#).create_async().await;
+        let moved = server.mock("POST", "/v1/docs/moved/location")
+            .match_query(mockito::Matcher::UrlEncoded("owner_id".into(), "owner".into()))
+            .match_body(mockito::Matcher::Json(serde_json::json!({"new_uri":"test://new"})))
+            .with_status(200).with_body(r#"{"updated":true}"#).create_async().await;
+        assert_eq!(manager.push_pending(&server.url(), "key").await.unwrap(), (2, 0));
+        assert_eq!(manager.pending_count().unwrap(), 0);
+        deletion.assert_async().await;
+        moved.assert_async().await;
     }
 
     #[test]

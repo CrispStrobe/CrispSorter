@@ -1,5 +1,7 @@
 #[path = "../../src-tauri/src/sync/pull.rs"]
 mod client;
+#[path = "../../src-tauri/src/sync/conflict.rs"]
+mod conflict;
 
 use axum::{extract::Query, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use client::{PendingPullPage, PullCheckpoint};
@@ -25,12 +27,15 @@ fn row(id: &str) -> SearchHit {
         snippet: String::new(),
         score: 0.0,
         chunk_index: 0,
+        indexed_at: 42,
+        source_hash: "same-content-hash".into(),
     }
 }
 fn cursor(id: &str) -> String {
     serde_json::to_string(&SyncCursor {
         version: SYNC_CURSOR_VERSION,
         snapshot_version: 3,
+        tombstone_horizon: 42,
         since_ms: 0,
         indexed_at: 42,
         owner_id: "owner'one".into(),
@@ -40,6 +45,8 @@ fn cursor(id: &str) -> String {
 }
 fn page(ids: &[&str], has_more: bool) -> SyncPage {
     SyncPage {
+        sync_version: SYNC_CURSOR_VERSION,
+        deletions: Vec::new(),
         rows: ids.iter().map(|id| row(id)).collect(),
         max_indexed_at: 42,
         has_more,
@@ -131,7 +138,7 @@ async fn pull_transport_encodes_cursor_and_validates_bounded_progress() {
             let seen = seen.clone();
             async move {
                 seen.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(query.get("cursor_version").map(String::as_str), Some("1"));
+                assert_eq!(query.get("cursor_version").map(String::as_str), Some("2"));
                 assert_eq!(query.get("ts").map(String::as_str), Some("0"));
                 if let Some(encoded) = query.get("cursor") {
                     assert_eq!(encoded, &cursor("b"));
@@ -298,7 +305,7 @@ async fn actual_sync_route_supports_safe_legacy_pages_and_cursor_clients() {
             .status(),
         StatusCode::OK
     );
-    for query in ["limit=0", "limit=1001", "cursor_version=2", "cursor=bad"] {
+    for query in ["limit=0", "limit=1001", "cursor_version=99", "cursor=bad"] {
         assert_eq!(
             http.get(format!("{url}/v1/sync/since?{query}"))
                 .send()
@@ -317,4 +324,112 @@ async fn actual_sync_route_supports_safe_legacy_pages_and_cursor_clients() {
     assert_eq!(first.snapshot_version, last.snapshot_version);
     assert!(completed.cursor.is_none());
     task.abort();
+}
+
+#[test]
+fn deletion_pages_follow_cursor_contract_and_preserve_conflict_policies() {
+    use conflict::{ConflictPolicy, Resolution};
+    let deletion = crisp_index_protocol::SyncDeletion {
+        owner_id: "owner'one".into(),
+        doc_id: "gone".into(),
+        indexed_at: 42,
+    };
+    for policy in [ConflictPolicy::LocalWins, ConflictPolicy::KeepBoth] {
+        assert_eq!(
+            client::deletion_resolution("gone", "owner'one", 1, &deletion, policy),
+            Resolution::UseLocal
+        );
+    }
+    assert_eq!(
+        client::deletion_resolution(
+            "gone",
+            "owner'one",
+            1,
+            &deletion,
+            ConflictPolicy::NewestWins
+        ),
+        Resolution::UseRemote
+    );
+    assert_eq!(
+        client::deletion_resolution(
+            "gone",
+            "owner'one",
+            42,
+            &deletion,
+            ConflictPolicy::NewestWins
+        ),
+        Resolution::UseLocal
+    );
+    assert_eq!(
+        client::deletion_resolution(
+            "gone",
+            "owner'one",
+            99,
+            &deletion,
+            ConflictPolicy::NewestWins
+        ),
+        Resolution::UseLocal
+    );
+    assert_eq!(
+        client::deletion_resolution(
+            "gone",
+            "other-owner",
+            1,
+            &deletion,
+            ConflictPolicy::RemoteWins
+        ),
+        Resolution::UseLocal
+    );
+    assert_eq!(
+        client::deletion_resolution(
+            "gone_remote",
+            "owner'one",
+            1,
+            &deletion,
+            ConflictPolicy::RemoteWins
+        ),
+        Resolution::UseLocal
+    );
+    assert_eq!(
+        client::deletion_resolution("gone", "owner'one", 1, &deletion, ConflictPolicy::Manual),
+        Resolution::NeedsManualReview
+    );
+    let review = client::RemoteDeletionConflict {
+        remote_url: "http://server".into(),
+        deletion: deletion.clone(),
+        expected_local_signature: "current revision".into(),
+    };
+    let encoded = review.encode().unwrap();
+    let decoded = client::RemoteDeletionConflict::decode(&encoded)
+        .unwrap()
+        .unwrap();
+    assert_eq!(decoded.deletion, deletion);
+    assert_eq!(decoded.expected_local_signature, "current revision");
+    assert!(
+        client::RemoteDeletionConflict::decode("ordinary-content-hash")
+            .unwrap()
+            .is_none()
+    );
+
+    let initial = PullCheckpoint::for_remote(None, 0, "http://server").unwrap();
+    let mut removed = page(&[], false);
+    removed.deletions = vec![deletion];
+    removed.has_more = true;
+    removed.next_cursor = Some(cursor("gone"));
+    let next = initial.after_page(&removed, 1).unwrap();
+    assert_eq!(next.since_ms, 0);
+    assert!(next.cursor.is_some());
+    let mut complete = page(&[], false);
+    complete.deletions = vec![crisp_index_protocol::SyncDeletion {
+        owner_id: "owner'one".into(),
+        doc_id: "later".into(),
+        indexed_at: 42,
+    }];
+    assert_eq!(next.after_page(&complete, 1).unwrap().since_ms, 42);
+
+    let old = serde_json::json!({"version":1,"remote_url":"http://server","since_ms":17,"cursor":"old opaque cursor"}).to_string();
+    let migrated = PullCheckpoint::for_remote(Some(&old), 17, "http://server").unwrap();
+    assert_eq!(migrated.version, SYNC_CURSOR_VERSION);
+    assert_eq!(migrated.since_ms, 17);
+    assert!(migrated.cursor.is_none());
 }

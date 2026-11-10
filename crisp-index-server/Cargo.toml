@@ -19,6 +19,7 @@ path = "src/main.rs"
 protoc-bin-vendored = "3"
 
 [dependencies]
+sha2 = "0.10"
 crisp-search-query = { path = "../crates/crisp-search-query" }
 
 # Wire-format types shared with the CrispSorter client (../src-tauri).

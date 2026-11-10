@@ -165,35 +165,68 @@ impl RemoteClient {
         Ok(response)
     }
 
-    fn document_url(&self,doc_id:&str,location:bool,owner_id:Option<&str>)->Result<reqwest::Url> {
-        let mut url=reqwest::Url::parse(&self.url("/v1/docs/"))?;
+    fn document_url(
+        &self,
+        doc_id: &str,
+        location: bool,
+        owner_id: Option<&str>,
+    ) -> Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(&self.url("/v1/docs/"))?;
         {
-            let mut path=url.path_segments_mut().map_err(|_|anyhow!("Remote index URL cannot contain path segments"))?;
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|_| anyhow!("Remote index URL cannot contain path segments"))?;
             path.pop_if_empty().push(doc_id);
-            if location {path.push("location");}
+            if location {
+                path.push("location");
+            }
         }
-        if let Some(owner)=owner_id {url.query_pairs_mut().append_pair("owner_id",owner);}
+        if let Some(owner) = owner_id {
+            url.query_pairs_mut().append_pair("owner_id", owner);
+        }
         Ok(url)
     }
 
     /// Select an owner when a content identifier is shared across collections.
-    pub async fn delete_doc_scoped(&self,doc_id:&str,owner_id:Option<&str>)->Result<()> {
-        let response=self.client.delete(self.document_url(doc_id,false,owner_id)?)
-            .bearer_auth(&self.api_key).send().await?;
+    pub async fn delete_doc_scoped(&self, doc_id: &str, owner_id: Option<&str>) -> Result<()> {
+        let response = self
+            .client
+            .delete(self.document_url(doc_id, false, owner_id)?)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
         if !response.status().is_success() {
-            let status=response.status();
-            return Err(anyhow!("Remote document deletion failed {status}: {}",response.text().await.unwrap_or_default()));
+            let status = response.status();
+            return Err(anyhow!(
+                "Remote document deletion failed {status}: {}",
+                response.text().await.unwrap_or_default()
+            ));
         }
         Ok(())
     }
 
     /// Update one owner's location without affecting another copy of the file.
-    pub async fn update_location_scoped(&self,doc_id:&str,new_uri:&str,owner_id:Option<&str>)->Result<()> {
-        let response=self.client.post(self.document_url(doc_id,true,owner_id)?)
-            .bearer_auth(&self.api_key).json(&UpdateLocationBody{new_uri:new_uri.into()}).send().await?;
+    pub async fn update_location_scoped(
+        &self,
+        doc_id: &str,
+        new_uri: &str,
+        owner_id: Option<&str>,
+    ) -> Result<()> {
+        let response = self
+            .client
+            .post(self.document_url(doc_id, true, owner_id)?)
+            .bearer_auth(&self.api_key)
+            .json(&UpdateLocationBody {
+                new_uri: new_uri.into(),
+            })
+            .send()
+            .await?;
         if !response.status().is_success() {
-            let status=response.status();
-            return Err(anyhow!("Remote location update failed {status}: {}",response.text().await.unwrap_or_default()));
+            let status = response.status();
+            return Err(anyhow!(
+                "Remote location update failed {status}: {}",
+                response.text().await.unwrap_or_default()
+            ));
         }
         Ok(())
     }
@@ -274,9 +307,13 @@ impl IndexBackend for RemoteClient {
             chunk_total: Some(doc.chunk_total),
             chunk_start_char: doc.chunk_start_char,
             chunk_end_char: doc.chunk_end_char,
+            source_identity_version: None,
             full_text: doc.full_text.clone().unwrap_or_default(),
             full_text_md: doc.full_text_md.clone(),
-            headings: doc.headings_text.as_ref().map(|headings| vec![headings.clone()]),
+            headings: doc
+                .headings_text
+                .as_ref()
+                .map(|headings| vec![headings.clone()]),
             embedding: doc.embedding.clone().unwrap_or_default(),
             title: doc.title.clone(),
             author: doc.author.clone(),
@@ -328,11 +365,11 @@ impl IndexBackend for RemoteClient {
     }
 
     async fn delete_doc(&self, doc_id: &str) -> Result<()> {
-        self.delete_doc_scoped(doc_id,None).await
+        self.delete_doc_scoped(doc_id, None).await
     }
 
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
-        self.update_location_scoped(doc_id,new_uri,None).await
+        self.update_location_scoped(doc_id, new_uri, None).await
     }
 
     async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {

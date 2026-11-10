@@ -1,9 +1,83 @@
 //! Cursor transport and checkpoint validation for metadata pull pages.
 use anyhow::{ensure, Context, Result};
-use crisp_index_protocol::{SyncCursor, SyncPage, SYNC_CURSOR_VERSION};
+use crisp_index_protocol::{SyncCursor, SyncDeletion, SyncPage, SYNC_CURSOR_VERSION};
 use serde::{Deserialize, Serialize};
 
 pub const CHECKPOINT_KEY: &str = "pull_checkpoint_v1";
+
+const DELETION_CONFLICT_PREFIX: &str = "sync-delete-v2:";
+const METADATA_CONFLICT_PREFIX: &str = "sync-metadata-v2:";
+
+/// Durable manual-review context. The local signature prevents a later review
+/// click from deleting a document edited since the conflict was queued.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDeletionConflict {
+    pub remote_url: String,
+    pub deletion: SyncDeletion,
+    pub expected_local_signature: String,
+}
+
+impl RemoteDeletionConflict {
+    pub fn encode(&self) -> Result<String> {
+        Ok(format!(
+            "{DELETION_CONFLICT_PREFIX}{}",
+            serde_json::to_string(self)?
+        ))
+    }
+
+    pub fn decode(value: &str) -> Result<Option<Self>> {
+        value
+            .strip_prefix(DELETION_CONFLICT_PREFIX)
+            .map(|encoded| serde_json::from_str(encoded).context("Reading deletion conflict"))
+            .transpose()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteMetadataConflict {
+    pub remote_url: String,
+    pub remote: crisp_index_protocol::SearchHit,
+    pub expected_local_signature: String,
+}
+
+impl RemoteMetadataConflict {
+    pub fn encode(&self) -> Result<String> {
+        Ok(format!("{METADATA_CONFLICT_PREFIX}{}", serde_json::to_string(self)?))
+    }
+
+    pub fn decode(value: &str) -> Result<Option<Self>> {
+        value.strip_prefix(METADATA_CONFLICT_PREFIX)
+            .map(|encoded| serde_json::from_str(encoded).context("Reading metadata conflict"))
+            .transpose()
+    }
+}
+
+/// Deletion has no remote copy to retain. KeepBoth therefore keeps the local
+/// document, and an independently named copy is outside this event's scope.
+pub fn deletion_resolution(
+    local_doc_id: &str,
+    local_owner: &str,
+    local_indexed_at: i64,
+    deletion: &SyncDeletion,
+    policy: super::conflict::ConflictPolicy,
+) -> super::conflict::Resolution {
+    use super::conflict::{ConflictPolicy, Resolution};
+    if local_doc_id != deletion.doc_id || local_owner != deletion.owner_id {
+        return Resolution::UseLocal;
+    }
+    match policy {
+        ConflictPolicy::LocalWins | ConflictPolicy::KeepBoth => Resolution::UseLocal,
+        ConflictPolicy::RemoteWins => Resolution::UseRemote,
+        ConflictPolicy::Manual => Resolution::NeedsManualReview,
+        ConflictPolicy::NewestWins => {
+            if local_indexed_at >= deletion.indexed_at {
+                Resolution::UseLocal
+            } else {
+                Resolution::UseRemote
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PullCheckpoint {
@@ -21,12 +95,20 @@ impl PullCheckpoint {
     ) -> Result<Self> {
         let remote_url = remote_url.trim_end_matches('/').to_owned();
         if let Some(saved) = saved {
-            let checkpoint: Self =
+            let mut checkpoint: Self =
                 serde_json::from_str(saved).context("Reading sync checkpoint")?;
             ensure!(
-                checkpoint.version == SYNC_CURSOR_VERSION && checkpoint.since_ms >= 0,
+                (checkpoint.version == 1 || checkpoint.version == SYNC_CURSOR_VERSION)
+                    && checkpoint.since_ms >= 0,
                 "Unsupported sync checkpoint"
             );
+            if checkpoint.version == 1 {
+                // A pre-deletion cursor cannot describe the new combined feed.
+                // Replay its completed boundary; any partial page was not yet
+                // published as a completed timestamp.
+                checkpoint.version = SYNC_CURSOR_VERSION;
+                checkpoint.cursor = None;
+            }
             if checkpoint.remote_url == remote_url {
                 if let Some(cursor) = &checkpoint.cursor {
                     let cursor: SyncCursor =
@@ -56,7 +138,11 @@ impl PullCheckpoint {
 
     pub fn after_page(&self, page: &SyncPage, limit: usize) -> Result<Self> {
         ensure!(
-            page.rows.len() <= limit,
+            page.sync_version == SYNC_CURSOR_VERSION,
+            "Server does not support the required deletion-aware sync protocol; upgrade the server"
+        );
+        ensure!(
+            page.rows.len().saturating_add(page.deletions.len()) <= limit,
             "Server exceeded the requested sync page size"
         );
         ensure!(
@@ -78,10 +164,21 @@ impl PullCheckpoint {
                 "Server returned an invalid or duplicate sync identity"
             );
         }
+        for deletion in &page.deletions {
+            ensure!(
+                !deletion.doc_id.is_empty()
+                    && deletion.doc_id.len() <= 512
+                    && deletion.owner_id.len() <= 512
+                    && deletion.indexed_at >= self.since_ms
+                    && deletion.indexed_at <= page.max_indexed_at
+                    && identities.insert((&deletion.owner_id, &deletion.doc_id)),
+                "Server returned an invalid or duplicate deletion identity"
+            );
+        }
         let mut next = self.clone();
         if page.has_more {
             ensure!(
-                !page.rows.is_empty(),
+                !page.rows.is_empty() || !page.deletions.is_empty(),
                 "Server returned an empty continuation page"
             );
             let encoded = page.next_cursor.as_ref().context("Server requires pagination but does not provide a safe cursor; upgrade the server before continuing")?;
@@ -94,15 +191,23 @@ impl PullCheckpoint {
                     && page.max_indexed_at == cursor.indexed_at,
                 "Server returned an inconsistent sync cursor"
             );
-            let last = page.rows.last().expect("page is nonempty");
+            let matches_last_row = page.rows.last().is_some_and(|last| {
+                last.owner_id == cursor.owner_id && last.doc_id == cursor.doc_id
+            });
+            let matches_last_deletion = page.deletions.last().is_some_and(|last| {
+                last.owner_id == cursor.owner_id
+                    && last.doc_id == cursor.doc_id
+                    && last.indexed_at == cursor.indexed_at
+            });
             ensure!(
-                last.owner_id == cursor.owner_id && last.doc_id == cursor.doc_id,
-                "Sync cursor does not identify the last applied row"
+                matches_last_row || matches_last_deletion,
+                "Sync cursor does not identify the last applied change"
             );
             if let Some(previous) = &self.cursor {
                 let previous: SyncCursor = serde_json::from_str(previous)?;
                 ensure!(
                     cursor.snapshot_version == previous.snapshot_version
+                        && cursor.tombstone_horizon == previous.tombstone_horizon
                         && (cursor.indexed_at, &cursor.owner_id, &cursor.doc_id)
                             > (previous.indexed_at, &previous.owner_id, &previous.doc_id),
                     "Server did not advance the sync cursor"

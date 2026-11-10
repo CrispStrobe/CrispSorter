@@ -29,14 +29,14 @@ pub mod embedder {
 }
 #[cfg(test)]
 mod http_contract;
-#[cfg(test)]
-mod sync_contract;
 #[path = "../../crisp-index-server/src/queue.rs"]
 mod queue;
 #[path = "../../crisp-index-server/src/routes/mod.rs"]
 mod routes;
 #[path = "../../crisp-index-server/src/state.rs"]
 mod state;
+#[cfg(test)]
+mod sync_contract;
 
 #[cfg(test)]
 mod tests {
@@ -342,3 +342,6 @@ mod tests {
         assert_eq!(document(vec![new, old]).body_segments, vec!["current"]);
     }
 }
+
+#[path = "../../shared/source_identity.rs"]
+mod source_identity;

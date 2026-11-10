@@ -26,6 +26,13 @@ The suite checks:
 
 - Atomic complete-document replacement, legacy duplicate cleanup, and removal
   of obsolete tail chunks without changing unrelated sources.
+- Independent occurrence identities for identical bytes at different paths or
+  owners; stable identities and reviewed fields across file moves; exact input
+  ordering of committed IDs after repeated-source batch coalescing.
+- Bounded repair of shared legacy IDs, retaining other sources' text, vectors,
+  and metadata without cross-owner text leakage or cross-source proximity hits.
+- Scoped deletion and selected-source promotion receipts, including a new
+  conflicting identity appearing while a prepared write waits for its lease.
 - Preservation of the last searchable document after extraction, embedding,
   model output validation, or preparation fails.
 - Recovery before readiness after the vector transaction commits but the full

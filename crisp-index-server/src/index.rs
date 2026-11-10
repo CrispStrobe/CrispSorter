@@ -34,11 +34,16 @@ const MAX_AFFECTED_CHUNKS: usize = 65_536;
 #[derive(Debug)]
 pub struct AmbiguousDocument;
 impl std::fmt::Display for AmbiguousDocument {
-    fn fmt(&self,formatter:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
-        formatter.write_str("Multiple owners share this document ID; provide owner_id to select one")
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("This document ID represents multiple owners or source locations; resolve the exact occurrence before changing it")
     }
 }
 impl std::error::Error for AmbiguousDocument {}
+
+struct SourceRemoval {
+    key: DocumentKey,
+    location_uri: String,
+}
 
 struct PreparedWrite {
     keys: Vec<DocumentKey>,
@@ -151,13 +156,163 @@ impl VectorStore {
         })
     }
 
-    pub(crate) fn table(&self) -> &Table { &self.table }
+    pub(crate) fn table(&self) -> &Table {
+        &self.table
+    }
+
+    /// Resolve only explicitly marked ordinary uploads. Unmarked external IDs
+    /// remain authoritative. Source lookup and row publication share the gate.
+    async fn resolve_source_identities(
+        &self,
+        chunks: &[IngestChunk],
+    ) -> Result<(Vec<IngestChunk>, Vec<SourceRemoval>)> {
+        let mut normalized = chunks.to_vec();
+        let mut groups = BTreeMap::<(String, String, String), Vec<usize>>::new();
+        for (position, chunk) in chunks.iter().enumerate() {
+            if let Some(version) = chunk.source_identity_version {
+                ensure!(version == 1, "Unsupported source identity version");
+                validate_chunk(chunk, self.dims)?;
+                let canonical = crate::source_identity::occurrence_id(
+                    &chunk.owner_id,
+                    &chunk.location_uri,
+                    &chunk.source_hash,
+                );
+                ensure!(
+                    chunk.doc_id == canonical,
+                    "Generated source identity does not match its owner and source URI"
+                );
+                groups
+                    .entry((
+                        chunk.owner_id.clone(),
+                        chunk.location_uri.clone(),
+                        canonical,
+                    ))
+                    .or_default()
+                    .push(position);
+            }
+        }
+        let mut removals = Vec::new();
+        for ((owner, uri, canonical), positions) in groups {
+            ensure!(
+                !uri.is_empty(),
+                "Generated per-file uploads require a concrete source URI"
+            );
+            let first = &chunks[positions[0]];
+            let total = first.chunk_total.ok_or_else(|| {
+                anyhow!("Generated source uploads require a complete declared chunk sequence")
+            })?;
+            let indices: HashSet<_> = positions
+                .iter()
+                .map(|position| chunks[*position].chunk_index)
+                .collect();
+            ensure!(
+                positions.len() == total as usize
+                    && indices.len() == positions.len()
+                    && positions
+                        .iter()
+                        .all(|position| chunks[*position].chunk_total == Some(total)
+                            && chunks[*position].source_hash == first.source_hash),
+                "Generated source uploads require all chunks from one complete source version"
+            );
+            let mut selected = canonical.clone();
+            if !uri.is_empty() {
+                let filter = format!(
+                    "owner_id='{}' AND location_uri='{}'",
+                    sql_escape(&owner),
+                    sql_escape(&uri)
+                );
+                let batches: Vec<RecordBatch> = self
+                    .table
+                    .query()
+                    .only_if(filter)
+                    .select(Select::columns(&["doc_id"]))
+                    .limit(MAX_AFFECTED_CHUNKS + 1)
+                    .execute()
+                    .await?
+                    .try_collect()
+                    .await?;
+                ensure!(
+                    batches.iter().map(RecordBatch::num_rows).sum::<usize>() <= MAX_AFFECTED_CHUNKS,
+                    "Source has too many stored chunks to resolve safely"
+                );
+                let mut ids = BTreeSet::new();
+                for batch in &batches {
+                    let ids_column = string_column(batch, "doc_id")?;
+                    for row in 0..batch.num_rows() {
+                        ids.insert(ids_column.value(row).to_owned());
+                    }
+                }
+                let canonical_at_source = ids.contains(&canonical);
+                if canonical_at_source {
+                    selected = canonical.clone();
+                } else if ids.len() == 1 {
+                    let legacy = DocumentKey {
+                        owner_id: owner.clone(),
+                        doc_id: ids.into_iter().next().expect("one ID"),
+                    };
+                    let elsewhere = format!(
+                        "({}) AND location_uri!='{}'",
+                        keys_sql(std::slice::from_ref(&legacy)),
+                        sql_escape(&uri)
+                    );
+                    if self.table.count_rows(Some(elsewhere)).await? == 0 {
+                        selected = legacy.doc_id;
+                    } else {
+                        removals.push(SourceRemoval {
+                            key: legacy,
+                            location_uri: uri.clone(),
+                        });
+                    }
+                } else {
+                    ensure!(ids.is_empty(),"Several legacy document IDs claim this owner and source URI; resolve the occurrence before replacing it");
+                }
+                // A moved occurrence can retain a URI-derived ID. If that old
+                // address is reused later, allocate a separate stable receipt ID.
+                if selected == canonical {
+                    let canonical_key = DocumentKey {
+                        owner_id: owner.clone(),
+                        doc_id: canonical.clone(),
+                    };
+                    let elsewhere = format!(
+                        "({}) AND location_uri!='{}'",
+                        keys_sql(std::slice::from_ref(&canonical_key)),
+                        sql_escape(&uri)
+                    );
+                    if self.table.count_rows(Some(elsewhere)).await? > 0 {
+                        if canonical_at_source {
+                            removals.push(SourceRemoval {
+                                key: canonical_key,
+                                location_uri: uri.clone(),
+                            });
+                        }
+                        use sha2::Digest;
+                        selected = format!(
+                            "{:x}",
+                            sha2::Sha256::digest(uuid::Uuid::new_v4().as_bytes())
+                        );
+                    }
+                }
+            }
+            for position in positions {
+                normalized[position].doc_id = selected.clone();
+            }
+        }
+        Ok((normalized, removals))
+    }
 
     /// Validate and stage complete affected documents before any persistent write.
     /// Existing duplicate rows are collapsed by latest timestamp. A declared,
     /// complete chunk sequence replaces old tails; partial chunk updates retain
     /// untouched siblings. The eventual merge publishes all changes atomically.
     async fn prepare_upsert(&self, chunks: &[IngestChunk]) -> Result<PreparedWrite> {
+        self.prepare_upsert_scoped(chunks, &[]).await
+    }
+
+    async fn prepare_upsert_scoped(
+        &self,
+        chunks: &[IngestChunk],
+        removals: &[SourceRemoval],
+    ) -> Result<PreparedWrite> {
         ensure!(
             !chunks.is_empty() && chunks.len() <= 4096,
             "An ingest batch must contain between 1 and 4096 chunks"
@@ -176,9 +331,21 @@ impl VectorStore {
             );
             groups.entry(key).or_default().push(chunk);
         }
-        let keys: Vec<_> = groups.keys().cloned().collect();
+        let keys: Vec<_> = groups
+            .keys()
+            .cloned()
+            .chain(removals.iter().map(|removal| removal.key.clone()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let mut complete = HashSet::new();
         for (key, group) in &groups {
+            ensure!(
+                group
+                    .iter()
+                    .all(|chunk| same_document_metadata(group[0], chunk)),
+                "Chunks disagree about document metadata"
+            );
             let totals: HashSet<_> = group.iter().filter_map(|chunk| chunk.chunk_total).collect();
             ensure!(
                 totals.len() <= 1,
@@ -197,14 +364,23 @@ impl VectorStore {
         for (batch_index, batch) in existing.iter().enumerate() {
             for (row, chunk) in stored_chunks(batch)?.into_iter().enumerate() {
                 let identity = (chunk.key.clone(), chunk.chunk_index);
+                let location = string_column(batch, "location_uri")?.value(row);
+                if removals
+                    .iter()
+                    .any(|removal| removal.key == chunk.key && removal.location_uri == location)
+                {
+                    continue;
+                }
                 if complete.contains(&chunk.key) || incoming.contains(&identity) {
                     continue;
                 }
-                if latest
-                    .get(&identity)
-                    .is_none_or(|(_, _, time, row_order)| (*time,*row_order) <= (chunk.indexed_at,chunk.row_order))
-                {
-                    latest.insert(identity, (batch_index, row, chunk.indexed_at, chunk.row_order));
+                if latest.get(&identity).is_none_or(|(_, _, time, row_order)| {
+                    (*time, *row_order) <= (chunk.indexed_at, chunk.row_order)
+                }) {
+                    latest.insert(
+                        identity,
+                        (batch_index, row, chunk.indexed_at, chunk.row_order),
+                    );
                 }
             }
         }
@@ -242,6 +418,9 @@ impl VectorStore {
             batches.iter().map(RecordBatch::num_rows).sum::<usize>() <= MAX_AFFECTED_CHUNKS,
             "Affected documents exceed the 65536-chunk safety limit; split the request"
         );
+        for batch in &mut batches {
+            *batch = propagate_document_metadata(batch, &groups)?;
+        }
         let documents = documents_from_batches(&batches, &keys)?;
         Ok(PreparedWrite {
             keys,
@@ -356,13 +535,31 @@ impl VectorStore {
         spool.execute_batch("PRAGMA synchronous=FULL;
             CREATE TABLE chunks(owner_id TEXT NOT NULL,doc_id TEXT NOT NULL,chunk_index INTEGER NOT NULL,indexed_at INTEGER NOT NULL,row_order INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(owner_id,doc_id,chunk_index));
             CREATE TABLE duplicates(owner_id TEXT NOT NULL,doc_id TEXT NOT NULL,PRIMARY KEY(owner_id,doc_id));")?;
-        let mut stream = self.table.query().select(Select::columns(&[
-            "owner_id","doc_id","chunk_index","indexed_at","title","filename","language","year","headings_text","full_text","chunk_start_char","chunk_end_char"
-        ])).with_row_id().execute().await?;
+        let mut stream = self
+            .table
+            .query()
+            .select(Select::columns(&[
+                "owner_id",
+                "doc_id",
+                "chunk_index",
+                "indexed_at",
+                "title",
+                "filename",
+                "language",
+                "year",
+                "headings_text",
+                "full_text",
+                "chunk_start_char",
+                "chunk_end_char",
+            ]))
+            .with_row_id()
+            .execute()
+            .await?;
         while let Some(batch) = stream.try_next().await? {
             let transaction = spool.transaction()?;
             for chunk in stored_chunks(&batch)? {
-                let row_order=i64::try_from(chunk.row_order).context("Stored row identifier exceeds supported range")?;
+                let row_order = i64::try_from(chunk.row_order)
+                    .context("Stored row identifier exceeds supported range")?;
                 transaction.execute("INSERT OR IGNORE INTO duplicates SELECT ?1,?2 WHERE EXISTS (SELECT 1 FROM chunks WHERE owner_id=?1 AND doc_id=?2 AND chunk_index=?3)",rusqlite::params![chunk.key.owner_id,chunk.key.doc_id,chunk.chunk_index])?;
                 transaction.execute("INSERT INTO chunks VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(owner_id,doc_id,chunk_index) DO UPDATE SET indexed_at=excluded.indexed_at,row_order=excluded.row_order,payload=excluded.payload WHERE (excluded.indexed_at,excluded.row_order)>=(chunks.indexed_at,chunks.row_order)",
                     rusqlite::params![chunk.key.owner_id,chunk.key.doc_id,chunk.chunk_index,chunk.indexed_at,row_order,serde_json::to_string(&chunk)?])?;
@@ -371,39 +568,82 @@ impl VectorStore {
         }
         let mut builder = fts.begin_rebuild()?;
         {
-            let mut docs=spool.prepare("SELECT DISTINCT owner_id,doc_id FROM chunks ORDER BY owner_id,doc_id")?;
-            let keys=docs.query_map([],|row|Ok(DocumentKey{owner_id:row.get(0)?,doc_id:row.get(1)?}))?;
+            let mut docs = spool
+                .prepare("SELECT DISTINCT owner_id,doc_id FROM chunks ORDER BY owner_id,doc_id")?;
+            let keys = docs.query_map([], |row| {
+                Ok(DocumentKey {
+                    owner_id: row.get(0)?,
+                    doc_id: row.get(1)?,
+                })
+            })?;
             for key in keys {
-                let key=key?;
+                let key = key?;
                 let mut select=spool.prepare("SELECT payload FROM chunks WHERE owner_id=?1 AND doc_id=?2 ORDER BY chunk_index LIMIT 65537")?;
-                let serialized=select.query_map(rusqlite::params![key.owner_id,key.doc_id],|row|row.get::<_,String>(0))?;
-                let mut chunks=Vec::new();let mut bytes=0usize;
+                let serialized = select
+                    .query_map(rusqlite::params![key.owner_id, key.doc_id], |row| {
+                        row.get::<_, String>(0)
+                    })?;
+                let mut chunks = Vec::new();
+                let mut bytes = 0usize;
                 for payload in serialized {
-                    let chunk:StoredChunk=serde_json::from_str(&payload?)?;
-                    bytes=bytes.saturating_add(chunk.text.len());
-                    ensure!(bytes<=64*1024*1024,"Document exceeds the 64 MiB reconstruction limit");
+                    let chunk: StoredChunk = serde_json::from_str(&payload?)?;
+                    bytes = bytes.saturating_add(chunk.text.len());
+                    ensure!(
+                        bytes <= 64 * 1024 * 1024,
+                        "Document exceeds the 64 MiB reconstruction limit"
+                    );
                     chunks.push(chunk);
                 }
-                ensure!(chunks.len()<=MAX_AFFECTED_CHUNKS,"Document exceeds the 65536-chunk rebuild limit");
-                if let Some(document)=FtsDocument::from_chunks(chunks)? {builder.add(&document)?;}
+                ensure!(
+                    chunks.len() <= MAX_AFFECTED_CHUNKS,
+                    "Document exceeds the 65536-chunk rebuild limit"
+                );
+                if let Some(document) = FtsDocument::from_chunks(chunks)? {
+                    builder.add(&document)?;
+                }
             }
         }
         // Finish and verify the new FTS files before touching legacy vector
         // duplicates. Lance retains its old data versions for crash recovery.
-        let maximum:i64=spool.query_row("SELECT COALESCE(MAX(indexed_at),0) FROM chunks",[],|row|row.get(0))?;
+        let maximum: i64 = spool.query_row(
+            "SELECT COALESCE(MAX(indexed_at),0) FROM chunks",
+            [],
+            |row| row.get(0),
+        )?;
         fts.observe_timestamp(maximum)?;
-        let sealed=fts.seal_rebuild(builder)?;
+        let sealed = fts.seal_rebuild(builder)?;
         loop {
             use rusqlite::OptionalExtension;
-            let key=spool.query_row("SELECT owner_id,doc_id FROM duplicates ORDER BY owner_id,doc_id LIMIT 1",[],|row|Ok(DocumentKey{owner_id:row.get(0)?,doc_id:row.get(1)?})).optional()?;
-            let Some(key)=key else {break};
-            let existing=self.fetch_by_keys(std::slice::from_ref(&key)).await?;
-            let generation=uuid::Uuid::new_v4().to_string();
-            let batches=latest_batches(&existing)?.into_iter().map(|batch|with_generation(batch,&generation)).collect::<Result<Vec<_>>>()?;
-            let write=PreparedWrite{documents:documents_from_batches(&batches,std::slice::from_ref(&key))?,keys:vec![key.clone()],batches};
+            let key = spool
+                .query_row(
+                    "SELECT owner_id,doc_id FROM duplicates ORDER BY owner_id,doc_id LIMIT 1",
+                    [],
+                    |row| {
+                        Ok(DocumentKey {
+                            owner_id: row.get(0)?,
+                            doc_id: row.get(1)?,
+                        })
+                    },
+                )
+                .optional()?;
+            let Some(key) = key else { break };
+            let existing = self.fetch_by_keys(std::slice::from_ref(&key)).await?;
+            let generation = uuid::Uuid::new_v4().to_string();
+            let batches = latest_batches(&existing)?
+                .into_iter()
+                .map(|batch| with_generation(batch, &generation))
+                .collect::<Result<Vec<_>>>()?;
+            let write = PreparedWrite {
+                documents: documents_from_batches(&batches, std::slice::from_ref(&key))?,
+                keys: vec![key.clone()],
+                batches,
+            };
             fts.mark_pending(&write.keys)?;
             self.commit_upsert(&write).await?;
-            spool.execute("DELETE FROM duplicates WHERE owner_id=?1 AND doc_id=?2",rusqlite::params![key.owner_id,key.doc_id])?;
+            spool.execute(
+                "DELETE FROM duplicates WHERE owner_id=?1 AND doc_id=?2",
+                rusqlite::params![key.owner_id, key.doc_id],
+            )?;
         }
         fts.publish_generation(sealed)?;
         drop(spool);
@@ -414,23 +654,39 @@ impl VectorStore {
     /// Read one ordered metadata page from a pinned immutable snapshot.
     pub async fn rows_since(
         &self,
+        fts: &FtsStore,
         since_ms: i64,
         cursor: Option<&crisp_index_protocol::SyncCursor>,
         limit: usize,
     ) -> Result<crisp_index_protocol::SyncPage> {
-        self.read_sync_page(since_ms, cursor, limit).await
+        self.read_sync_page(fts, since_ms, cursor, limit).await
     }
 
-    async fn delete_keys(&self,keys:&[DocumentKey])->Result<()> {
-        self.table.delete(&keys_sql(keys)).await.context("Delete scoped document")?;
+    async fn delete_keys(&self, keys: &[DocumentKey]) -> Result<()> {
+        self.table
+            .delete(&keys_sql(keys))
+            .await
+            .context("Delete scoped document")?;
         Ok(())
     }
 
-    async fn update_keys_location(&self,keys:&[DocumentKey],new_uri:&str,indexed_at:i64)->Result<()> {
-        self.table.update().only_if(keys_sql(keys))
-            .column("location_uri",format!("'{}'",sql_escape(new_uri)))
-            .column("indexed_at",format!("timestamp '{}'",iso_from_ms(indexed_at)))
-            .execute().await.context("Update scoped document location")?;
+    async fn update_keys_location(
+        &self,
+        keys: &[DocumentKey],
+        new_uri: &str,
+        indexed_at: i64,
+    ) -> Result<()> {
+        self.table
+            .update()
+            .only_if(keys_sql(keys))
+            .column("location_uri", format!("'{}'", sql_escape(new_uri)))
+            .column(
+                "indexed_at",
+                format!("timestamp '{}'", iso_from_ms(indexed_at)),
+            )
+            .execute()
+            .await
+            .context("Update scoped document location")?;
         Ok(())
     }
 
@@ -533,55 +789,107 @@ impl SearchIndex {
         }
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
-        let mut write = self.vector.prepare_upsert(&batch.chunks).await?;
-        let indexed_at=self.fts.next_write_timestamp()?;
+        let (chunks, removals) = self.vector.resolve_source_identities(&batch.chunks).await?;
+        let mut write = self
+            .vector
+            .prepare_upsert_scoped(&chunks, &removals)
+            .await?;
+        let indexed_at = self.fts.next_write_timestamp()?;
         for batch in &mut write.batches {
-            let position=batch.schema().index_of("indexed_at")?;
-            let mut columns=batch.columns().to_vec();
-            columns[position]=Arc::new(TimestampMillisecondArray::from(vec![indexed_at;batch.num_rows()]));
-            *batch=RecordBatch::try_new(batch.schema(),columns)?;
+            let position = batch.schema().index_of("indexed_at")?;
+            let mut columns = batch.columns().to_vec();
+            columns[position] = Arc::new(TimestampMillisecondArray::from(vec![
+                indexed_at;
+                batch.num_rows()
+            ]));
+            *batch = RecordBatch::try_new(batch.schema(), columns)?;
         }
         self.fts.mark_pending(&write.keys)?;
+        let retired: Vec<_> = write
+            .documents
+            .iter()
+            .filter(|(_, document)| document.is_none())
+            .map(|(key, _)| key.clone())
+            .collect();
+        if !retired.is_empty() {
+            self.fts.mark_pending_delete(&retired, indexed_at)?;
+        }
         self.vector.commit_upsert(&write).await?;
         self.fts.finish_repairs(&write.documents)?;
         Ok(())
     }
 
-    async fn mutation_keys(&self,doc_id:&str,owner_id:Option<&str>)->Result<Vec<DocumentKey>> {
-        let mut keys=self.vector.keys_for_doc(doc_id).await?;
-        if let Some(owner)=owner_id {keys.retain(|key|key.owner_id==owner);}
-        else if keys.len()>1 {return Err(AmbiguousDocument.into());}
+    async fn mutation_keys(
+        &self,
+        doc_id: &str,
+        owner_id: Option<&str>,
+    ) -> Result<Vec<DocumentKey>> {
+        let mut keys = self.vector.keys_for_doc(doc_id).await?;
+        if let Some(owner) = owner_id {
+            keys.retain(|key| key.owner_id == owner);
+        } else if keys.len() > 1 {
+            return Err(AmbiguousDocument.into());
+        }
+        if !keys.is_empty() {
+            let batches = self.vector.fetch_by_keys(&keys).await?;
+            let mut locations = HashSet::new();
+            for batch in &batches {
+                let column = string_column(batch, "location_uri")?;
+                for row in 0..batch.num_rows() {
+                    locations.insert(column.value(row).to_owned());
+                }
+            }
+            if locations.len() > 1 {
+                return Err(AmbiguousDocument.into());
+            }
+        }
         Ok(keys)
     }
 
-    pub async fn delete_doc(&self,doc_id:&str)->Result<()> {
-        self.delete_scoped_doc(doc_id,None).await
+    pub async fn delete_doc(&self, doc_id: &str) -> Result<()> {
+        self.delete_scoped_doc(doc_id, None).await
     }
 
-    pub async fn delete_scoped_doc(&self,doc_id:&str,owner_id:Option<&str>)->Result<()> {
-        let _guard=self.read_guard().await?;
-        let keys=self.mutation_keys(doc_id,owner_id).await?;
-        if keys.is_empty(){return Ok(());}
-        self.fts.mark_pending(&keys)?;
+    pub async fn delete_scoped_doc(&self, doc_id: &str, owner_id: Option<&str>) -> Result<()> {
+        let _guard = self.read_guard().await?;
+        let keys = self.mutation_keys(doc_id, owner_id).await?;
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.fts
+            .mark_pending_delete(&keys, self.fts.next_write_timestamp()?)?;
         self.vector.delete_keys(&keys).await?;
-        self.fts.finish_repairs(&keys.into_iter().map(|key|(key,None)).collect::<Vec<_>>())?;
+        self.fts
+            .finish_repairs(&keys.into_iter().map(|key| (key, None)).collect::<Vec<_>>())?;
         Ok(())
     }
 
-    pub async fn update_location(&self,doc_id:&str,new_uri:&str)->Result<()> {
-        self.update_scoped_location(doc_id,new_uri,None).await
+    pub async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
+        self.update_scoped_location(doc_id, new_uri, None).await
     }
 
-    pub async fn update_scoped_location(&self,doc_id:&str,new_uri:&str,owner_id:Option<&str>)->Result<()> {
-        let _guard=self.read_guard().await?;
-        let keys=self.mutation_keys(doc_id,owner_id).await?;
-        if keys.is_empty(){return Ok(());}
-        self.vector.update_keys_location(&keys,new_uri,self.fts.next_write_timestamp()?).await
+    pub async fn update_scoped_location(
+        &self,
+        doc_id: &str,
+        new_uri: &str,
+        owner_id: Option<&str>,
+    ) -> Result<()> {
+        let _guard = self.read_guard().await?;
+        let keys = self.mutation_keys(doc_id, owner_id).await?;
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.vector
+            .update_keys_location(&keys, new_uri, self.fts.next_write_timestamp()?)
+            .await
     }
 
-    pub async fn stats(&self)->Result<(usize,usize)> {
-        let _guard=self.read_guard().await?;
-        Ok((self.vector.count().await?,usize::try_from(self.fts.document_count()?)?))
+    pub async fn stats(&self) -> Result<(usize, usize)> {
+        let _guard = self.read_guard().await?;
+        Ok((
+            self.vector.count().await?,
+            usize::try_from(self.fts.document_count()?)?,
+        ))
     }
 
     pub async fn search_text(
@@ -618,8 +926,25 @@ impl SearchIndex {
         validate_embedding(embedding, self.vector.dims)?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
-        self.vector_candidates(embedding, filters, limit, None)
-            .await
+        let matches = self
+            .vector_candidates(embedding, filters, limit, None)
+            .await?;
+        let scores = matches
+            .iter()
+            .map(|hit| (hit_key(hit), hit.score))
+            .collect();
+        let mut hydrated = self.hydrate(&scores, &[], limit).await?;
+        let best: HashMap<_, _> = matches
+            .into_iter()
+            .map(|hit| (hit_key(&hit), hit))
+            .collect();
+        for hit in &mut hydrated {
+            if let Some(best) = best.get(&hit_key(hit)) {
+                hit.snippet = best.snippet.clone();
+                hit.chunk_index = best.chunk_index;
+            }
+        }
+        Ok(hydrated)
     }
 
     pub async fn search_hybrid(
@@ -658,6 +983,8 @@ impl SearchIndex {
         wanted: usize,
         constraint: Option<&PreparedSearch>,
     ) -> Result<Vec<SearchHit>> {
+        let metadata = self.fts.prepare_filters(filters)?;
+        let constraint = constraint.unwrap_or(&metadata);
         let mut candidate_limit = (wanted * 4).clamp(40, 1000);
         loop {
             let hits = self
@@ -670,7 +997,7 @@ impl SearchIndex {
                 .into_iter()
                 .filter(|hit| seen.insert(hit_key(hit)))
                 .collect();
-            if let Some(constraint) = constraint {
+            {
                 let keys: Vec<_> = unique.iter().map(hit_key).collect();
                 let mut allowed = HashSet::new();
                 for group in keys.chunks(1000) {
@@ -764,6 +1091,123 @@ fn rrf_merge(
     ranked.into_iter().collect()
 }
 
+fn same_document_metadata(left: &IngestChunk, right: &IngestChunk) -> bool {
+    left.title == right.title
+        && left.author == right.author
+        && left.year == right.year
+        && left.filename == right.filename
+        && left.ext == right.ext
+        && left.language == right.language
+        && left.location_uri == right.location_uri
+        && left.source_hash == right.source_hash
+        && left.tags == right.tags
+}
+
+/// Partial chunk updates still publish one coherent document metadata view.
+fn propagate_document_metadata(
+    batch: &RecordBatch,
+    groups: &BTreeMap<DocumentKey, Vec<&IngestChunk>>,
+) -> Result<RecordBatch> {
+    let owners = string_column(batch, "owner_id")?;
+    let ids = string_column(batch, "doc_id")?;
+    let metadata: Vec<_> = (0..batch.num_rows())
+        .map(|row| {
+            groups
+                .get(&DocumentKey {
+                    owner_id: owners.value(row).into(),
+                    doc_id: ids.value(row).into(),
+                })
+                .and_then(|chunks| chunks.first().copied())
+        })
+        .collect();
+    let mut columns = batch.columns().to_vec();
+    for name in [
+        "title",
+        "author",
+        "filename",
+        "ext",
+        "language",
+        "location_uri",
+        "source_hash",
+    ] {
+        let old = string_column(batch, name)?;
+        let values: Vec<Option<&str>> = metadata
+            .iter()
+            .enumerate()
+            .map(|(row, chunk)| match chunk {
+                Some(chunk) => match name {
+                    "title" => chunk.title.as_deref(),
+                    "author" => chunk.author.as_deref(),
+                    "filename" => Some(chunk.filename.as_str()),
+                    "ext" => Some(chunk.ext.as_str()),
+                    "language" => Some(chunk.language.as_str()),
+                    "location_uri" => Some(chunk.location_uri.as_str()),
+                    _ => Some(chunk.source_hash.as_str()),
+                },
+                None => {
+                    if old.is_null(row) {
+                        None
+                    } else {
+                        Some(old.value(row))
+                    }
+                }
+            })
+            .collect();
+        columns[batch.schema().index_of(name)?] = Arc::new(StringArray::from(values));
+    }
+    let year = batch
+        .column_by_name("year")
+        .and_then(|column| column.as_any().downcast_ref::<Int32Array>())
+        .ok_or_else(|| anyhow!("Stored year column is missing"))?;
+    columns[batch.schema().index_of("year")?] = Arc::new(Int32Array::from(
+        metadata
+            .iter()
+            .enumerate()
+            .map(|(row, chunk)| match chunk {
+                Some(chunk) => chunk.year,
+                None => {
+                    if year.is_null(row) {
+                        None
+                    } else {
+                        Some(year.value(row))
+                    }
+                }
+            })
+            .collect::<Vec<_>>(),
+    ));
+    let old_tags = batch
+        .column_by_name("tags")
+        .and_then(|column| column.as_any().downcast_ref::<arrow_array::ListArray>())
+        .ok_or_else(|| anyhow!("Stored tags column is missing"))?;
+    let mut tags = ListBuilder::new(StringBuilder::new());
+    for (row, chunk) in metadata.into_iter().enumerate() {
+        if let Some(chunk) = chunk {
+            for tag in &chunk.tags {
+                tags.values().append_value(tag);
+            }
+            tags.append(true);
+        } else if old_tags.is_null(row) {
+            tags.append(false);
+        } else {
+            let value = old_tags.value(row);
+            let values = value
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow!("Stored tags are not strings"))?;
+            for index in 0..values.len() {
+                if values.is_null(index) {
+                    tags.values().append_null();
+                } else {
+                    tags.values().append_value(values.value(index));
+                }
+            }
+            tags.append(true);
+        }
+    }
+    columns[batch.schema().index_of("tags")?] = Arc::new(tags.finish());
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
+}
+
 fn sql_escape(text: &str) -> String {
     text.replace('\'', "''")
 }
@@ -811,6 +1255,12 @@ pub fn validate_chunk_shape(chunk: &IngestChunk) -> Result<()> {
         "Owner identifier exceeds 512 bytes"
     );
     ensure!(chunk.chunk_index >= 0, "Chunk index cannot be negative");
+    ensure!(
+        chunk
+            .source_identity_version
+            .is_none_or(|version| version == 1),
+        "Unsupported source identity version"
+    );
     if let Some(total) = chunk.chunk_total {
         ensure!(
             total > 0 && total <= MAX_AFFECTED_CHUNKS as i32 && chunk.chunk_index < total,
@@ -843,30 +1293,47 @@ pub fn validate_chunk(chunk: &IngestChunk, dims: usize) -> Result<()> {
 
 /// One canonical row per owner/document/chunk, including deterministic ordering
 /// when old append-only writes share a millisecond timestamp.
-fn latest_batches(batches:&[RecordBatch])->Result<Vec<RecordBatch>> {
-    let mut latest=HashMap::<(DocumentKey,i32),(usize,usize,i64,u64)>::new();
-    for (batch_index,batch) in batches.iter().enumerate() {
-        for (row,chunk) in stored_chunks(batch)?.into_iter().enumerate() {
-            let identity=(chunk.key,chunk.chunk_index);
-            if latest.get(&identity).is_none_or(|(_,_,time,order)|(*time,*order)<=(chunk.indexed_at,chunk.row_order)) {
-                latest.insert(identity,(batch_index,row,chunk.indexed_at,chunk.row_order));
+fn latest_batches(batches: &[RecordBatch]) -> Result<Vec<RecordBatch>> {
+    let mut latest = HashMap::<(DocumentKey, i32), (usize, usize, i64, u64)>::new();
+    for (batch_index, batch) in batches.iter().enumerate() {
+        for (row, chunk) in stored_chunks(batch)?.into_iter().enumerate() {
+            let identity = (chunk.key, chunk.chunk_index);
+            if latest.get(&identity).is_none_or(|(_, _, time, order)| {
+                (*time, *order) <= (chunk.indexed_at, chunk.row_order)
+            }) {
+                latest.insert(
+                    identity,
+                    (batch_index, row, chunk.indexed_at, chunk.row_order),
+                );
             }
         }
     }
-    let mut selected=Vec::new();
-    for (batch_index,batch) in batches.iter().enumerate() {
-        let mut rows:Vec<_>=latest.values().filter(|(index,_,_,_)|*index==batch_index).map(|(_,row,_,_)|*row as u32).collect();
+    let mut selected = Vec::new();
+    for (batch_index, batch) in batches.iter().enumerate() {
+        let mut rows: Vec<_> = latest
+            .values()
+            .filter(|(index, _, _, _)| *index == batch_index)
+            .map(|(_, row, _, _)| *row as u32)
+            .collect();
         rows.sort_unstable();
-        if rows.is_empty(){continue;}
-        let selection=UInt32Array::from(rows);
-        let columns=batch.columns().iter().map(|column|arrow_select::take::take(column,&selection,None)).collect::<std::result::Result<Vec<_>,_>>()?;
-        selected.push(RecordBatch::try_new(batch.schema(),columns)?);
+        if rows.is_empty() {
+            continue;
+        }
+        let selection = UInt32Array::from(rows);
+        let columns = batch
+            .columns()
+            .iter()
+            .map(|column| arrow_select::take::take(column, &selection, None))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        selected.push(RecordBatch::try_new(batch.schema(), columns)?);
     }
     Ok(selected)
 }
 
 fn with_generation(mut batch: RecordBatch, generation: &str) -> Result<RecordBatch> {
-    if let Ok(position) = batch.schema().index_of("_rowid") { batch.remove_column(position); }
+    if let Ok(position) = batch.schema().index_of("_rowid") {
+        batch.remove_column(position);
+    }
     let position = batch.schema().index_of("metadata_json")?;
     let existing = string_column(&batch, "metadata_json")?;
     let mut encoded = Vec::with_capacity(batch.num_rows());
@@ -938,9 +1405,12 @@ fn stored_chunks(batch: &RecordBatch) -> Result<Vec<StoredChunk>> {
                     .filter(|column| !column.is_null(row))
                     .map(|column| column.value(row))
                     .unwrap_or(0),
-                row_order: batch.column_by_name("_rowid")
-                    .and_then(|column|column.as_any().downcast_ref::<UInt64Array>())
-                    .filter(|column|!column.is_null(row)).map(|column|column.value(row)).unwrap_or(0),
+                row_order: batch
+                    .column_by_name("_rowid")
+                    .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+                    .filter(|column| !column.is_null(row))
+                    .map(|column| column.value(row))
+                    .unwrap_or(0),
                 title: if title.is_empty() {
                     string("filename", row)
                 } else {
@@ -1110,7 +1580,11 @@ fn batches_to_results(
         let lang_col = str_col!("language");
         let text_col = str_col!("full_text");
         let chunk_col = i32_col!("chunk_index");
+        let source_hash_col = str_col!("source_hash");
         let dist_col = f32_col!("_distance");
+        let indexed_col = batch
+            .column_by_name("indexed_at")
+            .and_then(|column| column.as_any().downcast_ref::<TimestampMillisecondArray>());
 
         for i in 0..n {
             let doc_id = doc_id_col
@@ -1191,6 +1665,14 @@ fn batches_to_results(
                 snippet,
                 score,
                 chunk_index: chunk_col.map(|c| c.value(i)).unwrap_or(0),
+                source_hash: source_hash_col
+                    .filter(|column| !column.is_null(i))
+                    .map(|column| column.value(i).to_owned())
+                    .unwrap_or_default(),
+                indexed_at: indexed_col
+                    .filter(|column| !column.is_null(i))
+                    .map(|column| column.value(i))
+                    .unwrap_or(0),
             });
         }
     }

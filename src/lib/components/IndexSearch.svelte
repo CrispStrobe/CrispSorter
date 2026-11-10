@@ -58,6 +58,7 @@
         ext?:            string;
         language?:       string;
         location_uri:    string;
+        owner_id?:       string;
         snippet:         string;   // backend sends "snippet", not "full_text"
         source_hash?:    string;
         indexed_at?:     number;
@@ -495,6 +496,7 @@
         try {
             const stats = await invoke<{ chunk_count: number }>('index_audio_promote_l3', {
                 locationUri: r.location_uri,
+                ownerId: r.owner_id ?? null,
             });
             const after = new Map(transcribes);
             after.set(key, { loading: false, done: true, chunks: stats.chunk_count });
@@ -519,6 +521,7 @@
         try {
             const stats = await invoke<{ chunk_count: number }>('index_image_promote_l3', {
                 locationUri: r.location_uri,
+                ownerId: r.owner_id ?? null,
             });
             const after = new Map(transcribes);
             after.set(key, { loading: false, done: true, chunks: stats.chunk_count });
@@ -1533,7 +1536,7 @@
                     docId: result.doc_id,
                     driveId: parts.driveId,
                     remotePath: parts.remotePath,
-                    ownerId: null,
+                    ownerId: result.owner_id ?? null,
                 });
                 await runSearch();
                 return `Promoted ${result.filename || parts.remotePath} to full local indexing.`;
@@ -1576,7 +1579,7 @@
                     originalPath,
                     retrievePyPath,
                     outputDir: null,
-                    ownerId: null,
+                    ownerId: result.owner_id ?? null,
                 });
                 await runSearch();
                 return `Promoted ${result.filename || originalPath} to local full-text index.`;

@@ -85,7 +85,8 @@ async function seedQueue(page: Page, files: SeedFile[], status = 'paused') {
             if (command === 'index_volume_id_for_path') return null;
             if (command === 'index_ingest_l1' || command === 'index_ingest_batch') {
                 if (root.__queueGate) await new Promise<void>(resolve => { root.__releaseQueueWrite = () => { root.__queueGate = false; resolve(); }; });
-                return { chunk_count: args.inputs?.length ?? 0, embed_time_ms: 1, write_time_ms: 1 };
+                return { chunk_count: args.inputs?.length ?? 0, embed_time_ms: 1, write_time_ms: 1,
+                    doc_ids: command === 'index_ingest_batch' ? args.inputs.map((input: any) => `committed-${input.locationUri}`) : [] };
             }
             if (command === 'index_promote_l2') return args.docIds.map((_: string, index: number) => ({
                 doc_id: `resolved-${args.sourcePaths[index]}`, updated: true,
@@ -191,9 +192,29 @@ test('short text is indexed, empty extraction is retryable, and long shared pref
     const writes = await queueCalls(page, 'index_ingest_batch');
     expect(writes).toHaveLength(1);
     expect(new Set(writes[0].args.inputs.map((input: any) => input.sourceHash)).size).toBe(3);
+    expect(writes[0].args.inputs.every((input: any) => input.sourceHash === input.sourceFingerprint)).toBe(true);
+    expect(await page.evaluate(() => (window as any).__queueRows[2].docId)).toBe('committed-/fixtures/short.txt');
     expect(writes[0].args.inputs.some((input: any) => input.fullText === 'A')).toBe(true);
     await expect(page.locator('.file-row').filter({ hasText: 'empty.txt' })).toContainText('Kein durchsuchbarer Text');
     await expect(page.getByRole('button', { name: /L3 Volltext-Indexierung \(1\)/ })).toBeEnabled();
+});
+
+test('identical file copies keep the shared byte fingerprint and acknowledge separate committed occurrences', async ({ page }) => {
+    await seedQueue(page, [
+        { name: 'first-copy.txt', status: 'pending', text: 'Identical source bytes.' },
+        { name: 'second-copy.txt', status: 'pending', text: 'Identical source bytes.' },
+    ]);
+    await page.getByRole('button', { name: 'L3', exact: true }).click();
+    await page.getByRole('button', { name: /L3 Volltext-Indexierung/ }).click();
+    await expect(page.locator('.stats-bar')).toContainText('2 fertig');
+    const inputs = (await queueCalls(page, 'index_ingest_batch'))[0].args.inputs;
+    expect(inputs[0].sourceHash).toBe(inputs[1].sourceHash);
+    expect(inputs[0].sourceHash).toBe(inputs[0].sourceFingerprint);
+    expect(await page.evaluate(() => (window as any).__queueRows.map((row: any) => row.docId))).toEqual([
+        'committed-/fixtures/first-copy.txt', 'committed-/fixtures/second-copy.txt',
+    ]);
+    const commands = await page.evaluate(() => (window as any).__queueCalls.map((call: any) => call.command));
+    expect(commands.lastIndexOf('jobs_set_doc_id')).toBeLessThan(commands.indexOf('jobs_mark_done'));
 });
 
 test('a source changed during extraction never reaches the index writer', async ({ page }) => {
