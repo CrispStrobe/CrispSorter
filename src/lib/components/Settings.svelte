@@ -572,6 +572,19 @@
     let sidecarLogEl: HTMLTextAreaElement | null = $state(null);
     let mlxReady = $state(false);
     let saveIndicator = $state(false);
+    let settingsSaveError = $state('');
+    let ocrPersistenceError = $state('');
+
+    async function syncBackgroundOcr(): Promise<boolean> {
+        const results = await Promise.allSettled([
+            invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }),
+            invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }),
+        ]);
+        const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
+        ocrPersistenceError = failures.length > 0
+            ? `OCR-Einstellungen konnten für die gespeicherten Hintergrundaufträge nicht übernommen werden: ${failures.join('; ')}` : '';
+        return failures.length === 0;
+    }
     let customModelInput = $state('');
 
     // MLX Model Management
@@ -725,6 +738,7 @@
     type PendingConflict = {
         id: number; path: string; local_doc_id: string; local_hash: string;
         remote_hash: string; local_title?: string; remote_title?: string;
+        remote_operation?: 'delete' | 'metadata';
         remote_indexed_at: number; created_at: number;
     };
     let pendingConflicts = $state<PendingConflict[]>([]);
@@ -1284,7 +1298,6 @@
         ocrEnabled = await getSetting('ocrEnabled', false);
         ocrTier    = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
         ocrRecLang = await getSetting('ocrRecLang', 'auto') as 'auto' | 'latin' | 'cjk';
-        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         ocrPipelineEnabled  = await getSetting('ocrPipelineEnabled', false) as boolean;
         ocrPipelineRouter   = await getSetting('ocrPipelineRouter', true) as boolean;
         ocrPipelineCleanup  = await getSetting('ocrPipelineCleanup', true) as boolean;
@@ -1309,7 +1322,7 @@
         ocrPipelineVlmModel  = await getSetting('ocrPipelineVlmModel', '') as string;
         ocrPipelineVlmEngine = await getSetting('ocrPipelineVlmEngine', 'qwen2vl') as string;
         ocrPipelineTruecase  = await getSetting('ocrPipelineTruecase', '') as string;
-        invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
+        await syncBackgroundOcr();
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
@@ -1711,9 +1724,8 @@
         await saveSetting('ocrPipelineVlmModel',  ocrPipelineVlmModel);
         await saveSetting('ocrPipelineVlmEngine', ocrPipelineVlmEngine);
         await saveSetting('ocrPipelineTruecase',  ocrPipelineTruecase);
-        invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
+        if (!(await syncBackgroundOcr())) throw new Error(ocrPersistenceError);
         // Sync OCR options to the background ingest worker.
-        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
@@ -2090,7 +2102,11 @@
         try {
             await invoke('sync_accept_remote_conflict', { id: conflict.id });
             pendingConflicts = pendingConflicts.filter((item) => item.id !== conflict.id);
-            conflictsMessage = `Accepted remote version for ${conflict.path}`;
+            conflictsMessage = conflict.remote_operation === 'delete'
+                ? `Removed indexed copy for ${conflict.path}; source files are preserved.`
+                : conflict.remote_operation === 'metadata'
+                ? `Updated document metadata for ${conflict.path}; reviewed text is preserved.`
+                : `Accepted remote version for ${conflict.path}`;
         } catch (e: any) {
             conflictsMessage = `Could not accept remote version: ${e}`;
         } finally {
@@ -2500,11 +2516,15 @@
     }
 
     async function handleSave() {
-        console.log(`[Settings] Saving global settings...`);
-        await saveSettingsSilent();
-        console.log(`[Settings] All settings saved.`);
-        saveIndicator = true;
-        setTimeout(() => saveIndicator = false, 2000);
+        settingsSaveError = '';
+        saveIndicator = false;
+        try {
+            await saveSettingsSilent();
+            saveIndicator = true;
+            setTimeout(() => saveIndicator = false, 2000);
+        } catch (error) {
+            settingsSaveError = `Einstellungen wurden nicht vollständig gespeichert: ${String(error)}`;
+        }
     }
 
     async function handleSaveProvider() {
@@ -3130,6 +3150,13 @@
     </aside>
 
     <div class="content">
+        {#if settingsSaveError || ocrPersistenceError}
+            <div role="alert" class="settings-persistence-error">
+                <AlertCircle size={16} />
+                <span>{settingsSaveError || ocrPersistenceError}</span>
+                <button class="save-btn" onclick={handleSave}>Speichern erneut versuchen</button>
+            </div>
+        {/if}
         {#if selectedProviderId === 'global'}
             <div class="header">
                 <h1>{i18n.t.settings.general}</h1>
@@ -4522,7 +4549,7 @@
                             <strong>Conflict review ({pendingConflicts.length})</strong>
                             <button type="button" class="btn" onclick={refreshConflicts} disabled={conflictsBusy}>Refresh</button>
                         </div>
-                        <p class="hint">Manual pulls remain unapplied until reviewed. Each action is explicit and applies only the selected path/hash.</p>
+                        <p class="hint">Manual changes remain unapplied until reviewed. Each action applies only to the selected document.</p>
                         {#if pendingConflicts.length === 0}
                             <p class="hint">No unresolved conflicts.</p>
                         {:else}
@@ -4537,18 +4564,26 @@
                                         </div>
                                         <div>
                                             <div class="hint">Remote</div>
-                                            <div style="overflow-wrap:anywhere;">{conflict.remote_title || conflict.remote_hash}</div>
-                                            <code style="font-size:.78em; overflow-wrap:anywhere;">{conflict.remote_hash || 'no hash'}</code>
+                                            {#if conflict.remote_operation === 'delete'}
+                                                <div>Deleted from the remote index</div>
+                                                <p class="hint">Apply this deletion to remove the indexed copy here. Source files are preserved.</p>
+                                            {:else if conflict.remote_operation === 'metadata'}
+                                                <div>{conflict.remote_title || 'Updated document metadata'}</div>
+                                                <p class="hint">Apply the remote title and location while preserving reviewed text and evidence.</p>
+                                            {:else}
+                                                <div style="overflow-wrap:anywhere;">{conflict.remote_title || conflict.remote_hash}</div>
+                                                <code style="font-size:.78em; overflow-wrap:anywhere;">{conflict.remote_hash || 'no hash'}</code>
+                                            {/if}
                                         </div>
                                     </div>
                                     <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;">
-                                        <span class="hint">Remote indexed {conflictTimestamp(conflict.remote_indexed_at)}</span>
+                                        <span class="hint">Remote {conflict.remote_operation === 'delete' ? 'deleted' : 'indexed'} {conflictTimestamp(conflict.remote_indexed_at)}</span>
                                         <div style="display:flex; gap:6px;">
                                             {#if conflictLocalPath(conflict.path)}
                                                 <button type="button" class="btn" onclick={() => openLocalConflict(conflict)} disabled={conflictsBusy}>Open local</button>
                                             {/if}
-                                            <button type="button" class="btn" onclick={() => acceptRemoteConflict(conflict)} disabled={conflictsBusy}>Keep remote</button>
-                                            <button type="button" class="btn danger" onclick={() => keepLocalConflict(conflict)} disabled={conflictsBusy}>Keep local</button>
+                                            <button type="button" class="btn" class:danger={conflict.remote_operation === 'delete'} onclick={() => acceptRemoteConflict(conflict)} disabled={conflictsBusy}>{conflict.remote_operation === 'delete' ? 'Remove indexed copy' : conflict.remote_operation === 'metadata' ? 'Apply metadata' : 'Keep remote'}</button>
+                                            <button type="button" class="btn" onclick={() => keepLocalConflict(conflict)} disabled={conflictsBusy}>Keep local</button>
                                         </div>
                                     </div>
                                 </div>
@@ -6094,6 +6129,9 @@
 {/if}
 
 <style>
+    .settings-persistence-error { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 12px; border: 1px solid #7f1d1d; border-radius: 7px; color: #fecaca; background: #2d1111; font-size: 0.85rem; }
+    .settings-persistence-error span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
     /* P36.13 — allowed third-party AI providers. */
     .consented-list {
         list-style: none;

@@ -598,11 +598,12 @@ impl SearchEngine {
         if filters.fuzzy {
             q_owned = super::fts_query::fuzzify_query(&q_owned);
         }
-        let filters_hash = super::result_cache::hash_request(filters, limit);
         {
             // Repair before trusting a cached answer. Preflight also binds
             // actual fields and bounds dictionary expansion before model work.
             let _read_guard = self.vector.read_guard(&self.fts).await?;
+            let filters_hash = super::result_cache::hash_snapshot(
+                filters, limit, self.vector.table_ref().version().await?);
             let mut cache = self.cache.lock().await;
             if let Some(cached) = cache.get(query_text, "hybrid", filters_hash) {
                 return Ok(cached);
@@ -614,6 +615,8 @@ impl SearchEngine {
         // Ingestion may progress during inference; take a fresh snapshot after.
         let embedding = self.embed_query(query_text).await?;
         let _read_guard = self.vector.read_guard(&self.fts).await?;
+        let filters_hash = super::result_cache::hash_snapshot(
+            filters, limit, self.vector.table_ref().version().await?);
         let cache_generation = self.cache.lock().await.generation_token();
         let prepared = self.prepare_fts_search(&q_owned, filters).await?;
         let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);

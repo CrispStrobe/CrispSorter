@@ -21,9 +21,12 @@
 ///   POST /v1/admin/build-ivf-pq   — build IVF-PQ index (auth required)
 mod auth;
 mod embedder;
+mod fts;
 mod index;
 mod queue;
 mod routes;
+#[path = "../../shared/source_identity.rs"]
+mod source_identity;
 mod state;
 
 use std::sync::Arc;
@@ -53,14 +56,18 @@ async fn main() -> Result<()> {
         .init();
 
     // Config from environment.
-    let api_key   = std::env::var("CRISP_API_KEY").unwrap_or_default();
+    let api_key = std::env::var("CRISP_API_KEY").unwrap_or_default();
     let port: u16 = std::env::var("PORT")
-        .ok().and_then(|p| p.parse().ok()).unwrap_or(8473);
-    let data_dir  = std::path::PathBuf::from(
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8473);
+    let data_dir = std::path::PathBuf::from(
         std::env::var("LANCE_DATA_DIR").unwrap_or_else(|_| "./data".to_owned()),
     );
     let dims: usize = std::env::var("EMBED_DIMS")
-        .ok().and_then(|d| d.parse().ok()).unwrap_or(1024);
+        .ok()
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(1024);
     let server_embed_enabled = std::env::var("SERVER_EMBED")
         .ok()
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
@@ -89,12 +96,15 @@ async fn main() -> Result<()> {
     let vector = Arc::new(VectorStore::open_or_create(&data_dir, dims).await?);
 
     tracing::info!("Opening FtsStore");
-    let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts"))?);
+    let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts-v2"))?);
 
     let search_index = Arc::new(SearchIndex::new(vector, fts));
+    search_index.ensure_ready().await?;
     let embedder = if server_embed_enabled {
         tracing::info!("Loading server-side embedder (BGE-M3)");
-        Some(embedder::ServerEmbedder::load_bge_m3(&data_dir.join("models"))?)
+        Some(embedder::ServerEmbedder::load_bge_m3(
+            &data_dir.join("models"),
+        )?)
     } else {
         None
     };
@@ -126,15 +136,23 @@ async fn main() -> Result<()> {
 
     // Authenticated /v1/* router.
     let v1 = Router::new()
-        .route("/stats",                    get(routes::stats::stats))
-        .route("/ingest",                   post(routes::ingest::ingest))
-        .route("/ingest/batch",             post(routes::ingest::ingest_batch))
-        .route("/tasks/:task_id",           get(routes::tasks::task_status))
-        .route("/search",                   post(routes::search::search))
-        .route("/docs/:doc_id",             delete(routes::docs::delete_doc))
-        .route("/docs/:doc_id/location",    post(routes::docs::update_location))
-        .route("/admin/build-ivf-pq",       post(routes::admin::build_ivf_pq))
-        .route("/sync/since",               get(routes::sync::since))
+        .route("/capabilities", get(routes::capabilities::capabilities))
+        .route("/stats", get(routes::stats::stats))
+        .route("/ingest", post(routes::ingest::ingest))
+        .route("/ingest/batch", post(routes::ingest::ingest_batch))
+        .route("/tasks/{task_id}", get(routes::tasks::task_status))
+        .route("/search", post(routes::search::search))
+        .route("/docs/{doc_id}", delete(routes::docs::delete_doc))
+        .route(
+            "/docs/location/by-uri",
+            post(routes::docs::update_location_by_uri),
+        )
+        .route(
+            "/docs/{doc_id}/location",
+            post(routes::docs::update_location),
+        )
+        .route("/admin/build-ivf-pq", post(routes::admin::build_ivf_pq))
+        .route("/sync/since", get(routes::sync::since))
         .layer(middleware::from_fn_with_state(
             shared.clone(),
             auth::require_bearer,

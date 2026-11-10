@@ -26,6 +26,13 @@ The suite checks:
 
 - Atomic complete-document replacement, legacy duplicate cleanup, and removal
   of obsolete tail chunks without changing unrelated sources.
+- Independent occurrence identities for identical bytes at different paths or
+  owners; stable identities and reviewed fields across file moves; exact input
+  ordering of committed IDs after repeated-source batch coalescing.
+- Bounded repair of shared legacy IDs, retaining other sources' text, vectors,
+  and metadata without cross-owner text leakage or cross-source proximity hits.
+- Scoped deletion and selected-source promotion receipts, including a new
+  conflicting identity appearing while a prepared write waits for its lease.
 - Preservation of the last searchable document after extraction, embedding,
   model output validation, or preparation fails.
 - Recovery before readiness after the vector transaction commits but the full
@@ -41,8 +48,13 @@ The suite checks:
   and mounted-source predicates applied before a result limit.
 - Queue recovery after reopening, error retry, idempotent and job-scoped
   acknowledgements, and transaction rollback on an injected SQLite failure.
+- Background source recovery, preserved OCR options, one live scheduler per
+  data directory, coalesced follow-up requests, dropped worker recovery, and
+  durable acknowledgements before progress advances.
+- File-byte receipts checked under the index writer lease after extraction and
+  embedding, including changes while a prepared document waits to commit.
 
 This suite does not qualify model inference, platform extractors, GPU backends,
-the desktop command registration, or the full search engine. Those remain the
+the desktop worker adapters or command registration, or the full search engine. Those remain the
 responsibility of the application and platform integration suites. The separate
 search contract package qualifies query parsing and lexical execution.

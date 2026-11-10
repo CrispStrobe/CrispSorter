@@ -35,6 +35,7 @@
     } from 'lucide-svelte';
     import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
+    import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
     import CafCatalog from './Catalog.svelte';
     import CorpusDashboard from './CorpusDashboard.svelte';
@@ -195,6 +196,7 @@
     let activeJobId = $state<string | null>(null);
     let queueSummary = $state<QueueSummary | null>(null);
     let queueError = $state('');
+    let contentsActionError = $state('');
     let queueLoading = $state(true);
     let queueMutating = $state(false);
     let queueRestored = $state(false);
@@ -1592,6 +1594,7 @@
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
                 locationUri: string; ownerId: string; sourceHash: string; tags: string[];
+                sourceFingerprint: string;
             };
         };
 
@@ -1658,7 +1661,7 @@
                         }
                         updateEntry(String(qf.rowId), { status: 'embedding' });
                         const language   = detectLanguage(result.text);
-                        const sourceHash = await hashText(result.text + qf.filePath);
+                        const sourceHash = sourceFingerprint;
 
                         pendingWrites.push({
                             rowId: qf.rowId,
@@ -1675,6 +1678,7 @@
                                 locationUri: qf.filePath,
                                 ownerId:     'local',
                                 sourceHash,
+                                sourceFingerprint,
                                 tags:        [],
                             },
                         });
@@ -1690,10 +1694,16 @@
                 // Flush writes for this batch
                 if (pendingWrites.length > 0) {
                     try {
-                        const batchStats = await invoke<{ chunk_count: number; embed_time_ms: number; write_time_ms: number }>(
+                        const batchStats = await invoke<{ chunk_count: number; embed_time_ms: number; write_time_ms: number; doc_ids?: string[] }>(
                             'index_ingest_batch', { inputs: pendingWrites.map(w => w.input) }
                         );
                         const n = pendingWrites.length;
+                        if (batchStats.doc_ids?.length) {
+                            if (batchStats.doc_ids.length !== n) throw new Error('Der Index hat nicht alle gespeicherten Dokumentidentitäten bestätigt. Bitte erneut versuchen.');
+                            for (let index = 0; index < n; index++) {
+                                await invoke('jobs_set_doc_id', { rowId: pendingWrites[index].rowId, docId: batchStats.doc_ids[index] });
+                            }
+                        }
                         await invoke('jobs_mark_done', {
                             jobId,
                             rowIds: pendingWrites.map(w => w.rowId),
@@ -2445,7 +2455,7 @@
                 docId:      doc.doc_id,
                 driveId:    parts.driveId,
                 remotePath: parts.remotePath,
-                ownerId:    null,
+                ownerId:    doc.owner_id ?? null,
             });
             logInfo(`P11: promoted to L3: ${result.chunks} chunks`);
             await loadContents();
@@ -2481,7 +2491,7 @@
                 originalPath,
                 retrievePyPath: pyPath,
                 outputDir: null,
-                ownerId: null,
+                ownerId: doc.owner_id ?? null,
             });
             logInfo(`P12: promoted to L3: ${result.chunks} chunks`);
             await loadContents();
@@ -2493,16 +2503,21 @@
         }
     }
 
-    async function deleteFromIndex(docId: string) {
+    async function deleteFromIndex(docId: string, occurrence?: { owner_id: string; location_uri: string }) {
         deletingIds = new Set([...deletingIds, docId]);
+        contentsActionError = '';
         try {
-            await invoke('index_delete_document', { docId });
-            contents = contents.filter((c: any) => c.doc_id !== docId);
+            const matches = contents.filter((c: any) => c.doc_id === docId);
+            if (!occurrence && matches.length > 1) throw new Error('Diese ältere Dokumentidentität gehört zu mehreren Quellen. Bitte die gewünschte Zeile einzeln löschen.');
+            const row = occurrence ?? matches[0];
+            if (!row?.owner_id || !row?.location_uri) throw new Error('Quelle nicht eindeutig geladen. Die Übersicht neu laden und erneut versuchen.');
+            await invoke('index_delete_document', { docId, ownerId: row.owner_id, locationUri: row.location_uri });
             selectedDocIds.delete(docId);
             selectedDocIds = new Set(selectedDocIds);
-            if (indexStats) indexStats = { ...indexStats, doc_count: indexStats.doc_count - 1 };
+            await loadContents();
         } catch (e) {
-            console.error('Delete failed:', e);
+            contentsActionError = `Die Quelle konnte nicht aus dem Index entfernt werden: ${String(e)}`;
+            logError(contentsActionError);
         } finally {
             deletingIds.delete(docId);
             deletingIds = new Set(deletingIds);
@@ -2753,7 +2768,9 @@
         if (ids.length === 0) return;
         promotingL3 = true;
         l3Progress = { done: 0, total: ids.length, current: '' };
-        let ok = 0, fail = 0, skipped = 0;
+        let ok = 0, fail = 0;
+        contentsActionError = '';
+        let lastFailure = '';
         try {
             // L3 promotion needs the embedder — attach it now.
             if (!(await ensureIndexReady(true))) return;
@@ -2764,6 +2781,7 @@
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
                 locationUri: string; ownerId: string; sourceHash: string; tags: string[];
+                sourceFingerprint: string;
             };
             const l3Buffer: L3Input[] = [];
 
@@ -2774,7 +2792,8 @@
                     await invoke('index_ingest_batch', { inputs: batch });
                     ok += batch.length;
                 } catch (e) {
-                    console.error('[L3] batch promote failed:', e);
+                    lastFailure = String(e);
+                    logError(`[L3] ${lastFailure}`);
                     fail += batch.length;
                 }
             };
@@ -2796,6 +2815,7 @@
 
                 try {
                     const bytes = await readFile(path);
+                    const sourceFingerprint = await hashBytes(bytes);
                     const ab = bytes.buffer as ArrayBuffer;
                     const filename = row.filename ?? path.split(/[\\/]/).pop() ?? id;
                     const ext = (row.ext ?? filename.split('.').pop() ?? '').toLowerCase();
@@ -2804,13 +2824,12 @@
                         arrayBuffer: ab,
                         path,
                     });
-                    if (!result.text || result.text.trim().length < 20) {
-                        skipped++;
-                        l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
-                        continue;
+                    if (!result.text?.trim()) throw new Error('Kein durchsuchbarer Text erkannt. OCR oder Extraktionseinstellungen prüfen.');
+                    if (await invoke<string>('file_sha256', { path }) !== sourceFingerprint) {
+                        throw new Error('Die Quelldatei wurde während der Extraktion verändert. Bitte erneut versuchen.');
                     }
                     const language = detectLanguage(result.text);
-                    const sourceHash = await hashText(result.text + path);
+                    const sourceHash = sourceFingerprint;
                     l3Buffer.push({
                         fullText:    result.text,
                         fullTextMd:  result.markdownText ?? '',
@@ -2824,18 +2843,20 @@
                         locationUri: row.location_uri,
                         ownerId:     row.owner_id ?? 'local',
                         sourceHash,
+                        sourceFingerprint,
                         tags:        [],
                     });
                     if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {
-                    console.error('[L3] promote failed for', id, e);
+                    lastFailure = String(e);
+                    logError(`[L3] ${id}: ${lastFailure}`);
                     fail++;
                 }
                 l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
             }
             await flushL3();
             await loadContents();
-            console.log(`[L3] ${ok} promoted, ${skipped} skipped (no text), ${fail} errors`);
+            if (fail > 0) contentsActionError = `${ok} Quellen aktualisiert, ${fail} fehlgeschlagen. ${lastFailure || 'Quelle nicht verfügbar; Übersicht neu laden und erneut versuchen.'}`;
         } finally {
             promotingL3 = false;
             l3Progress = null;
@@ -3536,6 +3557,7 @@
 
     <!-- ══════════════════ HINZUFÜGEN (queue + ingest run) ══════════════════ -->
     {#if activeTab === 'add'}
+        <BackgroundIngestStatus ensureReady={() => ensureIndexReady(true)} />
         <div class="toolbar">
             <div class="toolbar-actions">
                 <button class="tb-btn" onclick={addFiles} disabled={queueBusy || !queueRestored}><FileText size={14} /> Dateien</button>
@@ -3715,6 +3737,7 @@
 
     <!-- ══════════════════ QUELLEN (managed folders + .caf import/export) ══════════════════ -->
     {#if activeTab === 'sources'}
+        <BackgroundIngestStatus ensureReady={() => ensureIndexReady(true)} />
         <div class="folders-toolbar">
             <button class="tb-btn" onclick={addFolder}><FolderOpen size={14} /> Ordner hinzufügen</button>
             <button class="tb-btn" onclick={openDriveDialog}
@@ -4234,6 +4257,10 @@
             </div>
         {/if}
 
+        {#if contentsActionError}
+            <div class="queue-error" role="alert"><AlertCircle size={15} /><span>{contentsActionError}</span></div>
+        {/if}
+
         {#if contentsLoading}
             <div class="empty-state"><Loader2 size={22} class="spin" /> Lade …</div>
         {:else if contents.length === 0}
@@ -4466,7 +4493,7 @@
                                         {#if isRetrying}<Loader2 size={13} class="spin" />{:else}<RotateCcw size={13} />{/if}
                                     </button>
                                 {/if}
-                                <button class="icon-btn danger-icon" onclick={() => deleteFromIndex(doc.doc_id)}
+                                <button class="icon-btn danger-icon" onclick={() => deleteFromIndex(doc.doc_id, doc)}
                                     disabled={isDeleting} title="Aus Index löschen">
                                     {#if isDeleting}<Loader2 size={13} class="spin" />{:else}<Trash2 size={13} />{/if}
                                 </button>

@@ -31,16 +31,17 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use crisp_index_protocol::{
-    BatchIngestResponse, IngestBatch, IngestChunk, SearchRequest, TaskStatusResponse,
-    UpdateLocationBody, UpdateLocationByUriBody,
+    BatchIngestResponse, IngestBatch, IngestChunk, SearchCapabilities, SearchRequest,
+    TaskStatusResponse, UpdateLocationBody, UpdateLocationByUriBody, QUERY_LANGUAGE_VERSION,
+    QUERY_VERSION_HEADER,
 };
 use reqwest::Client;
 use serde::Serialize;
 use std::time::Duration;
 
 use super::schema::{SearchFilters, SearchResult};
-use crate::sync::proxy::ProxyConfig;
 use super::{DocumentChunk, IndexBackend};
+use crate::sync::proxy::ProxyConfig;
 
 // ── RemoteClient ──────────────────────────────────────────────────────────────
 
@@ -65,7 +66,10 @@ impl RemoteClient {
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             api_key: api_key.into(),
-            client: crate::sync::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?,
+            client: crate::sync::proxy::build_async_client_with_timeout(
+                proxy,
+                Duration::from_secs(30),
+            )?,
         })
     }
 
@@ -106,6 +110,127 @@ impl RemoteClient {
         Ok(resp)
     }
 
+    /// Negotiate lexical meaning before sending syntax that an older server
+    /// could interpret differently. Plain queries remain available on legacy
+    /// servers; explicit syntax requires the shared versioned parser.
+    pub async fn query_language_version(&self, query: &str, hybrid: bool) -> Result<Option<u32>> {
+        let explicit = super::fts_query::has_explicit_syntax(query)?;
+        let response = self
+            .client
+            .get(self.url("/v1/capabilities"))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            if explicit {
+                return Err(anyhow!("This server does not advertise versioned lexical search. Upgrade the server before using Boolean, field, phrase, wildcard, fuzzy, or proximity queries."));
+            }
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            let status = response.status();
+            return Err(anyhow!(
+                "Remote search capability check failed {status}: {}",
+                response.text().await.unwrap_or_default()
+            ));
+        }
+        let capabilities = response.json::<SearchCapabilities>().await?;
+        if !capabilities.supports_strict_search(hybrid) {
+            return Err(anyhow!("The remote full-text index is not ready or does not support the required query language and hybrid constraints. Finish its rebuild or upgrade the server."));
+        }
+        Ok(Some(QUERY_LANGUAGE_VERSION))
+    }
+
+    async fn post_search(&self, mut request: SearchRequest) -> Result<reqwest::Response> {
+        let mode = request.mode.as_deref().unwrap_or("hybrid");
+        if mode != "vector" {
+            let query = request
+                .query
+                .as_deref()
+                .ok_or_else(|| anyhow!("A lexical query is required"))?;
+            request.query_language_version =
+                self.query_language_version(query, mode == "hybrid").await?;
+        }
+        let response = self.post_json("/v1/search", &request).await?;
+        if let Some(version) = request.query_language_version {
+            let reported = response
+                .headers()
+                .get(QUERY_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u32>().ok());
+            if reported != Some(version) {
+                return Err(anyhow!("The server did not confirm the negotiated query language version; its search results were not accepted."));
+            }
+        }
+        Ok(response)
+    }
+
+    fn document_url(
+        &self,
+        doc_id: &str,
+        location: bool,
+        owner_id: Option<&str>,
+    ) -> Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(&self.url("/v1/docs/"))?;
+        {
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|_| anyhow!("Remote index URL cannot contain path segments"))?;
+            path.pop_if_empty().push(doc_id);
+            if location {
+                path.push("location");
+            }
+        }
+        if let Some(owner) = owner_id {
+            url.query_pairs_mut().append_pair("owner_id", owner);
+        }
+        Ok(url)
+    }
+
+    /// Select an owner when a content identifier is shared across collections.
+    pub async fn delete_doc_scoped(&self, doc_id: &str, owner_id: Option<&str>) -> Result<()> {
+        let response = self
+            .client
+            .delete(self.document_url(doc_id, false, owner_id)?)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            return Err(anyhow!(
+                "Remote document deletion failed {status}: {}",
+                response.text().await.unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Update one owner's location without affecting another copy of the file.
+    pub async fn update_location_scoped(
+        &self,
+        doc_id: &str,
+        new_uri: &str,
+        owner_id: Option<&str>,
+    ) -> Result<()> {
+        let response = self
+            .client
+            .post(self.document_url(doc_id, true, owner_id)?)
+            .bearer_auth(&self.api_key)
+            .json(&UpdateLocationBody {
+                new_uri: new_uri.into(),
+            })
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            return Err(anyhow!(
+                "Remote location update failed {status}: {}",
+                response.text().await.unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn ingest_batch(&self, batch: &IngestBatch) -> Result<BatchIngestResponse> {
         let resp = self.post_json("/v1/ingest/batch", batch).await?;
         Ok(resp.json::<BatchIngestResponse>().await?)
@@ -143,7 +268,7 @@ impl RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), None, "vector", filters, limit);
-        let resp = self.post_json("/v1/search", &payload).await?;
+        let resp = self.post_search(payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
 
@@ -154,7 +279,7 @@ impl RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), None, "hybrid", filters, limit);
-        let resp = self.post_json("/v1/search", &payload).await?;
+        let resp = self.post_search(payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
 }
@@ -182,9 +307,13 @@ impl IndexBackend for RemoteClient {
             chunk_total: Some(doc.chunk_total),
             chunk_start_char: doc.chunk_start_char,
             chunk_end_char: doc.chunk_end_char,
+            source_identity_version: None,
             full_text: doc.full_text.clone().unwrap_or_default(),
             full_text_md: doc.full_text_md.clone(),
-            headings: None, // headings stored in full_text_md already
+            headings: doc
+                .headings_text
+                .as_ref()
+                .map(|headings| vec![headings.clone()]),
             embedding: doc.embedding.clone().unwrap_or_default(),
             title: doc.title.clone(),
             author: doc.author.clone(),
@@ -208,7 +337,7 @@ impl IndexBackend for RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), None, "text", filters, limit);
-        let resp = self.post_json("/v1/search", &payload).await?;
+        let resp = self.post_search(payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
 
@@ -219,7 +348,7 @@ impl IndexBackend for RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(None, Some(embedding), "vector", filters, limit);
-        let resp = self.post_json("/v1/search", &payload).await?;
+        let resp = self.post_search(payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
 
@@ -231,31 +360,16 @@ impl IndexBackend for RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), Some(embedding), "hybrid", filters, limit);
-        let resp = self.post_json("/v1/search", &payload).await?;
+        let resp = self.post_search(payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
 
     async fn delete_doc(&self, doc_id: &str) -> Result<()> {
-        let resp = self
-            .client
-            .delete(self.url(&format!("/v1/docs/{doc_id}")))
-            .bearer_auth(&self.api_key)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("delete_doc {doc_id} failed {status}: {text}"));
-        }
-        Ok(())
+        self.delete_doc_scoped(doc_id, None).await
     }
 
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
-        let payload = UpdateLocationBody { new_uri: new_uri.to_owned() };
-        self.post_json(&format!("/v1/docs/{doc_id}/location"), &payload)
-            .await?;
-        Ok(())
+        self.update_location_scoped(doc_id, new_uri, None).await
     }
 
     async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {

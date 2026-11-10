@@ -7,6 +7,8 @@ pub mod fts_query;
 pub mod synonyms;
 pub mod hf_prefetch;
 pub mod ingest;
+#[path = "../../../shared/source_identity.rs"]
+pub mod source_identity;
 pub mod license_consent;
 pub mod l2_metadata;
 pub mod local_index;

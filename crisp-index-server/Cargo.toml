@@ -19,6 +19,7 @@ path = "src/main.rs"
 protoc-bin-vendored = "3"
 
 [dependencies]
+sha2 = "0.10"
 crisp-search-query = { path = "../crates/crisp-search-query" }
 
 # Wire-format types shared with the CrispSorter client (../src-tauri).
@@ -36,6 +37,7 @@ anyhow        = "1"
 
 # Vector store (LanceDB) — client sends pre-computed embeddings; no GPU required
 lancedb       = { version = "0.26.2", default-features = false }
+lance         = { version = "2.0.0", default-features = false }
 
 # Full-text search (Tantivy) — same version as CrispSorter client
 tantivy       = "0.22"
@@ -56,3 +58,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait   = "0.1"
 fastembed    = { git = "https://github.com/CrispStrobe/fastembed-rs", branch = "feat/new-model-entries", features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -10,7 +10,7 @@ async function seedQueue(page: Page, files: SeedFile[], status = 'paused') {
     await page.evaluate(({ files, status }) => {
         const root = window as any;
         const original = root.__TAURI_INTERNALS__.invoke;
-        const rows = files.map((file, index) => ({
+        const rows: any[] = files.map((file, index) => ({
             rowId: index + 1, jobId: 'queue-fixture', filePath: `/fixtures/${file.name}`,
             docId: null, targetLevel: 3, status: file.status as QueueStatus,
             errorText: file.status === 'error' ? 'Saved extraction failure' : null, retryCount: 0,
@@ -85,7 +85,8 @@ async function seedQueue(page: Page, files: SeedFile[], status = 'paused') {
             if (command === 'index_volume_id_for_path') return null;
             if (command === 'index_ingest_l1' || command === 'index_ingest_batch') {
                 if (root.__queueGate) await new Promise<void>(resolve => { root.__releaseQueueWrite = () => { root.__queueGate = false; resolve(); }; });
-                return { chunk_count: args.inputs?.length ?? 0, embed_time_ms: 1, write_time_ms: 1 };
+                return { chunk_count: args.inputs?.length ?? 0, embed_time_ms: 1, write_time_ms: 1,
+                    doc_ids: command === 'index_ingest_batch' ? args.inputs.map((input: any) => `committed-${input.locationUri}`) : [] };
             }
             if (command === 'index_promote_l2') return args.docIds.map((_: string, index: number) => ({
                 doc_id: `resolved-${args.sourcePaths[index]}`, updated: true,
@@ -191,9 +192,29 @@ test('short text is indexed, empty extraction is retryable, and long shared pref
     const writes = await queueCalls(page, 'index_ingest_batch');
     expect(writes).toHaveLength(1);
     expect(new Set(writes[0].args.inputs.map((input: any) => input.sourceHash)).size).toBe(3);
+    expect(writes[0].args.inputs.every((input: any) => input.sourceHash === input.sourceFingerprint)).toBe(true);
+    expect(await page.evaluate(() => (window as any).__queueRows[2].docId)).toBe('committed-/fixtures/short.txt');
     expect(writes[0].args.inputs.some((input: any) => input.fullText === 'A')).toBe(true);
     await expect(page.locator('.file-row').filter({ hasText: 'empty.txt' })).toContainText('Kein durchsuchbarer Text');
     await expect(page.getByRole('button', { name: /L3 Volltext-Indexierung \(1\)/ })).toBeEnabled();
+});
+
+test('identical file copies keep the shared byte fingerprint and acknowledge separate committed occurrences', async ({ page }) => {
+    await seedQueue(page, [
+        { name: 'first-copy.txt', status: 'pending', text: 'Identical source bytes.' },
+        { name: 'second-copy.txt', status: 'pending', text: 'Identical source bytes.' },
+    ]);
+    await page.getByRole('button', { name: 'L3', exact: true }).click();
+    await page.getByRole('button', { name: /L3 Volltext-Indexierung/ }).click();
+    await expect(page.locator('.stats-bar')).toContainText('2 fertig');
+    const inputs = (await queueCalls(page, 'index_ingest_batch'))[0].args.inputs;
+    expect(inputs[0].sourceHash).toBe(inputs[1].sourceHash);
+    expect(inputs[0].sourceHash).toBe(inputs[0].sourceFingerprint);
+    expect(await page.evaluate(() => (window as any).__queueRows.map((row: any) => row.docId))).toEqual([
+        'committed-/fixtures/first-copy.txt', 'committed-/fixtures/second-copy.txt',
+    ]);
+    const commands = await page.evaluate(() => (window as any).__queueCalls.map((call: any) => call.command));
+    expect(commands.lastIndexOf('jobs_set_doc_id')).toBeLessThan(commands.indexOf('jobs_mark_done'));
 });
 
 test('a source changed during extraction never reaches the index writer', async ({ page }) => {
@@ -236,4 +257,44 @@ test('whole-job counts and error filtering remain correct beyond the visible pag
     await page.getByRole('button', { name: /L1 Quick-Scan/ }).click();
     await expect(page.locator('.stats-bar')).toContainText('551 fertig');
     expect((await queueCalls(page, 'index_ingest_l1'))[0].args.files.map((file: any) => file.locationUri)).toEqual(['/fixtures/last-error.txt']);
+});
+
+test('restored background work exposes resume controls and keeps failed control actions visible', async ({ page }) => {
+    await page.evaluate(() => {
+        const root = window as any;
+        const original = root.__TAURI_INTERNALS__.invoke;
+        const state = { status: 'paused', pending: 2, active: 0, current: null, done: 3, errored: 1, last_error: 'Saved source failure' };
+        root.__backgroundControlFailure = '';
+        root.__backgroundCalls = [];
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any, options: any) => {
+            if (command === 'bg_ingest_status') return { ...state };
+            if (['bg_ingest_resume', 'bg_ingest_pause', 'bg_ingest_cancel', 'bg_ingest_clear'].includes(command)) {
+                root.__backgroundCalls.push(command);
+                if (command === root.__backgroundControlFailure) throw new Error('Fixture background storage failure');
+                if (command === 'bg_ingest_resume') { state.status = 'running'; state.active = 1; }
+                if (command === 'bg_ingest_pause' || command === 'bg_ingest_cancel') { state.status = 'paused'; state.active = 0; }
+                if (command === 'bg_ingest_clear') { state.pending = 0; state.done = 0; state.errored = 0; state.last_error = ''; }
+                return;
+            }
+            return original(command, args, options);
+        };
+    });
+    await seedQueue(page, [{ name: 'manual.txt', status: 'pending' }]);
+    const panel = page.getByRole('region', { name: 'Hintergrund-Indexierung', exact: true });
+    await expect(panel).toContainText('2 ausstehend');
+    await expect(panel).toContainText('3 gespeichert');
+    await page.evaluate(() => { (window as any).__backgroundControlFailure = 'bg_ingest_resume'; });
+    await panel.getByRole('button', { name: /Hintergrund fortsetzen/ }).click();
+    await expect(panel.getByRole('alert')).toContainText('Fixture background storage failure');
+    await expect(panel.getByRole('button', { name: /Hintergrund fortsetzen/ })).toBeEnabled();
+    await page.evaluate(() => { (window as any).__backgroundControlFailure = ''; });
+    await panel.getByRole('button', { name: /Hintergrund fortsetzen/ }).click();
+    await expect(panel.getByRole('button', { name: 'Hintergrund pausieren', exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Hintergrundliste leeren', exact: true })).toBeDisabled();
+    await panel.getByRole('button', { name: 'Hintergrund stoppen', exact: true }).click();
+    await expect(panel.getByRole('button', { name: /Hintergrund fortsetzen/ })).toBeVisible();
+    await page.evaluate(() => { (window as any).__backgroundControlFailure = 'bg_ingest_clear'; });
+    await panel.getByRole('button', { name: 'Hintergrundliste leeren', exact: true }).click();
+    await expect(panel.getByRole('alert')).toContainText('Fixture background storage failure');
+    await expect(panel).toContainText('2 ausstehend');
 });

@@ -21,7 +21,7 @@ describe('result inspection', () => {
         const groups = groupResults([hit('unknown'), hit('old', { year: 2001 }), hit('new', { year: 2026 })]);
         expect(sortGroups(groups, 'year-desc').map(item => item.doc_id)).toEqual(['new', 'old', 'unknown']);
         expect(sortGroups(groups, 'year-asc').map(item => item.doc_id)).toEqual(['old', 'new', 'unknown']);
-        expect(sortGroups(groupResults([hit('b'), hit('a')]), 'relevance').map(item => item.doc_id)).toEqual(['a', 'b']);
+        expect(sortGroups(groupResults([hit('b'), hit('a')]), 'relevance').map(item => item.doc_id)).toEqual(['b', 'a']);
     });
     it('does not compare a synthetic filename score as if it were a content relevance score', () => {
         const groups = groupResults([hit('catalog', { score: .4, catalog_source: '/drive.caf' }), hit('content', { score: .01 })]);

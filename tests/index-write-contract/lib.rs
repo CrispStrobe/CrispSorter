@@ -6,6 +6,9 @@
 #[path = "../../src-tauri/src/index/summary.rs"] pub mod summary_production;
 #[path = "../../src-tauri/src/index/barcode.rs"] pub mod barcode_production;
 #[path = "../../src-tauri/src/index/task_failure.rs"] pub mod task_failure_production;
+#[path = "../../shared/source_identity.rs"] pub mod source_identity_production;
+#[path = "../../src-tauri/src/sync/conflict.rs"] pub mod sync_conflict_production;
+pub mod sync { pub use crate::sync_conflict_production as conflict; }
 
 #[path = "../../src-tauri/src/index/fts_query.rs"] pub mod fts_query_production;
 
@@ -13,20 +16,28 @@ pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
 
 pub mod jobs { include!(concat!(env!("OUT_DIR"), "/jobs.rs")); }
-pub mod bg_ingest { include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
+#[path = "../../src-tauri/src/bg_ingest/queue.rs"] pub mod bg_queue_production;
+pub mod extractors { include!(concat!(env!("OUT_DIR"), "/extractor_options.rs")); }
+pub mod bg_ingest { pub use crate::bg_queue_production as queue; include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
 
 pub mod index {
     pub mod schema { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/schema.rs")); }
     pub use crate::fts_query_production as fts_query;
     pub use crate::synonyms_production as synonyms;
     pub mod fts_index { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/fts_index.rs")); }
-    pub mod local_index { include!(concat!(env!("OUT_DIR"), "/local_index.rs")); }
+    pub mod local_index {
+        include!(concat!(env!("OUT_DIR"), "/local_index.rs"));
+        mod occurrence { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/occurrence.rs")); }
+        pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
+        mod source_move { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/source_move.rs")); }
+    }
     pub mod ingest { include!(concat!(env!("OUT_DIR"), "/ingest.rs")); }
     pub use fts_index::FtsIndex;
     pub use local_index::LocalIndex;
     pub use crate::summary_production as summary;
     pub use crate::barcode_production as barcode;
     pub use crate::task_failure_production as task_failure;
+    pub use crate::source_identity_production as source_identity;
     pub use crate::snippet_production as snippet;
     pub mod result_cache { pub fn invalidate() {} }
 
@@ -58,12 +69,5 @@ pub mod index {
         }
         pub fn build_entity_tags(_: Vec<ScoredEntity>, _: f32, _: usize) -> Vec<String> { panic!("NER is unavailable") }
     }
-    pub mod fields {
-        pub struct Field { pub review_status: String }
-        pub fn from_extraction(_: &str, _: &str, _: &str, _: Vec<(String, String, f32)>) -> Vec<Field> { panic!("NER is unavailable") }
-        pub fn read(_: &serde_json::Value) -> Vec<Field> { panic!("NER is unavailable") }
-        pub fn preserve_reviews(_: &mut Vec<Field>, _: &Vec<Field>) { panic!("NER is unavailable") }
-        pub fn attach(_: &mut Option<String>, _: &Vec<Field>) { panic!("NER is unavailable") }
-        pub fn tag(_: &Field) -> String { panic!("NER is unavailable") }
-    }
+    pub mod fields { include!(concat!(env!("OUT_DIR"), "/fields.rs")); }
 }

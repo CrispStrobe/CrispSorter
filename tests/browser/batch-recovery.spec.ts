@@ -262,3 +262,55 @@ test('Empty batch keeps the report and entries after a storage failure, then cle
     expect((await snapshot(page)).items).toEqual([]);
     expect(await callsFor(page, 'batch_session_clear')).toHaveLength(2);
 });
+
+test('a moved file retains an index warning until a retried update is durably acknowledged', async ({ page }) => {
+    await seedRecovery(page, [{ id: 'index-warning', status: 'review' }]);
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__failIndexUpdate = true;
+        root.__holdIndexUpdate = true;
+        root.__failIndexAcknowledgement = false;
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any = {}) => {
+            if (command === 'index_update_location_by_path') {
+                root.__fixtureCalls.push({ command, args });
+                if (root.__holdIndexUpdate) {
+                    await new Promise<void>(resolve => { root.__releaseIndexUpdate = () => { root.__holdIndexUpdate = false; resolve(); }; });
+                }
+                if (root.__failIndexUpdate) throw new Error('Fixture index storage failure');
+                return;
+            }
+            if (command === 'batch_session_upsert_item' && root.__failIndexAcknowledgement) {
+                throw new Error('Fixture index acknowledgement failure');
+            }
+            return original(command, args);
+        };
+    });
+    await openSortPlan(page);
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseIndexUpdate)).toBe('function');
+    const durableMoves = await callsFor(page, 'batch_session_upsert_items_bulk');
+    expect(durableMoves.at(-1).args.items).toEqual([expect.objectContaining({
+        status: 'done', statusDetail: 'moved (index update pending)',
+        errorMessage: expect.stringContaining('INDEX_UPDATE_FAILED:'),
+    })]);
+    expect(await callsFor(page, 'execute_batch')).toHaveLength(1);
+    await page.evaluate(() => (window as any).__releaseIndexUpdate());
+    const report = page.locator('.report-modal');
+    await expect(report.getByRole('alert')).toContainText('search index updates are still pending');
+    await report.getByRole('button', { name: 'Keep problematic files in batch', exact: true }).click();
+    await page.locator('nav.main-nav').getByRole('button', { name: 'Inbox', exact: true }).click();
+    const row = page.locator('.batch-container table.dense-table').getByRole('row').filter({ hasText: 'index-warning.pdf' });
+    await expect(row).toContainText('Index update pending');
+    await row.locator('.file-name').click();
+    const retry = page.getByRole('button', { name: 'Retry search index update', exact: true });
+    await page.evaluate(() => { (window as any).__failIndexUpdate = false; (window as any).__failIndexAcknowledgement = true; });
+    await retry.click();
+    await expect(page.getByRole('alert')).toContainText('Fixture index acknowledgement failure');
+    expect((await snapshot(page)).items[0]).toMatchObject({ status: 'done', errorMessage: expect.stringContaining('INDEX_UPDATE_FAILED:') });
+    await page.evaluate(() => { (window as any).__failIndexAcknowledgement = false; });
+    await retry.click();
+    await expect.poll(() => snapshot(page)).toMatchObject({ items: [expect.objectContaining({ status: 'done', statusDetail: 'moved' })] });
+    expect((await snapshot(page)).items[0].errorMessage).toBeUndefined();
+    expect(await callsFor(page, 'execute_batch')).toHaveLength(1);
+    expect(await callsFor(page, 'index_update_location_by_path')).toHaveLength(3);
+    expect((await callsFor(page, 'index_update_location_by_path')).at(-1).args.requireUpdate).toBe(true);
+});

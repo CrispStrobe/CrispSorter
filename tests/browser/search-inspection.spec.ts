@@ -160,3 +160,27 @@ test('phone results retain reachable report controls and indexed-passage close n
     await page.getByRole('button', { name: 'Close preview', exact: true }).click();
     await expect(inspect).toBeFocused();
 });
+
+test('source promotion keeps the selected owner for audio and image occurrences', async ({ page }) => {
+    await page.evaluate(() => {
+        const root = window as any;
+        root.__fixtureResults[0] = { ...root.__fixtureResults[0], ext: 'mp3', snippet: '', owner_id: 'audio-owner' };
+        root.__fixtureResults[1] = { ...root.__fixtureResults[1], ext: 'png', snippet: '', owner_id: 'image-owner' };
+        root.__promotionCalls = [];
+        const original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any, options: any) => {
+            if (command === 'index_audio_promote_l3' || command === 'index_image_promote_l3') {
+                root.__promotionCalls.push({ command, args });
+                return { chunk_count: 2, doc_ids: [command === 'index_audio_promote_l3' ? 'z' : 'a'] };
+            }
+            return original(command, args, options);
+        };
+    });
+    await search(page);
+    await page.locator('.result-card[data-document-id="z"]').getByRole('button', { name: 'Transcribe (.mp3)', exact: true }).click();
+    await page.locator('.result-card[data-document-id="a"]').getByRole('button', { name: 'Re-OCR (.png)', exact: true }).click();
+    expect(await page.evaluate(() => (window as any).__promotionCalls)).toEqual([
+        { command: 'index_audio_promote_l3', args: { locationUri: '/z.txt', ownerId: 'audio-owner' } },
+        { command: 'index_image_promote_l3', args: { locationUri: '/a.txt', ownerId: 'image-owner' } },
+    ]);
+});

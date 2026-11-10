@@ -20,8 +20,17 @@ pub async fn task_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("spawn_blocking panic: {e}") })),
         ),
-        Ok(Ok(Some(status))) => (StatusCode::OK, Json(serde_json::to_value(status).unwrap_or(json!({})))),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, Json(json!({ "error": "task not found" }))),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))),
+        Ok(Ok(Some(status))) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(status).unwrap_or(json!({}))),
+        ),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "task not found" })),
+        ),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
