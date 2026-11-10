@@ -85,7 +85,7 @@ concurrency:
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.
-  OCR_CRISPEMBED_REF: 9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a  # Streaming writer and UTF-8 paths; this gate qualifies the exact app integration.
+  OCR_CRISPEMBED_REF: 2cbf0b9e2f4b55ee01877b60c0825d990f2636cd  # CrispEmbed v0.17.17
   CARGO_NET_RETRY: '10'
   CARGO_HTTP_MULTIPLEXING: 'false'
   CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
