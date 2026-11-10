@@ -126,4 +126,3 @@ export async function fixtures(page: Page) {
         };
     });
 }
-
