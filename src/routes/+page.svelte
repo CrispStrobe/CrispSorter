@@ -12,13 +12,14 @@
     import History from '$lib/components/History.svelte';
     import Chat from '$lib/components/Chat.svelte';
     import { batchManager } from '$lib/batch/store.svelte';
+    import { reviewDrafts } from '$lib/batch/reviewDrafts.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText, Search } from 'lucide-svelte';
     import { CORE_TABS, AITOOLKIT_TABS, MOBILE_TABS, visibleTabs } from '$lib/tabs';
     import { aitoolkitCaps } from '$lib/aitoolkit';
-    import { caps, buildFlags, loadCapabilities } from '$lib/capabilities';
+    import { caps, capsError, capsLoading, buildFlags, loadCapabilities } from '$lib/capabilities';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
     import ThirdPartyAiConsent from '$lib/components/ThirdPartyAiConsent.svelte';
@@ -77,6 +78,77 @@
     let mobileToolsTrigger = $state<HTMLButtonElement>();
     let mobileToolsMenu = $state<HTMLDivElement>();
     const navCopy = $derived(navigationCopy[i18n.lang]);
+    let shellDisposed = false;
+    let preferencesRestoring = $state(false);
+    let preferencesError = $state('');
+    let sessionRestoring = $state(false);
+    let sessionError = $state('');
+    const sessionBusy = $derived(batchManager.isProcessing || batchManager.isExecuting || batchManager.isUpdatingBatch
+        || batchManager.isCleaningDuplicates || reviewDrafts.applyingId != null);
+    const startupCopy = $derived(i18n.lang === 'de' ? {
+        capabilities: 'Verfügbare Funktionen konnten nicht geprüft werden',
+        capabilitiesHint: 'Dateiimport und optionale Werkzeuge bleiben bis zu einer erfolgreichen Prüfung deaktiviert.',
+        preferences: 'Einstellungen konnten nicht geladen werden',
+        preferencesHint: 'Du kannst weiterarbeiten und das Laden deiner gespeicherten Einstellungen erneut versuchen.',
+        session: 'Der letzte Stapel konnte nicht wiederhergestellt werden',
+        sessionHint: 'Stelle den gespeicherten Stapel wieder her, bevor du Dateien hinzufügst. Bereits vorhandene Einträge und Änderungen in dieser Sitzung bleiben erhalten.',
+        restoring: 'Der letzte Stapel wird geladen…', retry: 'Erneut versuchen', retrying: 'Wird erneut versucht…', details: 'Fehlerdetails',
+    } : {
+        capabilities: 'Available tools could not be checked',
+        capabilitiesHint: 'File import and optional tools stay unavailable until this check succeeds.',
+        preferences: 'Some preferences could not be loaded',
+        preferencesHint: 'You can keep working and retry loading your saved preferences.',
+        session: 'The previous batch could not be restored',
+        sessionHint: 'Restore the saved batch before adding files. Existing entries and edits in this session will be kept.',
+        restoring: 'Restoring the previous batch…', retry: 'Retry', retrying: 'Retrying…', details: 'Error details',
+    });
+    const startupNotices = $derived([
+        ...($capsError ? [{ id: 'capabilities', title: startupCopy.capabilities, hint: startupCopy.capabilitiesHint,
+            error: $capsError, busy: $capsLoading, disabled: $capsLoading, retry: loadCapabilities }] : []),
+        ...(preferencesError ? [{ id: 'preferences', title: startupCopy.preferences, hint: startupCopy.preferencesHint,
+            error: preferencesError, busy: preferencesRestoring, disabled: preferencesRestoring, retry: restorePreferences }] : []),
+        ...(sessionError ? [{ id: 'session', title: startupCopy.session, hint: startupCopy.sessionHint,
+            error: sessionError, busy: sessionRestoring, disabled: sessionRestoring || sessionBusy, retry: restoreSession }] : []),
+    ]);
+
+    async function restorePreferences() {
+        if (preferencesRestoring || shellDisposed) return;
+        preferencesRestoring = true;
+        // A failed optional setting must not prevent language, batch restore,
+        // or later startup work. Each preference can be retried independently
+        // of native listeners and timers.
+        const results = await Promise.allSettled([
+            loadExperimentalCrispEmbed(),
+            (async () => {
+                const language = await getSetting('language', 'en');
+                if (language !== 'en' && language !== 'de') throw new Error('Invalid saved language.');
+                if (!shellDisposed) i18n.setLanguage(language as Language);
+            })(),
+            (async () => {
+                const verbosity = await getSetting('logVerbosity', 'info');
+                const { setLogVerbosity } = await import('$lib/log');
+                if (!shellDisposed) setLogVerbosity(verbosity);
+            })(),
+        ]);
+        if (shellDisposed) return;
+        preferencesError = results.filter(result => result.status === 'rejected')
+            .map(result => String((result as PromiseRejectedResult).reason)).join('\n');
+        preferencesRestoring = false;
+    }
+
+    async function restoreSession() {
+        if (sessionRestoring || sessionBusy || shellDisposed) return;
+        sessionRestoring = true;
+        try {
+            await batchManager.resumeLastSession();
+            if (!shellDisposed) sessionError = '';
+        } catch (error) {
+            if (!shellDisposed) sessionError = String(error);
+            flog('warn', `Session restore failed: ${String(error)}`);
+        } finally {
+            if (!shellDisposed) sessionRestoring = false;
+        }
+    }
 
     function navigate(tab: string) {
         showMobileTools = false;
@@ -148,8 +220,9 @@
     let syncStatus = $state<SyncStatus | null>(null);
     async function refreshSyncStatus() {
         try {
-            syncStatus = await invoke<SyncStatus>('sync_status');
-        } catch { syncStatus = null; }
+            const status = await invoke<SyncStatus>('sync_status');
+            if (!shellDisposed) syncStatus = status;
+        } catch { if (!shellDisposed) syncStatus = null; }
     }
     // Poll sync status every 30 s when in Hybrid mode.
     $effect(() => {
@@ -162,8 +235,9 @@
     let writeQueueDepth = $state(0);
     async function refreshQueueDepth() {
         try {
-            writeQueueDepth = await invoke<number>('index_queue_depth');
-        } catch { writeQueueDepth = 0; }
+            const depth = await invoke<number>('index_queue_depth');
+            if (!shellDisposed) writeQueueDepth = depth;
+        } catch { if (!shellDisposed) writeQueueDepth = 0; }
     }
     function shortNumber(n: number): string {
         if (n < 1000) return n.toLocaleString();
@@ -173,7 +247,7 @@
     async function refreshDbStats() {
         try {
             const stats = await invoke<{ doc_count: number }>('index_stats');
-            dbDocCount = stats?.doc_count ?? 0;
+            if (!shellDisposed) dbDocCount = stats?.doc_count ?? 0;
         } catch { /* index disabled or not yet initialised */ }
     }
 
@@ -224,13 +298,20 @@
     ));
 
     onMount(() => {
-        let cleanup = () => {};
-        (async () => {
+        const cleanups: Array<() => void> = [];
+        const trackCleanup = (cleanup: () => void) => {
+            // listen() can resolve after the component has already unmounted.
+            if (shellDisposed) cleanup();
+            else cleanups.push(cleanup);
+        };
+        void (async () => {
             // Probe the build before anything renders conditionally. Its
             // own failure path leaves every gated surface hidden, so this
             // deliberately does not guard the rest of startup.
             await loadCapabilities();
-            await loadExperimentalCrispEmbed();
+            if (shellDisposed) return;
+            await restorePreferences();
+            if (shellDisposed) return;
 
             // Polled, not read once: the store refuses on the first *read*
             // of a secret, which happens long after mount — when a provider
@@ -238,58 +319,53 @@
             // the vault layer already holds; it never touches the keychain,
             // which is the whole point.
             const checkSecretStore = async () => {
-                if (secretStoreAlertDismissed) return;
+                if (secretStoreAlertDismissed || shellDisposed) return;
                 try {
                     const st = await getBackendStatus();
-                    secretStoreAlert = st.denied || st.error ? st : null;
+                    if (!shellDisposed) secretStoreAlert = st.denied || st.error ? st : null;
                 } catch (e) {
                     flog('warn', `secret store status unavailable: ${e}`);
                 }
             };
             await checkSecretStore();
+            if (shellDisposed) return;
             const secretStoreTimer = setInterval(checkSecretStore, 15_000);
+            trackCleanup(() => clearInterval(secretStoreTimer));
 
-            // Load saved language
-            const savedLang = await getSetting('language', 'en') as Language;
-            i18n.setLanguage(savedLang);
-
-            // Restore the in-process log verbosity threshold so the
-            // Logs panel stays as quiet (or chatty) as the user left it.
-            try {
-                const v = await getSetting('logVerbosity', 'info') as any;
-                const { setLogVerbosity } = await import('$lib/log');
-                setLogVerbosity(v);
-            } catch (e) { /* log module not loaded yet -- non-fatal */ }
-
-            try {
-                await batchManager.resumeLastSession();
-            } catch (e) {
-                console.error("Session resume failed:", e);
-            }
+            await restoreSession();
+            if (shellDisposed) return;
 
             // ── Folder watcher ──────────────────────────────────────────
             // Single global listener for folder-watch:added events. The
             // Rust watcher emits one event per new file (debounced 2s);
             // we stat for size and append to the batch. addItem dedupes
             // on path, so re-emitted events don't create duplicate rows.
-            const unlistenWatch = await listen<{ path: string }>(
-                'folder-watch:added',
-                async (event) => {
-                    const path = event.payload?.path;
-                    if (!path) return;
-                    const name = path.split(/[\\/]/).pop() || path;
-                    let size = 0;
-                    try {
-                        const info = await stat(path);
-                        size = Number((info as any).size ?? 0);
-                    } catch {
-                        /* file may have been moved between detection and
-                           stat — ignore and import with size=0 */
+            try {
+                const unlistenWatch = await listen<{ path: string }>(
+                    'folder-watch:added',
+                    async (event) => {
+                        const path = event.payload?.path;
+                        if (!path || shellDisposed) return;
+                        const name = path.split(/[\\/]/).pop() || path;
+                        let size = 0;
+                        try {
+                            const info = await stat(path);
+                            size = Number((info as any).size ?? 0);
+                        } catch {
+                            /* file may have been moved between detection and
+                               stat — ignore and import with size=0 */
+                        }
+                        if (shellDisposed) return;
+                        try {
+                            if (await batchManager.addItem(path, name, size)) flog('info', `Watcher added: ${name}`);
+                        } catch (error) {
+                            flog('warn', `Watcher could not add ${name}: ${String(error)}`);
+                        }
                     }
-                    batchManager.addItem(path, name, size);
-                    flog('info', `Watcher added: ${name}`);
-                }
-            );
+                );
+                trackCleanup(unlistenWatch);
+            } catch (error) { flog('warn', `Folder watcher listener failed: ${String(error)}`); }
+            if (shellDisposed) return;
 
             type SyncPair = {
                 id: string;
@@ -299,38 +375,43 @@
             };
             type SyncPairCandidate = { path: string; watched_folder: string };
             const syncPairPushes = new Set<string>();
-            const unlistenSyncPair = await listen<SyncPairCandidate>(
-                'folder-watch:sync-pair-candidate',
-                async (event) => {
-                    const candidate = event.payload;
-                    if (!candidate?.path) return;
-                    try {
-                        const pairs = await invoke<SyncPair[]>('sync_pair_list');
-                        for (const pair of pairs) {
-                            if (!pair.enabled || pair.mode === 'to_local' || syncPairPushes.has(pair.id)) continue;
-                            const root = pair.local_root.replace(/[\\/]+$/, '');
-                            const changed = candidate.path.replaceAll('\\', '/');
-                            const normalizedRoot = root.replaceAll('\\', '/');
-                            if (changed !== normalizedRoot && !changed.startsWith(`${normalizedRoot}/`)) continue;
-                            syncPairPushes.add(pair.id);
-                            try {
-                                await invoke('sync_pair_push', {
-                                    id: pair.id,
-                                    dryRun: false,
-                                    conflictPolicy: 'local_wins',
-                                });
-                                flog('info', `[sync-pair] watcher push completed: ${pair.id}`);
-                            } catch (error) {
-                                flog('warn', `[sync-pair] watcher push failed for ${pair.id}: ${String(error)}`);
-                            } finally {
-                                syncPairPushes.delete(pair.id);
+            try {
+                const unlistenSyncPair = await listen<SyncPairCandidate>(
+                    'folder-watch:sync-pair-candidate',
+                    async (event) => {
+                        const candidate = event.payload;
+                        if (!candidate?.path || shellDisposed) return;
+                        try {
+                            const pairs = await invoke<SyncPair[]>('sync_pair_list');
+                            for (const pair of pairs) {
+                                if (shellDisposed) return;
+                                if (!pair.enabled || pair.mode === 'to_local' || syncPairPushes.has(pair.id)) continue;
+                                const root = pair.local_root.replace(/[\\/]+$/, '');
+                                const changed = candidate.path.replaceAll('\\', '/');
+                                const normalizedRoot = root.replaceAll('\\', '/');
+                                if (changed !== normalizedRoot && !changed.startsWith(`${normalizedRoot}/`)) continue;
+                                syncPairPushes.add(pair.id);
+                                try {
+                                    await invoke('sync_pair_push', {
+                                        id: pair.id,
+                                        dryRun: false,
+                                        conflictPolicy: 'local_wins',
+                                    });
+                                    flog('info', `[sync-pair] watcher push completed: ${pair.id}`);
+                                } catch (error) {
+                                    flog('warn', `[sync-pair] watcher push failed for ${pair.id}: ${String(error)}`);
+                                } finally {
+                                    syncPairPushes.delete(pair.id);
+                                }
                             }
+                        } catch (error) {
+                            flog('warn', `[sync-pair] watcher dispatch failed: ${String(error)}`);
                         }
-                    } catch (error) {
-                        flog('warn', `[sync-pair] watcher dispatch failed: ${String(error)}`);
-                    }
-                },
-            );
+                    },
+                );
+                trackCleanup(unlistenSyncPair);
+            } catch (error) { flog('warn', `Sync watcher listener failed: ${String(error)}`); }
+            if (shellDisposed) return;
 
             // Resume any watchers configured in a previous session.
             // Migrate the v0.1.32 single-folder shape (watchEnabled +
@@ -345,9 +426,11 @@
                 }
                 const modes = (await getSetting('watchModes', {})) as Record<string, string>;
                 for (const folder of folders) {
+                    if (shellDisposed) return;
                     try {
                         const mode = modes[folder] || 'off';
                         await invoke('watch_start', { folder, mode, initialScan: false });
+                        if (shellDisposed) { void invoke('watch_stop_all').catch(() => {}); return; }
                         flog('info', `Watcher resumed: ${folder} (mode: ${mode})`);
                     } catch (e) {
                         flog('warn', `Watcher resume failed for ${folder}: ${e}`);
@@ -356,6 +439,7 @@
             } catch (e) {
                 flog('warn', `Watcher resume read failed: ${e}`);
             }
+            if (shellDisposed) return;
 
             // ── Restore the search-index config on every app launch ─────
             // The Rust IndexState boots with `IndexConfig::default()`
@@ -437,30 +521,36 @@
                     model_cache_dir:  (await getSetting('indexModelCacheDir', '')) || null,
                     matryoshka_dim:   (await getSetting('indexMatryoshkaDim', 0)) || null,
                 };
+                if (shellDisposed) return;
                 await invoke('index_set_config', { config: cfg });
+                if (shellDisposed) return;
                 flog('info', '[boot] Pushed persisted index config to Rust.');
 
                 if (cfg.enabled) {
                     const dataDir = await invoke<string>('get_app_data_dir').catch(() => '');
+                    if (shellDisposed) return;
                     await invoke('index_init', { dataDir, withEmbedder: false });
                     flog('info', `[boot] Index auto-initialised at ${dataDir} (use_vector=${cfg.use_vector}).`);
                 }
             } catch (e: any) {
                 flog('warn', `[boot] Index restore failed: ${e?.message ?? e}`);
             }
+            if (shellDisposed) return;
 
             // Initial DB stats + 4 s refresh tick. Cheap (single LanceDB
             // count_rows) so even unconditional polling is OK; we'd switch
             // to event-driven (push from Rust on every ingest) once the
             // ingest pipeline gains a `dbcount-changed` Tauri event.
             await refreshDbStats();
+            if (shellDisposed) return;
             const dbStatsTimer = setInterval(refreshDbStats, 4000);
+            trackCleanup(() => clearInterval(dbStatsTimer));
 
             // Writer queue depth: only poll while an ingest is active.
             // The depth is always 0 between runs, so a 24/7 poll just wastes IPC.
             let queueDepthTimer: ReturnType<typeof setInterval> | null = null;
             const startQueuePoll = () => {
-                if (!queueDepthTimer) queueDepthTimer = setInterval(refreshQueueDepth, 2000);
+                if (!shellDisposed && !queueDepthTimer) queueDepthTimer = setInterval(refreshQueueDepth, 2000);
             };
             const stopQueuePoll = () => {
                 if (queueDepthTimer) { clearInterval(queueDepthTimer); queueDepthTimer = null; writeQueueDepth = 0; }
@@ -468,17 +558,20 @@
             // Expose to the $effect above so it can react to batchManager.isProcessing changes.
             _startQueuePoll = startQueuePoll;
             _stopQueuePoll  = stopQueuePoll;
-
-            cleanup = () => {
-                clearInterval(dbStatsTimer);
-                clearInterval(secretStoreTimer);
+            if (batchManager.isProcessing || writeQueueDepth > 0) startQueuePoll();
+            trackCleanup(() => {
                 stopQueuePoll();
-                unlistenWatch();
-                unlistenSyncPair();
-                invoke('watch_stop_all').catch(() => {});
-            };
-        })();
-        return () => cleanup();
+                _startQueuePoll = null;
+                _stopQueuePoll = null;
+            });
+        })().catch(error => flog('warn', `Startup failed: ${String(error)}`));
+        return () => {
+            shellDisposed = true;
+            for (const cleanup of cleanups.reverse()) {
+                try { cleanup(); } catch (error) { flog('warn', `Startup cleanup failed: ${String(error)}`); }
+            }
+            void invoke('watch_stop_all').catch(() => {});
+        };
     });
 
     function switchToBatch() {
@@ -621,6 +714,23 @@
     </nav>
 
     <main class="main-content" class:with-logs={showLogs}>
+        {#if startupNotices.length}
+            <div class="startup-notices">
+                {#each startupNotices as notice (notice.id)}
+                    <div class="startup-notice" role="alert" aria-labelledby={`startup-${notice.id}-title`}>
+                        <div class="startup-notice-content">
+                            <strong id={`startup-${notice.id}-title`}>{notice.title}</strong>
+                            <p>{notice.hint}</p>
+                            <details><summary>{startupCopy.details}</summary><pre>{notice.error}</pre></details>
+                        </div>
+                        <button disabled={notice.disabled} aria-busy={notice.busy} onclick={notice.retry}>
+                            {notice.busy ? startupCopy.retrying : startupCopy.retry}
+                        </button>
+                    </div>
+                {/each}
+            </div>
+        {/if}
+        {#if sessionRestoring && !sessionError}<div class="startup-loading" role="status">{startupCopy.restoring}</div>{/if}
         {#if secretStoreAlert && !secretStoreAlertDismissed}
             <div class="secret-store-banner" role="alert">
                 <span>
@@ -745,6 +855,17 @@
 </div>
 
 <style>
+    .startup-notices { flex-shrink: 0; max-height: 40vh; overflow-y: auto; border-bottom: 1px solid #854d0e; }
+    .startup-notice { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; background: #422006; color: #fef3c7; font-size: 0.8rem; }
+    .startup-notice + .startup-notice { border-top: 1px solid #854d0e; }
+    .startup-notice-content { flex: 1; min-width: 0; }
+    .startup-notice p { margin: 6px 0; line-height: 1.5; }
+    .startup-notice summary { cursor: pointer; }
+    .startup-notice pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.72rem; }
+    .startup-notice button { flex-shrink: 0; border: 1px solid #a16207; border-radius: 6px; padding: 7px 10px; color: #fef3c7; background: #713f12; cursor: pointer; }
+    .startup-notice button:disabled { cursor: wait; opacity: 0.65; }
+    .startup-notice button:focus-visible, .startup-notice summary:focus-visible { outline: 2px solid #fef3c7; outline-offset: 2px; }
+    .startup-loading { padding: 8px 12px; font-size: 0.8rem; color: #a1a1aa; }
     .mobile-tools-menu { position: fixed; bottom: calc(70px + env(safe-area-inset-bottom, 0px)); right: 12px; max-height: calc(100dvh - 110px); overflow-y: auto; background: #18181b; border: 1px solid #52525b; border-radius: 8px; padding: 8px; z-index: 100; display: flex; flex-direction: column; }
     .mobile-tools-menu button { background: transparent; border: 0; color: #eee; padding: 10px 20px; text-align: left; cursor: pointer; }
     .mobile-tools-menu button:hover, .mobile-tools-menu button[aria-current="page"] { background: #27272a; }
