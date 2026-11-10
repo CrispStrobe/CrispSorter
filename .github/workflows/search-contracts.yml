@@ -14,6 +14,8 @@ on:
       - 'src-tauri/src/extractors/eml.rs'
       - 'src-tauri/src/extractors/html.rs'
       - 'src-tauri/src/extractors/archive.rs'
+      - 'src-tauri/src/extractors/native_text.rs'
+      - 'src-tauri/src/extractors/pptx.rs'
       - 'src-tauri/src/extractors/text.rs'
       - 'src-tauri/src/extractors/mod.rs'
       - 'tests/search-contract/**'

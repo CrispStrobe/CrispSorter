@@ -1,6 +1,6 @@
-# ZIP, email, HTML and text extraction contracts
+# ZIP, mail, presentation, HTML and text extraction contracts
 
-This package compiles the production ZIP, email, HTML and text extractor modules directly.
+This package compiles the production ZIP, email, PPTX, HTML and text extractor modules directly.
 The document envelope has inert placeholders for unrelated audio/image fields;
 the parsers, file reads, text decoding, limits, and test cases are the actual
 application implementations. It needs Rust 1.98 or newer and no desktop shell,
@@ -25,9 +25,9 @@ temporary filenames and cleanup, ZIP64 directories, compressed input and
 central-directory allocation guards, shared nesting/member/expanded-byte/text
 limits, document-package expansion preflight, checksums, duplicate names,
 encrypted members, unsafe paths, symbolic links, and failed native parsers.
-The isolated suite does not load PDF/Office/OCR engines; the application
-dispatcher passes its configured native extraction and OCR options to members,
-and full application CI qualifies that wiring.
+The suite includes the actual presentation reader and its reading-order,
+speaker-note, comment, and text-budget tests. It does not load PDF, DOCX, or OCR
+engines; full application CI qualifies their dispatcher and option wiring.
 
 ZIP sources remain one indexed document with a labeled section per readable
 member. Unsupported, encrypted, linked, unsafe, and textless members have
@@ -54,3 +54,17 @@ contents are not claimed as extracted. Mbox remains a single indexed source
 with labeled message sections. HTML extraction does not execute scripts, fetch
 resources, or evaluate external CSS; it respects markup-level hidden attributes
 and supported inline visibility declarations.
+
+Direct foreground EML, MBOX, and PPTX ingestion uses a private, generated source
+copy before invoking these same readers. Input ceilings are 64 MiB for EML,
+256 MiB for MBOX, and 128 MiB for PPTX; extracted text is limited to 16 MiB.
+PPTX also passes the ZIP directory/member expansion checks before parsing, and
+its reader bounds repeated relationship reads, slide references, XML nesting,
+XML event counts, and assembled text. Malformed XML and document type declarations
+fail instead of publishing a partial parse. Slide text, speaker notes, and
+comments are supported; images, charts, and embedded media are explicitly omitted.
+Image-only decks fail clearly rather than indexing generated slide headings as
+source text. The bridge does not invoke OCR or expand binary mail attachments.
+Frontend tests qualify host-path-only dispatch, cancellation result disposal,
+and extraction coverage tags. Index ingestion retains its source fingerprint
+checks before extraction, after extraction, and at the native write boundary.

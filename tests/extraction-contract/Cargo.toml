@@ -17,3 +17,7 @@ scraper = { version = "=0.25.0", default-features = false }
 encoding_rs = "=0.8.35"
 tempfile = "=3.27.0"
 zip = { version = "=7.2.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+quick-xml = "=0.38.4"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("desktop"))'] }

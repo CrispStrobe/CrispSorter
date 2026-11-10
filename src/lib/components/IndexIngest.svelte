@@ -34,7 +34,7 @@
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
         Columns2, Eye, RotateCcw, CloudDownload, Images, Tag, AlertTriangle
     } from 'lucide-svelte';
-    import { extractText, extractionTags, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractText, extractionTags, usesNativePathExtraction, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
     import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
@@ -1230,7 +1230,7 @@
             // Documents + images + audio/video — extension whitelist matches
             // the `supported` Set used by the drop handler so picker + drop
             // accept the same files.
-            filters: [{ name: 'Documents, ZIP Archives, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
+            filters: [{ name: 'Documents, Mail, Presentations, ZIP Archives, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
         });
         if (!selected) return;
         await addPaths(Array.isArray(selected) ? selected : [selected]);
@@ -1628,7 +1628,7 @@
                     try {
                         let bytes: Uint8Array;
                         try {
-                            bytes = ext === 'zip' ? new Uint8Array(0) : await readFile(qf.filePath);
+                            bytes = usesNativePathExtraction(filename) ? new Uint8Array(0) : await readFile(qf.filePath);
                         } catch (fsErr: any) {
                             const msg = `Read failed: ${fsErr?.message ?? fsErr}`;
                             logError(`${msg}: ${qf.filePath}`);
@@ -1637,7 +1637,7 @@
                             continue;
                         }
 
-                        const sourceFingerprint = ext === 'zip'
+                        const sourceFingerprint = usesNativePathExtraction(filename)
                             ? await invoke<string>('file_sha256', { path: qf.filePath }) : await hashBytes(bytes);
                         // Pass `path` so extractText can route audio/video
                         // extensions to the Rust audio_extract_text command
@@ -2812,8 +2812,8 @@
                 try {
                     const filename = row.filename ?? path.split(/[\\/]/).pop() ?? id;
                     const ext = (row.ext ?? filename.split('.').pop() ?? '').toLowerCase();
-                    const bytes = ext === 'zip' ? new Uint8Array(0) : await readFile(path);
-                    const sourceFingerprint = ext === 'zip'
+                    const bytes = usesNativePathExtraction(filename) ? new Uint8Array(0) : await readFile(path);
+                    const sourceFingerprint = usesNativePathExtraction(filename)
                         ? await invoke<string>('file_sha256', { path }) : await hashBytes(bytes);
                     const ab = bytes.buffer as ArrayBuffer;
                     const result = await extractText({
@@ -2925,6 +2925,9 @@
             md:   'text/markdown',
             epub: 'application/epub+zip',
             zip:  'application/zip',
+            eml:  'message/rfc822',
+            mbox: 'application/mbox',
+            pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
             html: 'text/html',
             htm:  'text/html',
             webp: 'image/webp',

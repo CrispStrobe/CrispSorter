@@ -1961,6 +1961,17 @@ async fn archive_extract_text(path: String, options: Option<ArchiveExtractOption
     }).await.map_err(|error| format!("Archive extraction worker failed: {error}"))?
 }
 
+/// Read existing email and presentation text through the bounded native
+/// snapshot pipeline. Compressed/binary source bytes stay out of the webview.
+#[tauri::command]
+async fn native_extract_text(path: String) -> Result<ArchiveExtractResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let doc = extractors::native_text::extract(std::path::Path::new(&path))
+            .map_err(|error| format!("{error:#}"))?;
+        Ok(ArchiveExtractResult { text: doc.full_text, headings: doc.headings, tags: doc.tags })
+    }).await.map_err(|error| format!("Native extraction worker failed: {error}"))?
+}
+
 /// PDF metadata, merged from the legacy `/Info` dictionary and the
 /// modern XMP packet. Where both are present, XMP wins (it's typically
 /// richer and better-curated by publisher tooling); `/Info` fills any
@@ -3344,6 +3355,7 @@ pub fn run() {
             delete_duplicate_copy,
             extract_pdf_native,
             archive_extract_text,
+            native_extract_text,
             extract_pdf_metadata,
             feed_fetch_and_parse,
             feed_parse_file,
@@ -3816,6 +3828,7 @@ pub fn run() {
             delete_duplicate_copy,
             extract_pdf_native,
             archive_extract_text,
+            native_extract_text,
             extract_pdf_metadata,
             get_app_data_dir,
             index::tauri_commands::index_search,

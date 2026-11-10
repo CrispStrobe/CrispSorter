@@ -16,10 +16,17 @@ export interface ExtractionResult {
 export const SUPPORTED_EXTENSIONS = [
     'pdf', 'docx', 'epub', 'txt', 'md',
     'html', 'htm',
-    'zip',
+    'zip', 'eml', 'mbox', 'pptx',
     'webp', 'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff',
     'doc',
 ] as const;
+
+/** Formats whose bytes stay in a bounded native document reader. */
+const NATIVE_PATH_EXTENSIONS = new Set(['zip', 'eml', 'mbox', 'pptx']);
+
+export function usesNativePathExtraction(filename: string): boolean {
+    return NATIVE_PATH_EXTENSIONS.has(filename.split('.').pop()?.toLowerCase() ?? '');
+}
 
 /** Audio + video file extensions handled by the Rust-side audio
  *  extractor (symphonia tier-1 + ffmpeg tier-2 + CrispASR).  Keep in
@@ -37,7 +44,7 @@ export const AUDIO_EXTENSIONS = [
 
 /** Superset that drag-drop + file-picker zones use:
  *  documents + images (handled JS-side via `extractText`) plus
- *  audio/video and ZIP archives (dispatched through native, path-based
+ *  audio/video, mail, presentations, and ZIP archives (native, path-based
  *  extraction commands). Use this for any drop filter that should
  *  surface the full P13.5 multimodal capability — passing the
  *  document-only `SUPPORTED_EXTENSIONS` would silently drop
@@ -89,6 +96,10 @@ export async function extractText(
     if (extension === 'zip') {
         const { extractArchive } = await import('./archiveExtractor');
         return extractArchive(name, path, options);
+    }
+    if (extension && ['eml', 'mbox', 'pptx'].includes(extension)) {
+        const { extractNativeText } = await import('./nativeTextExtractor');
+        return extractNativeText(name, path, options);
     }
 
     const arrayBuffer = file instanceof File ? await file.arrayBuffer() : file.arrayBuffer;

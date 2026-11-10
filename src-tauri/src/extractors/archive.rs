@@ -214,6 +214,12 @@ fn verify_package(path: &Path, limits: &Limits, budget: &mut Budget) -> Result<(
     Ok(())
 }
 
+/// Check a direct ZIP-based document before its native parser allocates or
+/// expands package parts. The caller must supply an immutable private copy.
+pub(super) fn preflight_document_package(path: &Path) -> Result<()> {
+    verify_package(path, &Limits::default(), &mut Budget::default())
+}
+
 fn walk<A, F>(path: &Path, parent: &str, depth: usize, limits: &Limits, budget: &mut Budget, accepts: &A, extract_member: &mut F) -> Result<()>
 where
     A: Fn(&str) -> bool,

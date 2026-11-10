@@ -133,17 +133,35 @@ impl Slide {
 
 // ── Reading ──────────────────────────────────────────────────────────────
 
-type Archive = zip::ZipArchive<std::fs::File>;
+struct Archive {
+    inner: zip::ZipArchive<std::fs::File>,
+    read_bytes: usize,
+    read_limit: usize,
+    read_error: Option<String>,
+}
 
 /// Read a `.pptx` into a [`Deck`].
 pub fn read_deck(path: &Path, opts: &ReadOptions) -> Result<Deck> {
+    read_deck_with_limits(path, opts, usize::MAX, usize::MAX, usize::MAX)
+}
+
+/// Foreground ingestion checks package expansion first and also bounds repeated
+/// relationship reads and assembled text before publishing a document.
+pub(super) fn read_deck_bounded(path: &Path, opts: &ReadOptions, text_limit: usize) -> Result<Deck> {
+    read_deck_with_limits(path, opts, 2048, 128 * 1024 * 1024, text_limit)
+}
+
+fn read_deck_with_limits(path: &Path, opts: &ReadOptions, slide_limit: usize, read_limit: usize, text_limit: usize) -> Result<Deck> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
+    let inner = zip::ZipArchive::new(file)
         .with_context(|| format!("{} is not a readable PPTX package", path.display()))?;
+    let mut zip = Archive { inner, read_bytes: 0, read_limit, read_error: None };
 
     let authors = read_comment_authors(&mut zip);
     let slide_parts = slide_parts_in_presentation_order(&mut zip);
+    anyhow::ensure!(slide_parts.len() <= slide_limit, "Presentation slide-reference limit exceeded");
+    let mut remaining_text = text_limit;
 
     let mut slides = Vec::with_capacity(slide_parts.len());
     for (i, part) in slide_parts.iter().enumerate() {
@@ -153,6 +171,10 @@ pub fn read_deck(path: &Path, opts: &ReadOptions) -> Result<Deck> {
         let (title, mut blocks) = parse_slide_shapes(&xml);
         if opts.order == ShapeOrder::Visual {
             sort_visually(&mut blocks);
+        }
+        if let Some(title) = &title { charge_text(&mut remaining_text, title.len())?; }
+        for block in &blocks {
+            for paragraph in &block.paragraphs { charge_text(&mut remaining_text, paragraph.len())?; }
         }
 
         let rels = read_rels_for(&mut zip, part);
@@ -167,16 +189,16 @@ pub fn read_deck(path: &Path, opts: &ReadOptions) -> Result<Deck> {
         } else {
             None
         };
+        if let Some(notes) = &notes { charge_text(&mut remaining_text, notes.len())?; }
 
-        let comments = if opts.include_comments {
-            rels.iter()
-                .filter(|(ty, target)| ty.ends_with("/comments") || target.contains("omment"))
-                .filter_map(|(_, target)| read_part(&mut zip, target))
-                .flat_map(|xml| parse_comments(&xml, &authors))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let mut comments = Vec::new();
+        if opts.include_comments {
+            for (_, target) in rels.iter().filter(|(ty, target)| ty.ends_with("/comments") || target.contains("omment")) {
+                if let Some(xml) = read_part(&mut zip, target) {
+                    comments.extend(parse_comments_with_budget(&xml, &authors, &mut remaining_text)?);
+                }
+            }
+        }
 
         slides.push(Slide {
             number: i + 1,
@@ -187,17 +209,75 @@ pub fn read_deck(path: &Path, opts: &ReadOptions) -> Result<Deck> {
         });
     }
 
+    if let Some(error) = zip.read_error { anyhow::bail!(error); }
     if slides.is_empty() {
         anyhow::bail!("no slides found in {}", path.display());
     }
     Ok(Deck { slides })
 }
 
+fn charge_text(remaining: &mut usize, bytes: usize) -> Result<()> {
+    anyhow::ensure!(bytes <= *remaining, "Presentation extracted text exceeds its byte limit");
+    *remaining -= bytes;
+    Ok(())
+}
+
 fn read_part(zip: &mut Archive, name: &str) -> Option<Vec<u8>> {
-    let mut entry = zip.by_name(name).ok()?;
+    if zip.read_error.is_some() { return None; }
+    let mut entry = zip.inner.by_name(name).ok()?;
+    let available = zip.read_limit.saturating_sub(zip.read_bytes);
+    if entry.size() > available as u64 {
+        zip.read_error = Some("Presentation repeated part reads exceed the expanded-byte limit".into());
+        return None;
+    }
     let mut buf = Vec::new();
-    entry.read_to_end(&mut buf).ok()?;
+    let result = (&mut entry).take(available.saturating_add(1) as u64).read_to_end(&mut buf);
+    if result.is_err() || buf.len() > available {
+        zip.read_error = Some("Presentation part is unreadable or exceeds its expanded-byte limit".into());
+        return None;
+    }
+    zip.read_bytes += buf.len();
+    if zip.read_limit != usize::MAX && (name.ends_with(".xml") || name.ends_with(".rels")) {
+        if let Err(error) = validate_part_xml(&buf) {
+            zip.read_error = Some(format!("Malformed presentation XML part {name}: {error}"));
+            return None;
+        }
+    }
     Some(buf)
+}
+
+fn validate_part_xml(xml: &[u8]) -> Result<()> {
+    use quick_xml::{events::Event, Reader};
+    let mut reader = Reader::from_reader(xml);
+    let mut buffer = Vec::new();
+    let mut depth = 0usize;
+    let mut events = 0usize;
+    loop {
+        events += 1;
+        anyhow::ensure!(events <= 1_000_000, "XML event limit exceeded");
+        match reader.read_event_into(&mut buffer)? {
+            Event::Start(_) => { depth += 1; anyhow::ensure!(depth <= 256, "XML nesting limit exceeded"); }
+            Event::End(_) => { depth = depth.checked_sub(1).context("Unexpected closing XML element")?; }
+            Event::DocType(_) => anyhow::bail!("XML document type declarations are unsupported"),
+            Event::GeneralRef(reference) => {
+                if reference.resolve_char_ref()?.is_none() {
+                    anyhow::ensure!(quick_xml::escape::resolve_xml_entity(&reference.decode()?).is_some(), "Unknown XML entity");
+                }
+            }
+            Event::Eof => { anyhow::ensure!(depth == 0, "Unclosed XML element"); break; }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(())
+}
+
+fn append_reference(output: &mut String, reference: &quick_xml::events::BytesRef<'_>) {
+    if let Ok(Some(character)) = reference.resolve_char_ref() {
+        output.push(character);
+    } else if let Ok(name) = reference.decode() {
+        if let Some(value) = quick_xml::escape::resolve_xml_entity(&name) { output.push_str(value); }
+    }
 }
 
 /// Slide parts in the order the *presentation* declares, not the order the
@@ -227,7 +307,7 @@ fn slide_parts_in_presentation_order(zip: &mut Archive) -> Vec<String> {
 
     // Fallback: numeric filename order. Correct for decks never reordered,
     // and better than returning nothing.
-    let mut found: Vec<(usize, String)> = zip
+    let mut found: Vec<(usize, String)> = zip.inner
         .file_names()
         .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
         .map(|n| {
@@ -366,7 +446,7 @@ fn parse_slide_shapes(xml: &[u8]) -> (Option<String>, Vec<TextBlock>) {
     use quick_xml::Reader;
 
     let mut reader = Reader::from_reader(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
 
     let mut title: Option<String> = None;
@@ -439,6 +519,10 @@ fn parse_slide_shapes(xml: &[u8]) -> (Option<String>, Vec<TextBlock>) {
                 if let Ok(decoded) = e.xml_content() {
                     current.push_str(&decoded);
                 }
+            }
+            Ok(Event::GeneralRef(reference)) if in_text => append_reference(&mut current, &reference),
+            Ok(Event::CData(text)) if in_text => {
+                if let Ok(text) = text.decode() { current.push_str(&text); }
             }
             Ok(Event::End(e)) => match e.local_name().as_ref() {
                 b"t" => in_text = false,
@@ -550,11 +634,16 @@ fn read_comment_authors(zip: &mut Archive) -> BTreeMap<String, String> {
 /// Modern:  `<p188:cm authorId="{guid}"><p188:txBody><a:t>…</a:t></p188:txBody></p188:cm>`.
 /// Matching on local names covers both without hard-coding either prefix.
 fn parse_comments(xml: &[u8], authors: &BTreeMap<String, String>) -> Vec<Comment> {
+    let mut unlimited = usize::MAX;
+    parse_comments_with_budget(xml, authors, &mut unlimited).unwrap_or_default()
+}
+
+fn parse_comments_with_budget(xml: &[u8], authors: &BTreeMap<String, String>, remaining: &mut usize) -> Result<Vec<Comment>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
     let mut reader = Reader::from_reader(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut out: Vec<Comment> = Vec::new();
 
@@ -579,28 +668,33 @@ fn parse_comments(xml: &[u8], authors: &BTreeMap<String, String>) -> Vec<Comment
                 }
                 // `text` is the classic body; `t` is a run inside a modern
                 // `txBody`. Both only count inside a comment element.
-                b"text" | b"t" if in_comment => capture = true,
+                b"text" | b"t" if in_comment => {
+                    if !text.is_empty() && !text.ends_with(' ') { text.push(' '); }
+                    capture = true;
+                }
                 _ => {}
             },
             Ok(Event::Text(e)) if capture => {
                 if let Ok(decoded) = e.xml_content() {
-                    if !text.is_empty() && !text.ends_with(' ') {
-                        text.push(' ');
-                    }
-                    text.push_str(decoded.trim());
+                    text.push_str(&decoded);
                 }
+            }
+            Ok(Event::GeneralRef(reference)) if capture => append_reference(&mut text, &reference),
+            Ok(Event::CData(data)) if capture => {
+                if let Ok(value) = data.decode() { text.push_str(&value); }
             }
             Ok(Event::End(e)) => match e.local_name().as_ref() {
                 b"text" | b"t" => capture = false,
                 b"cm" if in_comment => {
                     in_comment = false;
-                    let body = text.trim().to_string();
+                    let body = text.trim();
                     if !body.is_empty() {
+                        let author = author_id.as_ref().and_then(|id| authors.get(id));
+                        charge_text(remaining, body.len())?;
+                        if let Some(author) = author { charge_text(remaining, author.len())?; }
                         out.push(Comment {
-                            author: author_id
-                                .as_ref()
-                                .and_then(|id| authors.get(id).cloned()),
-                            text: body,
+                            author: author.cloned(),
+                            text: body.to_owned(),
                         });
                     }
                 }
@@ -611,7 +705,7 @@ fn parse_comments(xml: &[u8], authors: &BTreeMap<String, String>) -> Vec<Comment
         }
         buf.clear();
     }
-    out
+    Ok(out)
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────
@@ -1222,6 +1316,44 @@ mod tests {
         zip::ZipWriter::new(file).finish().unwrap();
         let err = read_deck(&path, &ReadOptions::default()).unwrap_err().to_string();
         assert!(err.contains("no slides"), "got: {err}");
+    }
+
+    #[test]
+    fn bounded_reader_rejects_slide_text_and_repeated_read_expansion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = write_test_deck(tmp.path());
+        let opts = ReadOptions::default();
+        assert!(read_deck_with_limits(&path, &opts, 1, usize::MAX, usize::MAX)
+            .unwrap_err().to_string().contains("slide-reference limit"));
+        assert!(read_deck_with_limits(&path, &opts, 10, 10, usize::MAX)
+            .unwrap_err().to_string().contains("expanded-byte limit"));
+        assert!(read_deck_with_limits(&path, &opts, 10, usize::MAX, 4)
+            .unwrap_err().to_string().contains("text exceeds"));
+    }
+
+    #[test]
+    fn repeated_comment_authors_consume_the_text_budget_before_cloning() {
+        let authors = BTreeMap::from([("a".into(), "Large author".repeat(100))]);
+        let xml = br#"<p:cmLst xmlns:p="p"><p:cm authorId="a"><p:text>Note</p:text></p:cm></p:cmLst>"#;
+        assert!(parse_comments_with_budget(xml, &authors, &mut 64).unwrap_err().to_string().contains("text exceeds"));
+    }
+
+    #[test]
+    fn text_entities_and_cdata_retain_word_boundaries() {
+        let xml = br#"<p:sp><p:txBody><a:p><a:r><a:t>Terms &amp; cost &#x20AC; <![CDATA[paid]]></a:t></a:r></a:p></p:txBody></p:sp>"#;
+        let (_, blocks) = parse_slide_shapes(xml);
+        assert_eq!(blocks[0].paragraphs, ["Terms & cost € paid"]);
+        let comments = parse_comments(br#"<p:cm><p:text>Terms &amp; cost &#8364;</p:text></p:cm>"#, &BTreeMap::new());
+        assert_eq!(comments[0].text, "Terms & cost €");
+    }
+
+    #[test]
+    fn bounded_xml_validation_rejects_partial_and_external_entity_inputs() {
+        assert!(validate_part_xml(b"<slide><text>partial").is_err());
+        assert!(validate_part_xml(b"<slide><text></slide>").is_err());
+        assert!(validate_part_xml(br#"<!DOCTYPE slide SYSTEM "file:///private/source"><slide/>"#).is_err());
+        assert!(validate_part_xml(b"<slide>&unknown;</slide>").is_err());
+        assert!(validate_part_xml(b"<slide>Terms &amp; cost &#8364;</slide>").is_ok());
     }
 
     #[test]

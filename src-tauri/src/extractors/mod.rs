@@ -41,6 +41,7 @@ pub mod clipboard;
 pub mod convert;
 pub mod context_cache;
 pub mod eml;
+pub mod native_text;
 pub mod epub;
 #[cfg(feature = "desktop")]
 pub mod export;

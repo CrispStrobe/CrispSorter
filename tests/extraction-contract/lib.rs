@@ -1,4 +1,4 @@
-//! Compile the application's ZIP, email, HTML and text extractors without model or UI dependencies.
+//! Compile the application's ZIP, mail, presentation, HTML and text extractors without model or UI dependencies.
 #![allow(dead_code)]
 
 #[derive(Debug, Default)]
@@ -24,3 +24,7 @@ pub mod html;
 pub mod text;
 #[path = "../../src-tauri/src/extractors/archive.rs"]
 pub mod archive;
+#[path = "../../src-tauri/src/extractors/pptx.rs"]
+pub mod pptx;
+#[path = "../../src-tauri/src/extractors/native_text.rs"]
+pub mod native_text;
