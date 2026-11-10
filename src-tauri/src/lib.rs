@@ -1909,6 +1909,58 @@ async fn extract_pdf_native(path: String) -> Result<String, String> {
     })
 }
 
+#[derive(Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct ArchiveExtractOptions {
+    try_ocr: bool,
+    ocr_pdf_min_chars: Option<usize>,
+    ocr_tier: Option<String>,
+    ocr_rec_lang: Option<String>,
+    ocr_pipeline: Option<extractors::OcrPipelineConfig>,
+}
+
+#[derive(serde::Serialize)]
+struct ArchiveExtractResult {
+    text: String,
+    headings: Vec<String>,
+    tags: Vec<String>,
+}
+
+/// Path-based ZIP extraction keeps compressed bytes and native document/OCR
+/// processing out of the webview. The archive module enforces shared limits.
+#[tauri::command]
+async fn archive_extract_text(path: String, options: Option<ArchiveExtractOptions>) -> Result<ArchiveExtractResult, String> {
+    let options = options.unwrap_or_default();
+    let opts = extractors::ExtractOptions {
+        try_ocr: options.try_ocr,
+        ocr_pdf_min_chars: options.ocr_pdf_min_chars.unwrap_or(32),
+        ocr_tier: match options.ocr_tier.as_deref().unwrap_or("auto") {
+            "auto" => extractors::OcrTier::Auto,
+            "tier1" => extractors::OcrTier::Tier1,
+            "tier2" => extractors::OcrTier::Tier2,
+            "tier3" => extractors::OcrTier::Tier3,
+            "tier4" => extractors::OcrTier::Tier4,
+            other => return Err(format!("Unknown archive OCR tier: {other}")),
+        },
+        ocr_rec_lang: match options.ocr_rec_lang.as_deref().unwrap_or("auto") {
+            "auto" => extractors::OcrRecLang::Auto,
+            "latin" => extractors::OcrRecLang::Latin,
+            "cjk" => extractors::OcrRecLang::Cjk,
+            other => return Err(format!("Unknown archive OCR recognition language: {other}")),
+        },
+        ocr_pipeline: options.ocr_pipeline.unwrap_or_default(),
+        ..Default::default()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = std::path::Path::new(&path);
+        if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
+            return Err("Archive extraction supports ZIP files only".to_string());
+        }
+        let doc = extractors::extract_text_from_path_with_opts(path, opts).map_err(|error| format!("{error:#}"))?;
+        Ok(ArchiveExtractResult { text: doc.full_text, headings: doc.headings, tags: doc.tags })
+    }).await.map_err(|error| format!("Archive extraction worker failed: {error}"))?
+}
+
 /// PDF metadata, merged from the legacy `/Info` dictionary and the
 /// modern XMP packet. Where both are present, XMP wins (it's typically
 /// richer and better-curated by publisher tooling); `/Info` fills any
@@ -3291,6 +3343,7 @@ pub fn run() {
             delete_files,
             delete_duplicate_copy,
             extract_pdf_native,
+            archive_extract_text,
             extract_pdf_metadata,
             feed_fetch_and_parse,
             feed_parse_file,
@@ -3759,6 +3812,7 @@ pub fn run() {
             delete_files,
             delete_duplicate_copy,
             extract_pdf_native,
+            archive_extract_text,
             extract_pdf_metadata,
             get_app_data_dir,
             index::tauri_commands::index_search,

@@ -227,6 +227,31 @@ test('a source changed during extraction never reaches the index writer', async 
     expect(await queueCalls(page, 'index_ingest_batch')).toHaveLength(0);
 });
 
+test('ZIP indexing keeps member coverage labels and verifies source bytes without a webview copy', async ({ page }) => {
+    await seedQueue(page, [{ name: 'research.zip', status: 'pending', text: 'Fixture archive bytes' }]);
+    await page.evaluate(() => {
+        const root = window as any;
+        const original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any, options: any) => {
+            if (command === 'plugin:fs|read_file' && args.path.endsWith('.zip')) throw new Error('Archive bytes must stay in the native extractor');
+            if (command === 'archive_extract_text') {
+                root.__archiveRequest = args;
+                return { text: 'Archive member: notes.txt\nWarranty evidence.', headings: ['notes.txt'], tags: ['archive:zip', 'coverage:partial'] };
+            }
+            return original(command, args, options);
+        };
+    });
+    await page.getByRole('button', { name: 'L3', exact: true }).click();
+    await page.getByRole('button', { name: /L3 Volltext-Indexierung/ }).click();
+    await expect(page.locator('.stats-bar')).toContainText('1 fertig');
+    const inputs = (await queueCalls(page, 'index_ingest_batch'))[0].args.inputs;
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toMatchObject({ ext: 'zip', locationUri: '/fixtures/research.zip', headings: ['notes.txt'], tags: ['archive:zip', 'coverage:partial'] });
+    expect(inputs[0].sourceHash).toBe(inputs[0].sourceFingerprint);
+    expect(await queueCalls(page, 'file_sha256')).toHaveLength(2);
+    expect(await page.evaluate(() => (window as any).__archiveRequest)).toMatchObject({ path: '/fixtures/research.zip', options: { tryOcr: false } });
+});
+
 test('storage acknowledgement failure remains resumable instead of reporting completion', async ({ page }) => {
     await seedQueue(page, [{ name: 'recover-write.txt', status: 'pending' }]);
     await page.evaluate(() => {

@@ -53,7 +53,7 @@ const AUTO_DISPATCH_DELAY: Duration = Duration::from_secs(5);
 /// Extensions worth importing — same set the rest of the app
 /// recognises. Lowercased; the matcher folds before comparing.
 const ALLOWED_EXTS: &[&str] = &[
-    "pdf", "epub", "djvu", "txt", "md", "rtf", "doc", "docx", "odt",
+    "pdf", "epub", "djvu", "txt", "md", "rtf", "doc", "docx", "odt", "zip",
     // Image formats — included when auto-process can OCR/embed them.
     "jpg", "jpeg", "png", "tiff", "tif", "webp", "heic", "bmp",
     // Audio/video — included for transcription + omni embedding.

@@ -25,6 +25,8 @@
 //!   visible text and headings, and saved-page source URLs.
 //! * **Email** — bounded MIME decoding, plain alternatives, text attachments,
 //!   forwarded messages and mbox; binary attachment names carry a coverage tag.
+//! * **ZIP** — bounded nested document containers with member provenance,
+//!   native document/OCR dispatch and explicit omitted-content coverage.
 //!
 //! EPUB has an in-process reader; DOCX uses crisp-docx-core.
 
@@ -32,6 +34,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub mod anydoc_conv;
+pub mod archive;
 pub mod audio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod clipboard;
@@ -170,6 +173,8 @@ pub fn supported(ext: &str) -> bool {
             | "pptx"
             // Email formats
             | "eml" | "mbox"
+            // Bounded recursive ZIP document containers
+            | "zip"
             // Source code (UTF-8 read)
             | "rs" | "py" | "js" | "ts" | "tsx" | "jsx"
             | "svelte" | "vue"
@@ -1138,7 +1143,8 @@ pub fn extract_text_from_path_with_opts(
     // also when the conversion fails or yields near-empty text, which is
     // what keeps scanned PDFs on the OCR ladder instead of indexing a
     // blank document.
-    let mut preferred = anydoc_conv::try_preferred(path, &ext, opts.anydoc);
+    // Archive expansion must always pass the shared resource/provenance guards.
+    let mut preferred = if ext == "zip" { None } else { anydoc_conv::try_preferred(path, &ext, opts.anydoc) };
 
     let result: Result<ExtractedDocument> = match ext.as_str() {
         _ if preferred.is_some() => Ok(preferred
@@ -1199,6 +1205,15 @@ pub fn extract_text_from_path_with_opts(
         }),
         "eml" => eml::extract(path),
         "mbox" => eml::extract_mbox(path),
+        "zip" => {
+            let mut member_opts = opts.clone();
+            // LID/translation runs once on the combined source below. Member
+            // OCR and conversion settings remain the caller's exact choices.
+            member_opts.text_lid_model = None;
+            member_opts.translate_to = None;
+            archive::extract(path, |ext| supported(ext) || OCR_IMAGE_EXTS.contains(&ext),
+                |member| extract_text_from_path_with_opts(member, member_opts.clone()))
+        }
         "docx" => extract_docx(path, &ext),
         "epub" => epub::extract(path).or_else(|native_error| {
             if opts.anydoc != AnydocMode::Never && anydoc_conv::is_available() {
@@ -1792,7 +1807,7 @@ mod tests {
         assert!(supported("rs"));
         assert!(supported("HTML")); // case-insensitive
         assert!(supported("docx")); // P30.2: now handled via crisp-docx-core
-        assert!(!supported("zip"));
+        assert!(supported("zip"));
         // EPUB has a native reader; other office formats track the
         // optional anydoc feature.
         assert!(supported("EPUB"));

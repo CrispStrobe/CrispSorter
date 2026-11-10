@@ -1,4 +1,4 @@
-//! Compile the application's email and HTML extractors without model or UI dependencies.
+//! Compile the application's ZIP, email, HTML and text extractors without model or UI dependencies.
 #![allow(dead_code)]
 
 #[derive(Debug, Default)]
@@ -20,3 +20,7 @@ pub struct ExtractedDocument {
 pub mod eml;
 #[path = "../../src-tauri/src/extractors/html.rs"]
 pub mod html;
+#[path = "../../src-tauri/src/extractors/text.rs"]
+pub mod text;
+#[path = "../../src-tauri/src/extractors/archive.rs"]
+pub mod archive;

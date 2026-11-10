@@ -672,7 +672,8 @@ export class BatchManager {
                         try {
                             const fileData = isProviderUri(item.originalPath)
                                 ? await readProviderFile(item.originalPath)
-                                : await readFile(item.originalPath);
+                                : item.originalName.toLowerCase().endsWith('.zip')
+                                    ? new Uint8Array(0) : await readFile(item.originalPath);
                             if (this.stopRequested) {
                                 item.status = 'unfinished';
                                 item.statusDetail = 'interrupted';

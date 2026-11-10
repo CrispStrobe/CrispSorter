@@ -27,13 +27,14 @@
     import { i18n } from '$lib/i18n.svelte';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import { uriToPath } from './viewer/types';
+    import { localPathFromSearchUri } from '$lib/drives/browser';
     import {
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
         Columns2, Eye, RotateCcw, CloudDownload, Images, Tag, AlertTriangle
     } from 'lucide-svelte';
-    import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractText, extractionTags, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
     import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
@@ -1229,7 +1230,7 @@
             // Documents + images + audio/video — extension whitelist matches
             // the `supported` Set used by the drop handler so picker + drop
             // accept the same files.
-            filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
+            filters: [{ name: 'Documents, ZIP Archives, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
         });
         if (!selected) return;
         await addPaths(Array.isArray(selected) ? selected : [selected]);
@@ -1627,7 +1628,7 @@
                     try {
                         let bytes: Uint8Array;
                         try {
-                            bytes = await readFile(qf.filePath);
+                            bytes = ext === 'zip' ? new Uint8Array(0) : await readFile(qf.filePath);
                         } catch (fsErr: any) {
                             const msg = `Read failed: ${fsErr?.message ?? fsErr}`;
                             logError(`${msg}: ${qf.filePath}`);
@@ -1636,7 +1637,8 @@
                             continue;
                         }
 
-                        const sourceFingerprint = await hashBytes(bytes);
+                        const sourceFingerprint = ext === 'zip'
+                            ? await invoke<string>('file_sha256', { path: qf.filePath }) : await hashBytes(bytes);
                         // Pass `path` so extractText can route audio/video
                         // extensions to the Rust audio_extract_text command
                         // (keeps the PCM buffer in Rust).
@@ -1644,7 +1646,7 @@
                             name: filename,
                             arrayBuffer: bytes.buffer as ArrayBuffer,
                             path: qf.filePath,
-                        });
+                        }, { signal });
                         logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
 
                         if (!result.text?.trim()) {
@@ -1679,7 +1681,7 @@
                                 ownerId:     'local',
                                 sourceHash,
                                 sourceFingerprint,
-                                tags:        [],
+                                tags:        extractionTags(result),
                             },
                         });
 
@@ -2804,21 +2806,16 @@
                 if (!row) { fail++; continue; }
                 l3Progress = { done: l3Progress?.done ?? 0, total: ids.length, current: row.filename ?? id.slice(0, 12) };
 
-                // Resolve location_uri to a path. Strip crisp+local://… prefix.
-                let path = String(row.location_uri ?? '');
-                if (path.startsWith('crisp+local://')) {
-                    const after = path.slice('crisp+local://'.length);
-                    const slashIdx = after.indexOf('/');
-                    path = slashIdx >= 0 ? after.slice(slashIdx) : after;
-                }
+                const path = localPathFromSearchUri(String(row.location_uri ?? ''));
                 if (!path) { fail++; continue; }
 
                 try {
-                    const bytes = await readFile(path);
-                    const sourceFingerprint = await hashBytes(bytes);
-                    const ab = bytes.buffer as ArrayBuffer;
                     const filename = row.filename ?? path.split(/[\\/]/).pop() ?? id;
                     const ext = (row.ext ?? filename.split('.').pop() ?? '').toLowerCase();
+                    const bytes = ext === 'zip' ? new Uint8Array(0) : await readFile(path);
+                    const sourceFingerprint = ext === 'zip'
+                        ? await invoke<string>('file_sha256', { path }) : await hashBytes(bytes);
+                    const ab = bytes.buffer as ArrayBuffer;
                     const result = await extractText({
                         name: filename,
                         arrayBuffer: ab,
@@ -2844,7 +2841,7 @@
                         ownerId:     row.owner_id ?? 'local',
                         sourceHash,
                         sourceFingerprint,
-                        tags:        [],
+                        tags:        extractionTags(result),
                     });
                     if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {
@@ -2927,6 +2924,7 @@
             txt:  'text/plain',
             md:   'text/markdown',
             epub: 'application/epub+zip',
+            zip:  'application/zip',
             html: 'text/html',
             htm:  'text/html',
             webp: 'image/webp',
@@ -3656,7 +3654,7 @@
             <div class="drop-area" class:active={dropActive}>
                 <UploadCloud size={40} style="color:#3b82f6; opacity:0.7;" />
                 <p>Dateien hier ablegen</p>
-                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, Bilder (PNG/JPG/…), Audio (MP3/WAV/FLAC/M4A/…) und Video (MP4/MOV/MKV/…) — oder "Dateien" klicken</p>
+                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, lokale ZIP-Archive, Bilder (PNG/JPG/…), Audio (MP3/WAV/FLAC/M4A/…) und Video (MP4/MOV/MKV/…) — oder "Dateien" klicken</p>
             </div>
         {:else}
             <div class="file-list">

@@ -16,6 +16,7 @@ export interface ExtractionResult {
 export const SUPPORTED_EXTENSIONS = [
     'pdf', 'docx', 'epub', 'txt', 'md',
     'html', 'htm',
+    'zip',
     'webp', 'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff',
     'doc',
 ] as const;
@@ -36,8 +37,8 @@ export const AUDIO_EXTENSIONS = [
 
 /** Superset that drag-drop + file-picker zones use:
  *  documents + images (handled JS-side via `extractText`) plus
- *  audio/video (dispatched to the Rust `audio_extract_text`
- *  Tauri command).  Use this for any drop filter that should
+ *  audio/video and ZIP archives (dispatched through native, path-based
+ *  extraction commands). Use this for any drop filter that should
  *  surface the full P13.5 multimodal capability — passing the
  *  document-only `SUPPORTED_EXTENSIONS` would silently drop
  *  audio files, which was the v0.1.40-era user complaint. */
@@ -52,6 +53,13 @@ export interface ExtractionOptions {
     onProgress?: (page: number, total: number) => void;
     maxChars?: number;
     maxPages?: number;
+}
+
+/** Preserve extraction coverage labels through the foreground indexing boundary. */
+export function extractionTags(result: ExtractionResult): string[] {
+    const tags = result.metadata?.tags;
+    return Array.isArray(tags)
+        ? [...new Set(tags.filter((tag): tag is string => typeof tag === 'string').map(tag => tag.trim()).filter(Boolean))] : [];
 }
 
 /** Extract `#`/`##`/`###` headings from a Markdown string. */
@@ -72,21 +80,18 @@ export async function extractText(
     file: File | { name: string, arrayBuffer: ArrayBuffer, path?: string },
     options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
-    let name: string;
-    let arrayBuffer: ArrayBuffer;
-    let path: string | undefined;
+    const name = file.name;
+    const path = file instanceof File ? undefined : file.path;
+    const extension = name.split('.').pop()?.toLowerCase();
 
-    if (file instanceof File) {
-        name = file.name;
-        arrayBuffer = await file.arrayBuffer();
-        path = undefined; // Browser File has no host path
-    } else {
-        name = file.name;
-        arrayBuffer = file.arrayBuffer;
-        path = file.path;
+    // Archive members stay in the bounded native extractor. Do not duplicate
+    // an entire archive in the webview merely to pass its host path back.
+    if (extension === 'zip') {
+        const { extractArchive } = await import('./archiveExtractor');
+        return extractArchive(name, path, options);
     }
 
-    const extension = name.split('.').pop()?.toLowerCase();
+    const arrayBuffer = file instanceof File ? await file.arrayBuffer() : file.arrayBuffer;
 
     // Audio / video: dispatch to the Rust-side audio extractor via
     // the `audio_extract_text` Tauri command.  Keeps the large PCM
