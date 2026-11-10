@@ -10,15 +10,13 @@
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { ProviderRequests, providerConfigurationMatches, providerErrorMessage, type ProviderRequest, type ProviderRequestConfig } from '../llm/providerRequests';
+    import { ProviderSaveQueue, prepareProviderSecrets, reconcileProviderSecrets } from '../llm/providerPersistence';
     import { caps, currentCaps } from '../capabilities';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
     import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
     import {
         resolveSecret,
         bulkSetSecrets,
-        makeSentinel,
-        sentinelAccount,
-        llmProviderAccount,
     } from '../secrets';
     import {
         getBackendOptions,
@@ -35,40 +33,13 @@
         type CreatedKeychain,
     } from '../secretBackend';
 
-    /**
-     * Walk a providers list, find any plain-text `apiKey` values (i.e.
-     * not already `@keyring/…` sentinels), move them into the OS
-     * keychain in a single bulk call, and return a new list with those
-     * fields rewritten to sentinels.
-     *
-     * Empty / sentinel / non-string apiKeys pass through unchanged.
-     * Returns `{ providers, migrated }` so the caller can decide
-     * whether to persist the rewritten list (the migration is only
-     * useful if we write the sentinels back to settings.json).
-     */
+    const providerSaves = new ProviderSaveQueue();
+
+    /** Store every submitted raw key before any provider settings are written. */
     async function migrateProviderKeysToKeychain(
         list: LLMProvider[]
     ): Promise<{ providers: LLMProvider[]; migrated: number }> {
-        const toMigrate: Array<[string, string]> = [];
-        for (const p of list) {
-            const k = p.apiKey;
-            if (!k || sentinelAccount(k)) continue;
-            // Skip the well-known local-server sentinel strings that
-            // aren't real secrets: 'ollama', 'no-key', '', 'local'.
-            if (k === 'ollama' || k === 'no-key' || k === 'local') continue;
-            toMigrate.push([llmProviderAccount(p.id), k]);
-        }
-        if (toMigrate.length === 0) return { providers: list, migrated: 0 };
-        const stored = await bulkSetSecrets(toMigrate);
-        const storedSet = new Set(stored);
-        const next = list.map((p) => {
-            const account = llmProviderAccount(p.id);
-            if (storedSet.has(account)) {
-                return { ...p, apiKey: makeSentinel(account) };
-            }
-            return p;
-        });
-        return { providers: next, migrated: stored.length };
+        return prepareProviderSecrets(list, bulkSetSecrets);
     }
 
     /**
@@ -590,6 +561,8 @@
     let mlxReady = $state(false);
     let saveIndicator = $state(false);
     let settingsSaveError = $state('');
+    let providerSavePending = $state(0);
+    let providerSaveNotice = $state('');
     let ocrPersistenceError = $state('');
 
     async function syncBackgroundOcr(): Promise<boolean> {
@@ -1289,16 +1262,18 @@
                 const saved = (savedProviders as LLMProvider[]).find(p => p.id === def.id);
                 return saved ? { ...def, ...saved } : def;
             });
-            // One-time migration: move any plain-text apiKey out of
-            // settings.json into the OS keychain, replace with a sentinel.
-            // Idempotent — entries already on sentinels are no-op.
-            const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(merged);
-            providers = migrated;
-            if (n > 0) {
-                // Persist the rewritten list so the plain keys never
-                // touch disk again from this point on.
-                await saveSetting('providers', $state.snapshot(providers));
-                console.log(`secrets: migrated ${n} provider API key(s) to OS keychain`);
+            providers = merged;
+            const submitted = $state.snapshot(providers);
+            try {
+                await providerSaves.run(async () => {
+                    const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(submitted);
+                    if (n > 0) await saveSetting('providers', migrated);
+                    providers = reconcileProviderSecrets(providers, submitted, migrated);
+                });
+            } catch (error) {
+                // Keep usable settings and editable drafts if the chosen vault
+                // is unavailable; never persist the unmigrated raw keys again.
+                settingsSaveError = providerErrorMessage(error, 'Provider keys could not be moved to secret storage. Choose or unlock a store, then save again.');
             }
         }
 
@@ -1695,19 +1670,37 @@
         }
     }
 
+    async function saveProviderSettings() {
+        const submitted = $state.snapshot(providers);
+        const submittedActiveId = activeProviderId;
+        providerSavePending += 1;
+        try {
+            return await providerSaves.run(async () => {
+                const { providers: stored } = await migrateProviderKeysToKeychain(submitted);
+                // Persist the captured, sanitized submission. Reading live
+                // drafts here could write a key typed while migration waited.
+                await saveSetting('providers', stored);
+                await saveSetting('activeProviderId', submittedActiveId);
+                providers = reconcileProviderSecrets(providers, submitted, stored);
+                llmClient.setKeys(await resolveAllApiKeys(stored));
+                return { providers: stored, activeProviderId: submittedActiveId };
+            });
+        } finally {
+            providerSavePending -= 1;
+        }
+    }
+
+    function showProviderSaveReceipt(saved: { providers: LLMProvider[]; activeProviderId: string }) {
+        const unchanged = JSON.stringify($state.snapshot(providers)) === JSON.stringify(saved.providers)
+            && activeProviderId === saved.activeProviderId;
+        saveIndicator = unchanged;
+        providerSaveNotice = unchanged ? '' : 'Submitted provider settings were saved. New edits are still unsaved.';
+        if (unchanged) setTimeout(() => saveIndicator = false, 2000);
+    }
+
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
-        // If the user typed a fresh API key into a provider field, the
-        // bound state holds it in plain text. Migrate to keychain before
-        // it lands in settings.json.
-        const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(
-            $state.snapshot(providers)
-        );
-        if (n > 0) {
-            providers = migrated;
-        }
-        await saveSetting('providers', $state.snapshot(providers));
-        await saveSetting('activeProviderId', activeProviderId);
+        const providerReceipt = await saveProviderSettings();
         await saveSetting('exportPath', exportPath);
         await saveSetting('exportPathMode', exportPathMode);
         await saveSetting('pathTemplate', pathTemplate);
@@ -1774,7 +1767,7 @@
         await saveSetting('indexBackendType',   indexBackendType);
         await saveSetting('indexRemoteUrl',     indexRemoteUrl);
         await saveSetting('indexRemoteApiKey',  indexRemoteApiKey);
-        if (!await persistFileAssociations()) return;
+        if (!await persistFileAssociations()) throw new Error(fileAssociationsError || 'File associations could not be saved.');
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
@@ -1821,11 +1814,11 @@
         await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
         await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
         await saveSetting('indexDataDir',       indexDataDir);
-        llmClient.setKeys(await resolveAllApiKeys(providers));
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = llamacppPort;
         llmClient.mlxPort = mlxPort;
         i18n.setLanguage(currentLanguage);
+        return providerReceipt;
     }
 
     // ── Round-robin helpers ──────────────────────────────────────────────────
@@ -2537,22 +2530,23 @@
     async function handleSave() {
         settingsSaveError = '';
         saveIndicator = false;
+        providerSaveNotice = '';
         try {
-            await saveSettingsSilent();
-            saveIndicator = true;
-            setTimeout(() => saveIndicator = false, 2000);
+            showProviderSaveReceipt(await saveSettingsSilent());
         } catch (error) {
             settingsSaveError = `Einstellungen wurden nicht vollständig gespeichert: ${String(error)}`;
         }
     }
 
     async function handleSaveProvider() {
-        console.log(`[Settings] Saving provider settings for: ${selectedProvider.name}`);
-        await saveSetting('providers', $state.snapshot(providers));
-        await saveSetting('activeProviderId', activeProviderId);
-        llmClient.setKeys(await resolveAllApiKeys(providers));
-        saveIndicator = true;
-        setTimeout(() => saveIndicator = false, 2000);
+        settingsSaveError = '';
+        saveIndicator = false;
+        providerSaveNotice = '';
+        try {
+            showProviderSaveReceipt(await saveProviderSettings());
+        } catch (error) {
+            settingsSaveError = providerErrorMessage(error, 'Provider settings could not be saved. Your edits are still available; retry after checking secret storage.');
+        }
     }
 
     async function resetToDefaults() {
@@ -2584,6 +2578,8 @@
     }
 
     function invalidateProviderRequests(providerId: string, modelOnly = false) {
+        saveIndicator = false;
+        providerSaveNotice = '';
         providerRequests.invalidate(providerId, modelOnly ? 'connection' : undefined);
         delete testingProviders[providerId];
         delete testResults[providerId];
@@ -5799,9 +5795,11 @@
                     <button class="action-btn small" class:active-btn={activeProviderId === selectedProvider.id} onclick={() => setActiveProvider(selectedProvider.id)}>
                         <Zap size={14} /> {activeProviderId === selectedProvider.id ? i18n.t.batch.selected_status : i18n.t.settings.set_active}
                     </button>
-                    <button class="save-btn" onclick={handleSaveProvider}>{i18n.t.settings.save_all}</button>
+                    <button class="save-btn" onclick={handleSaveProvider} disabled={providerSavePending > 0}>{providerSavePending > 0 ? 'Saving…' : i18n.t.settings.save_all}</button>
                 </div>
             </div>
+
+            {#if providerSaveNotice}<p class="hint" role="status">{providerSaveNotice}</p>{/if}
 
             {#if !['mistralrs', 'webllm', 'ort'].includes(selectedProvider.id)}
                 <div class="form-group">
@@ -5827,7 +5825,7 @@
                 <label for="model-select-input-{selectedProvider.id}">{i18n.t.settings.select_model}</label>
                 <div class="input-with-action">
                     <select id="model-select-input-{selectedProvider.id}" bind:value={selectedProvider.selectedModel} class="styled-select"
-                        onchange={() => { invalidateProviderRequests(selectedProvider.id, true); void handleSave(); }}>
+                        onchange={(event) => { selectedProvider.selectedModel = event.currentTarget.value; invalidateProviderRequests(selectedProvider.id, true); void handleSave(); }}>
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each availableModels as model}
                             <option value={model}>{model.split(/[\\/]/).pop()}</option>

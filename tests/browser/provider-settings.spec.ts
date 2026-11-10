@@ -17,6 +17,10 @@ async function providerFixture(page: Page) {
         root.__providerReleases = {};
         root.__providerHoldSecret = '';
         root.__providerHoldUrl = '';
+        root.__providerSavedSnapshots = [];
+        root.__providerSecretValues = {};
+        root.__providerSecretWriteFailure = false;
+        root.__providerHoldSecretWrite = false;
         const responses = new Map<number, { url: string; bytes: number[]; read: boolean }>();
         let nextId = 100000;
         const wrapped = new WeakSet<object>();
@@ -26,14 +30,26 @@ async function providerFixture(page: Page) {
             const original = bridge.invoke;
             bridge.invoke = async (command: string, args: any = {}) => {
                 if (command === 'plugin:store|get' && args.key in settings) return [settings[args.key], true];
-                if (command === 'plugin:store|set' && args.key in settings) { settings[args.key] = args.value; return; }
+                if (command === 'plugin:store|set' && args.key in settings) {
+                    if (args.key === 'providers') root.__providerSavedSnapshots.push(structuredClone(args.value));
+                    settings[args.key] = args.value; return;
+                }
+                if (command === 'secrets_bulk_set') {
+                    if (root.__providerHoldSecretWrite) {
+                        root.__providerHoldSecretWrite = false;
+                        await new Promise<void>(resolve => { root.__providerReleases['secret-write'] = resolve; });
+                    }
+                    if (root.__providerSecretWriteFailure) return [];
+                    for (const [account, value] of args.items) root.__providerSecretValues[account] = value;
+                    return args.items.map(([account]: [string, string]) => account);
+                }
                 if (command === 'secret_get' && args.account.startsWith('llm-provider:')) {
                     const id = args.account.slice('llm-provider:'.length);
                     if (root.__providerHoldSecret === id) {
                         root.__providerHoldSecret = '';
                         await new Promise<void>(resolve => { root.__providerReleases[`secret:${id}`] = resolve; });
                     }
-                    return `${id}-secret`;
+                    return root.__providerSecretValues[args.account] ?? `${id}-secret`;
                 }
                 if (command === 'plugin:http|fetch' && /^https:\/\/(groq|openai)(-changed)?\.example\//.test(args.clientConfig.url)) {
                     const config = args.clientConfig;
@@ -150,4 +166,52 @@ test('parallel connection tests keep responses and secrets with their configured
         const recipient = call.url.includes('groq') ? 'groq' : 'openai';
         expect(new Map<string, string>(call.headers).get('authorization')).toBe(`Bearer ${recipient}-secret`);
     }
+});
+
+test('Save All persists key references and preserves edits made while migration is pending', async ({ page }) => {
+    await providerFixture(page);
+    await chooseProvider(page, 'Groq');
+    await expect(page.locator('#model-select-input-groq option')).toHaveText(['-- Active Model --', 'groq-chat', 'groq-updated']);
+    await expect(page.getByRole('button', { name: 'Refresh models', exact: true })).toBeEnabled();
+    const save = page.locator('.settings-container .header').getByRole('button', { name: 'Save All', exact: true });
+    await expect(save).toBeEnabled();
+    await page.locator('#api-key-input-groq').fill('fixture-submitted-key');
+    await page.evaluate(() => { (window as any).__providerHoldSecretWrite = true; });
+    await save.click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__providerReleases['secret-write'])).toBe('function');
+    await page.locator('#api-key-input-groq').fill('fixture-new-unsaved-key');
+    await page.locator('#base-url-input-groq').fill('https://groq-changed.example/v1');
+    await release(page, 'secret-write');
+    await expect(page.locator('#api-key-input-groq')).toHaveValue('fixture-new-unsaved-key');
+    await expect(page.locator('#base-url-input-groq')).toHaveValue('https://groq-changed.example/v1');
+    await expect(page.getByRole('status').filter({ hasText: 'New edits are still unsaved' })).toBeVisible();
+    const stored = await page.evaluate(() => (window as any).__providerSavedSnapshots.at(-1).find((provider: any) => provider.id === 'groq'));
+    expect(stored.apiKey).toBe('@keyring/llm-provider:groq');
+    expect(stored.baseUrl).toBe('https://groq.example/v1');
+    await save.click();
+    await expect(page.locator('#api-key-input-groq')).toHaveValue('@keyring/llm-provider:groq');
+    expect(await page.evaluate(() => (window as any).__providerSecretValues['llm-provider:groq'])).toBe('fixture-new-unsaved-key');
+    const snapshots = JSON.stringify(await page.evaluate(() => (window as any).__providerSavedSnapshots));
+    expect(snapshots).not.toContain('fixture-submitted-key');
+    expect(snapshots).not.toContain('fixture-new-unsaved-key');
+});
+
+test('a failed key migration keeps the editable key and writes no plaintext settings before retry', async ({ page }) => {
+    await providerFixture(page);
+    await chooseProvider(page, 'Groq');
+    await expect(page.locator('#model-select-input-groq option')).toHaveText(['-- Active Model --', 'groq-chat', 'groq-updated']);
+    await expect(page.getByRole('button', { name: 'Refresh models', exact: true })).toBeEnabled();
+    const save = page.locator('.settings-container .header').getByRole('button', { name: 'Save All', exact: true });
+    await expect(save).toBeEnabled();
+    const writes = await page.evaluate(() => (window as any).__providerSavedSnapshots.length);
+    await page.evaluate(() => { (window as any).__providerSecretWriteFailure = true; });
+    await page.locator('#api-key-input-groq').fill('fixture-retry-key');
+    await save.click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Secret storage did not save' })).toBeVisible();
+    await expect(page.locator('#api-key-input-groq')).toHaveValue('fixture-retry-key');
+    expect(await page.evaluate(() => (window as any).__providerSavedSnapshots.length)).toBe(writes);
+    await page.evaluate(() => { (window as any).__providerSecretWriteFailure = false; });
+    await save.click();
+    await expect(page.locator('#api-key-input-groq')).toHaveValue('@keyring/llm-provider:groq');
+    expect(JSON.stringify(await page.evaluate(() => (window as any).__providerSavedSnapshots))).not.toContain('fixture-retry-key');
 });
