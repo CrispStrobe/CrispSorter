@@ -283,7 +283,12 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 | `query_language_version` | after negotiation | grammar version confirmed by `/v1/capabilities` |
 | `owner_id` | no | filter to a specific user's documents |
 | `language` | no | filter by language code (`"en"`, `"de"`, …) |
-| `year_min` / `year_max` | no | filter by publication year |
+| `year_min` / `year_max` | no | inclusive publication years, 1–9999 |
+| `metadata_filter_version` | for the filters below | use the version advertised by `/v1/capabilities` (currently 1) |
+| `ext` | no | any of these extensions, without a leading dot; values are lowercased |
+| `tag` | no | one exact tag value, including punctuation |
+| `source_hash_prefix` | no | 1–64 hexadecimal characters; case-insensitive input |
+| `doc_id_scope` | no | restrict to up to 1,000 document IDs; combine with `owner_id` to select an owner |
 
 **Response 200:**
 ```json
@@ -565,6 +570,23 @@ chunk-boundary behavior. A negotiated `POST /v1/search` includes
 `x-crisp-query-version`. Older servers remain usable for plain queries. Explicit
 syntax requires a compatible ready server, and clients reject results that do
 not confirm the negotiated version.
+
+The capability response also advertises `metadata_filter_version: 1`. Requests
+using extension, tag, fingerprint-prefix, or document-scope predicates must send
+that version. Successful responses include `x-crisp-metadata-filter-version: 1`;
+the desktop client requires this receipt and will not send extended filters to
+an older server that could ignore them. Unknown or missing requested versions
+return HTTP 409; invalid filter values return HTTP 422. Queries without the new
+predicates remain compatible with the earlier request shape.
+
+Metadata predicates apply before ranking limits in every search mode. Lexical
+search continues across the pinned full-text snapshot when the first ranked
+page has no eligible documents. Scalar matching projects only owner/document
+identities, and each SQL predicate batch is bounded. This favors correct results
+for restrictive filters; broad lexical queries with very selective metadata can
+still require substantial work. ANN candidate retrieval remains approximate.
+Folder, translated-text, audio, image, review-status, and mounted-volume filters
+are not represented in this server schema and remain explicit client errors.
 
 Run one server per data directory. On upgrade, stop the previous process and
 start the new binary with the same `LANCE_DATA_DIR`. Before accepting requests,

@@ -664,19 +664,7 @@ impl LocalIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let mut vq = self
-            .table
-            .vector_search(embedding)?
-            .distance_type(DistanceType::Cosine)
-            .select(search_result_columns())
-            .limit(limit);
-
-        if let Some(sql) = filters.to_lance_sql() {
-            vq = vq.only_if(sql);
-        }
-
-        let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
-        record_batches_to_search_results(&batches)
+        self.search_vector_column(embedding, "embedding", filters, limit).await
     }
 
     /// P22 — "More Like This": find documents similar to a given
@@ -737,10 +725,9 @@ impl LocalIndex {
         record_batches_to_search_results(&result_batches)
     }
 
-    /// ANN vector search targeting a specific vector column (e.g.
-    /// `embedding_omni` or `embedding_vit`) instead of the default
-    /// `embedding` column.  Same pattern as `search_vector` but with
-    /// an explicit `.column()` call on the LanceDB `VectorQuery`.
+    /// ANN search targeting a vector column, returning one best chunk per
+    /// document occurrence. Candidate widening avoids long-document crowding;
+    /// metadata filters apply in the database before every ANN collection.
     pub async fn search_vector_column(
         &self,
         embedding: &[f32],
@@ -748,20 +735,32 @@ impl LocalIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let mut vq = self
-            .table
-            .vector_search(embedding)?
-            .column(column)
-            .distance_type(DistanceType::Cosine)
-            .select(search_result_columns())
-            .limit(limit);
-
-        if let Some(sql) = filters.to_lance_sql() {
-            vq = vq.only_if(sql);
+        if limit == 0 { return Ok(Vec::new()); }
+        // ANN limits count chunks. Widen the candidate window when a long
+        // document crowds out other sources, keeping its highest-ranked chunk.
+        // This remains approximate retrieval; the bounded window avoids a full
+        // corpus scan for every semantic request.
+        let maximum_candidates = limit.max(4096);
+        let mut candidate_limit = limit.saturating_mul(4).clamp(40, maximum_candidates);
+        loop {
+            let mut vq = self.table.vector_search(embedding)?
+                .column(column)
+                .distance_type(DistanceType::Cosine)
+                .select(search_result_columns())
+                .limit(candidate_limit);
+            if let Some(sql) = filters.to_lance_sql() { vq = vq.only_if(sql); }
+            let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
+            let rows = record_batches_to_search_results(&batches)?;
+            let exhausted = rows.len() < candidate_limit;
+            let mut seen = std::collections::HashSet::new();
+            let mut documents: Vec<_> = rows.into_iter().filter(|hit|
+                seen.insert((hit.owner_id.clone(), hit.doc_id.clone()))).collect();
+            if documents.len() >= limit || exhausted || candidate_limit >= maximum_candidates {
+                documents.truncate(limit);
+                return Ok(documents);
+            }
+            candidate_limit = candidate_limit.saturating_mul(2).min(maximum_candidates);
         }
-
-        let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
-        record_batches_to_search_results(&batches)
     }
 
     /// Stage AE — ColBERT late-interaction re-ranking of an existing
@@ -898,12 +897,15 @@ impl LocalIndex {
                     std::slice::from_ref(&batch), score_map,
                 )?;
                 for (row, result) in results.into_iter().enumerate() {
-                    let text_lower = text
-                        .filter(|column| !column.is_null(row))
-                        .map(|column| column.value(row))
-                        .unwrap_or("")
-                        .to_lowercase();
-                    let hits = query_terms.iter().filter(|&&term| text_lower.contains(term)).count();
+                    let body = text.filter(|column| !column.is_null(row))
+                        .map(|column| column.value(row)).unwrap_or("");
+                    // Match the index analyzer: accent folding and whole tokens
+                    // keep short/CJK terms useful without matching word fragments.
+                    let hits = if query_terms.is_empty() { 0 } else {
+                        let tokens: std::collections::HashSet<_> =
+                            super::fts_query::simple_tokenize(body).into_iter().collect();
+                        query_terms.iter().filter(|&&term| tokens.contains(term)).count()
+                    };
                     let replace = match best.get(&result.doc_id) {
                         None => true,
                         Some((previous, previous_hits)) => hits > *previous_hits

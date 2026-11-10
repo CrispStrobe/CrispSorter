@@ -14,6 +14,7 @@ use std::sync::{
 fn capabilities() -> SearchCapabilities {
     SearchCapabilities {
         api_version: 1,
+        metadata_filter_version: crisp_index_protocol::METADATA_FILTER_VERSION,
         query_language_version: QUERY_LANGUAGE_VERSION,
         fts_schema_version: FTS_SCHEMA_VERSION,
         fts_ready: true,
@@ -412,5 +413,102 @@ async fn exact_uri_http_move_preserves_copies_and_rejects_ambiguous_sources_and_
         .unwrap_err()
         .to_string()
         .contains("422"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn legacy_metadata_capabilities_fail_before_any_search_request() {
+    for advertised_version in [0, 99] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let router = Router::new()
+            .route("/v1/capabilities", get(move || async move {
+                let mut caps = capabilities(); caps.metadata_filter_version = advertised_version; Json(caps)
+            }))
+            .route("/v1/search", post(move || {
+                let seen = seen.clone(); async move { seen.fetch_add(1, Ordering::SeqCst); Json(Vec::<crisp_index_protocol::SearchHit>::new()) }
+            }));
+        let (url, server) = serve(router).await;
+        let client = RemoteClient::new(url, "");
+        let filters = SearchFilters { ext: vec!["pdf".into()], ..Default::default() };
+        assert!(client.search_text("needle", &filters, 1).await.unwrap_err().to_string().contains("metadata filters"));
+        assert!(client.search_vector(&[1.0, 0.0], &filters, 1).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn metadata_negotiation_round_trips_every_supported_predicate_and_requires_receipt() {
+    for include_receipt in [false, true] {
+        let router = Router::new()
+            .route("/v1/capabilities", get(|| async { Json(capabilities()) }))
+            .route("/v1/search", post(move |Json(request): Json<crisp_index_protocol::SearchRequest>| async move {
+                assert_eq!(request.metadata_filter_version, Some(crisp_index_protocol::METADATA_FILTER_VERSION));
+                assert_eq!(request.ext, ["pdf"]);
+                assert_eq!(request.tag.as_deref(), Some("reviewed"));
+                assert_eq!(request.source_hash_prefix.as_deref(), Some("abc"));
+                assert_eq!(request.doc_id_scope, ["doc"]);
+                let mut headers = axum::http::HeaderMap::new();
+                headers.insert(crisp_index_protocol::QUERY_VERSION_HEADER, "1".parse().unwrap());
+                if include_receipt { headers.insert(crisp_index_protocol::METADATA_FILTER_VERSION_HEADER, "1".parse().unwrap()); }
+                (headers, Json(Vec::<crisp_index_protocol::SearchHit>::new()))
+            }));
+        let (url, server) = serve(router).await;
+        let client = RemoteClient::new(url, "");
+        let filters = SearchFilters { ext: vec!["pdf".into()], tag: Some("reviewed".into()),
+            source_hash_prefix: Some("abc".into()), doc_id_scope: vec!["doc".into()], ..Default::default() };
+        let result = client.search_text("needle", &filters, 1).await;
+        if include_receipt { assert!(result.unwrap().is_empty()); }
+        else { assert!(result.unwrap_err().to_string().contains("did not confirm the negotiated metadata filters")); }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn real_search_route_filters_negotiated_requests_and_rejects_unversioned_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(crate::index::VectorStore::open_or_create(dir.path(), 2).await.unwrap());
+    let fts = Arc::new(crate::fts::FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = Arc::new(crate::index::SearchIndex::new(vector, fts));
+    index.ensure_ready().await.unwrap();
+    let chunk = |id: &str, ext: &str| serde_json::from_value(serde_json::json!({
+        "doc_id": id, "chunk_index": 0, "chunk_total": 1, "full_text": "needle body",
+        "embedding": [1.0, 0.0], "filename": format!("{id}.{ext}"), "ext": ext,
+        "language": "en", "location_uri": format!("test://a/{id}"), "owner_id": "a",
+        "source_hash": "abcdef", "tags": ["reviewed"]
+    })).unwrap();
+    index.ingest_batch(&crisp_index_protocol::IngestBatch { chunks: vec![chunk("yes", "pdf"), chunk("no", "txt")] }).await.unwrap();
+    let state = Arc::new(crate::state::SharedState {
+        index, queue: crate::queue::TaskQueue::open_or_create(dir.path(), Default::default()).unwrap(), embedder: None,
+        config: crate::state::ServerConfig { api_key: "".into(), port: 0, data_dir: dir.path().to_owned(), embed_dims: 2,
+            server_embed_enabled: false, queue_lease_secs: 30, queue_retry_base_ms: 1000, queue_max_attempts: 3 },
+    });
+    let router = Router::new()
+        .route("/v1/capabilities", get(crate::routes::capabilities::capabilities))
+        .route("/v1/search", post(crate::routes::search::search)).with_state(state);
+    let (url, server) = serve(router).await;
+    let client = RemoteClient::new(&url, "");
+    let filters = SearchFilters { owner_id: Some("a".into()), ext: vec!["pdf".into()],
+        tag: Some("reviewed".into()), source_hash_prefix: Some("abc".into()), doc_id_scope: vec!["yes".into()], ..Default::default() };
+    for results in [
+        client.search_text("needle", &filters, 1).await.unwrap(),
+        client.search_vector(&[1.0, 0.0], &filters, 1).await.unwrap(),
+        client.search_hybrid("needle", &[1.0, 0.0], &filters, 1).await.unwrap(),
+    ] {
+        assert_eq!(results.len(), 1); assert_eq!(results[0].doc_id, "yes");
+    }
+    let http = reqwest::Client::new();
+    for body in [
+        serde_json::json!({"mode":"text", "query":"needle", "ext":["pdf"]}),
+        serde_json::json!({"mode":"text", "query":"needle", "ext":["pdf"], "metadata_filter_version":99}),
+    ] {
+        let response = http.post(format!("{url}/v1/search")).json(&body).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    }
+    let invalid = http.post(format!("{url}/v1/search"))
+        .json(&serde_json::json!({"mode":"text", "query":"needle", "source_hash_prefix":"%", "metadata_filter_version":1}))
+        .send().await.unwrap();
+    assert_eq!(invalid.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
     server.abort();
 }

@@ -74,3 +74,6 @@ pub mod index {
 
 #[cfg(test)]
 mod retrieval_contract;
+
+#[path = "../../src-tauri/src/index/passage.rs"]
+pub mod passage;

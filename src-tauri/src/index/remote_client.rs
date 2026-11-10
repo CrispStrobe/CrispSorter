@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use crisp_index_protocol::{
     BatchIngestResponse, IngestBatch, IngestChunk, SearchCapabilities, SearchRequest,
     TaskStatusResponse, UpdateLocationBody, UpdateLocationByUriBody, QUERY_LANGUAGE_VERSION,
-    QUERY_VERSION_HEADER,
+    QUERY_VERSION_HEADER, METADATA_FILTER_VERSION, METADATA_FILTER_VERSION_HEADER,
 };
 use reqwest::Client;
 use serde::Serialize;
@@ -142,6 +142,18 @@ impl RemoteClient {
     }
 
     async fn post_search(&self, mut request: SearchRequest) -> Result<reqwest::Response> {
+        let filters = request.filters();
+        filters.validate().map_err(|error| anyhow!(error))?;
+        if filters.needs_metadata_filter_version() {
+            let capabilities = self.get("/v1/capabilities").await
+                .map_err(|error| anyhow!("Cannot verify remote metadata filters; upgrade the server or clear these filters: {error}"))?
+                .json::<SearchCapabilities>().await?;
+            if capabilities.api_version != 1 || !capabilities.fts_ready
+                || capabilities.metadata_filter_version != METADATA_FILTER_VERSION {
+                return Err(anyhow!("This server does not support the required metadata filters. Upgrade the server or clear extension, tag, fingerprint and result-scope filters."));
+            }
+            request.metadata_filter_version = Some(METADATA_FILTER_VERSION);
+        }
         let mode = request.mode.as_deref().unwrap_or("hybrid");
         if mode != "vector" {
             let query = request
@@ -160,6 +172,14 @@ impl RemoteClient {
                 .and_then(|value| value.parse::<u32>().ok());
             if reported != Some(version) {
                 return Err(anyhow!("The server did not confirm the negotiated query language version; its search results were not accepted."));
+            }
+        }
+        if let Some(version) = request.metadata_filter_version {
+            let reported = response.headers().get(METADATA_FILTER_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u32>().ok());
+            if reported != Some(version) {
+                return Err(anyhow!("The server did not confirm the negotiated metadata filters; its search results were not accepted."));
             }
         }
         Ok(response)
@@ -401,6 +421,11 @@ fn build_search_request(
         mode: Some(mode.to_owned()),
         limit: Some(limit),
         query_language_version: None,
+        metadata_filter_version: None,
+        ext: filters.ext.clone(),
+        tag: filters.tag.clone(),
+        source_hash_prefix: filters.source_hash_prefix.clone(),
+        doc_id_scope: filters.doc_id_scope.clone(),
         owner_id: filters.owner_id.clone(),
         language: filters.language.clone(),
         year_min: filters.year_min,

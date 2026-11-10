@@ -519,16 +519,9 @@ impl SearchEngine {
         let score_map: HashMap<String, f32> =
             hits.iter().map(|h| (h.doc_id.clone(), h.score)).collect();
 
-        // Extract query terms for best-chunk selection (words ≥ 3 chars).
-        let terms: Vec<String> = query
-            .split_whitespace()
-            .map(|w| {
-                w.to_lowercase()
-                    .trim_matches(|c: char| !c.is_alphanumeric())
-                    .to_owned()
-            })
-            .filter(|w| w.len() >= 3)
-            .collect();
+        // Only positive literal body terms are useful passage seeds. Boolean
+        // operators, exclusions and metadata fields must not win the preview.
+        let terms = super::fts_query::literal_body_terms(query)?;
         let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
 
         let mut results = self
@@ -743,15 +736,7 @@ impl SearchEngine {
 
         let mut fts_hydrated: HashMap<String, SearchResult> = HashMap::new();
         if !fts_only_ids.is_empty() {
-            let terms: Vec<String> = query_text
-                .split_whitespace()
-                .map(|w| {
-                    w.to_lowercase()
-                        .trim_matches(|c: char| !c.is_alphanumeric())
-                        .to_owned()
-                })
-                .filter(|w| w.len() >= 3)
-                .collect();
+            let terms = super::fts_query::literal_body_terms(query_text)?;
             let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
             let fts_score_sub: HashMap<String, f32> = fts_only_ids
                 .iter()

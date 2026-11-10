@@ -197,6 +197,7 @@ mod tests {
             language: Some("en".into()),
             year_min: Some(2024),
             year_max: Some(2024),
+            ..Default::default()
         };
         assert_eq!(
             store.prepare("alpha", &filters).unwrap().hits(1).unwrap()[0].key,

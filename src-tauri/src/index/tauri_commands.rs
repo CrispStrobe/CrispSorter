@@ -120,8 +120,8 @@ pub async fn index_search(
         }
         .map_err(|e| e.to_string())?
     } else {
-        // The older remote-index protocol only carries owner/language/year.
-        // Refuse unsupported filters instead of returning unfiltered matches.
+        // Only transmit predicates represented by the remote schema. Extended
+        // metadata predicates also require a capability and response receipt.
         ensure_remote_search_filters_supported(&filters)?;
         // ── Remote path: embed query locally, then call backend ───────
         let backend = lock
@@ -241,9 +241,14 @@ fn ensure_remote_search_filters_supported(filters: &super::SearchFilters) -> Res
     unsupported.language = None;
     unsupported.year_min = None;
     unsupported.year_max = None;
+    // The HTTP client negotiates and verifies these server-side predicates.
+    unsupported.ext.clear();
+    unsupported.tag = None;
+    unsupported.source_hash_prefix = None;
+    unsupported.doc_id_scope.clear();
     if unsupported.to_lance_sql().is_some() || !unsupported.tags.is_empty() || unsupported.fuzzy || unsupported.synonyms
         || unsupported.colbert_rerank || unsupported.omni_search {
-        return Err("This remote index supports only language and publication-year filters. Clear the other search options or switch to the local index.".into());
+        return Err("This remote index supports language, publication years, extensions, an exact tag, a source fingerprint prefix and a document scope. Clear other search options or switch to the local index.".into());
     }
     Ok(())
 }
@@ -5402,13 +5407,15 @@ mod search_filter_boundary_tests {
     fn remote_index_refuses_filters_missing_from_its_wire_protocol() {
         assert!(ensure_remote_search_filters_supported(&SearchFilters {
             language: Some("de".into()), year_min: Some(2000), year_max: Some(2025),
+            ext: vec!["pdf".into()], tag: Some("invoice".into()),
+            source_hash_prefix: Some("abc".into()), doc_id_scope: vec!["one".into()],
             ..Default::default()
         }).is_ok());
         for filters in [
-            SearchFilters { ext: vec!["pdf".into()], ..Default::default() },
-            SearchFilters { tag: Some("invoice".into()), ..Default::default() },
+            SearchFilters { parent_dir_prefix: Some("/docs".into()), ..Default::default() },
+            SearchFilters { prefer_translated_lang: Some("en".into()), ..Default::default() },
             SearchFilters { synonyms: true, ..Default::default() },
-            SearchFilters { doc_id_scope: vec!["one".into()], ..Default::default() },
+            SearchFilters { doc_status: Some("reviewed".into()), ..Default::default() },
         ] {
             assert!(ensure_remote_search_filters_supported(&filters).is_err());
         }

@@ -883,6 +883,7 @@ async fn partial_updates_publish_coherent_metadata_and_filtered_vector_results()
         language: Some("fr".into()),
         year_min: Some(2026),
         year_max: Some(2026),
+        ..Default::default()
     };
     for hits in [
         index
@@ -947,6 +948,7 @@ async fn legacy_mixed_chunk_metadata_cannot_bypass_canonical_vector_filters() {
         language: Some("fr".into()),
         year_min: Some(2026),
         year_max: Some(2026),
+        ..Default::default()
     };
     for hits in [
         index.search_vector(&[1.0, 0.0], &filters, 1).await.unwrap(),
@@ -965,4 +967,52 @@ async fn legacy_mixed_chunk_metadata_cannot_bypass_canonical_vector_filters() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn extended_metadata_filters_apply_before_lexical_limits_and_all_retrieval_lanes() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let mut chunks: Vec<_> = (0..180).map(|n| wire("a", &format!("early-{n:03}"), 0,
+        "needle", Some(1), None)).collect();
+    let mut target = wire("a", "late", 0, "needle with a longer passage that scores below short rows", Some(1), None);
+    target.ext = "pdf".into();
+    target.tags = vec!["owner's invoice".into()];
+    target.source_hash = "abcdef123456".into();
+    chunks.push(target.clone());
+    let mut other_owner = target.clone();
+    other_owner.owner_id = "b".into();
+    other_owner.location_uri = "test://b/late".into();
+    chunks.push(other_owner);
+    let mut wrong_tag = target.clone();
+    wrong_tag.doc_id = "wrong-tag".into();
+    wrong_tag.location_uri = "test://a/wrong-tag".into();
+    wrong_tag.tags = vec!["owner's invoice draft".into()];
+    chunks.push(wrong_tag);
+    index.ingest_batch(&IngestBatch { chunks }).await.unwrap();
+    let filters = SearchFilters {
+        owner_id: Some("a".into()), ext: vec!["PDF".into()],
+        tag: Some("owner's invoice".into()), source_hash_prefix: Some("ABCDEF".into()),
+        doc_id_scope: vec!["late".into()], ..Default::default()
+    };
+    for hits in [
+        index.search_text("needle", &filters, 1).await.unwrap(),
+        index.search_vector(&[1.0, 0.0], &filters, 1).await.unwrap(),
+        index.search_hybrid("needle AND NOT missing", &[1.0, 0.0], &filters, 1).await.unwrap(),
+    ] {
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, "late");
+        assert_eq!(hits[0].owner_id, "a");
+    }
+    let tag_only = SearchFilters { owner_id: Some("a".into()), tag: Some("owner's invoice".into()), ..Default::default() };
+    let found = index.search_text("needle", &tag_only, 1).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].doc_id, "late");
+    for invalid in [
+        SearchFilters { source_hash_prefix: Some("%".into()), ..Default::default() },
+        SearchFilters { doc_id_scope: vec!["late".into(); 1001], ..Default::default() },
+    ] {
+        assert!(index.search_text("needle", &invalid, 1).await.is_err());
+        assert!(index.search_vector(&[1.0, 0.0], &invalid, 1).await.is_err());
+    }
 }

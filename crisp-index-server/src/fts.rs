@@ -557,6 +557,7 @@ impl FtsStore {
     pub fn capabilities(&self) -> Result<SearchCapabilities> {
         Ok(SearchCapabilities {
             api_version: 1,
+            metadata_filter_version: crisp_index_protocol::METADATA_FILTER_VERSION,
             query_language_version: QUERY_LANGUAGE_VERSION,
             fts_schema_version: FTS_SCHEMA_VERSION,
             fts_ready: !self.needs_rebuild()? && self.pending()?.is_empty(),
@@ -579,6 +580,7 @@ impl FtsStore {
         text: Option<&str>,
         filters: &SearchFilters,
     ) -> Result<PreparedSearch> {
+        filters.validate().map_err(|error| anyhow!(error))?;
         ensure!(
             self.pending()?.is_empty(),
             "Pending full-text writes must be repaired before searching"
@@ -694,15 +696,21 @@ pub struct PreparedSearch {
 
 impl PreparedSearch {
     pub fn hits(&self, limit: usize) -> Result<Vec<FtsHit>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         ensure!(limit <= 1000, "Full-text candidate limit exceeds 1000");
+        self.hits_page(limit, 0)
+    }
+
+    pub fn document_count(&self) -> usize { self.searcher.num_docs() as usize }
+
+    /// Keep one pinned lexical snapshot while applying scalar metadata filters.
+    pub fn hits_page(&self, limit: usize, offset: usize) -> Result<Vec<FtsHit>> {
+        if limit == 0 { return Ok(Vec::new()); }
+        ensure!(offset.checked_add(limit).is_some(), "Full-text page range overflow");
         let mut snippets =
             SnippetGenerator::create(&self.searcher, self.query.as_ref(), self.fields.search.body)?;
         snippets.set_max_num_chars(400);
         self.searcher
-            .search(&self.query, &TopDocs::with_limit(limit))?
+            .search(&self.query, &TopDocs::with_limit(limit).and_offset(offset))?
             .into_iter()
             .map(|(score, address)| {
                 let doc: TantivyDocument = self.searcher.doc(address)?;

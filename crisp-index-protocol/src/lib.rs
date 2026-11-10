@@ -198,6 +198,11 @@ pub const QUERY_LANGUAGE_VERSION: u32 = 1;
 /// Response header proving which parser handled a negotiated search request.
 pub const QUERY_VERSION_HEADER: &str = "x-crisp-query-version";
 
+/// Metadata filter semantics: extension, exact tag, hash prefix and document scope.
+pub const METADATA_FILTER_VERSION: u32 = 1;
+/// Response receipt for metadata predicates applied before ranking and limiting.
+pub const METADATA_FILTER_VERSION_HEADER: &str = "x-crisp-metadata-filter-version";
+
 /// Current server full-text schema. Older generations remain preserved on disk.
 pub const FTS_SCHEMA_VERSION: u32 = 2;
 
@@ -206,6 +211,9 @@ pub const FTS_SCHEMA_VERSION: u32 = 2;
 pub struct SearchCapabilities {
     /// HTTP API generation.
     pub api_version: u32,
+    /// Missing on legacy servers, which must not receive extended filters.
+    #[serde(default)]
+    pub metadata_filter_version: u32,
     /// Exact Boolean, field, phrase, fuzzy, wildcard, and proximity grammar.
     pub query_language_version: u32,
     /// Active full-text index schema generation.
@@ -256,6 +264,9 @@ pub struct SearchRequest {
     /// Required lexical grammar version negotiated through `/v1/capabilities`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_language_version: Option<u32>,
+    /// Negotiated metadata predicates; unknown versions are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_filter_version: Option<u32>,
 
     // ── Filters (flat for backwards compatibility; matches existing wire). ──
     /// Restrict to one owner.
@@ -270,6 +281,18 @@ pub struct SearchRequest {
     /// Upper bound (inclusive) on `year`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year_max: Option<i32>,
+    /// Match any lower-case file extension (without a leading dot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    /// Require this exact tag value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Require a hexadecimal source fingerprint prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash_prefix: Option<String>,
+    /// Restrict to these document IDs; an empty list leaves scope unrestricted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_id_scope: Vec<String>,
 }
 
 /// Filters in struct form, used internally by both client and server. Wire
@@ -288,9 +311,63 @@ pub struct SearchFilters {
     /// Upper bound (inclusive) on `year`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year_max: Option<i32>,
+    /// Match any lower-case file extension (without a leading dot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    /// Require this exact tag value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Require a hexadecimal source fingerprint prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash_prefix: Option<String>,
+    /// Restrict to these document IDs; an empty list leaves scope unrestricted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_id_scope: Vec<String>,
+}
+
+impl SearchRequest {
+    pub fn filters(&self) -> SearchFilters {
+        SearchFilters {
+            owner_id: self.owner_id.clone(), language: self.language.clone(),
+            year_min: self.year_min, year_max: self.year_max, ext: self.ext.clone(),
+            tag: self.tag.clone(), source_hash_prefix: self.source_hash_prefix.clone(),
+            doc_id_scope: self.doc_id_scope.clone(),
+        }
+    }
 }
 
 impl SearchFilters {
+    /// These predicates were not understood by the first server API.
+    pub fn needs_metadata_filter_version(&self) -> bool {
+        !self.ext.is_empty() || self.tag.is_some() || self.source_hash_prefix.is_some()
+            || !self.doc_id_scope.is_empty()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        for year in [self.year_min, self.year_max].into_iter().flatten() {
+            if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999".into()); }
+        }
+        if matches!((self.year_min, self.year_max), (Some(min), Some(max)) if min > max) {
+            return Err("year_min exceeds year_max".into());
+        }
+        if self.ext.len() > 128 || self.ext.iter().any(|value| value.is_empty() || value.len() > 64) {
+            return Err("At most 128 nonempty extensions of 64 bytes each are supported".into());
+        }
+        if self.doc_id_scope.len() > 1000 || self.doc_id_scope.iter().any(|value| value.is_empty() || value.len() > 1024) {
+            return Err("Document scope accepts at most 1000 nonempty IDs of 1024 bytes each".into());
+        }
+        if let Some(prefix) = &self.source_hash_prefix {
+            if prefix.is_empty() || prefix.len() > 64 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("Source fingerprint prefix must contain 1 to 64 hexadecimal characters".into());
+            }
+        }
+        if [self.owner_id.as_ref(), self.language.as_ref(), self.tag.as_ref()].into_iter()
+            .flatten().any(|value| value.len() > 1024) {
+            return Err("Metadata filter values must not exceed 1024 bytes".into());
+        }
+        Ok(())
+    }
+
     /// Build a LanceDB SQL `WHERE` clause fragment from the active filters.
     /// Returns `None` if no filters are set.
     ///
@@ -310,6 +387,20 @@ impl SearchFilters {
         }
         if let Some(y) = self.year_max {
             parts.push(format!("year <= {y}"));
+        }
+        if !self.ext.is_empty() {
+            parts.push(format!("ext IN ({})", self.ext.iter().map(|value|
+                format!("'{}'", value.to_lowercase().replace('\'', "''"))).collect::<Vec<_>>().join(",")));
+        }
+        if let Some(tag) = &self.tag {
+            parts.push(format!("array_has(tags, '{}')", tag.replace('\'', "''")));
+        }
+        if let Some(prefix) = &self.source_hash_prefix {
+            parts.push(format!("source_hash LIKE '{}%'", prefix.to_ascii_lowercase().replace('\'', "''")));
+        }
+        if !self.doc_id_scope.is_empty() {
+            parts.push(format!("doc_id IN ({})", self.doc_id_scope.iter().map(|value|
+                format!("'{}'", value.replace('\'', "''"))).collect::<Vec<_>>().join(",")));
         }
         if parts.is_empty() {
             None
@@ -528,6 +619,7 @@ mod tests {
             language: Some("en".into()),
             year_min: Some(2020),
             year_max: Some(2024),
+            ..Default::default()
         };
         let sql = f.to_lance_sql().unwrap();
         assert!(sql.contains("owner_id = 'u''1'"));
@@ -549,6 +641,28 @@ mod tests {
         assert!(!json.contains("owner_id"));
         assert!(!json.contains("embedding"));
         assert!(json.contains("\"mode\":\"hybrid\""));
+    }
+
+    #[test]
+    fn extended_filters_validate_and_quote_literal_values() {
+        let filters = SearchFilters {
+            ext: vec!["PDF".into()], tag: Some("owner's reviewed".into()),
+            source_hash_prefix: Some("ABCD".into()), doc_id_scope: vec!["doc'one".into()],
+            ..Default::default()
+        };
+        filters.validate().unwrap();
+        assert!(filters.needs_metadata_filter_version());
+        let sql = filters.to_lance_sql().unwrap();
+        assert!(sql.contains("ext IN ('pdf')"));
+        assert!(sql.contains("array_has(tags, 'owner''s reviewed')"));
+        assert!(sql.contains("source_hash LIKE 'abcd%'"));
+        assert!(sql.contains("doc_id IN ('doc''one')"));
+        for value in ["", "%", "a_b", "not-a-hash"] {
+            assert!(SearchFilters { source_hash_prefix: Some(value.into()), ..Default::default() }.validate().is_err());
+        }
+        let legacy: SearchRequest = serde_json::from_str(r#"{"query":"needle"}"#).unwrap();
+        assert!(!legacy.filters().needs_metadata_filter_version());
+        assert_eq!(legacy.metadata_filter_version, None);
     }
 
     #[test]

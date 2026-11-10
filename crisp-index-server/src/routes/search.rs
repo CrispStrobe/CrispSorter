@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
-use crisp_index_protocol::{SearchFilters, SearchRequest};
+use crisp_index_protocol::SearchRequest;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -19,6 +19,10 @@ pub async fn search(state: State<Arc<SharedState>>, request: Json<SearchRequest>
     let (status, body) = search_inner(state, request).await;
     let mut response = (status, body).into_response();
     if status.is_success() {
+        response.headers_mut().insert(
+            crisp_index_protocol::METADATA_FILTER_VERSION_HEADER,
+            crisp_index_protocol::METADATA_FILTER_VERSION.to_string().parse().expect("integer header"),
+        );
         response.headers_mut().insert(
             crisp_index_protocol::QUERY_VERSION_HEADER,
             crisp_index_protocol::QUERY_LANGUAGE_VERSION
@@ -74,14 +78,16 @@ async fn search_inner(
         }
     }
 
-    // Flatten the wire request's filter fields into the `SearchFilters`
-    // struct used by the index layer (same fields, different shape).
-    let filters = SearchFilters {
-        owner_id: req.owner_id,
-        language: req.language,
-        year_min: req.year_min,
-        year_max: req.year_max,
-    };
+    let filters = req.filters();
+    if let Err(error) = filters.validate() {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": error})));
+    }
+    if req.metadata_filter_version.is_some_and(|version| version != crisp_index_protocol::METADATA_FILTER_VERSION) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Unsupported metadata filter version; negotiate /v1/capabilities"})));
+    }
+    if filters.needs_metadata_filter_version() && req.metadata_filter_version.is_none() {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Extended metadata filters require a negotiated metadata_filter_version"})));
+    }
 
     if mode != "vector" {
         let Some(query) = req.query.as_deref() else {

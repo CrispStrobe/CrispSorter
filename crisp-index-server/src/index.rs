@@ -503,6 +503,27 @@ impl VectorStore {
         Ok(batches)
     }
 
+    /// Resolve scalar predicates against every chunk without loading bodies or vectors.
+    async fn matching_keys_for_filters(&self, keys: &[DocumentKey], filters: &SearchFilters) -> Result<HashSet<DocumentKey>> {
+        if keys.is_empty() { return Ok(HashSet::new()); }
+        let mut predicate = keys_sql(keys);
+        if let Some(extra) = filters.to_lance_sql() {
+            predicate = format!("({predicate}) AND ({extra})");
+        }
+        let mut stream = self.table.query().only_if(predicate)
+            .select(Select::columns(&["owner_id", "doc_id"]))
+            .execute().await?;
+        let mut allowed = HashSet::new();
+        while let Some(batch) = stream.try_next().await? {
+            let owners = string_column(&batch, "owner_id")?;
+            let ids = string_column(&batch, "doc_id")?;
+            for row in 0..batch.num_rows() {
+                allowed.insert(DocumentKey { owner_id: owners.value(row).into(), doc_id: ids.value(row).into() });
+            }
+        }
+        Ok(allowed)
+    }
+
     async fn keys_for_doc(&self, doc_id: &str) -> Result<Vec<DocumentKey>> {
         let batches: Vec<RecordBatch> = self
             .table
@@ -956,6 +977,33 @@ impl SearchIndex {
         ))
     }
 
+    /// Metadata predicates apply before result limits, including matches beyond
+    /// the first lexical page. The pinned reader is shared across every page.
+    async fn filtered_fts_hits(&self, prepared: &PreparedSearch, filters: &SearchFilters, wanted: usize) -> Result<Vec<FtsHit>> {
+        if !filters.needs_metadata_filter_version() { return prepared.hits(wanted); }
+        let mut hits = Vec::with_capacity(wanted);
+        let mut offset = 0usize;
+        let total = prepared.document_count();
+        while offset < total && hits.len() < wanted {
+            let page_size = offset.max(wanted.clamp(128, 512)).min(4096).min(total - offset);
+            let page = prepared.hits_page(page_size, offset)?;
+            let exhausted = page.len() < page_size;
+            offset += page.len();
+            for group in page.chunks(512) {
+                let keys: Vec<_> = group.iter().map(|hit| hit.key.clone()).collect();
+                let allowed = self.vector.matching_keys_for_filters(&keys, filters).await?;
+                for hit in group {
+                    if allowed.contains(&hit.key) {
+                        hits.push(hit.clone());
+                        if hits.len() == wanted { return Ok(hits); }
+                    }
+                }
+            }
+            if exhausted { break; }
+        }
+        Ok(hits)
+    }
+
     pub async fn search_text(
         &self,
         query: &str,
@@ -966,10 +1014,11 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         ensure!(limit <= 200, "Result limit exceeds 200");
+        filters.validate().map_err(|error| anyhow!(error))?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
         let prepared = self.fts.prepare(query, filters)?;
-        let hits = prepared.hits(limit)?;
+        let hits = self.filtered_fts_hits(&prepared, filters, limit).await?;
         let scores = hits
             .iter()
             .map(|hit| (hit.key.clone(), hit.score))
@@ -987,6 +1036,7 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         ensure!(limit <= 200, "Result limit exceeds 200");
+        filters.validate().map_err(|error| anyhow!(error))?;
         validate_embedding(embedding, self.vector.dims)?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
@@ -1022,12 +1072,13 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         ensure!(limit <= 200, "Result limit exceeds 200");
+        filters.validate().map_err(|error| anyhow!(error))?;
         let constrained = crisp_search_query::has_explicit_syntax(query)?;
         validate_embedding(embedding, self.vector.dims)?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
         let prepared = self.fts.prepare(query, filters)?;
-        let fts_hits = prepared.hits((limit * 3).min(1000))?;
+        let fts_hits = self.filtered_fts_hits(&prepared, filters, (limit * 3).min(1000)).await?;
         let vec_hits = self
             .vector_candidates(
                 embedding,
