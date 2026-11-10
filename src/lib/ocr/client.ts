@@ -12,6 +12,10 @@ import type { SaveReceipt } from "./autosave";
 import type { PhotoQuad } from "./photo";
 import { loadCapabilities } from "../capabilities";
 import { readProviderFile, isProviderUri, PROVIDER_MAX_BYTES, type ProviderFile } from "../mobileProvider";
+import { getSetting, saveSetting } from "../store";
+import { readProofreadingData, type ProofreadingData } from "./proofreadingData";
+import type { OfficeExportOptions } from "./officeExport";
+import type { WorkbookOptions } from "./workbookExport";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -31,6 +35,10 @@ export interface WorkspaceCapabilities {
   mobile_model_store?: boolean;
   default_engine?: string;
   default_language?: string;
+  /** Native editable Word structure is available in this build. */
+  structured_docx?: boolean;
+  /** Saved tables can be exported as literal editable workbook cells. */
+  structured_xlsx?: boolean;
   /** Isolated low-memory Qwen2-VL worker is available in this build. */
   cpu_budget?: boolean;
   cpu_budget_pixels?: number;
@@ -44,6 +52,12 @@ export interface WorkspaceCapabilities {
   pdfa_conformance?: "PDF/A-2b";
   pdfa_export_reason?: string;
   reasons?: Record<string, string>;
+  system_tesseract?: {
+    available: boolean;
+    version?: string | null;
+    languages: string[];
+    reason?: string | null;
+  };
 }
 export interface ModelDownloadProgress {
   name: string;
@@ -154,6 +168,8 @@ export interface ExportResult {
   pages: number;
   format: string;
   cancelled?: boolean;
+  warnings?: string[];
+  sheets?: number;
 }
 export interface ExportRequest {
   outputPath: string;
@@ -162,6 +178,8 @@ export interface ExportRequest {
   pages: ExportPage[];
   overwrite: boolean;
   sourceUris: string[];
+  officeOptions?: OfficeExportOptions;
+  workbookOptions?: WorkbookOptions;
 }
 export interface ExportProgress {
   request_id: string;
@@ -226,6 +244,8 @@ export interface WorkspaceClient {
   pickDocuments(): Promise<string[]>;
   pickExport(name: string, extension: string): Promise<string | null>;
   imageUrl(path: string): string;
+  loadUserProofreading?(): Promise<ProofreadingData>;
+  saveUserProofreading?(data: ProofreadingData): Promise<void>;
 }
 
 const providerNames = new Map<string, string>();
@@ -525,4 +545,6 @@ export const workspaceClient: WorkspaceClient = {
     });
   },
   imageUrl: convertFileSrc,
+  loadUserProofreading: async () => readProofreadingData(await getSetting("ocrProofreadingV1")),
+  saveUserProofreading: async (data) => saveSetting("ocrProofreadingV1", readProofreadingData(data)),
 };

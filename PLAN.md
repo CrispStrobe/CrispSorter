@@ -12,6 +12,38 @@ See [format semantics and evidence scope](docs/ocr-text-export-compatibility.md)
 The qualified native PDF renderer still withholds general bidirectional support;
 the text alternatives do not change that capability decision.
 
+## OCR review and document workflows — 9 November 2026
+
+The [OCR roadmap](docs/ocr-roadmap.md) scopes OCR-01 through OCR-18 with
+dependencies, lettered delivery increments, acceptance tests, and qualification
+boundaries. It is the current source of status for this programme. Work is
+committed and pushed incrementally to `feat/ocr-word-review` through
+[draft PR #36](https://github.com/CrispStrobe/CrispSorter/pull/36).
+
+Native word evidence and source inspection, project/personal vocabulary and
+reviewable correction rules, passage split/merge/repair, and versioned document
+semantics with per-passage formatting have implementation checkpoints. A separate
+whole-page text draft editor adds cross-passage selection and previewed changes,
+with durable unapplied drafts and guarded Undo/Redo. The roadmap records which
+unit, browser, and native checks actually passed; the page-draft checkpoint
+passed 343 unit tests and all 34 browser interactions. Independent
+table/formula/field objects now retain original output, spans, source captures,
+and historical results across edits. Previewed row/column insertion and deletion,
+cell merge/split, and header repair preserve original evidence and use one-step
+Undo. Continuation joins now add explicit order, column mapping, repeated-header
+review, and flat input snapshots while keeping source tables unchanged. Structured
+Word export now consumes reviewed headings, lists, styles, columns, current
+pictures, and explicitly selected tables/formulas. It warns about unsupported
+Word semantics and preserves literal values. Native package generation and
+independent-reader results are recorded separately in the roadmap. Literal table
+workbooks now provide explicit named sheets, preserved merges and current saved
+values, with historical-source export independent of current page OCR. The
+checkpoint passed 39 native module tests and 449 frontend tests; reader
+limitations and pending full-application/browser gates are recorded separately.
+Saved export profiles are next. Hardware support, trained
+recognizers, PDF/A/PDF/UA, and general accuracy claims retain their separate
+evidence requirements.
+
 ## Follow-up improvement programme — 29 October 2026
 
 **Handoff:** [exact open tasks, run links, evidence and next steps](docs/HANDOFF_2026-10-29.md).
@@ -1136,13 +1168,18 @@ management systems and enterprise OCR/archival suites.
   section: dropdown of templates, "Apply" button → calls `template_apply`,
   results table (label | text | confidence).  DE/EN i18n keys.
   Follow-up: drag-to-draw zones on the page preview canvas.
+  **Audit correction (2026-11-09):** the backend/CLI template store and zoned
+  extraction are present, but the current OCR workspace has no connected
+  template-design/application surface. This frontend slice is outstanding;
+  see [the OCR roadmap](docs/ocr-roadmap.md) for the scoped acceptance gate.
 
-- [x] **P26.5 — PDF/A archival conversion.**  ✅ SHIPPED (2026-07-02).
-  `pdf_ops::convert_to_pdfa()` adds PDF/A-2b conformance metadata
-  (XMP `pdfaid:part=2 conformance=B`, sRGB OutputIntent, PDF 1.7
-  version).  Tauri command `pdf_convert_pdfa`.  CLI:
-  `crispsorter pdf pdfa --out archival.pdf`.  Also available via
-  existing `ocr --render pdf --pdfa` for OCR output.
+- [ ] **P26.5 — Validated PDF/A archival conversion.**
+  **Audit correction (2026-11-09):** `pdf_ops::convert_to_pdfa()` supplies a
+  metadata helper, not a qualified archival converter. Identifying XMP and an
+  OutputIntent dictionary do not embed missing fonts/resources or establish
+  conformance. The OCR path rejects `--pdfa` explicitly. Complete the actual
+  conversion and independent validation before advertising archival output;
+  see [the OCR roadmap](docs/ocr-roadmap.md).
 
 - [x] **P26.6 — Digital signature detection.**  ✅ SHIPPED (2026-07-02).
   `pdf_ops::detect_signatures()` walks PDF annotation widgets for

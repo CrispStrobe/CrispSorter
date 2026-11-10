@@ -1,0 +1,933 @@
+{
+  "fixtures": [
+    {
+      "name": "semantic-text",
+      "pages": [
+        {
+          "figures": [],
+          "id": "semantic-page",
+          "objects": [],
+          "pageHeightPoints": 792.0,
+          "pageWidthPoints": 612.0,
+          "regions": [
+            {
+              "id": "heading",
+              "kind": "title",
+              "separatorBefore": null,
+              "text": "Maintenance checklist"
+            },
+            {
+              "id": "body",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "😀 Equipment & safety\nKeep 0012\tintact. See [1]."
+            },
+            {
+              "id": "number",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "7. Retain literal marker"
+            },
+            {
+              "id": "bullet",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "Nested item"
+            },
+            {
+              "id": "right",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "Right column paragraph"
+            },
+            {
+              "id": "header",
+              "kind": "header",
+              "separatorBefore": null,
+              "text": "Source header 0012"
+            },
+            {
+              "id": "note",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "[1] Keep the original note."
+            },
+            {
+              "id": "footer",
+              "kind": "footer",
+              "separatorBefore": null,
+              "text": "Source footer"
+            }
+          ],
+          "structure": {
+            "blocks": [
+              {
+                "alignment": "center",
+                "breakBefore": "none",
+                "column": 1,
+                "headingLevel": 2,
+                "id": "b-heading",
+                "role": "heading",
+                "runs": [],
+                "sectionId": "columns",
+                "sourceRegionId": "heading"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-body",
+                "noteReferences": [
+                  {
+                    "end": 47,
+                    "start": 44,
+                    "targetBlockId": "b-note"
+                  }
+                ],
+                "role": "paragraph",
+                "runs": [
+                  {
+                    "bold": true,
+                    "end": 12,
+                    "start": 3
+                  },
+                  {
+                    "end": 21,
+                    "italic": true,
+                    "start": 15
+                  },
+                  {
+                    "end": 31,
+                    "start": 27,
+                    "underline": true
+                  }
+                ],
+                "sectionId": "columns",
+                "sourceRegionId": "body"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-number",
+                "list": {
+                  "kind": "number",
+                  "level": 0,
+                  "start": 7
+                },
+                "role": "list-item",
+                "runs": [],
+                "sectionId": "columns",
+                "sourceRegionId": "number"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-bullet",
+                "list": {
+                  "kind": "bullet",
+                  "level": 1
+                },
+                "role": "list-item",
+                "runs": [],
+                "sectionId": "columns",
+                "sourceRegionId": "bullet"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 2,
+                "id": "b-right",
+                "role": "paragraph",
+                "runs": [],
+                "sectionId": "columns",
+                "sourceRegionId": "right"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-header",
+                "role": "header",
+                "runs": [],
+                "sectionId": "notes",
+                "sourceRegionId": "header"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-note",
+                "role": "footnote",
+                "runs": [],
+                "sectionId": "notes",
+                "sourceRegionId": "note"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "page",
+                "column": 1,
+                "id": "b-footer",
+                "role": "footer",
+                "runs": [],
+                "sectionId": "notes",
+                "sourceRegionId": "footer"
+              }
+            ],
+            "sections": [
+              {
+                "columns": 2,
+                "id": "columns"
+              },
+              {
+                "columns": 1,
+                "id": "notes"
+              }
+            ],
+            "version": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "whitespace-blank-pages",
+      "pages": [
+        {
+          "figures": [],
+          "id": "whitespace-page",
+          "objects": [],
+          "pageHeightPoints": 792.0,
+          "pageWidthPoints": 612.0,
+          "regions": [
+            {
+              "id": "a",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "  A "
+            },
+            {
+              "id": "b",
+              "kind": "text",
+              "separatorBefore": "",
+              "text": "😀 B\tC\r\nD"
+            },
+            {
+              "id": "c",
+              "kind": "text",
+              "separatorBefore": " ",
+              "text": "  "
+            }
+          ],
+          "structure": null
+        },
+        {
+          "figures": [],
+          "id": "blank-page",
+          "objects": [],
+          "pageHeightPoints": 792.0,
+          "pageWidthPoints": 612.0,
+          "regions": [],
+          "structure": null
+        },
+        {
+          "figures": [],
+          "id": "last-page",
+          "objects": [],
+          "pageHeightPoints": 792.0,
+          "pageWidthPoints": 612.0,
+          "regions": [
+            {
+              "id": "last",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "After blank source page"
+            }
+          ],
+          "structure": null
+        }
+      ]
+    },
+    {
+      "name": "selected-table-figure-formula",
+      "pages": [
+        {
+          "figures": [
+            {
+              "heightPoints": 80.0,
+              "heightPx": 4,
+              "pngInput": "fixture-source.png",
+              "regionId": "figure",
+              "widthPoints": 160.0,
+              "widthPx": 8
+            }
+          ],
+          "id": "objects-page",
+          "objects": [
+            {
+              "data": {
+                "kind": "table",
+                "value": {
+                  "cells": [
+                    {
+                      "column": 0,
+                      "columnSpan": 2,
+                      "header": true,
+                      "id": "merged",
+                      "row": 0,
+                      "rowSpan": 2,
+                      "text": "Valve\n0012"
+                    },
+                    {
+                      "column": 2,
+                      "columnSpan": 1,
+                      "header": true,
+                      "id": "quantity",
+                      "row": 0,
+                      "rowSpan": 1,
+                      "text": "Qty"
+                    },
+                    {
+                      "column": 2,
+                      "columnSpan": 1,
+                      "id": "literal-formula",
+                      "row": 1,
+                      "rowSpan": 1,
+                      "text": "=2+2"
+                    },
+                    {
+                      "column": 0,
+                      "columnSpan": 1,
+                      "id": "leading-zero",
+                      "row": 2,
+                      "rowSpan": 1,
+                      "text": "03"
+                    },
+                    {
+                      "column": 1,
+                      "columnSpan": 1,
+                      "id": "identifier",
+                      "row": 2,
+                      "rowSpan": 1,
+                      "text": "LOT-003"
+                    },
+                    {
+                      "column": 2,
+                      "columnSpan": 1,
+                      "id": "xml-literal",
+                      "row": 2,
+                      "rowSpan": 1,
+                      "text": " & < > "
+                    }
+                  ],
+                  "columns": 3,
+                  "rows": 3,
+                  "version": 1
+                }
+              },
+              "name": "reviewed-table",
+              "objectId": "reviewed-table",
+              "placement": {
+                "kind": "replace-region",
+                "regionId": "table-region"
+              }
+            },
+            {
+              "data": {
+                "kind": "formula",
+                "value": "\\frac{0012}{03} + x_{LOT-003}"
+              },
+              "name": "reviewed-formula",
+              "objectId": "reviewed-formula",
+              "placement": {
+                "kind": "append"
+              }
+            }
+          ],
+          "pageHeightPoints": 792.0,
+          "pageWidthPoints": 612.0,
+          "regions": [
+            {
+              "id": "intro",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "Reviewed selected objects"
+            },
+            {
+              "id": "table-region",
+              "kind": "table",
+              "separatorBefore": null,
+              "text": "OCR_TABLE_TEXT_MUST_BE_REPLACED"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "separatorBefore": null,
+              "text": "Figure 1. Captured color test"
+            }
+          ],
+          "structure": {
+            "blocks": [
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-intro",
+                "role": "paragraph",
+                "runs": [],
+                "sectionId": "section",
+                "sourceRegionId": "intro"
+              },
+              {
+                "alignment": "start",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-table",
+                "role": "table",
+                "runs": [],
+                "sectionId": "section",
+                "sourceRegionId": "table-region"
+              },
+              {
+                "alignment": "start",
+                "altText": "An authored red and blue test image",
+                "breakBefore": "none",
+                "column": 1,
+                "decorative": false,
+                "id": "b-figure",
+                "role": "figure",
+                "runs": [],
+                "sectionId": "section",
+                "sourceRegionId": "figure"
+              },
+              {
+                "alignment": "start",
+                "anchorBlockId": "b-figure",
+                "breakBefore": "none",
+                "column": 1,
+                "id": "b-caption",
+                "role": "caption",
+                "runs": [],
+                "sectionId": "section",
+                "sourceRegionId": "caption"
+              }
+            ],
+            "sections": [
+              {
+                "columns": 1,
+                "id": "section"
+              }
+            ],
+            "version": 1
+          }
+        }
+      ]
+    }
+  ],
+  "selectedObjectBoundary": {
+    "options": {
+      "objects": [
+        {
+          "objectId": "reviewed-table",
+          "pageId": "objects-page",
+          "placement": "replace-region",
+          "regionId": "table-region"
+        },
+        {
+          "objectId": "reviewed-formula",
+          "pageId": "objects-page",
+          "placement": "append"
+        }
+      ],
+      "version": 1
+    },
+    "provenance": {
+      "extractionObjects": {
+        "objects": [
+          {
+            "captures": [
+              {
+                "bounds": {
+                  "h": 200,
+                  "w": 500,
+                  "x": 10,
+                  "y": 20
+                },
+                "documentId": "fixture-document",
+                "height": 1000,
+                "id": "capture",
+                "imagePath": "/never/open/a/provenance/path.png",
+                "method": "pixels",
+                "pageId": "objects-page",
+                "regionId": "table-region",
+                "text": null,
+                "width": 800
+              }
+            ],
+            "createdAt": "2026-11-09T00:00:00.000Z",
+            "currentData": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "Valve\n0012"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "literal-formula",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "leading-zero",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "xml-literal",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": " & < > "
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            },
+            "excluded": false,
+            "id": "reviewed-table",
+            "kind": "table",
+            "name": "reviewed-table",
+            "originalData": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "ORIGINAL_MODEL_CELL_MUST_NOT_EXPORT"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "literal-formula",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "leading-zero",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "xml-literal",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": " & < > "
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            },
+            "originalOutput": {
+              "html": "RAW_MODEL_OUTPUT_MUST_NOT_EXPORT"
+            },
+            "originalOutputKind": "model",
+            "review": "corrected",
+            "updatedAt": "2026-11-09T00:00:00.000Z",
+            "version": 1
+          },
+          {
+            "captures": [
+              {
+                "bounds": {
+                  "h": 200,
+                  "w": 500,
+                  "x": 10,
+                  "y": 20
+                },
+                "documentId": "fixture-document",
+                "height": 1000,
+                "id": "capture",
+                "imagePath": "/never/open/a/provenance/path.png",
+                "method": "pixels",
+                "pageId": "objects-page",
+                "regionId": "table-region",
+                "text": null,
+                "width": 800
+              }
+            ],
+            "createdAt": "2026-11-09T00:00:00.000Z",
+            "currentData": {
+              "latex": "\\frac{0012}{03} + x_{LOT-003}",
+              "version": 1
+            },
+            "excluded": false,
+            "id": "reviewed-formula",
+            "kind": "formula",
+            "name": "reviewed-formula",
+            "originalData": {
+              "latex": "ORIGINAL_FORMULA_MUST_NOT_EXPORT",
+              "version": 1
+            },
+            "originalOutput": "RAW_FORMULA_MUST_NOT_EXPORT",
+            "originalOutputKind": "model",
+            "review": "corrected",
+            "updatedAt": "2026-11-09T00:00:00.000Z",
+            "version": 1
+          },
+          {
+            "captures": [
+              {
+                "bounds": {
+                  "h": 200,
+                  "w": 500,
+                  "x": 10,
+                  "y": 20
+                },
+                "documentId": "fixture-document",
+                "height": 1000,
+                "id": "capture",
+                "imagePath": "/never/open/a/provenance/path.png",
+                "method": "pixels",
+                "pageId": "objects-page",
+                "regionId": "table-region",
+                "text": null,
+                "width": 800
+              }
+            ],
+            "createdAt": "2026-11-09T00:00:00.000Z",
+            "currentData": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "UNSELECTED_TABLE_MUST_NOT_EXPORT"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "literal-formula",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "leading-zero",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "xml-literal",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": " & < > "
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            },
+            "excluded": false,
+            "id": "unselected-table",
+            "kind": "table",
+            "name": "unselected-table",
+            "originalData": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "UNSELECTED_TABLE_MUST_NOT_EXPORT"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "literal-formula",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "leading-zero",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "xml-literal",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": " & < > "
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            },
+            "originalOutput": {
+              "html": "UNSELECTED_RAW"
+            },
+            "originalOutputKind": "model",
+            "review": "corrected",
+            "updatedAt": "2026-11-09T00:00:00.000Z",
+            "version": 1
+          },
+          {
+            "captures": [
+              {
+                "bounds": {
+                  "h": 200,
+                  "w": 500,
+                  "x": 10,
+                  "y": 20
+                },
+                "documentId": "fixture-document",
+                "height": 1000,
+                "id": "capture",
+                "imagePath": "/never/open/a/provenance/path.png",
+                "method": "pixels",
+                "pageId": "objects-page",
+                "regionId": "table-region",
+                "text": null,
+                "width": 800
+              }
+            ],
+            "createdAt": "2026-11-09T00:00:00.000Z",
+            "currentData": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "Valve\n0012"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "literal-formula",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "leading-zero",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "xml-literal",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": " & < > "
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            },
+            "excluded": true,
+            "id": "excluded-table",
+            "kind": "table",
+            "name": "excluded-table",
+            "originalData": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "Valve\n0012"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "literal-formula",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "leading-zero",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "xml-literal",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": " & < > "
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            },
+            "originalOutput": {
+              "html": "EXCLUDED_RAW"
+            },
+            "originalOutputKind": "model",
+            "review": "corrected",
+            "updatedAt": "2026-11-09T00:00:00.000Z",
+            "version": 1
+          }
+        ],
+        "version": 1
+      }
+    }
+  },
+  "version": 1
+}

@@ -120,6 +120,8 @@ lopdf       = "0.38"
 feed-rs     = { version = "2", optional = true }
 # Word-level text diff — used for P25.7 document comparison.
 similar     = "2"
+# OCR styled ranges use the same complete-character boundary contract as the editor.
+unicode-segmentation = "1.13"
 # DOCX generation — used for P27.10 export to Word format.
 docx-rs     = { version = "0.4", optional = true, default-features = false }
 unicode-bidi = { version = "0.3.18", optional = true }
@@ -293,7 +295,11 @@ default = []
 # were dead code in every shipped artifact. Kept on ONE line — the compliance
 # guards parse this file line-by-line, and a wrapped feature list is invisible
 # to them.
-desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "ocr-text-export", "drive-filen-native", "drive-internxt-native", "cloud-backup"]
+desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "ocr-text-export", "ocr-office", "drive-filen-native", "drive-internxt-native", "cloud-backup"]
+# Structured Word/XLSX export of reviewed OCR objects. Figures are embedded
+# with explicit pixel sizes (Pic::new_with_dimensions), so docx-rs keeps its
+# image decoder feature off, as for ocr-text-export.
+ocr-office = ["dep:docx-rs"]
 # P36.1 — the right to spawn a helper process, split out of `desktop`.
 #
 # App Sandbox (Mac App Store, iOS) forbids fork/exec of anything outside the
@@ -415,7 +421,7 @@ ocr-photo-tools = ["crispembed"]
 # Text-only OOXML is portable; it does not enable desktop integrations or the
 # docx-rs image decoder feature. Keep the generic desktop export API separate.
 ocr-text-export = ["dep:docx-rs", "dep:unicode-bidi"]
-ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools", "ocr-text-export"]
+ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools", "ocr-text-export", "ocr-office"]
 # Paired mobile OCR includes app-private model provisioning and native document
 # import through mobile-provider. PDF/phone-format capabilities come from the
 # actual platform decoder; searchable PDF export uses CrispEmbed's writer.

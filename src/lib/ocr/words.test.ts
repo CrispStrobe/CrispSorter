@@ -55,7 +55,6 @@ describe('word confidence and selection', () => {
         { charConfidenceAligned: false },
         { confidenceBasis: 'detection' as const },
         { confidenceBasis: 'unknown' as const },
-        { confidenceBasis: 'manual' as const },
         { char_conf: [] },
         { char_conf: [0.95, 0.98] },
         { char_conf: Array.from('Invoice total', (_, index) => index === 3 ? NaN : 0.98) },
@@ -76,6 +75,14 @@ describe('word confidence and selection', () => {
     it('does not repeat a region score on each word, even for a one-word region', () => {
         const words = getWordEvidence(region('Invoice', { char_conf: [], charConfidenceAligned: false }));
         expect(words[0]).toMatchObject({ text: 'Invoice', confidence: null, basis: 'unavailable' });
+    });
+
+    it('marks manual passage baselines as edited without claiming raw OCR evidence', () => {
+        const source=region('Manual passage',{confidenceBasis:'manual',confidence:null,char_conf:[]});
+        for(const view of ['current','original'] as const) {
+            expect(getWordEvidence(source,view).every(word=>word.basis==='edited' && word.confidence===null)).toBe(true);
+        }
+        expect(regionReviewReason(source,0.85)).toBe('changed');
     });
 
     it('keeps zero scores and treats the threshold consistently', () => {

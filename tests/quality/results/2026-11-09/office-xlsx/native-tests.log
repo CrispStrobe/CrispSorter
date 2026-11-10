@@ -1,0 +1,47 @@
+   Compiling crispsorter-office-quality v0.0.0 (/workspace/scratch/82243b18126c/ocr-runtime-temp/crispsorter-office-8comyqea)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.89s
+     Running unittests lib.rs (/workspace/scratch/82243b18126c/ocr-office-local-harness/target/debug/deps/crispsorter_office_quality-3d9f284c5001193b)
+
+running 39 tests
+test ocr_document::tests::rejects_interleaved_columns_unknown_versions_and_cyclic_notes ... ok
+test ocr_document::tests::validates_literal_text_ranges_and_picture_note_links_without_geometry_guesses ... ok
+test ocr_docx::tests::exact_empty_and_space_separators_coalesce_without_new_paragraphs ... ok
+test ocr_docx::tests::figures_columns_literal_notes_and_blank_source_pages_are_retained_with_disclosed_limits ... ok
+test ocr_docx::tests::formulas_and_headers_remain_literal_body_text ... ok
+test ocr_docx::tests::headings_lists_levels_restarts_alignment_and_explicit_break_have_real_definitions ... ok
+test ocr_docx::tests::incompatible_inline_semantics_fail_instead_of_inserting_text ... ok
+test ocr_docx::tests::invalid_native_inputs_and_word_specific_size_limits_fail_before_output ... ok
+test ocr_docx::tests::list_references_resolve_to_unique_numbering_and_effective_requested_levels ... ok
+test ocr_docx::tests::literal_spaces_unicode_tabs_and_all_lines_survive_the_package ... ok
+test ocr_docx::tests::only_explicit_same_kind_replacement_removes_the_old_literal_projection ... ok
+test ocr_docx::tests::styled_utf16_ranges_after_emoji_are_real_runs_and_split_surrogates_fail ... ok
+test ocr_docx::tests::two_dimensional_spans_emit_continuation_cells_without_repeated_text_or_numeric_inference ... ok
+test ocr_office::tests::exports_literal_current_values_without_reading_capture_paths ... ok
+test ocr_office::tests::formula_selection_keeps_exact_latex_and_field_corrections_cannot_keep_scores ... ok
+test ocr_office::tests::joined_receipts_reject_cycles_missing_and_unreferenced_sources ... ok
+test ocr_office::tests::original_output_and_selection_limits_fail_without_truncation ... ok
+test ocr_office::tests::rejects_unknown_versions_keys_duplicates_and_excluded_selections ... ok
+test ocr_office::tests::rejects_xml_controls_without_stripping_literal_strings ... ok
+test ocr_office::tests::requires_explicit_compatible_unique_placement ... ok
+test ocr_office::tests::table_grid_and_real_source_boxes_are_independently_validated ... ok
+test ocr_office::tests::validates_flat_join_ancestry_and_exact_manual_baseline ... ok
+test ocr_office::tests::workbook_rejects_scope_exclusion_non_tables_and_bad_identities ... ok
+test ocr_office::tests::workbook_requires_versioned_bounded_explicit_choices ... ok
+test ocr_office::tests::workbook_retains_tables_wider_than_word_without_inventing_source_cells ... ok
+test ocr_office::tests::workbook_selects_only_current_literal_tables_in_explicit_tab_order ... ok
+test ocr_xlsx::tests::aggregate_utf8_budget_is_distinct_from_per_cell_and_per_table_limits ... ok
+test ocr_xlsx::tests::cell_limits_count_original_unicode_and_line_feeds_without_normalization ... ok
+test ocr_xlsx::tests::explicitly_selected_empty_table_remains_a_named_empty_worksheet ... ok
+test ocr_xlsx::tests::literal_strings_survive_as_exact_inline_text_without_formula_or_number_inference ... ok
+test ocr_xlsx::tests::malformed_grids_and_xml_invalid_cells_fail_before_a_package_is_returned ... ok
+test ocr_xlsx::tests::merged_anchors_and_header_styles_resolve_without_duplicating_or_moving_text ... ok
+test ocr_xlsx::tests::package_relationships_types_and_sheet_order_resolve_to_exact_selected_data ... ok
+test ocr_xlsx::tests::selection_identity_and_case_insensitive_names_are_unique ... ok
+test ocr_xlsx::tests::sheet_names_are_preserved_and_reject_invalid_or_ambiguous_limits ... ok
+test ocr_xlsx::tests::wide_and_tall_tables_use_real_excel_coordinates_without_word_limits ... ok
+test ocr_xlsx::tests::workbook_sheet_and_aggregate_grid_limits_are_enforced_before_serialization ... ok
+test ocr_xlsx::tests::xstring_encoding_is_single_pass_for_cr_literal_and_overlapping_escape_shapes ... ok
+test ocr_xlsx::tests::zip_and_xml_limits_stop_writes_without_returning_partial_content ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.96s
+

@@ -1,9 +1,9 @@
 {
   "generatedAt": "2026-08-01T11:31:32.576Z",
   "counts": {
-    "frontend": 18,
+    "frontend": 20,
     "backend": 1051,
-    "total": 1069
+    "total": 1071
   },
   "licenses": [
     {
@@ -2069,6 +2069,14 @@
       "author": "Zeeshan Ali Khan <zeenix@gmail.com>",
       "link": "https://github.com/zeenix/endi",
       "source": "Backend"
+    },
+    {
+      "name": "entities",
+      "version": "9.0.0",
+      "license": "BSD-2-Clause",
+      "author": "Felix Boehm <me@feedic.com>",
+      "link": "https://www.npmjs.com/package/entities",
+      "source": "Frontend"
     },
     {
       "name": "enumflags2",
@@ -4733,6 +4741,14 @@
       "author": "Amanieu d'Antras <amanieu@gmail.com>",
       "link": "https://github.com/Amanieu/parking_lot",
       "source": "Backend"
+    },
+    {
+      "name": "parse5",
+      "version": "8.1.1",
+      "license": "MIT",
+      "author": "Ivan Nikulin <ifaaan@gmail.com> (https://github.com/inikulin)",
+      "link": "https://www.npmjs.com/package/parse5",
+      "source": "Frontend"
     },
     {
       "name": "paste",

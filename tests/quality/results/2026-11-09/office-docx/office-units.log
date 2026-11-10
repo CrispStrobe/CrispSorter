@@ -1,0 +1,80 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> tauri-app@0.15.0 test
+> vitest run
+
+
+ RUN  v3.2.7 /workspace/scratch/82243b18126c/CrispSorter
+
+ ✓ src/lib/ocr/structureIntegration.test.ts (8 tests) 49ms
+ ✓ src/lib/ocr/officeExport.test.ts (12 tests) 113ms
+ ✓ src/lib/ocr/extractionObjects.test.ts (18 tests) 176ms
+ ✓ src/lib/ocr/pageTextDraft.test.ts (30 tests) 201ms
+ ✓ src/lib/ocr/tableOperations.test.ts (23 tests) 256ms
+ ✓ src/lib/ocr/continuationJoin.test.ts (12 tests) 265ms
+ ✓ src/lib/ocr/passageData.test.ts (6 tests) 442ms
+   ✓ durable flat passage source history > validates archived sources independently and counts duplicated snapshots toward the page limit  369ms
+ ✓ src/lib/ocr/continuationIntegration.test.ts (4 tests) 107ms
+ ✓ src/lib/ocr/passages.test.ts (15 tests) 85ms
+ ✓ src/lib/ocr/structureData.test.ts (13 tests) 68ms
+ ✓ src/lib/chat/evidence.test.ts (20 tests) 444ms
+   ✓ document evidence > budgets multilingual source text, labels and question in tokens  374ms
+ ✓ src/lib/ocr/extractionIntegration.test.ts (7 tests) 70ms
+ ✓ src/lib/ocr/model.test.ts (33 tests) 35ms
+ ✓ src/lib/ocr/proofreading.test.ts (15 tests) 63ms
+ ✓ src/lib/ocr/words.test.ts (26 tests) 34ms
+ ✓ src/lib/ocr/wordEvidence.test.ts (27 tests) 26ms
+ ✓ src/lib/ocr/tableData.test.ts (11 tests) 32ms
+ ✓ src/lib/ocr/zoneReview.test.ts (11 tests) 26ms
+ ✓ src/lib/ocr/queue.test.ts (11 tests) 15ms
+ ✓ src/lib/ocr/pageTextHistory.test.ts (6 tests) 29ms
+ ✓ src/lib/ocr/structure.test.ts (6 tests) 33ms
+ ✓ src/lib/ocr/text.test.ts (6 tests) 26ms
+ ✓ src/lib/aitoolkit.test.ts (12 tests) 16ms
+ ✓ src/lib/batch/sortPlan.test.ts (4 tests) 7ms
+ ✓ src/lib/ocr/extractionExport.test.ts (3 tests) 30ms
+ ✓ src/lib/ocr/proofreadingStore.test.ts (3 tests) 13ms
+ ✓ src/lib/llm/thirdPartyConsent.test.ts (13 tests) 12ms
+ ✓ src/lib/mobileProvider.test.ts (5 tests) 15ms
+ ✓ src/lib/ocr/zones.test.ts (8 tests) 22ms
+stderr | src/lib/extractors/emptyInput.test.ts > extractText on an empty file > rejects rather than dispatching to a parser
+[app:warn] Skipping broken.epub: the file is empty (0 bytes)
+
+stderr | src/lib/extractors/emptyInput.test.ts > extractText on an empty file > rejects for every format, not just the one that reported it
+[app:warn] Skipping a.pdf: the file is empty (0 bytes)
+
+stderr | src/lib/extractors/emptyInput.test.ts > extractText on an empty file > rejects for every format, not just the one that reported it
+[app:warn] Skipping b.epub: the file is empty (0 bytes)
+
+stderr | src/lib/extractors/emptyInput.test.ts > extractText on an empty file > rejects for every format, not just the one that reported it
+[app:warn] Skipping c.docx: the file is empty (0 bytes)
+
+stderr | src/lib/extractors/emptyInput.test.ts > extractText on an empty file > rejects for every format, not just the one that reported it
+[app:warn] Skipping d.txt: the file is empty (0 bytes)
+
+stderr | src/lib/extractors/emptyInput.test.ts > extractText on an empty file > names the file, so the report says which one to go and look at
+[app:warn] Skipping Fauler Zauber.epub: the file is empty (0 bytes)
+
+ ✓ src/lib/extractors/emptyInput.test.ts (3 tests) 8ms
+ ✓ src/lib/ocr/extraction.test.ts (7 tests) 10ms
+ ✓ src/lib/export/bibtex.test.ts (4 tests) 7ms
+ ✓ src/lib/ocr/autosave.test.ts (5 tests) 13ms
+ ✓ src/lib/catalogScan.test.ts (5 tests) 10ms
+ ✓ src/lib/drives/duplicateAudit.test.ts (5 tests) 7ms
+ ✓ src/lib/workflow.test.ts (2 tests) 4ms
+ ✓ src/lib/drives/browser.test.ts (5 tests) 7ms
+ ✓ src/lib/tabs.test.ts (7 tests) 13ms
+ ✓ src/lib/metadataFields.test.ts (3 tests) 4ms
+ ✓ src/lib/components/viewer/associations.test.ts (3 tests) 4ms
+ ✓ src/lib/folderAccess.test.ts (6 tests) 4ms
+ ✓ src/lib/ocrTasks.test.ts (2 tests) 6ms
+ ✓ src/lib/drives/panels.test.ts (2 tests) 8ms
+ ✓ src/lib/components/viewer/types.test.ts (4 tests) 4ms
+ ✓ src/lib/components/imageIndexSettings.test.ts (1 test) 2ms
+ ✓ src/lib/capabilities.test.ts (1 test) 3ms
+
+ Test Files  46 passed (46)
+      Tests  433 passed (433)
+   Start at  23:11:34
+   Duration  2.78s (transform 1.91s, setup 0ms, collect 6.22s, tests 2.82s, environment 10ms, prepare 3.26s)
+

@@ -1,0 +1,49 @@
+{
+  "recordedAt": "2026-11-09T22:37:12.079047+00:00",
+  "runtimeBundle": "26.1105.12137",
+  "mode": "Original native XLSX packages imported read-only; only derived JSON, PDF and PNG inspection artifacts were written. Original XLSX hashes still match the native receipt.",
+  "artifactTool": {
+    "reader": "@oai/artifact-tool bundled primary runtime",
+    "values": {
+      "anchorsChecked": 102,
+      "exact": 93,
+      "emptyStringToNullDifferences": 3,
+      "xstringCellDifferences": 6,
+      "xstringSheetNameDifferences": 1,
+      "formulasFound": 0
+    },
+    "renderedViewsInspected": 6,
+    "renderDifferences": [
+      "0012 displayed as 12",
+      "03 displayed as 3",
+      "3.14e5 displayed as 314000",
+      "LF/tab-only cell displayed as 0",
+      "Encoded Xstring escapes remained visible as documented in artifact-reader.json"
+    ],
+    "result": "passed_with_known_reader_limitations; not an exact display or value round-trip pass"
+  },
+  "libreOffice": {
+    "reader": "LibreOfficeDev 26.8.0.0.alpha0 2c87e51eeaa2b413ff4ae097b2705eea1995d8e5",
+    "originalPackagesOpened": 2,
+    "pdfPages": {
+      "reviewed-workbook.pdf": 18,
+      "escaped-and-blank-workbook.pdf": 1
+    },
+    "visualPagesInspected": [
+      "reviewed-workbook.pdf:1",
+      "reviewed-workbook.pdf:2",
+      "escaped-and-blank-workbook.pdf:1"
+    ],
+    "observations": [
+      "Literal 0012, 03, 03-04, 3.14e5, =2+2, +SUM(A1:A2), @value, spaces and Unicode are visible without numeric/formula evaluation.",
+      "The 2 by 2 merged anchor spans the expected space; header text is bold and multiline values are not clipped in these fixtures.",
+      "Literal _x000D_, _x005F_ and adjacent escape-shaped text display as literal sequences.",
+      "Actual CR has no visible line break in Calc PDF; CRLF is visibly split across lines. This is a display observation, not an exact data round trip.",
+      "The 64-column sheet prints across 16 default-width pages; all ID0001 through ID0064 appear in extracted PDF text. Print layout is not optimized by this export.",
+      "The named empty worksheet remains in the original XLSX and readers; default PDF printing omits empty sheets."
+    ],
+    "result": "Original packages reopened and inspected representative pages; Microsoft Excel, exact Calc value roundtrip and schema validation not run"
+  },
+  "nativeSourceHashesVerified": true,
+  "originalArtifactHashesVerified": true
+}

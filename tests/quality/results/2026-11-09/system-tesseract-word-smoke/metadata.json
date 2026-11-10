@@ -1,0 +1,64 @@
+{
+  "boundary": "external_cli",
+  "timestamp_utc": "2026-11-09T19:11:18.656331+00:00",
+  "command": [
+    "tesseract",
+    "/workspace/scratch/82243b18126c/CrispSorter/tests/quality/ocr-task.png",
+    "/workspace/scratch/82243b18126c/ocr-system-tesseract-check/recognition",
+    "-l",
+    "eng",
+    "--psm",
+    "3",
+    "tsv",
+    "txt"
+  ],
+  "exit_code": 0,
+  "elapsed_ms": 126.138,
+  "version": "tesseract 5.5.0",
+  "installed_languages": [
+    "eng",
+    "osd"
+  ],
+  "requested_languages": [
+    "eng"
+  ],
+  "psm": 3,
+  "image_dimensions": [
+    1500,
+    200
+  ],
+  "word_count": 5,
+  "same_run_alignment_checked_by": "independent Python exact substring check, not Rust parser",
+  "alignment_verified": true,
+  "word_boxes_in_bounds": true,
+  "word_confidence_raw_min": 96.03495,
+  "word_confidence_raw_max": 96.815422,
+  "text": "Cobalt warranty expires November 2031.\n",
+  "artifacts": [
+    {
+      "path": "/workspace/scratch/82243b18126c/CrispSorter/tests/quality/ocr-task.png",
+      "sha256": "25f0e5ee8d518403fc97a94435f88d525526649adbc08c2b937c3469ff4fb4ef",
+      "bytes": 15785
+    },
+    {
+      "path": "/workspace/scratch/82243b18126c/ocr-system-tesseract-check/recognition.txt",
+      "sha256": "f214a917570bd16fbda6d0112cb33959681acc24fe9e48b7c192ad1df444c234",
+      "bytes": 39
+    },
+    {
+      "path": "/workspace/scratch/82243b18126c/ocr-system-tesseract-check/recognition.tsv",
+      "sha256": "ecbe94897855381f943d4ecf4fc918ba242798324fbcfa0a846d5f1e5d50479a",
+      "bytes": 421
+    },
+    {
+      "path": "/workspace/scratch/82243b18126c/ocr-system-tesseract-check/stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "/workspace/scratch/82243b18126c/ocr-system-tesseract-check/stderr.txt",
+      "sha256": "1cf2fcdbdadb964d103d3a1e52f0cb7a3c7a184aa668b329a37a5a0d2158cbe6",
+      "bytes": 29
+    }
+  ]
+}

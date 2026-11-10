@@ -54,6 +54,11 @@ on:
       - src-tauri/src/model_provisioning/**
       - src-tauri/src/lib.rs
       - src-tauri/src/ocr_reading_order.rs
+      - src-tauri/src/ocr_word_evidence.rs
+      - src-tauri/src/ocr_document.rs
+      - src-tauri/src/ocr_office.rs
+      - src-tauri/src/ocr_docx.rs
+      - src-tauri/src/ocr_xlsx.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
       - src-tauri/src/extractors/ocr_render.rs
@@ -221,6 +226,21 @@ jobs:
           cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             ocr_reading_order::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_word_evidence::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_document::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_office::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_docx::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace \
+            ocr_xlsx::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
             --features ocr-workspace \
             extractors::ocr_render::tests -- --test-threads=1

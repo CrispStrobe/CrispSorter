@@ -1,0 +1,18 @@
+{
+  "reader": "LibreOfficeDev 26.8.0.0.alpha0 2c87e51eeaa2b413ff4ae097b2705eea1995d8e5",
+  "command": [
+    "/opt/codex/runtimes/codex-primary-runtime/dependencies/bin/override/soffice",
+    "-env:UserInstallation=file:///workspace/scratch/82243b18126c/ocr06b-calc/profile",
+    "--headless",
+    "--convert-to",
+    "pdf",
+    "--outdir",
+    "/workspace/scratch/82243b18126c/ocr06b-calc",
+    "/workspace/scratch/82243b18126c/ocr06b-qualified/reviewed-workbook.xlsx",
+    "/workspace/scratch/82243b18126c/ocr06b-qualified/escaped-and-blank-workbook.xlsx"
+  ],
+  "exitCode": 0,
+  "stdout": "convert /workspace/scratch/82243b18126c/ocr06b-qualified/reviewed-workbook.xlsx as a Calc document -> /workspace/scratch/82243b18126c/ocr06b-calc/reviewed-workbook.pdf using filter : calc_pdf_Export\nconvert /workspace/scratch/82243b18126c/ocr06b-qualified/escaped-and-blank-workbook.xlsx as a Calc document -> /workspace/scratch/82243b18126c/ocr06b-calc/escaped-and-blank-workbook.pdf using filter : calc_pdf_Export\n",
+  "stderr": "",
+  "runtimeBundle": "26.1105.12137"
+}

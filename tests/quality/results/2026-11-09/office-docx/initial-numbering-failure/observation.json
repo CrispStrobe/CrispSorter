@@ -1,0 +1,8 @@
+{
+  "status": "failed",
+  "reader_version": "LibreOfficeDev 26.8.0.0.alpha0 2c87e51eeaa2b413ff4ae097b2705eea1995d8e5",
+  "observed": "Requested start 7 rendered as 1; nested bullet rendered as (1).",
+  "cause": "Pinned docx-rs 0.4.20 unconditionally emits numId 1 / abstractNumId 1; our initial definitions collided.",
+  "correction": "Reserve built-in ID 1, use unique custom definitions, and resolve actual list references in native and independent tests.",
+  "source_limit": "Observed during uncommitted OCR-06a development; no exact initial source-hash receipt was captured. These artifacts document the failure, not a qualified app revision."
+}
