@@ -278,6 +278,31 @@ where
     Ok(())
 }
 
+pub(crate) fn open_zip_shared(path: &Path, budget: &super::container::Budget) -> Result<ZipArchive<File>> {
+    let mut file = File::open(path)?;
+    let limits = Limits { archive_bytes: budget.limits.archive_bytes, directory_bytes: budget.limits.directory_bytes, ..Limits::default() };
+    let count = directory_count(&mut file, &limits, budget.limits.entries.saturating_sub(budget.coverage.discovered as usize))?;
+    let zip = ZipArchive::new(file)?;
+    ensure!(zip.len() == count, "ZIP directory contains ambiguous duplicate member names");
+    Ok(zip)
+}
+
+pub(crate) fn verify_document_package_shared(path: &Path, budget: &mut super::container::Budget) -> Result<()> {
+    let mut zip = open_zip_shared(path, budget)?;
+    for index in 0..zip.len() {
+        budget.discover(1)?;
+        let raw = zip.by_index_raw(index)?;
+        ensure!(!raw.encrypted() && !raw.is_symlink(), "Encrypted or linked document package member");
+        member_name(raw.name())?;
+        if raw.is_dir() { continue; }
+        let size = raw.size(); drop(raw);
+        ensure!(size <= budget.limits.member_bytes, "Document package member exceeds decoded-byte limit");
+        let (_, actual) = super::container::copy_and_hash(&mut zip.by_index(index)?, &mut std::io::sink(), budget.limits.member_bytes, Some(budget))?;
+        ensure!(size == actual, "Document package member byte count disagrees with its directory");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

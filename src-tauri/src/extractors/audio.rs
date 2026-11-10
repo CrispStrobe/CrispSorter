@@ -128,6 +128,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         source_url: None,
         tags: vec![],
         audio_pcm: Some(pcm_for_omni),
+        ..Default::default()
     })
 }
 

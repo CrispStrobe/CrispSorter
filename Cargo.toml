@@ -81,6 +81,7 @@ repository = "https://github.com/CrispStrobe/CrispSorter"
 # Remove once https://github.com/lancedb/lance/pull/XXXX lands upstream.
 [patch.crates-io]
 lance-linalg = { path = "patches/lance-linalg" }
+sevenz-rust2 = { path = "patches/sevenz-rust2" }
 
 [profile.dev.package."*"]
 debug = 0

@@ -5,23 +5,20 @@ on:
     paths:
       - 'crates/crisp-search-query/**'
       - 'shared/source_identity.rs'
+      - 'shared/source_paths.rs'
       - 'shared/stored_passage.rs'
       - 'crisp-index-protocol/**'
       - 'crisp-index-server/**'
       - 'src-tauri/src/index/**'
       - 'src-tauri/src/bg_ingest/**'
       - 'src-tauri/src/jobs/**'
-      - 'src-tauri/src/extractors/eml.rs'
-      - 'src-tauri/src/extractors/html.rs'
-      - 'src-tauri/src/extractors/archive.rs'
-      - 'src-tauri/src/extractors/native_text.rs'
-      - 'src-tauri/src/extractors/pptx.rs'
-      - 'src-tauri/src/extractors/text.rs'
-      - 'src-tauri/src/extractors/mod.rs'
+      - 'src-tauri/src/extractors/**'
+      - 'patches/sevenz-rust2/**'
       - 'tests/search-contract/**'
       - 'tests/index-write-contract/**'
       - 'tests/extraction-contract/**'
       - 'tests/server-search-contract/**'
+      - 'tests/sevenz-contract/**'
       - 'src-tauri/src/sync/pull.rs'
       - 'src-tauri/src/sync/tauri_commands.rs'
       - 'src-tauri/src/sync/cloud_backup.rs'
@@ -109,5 +106,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tests/extraction-contract
-      - name: Test production ZIP, MIME, HTML, and text extraction
+      - name: Test bounded container, MIME, HTML, and text extraction
         run: cargo test --locked --manifest-path tests/extraction-contract/Cargo.toml
+
+  sevenz-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/sevenz-contract
+      - name: Test decoder corruption and allocation bounds
+        run: cargo test --locked --manifest-path tests/sevenz-contract/Cargo.toml --lib
+

@@ -2409,6 +2409,7 @@ dependencies = [
  "encoding_rs",
  "fastembed",
  "feed-rs",
+ "flate2",
  "fuser",
  "futures",
  "getrandom 0.2.17",
@@ -2451,12 +2452,14 @@ dependencies = [
  "security-framework 3.7.0",
  "serde",
  "serde_json",
+ "sevenz-rust2",
  "sha1 0.10.6",
  "sha2 0.10.9",
  "similar",
  "symphonia",
  "sysinfo 0.33.1",
  "tantivy 0.22.1",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -7708,6 +7711,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzma-rust2"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1d73c59a56771343712b22ea5615092c612c16ba291c0979e3105dfeec4890"
+
+[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9178,7 +9187,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06503bb33f294c5f1ba484011e053bfa6ae227074bdb841e9863492dc5960d4b"
 dependencies = [
  "hmac-sha256",
- "lzma-rust2",
+ "lzma-rust2 0.15.8",
  "ureq 3.3.0",
 ]
 
@@ -11717,6 +11726,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sevenz-rust2"
+version = "0.25.0"
+dependencies = [
+ "crc32fast",
+ "js-sys",
+ "lzma-rust2 0.25.0",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12996,6 +13015,16 @@ name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+]
 
 [[package]]
 name = "target-lexicon"
@@ -15937,7 +15966,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac 0.12.1",
  "indexmap 2.14.0",
- "lzma-rust2",
+ "lzma-rust2 0.15.8",
  "memchr",
  "pbkdf2 0.12.2",
  "ppmd-rust",

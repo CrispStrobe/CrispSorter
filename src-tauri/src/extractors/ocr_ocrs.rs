@@ -180,6 +180,7 @@ pub fn ocr_via_ocrs(path: &Path) -> Result<ExtractedDocument> {
         source_url: None,
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 

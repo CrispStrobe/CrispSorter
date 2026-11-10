@@ -6,6 +6,65 @@ use std::{fs::File, io::{Read, Write}, path::Path};
 
 use super::{archive, eml, pptx, ExtractedDocument};
 
+/// Serializable extraction content. Root text and flattened members remain
+/// separate so the foreground path does not index the aggregate preview twice.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeExtractionResult {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub own_text: Option<String>,
+    pub headings: Vec<String>,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub ext: String,
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_source: Option<crisp_index_protocol::ContainerSourceReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_coverage: Option<crisp_index_protocol::ContainerCoverage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<NativeExtractedMember>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct NativeExtractedMember {
+    pub entries: Vec<crisp_index_protocol::ContainerEntry>,
+    pub document: NativeExtractionResult,
+}
+
+impl NativeExtractionResult {
+    pub fn from_document(document: ExtractedDocument) -> Result<Self> {
+        if !document.members.is_empty() {
+            ensure!(document.own_text.is_some() && document.container_source.is_some(),
+                "Container extraction is missing its separate root text or source receipt");
+        }
+        if let Some(source) = &document.container_source { source.validate().map_err(anyhow::Error::msg)?; }
+        if let Some(coverage) = &document.coverage { coverage.validate().map_err(anyhow::Error::msg)?; }
+        let mut metadata = serde_json::Map::new();
+        macro_rules! optional_metadata {
+            ($name:literal, $value:expr) => {
+                if let Some(value) = $value { metadata.insert($name.into(), serde_json::to_value(value)?); }
+            };
+        }
+        optional_metadata!("language", document.language);
+        optional_metadata!("text_translated", document.translated_text);
+        optional_metadata!("text_translated_lang", document.translated_to_lang);
+        optional_metadata!("source_url", document.source_url);
+        optional_metadata!("audio", document.audio);
+        optional_metadata!("image_exif", document.image_exif);
+        let members = document.members.into_iter().map(|member| {
+            ensure!(member.document.members.is_empty(), "Container member expansion must be flattened");
+            crisp_index_protocol::container::validate_entry_chain(&member.entries).map_err(anyhow::Error::msg)?;
+            Ok(NativeExtractedMember { entries: member.entries, document: Self::from_document(member.document)? })
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(Self { text: document.full_text, own_text: document.own_text, headings: document.headings,
+            tags: document.tags, ext: document.ext, metadata, container_source: document.container_source,
+            container_coverage: document.coverage, members })
+    }
+}
+
 const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 
 /// These are the only formats accepted by the foreground native text bridge.
@@ -75,6 +134,39 @@ fn snapshot(path: &Path, ext: &str, maximum: u64) -> Result<tempfile::NamedTempF
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_bridge_preserves_member_receipts_and_separate_root_content() {
+        use crisp_index_protocol::{ContainerEntry, ContainerEntryKind, ContainerKind, ContainerSourceReceipt};
+        let document = ExtractedDocument { full_text: "Archive summary\nMember body".into(), own_text: Some("Archive summary".into()),
+            ext: "zip".into(), container_source: Some(ContainerSourceReceipt { kind: ContainerKind::Zip, sha256: "a".repeat(64), size: 100 }),
+            members: vec![super::super::ExtractedMember {
+                entries: vec![ContainerEntry { kind: ContainerEntryKind::Zip, index: 1, occurrence: 0,
+                    name: "notes.txt".into(), sha256: "b".repeat(64), size: 20 }],
+                document: ExtractedDocument { full_text: "Member body".into(), ext: "txt".into(), language: Some("en".into()),
+                    source_url: Some("https://example.test/source".into()), translated_text: Some("Text des Eintrags".into()),
+                    translated_to_lang: Some("de".into()), tags: vec!["reviewed".into()], ..Default::default() },
+            }], ..Default::default() };
+        let wire = serde_json::to_value(NativeExtractionResult::from_document(document).unwrap()).unwrap();
+        assert_eq!(wire["ownText"], "Archive summary");
+        assert_eq!(wire["text"], "Archive summary\nMember body");
+        assert_eq!(wire["containerSource"]["sha256"], "a".repeat(64));
+        assert_eq!(wire["members"][0]["entries"][0]["name"], "notes.txt");
+        let child = &wire["members"][0]["document"];
+        assert_eq!(child["text"], "Member body");
+        assert_eq!(child["metadata"]["language"], "en");
+        assert_eq!(child["metadata"]["text_translated_lang"], "de");
+        assert_eq!(child["metadata"]["source_url"], "https://example.test/source");
+        assert!(child.get("members").is_none());
+    }
+
+    #[test]
+    fn foreground_bridge_rejects_members_without_a_root_byte_receipt() {
+        let document = ExtractedDocument { members: vec![super::super::ExtractedMember {
+            entries: vec![], document: ExtractedDocument::default(),
+        }], ..Default::default() };
+        assert!(NativeExtractionResult::from_document(document).unwrap_err().to_string().contains("root text or source receipt"));
+    }
 
     fn source(ext: &str, bytes: &[u8]) -> tempfile::NamedTempFile {
         let mut source = tempfile::Builder::new().suffix(&format!(".{ext}")).tempfile().unwrap();

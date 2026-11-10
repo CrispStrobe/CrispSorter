@@ -549,6 +549,7 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
         source_url: None,
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 
@@ -620,6 +621,7 @@ pub fn ocr_via_crispembed_custom(
         source_url: None,
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 
@@ -731,6 +733,7 @@ pub fn ocr_via_pipeline(
         source_url: None,
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 

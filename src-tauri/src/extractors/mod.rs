@@ -35,6 +35,9 @@ use std::path::Path;
 
 pub mod anydoc_conv;
 pub mod archive;
+pub mod container;
+mod container_formats;
+pub use container::ExtractedMember;
 pub mod audio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod clipboard;
@@ -67,6 +70,12 @@ pub mod text_lid;
 /// One file's extracted text + structural breadcrumbs.
 #[derive(Debug, Clone, Default)]
 pub struct ExtractedDocument {
+    /// Source text belonging to this parent, excluding independently indexed
+    /// member content. None retains ordinary full_text indexing behavior.
+    pub own_text: Option<String>,
+    pub members: Vec<container::ExtractedMember>,
+    pub container_source: Option<crisp_index_protocol::ContainerSourceReceipt>,
+    pub coverage: Option<crisp_index_protocol::ContainerCoverage>,
     /// Plain text body. Suitable as input to the embedder + as the
     /// `full_text` column in the documents table.
     pub full_text: String,
@@ -174,8 +183,8 @@ pub fn supported(ext: &str) -> bool {
             | "pptx"
             // Email formats
             | "eml" | "mbox"
-            // Bounded recursive ZIP document containers
-            | "zip"
+            // Bounded document containers
+            | "zip" | "tar" | "gz" | "gzip" | "tgz" | "7z"
             // Source code (UTF-8 read)
             | "rs" | "py" | "js" | "ts" | "tsx" | "jsx"
             | "svelte" | "vue"
@@ -807,6 +816,7 @@ fn extract_docx(path: &Path, ext: &str) -> Result<ExtractedDocument> {
         source_url: None,
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 
@@ -1027,6 +1037,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         source_url: None,
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 
@@ -1125,6 +1136,13 @@ fn ocr_one_image(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument
     Ok(doc)
 }
 
+/// One shared budget and typed member receipts across archives and email.
+/// Leaves retain the caller's extraction/OCR/conversion options.
+pub fn extract_container_from_path(path: &Path, opts: ExtractOptions) -> Result<ExtractedDocument> {
+    container::extract(path, |ext| supported(ext) || OCR_IMAGE_EXTS.contains(&ext),
+        |member| extract_text_from_path_with_opts(member, opts.clone()))
+}
+
 /// Variant that takes the OCR opt-in. Calling sites in bg_ingest +
 /// CLI thread the user's catalog-level setting through here.
 pub fn extract_text_from_path_with_opts(
@@ -1145,7 +1163,7 @@ pub fn extract_text_from_path_with_opts(
     // what keeps scanned PDFs on the OCR ladder instead of indexing a
     // blank document.
     // Archive expansion must always pass the shared resource/provenance guards.
-    let mut preferred = if ext == "zip" { None } else { anydoc_conv::try_preferred(path, &ext, opts.anydoc) };
+    let mut preferred = if container::kind_for_extension(&ext).is_some() { None } else { anydoc_conv::try_preferred(path, &ext, opts.anydoc) };
 
     let result: Result<ExtractedDocument> = match ext.as_str() {
         _ if preferred.is_some() => Ok(preferred
@@ -1204,17 +1222,7 @@ pub fn extract_text_from_path_with_opts(
             doc.ext = ext.clone();
             doc
         }),
-        "eml" => eml::extract(path),
-        "mbox" => eml::extract_mbox(path),
-        "zip" => {
-            let mut member_opts = opts.clone();
-            // LID/translation runs once on the combined source below. Member
-            // OCR and conversion settings remain the caller's exact choices.
-            member_opts.text_lid_model = None;
-            member_opts.translate_to = None;
-            archive::extract(path, |ext| supported(ext) || OCR_IMAGE_EXTS.contains(&ext),
-                |member| extract_text_from_path_with_opts(member, member_opts.clone()))
-        }
+        e if container::kind_for_extension(e).is_some() => extract_container_from_path(path, opts.clone()),
         "docx" => extract_docx(path, &ext),
         "epub" => epub::extract(path).or_else(|native_error| {
             if opts.anydoc != AnydocMode::Never && anydoc_conv::is_available() {
@@ -1300,6 +1308,7 @@ pub fn extract_text_from_path_with_opts(
                     source_url: None,
                     tags: vec![],
                     audio_pcm: None,
+                    ..Default::default()
                 });
             }
 
@@ -1351,6 +1360,7 @@ pub fn extract_text_from_path_with_opts(
                 source_url: None,
                 tags: vec![],
                 audio_pcm: None,
+                ..Default::default()
             })
         }
         e if audio::AUDIO_EXTS.contains(&e) => {
@@ -1409,6 +1419,7 @@ pub fn extract_text_from_path_with_opts(
                         source_url: None,
                         tags: vec![],
                         audio_pcm: None,
+                        ..Default::default()
                     })
                 }
                 #[cfg(not(feature = "crispasr"))]
@@ -1455,11 +1466,12 @@ pub fn extract_text_from_path_with_opts(
             // check skips tiny inputs where LID would be unreliable
             // anyway.
             // Slice at a char boundary near 2000 chars to avoid allocating.
-            let byte_end = doc.full_text.char_indices()
+            let source_text = doc.own_text.as_deref().unwrap_or(&doc.full_text);
+            let byte_end = source_text.char_indices()
                 .nth(2000)
                 .map(|(i, _)| i)
-                .unwrap_or(doc.full_text.len());
-            let trimmed = doc.full_text[..byte_end].trim();
+                .unwrap_or(source_text.len());
+            let trimmed = source_text[..byte_end].trim();
             if trimmed.len() >= 20 {
                 match text_lid::detect_language(trimmed, model_path, 2) {
                     Ok(r) => {
@@ -1503,7 +1515,7 @@ pub fn extract_text_from_path_with_opts(
                         .to_string();
                     let model_path = opts.translate_model.clone();
                     match run_batch_translation(
-                        &doc.full_text,
+                        doc.own_text.as_deref().unwrap_or(&doc.full_text),
                         source,
                         &target,
                         &backend,
