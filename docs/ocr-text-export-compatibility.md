@@ -1,8 +1,8 @@
 # Reviewed OCR text export compatibility
 
 The export preflight examines the chosen pages and included regions before a
-destination picker opens. With the qualified CrispEmbed renderer at
-`9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a`, general bidirectional PDF capability
+destination picker opens. With the qualified CrispEmbed renderer
+(`9c44a69c`, unchanged in the pinned v0.17.17 release), general bidirectional PDF capability
 remains disabled. Selecting searchable PDF or PDF/A for affected text presents
 the reason and buttons for the available text formats. Changing format keeps
 the page selection, approval policy, page geometry, source provenance, and
