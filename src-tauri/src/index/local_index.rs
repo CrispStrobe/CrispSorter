@@ -869,77 +869,55 @@ impl LocalIndex {
         Ok(out)
     }
 
-    /// Fetch the best-matching chunk per doc_id for FTS result display.
+    /// Fetch one representative passage for every ranked full-text document.
     ///
-    /// Fetches up to `chunks_per_doc` chunks for each doc_id and selects the
-    /// chunk whose `full_text` contains the most occurrences of `query_terms`.
-    /// Falls back to `chunk_index = 0` when no terms are given.
+    /// Scan all selected documents' passages as a stream. A shared row limit
+    /// cannot express a per-document limit: a long document would consume it
+    /// and hide later documents, and a late matching passage would be missed.
+    /// Memory is bounded by one Arrow batch plus one winning result per doc.
+    /// Ties prefer the earliest chunk and returned order follows `doc_ids`.
     pub async fn fetch_best_chunk_per_doc(
         &self,
         doc_ids: &[String],
         query_terms: &[&str],
         score_map: &std::collections::HashMap<String, f32>,
     ) -> Result<Vec<SearchResult>> {
-        if doc_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let quoted: Vec<String> = doc_ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect();
-
-        let (filter, per_doc) = if query_terms.is_empty() {
-            // No terms to score → just grab chunk_index=0
-            (
-                format!("doc_id IN ({}) AND chunk_index = 0", quoted.join(", ")),
-                1usize,
-            )
-        } else {
-            // Fetch several chunks so we can pick the best one
-            (format!("doc_id IN ({})", quoted.join(", ")), 8usize)
-        };
-
-        let batches: Vec<RecordBatch> = self
-            .table
-            .query()
-            .only_if(filter)
-            .select(search_result_columns())
-            .limit(doc_ids.len() * per_doc)
-            .execute()
-            .await?
-            .try_collect()
-            .await?;
-
-        let all = batches_to_search_results_with_scores(&batches, score_map)?;
-
-        if query_terms.is_empty() {
-            return Ok(all);
-        }
-
-        let passages = self.fetch_passages(&all).await?;
-        // Select on complete passages, including matches after the preview.
-        let mut best: std::collections::HashMap<String, (SearchResult, usize)> =
-            std::collections::HashMap::new();
-
-        for result in all {
-            let text_lower = passages.get(&chunk_row_id(&result.doc_id, result.chunk_index))
-                .map(|p| p.text.as_str()).unwrap_or(&result.snippet).to_lowercase();
-            let hits = query_terms
-                .iter()
-                .filter(|&&t| text_lower.contains(t))
-                .count();
-
-            let is_better = match best.get(&result.doc_id) {
-                None => true,
-                Some((_, prev)) => hits > *prev,
-            };
-            if is_better {
-                best.insert(result.doc_id.clone(), (result, hits));
+        let mut best = std::collections::HashMap::<String, (SearchResult, usize)>::new();
+        for ids in doc_ids.chunks(256) {
+            let filter = format!("doc_id IN ({})", sql_values(ids));
+            let mut stream = self
+                .table
+                .query()
+                .only_if(filter)
+                .select(search_result_columns())
+                .execute()
+                .await?;
+            while let Some(batch) = stream.try_next().await? {
+                let text = str_col_opt(&batch, "full_text");
+                let results = batches_to_search_results_with_scores(
+                    std::slice::from_ref(&batch), score_map,
+                )?;
+                for (row, result) in results.into_iter().enumerate() {
+                    let text_lower = text
+                        .filter(|column| !column.is_null(row))
+                        .map(|column| column.value(row))
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let hits = query_terms.iter().filter(|&&term| text_lower.contains(term)).count();
+                    let replace = match best.get(&result.doc_id) {
+                        None => true,
+                        Some((previous, previous_hits)) => hits > *previous_hits
+                            || (hits == *previous_hits && result.chunk_index < previous.chunk_index),
+                    };
+                    if replace {
+                        best.insert(result.doc_id.clone(), (result, hits));
+                    }
+                }
             }
         }
-
-        Ok(best.into_values().map(|(r, _)| r).collect())
+        // Removing from the map also deduplicates repeated input IDs without
+        // losing the ranking supplied by the full-text collector.
+        Ok(doc_ids.iter().filter_map(|id| best.remove(id).map(|(result, _)| result)).collect())
     }
 
     /// Score a candidate doc-id pool by sparse dot product.

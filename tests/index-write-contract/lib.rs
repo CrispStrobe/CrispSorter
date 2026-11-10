@@ -71,3 +71,6 @@ pub mod index {
     }
     pub mod fields { include!(concat!(env!("OUT_DIR"), "/fields.rs")); }
 }
+
+#[cfg(test)]
+mod retrieval_contract;
