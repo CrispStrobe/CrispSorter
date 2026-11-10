@@ -107,6 +107,9 @@ pub async fn index_review_field(
     }
     let lock = state.index.lock().await;
     let local = lock.local.clone().ok_or("Local index is not ready")?;
+    // Metadata writes take the paired index lease. Release configuration first
+    // so an export holding that lease can validate its active index and finish.
+    drop(lock);
     let metadata = local.document_metadata(&doc_id).await.map_err(|e| e.to_string())?;
     let mut fields = read(&metadata);
     let field = fields.iter_mut().find(|f| f.id == field_id).ok_or("Field is no longer present; reload the document")?;
@@ -155,6 +158,7 @@ fn approve_batch(fields: &mut Vec<FieldEvidence>, reviews: Vec<FieldReview>) -> 
 pub async fn index_approve_fields(state: State<'_, AppState>, doc_id: String, reviews: Vec<FieldReview>) -> Result<Vec<FieldEvidence>, String> {
     let lock = state.index.lock().await;
     let local = lock.local.clone().ok_or("Local index is not ready")?;
+    drop(lock); // Keep the same configuration/index lease order as single-field review.
     let metadata = local.document_metadata(&doc_id).await.map_err(|e| e.to_string())?;
     let mut fields = read(&metadata);
     approve_batch(&mut fields, reviews)?;
