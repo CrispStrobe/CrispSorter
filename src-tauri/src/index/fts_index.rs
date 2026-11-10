@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 /// Tantivy full-text index — create, write, search.
 ///
@@ -18,22 +18,19 @@ use serde::{Deserialize, Serialize};
 ///                     becomes `None` and the field is skipped for both
 ///                     ingest and search until the user rebuilds.
 ///   language        — STRING STORED (filter)
-use std::path::Path;
+use std::{collections::{BTreeSet, HashSet}, path::Path};
 use tantivy::{
-    collector::TopDocs,
-    query::{BooleanQuery, Occur, Query, TermQuery},
+    collector::{Count, DocSetCollector, TopDocs},
+    query::{BooleanQuery, Occur, Query, TermQuery, TermSetQuery},
     schema::OwnedValue,
     schema::{
         Field, IndexRecordOption, Schema, SchemaBuilder, TextFieldIndexing, TextOptions, STORED,
         STRING,
     },
-    tokenizer::{
-        AsciiFoldingFilter, LowerCaser, RemoveLongFilter, SimpleTokenizer, TextAnalyzer,
-    },
     Index, IndexReader, IndexWriter, ReloadPolicy, Score, TantivyDocument, Term,
 };
 
-use super::fts_query::{translate, SearchFields};
+use super::fts_query::{fold_accents, simple_tokenize, text_analyzer, translate, SearchFields};
 use super::schema::SearchFilters;
 
 const WRITER_HEAP_MB: usize = 50;
@@ -45,11 +42,7 @@ const WRITER_HEAP_MB: usize = 50;
 const ASCII_FOLD_TOKENIZER: &str = "ascii_folding";
 
 fn register_tokenizers(index: &Index) {
-    let analyzer = TextAnalyzer::builder(SimpleTokenizer::default())
-        .filter(RemoveLongFilter::limit(40))
-        .filter(LowerCaser)
-        .filter(AsciiFoldingFilter)
-        .build();
+    let analyzer = text_analyzer();
     index
         .tokenizers()
         .register(ASCII_FOLD_TOKENIZER, analyzer);
@@ -147,7 +140,7 @@ impl FtsIndex {
         })
     }
 
-    /// Return `SearchFields` for the dtSearch query translator.
+    /// Return `SearchFields` for the validated query translator.
     /// `body_translated` is only populated when the on-disk schema has
     /// the field; legacy indexes return `None` and the translator
     /// silently skips the disjunction.
@@ -158,6 +151,74 @@ impl FtsIndex {
             body: self.fields.body,
             body_translated: self.fields.body_translated,
         }
+    }
+
+    /// Browse actual indexed words in lexical order. Counts use live documents
+    /// and a union of all text fields, so the same word in a title and body is
+    /// counted once. The owner filter is honored before returning vocabulary.
+    /// No body text or whole dictionary is materialized. Dead terms can make a
+    /// page shorter than requested; the bounded scan is suitable for suggestions.
+    pub fn vocabulary(&self, prefix: &str, limit: usize, filters: &SearchFilters) -> Result<Vec<VocabularyTerm>> {
+        if prefix.len() > 128 { bail!("Vocabulary prefix is too long."); }
+        if !prefix.chars().all(char::is_alphanumeric) { bail!("Vocabulary prefix must be one word without search operators."); }
+        if !prefix.is_empty() && simple_tokenize(prefix).len() != 1 { bail!("Vocabulary prefix must be one indexed word shorter than 40 bytes."); }
+        let prefix = fold_accents(prefix);
+        let limit = limit.min(100);
+        if limit == 0 { return Ok(Vec::new()); }
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+        let fields = self.search_fields().weighted();
+        let scan_limit = limit.saturating_mul(4);
+        let mut words = BTreeSet::new();
+        for segment in searcher.segment_readers() {
+            for (field, _) in &fields {
+                let index = segment.inverted_index(*field)?;
+                let mut stream = index.terms().range().ge(prefix.as_bytes()).into_stream()?;
+                for _ in 0..scan_limit {
+                    if !stream.advance() { break; }
+                    let word = std::str::from_utf8(stream.key())?;
+                    if !word.starts_with(&prefix) { break; }
+                    words.insert(word.to_owned());
+                    if words.len() > scan_limit { words.pop_last(); }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for word in words {
+            let term_query: Box<dyn Query> = Box::new(BooleanQuery::new(fields.iter().map(|(field, _)| {
+                (Occur::Should, Box::new(TermQuery::new(Term::from_field_text(*field, &word), IndexRecordOption::Basic)) as Box<dyn Query>)
+            }).collect()));
+            let query = if let Some(owner) = &filters.owner_id {
+                Box::new(BooleanQuery::new(vec![
+                    (Occur::Must, term_query),
+                    (Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.fields.owner_id, owner), IndexRecordOption::Basic))),
+                ])) as Box<dyn Query>
+            } else { term_query };
+            let doc_freq = searcher.search(&query, &Count)? as u64;
+            if doc_freq > 0 { out.push(VocabularyTerm { term: word, doc_freq }); }
+            if out.len() == limit { break; }
+        }
+        Ok(out)
+    }
+
+    /// Verify a bounded set of hydrated candidates against the exact lexical
+    /// condition. This prevents vector fusion from bypassing NOT, field,
+    /// phrase, or proximity constraints. It never scans/materializes all hits.
+    pub fn matching_doc_ids(&self, query: &str, ids: &[String]) -> Result<HashSet<String>> {
+        if ids.len() > 1024 { bail!("At most 1024 document candidates can be verified at once."); }
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+        let parsed = translate(query, &searcher, &self.search_fields())?;
+        if ids.is_empty() { return Ok(HashSet::new()); }
+        let ids_query = TermSetQuery::new(ids.iter().map(|id| Term::from_field_text(self.fields.doc_id, id)));
+        let query = BooleanQuery::new(vec![(Occur::Must, parsed), (Occur::Must, Box::new(ids_query))]);
+        let docs = searcher.search(&query, &DocSetCollector)?;
+        let mut result = HashSet::with_capacity(docs.len());
+        for address in docs {
+            let doc: TantivyDocument = searcher.doc(address)?;
+            if let Some(id) = owned_str(&doc, self.fields.doc_id) { result.insert(id); }
+        }
+        Ok(result)
     }
 
     pub fn writer(&self) -> Result<IndexWriter> {
@@ -199,7 +260,7 @@ impl FtsIndex {
         Ok(())
     }
 
-    /// Full-text search with dtSearch-style query syntax.
+    /// Full-text search with Boolean, field, phrase, wildcard, fuzzy, and positional syntax.
     /// Optionally pre-filters by `owner_id` from `filters`.
     pub fn search(
         &self,
@@ -221,7 +282,7 @@ impl FtsIndex {
         let searcher = self.reader.searcher();
         let sf = self.search_fields();
 
-        let query = translate(query_str, &self.reader, &sf)?;
+        let query = translate(query_str, &searcher, &sf)?;
 
         // Wrap with owner_id filter if provided.
         let effective_query: Box<dyn Query> = if let Some(ref oid) = filters.owner_id {
@@ -265,6 +326,13 @@ impl PreparedFtsSearch {
         }
         Ok(hits)
     }
+}
+
+/// One actual indexed word with its live matching-document count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VocabularyTerm {
+    pub term: String,
+    pub doc_freq: u64,
 }
 
 /// A single full-text search hit.

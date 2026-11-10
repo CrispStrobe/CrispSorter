@@ -1,838 +1,742 @@
+//! Validated full-text query language and positional matching.
+//!
+//! AND binds more tightly than OR. Adjacent operands imply AND. NOT is a
+//! complement, including at the root. Fields accept a term, a quoted phrase,
+//! or a parenthesized expression. `w/N` allows either order and `pre/N` requires
+//! the left operand before the right, with at most N intervening indexed words.
+//! Proximity operands support words, exact phrases, and OR alternatives. An
+//! unsupported shape is an error; it is never silently changed into an AND.
 use anyhow::{anyhow, bail, Result};
-use deunicode::deunicode;
-/// Boolean query translator → Tantivy query tree.
-///
-/// Supported syntax:
-///
-///   foo AND bar          boolean must
-///   foo OR bar           boolean should
-///   NOT foo              boolean must_not
-///   "foo bar"            exact phrase (slop 0)
-///   foo*                 prefix wildcard  (expanded via RegexQuery on the TermDictionary)
-///   fo?                  single-char wildcard (one arbitrary character)
-///   foo~2                fuzzy, edit distance 2
-///   foo w/N bar          within N words, either order  (bidirectional slop)
-///   foo pre/N bar        foo before bar within N words (ordered slop)
-///   (foo OR bar) w/N baz grouped proximity (cross-product slop)
-///   foo bar              implicit AND (adjacent terms require both)
-///
-/// Wildcard expansion (`foo*`, `fo?`) converts the pattern to a regex using the
-/// same rules as Tantivy's own wildcard helpers: `*` → `.*`, `?` → `.`, other
-/// regex metacharacters are escaped.  tantivy-fst applies implicit full-match
-/// anchoring (`^…$`) when scanning the TermDictionary, so no explicit anchors
-/// are added here (they are not supported by the FST regex engine).
+use std::collections::BTreeSet;
 use tantivy::{
-    query::{BooleanQuery, FuzzyTermQuery, Occur, PhraseQuery, Query, RegexQuery, TermQuery},
+    postings::SegmentPostings,
+    query::{AllQuery, BooleanQuery, BoostQuery, EmptyQuery, EnableScoring, Explanation,
+        FuzzyTermQuery, Occur, PhraseQuery, Query, RegexQuery, Scorer, TermQuery, Weight},
     schema::{Field, IndexRecordOption},
-    IndexReader, Term,
+    tokenizer::{AsciiFoldingFilter, LowerCaser, RawTokenizer, RemoveLongFilter,
+        SimpleTokenizer, TextAnalyzer},
+    DocId, DocSet, Postings, Score, Searcher, SegmentReader, Term, TERMINATED,
 };
 
-/// Fields that the translator can target.
+const MAX_QUERY_BYTES: usize = 8192;
+const MAX_TOKENS: usize = 512;
+const MAX_DEPTH: usize = 32;
+const MAX_DISTANCE: u32 = 1024;
+const MAX_EXPANDED_TERMS: usize = 128;
+const MAX_DICTIONARY_VISITS: usize = 100_000;
+
+/// The same analyzer must be used on both sides of the index boundary.
+/// Accent folding keeps non-Latin scripts intact; transliteration does not.
+pub(crate) fn text_analyzer() -> TextAnalyzer {
+    TextAnalyzer::builder(SimpleTokenizer::default())
+        .filter(RemoveLongFilter::limit(40))
+        .filter(LowerCaser)
+        .filter(AsciiFoldingFilter)
+        .build()
+}
+
+fn analyzed_tokens(text: &str) -> Vec<(usize, String)> {
+    let mut analyzer = text_analyzer();
+    let mut stream = analyzer.token_stream(text);
+    let mut tokens = Vec::new();
+    while stream.advance() {
+        let token = stream.token();
+        tokens.push((token.position, token.text.clone()));
+    }
+    tokens
+}
+
+pub fn simple_tokenize(text: &str) -> Vec<String> {
+    analyzed_tokens(text).into_iter().map(|(_, text)| text).collect()
+}
+
+/// Fold a wildcard's literal text without losing its operators or changing
+/// scripts. RawTokenizer deliberately keeps the entire pattern together.
+pub fn fold_accents(text: &str) -> String {
+    let mut analyzer = TextAnalyzer::builder(RawTokenizer::default())
+        .filter(LowerCaser).filter(AsciiFoldingFilter).build();
+    let mut stream = analyzer.token_stream(text);
+    if stream.advance() { stream.token().text.clone() } else { String::new() }
+}
+
+#[derive(Clone)]
 pub struct SearchFields {
     pub title: Field,
     pub body: Field,
     pub headings: Field,
-    /// `Some` iff the on-disk Tantivy schema has the `body_translated`
-    /// field — added in the FTS-over-translated-body P13.5 follow-up.
-    /// When `Some`, every bare-term query OR's a low-boost match against
-    /// the translated body so an English query against a Bosnian doc
-    /// with an English translation still scores via BM25.  When `None`
-    /// (legacy index), the translator silently skips it.
     pub body_translated: Option<Field>,
 }
 
-/// Translate a query string into a Tantivy `Box<dyn Query>`.
-pub fn translate(
-    query_str: &str,
-    _reader: &IndexReader,
-    fields: &SearchFields,
-) -> Result<Box<dyn Query>> {
-    let tokens = lex(query_str)?;
-    let mut parser = Parser::new(tokens, fields);
-    parser.parse_expr()
-}
+impl SearchFields {
+    pub(crate) fn weighted(&self) -> Vec<(Field, f32)> {
+        let mut result = vec![(self.title, 3.0), (self.headings, 2.0), (self.body, 1.0)];
+        if let Some(field) = self.body_translated { result.push((field, 0.7)); }
+        result
+    }
 
-// ── Lexer ──────────────────────────────────────────────────────────────────
+    fn resolve(&self, name: &str) -> Result<Field> {
+        match name.to_ascii_lowercase().as_str() {
+            "title" => Ok(self.title),
+            "body" | "text" => Ok(self.body),
+            "headings" | "h" => Ok(self.headings),
+            "translated" | "body_translated" => self.body_translated
+                .ok_or_else(|| anyhow!("This index has no translated field. Rebuild it to search translations.")),
+            _ => bail!("Unknown search field '{name}'. Use title, body, headings, or translated."),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
-enum Token {
-    Word(String),   // bare term (may contain * ? ~ modifiers)
-    Phrase(String), // "quoted phrase"
-    And,
-    Or,
-    Not,
-    Within(u32, bool), // w/N (false) or pre/N (true = ordered)
-    LParen,
-    RParen,
-    Eof,
-}
+enum Kind { Word(String), Phrase(String), Field(String), And, Or, Not, Near(u32, bool), LParen, RParen, End }
+
+#[derive(Debug, Clone)]
+struct Token { kind: Kind, start: usize, end: usize }
 
 fn lex(input: &str) -> Result<Vec<Token>> {
-    let mut tokens = Vec::new();
+    if input.len() > MAX_QUERY_BYTES { bail!("Query is too long (maximum {MAX_QUERY_BYTES} bytes)."); }
+    let mut out = Vec::new();
     let mut chars = input.char_indices().peekable();
-
-    while let Some((_i, c)) = chars.next() {
-        match c {
-            ' ' | '\t' | '\n' => {}
-            '(' => tokens.push(Token::LParen),
-            ')' => tokens.push(Token::RParen),
+    while let Some((start, ch)) = chars.next() {
+        if ch.is_whitespace() { continue; }
+        let kind = match ch {
+            '(' => Kind::LParen,
+            ')' => Kind::RParen,
+            ':' => bail!("A field name is required before ':' at byte {}.", start + 1),
             '"' => {
-                let mut phrase = String::new();
-                loop {
-                    match chars.next() {
-                        Some((_, '"')) | None => break,
-                        Some((_, ch)) => phrase.push(ch),
+                let mut value = String::new();
+                let mut closed = false;
+                while let Some((_, ch)) = chars.next() {
+                    match ch {
+                        '"' => { closed = true; break; }
+                        '\\' => match chars.next() {
+                            Some((_, escaped @ ('"' | '\\'))) => value.push(escaped),
+                            Some((_, other)) => { value.push('\\'); value.push(other); }
+                            None => break,
+                        },
+                        other => value.push(other),
                     }
                 }
-                tokens.push(Token::Phrase(phrase));
+                if !closed { bail!("Unclosed quotation mark at byte {}.", start + 1); }
+                Kind::Phrase(value)
             }
             _ => {
-                let mut word = String::from(c);
-                while let Some(&(_, nc)) = chars.peek() {
-                    if nc == ' ' || nc == '\t' || nc == '\n' || nc == '(' || nc == ')' {
-                        break;
-                    }
+                let mut value = String::from(ch);
+                while let Some(&(_, next)) = chars.peek() {
+                    if next.is_whitespace() || matches!(next, '(' | ')' | '"' | ':') { break; }
                     chars.next();
-                    word.push(nc);
+                    value.push(next);
                 }
-                if word.eq_ignore_ascii_case("AND") {
-                    tokens.push(Token::And);
-                } else if word.eq_ignore_ascii_case("OR") {
-                    tokens.push(Token::Or);
-                } else if word.eq_ignore_ascii_case("NOT") {
-                    tokens.push(Token::Not);
-                } else if word.is_ascii()
-                    && word.len() > 2
-                    && word[..2].eq_ignore_ascii_case("W/")
-                {
-                    let n = word[2..]
-                        .parse::<u32>()
-                        .map_err(|_| anyhow!("Invalid w/N operator: {}", word))?;
-                    tokens.push(Token::Within(n, false));
-                } else if word.is_ascii()
-                    && word.len() > 4
-                    && word[..4].eq_ignore_ascii_case("PRE/")
-                {
-                    let n = word[4..]
-                        .parse::<u32>()
-                        .map_err(|_| anyhow!("Invalid pre/N operator: {}", word))?;
-                    tokens.push(Token::Within(n, true));
-                } else {
-                    tokens.push(Token::Word(word));
+                if chars.peek().is_some_and(|(_, ch)| *ch == ':') {
+                    chars.next();
+                    Kind::Field(value)
+                } else if value.eq_ignore_ascii_case("AND") { Kind::And }
+                else if value.eq_ignore_ascii_case("OR") { Kind::Or }
+                else if value.eq_ignore_ascii_case("NOT") { Kind::Not }
+                else {
+                    let lower = value.to_ascii_lowercase();
+                    if lower.starts_with("w/") || lower.starts_with("pre/") {
+                        let (n, ordered) = if let Some(n) = lower.strip_prefix("pre/") { (n, true) }
+                            else { (&lower[2..], false) };
+                        let n: u32 = n.parse().map_err(|_| anyhow!("Invalid proximity operator '{value}'. Use w/N or pre/N."))?;
+                        if n > MAX_DISTANCE { bail!("Proximity distance must be between 0 and {MAX_DISTANCE}."); }
+                        Kind::Near(n, ordered)
+                    } else { Kind::Word(value) }
                 }
             }
-        }
+        };
+        let end = chars.peek().map_or(input.len(), |(at, _)| *at);
+        out.push(Token { kind, start, end });
+        if out.len() > MAX_TOKENS { bail!("Query has too many tokens (maximum {MAX_TOKENS})."); }
     }
-    tokens.push(Token::Eof);
-    Ok(tokens)
+    out.push(Token { kind: Kind::End, start: input.len(), end: input.len() });
+    Ok(out)
 }
 
-// ── Recursive-descent parser ───────────────────────────────────────────────
-
-struct Parser<'a> {
-    tokens: Vec<Token>,
-    pos: usize,
-    fields: &'a SearchFields,
+#[derive(Clone, Debug)]
+enum Expr {
+    Word(String), Phrase(String), Scope(Field, Box<Expr>),
+    And(Vec<Expr>), Or(Vec<Expr>), Not(Box<Expr>),
+    Near(Box<Expr>, Box<Expr>, u32, bool),
 }
+
+struct Parser<'a> { tokens: Vec<Token>, at: usize, fields: &'a SearchFields }
 
 impl<'a> Parser<'a> {
-    fn new(tokens: Vec<Token>, fields: &'a SearchFields) -> Self {
-        Parser {
-            tokens,
-            pos: 0,
-            fields,
-        }
+    fn peek(&self) -> &Kind { &self.tokens[self.at].kind }
+    fn next(&mut self) -> Kind { let token = self.peek().clone(); self.at += 1; token }
+    fn location(&self) -> usize { self.tokens[self.at].start + 1 }
+    fn depth(depth: usize) -> Result<()> {
+        if depth > MAX_DEPTH { bail!("Query nesting is too deep (maximum {MAX_DEPTH})."); }
+        Ok(())
     }
-
-    fn peek(&self) -> &Token {
-        self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+    fn parse_or(&mut self, depth: usize) -> Result<Expr> {
+        Self::depth(depth)?;
+        let mut parts = vec![self.parse_and(depth)?];
+        while matches!(self.peek(), Kind::Or) { self.next(); parts.push(self.parse_and(depth)?); }
+        Ok(if parts.len() == 1 { parts.remove(0) } else { Expr::Or(parts) })
     }
-
-    fn consume(&mut self) -> Token {
-        let t = self.tokens.get(self.pos).cloned().unwrap_or(Token::Eof);
-        self.pos += 1;
-        t
-    }
-
-    /// Entry: parse a boolean OR expression (lowest precedence).
-    fn parse_expr(&mut self) -> Result<Box<dyn Query>> {
-        let mut lhs = self.parse_and()?;
-        while matches!(self.peek(), Token::Or) {
-            self.consume();
-            let rhs = self.parse_and()?;
-            lhs = Box::new(BooleanQuery::new(vec![
-                (Occur::Should, lhs),
-                (Occur::Should, rhs),
-            ]));
-        }
-        Ok(lhs)
-    }
-
-    fn parse_and(&mut self) -> Result<Box<dyn Query>> {
-        let mut lhs = self.parse_not()?;
+    fn parse_and(&mut self, depth: usize) -> Result<Expr> {
+        let mut parts = vec![self.parse_not(depth)?];
         loop {
-            if matches!(self.peek(), Token::And) {
-                self.consume();
-                let rhs = self.parse_not()?;
-                lhs = Box::new(BooleanQuery::new(vec![
-                    (Occur::Must, lhs),
-                    (Occur::Must, rhs),
-                ]));
-            } else if matches!(
-                self.peek(),
-                Token::Word(_) | Token::Phrase(_) | Token::LParen | Token::Not
-            ) {
-                // Implicit AND: adjacent terms without an explicit operator
-                let rhs = self.parse_not()?;
-                lhs = Box::new(BooleanQuery::new(vec![
-                    (Occur::Must, lhs),
-                    (Occur::Must, rhs),
-                ]));
-            } else {
-                break;
+            if matches!(self.peek(), Kind::And) { self.next(); }
+            else if !matches!(self.peek(), Kind::Word(_) | Kind::Phrase(_) | Kind::Field(_) | Kind::LParen | Kind::Not) { break; }
+            parts.push(self.parse_not(depth)?);
+        }
+        Ok(if parts.len() == 1 { parts.remove(0) } else { Expr::And(parts) })
+    }
+    fn parse_not(&mut self, depth: usize) -> Result<Expr> {
+        Self::depth(depth)?;
+        if matches!(self.peek(), Kind::Not) {
+            self.next();
+            return Ok(Expr::Not(Box::new(self.parse_not(depth + 1)?)));
+        }
+        let lhs = self.atom(depth)?;
+        if let Kind::Near(n, ordered) = self.peek().clone() {
+            self.next();
+            let rhs = self.atom(depth)?;
+            if matches!(self.peek(), Kind::Near(_, _)) {
+                bail!("Chained proximity needs separate clauses, for example (a pre/3 b) AND (b pre/3 c).");
             }
-        }
-        Ok(lhs)
+            Ok(Expr::Near(Box::new(lhs), Box::new(rhs), n, ordered))
+        } else { Ok(lhs) }
     }
-
-    fn parse_not(&mut self) -> Result<Box<dyn Query>> {
-        if matches!(self.peek(), Token::Not) {
-            self.consume();
-            let operand = self.parse_proximity()?;
-            Ok(Box::new(BooleanQuery::new(vec![(Occur::MustNot, operand)])))
-        } else {
-            self.parse_proximity()
-        }
-    }
-
-    /// Proximity: `atom w/N atom` or `atom pre/N atom`.
-    fn parse_proximity(&mut self) -> Result<Box<dyn Query>> {
-        let lhs = self.parse_atom()?;
-        if let Token::Within(n, ordered) = self.peek().clone() {
-            self.consume();
-            let rhs = self.parse_atom()?;
-            return build_proximity(lhs, rhs, n, ordered, self.fields);
-        }
-        Ok(lhs)
-    }
-
-    fn parse_atom(&mut self) -> Result<Box<dyn Query>> {
+    fn atom(&mut self, depth: usize) -> Result<Expr> {
+        Self::depth(depth)?;
         match self.peek().clone() {
-            Token::LParen => {
-                self.consume();
-                let inner = self.parse_expr()?;
-                if matches!(self.peek(), Token::RParen) {
-                    self.consume();
+            Kind::Word(word) => { self.next(); Ok(Expr::Word(word)) }
+            Kind::Phrase(phrase) => { self.next(); Ok(Expr::Phrase(phrase)) }
+            Kind::Field(name) => {
+                self.next();
+                let field = self.fields.resolve(&name)?;
+                Ok(Expr::Scope(field, Box::new(self.atom(depth + 1)?)))
+            }
+            Kind::LParen => {
+                self.next();
+                let expr = self.parse_or(depth + 1)?;
+                if !matches!(self.peek(), Kind::RParen) { bail!("Missing closing ')' at byte {}.", self.location()); }
+                self.next();
+                Ok(expr)
+            }
+            Kind::End => bail!("Expected a search term at the end of the query."),
+            other => bail!("Expected a search term at byte {}, found {other:?}.", self.location()),
+        }
+    }
+}
+
+/// Parse the entire input before constructing queries. Nothing after a closing
+/// group, and no incomplete operand, can be silently discarded.
+pub fn translate(query: &str, searcher: &Searcher, fields: &SearchFields) -> Result<Box<dyn Query>> {
+    let expr = parse_query(query, fields)?;
+    compile(&expr, fields, searcher, None, &mut ExpansionBudget::default())
+}
+
+fn parse_query(query: &str, fields: &SearchFields) -> Result<Expr> {
+    let mut parser = Parser { tokens: lex(query)?, at: 0, fields };
+    let expr = parser.parse_or(0)?;
+    if !matches!(parser.peek(), Kind::End) { bail!("Unexpected token at byte {}. Check parentheses and operators.", parser.location()); }
+    validate_expr(&expr)?;
+    Ok(expr)
+}
+
+fn validate_expr(expr: &Expr) -> Result<()> {
+    match expr {
+        Expr::Word(word) => { WordPattern::parse(word)?; }
+        Expr::Phrase(text) => if analyzed_tokens(text).is_empty() { bail!("A phrase must contain an indexed word."); },
+        Expr::Scope(_, inner) | Expr::Not(inner) => validate_expr(inner)?,
+        Expr::And(parts) | Expr::Or(parts) => { for part in parts { validate_expr(part)?; } }
+        Expr::Near(left, right, _, _) => { validate_proximity_operand(left)?; validate_proximity_operand(right)?; }
+    }
+    Ok(())
+}
+
+/// Hybrid retrieval may broaden ordinary words semantically, but an explicit
+/// condition is a constraint on every result, including vector-only candidates.
+/// This check also rejects malformed input before an embedding model is invoked.
+pub fn has_explicit_syntax(query: &str) -> Result<bool> {
+    let fields = SearchFields { title: Field::from_field_id(0), body: Field::from_field_id(1),
+        headings: Field::from_field_id(2), body_translated: Some(Field::from_field_id(3)) };
+    parse_query(query, &fields)?;
+    Ok(lex(query)?.iter().any(|token| match &token.kind {
+        Kind::Word(word) => word.contains(['*', '?', '~']),
+        Kind::End => false,
+        _ => true,
+    }))
+}
+
+fn union(queries: Vec<Box<dyn Query>>) -> Box<dyn Query> {
+    if queries.is_empty() { Box::new(EmptyQuery) }
+    else if queries.len() == 1 { queries.into_iter().next().unwrap() }
+    else { Box::new(BooleanQuery::new(queries.into_iter().map(|q| (Occur::Should, q)).collect())) }
+}
+fn intersection(queries: Vec<Box<dyn Query>>) -> Box<dyn Query> {
+    if queries.len() == 1 { queries.into_iter().next().unwrap() }
+    else { Box::new(BooleanQuery::new(queries.into_iter().map(|q| (Occur::Must, q)).collect())) }
+}
+fn boosted(query: Box<dyn Query>, boost: f32) -> Box<dyn Query> {
+    if boost == 1.0 { query } else { Box::new(BoostQuery::new(query, boost)) }
+}
+fn targets(fields: &SearchFields, scope: Option<Field>) -> Vec<(Field, f32)> {
+    scope.map_or_else(|| fields.weighted(), |field| vec![(field, 1.0)])
+}
+
+fn compile(expr: &Expr, fields: &SearchFields, searcher: &Searcher, scope: Option<Field>, budget: &mut ExpansionBudget) -> Result<Box<dyn Query>> {
+    match expr {
+        Expr::And(parts) => Ok(intersection(parts.iter().map(|x| compile(x, fields, searcher, scope, budget)).collect::<Result<_>>()?)),
+        Expr::Or(parts) => Ok(union(parts.iter().map(|x| compile(x, fields, searcher, scope, budget)).collect::<Result<_>>()?)),
+        Expr::Not(inner) => Ok(Box::new(BooleanQuery::new(vec![
+            (Occur::Must, Box::new(AllQuery)),
+            (Occur::MustNot, compile(inner, fields, searcher, scope, budget)?),
+        ]))),
+        Expr::Scope(field, inner) => compile(inner, fields, searcher, Some(*field), budget),
+        Expr::Word(word) => {
+            if word == "*" && scope.is_none() { return Ok(Box::new(AllQuery)); }
+            let pattern = WordPattern::parse(word)?;
+            let queries = targets(fields, scope).into_iter().map(|(field, boost)| {
+                Ok(boosted(pattern.query(field)?, boost))
+            }).collect::<Result<_>>()?;
+            Ok(union(queries))
+        }
+        Expr::Phrase(text) => {
+            let words = analyzed_tokens(text);
+            if words.is_empty() { bail!("A phrase must contain an indexed word (words must be shorter than 40 bytes)."); }
+            Ok(union(targets(fields, scope).into_iter().map(|(field, boost)| boosted(sequence_query(&terms_for(field, &words)), boost)).collect()))
+        }
+        Expr::Near(left, right, distance, ordered) => {
+            // Reject unsupported Boolean shapes before field filtering could
+            // hide them. A field mismatch is a valid query with no matches.
+            validate_proximity_operand(left)?;
+            validate_proximity_operand(right)?;
+            let mut queries = Vec::new();
+            for (field, boost) in targets(fields, scope) {
+                let left = proximity_sequences(left, field, searcher, budget)?;
+                let right = proximity_sequences(right, field, searcher, budget)?;
+                if !left.is_empty() && !right.is_empty() {
+                    queries.push(boosted(Box::new(PositionalQuery { left, right, distance: *distance, ordered: *ordered }), boost));
                 }
-                Ok(inner)
             }
-            Token::Phrase(text) => {
-                self.consume();
-                build_phrase_query(&text, 0, self.fields)
-            }
-            Token::Word(word) => {
-                self.consume();
-                build_term_query(&word, self.fields)
-            }
-            Token::Eof => bail!("Unexpected end of query"),
-            other => bail!("Unexpected token: {:?}", other),
+            Ok(union(queries))
         }
     }
 }
 
-// ── Query builders ─────────────────────────────────────────────────────────
-
-/// Build a query for a single term word.
-/// - `field:foo`    → TermQuery scoped to the named field (PLAN P7.2)
-/// - `foo*` / `fo?` → RegexQuery (wildcard)
-/// - `foo~N`        → FuzzyTermQuery
-/// - `foo`          → TermQuery on body + headings + title (weighted via BoostQuery)
-fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    // Field-prefix syntax: `title:foo`, `body:foo`, `headings:foo`.
-    // PLAN P7.2 — restricts the match to a single field instead of the
-    // default boosted union across all three. Phrases inside the value
-    // aren't supported here (the lexer eats the `"` as a separate
-    // Phrase token); use `title:* AND "phrase"` for that effect.
-    if let Some(colon) = word.find(':') {
-        let prefix = &word[..colon];
-        let value = &word[colon + 1..];
-        if !value.is_empty() {
-            let field_opt = match prefix {
-                "title" => Some(fields.title),
-                "headings" | "h" => Some(fields.headings),
-                "body" | "text" => Some(fields.body),
-                _ => None,
-            };
-            if let Some(f) = field_opt {
-                let folded = fold_accents(value);
-                // Wildcards / fuzzy still apply inside a field-scoped term —
-                // recurse through the regular term-query dispatch but with
-                // a single-field SearchFields so the boosted union becomes
-                // a single boosted Term on `f`.  body_translated is dropped
-                // here on purpose: a field-prefixed query like `title:hello`
-                // shouldn't also fan out into the translated body — that
-                // would surprise the user.
-                let scoped = SearchFields {
-                    title: f,
-                    headings: f,
-                    body: f,
-                    body_translated: None,
-                };
-                return build_term_query(&folded, &scoped);
-            }
-            // Unknown prefix → fall through to treat the whole `prefix:value`
-            // as a literal term. Surprising but predictable; the alternative
-            // (silently dropping the colon) hides bad queries.
+#[derive(Clone, Debug)]
+enum WordPattern { Exact(Vec<(usize, String)>), Wildcard(String), Fuzzy(String, u8) }
+impl WordPattern {
+    fn parse(word: &str) -> Result<Self> {
+        if let Some((base, suffix)) = word.rsplit_once('~') {
+            if base.is_empty() || base.contains(['*', '?', '~']) { bail!("Fuzzy matching needs one plain word followed by ~, ~1, or ~2."); }
+            let distance = if suffix.is_empty() { 1 } else { suffix.parse::<u8>().map_err(|_| anyhow!("Fuzzy distance must be 0, 1, or 2."))? };
+            if distance > 2 { bail!("Fuzzy distance must be 0, 1, or 2."); }
+            let tokens = simple_tokenize(base);
+            if tokens.len() != 1 { bail!("Fuzzy matching applies to one indexed word."); }
+            return Ok(Self::Fuzzy(tokens[0].clone(), distance));
         }
-    }
-
-    let folded = fold_accents(word);
-
-    // Fuzzy: foo~N
-    if let Some(tilde_pos) = folded.rfind('~') {
-        let term_str = &folded[..tilde_pos];
-        let dist: u8 = folded[tilde_pos + 1..].parse().unwrap_or(1);
-        return build_fuzzy(term_str, dist, fields);
-    }
-
-    // Wildcard: foo* or fo?
-    if folded.contains('*') || folded.contains('?') {
-        return build_wildcard(&folded, fields);
-    }
-
-    // Exact term across fields with boosting.
-    let title_q = build_boosted_term(fields.title, &folded, 3.0);
-    let head_q = build_boosted_term(fields.headings, &folded, 2.0);
-    let body_q = build_boosted_term(fields.body, &folded, 1.0);
-
-    let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![
-        (Occur::Should, title_q),
-        (Occur::Should, head_q),
-        (Occur::Should, body_q),
-    ];
-
-    // FTS-over-translated body: when the schema has body_translated,
-    // OR-merge a slightly lower-boost match against it.  0.7 < 1.0 so
-    // original-language hits outrank translated-only hits when both
-    // fire, but translated-only hits still score above zero and so
-    // appear in the BM25 channel of the hybrid search.  Wildcards /
-    // fuzzy queries above already returned before reaching this point,
-    // so body_translated only joins the exact-term path — matches the
-    // user expectation for a translated-text channel (whole words).
-    if let Some(bt) = fields.body_translated {
-        clauses.push((Occur::Should, build_boosted_term(bt, &folded, 0.7)));
-    }
-
-    Ok(Box::new(BooleanQuery::new(clauses)))
-}
-
-fn build_boosted_term(field: Field, text: &str, boost: f32) -> Box<dyn Query> {
-    use tantivy::query::BoostQuery;
-    let tq = Box::new(TermQuery::new(
-        Term::from_field_text(field, text),
-        IndexRecordOption::WithFreqsAndPositions,
-    ));
-    if (boost - 1.0).abs() < 0.001 {
-        tq
-    } else {
-        Box::new(BoostQuery::new(tq, boost))
-    }
-}
-
-/// Convert a wildcard pattern to a regex string.
-fn wildcard_to_regex(pattern: &str) -> String {
-    let mut out = String::with_capacity(pattern.len() * 2);
-    for c in pattern.chars() {
-        match c {
-            '*' => out.push_str(".*"),
-            '?' => out.push('.'),
-            '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\' => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
+        if word.contains(['*', '?']) {
+            if word.chars().filter(|c| matches!(c, '*' | '?')).count() > 32 { bail!("A wildcard pattern may contain at most 32 wildcard symbols."); }
+            if word.chars().any(|c| !c.is_alphanumeric() && c != '*' && c != '?') { bail!("A wildcard pattern must contain letters, numbers, '*' or '?'. Use separate words for punctuation."); }
+            return Ok(Self::Wildcard(fold_accents(word)));
         }
+        let tokens = analyzed_tokens(word);
+        if tokens.is_empty() { bail!("'{word}' contains no indexed word. Indexed words must be shorter than 40 bytes."); }
+        Ok(Self::Exact(tokens))
     }
-    out
-}
-
-fn build_wildcard(pattern: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    let regex = wildcard_to_regex(pattern);
-
-    let title_q = build_boosted_regex(fields.title, &regex, 3.0)?;
-    let head_q = build_boosted_regex(fields.headings, &regex, 2.0)?;
-    let body_q = build_boosted_regex(fields.body, &regex, 1.0)?;
-
-    Ok(Box::new(BooleanQuery::new(vec![
-        (Occur::Should, title_q),
-        (Occur::Should, head_q),
-        (Occur::Should, body_q),
-    ])))
-}
-
-fn build_boosted_regex(field: Field, regex: &str, boost: f32) -> Result<Box<dyn Query>> {
-    use tantivy::query::BoostQuery;
-    let rq = Box::new(
-        RegexQuery::from_pattern(regex, field)
-            .map_err(|e| anyhow!("Wildcard regex error: {:?}", e))?,
-    );
-
-    if (boost - 1.0).abs() < 0.001 {
-        Ok(rq)
-    } else {
-        Ok(Box::new(BoostQuery::new(rq, boost)))
-    }
-}
-
-fn build_fuzzy(term: &str, distance: u8, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    use tantivy::query::BoostQuery;
-    let title_q = Box::new(BoostQuery::new(
-        Box::new(FuzzyTermQuery::new(
-            Term::from_field_text(fields.title, term),
-            distance,
-            true,
-        )),
-        3.0,
-    ));
-    let head_q = Box::new(BoostQuery::new(
-        Box::new(FuzzyTermQuery::new(
-            Term::from_field_text(fields.headings, term),
-            distance,
-            true,
-        )),
-        2.0,
-    ));
-    let body_q = Box::new(FuzzyTermQuery::new(
-        Term::from_field_text(fields.body, term),
-        distance,
-        true,
-    ));
-
-    Ok(Box::new(BooleanQuery::new(vec![
-        (Occur::Should, title_q),
-        (Occur::Should, head_q),
-        (Occur::Should, body_q),
-    ])))
-}
-
-/// Build an exact or slop phrase query on the body field.
-fn build_phrase_query(text: &str, slop: u32, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    let tokens = simple_tokenize(text);
-    if tokens.is_empty() {
-        bail!("Empty phrase query");
-    }
-
-    // For phrases, we also try matching title/headings, but with lower slop or higher boost.
-    let title_q = build_boosted_phrase(fields.title, &tokens, slop, 3.0);
-    let head_q = build_boosted_phrase(fields.headings, &tokens, slop, 2.0);
-    let body_q = build_boosted_phrase(fields.body, &tokens, slop, 1.0);
-
-    Ok(Box::new(BooleanQuery::new(vec![
-        (Occur::Should, title_q),
-        (Occur::Should, head_q),
-        (Occur::Should, body_q),
-    ])))
-}
-
-fn build_boosted_phrase(field: Field, tokens: &[String], slop: u32, boost: f32) -> Box<dyn Query> {
-    use tantivy::query::BoostQuery;
-    let terms: Vec<Term> = tokens
-        .iter()
-        .map(|t| Term::from_field_text(field, t))
-        .collect();
-
-    let pq: Box<dyn Query> = if terms.len() == 1 {
-        Box::new(TermQuery::new(
-            terms[0].clone(),
-            IndexRecordOption::WithFreqsAndPositions,
-        ))
-    } else {
-        let phrase_terms: Vec<(usize, Term)> = terms.into_iter().enumerate().collect();
-        let mut pq = PhraseQuery::new_with_offset(phrase_terms);
-        pq.set_slop(slop);
-        Box::new(pq)
-    };
-
-    if (boost - 1.0).abs() < 0.001 {
-        pq
-    } else {
-        Box::new(BoostQuery::new(pq, boost))
-    }
-}
-
-/// Build a proximity query for `lhs w/N rhs` or `lhs pre/N rhs`.
-///
-/// Extracts leaf Terms from both sides and cross-products them into slop queries.
-/// For `w/N` (bidirectional): emits both orderings as BooleanQuery::should.
-/// For `pre/N` (ordered): emits only forward ordering.
-fn build_proximity(
-    lhs: Box<dyn Query>,
-    rhs: Box<dyn Query>,
-    slop: u32,
-    ordered: bool,
-    fields: &SearchFields,
-) -> Result<Box<dyn Query>> {
-    let lhs_terms = extract_body_terms(&*lhs, fields.body);
-    let rhs_terms = extract_body_terms(&*rhs, fields.body);
-
-    if lhs_terms.is_empty() || rhs_terms.is_empty() {
-        // Fall back to AND if terms can't be extracted (e.g. nested complex queries)
-        return Ok(Box::new(BooleanQuery::new(vec![
-            (Occur::Must, lhs),
-            (Occur::Must, rhs),
-        ])));
-    }
-
-    let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-
-    for lt in &lhs_terms {
-        for rt in &rhs_terms {
-            // Forward: lt … rt
-            let mut fwd =
-                PhraseQuery::new_with_offset(vec![(0usize, lt.clone()), (1usize, rt.clone())]);
-            fwd.set_slop(slop);
-            clauses.push((Occur::Should, Box::new(fwd)));
-
-            if !ordered {
-                // Backward: rt … lt  (bidirectional w/N)
-                let mut bwd =
-                    PhraseQuery::new_with_offset(vec![(0usize, rt.clone()), (1usize, lt.clone())]);
-                bwd.set_slop(slop);
-                clauses.push((Occur::Should, Box::new(bwd)));
-            }
-        }
-    }
-
-    Ok(Box::new(BooleanQuery::new(clauses)))
-}
-
-/// Extract leaf Terms from a query, restricted to `field`.
-fn extract_body_terms(query: &dyn Query, field: Field) -> Vec<Term> {
-    let mut out = Vec::new();
-    if let Some(tq) = query.as_any().downcast_ref::<TermQuery>() {
-        let t = tq.term();
-        if t.field() == field {
-            out.push(t.clone());
-        }
-    } else if let Some(bq) = query.as_any().downcast_ref::<BooleanQuery>() {
-        for (_, sub) in bq.clauses() {
-            out.extend(extract_body_terms(sub.as_ref(), field));
-        }
-    }
-    out
-}
-
-/// Naive whitespace + lowercase tokenizer for phrase query construction.
-pub fn simple_tokenize(text: &str) -> Vec<String> {
-    text.split_whitespace()
-        .map(|t| {
-            fold_accents(t)
-                .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_owned()
+    fn query(&self, field: Field) -> Result<Box<dyn Query>> {
+        Ok(match self {
+            Self::Exact(tokens) => intersection(tokens.iter().map(|(_, token)| Box::new(TermQuery::new(Term::from_field_text(field, token), IndexRecordOption::WithFreqsAndPositions)) as Box<dyn Query>).collect()),
+            Self::Wildcard(pattern) => Box::new(RegexQuery::from_pattern(&wildcard_to_regex(pattern), field).map_err(|e| anyhow!("Invalid wildcard: {e}"))?),
+            Self::Fuzzy(term, distance) => Box::new(FuzzyTermQuery::new(Term::from_field_text(field, term), *distance, true)),
         })
-        .filter(|t| !t.is_empty())
-        .collect()
+    }
 }
 
-/// Normalise text to ASCII-ish (lowercase + accent folding).
-pub fn fold_accents(text: &str) -> String {
-    deunicode(text).to_lowercase()
+fn wildcard_to_regex(pattern: &str) -> String {
+    let mut regex = String::new();
+    for ch in pattern.chars() {
+        match ch { '*' => regex.push_str(".*"), '?' => regex.push('.'),
+            c if ".+^${}()|[]\\".contains(c) => { regex.push('\\'); regex.push(c); }, c => regex.push(c) }
+    }
+    regex
 }
 
-/// Rewrite a query string to add fuzzy matching (~1) to every bare word.
-/// Preserves phrases, operators, wildcards, and existing fuzzy markers.
-/// Only words with 4+ chars are fuzzified (short words produce too many
-/// false-positive matches at edit-distance 1).
-pub fn fuzzify_query(query: &str) -> String {
-    let mut result = Vec::new();
-    let mut in_quote = false;
-    for token in query.split_whitespace() {
-        if token.starts_with('"') {
-            in_quote = true;
+type Sequence = Vec<(usize, Term)>;
+fn terms_for(field: Field, tokens: &[(usize, String)]) -> Sequence {
+    let first = tokens.first().map_or(0, |(position, _)| *position);
+    tokens.iter().map(|(position, token)| (position - first, Term::from_field_text(field, token))).collect()
+}
+fn sequence_query(sequence: &Sequence) -> Box<dyn Query> {
+    if sequence.len() == 1 { Box::new(TermQuery::new(sequence[0].1.clone(), IndexRecordOption::WithFreqsAndPositions)) }
+    else { Box::new(PhraseQuery::new_with_offset(sequence.clone())) }
+}
+fn validate_proximity_operand(expr: &Expr) -> Result<()> {
+    match expr {
+        Expr::Word(word) => { WordPattern::parse(word)?; Ok(()) }
+        Expr::Phrase(text) => if analyzed_tokens(text).is_empty() { bail!("A proximity phrase cannot be empty."); } else { Ok(()) },
+        Expr::Scope(_, inner) => validate_proximity_operand(inner),
+        Expr::Or(parts) => { for part in parts { validate_proximity_operand(part)?; } Ok(()) }
+        _ => bail!("Proximity operands support words, phrases, and OR alternatives. Put AND/NOT or another proximity operator in a separate clause."),
+    }
+}
+
+#[derive(Default)]
+struct ExpansionBudget { visited: usize, expanded: usize }
+fn proximity_sequences(expr: &Expr, field: Field, searcher: &Searcher, budget: &mut ExpansionBudget) -> Result<Vec<Sequence>> {
+    match expr {
+        Expr::Scope(required, inner) => if *required == field { proximity_sequences(inner, field, searcher, budget) } else { Ok(Vec::new()) },
+        Expr::Or(parts) => {
+            let mut out = Vec::new();
+            for part in parts { out.extend(proximity_sequences(part, field, searcher, budget)?); }
+            Ok(out)
         }
-        if in_quote {
-            result.push(token.to_string());
-            if token.ends_with('"') && token.len() > 1 {
-                in_quote = false;
+        Expr::Phrase(text) => Ok(vec![terms_for(field, &analyzed_tokens(text))]),
+        Expr::Word(word) => match WordPattern::parse(word)? {
+            WordPattern::Exact(tokens) => Ok(vec![terms_for(field, &tokens)]),
+            pattern => {
+                let prefix: String = match &pattern {
+                    WordPattern::Wildcard(text) => text.chars().take_while(|ch| *ch != '*' && *ch != '?').collect(),
+                    _ => String::new(),
+                };
+                let mut terms = BTreeSet::new();
+                for segment in searcher.segment_readers() {
+                    let index = segment.inverted_index(field)?;
+                    let mut stream = index.terms().range().ge(prefix.as_bytes()).into_stream()?;
+                    while stream.advance() {
+                        let text = std::str::from_utf8(stream.key())?;
+                        if !text.starts_with(&prefix) { break; }
+                        budget.visited += 1;
+                        if budget.visited > MAX_DICTIONARY_VISITS { bail!("Proximity expansion examined too many indexed words. Use a longer wildcard prefix or an exact term."); }
+                        let matches = match &pattern {
+                            WordPattern::Wildcard(pattern) => wildcard_matches(pattern, text),
+                            WordPattern::Fuzzy(term, distance) => edit_distance(term, text, *distance as usize) <= *distance as usize,
+                            _ => unreachable!(),
+                        };
+                        if matches && terms.insert(text.to_owned()) {
+                            budget.expanded += 1;
+                            if budget.expanded > MAX_EXPANDED_TERMS { bail!("Proximity expansion matches too many words (maximum {MAX_EXPANDED_TERMS}). Narrow the pattern or field."); }
+                        }
+                    }
+                }
+                Ok(terms.into_iter().map(|text| vec![(0, Term::from_field_text(field, &text))]).collect())
             }
-            continue;
+        },
+        _ => unreachable!("validated before expansion"),
+    }
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    let (mut p, mut v, mut star, mut retry) = (0, 0, None, 0);
+    while v < value.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == value[v]) { p += 1; v += 1; }
+        else if p < pattern.len() && pattern[p] == '*' { star = Some(p); p += 1; retry = v; }
+        else if let Some(at) = star { p = at + 1; retry += 1; v = retry; }
+        else { return false; }
+    }
+    while p < pattern.len() && pattern[p] == '*' { p += 1; }
+    p == pattern.len()
+}
+
+/// Optimal-string-alignment distance: one adjacent transposition costs one,
+/// matching the FuzzyTermQuery setting used for ordinary word queries.
+fn edit_distance(left: &str, right: &str, limit: usize) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.len().abs_diff(right.len()) > limit { return limit + 1; }
+    let mut older = vec![0; right.len() + 1];
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.iter().enumerate() {
+        let mut current = vec![i + 1; right.len() + 1];
+        for (j, b) in right.iter().enumerate() {
+            current[j + 1] = (current[j] + 1).min(previous[j + 1] + 1).min(previous[j] + usize::from(a != b));
+            if i > 0 && j > 0 && *a == right[j - 1] && left[i - 1] == *b { current[j + 1] = current[j + 1].min(older[j - 1] + 1); }
         }
-        // Skip operators (avoid to_uppercase() allocation)
-        if token.eq_ignore_ascii_case("AND")
-            || token.eq_ignore_ascii_case("OR")
-            || token.eq_ignore_ascii_case("NOT")
-            || token.contains("w/")
-            || token.contains("pre/")
-        {
-            result.push(token.to_string());
-            continue;
+        older = previous;
+        previous = current;
+    }
+    previous[right.len()]
+}
+
+/// Uses actual token positions, because phrase slop permits transpositions and
+/// cannot express a strict before relationship. Candidate retrieval still uses
+/// the ordinary inverted index and BM25; only candidates need position checks.
+#[derive(Clone, Debug)]
+struct PositionalQuery { left: Vec<Sequence>, right: Vec<Sequence>, distance: u32, ordered: bool }
+impl Query for PositionalQuery {
+    fn weight(&self, scoring: EnableScoring<'_>) -> tantivy::Result<Box<dyn Weight>> {
+        let candidates = intersection(vec![
+            union(self.left.iter().map(sequence_query).collect()),
+            union(self.right.iter().map(sequence_query).collect()),
+        ]);
+        Ok(Box::new(PositionalWeight { query: self.clone(), candidates: candidates.weight(scoring)? }))
+    }
+    fn query_terms<'a>(&'a self, visitor: &mut dyn FnMut(&'a Term, bool)) {
+        for sequence in self.left.iter().chain(self.right.iter()) { for (_, term) in sequence { visitor(term, true); } }
+    }
+}
+struct PositionalWeight { query: PositionalQuery, candidates: Box<dyn Weight> }
+impl Weight for PositionalWeight {
+    fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        let mut scorer = PositionalScorer {
+            candidates: self.candidates.scorer(reader, boost)?,
+            left: bind_sequences(&self.query.left, reader)?,
+            right: bind_sequences(&self.query.right, reader)?,
+            distance: self.query.distance, ordered: self.query.ordered,
+        };
+        scorer.skip_nonmatching();
+        Ok(Box::new(scorer))
+    }
+    fn explain(&self, reader: &SegmentReader, doc: DocId) -> tantivy::Result<Explanation> {
+        let mut scorer = self.scorer(reader, 1.0)?;
+        if scorer.seek(doc) != doc { return Err(tantivy::TantivyError::InvalidArgument("Document does not match the positional query".into())); }
+        Ok(Explanation::new("Positional match with candidate BM25 score", scorer.score()))
+    }
+}
+
+type BoundSequence = Vec<(u32, Option<SegmentPostings>)>;
+fn bind_sequences(sequences: &[Sequence], reader: &SegmentReader) -> tantivy::Result<Vec<BoundSequence>> {
+    sequences.iter().map(|sequence| sequence.iter().map(|(offset, term)| {
+        let postings = reader.inverted_index(term.field())?.read_postings(term, IndexRecordOption::WithFreqsAndPositions)?;
+        Ok((*offset as u32, postings))
+    }).collect()).collect()
+}
+fn spans(sequences: &mut [BoundSequence], doc: DocId) -> Vec<(u32, u32)> {
+    let mut result = Vec::new();
+    for sequence in sequences {
+        let mut positions = Vec::new();
+        let mut starts: Vec<u32> = Vec::new();
+        let last_offset = sequence.last().map_or(0, |(offset, _)| *offset);
+        for (i, (offset, postings)) in sequence.iter_mut().enumerate() {
+            let Some(postings) = postings else { starts.clear(); break; };
+            if postings.doc() < doc { postings.seek(doc); }
+            if postings.doc() != doc { starts.clear(); break; }
+            postings.positions(&mut positions);
+            if i == 0 { starts.clone_from(&positions); }
+            else { starts.retain(|start| start.checked_add(*offset).is_some_and(|at| positions.binary_search(&at).is_ok())); }
+            if starts.is_empty() { break; }
         }
-        // Skip if already has fuzzy/wildcard markers
-        if token.contains('~')
-            || token.contains('*')
-            || token.contains('?')
-            || token.starts_with('(')
-            || token.ends_with(')')
-            || token.contains(':')
-        {
-            result.push(token.to_string());
-            continue;
-        }
-        // Only fuzzify alphabetic words >= 4 chars.
-        // Pure numbers (years, IDs) should match exactly.
-        if token.len() >= 4 && !token.chars().all(|c| c.is_ascii_digit()) {
-            result.push(format!("{}~1", token));
-        } else {
-            result.push(token.to_string());
+        result.extend(starts.into_iter().filter_map(|start| start.checked_add(last_offset).map(|end| (start, end))));
+    }
+    result.sort_unstable();
+    result.dedup();
+    result
+}
+fn before_within(left: &[(u32, u32)], right: &[(u32, u32)], distance: u32) -> bool {
+    left.iter().any(|(_, end)| {
+        let next = right.partition_point(|(start, _)| start <= end);
+        right.get(next).is_some_and(|(start, _)| start - end - 1 <= distance)
+    })
+}
+struct PositionalScorer { candidates: Box<dyn Scorer>, left: Vec<BoundSequence>, right: Vec<BoundSequence>, distance: u32, ordered: bool }
+impl PositionalScorer {
+    fn skip_nonmatching(&mut self) -> DocId {
+        loop {
+            let doc = self.candidates.doc();
+            if doc == TERMINATED { return doc; }
+            let left = spans(&mut self.left, doc);
+            let right = spans(&mut self.right, doc);
+            if before_within(&left, &right, self.distance) || (!self.ordered && before_within(&right, &left, self.distance)) { return doc; }
+            self.candidates.advance();
         }
     }
-    result.join(" ")
 }
+impl DocSet for PositionalScorer {
+    fn advance(&mut self) -> DocId { self.candidates.advance(); self.skip_nonmatching() }
+    fn seek(&mut self, target: DocId) -> DocId {
+        if self.candidates.doc() < target { self.candidates.seek(target); }
+        self.skip_nonmatching()
+    }
+    fn doc(&self) -> DocId { self.candidates.doc() }
+    fn size_hint(&self) -> u32 { self.candidates.size_hint() }
+}
+impl Scorer for PositionalScorer { fn score(&mut self) -> Score { self.candidates.score() } }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
+/// Add ~1 only to unmodified bare words. Token spans keep quoted field phrases,
+/// escaped quotes, operators in any casing, and the original spacing intact.
+/// Invalid input is returned unchanged so the parser reports the real error.
+pub fn fuzzify_query(query: &str) -> String {
+    let Ok(tokens) = lex(query) else { return query.to_owned(); };
+    let mut result = String::new();
+    let mut copied = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        let Kind::Word(word) = &token.kind else { continue; };
+        if word.chars().count() < 4 || word.chars().all(|c| c.is_numeric()) || word.contains(['*', '?', '~'])
+            || (i > 0 && matches!(tokens[i - 1].kind, Kind::Field(_) | Kind::LParen))
+            || tokens.get(i + 1).is_some_and(|next| matches!(next.kind, Kind::RParen)) { continue; }
+        if !word.chars().all(char::is_alphabetic) { continue; }
+        result.push_str(&query[copied..token.end]); result.push_str("~1"); copied = token.end;
+    }
+    result.push_str(&query[copied..]);
+    result
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::{fts_index::{FtsIndex, TantivyInput}, schema::SearchFilters};
+    use tempfile::TempDir;
 
-    #[test]
-    fn lex_basic_boolean() {
-        let tokens = lex("rahner AND NOT barth").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::And)));
-        assert!(tokens.iter().any(|t| matches!(t, Token::Not)));
-    }
-
-    #[test]
-    fn lex_within() {
-        let tokens = lex("rahner w/50 anon*").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Within(50, false))));
-    }
-
-    #[test]
-    fn lex_pre() {
-        let tokens = lex("god pre/10 grace").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Within(10, true))));
-    }
-
-    #[test]
-    fn lex_phrase() {
-        let tokens = lex("\"heiliger geist\"").unwrap();
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t, Token::Phrase(p) if p == "heiliger geist")));
-    }
-
-    #[test]
-    fn lex_fuzzy() {
-        let tokens = lex("gnade~2").unwrap();
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t, Token::Word(w) if w.contains('~'))));
-    }
-
-    #[test]
-    fn lex_wildcard() {
-        let tokens = lex("anon*").unwrap();
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t, Token::Word(w) if w.contains('*'))));
-    }
-
-    #[test]
-    fn simple_tokenize_cleans() {
-        let tokens = simple_tokenize("Heiliger Geist!");
-        assert_eq!(tokens, vec!["heiliger", "geist"]);
-    }
-
-    #[test]
-    fn lex_case_insensitive_operators() {
-        let tokens = lex("foo or bar").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Or)));
-    }
-
-    #[test]
-    fn implicit_and_multi_word() {
-        // "Karl Barth" should parse as Karl AND Barth (not just Karl)
-        use crate::index::fts_index::{FtsIndex, TantivyInput};
-        use tempfile::TempDir;
+    fn fixture() -> (FtsIndex, TempDir) {
         let dir = TempDir::new().unwrap();
-        let idx = FtsIndex::open_or_create(dir.path()).unwrap();
-        let mut w = idx.writer().unwrap();
-        idx.add_document(
-            &mut w,
-            TantivyInput {
-                doc_id: "d1",
-                owner_id: "u1",
-                language: "en",
-                title: "",
-                headings: "",
-                body: "Karl Barth schrieb über Gnade",
-                body_translated: None,
-            },
-        )
-        .unwrap();
-        idx.add_document(
-            &mut w,
-            TantivyInput {
-                doc_id: "d2",
-                owner_id: "u1",
-                language: "en",
-                title: "",
-                headings: "",
-                body: "Karl Marx schrieb über Kapital",
-                body_translated: None,
-            },
-        )
-        .unwrap();
-        w.commit().unwrap();
-
-        use crate::index::schema::SearchFilters;
-        let hits = idx
-            .search("Karl Barth", &SearchFilters::default(), 10)
-            .unwrap();
-        // d1 contains both Karl AND Barth; d2 only has Karl — implicit AND must exclude d2
-        assert_eq!(hits.len(), 1, "implicit AND should require both terms");
-        assert_eq!(hits[0].doc_id, "d1");
-    }
-
-    #[test]
-    fn wildcard_leading_allowed() {
-        let fields = SearchFields {
-            title: tantivy::schema::Field::from_field_id(0),
-            headings: tantivy::schema::Field::from_field_id(1),
-            body: tantivy::schema::Field::from_field_id(2),
-            body_translated: None,
-        };
-        let res = build_wildcard("*foo", &fields);
-        assert!(res.is_ok(), "Leading wildcard * should now be allowed");
-        let res2 = build_wildcard("?foo", &fields);
-        assert!(res2.is_ok(), "Leading wildcard ? should now be allowed");
-    }
-
-    /// PLAN P7.2 — `field:term` syntax restricts the match to a single
-    /// indexed field instead of the default boosted union across all
-    /// three. The body of the query is still wildcard / fuzzy aware
-    /// because we recurse through `build_term_query` with a
-    /// single-field SearchFields.
-    #[test]
-    fn field_prefix_scopes_to_named_field() {
-        let title_f = tantivy::schema::Field::from_field_id(0);
-        let head_f = tantivy::schema::Field::from_field_id(1);
-        let body_f = tantivy::schema::Field::from_field_id(2);
-        let fields = SearchFields {
-            title: title_f,
-            headings: head_f,
-            body: body_f,
-            body_translated: None,
-        };
-
-        // `title:karl` should produce a TermQuery on the title field only,
-        // not the boosted three-way union the bare term `karl` would yield.
-        let q = build_term_query("title:karl", &fields).unwrap();
-        // The boosted union returns a BooleanQuery with 3 Should clauses;
-        // a field-scoped term returns one with all 3 clauses pointing at
-        // the same field (since the recursion still goes through the
-        // boosted-union path with a single-field SearchFields).
-        if let Some(bq) = q.as_any().downcast_ref::<BooleanQuery>() {
-            for (_, sub) in bq.clauses() {
-                // Every leaf TermQuery should be on the title field.
-                let body_terms = extract_body_terms(sub.as_ref(), title_f);
-                let head_terms = extract_body_terms(sub.as_ref(), head_f);
-                let body_field_terms = extract_body_terms(sub.as_ref(), body_f);
-                assert!(
-                    !body_terms.is_empty()
-                        || head_terms.is_empty() && body_field_terms.is_empty(),
-                    "field-scoped term must only emit on the named field"
-                );
-            }
-        } else {
-            panic!("expected a BooleanQuery, got something else");
+        let index = FtsIndex::open_or_create(dir.path()).unwrap();
+        let mut writer = index.writer().unwrap();
+        for (id, title, headings, body, translation, owner) in [
+            ("a", "Alpha beta handbook", "Methods", "red fox jumps over silver moon", Some("hello bright world"), "one"),
+            ("b", "Beta alpha compendium", "Results", "silver moon greets red fox", None, "one"),
+            ("c", "Gamma", "Appendix", "red agile fox rests outside near silver dark moon", None, "two"),
+            ("d", "Only", "", "lonely zebra", None, "two"),
+            ("e", "Unicode", "", "München übermäßig Москва 京都 東京 中文 Ελληνικά العربية", None, "two"),
+        ] {
+            index.add_document(&mut writer, TantivyInput { doc_id: id, owner_id: owner, language: "", title, headings, body, body_translated: translation }).unwrap();
         }
+        writer.commit().unwrap();
+        (index, dir)
     }
-
-    /// Unknown prefixes (`foo:bar` for non-whitelisted `foo`) fall
-    /// through to be treated as a literal term. Surprising but
-    /// predictable: we'd rather a typo'd field name surface as
-    /// "no results" than silently search the wrong field or throw an
-    /// error mid-typing.
-    #[test]
-    fn field_prefix_unknown_falls_through() {
-        let fields = SearchFields {
-            title: tantivy::schema::Field::from_field_id(0),
-            headings: tantivy::schema::Field::from_field_id(1),
-            body: tantivy::schema::Field::from_field_id(2),
-            body_translated: None,
-        };
-        let q = build_term_query("notafield:karl", &fields);
-        assert!(q.is_ok(), "unknown prefix should still produce a query");
+    fn ids(index: &FtsIndex, query: &str) -> Vec<String> {
+        let mut ids: Vec<_> = index.search(query, &SearchFilters::default(), 100).unwrap_or_else(|e| panic!("{query}: {e:#}")).into_iter().map(|hit| hit.doc_id).collect();
+        ids.sort(); ids
     }
 
     #[test]
-    fn fuzzify_adds_tilde_to_bare_words() {
-        assert_eq!(
-            fuzzify_query("climate change 2024"),
-            "climate~1 change~1 2024"
-        );
-        assert_eq!(
-            fuzzify_query("\"exact phrase\" AND foo*"),
-            "\"exact phrase\" AND foo*"
-        );
-        // "the" is 3 chars → not fuzzified; "long" is 4 → fuzzified
-        assert_eq!(fuzzify_query("the long road"), "the long~1 road~1");
+    fn boolean_complements_and_precedence_match_real_documents() {
+        let (index, _dir) = fixture();
+        assert_eq!(ids(&index, "red NOT agile"), ["a", "b"]);
+        assert_eq!(ids(&index, "red AND NOT agile"), ["a", "b"]);
+        assert_eq!(ids(&index, "NOT red"), ["d", "e"]);
+        assert_eq!(ids(&index, "NOT NOT red"), ["a", "b", "c"]);
+        assert_eq!(ids(&index, "red AND NOT (agile OR jumps)"), ["b"]);
+        assert_eq!(ids(&index, "red OR lonely AND zebra"), ["a", "b", "c", "d"]);
+        assert_eq!(ids(&index, "(red OR lonely) AND zebra"), ["d"]);
+        assert_eq!(ids(&index, "NOT (red OR lonely)"), ["e"]);
     }
 
     #[test]
-    fn fuzzify_preserves_field_prefix() {
-        // Tokens containing ':' must pass through unchanged to preserve
-        // field-scoped syntax like "title:karl" or "body:foo".
-        let out = fuzzify_query("title:karl body:foo");
-        assert_eq!(out, "title:karl body:foo",
-            "field-prefixed tokens must not be fuzzified: {out}");
+    fn fields_accept_terms_phrases_and_groups() {
+        let (index, _dir) = fixture();
+        assert_eq!(ids(&index, "TITLE:\"alpha beta\""), ["a"]);
+        assert_eq!(ids(&index, "title:(alpha AND NOT handbook)"), ["b"]);
+        assert_eq!(ids(&index, "headings:(Methods OR Results)"), ["a", "b"]);
+        assert_eq!(ids(&index, "body:alpha"), Vec::<String>::new());
+        assert_eq!(ids(&index, "title:alpha AND body:\"red fox\""), ["a", "b"]);
+        assert_eq!(ids(&index, "translated:\"hello bright\""), ["a"]);
+        assert_eq!(ids(&index, "translated:hel*"), ["a"]);
+        assert_eq!(ids(&index, "translated:helo~1"), ["a"]);
+        assert_eq!(ids(&index, "\"hello bright\""), ["a"]);
     }
 
     #[test]
-    fn fuzzify_skips_parentheses() {
-        // Tokens that start with '(' or end with ')' must be left alone.
-        let out = fuzzify_query("(climate OR weather)");
-        assert_eq!(out, "(climate OR weather)",
-            "parenthesized tokens must be preserved: {out}");
-    }
-
-    #[test]
-    fn fuzzify_handles_empty() {
-        // Empty input must return an empty string without panicking.
-        assert_eq!(fuzzify_query(""), "", "empty input must produce empty output");
-    }
-
-    #[test]
-    fn lex_mixed_case_within_pre() {
-        // W/ and PRE/ must be recognised in any casing.
-        let t1 = lex("a W/5 b").unwrap();
-        assert!(t1.iter().any(|t| matches!(t, Token::Within(5, false))));
-        let t2 = lex("a w/5 b").unwrap();
-        assert!(t2.iter().any(|t| matches!(t, Token::Within(5, false))));
-        let t3 = lex("a PRE/3 b").unwrap();
-        assert!(t3.iter().any(|t| matches!(t, Token::Within(3, true))));
-        let t4 = lex("a pre/3 b").unwrap();
-        assert!(t4.iter().any(|t| matches!(t, Token::Within(3, true))));
-    }
-
-    #[test]
-    fn lex_unicode_word_not_panics() {
-        // A multi-byte word like "über" must not panic on the W/ / PRE/
-        // byte-slice check — the `is_ascii()` guard protects it.
-        let tokens = lex("über Müller").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w == "über")));
-        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w == "Müller")));
-    }
-
-    #[test]
-    fn fuzzify_operators_case_insensitive() {
-        // Operators in any casing must be preserved by fuzzify_query.
-        for op in &["AND", "and", "And", "OR", "or", "NOT", "not"] {
-            let input = format!("climate {} weather", op);
-            let out = fuzzify_query(&input);
-            assert!(out.contains(op), "operator {op} must survive fuzzify: {out}");
+    fn tokenization_preserves_scripts_and_index_punctuation() {
+        let (index, _dir) = fixture();
+        for query in ["Москва", "京都", "中文", "Ελληνικά", "العربية", "München", "Munchen", "übermäßig", "ubermassig", "\"München übermäßig\""] {
+            assert_eq!(ids(&index, query), ["e"], "{query}");
         }
+        assert_eq!(ids(&index, "\"red,fox\""), ["a", "b"]);
+        assert_eq!(ids(&index, "red-fox"), ["a", "b", "c"]);
+        assert_eq!(ids(&index, "red\u{2003}fox"), ["a", "b", "c"]);
+        assert_eq!(simple_tokenize("alpha-beta, Γάμμα!"), ["alpha", "beta", "γάμμα"]);
+    }
+
+    #[test]
+    fn ordered_proximity_checks_real_positions_and_distance_boundaries() {
+        let (index, _dir) = fixture();
+        assert_eq!(ids(&index, "alpha pre/0 beta"), ["a"]);
+        assert_eq!(ids(&index, "alpha pre/100 beta"), ["a"]); // reversed title must never match
+        assert_eq!(ids(&index, "alpha w/0 beta"), ["a", "b"]);
+        assert_eq!(ids(&index, "red pre/0 fox"), ["a", "b"]);
+        assert_eq!(ids(&index, "red pre/1 fox"), ["a", "b", "c"]);
+        assert_eq!(ids(&index, "red pre/2 silver"), Vec::<String>::new());
+        assert_eq!(ids(&index, "red pre/3 silver"), ["a"]);
+        assert_eq!(ids(&index, "red w/3 silver"), ["a", "b"]);
+        assert_eq!(ids(&index, "body:alpha pre/10 beta"), Vec::<String>::new());
+        assert_eq!(ids(&index, "title:alpha pre/10 body:beta"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn proximity_preserves_whole_phrases_or_choices_and_modifiers() {
+        let (index, _dir) = fixture();
+        assert_eq!(ids(&index, "\"red fox\" pre/2 \"silver moon\""), ["a"]);
+        assert_eq!(ids(&index, "\"red fox\" w/2 \"silver moon\""), ["a", "b"]);
+        assert_eq!(ids(&index, "(red OR lonely) pre/0 (fox OR zebra)"), ["a", "b", "d"]);
+        assert_eq!(ids(&index, "(red OR lonely) pre/1 (fox OR zebra)"), ["a", "b", "c", "d"]);
+        assert_eq!(ids(&index, "re* pre/0 f?x"), ["a", "b"]);
+        assert_eq!(ids(&index, "rde~1 pre/0 fox"), ["a", "b"]);
+        assert_eq!(ids(&index, "title:(alp* pre/0 beta)"), ["a"]);
+        assert_eq!(ids(&index, "translated:(hello pre/1 world)"), ["a"]);
+        assert_eq!(ids(&index, "nevermatch* pre/0 fox"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn repeated_terms_require_distinct_nonoverlapping_occurrences() {
+        let dir = TempDir::new().unwrap();
+        let index = FtsIndex::open_or_create(dir.path()).unwrap();
+        let mut writer = index.writer().unwrap();
+        for (id, body) in [("one", "echo"), ("two", "echo echo"), ("three", "echo small echo"), ("four", "echo echo echo")] {
+            index.add_document(&mut writer, TantivyInput { doc_id: id, owner_id: "", language: "", title: "", headings: "", body, body_translated: None }).unwrap();
+        }
+        writer.commit().unwrap();
+        assert_eq!(ids(&index, "echo w/0 echo"), ["four", "two"]);
+        assert_eq!(ids(&index, "echo pre/1 echo"), ["four", "three", "two"]);
+        assert_eq!(ids(&index, "\"echo echo\" pre/0 echo"), ["four"]);
+    }
+
+    #[test]
+    fn malformed_and_unsupported_queries_fail_instead_of_broadening() {
+        let (index, _dir) = fixture();
+        for query in ["", " ", "\"red", "(red", "red)", "red) OR zebra", "()", "red AND", "OR red", "red OR OR fox", "NOT", "title:", "author:red", "\"\"", "red w/no fox", "red w/1025 fox", "red~3", "red~bogus", "red~~1", "~1", "red*~1", "(red AND fox) w/2 moon", "(NOT red) w/2 moon", "(red w/2 fox) w/2 moon", "red pre/2 fox pre/2 moon"] {
+            assert!(index.search(query, &SearchFilters::default(), 10).is_err(), "must reject {query:?}");
+        }
+        assert!(has_explicit_syntax(&format!("{}red{}", "(".repeat(33), ")".repeat(33))).is_err());
+        assert!(has_explicit_syntax(&"r ".repeat(513)).is_err());
+        assert!(has_explicit_syntax(&"a".repeat(MAX_QUERY_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn modifier_expansion_has_explicit_limits_and_no_truncated_matches() {
+        let dir = TempDir::new().unwrap();
+        let index = FtsIndex::open_or_create(dir.path()).unwrap();
+        let mut writer = index.writer().unwrap();
+        let body = (0..140).map(|n| format!("word{n} anchor")).collect::<Vec<_>>().join(" ");
+        index.add_document(&mut writer, TantivyInput { doc_id: "wide", owner_id: "", language: "", title: "", headings: "", body: &body, body_translated: None }).unwrap();
+        writer.commit().unwrap();
+        let error = index.search("word* pre/0 anchor", &SearchFilters::default(), 10).unwrap_err().to_string();
+        assert!(error.contains("too many words"), "{error}");
+        assert_eq!(ids(&index, "body:word13* pre/0 anchor"), ["wide"]);
+    }
+
+    #[test]
+    fn explicit_syntax_detection_and_fuzzification_preserve_query_intent() {
+        assert!(!has_explicit_syntax("climate change").unwrap());
+        for query in ["climate AND change", "NOT change", "title:climate", "\"climate change\"", "clim*", "climate~1", "climate pre/2 change", "(climate OR weather)"] { assert!(has_explicit_syntax(query).unwrap(), "{query}"); }
+        assert_eq!(fuzzify_query("climate change 2024"), "climate~1 change~1 2024");
+        assert_eq!(fuzzify_query("title:\"exact phrase\" AND climate"), "title:\"exact phrase\" AND climate~1");
+        assert_eq!(fuzzify_query("climate PRE/2 weather"), "climate~1 PRE/2 weather~1");
+        assert_eq!(fuzzify_query("title:karl body:foo"), "title:karl body:foo");
+        assert_eq!(fuzzify_query("\"unclosed phrase"), "\"unclosed phrase");
+        assert_eq!(fuzzify_query("(climate OR weather)"), "(climate OR weather)");
+        assert_eq!(fuzzify_query(""), "");
+    }
+
+    #[test]
+    fn glossary_counts_live_documents_once_and_respects_owner() {
+        let (index, _dir) = fixture();
+        let terms = index.vocabulary("al", 10, &SearchFilters::default()).unwrap();
+        assert_eq!(terms.iter().map(|t| (t.term.as_str(), t.doc_freq)).collect::<Vec<_>>(), [("alpha", 2)]);
+        let owner = SearchFilters { owner_id: Some("two".into()), ..Default::default() };
+        assert!(index.vocabulary("al", 10, &owner).unwrap().is_empty());
+        assert_eq!(index.vocabulary("MÜ", 10, &SearchFilters::default()).unwrap()[0].term, "munchen");
+        assert!(index.vocabulary("red*", 10, &SearchFilters::default()).is_err());
+        let mut writer = index.writer().unwrap();
+        index.delete_document(&mut writer, "a").unwrap(); writer.commit().unwrap();
+        assert_eq!(index.vocabulary("al", 10, &SearchFilters::default()).unwrap()[0].doc_freq, 1);
+    }
+
+    #[test]
+    fn candidate_verification_cannot_bypass_boolean_or_field_constraints() {
+        let (index, _dir) = fixture();
+        let candidates = ["a", "b", "c", "d", "missing"].map(str::to_owned);
+        let matching = index.matching_doc_ids("title:alpha AND NOT handbook", &candidates).unwrap();
+        assert_eq!(matching, std::collections::HashSet::from(["b".to_owned()]));
+        assert_eq!(index.matching_doc_ids("red pre/0 fox", &candidates).unwrap(), std::collections::HashSet::from(["a".to_owned(), "b".to_owned()]));
+        assert!(index.matching_doc_ids("red)", &[]).is_err());
+        assert!(index.matching_doc_ids("red", &vec!["a".into(); 1025]).is_err());
     }
 }
