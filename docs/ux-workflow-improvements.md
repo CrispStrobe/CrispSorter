@@ -104,22 +104,61 @@ Open **Quick navigation** from the sidebar, the mobile Tools menu, or
 Enter opens a destination, and Escape closes the dialog and restores focus.
 Unavailable capabilities are excluded. The sidebar can scroll in short windows,
 and collapsed navigation retains accessible labels and active-state semantics.
+Tab and Shift+Tab cycle explicitly between the search input and Close; arrow
+keys select destinations. The expanded sidebar keeps the full English or German
+trigger label above its shortcut instead of clipping it into one crowded row.
 See [navigation definitions](../src/lib/navigation.ts).
+
+### Read and review files on a phone
+
+The compact batch table fits selection, status, acceptance and filename into the
+viewport. Filenames wrap and act as explicit buttons for opening details. Other
+metadata is available in the details pane, which scrolls independently below the
+list. Bulk actions wrap instead of disappearing offscreen. The responsive table
+uses column identities rather than positional hiding, and retains desktop column
+widths when the window grows again.
+
+This fixes a concrete issue in the first CI screenshot: hiding desktop metadata
+columns left the desktop table width in place, spreading the remaining columns
+so far apart that the filename was entirely outside a 390-pixel viewport.
+
+### Preserve proofread text when a recognition retry finds nothing
+
+An OCR zone retry that returns no regions, or only whitespace, now leaves the
+project unchanged and explains that the existing text was preserved. It keeps
+corrections, approval, provenance and Undo/Redo history. The zone merge helper
+independently enforces this behavior; an explicit region deletion remains a
+separate action. The regression covers failed and empty retries, successful
+recognition, Undo, persisted project revisions and tab navigation in the current
+OCR workspace.
 
 ## Verification snapshot
 
 Changes were committed and pushed incrementally to
-`feat/ux-workflow-essentials`. At this snapshot, **Workflow UX verification** and
-the native GitHub CI were queued; consult the
+`feat/ux-workflow-essentials`. The first completed **Workflow UX verification** run
+at `a096e285` passed 37 browser tests and all five isolated native duplicate guard
+tests. Its seven browser failures exposed a palette focus problem, overly broad
+or mismatched test selectors, a short cold-start wait, and OCR fixtures still
+targeting the previous workspace. The follow-up corrects those cases and adds
+the mobile layout and empty OCR retry protections described above. The next run,
+at `4e55d839`, passed 47 of 48 browser tests, including all seven previous failure
+cases. Its remaining phone-field assertion reported a 0.19-pixel intersection
+difference after scrolling; the follow-up checks a one-pixel visibility tolerance
+and explicitly checks that the author can be edited, saved, and reopened. The filename and
+main control visibility checks remain strict. Consult the
 [checks on PR #37](https://github.com/CrispStrobe/CrispSorter/pull/37/checks)
-for their current results.
+for the latest rerun and full native compilation results.
 
 | Check | Observed result |
 | --- | --- |
 | `npm run check` | Passed: zero errors; 54 pre-existing warnings. |
-| `npm test` | Passed: 198 tests in 29 files. |
+| `npm test` | Passed after the OCR guard: 199 tests in 29 files. |
 | `npx vite build` | Passed: frontend production bundle generated. |
-| Playwright discovery | 44 tests across five files discovered successfully. |
+| Playwright discovery | 48 tests across six files, including phone layout and current OCR workspace regressions. |
+| Browser execution | Remote run at `4e55d839`: 47 passed, one phone-field geometry assertion failed; its focused correction is awaiting rerun. |
+| Isolated native duplicate guard | All five filesystem tests passed on the remote Unix runner. |
+| Existing frontend CI | Type checking, unit tests, extractor regressions, pin checks and license generation passed remotely. |
+| OCR component verification | 67 OCR unit tests and 16 Chromium scenarios passed with no captured page errors on `190099da`; OCR source is unchanged in `4e55d839`. Desktop and compact screenshots were inspected. |
 | Local browser execution | Blocked: Chromium could not create a socket under the workspace permissions. Discovery is not a browser pass. |
 | Local Rust execution | Not run: no Rust toolchain was available. |
 
@@ -140,9 +179,9 @@ bundle is not a packaged desktop/mobile release.
 
 ## Limits and prioritized follow-ups
 
-1. **Complete execution qualification before merging.** Review the queued browser
-   and native CI results, particularly the search-filter fixture and standalone
-   duplicate guard. Real platform checks remain necessary for filesystem and
+1. **Complete execution qualification before merging.** Review the latest browser
+   and native CI results, particularly the native search-filter fixture. Real
+   platform checks remain necessary for filesystem and
    desktop/mobile behavior beyond the fixture-backed UI.
 2. **Measure selective search on large libraries.** The new search path reuses one
    query/searcher snapshot, doubles the explored ranked prefix, and hydrates
@@ -157,5 +196,5 @@ bundle is not a packaged desktop/mobile release.
 Duplicate deletion's content/path/metadata checks are **not an atomic lock
 against external filesystem writers**. Another process can still modify paths
 between the final check and removal. The new guard materially narrows the
-existing risk; it does not claim to eliminate that race. OCR/model-quality work
+existing risk; it does not claim to eliminate that race. Recognition model-quality work
 and a new application release were outside this increment.

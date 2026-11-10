@@ -1,7 +1,35 @@
 // Browser integration uses explicit IPC/provider fixtures. Real native and model
 // qualification is separate; these tests do not claim inference accuracy.
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { fixtures } from './fixtures';
+import type { OcrProject } from '../../src/lib/ocr/model';
+
+async function ocrCalls(page: Page, command = 'ocr_workspace_recognize') {
+    return page.evaluate(name => (window as any).__fixtureCalls.filter((call: any) => call.command === name), command);
+}
+
+async function savedOcrProject(page: Page): Promise<OcrProject | null> {
+    return page.evaluate(async () => {
+        const saved = await (window as any).__TAURI_INTERNALS__.invoke('ocr_workspace_load', { projectId: null });
+        return saved?.project ?? null;
+    });
+}
+
+async function recognizeFirstZone(page: Page, workspace: Locator) {
+    const drawingTool = workspace.getByLabel('Region drawing tool', { exact: true });
+    await drawingTool.selectOption('recognize');
+    const canvas = workspace.locator('svg[aria-label="Page regions"]');
+    await canvas.scrollIntoViewIfNeeded();
+    const bounds = await canvas.boundingBox();
+    if (!bounds) throw new Error('The OCR page canvas is not visible');
+    // Coordinates are relative to the rendered 500 × 700 page. Cover the
+    // first text region at (10, 20, 350, 40), as a user drawing on the image.
+    await page.mouse.move(bounds.x + bounds.width * 0.01, bounds.y + bounds.height * 0.01);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + bounds.width * 0.8, bounds.y + bounds.height * 0.12, { steps: 5 });
+    await page.mouse.up();
+    await expect(drawingTool).toHaveValue('select');
+}
 
 
 test.beforeEach(async ({ page }) => {
@@ -48,11 +76,33 @@ for (const platform of ['ios', 'android']) {
     });
 }
 
-test('document OCR action carries the selected Inbox file into the workbench', async ({ page }) => {
-    await page.locator('.batch-container').getByText('Pending scan.png', { exact: true }).first().click();
+test('document OCR action imports the selected Inbox file once and retains its workspace across tabs', async ({ page }) => {
+    const navigation = page.locator('nav.main-nav');
+    const inboxFile = page.locator('.batch-container table.dense-table .file-name').filter({ hasText: /^Pending scan\.png$/ });
+    await inboxFile.click();
     await page.getByRole('button', { name: 'OCR selected document', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'OCR document workspace', exact: true })).toBeVisible();
-    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'ocr_workspace_import' && call.args.locationUri === '/fixtures/scan.png').length)).toBe(1);
+    const workspace = page.getByRole('region', { name: 'OCR document workspace', exact: true });
+    await expect(workspace).toBeVisible();
+    await expect(workspace.locator('.page-card')).toHaveCount(1);
+    await expect(workspace.getByRole('button', { name: 'Page 1: scan.png · 1', exact: true })).toBeVisible();
+    await expect.poll(() => savedOcrProject(page)).toMatchObject({
+        documents: [expect.objectContaining({ sourceUri: '/fixtures/scan.png', name: 'scan.png' })],
+        pages: [expect.objectContaining({ imagePath: '/fixtures/scan.png', status: 'pending' })],
+    });
+    const projectId = (await savedOcrProject(page))!.id;
+
+    await navigation.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await navigation.getByRole('button', { name: 'OCR', exact: true }).click();
+    await expect(workspace.locator('.page-card')).toHaveCount(1);
+    // Sending the same source again also selects its existing page, rather
+    // than importing another copy or replacing the current project.
+    await navigation.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await inboxFile.click();
+    await page.getByRole('button', { name: 'OCR selected document', exact: true }).click();
+    await expect(workspace.locator('.page-card')).toHaveCount(1);
+    expect((await savedOcrProject(page))!.id).toBe(projectId);
+    expect((await ocrCalls(page, 'ocr_workspace_import')).map((call: any) => call.args.locationUri)).toEqual(['/fixtures/scan.png']);
+    expect(await ocrCalls(page)).toHaveLength(0);
 });
 
 test('script generation reports no file moves and preserves the batch', async ({ page }) => {
@@ -135,10 +185,100 @@ test('empty library evidence answers explicitly without calling a model', async 
     expect(await page.evaluate(() => (window as any).__fixturePrompts.length)).toBe(0);
 });
 
-// The legacy OCR panel this file once drove (weak-page retry, region retry,
-// undo) was replaced by the production OCR workspace. Its page retry, partial
-// re-OCR with apply/undo, and correction-preserving flows are covered by
-// tests/ocr-workspace/smoke.mjs against the real component.
+test('OCR scopes page processing and preserves reviewed corrections through failed and empty zone retries and Undo', async ({ page }) => {
+    const navigation = page.locator('nav.main-nav');
+    await navigation.getByRole('button', { name: 'OCR', exact: true }).click();
+    const workspace = page.getByRole('region', { name: 'OCR document workspace', exact: true });
+    const commands = workspace.locator('.command-bar');
+    await commands.getByRole('button', { name: 'Add documents', exact: true }).click();
+    await expect(workspace.locator('.page-card')).toHaveCount(2);
+    await workspace.getByRole('tab', { name: 'Recognize', exact: true }).click();
+    await workspace.getByLabel('Recognition engine').selectOption('tesseract');
+    await expect(workspace.getByRole('checkbox', { name: /Low-memory CPU profile/ })).toHaveCount(0);
+    await workspace.getByLabel('Recognition engine').selectOption('qwen2vl');
+    await workspace.getByRole('checkbox', { name: /Low-memory CPU profile/ }).check();
+    await workspace.getByLabel('Processing profile').selectOption('accurate');
+    await workspace.getByLabel('Document language').selectOption('deu');
+    await commands.getByRole('button', { name: 'Recognize page', exact: true }).click();
+    await expect(workspace.locator('.queue-bar')).toContainText('1 / 1 pages');
+    expect((await ocrCalls(page)).map((call: any) => call.args.pagePath)).toEqual(['/fixtures/page1.png']);
+    expect((await ocrCalls(page))[0].args).toMatchObject({
+        pagePath: '/fixtures/page1.png', engine: 'qwen2vl', language: 'deu', cpuPixelBudget: true,
+        pageWidthPoints: 120, pageHeightPoints: 168, zone: null,
+        config: { layout: true, min_confidence: 0.85 },
+    });
+    await workspace.getByRole('tab', { name: 'Review', exact: true }).click();
+    await expect(workspace.locator('.review-heading')).toContainText('1 need attention');
+    const text = workspace.getByRole('textbox', { name: 'Text for region 1', exact: true });
+    await text.fill('My proofread warranty text.');
+    await workspace.getByRole('button', { name: 'Approve page', exact: true }).click();
+    await expect(workspace.getByRole('button', { name: 'Page approved', exact: true })).toBeVisible();
+
+    // The remaining page fails once. Retry failed must not recognize the
+    // already reviewed first page or overwrite its manual corrections.
+    await page.evaluate(() => { (window as any).__fixtureOcrPageFailures['/fixtures/page2.png'] = 1; });
+    await commands.getByRole('button', { name: 'Process pending', exact: true }).click();
+    await expect(workspace.locator('.queue-bar')).toContainText('1 failed');
+    await expect(workspace.locator('.page-card').nth(1)).toContainText('Failed');
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await workspace.getByRole('button', { name: 'Retry failed', exact: true }).click();
+    await expect(workspace.locator('.queue-bar')).toContainText('Batch complete');
+    await expect(workspace.getByRole('button', { name: 'Retry failed', exact: true })).toHaveCount(0);
+    expect((await ocrCalls(page)).map((call: any) => call.args.pagePath)).toEqual([
+        '/fixtures/page1.png', '/fixtures/page2.png', '/fixtures/page2.png',
+    ]);
+    await expect.poll(() => savedOcrProject(page)).toMatchObject({ pages: [
+        expect.objectContaining({ approved: true, regions: [expect.objectContaining({ text: 'My proofread warranty text.', review: 'approved' })] }),
+        expect.objectContaining({ status: 'recognized', regions: [expect.objectContaining({ text: 'Archive reference 42.' })] }),
+    ] });
+
+    await page.evaluate(() => { (window as any).__fixtureOcrZoneOutcome = 'error'; });
+    await recognizeFirstZone(page, workspace);
+    await expect(workspace.getByRole('alert')).toContainText('Fixture zone recognition failed');
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await expect(workspace.getByRole('button', { name: 'Page approved', exact: true })).toBeVisible();
+
+    const beforeEmptyRetry = await savedOcrProject(page);
+    await page.evaluate(() => { (window as any).__fixtureOcrZoneOutcome = 'empty'; });
+    await recognizeFirstZone(page, workspace);
+    // The integrated workspace reviews partial OCR before replacing text; an
+    // empty result never opens that review and leaves the project untouched.
+    await expect(workspace.getByRole('alert')).toContainText('No text was found in this area. Existing text was preserved.');
+    await expect(page.getByRole('dialog', { name: 'Review new OCR text', exact: true })).toHaveCount(0);
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await expect(workspace.getByRole('button', { name: 'Page approved', exact: true })).toBeVisible();
+    expect(await savedOcrProject(page)).toEqual(beforeEmptyRetry);
+
+    await page.evaluate(() => { (window as any).__fixtureOcrZoneOutcome = 'success'; });
+    await recognizeFirstZone(page, workspace);
+    const review = page.getByRole('dialog', { name: 'Review new OCR text', exact: true });
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await review.getByRole('button', { name: 'Use new OCR text', exact: true }).click();
+    await expect(text).toHaveValue('Corrected crop text.');
+    await expect(workspace.getByRole('button', { name: 'Approve page', exact: true })).toBeVisible();
+    const zoneCalls = (await ocrCalls(page)).filter((call: any) => call.args.zone !== null);
+    expect(zoneCalls).toHaveLength(3);
+    for (const { args } of zoneCalls) {
+        expect(args).toMatchObject({ pagePath: '/fixtures/page1.png', engine: 'qwen2vl', language: 'deu', cpuPixelBudget: true });
+        expect(args.zone.x).toBeLessThanOrEqual(10);
+        expect(args.zone.y).toBeLessThanOrEqual(20);
+        expect(args.zone.x + args.zone.w).toBeGreaterThanOrEqual(360);
+        expect(args.zone.y + args.zone.h).toBeGreaterThanOrEqual(60);
+    }
+    await workspace.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await expect(workspace.getByRole('button', { name: 'Page approved', exact: true })).toBeVisible();
+    await expect.poll(() => savedOcrProject(page)).toMatchObject({ pages: [
+        expect.objectContaining({ approved: true, regions: [expect.objectContaining({
+            text: 'My proofread warranty text.', originalText: 'Warranty expires in November 2031.', review: 'approved',
+        })] }),
+        expect.objectContaining({ status: 'recognized', regions: [expect.objectContaining({ text: 'Archive reference 42.' })] }),
+    ] });
+    await navigation.getByRole('button', { name: 'Inbox', exact: true }).click();
+    await navigation.getByRole('button', { name: 'OCR', exact: true }).click();
+    await expect(text).toHaveValue('My proofread warranty text.');
+    await expect(workspace.getByRole('button', { name: 'Page approved', exact: true })).toBeVisible();
+});
 
 test('field review preserves evidence, finds exact values, exports and stages sorting without moves', async ({ page }) => {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();

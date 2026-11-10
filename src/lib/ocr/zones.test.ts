@@ -3,6 +3,7 @@ import { addDocument, applyRecognition, createProject } from "./model";
 import {
   effectiveRecognitionZone,
   expandRecognitionZone,
+  hasRecognizedText,
   mergeZoneRegions,
 } from "./zones";
 
@@ -70,19 +71,50 @@ describe("safe zone recognition", () => {
   });
   it("leaves partially intersected regions intact when the native effective crop is narrower", () => {
     const page = sample();
-    expect(
-      mergeZoneRegions(page, { x: 100, y: 150, w: 200, h: 100 }, []),
-    ).toEqual(page.regions);
+    const replacement = {
+      ...page.regions[1],
+      id: "partial-paragraph",
+      text: "Recognized fragment",
+      w: 200,
+    };
+    const merged = mergeZoneRegions(
+      page,
+      { x: 100, y: 150, w: 200, h: 100 },
+      [replacement],
+    );
+    expect(merged.filter((region) => region !== replacement)).toEqual(page.regions);
+    expect(merged).toContain(replacement);
+  });
+  it("preserves corrected and approved regions when a full-zone retry finds no text", () => {
+    const page = sample();
+    page.approved = true;
+    page.regions[0].text = "Proofread heading";
+    page.regions[0].review = "approved";
+    const before = structuredClone(page);
+    const zone = { x: 0, y: 0, w: page.width, h: page.height };
+
+    expect(hasRecognizedText([])).toBe(false);
+    expect(mergeZoneRegions(page, zone, [])).toBe(page.regions);
+    // Some engines return a positioned empty/whitespace region instead of [].
+    const blank = [{ ...page.regions[0], id: "empty-retry", text: " \n\t " }];
+    expect(hasRecognizedText(blank)).toBe(false);
+    expect(mergeZoneRegions(page, zone, blank)).toBe(page.regions);
+    expect(page).toEqual(before);
   });
   it("retains excluded and picture regions even inside a recognized zone", () => {
     const page = sample();
     page.regions[0].excluded = true;
     page.regions[1].kind = "picture";
+    const replacement = {
+      ...page.regions[2],
+      id: "new-paragraph",
+      text: "Recognized paragraph",
+    };
     expect(
-      mergeZoneRegions(page, { x: 0, y: 0, w: 1000, h: 1000 }, []).map(
+      mergeZoneRegions(page, { x: 0, y: 0, w: 1000, h: 1000 }, [replacement]).map(
         (r) => r.id,
       ),
-    ).toEqual(page.regions.slice(0, 2).map((r) => r.id));
+    ).toEqual([...page.regions.slice(0, 2).map((r) => r.id), replacement.id]);
   });
   it("rejects invalid zones and rounds a blank zone to whole native pixels", () => {
     const page = sample();

@@ -55,9 +55,13 @@ async function seedBatch(page: Page, items: ReviewFixture[]) {
     }, items);
 }
 
+function batchFileNames(page: Page) {
+    return page.locator('.batch-container table.dense-table .file-name');
+}
+
 async function openReview(page: Page) {
     await page.locator('.main-nav').getByRole('button', { name: 'Review', exact: true }).click();
-    await expect(page.locator('.batch-container .file-name').first()).toBeVisible();
+    await expect(batchFileNames(page).first()).toBeVisible();
 }
 
 async function itemsSnapshot(page: Page) {
@@ -127,7 +131,7 @@ test('select-all uses visible IDs and bulk approval/removal excludes hidden sele
     await expect.poll(() => itemsSnapshot(page)).toEqual([expect.objectContaining({ id: 'alpha', accepted: false })]);
     expect((await callsFor(page, 'batch_session_delete_items')).at(-1).args.ids).toEqual(['beta']);
     await page.locator('.active-batch-filters').getByRole('button', { name: 'Clear filters', exact: true }).click();
-    await expect(page.locator('.batch-container .file-name')).toHaveText(['alpha.pdf']);
+    await expect(batchFileNames(page)).toHaveText(['alpha.pdf']);
     await expect(page.getByRole('checkbox', { name: 'Select item', exact: true })).toBeChecked();
 });
 
@@ -154,7 +158,7 @@ test('filters include present image/audio types and stage-specific statuses, and
     await expect(statuses).toHaveValue('all');
     await expect(page.locator('#size-filter')).toHaveValue('0');
     await expect(page.getByRole('textbox', { name: 'Search items', exact: true })).toHaveValue('');
-    await expect(page.locator('.batch-container .file-name')).toHaveText(['book.epub', 'recording.mp3', 'scan.png']);
+    await expect(batchFileNames(page)).toHaveText(['book.epub', 'recording.mp3', 'scan.png']);
     await expect(page.locator('.view-count')).toHaveText('3 / 3 files shown');
 
     await openReview(page);
@@ -167,7 +171,7 @@ test('filters include present image/audio types and stage-specific statuses, and
 test('metadata drafts survive rows and tabs, persist separately, and apply only on explicit Save', async ({ page }) => {
     await seedBatch(page, reviewFiles);
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     const title = page.getByRole('textbox', { name: 'Edit Title', exact: true });
     await title.fill('Corrected A');
     await expect.poll(() => savedDrafts(page)).toMatchObject({ alpha: { title: 'Corrected A', originalPath: '/fixtures/alpha.pdf', base: { title: 'Original A' } } });
@@ -177,13 +181,13 @@ test('metadata drafts survive rows and tabs, persist separately, and apply only 
     ]);
     expect(await callsFor(page, 'batch_session_upsert_item')).toHaveLength(0);
 
-    await page.locator('.batch-container .file-name').filter({ hasText: /^beta\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^beta\.pdf$/ }).click();
     await expect(title).toHaveValue('Original B');
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     await expect(title).toHaveValue('Corrected A');
     await page.locator('.main-nav').getByRole('button', { name: 'Inbox', exact: true }).click();
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     await expect(title).toHaveValue('Corrected A');
     await expect(page.locator('.detail-pane')).toContainText('Draft saved; changes are not applied yet.');
 
@@ -200,7 +204,7 @@ test('metadata drafts survive rows and tabs, persist separately, and apply only 
 test('Save & next applies one draft and advances to the next visible document', async ({ page }) => {
     await seedBatch(page, reviewFiles);
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     await page.getByRole('textbox', { name: 'Edit Title', exact: true }).fill('Reviewed A');
     await page.locator('.detail-pane').getByRole('button', { name: 'Save & next', exact: false }).click();
     await expect(page.getByRole('textbox', { name: 'Edit Title', exact: true })).toHaveValue('Original B');
@@ -216,7 +220,7 @@ test('Save & next applies one draft and advances to the next visible document', 
 test('sorting an accepted document requires resolving its unapplied metadata draft', async ({ page }) => {
     await seedBatch(page, [{ ...reviewFiles[0], accepted: true }]);
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     await page.getByRole('textbox', { name: 'Edit Title', exact: true }).fill('Draft destination');
     await page.getByRole('button', { name: 'Sort', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('Save or discard metadata drafts for accepted files before sorting.');
@@ -233,7 +237,7 @@ test('sorting an accepted document requires resolving its unapplied metadata dra
 test('clearing a batch asks for confirmation and preserves rows and drafts on storage failure', async ({ page }) => {
     await seedBatch(page, reviewFiles);
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     await page.getByRole('textbox', { name: 'Edit Title', exact: true }).fill('Keep this draft');
     await expect.poll(() => savedDrafts(page)).toMatchObject({ alpha: { title: 'Keep this draft' } });
     const clear = page.getByRole('button', { name: 'Clear All', exact: true });
@@ -262,10 +266,10 @@ test('a pending metadata Save locks batch edits across tab remounts and preserve
     await seedBatch(page, reviewFiles);
     await openReview(page);
     const title = page.getByRole('textbox', { name: 'Edit Title', exact: true });
-    await page.locator('.batch-container .file-name').filter({ hasText: /^beta\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^beta\.pdf$/ }).click();
     await title.fill('Keep B draft');
     await expect.poll(() => savedDrafts(page)).toMatchObject({ beta: { title: 'Keep B draft' } });
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     await title.fill('Applied A');
     await expect.poll(() => savedDrafts(page)).toMatchObject({ alpha: { title: 'Applied A' } });
     await page.getByRole('checkbox', { name: 'Select item', exact: true }).first().check();
@@ -297,7 +301,7 @@ test('a pending metadata Save locks batch edits across tab remounts and preserve
 
     await page.locator('.main-nav').getByRole('button', { name: 'Inbox', exact: true }).click();
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^beta\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^beta\.pdf$/ }).click();
     await page.getByRole('checkbox', { name: 'Select item', exact: true }).last().check();
     await expect(title).toHaveValue('Keep B draft');
     await expect(title).toBeDisabled();
@@ -370,7 +374,7 @@ test('failed draft restoration stays read-only and Retry recovers preserved draf
     await expect(page.locator('.batch-container').getByText('Pending scan.png', { exact: true }).first()).toBeVisible();
     await seedBatch(page, reviewFiles);
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     const storageError = page.locator('.draft-storage-error');
     await expect(storageError).toContainText('Saved metadata drafts could not be loaded. Retry before editing them.');
     for (const field of ['Edit Title', 'Edit Author', 'Edit Year']) {
@@ -398,7 +402,7 @@ test('failed draft restoration stays read-only and Retry recovers preserved draf
 test('a failed metadata save restores applied values and keeps the draft available for retry', async ({ page }) => {
     await seedBatch(page, reviewFiles);
     await openReview(page);
-    await page.locator('.batch-container .file-name').filter({ hasText: /^alpha\.pdf$/ }).click();
+    await batchFileNames(page).filter({ hasText: /^alpha\.pdf$/ }).click();
     const title = page.getByRole('textbox', { name: 'Edit Title', exact: true });
     await title.fill('Retry draft');
     await expect.poll(() => savedDrafts(page)).toMatchObject({ alpha: { title: 'Retry draft' } });

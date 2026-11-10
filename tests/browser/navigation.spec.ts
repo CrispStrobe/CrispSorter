@@ -26,6 +26,19 @@ test('palette arrows, empty results, modal focus and dismissal stay predictable'
     await trigger.click();
     const dialog = page.getByRole('dialog', { name: 'Go to a tool or workflow' });
     const search = dialog.getByRole('combobox');
+    const close = dialog.getByRole('button', { name: 'Close quick navigation' });
+    async function expectFocusCycle() {
+        await expect(search).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(close).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(search).toBeFocused();
+        await page.keyboard.press('Shift+Tab');
+        await expect(close).toBeFocused();
+        await page.keyboard.press('Shift+Tab');
+        await expect(search).toBeFocused();
+    }
+    await expectFocusCycle();
     await search.press('ArrowDown');
     await expect(dialog.getByRole('option', { selected: true })).toContainText('Review');
     await search.press('ArrowUp');
@@ -35,11 +48,16 @@ test('palette arrows, empty results, modal focus and dismissal stay predictable'
     await expect(search).not.toHaveAttribute('aria-activedescendant');
     await search.press('Enter');
     await expect(dialog).toBeVisible();
-    await search.press('Tab');
-    await expect(dialog.getByRole('button', { name: 'Close quick navigation' })).toBeFocused();
-    await page.keyboard.press('Shift+Tab');
+    await expectFocusCycle();
+    await page.keyboard.press('Tab');
+    await expect(close).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(dialog).not.toBeVisible();
+    await expect(trigger).toBeFocused();
+
+    await trigger.click();
     await expect(search).toBeFocused();
-    await search.press('Escape');
+    await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await expect(trigger).toBeFocused();
 });
@@ -86,6 +104,31 @@ test('mobile capabilities also gate searchable destinations', async ({ page }) =
     await expect(dialog.getByRole('option').filter({ hasText: /^AIToolkit/ })).toHaveCount(0);
     await dialog.getByRole('combobox').fill('scan');
     await expect(dialog.getByText('No matching destinations')).toBeVisible();
+});
+
+test('expanded quick-navigation labels fit beside the icon with the shortcut below in both languages', async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 600 });
+    for (const [language, label] of [['en', 'Quick navigation'], ['de', 'Schnellnavigation']] as const) {
+        await page.evaluate(async language => {
+            const modulePath = '/src/lib/i18n.svelte.ts';
+            const { i18n } = await import(modulePath);
+            i18n.setLanguage(language);
+        }, language);
+        const trigger = page.locator('.main-nav').getByRole('button', { name: label, exact: true });
+        await expect(trigger.locator('span')).toHaveText(label);
+        await expect(trigger.locator('span')).toBeVisible();
+        const layout = await trigger.evaluate(button => {
+            const caption = button.querySelector('span')!;
+            const shortcut = button.querySelector('kbd')!;
+            const captionBox = caption.getBoundingClientRect();
+            const buttonBox = button.getBoundingClientRect();
+            return {
+                labelFits: caption.scrollWidth <= caption.clientWidth && captionBox.right <= buttonBox.right,
+                shortcutBelowLabel: shortcut.getBoundingClientRect().top >= captionBox.bottom,
+            };
+        });
+        expect(layout).toEqual({ labelFits: true, shortcutBelowLabel: true });
+    }
 });
 
 test('short and collapsed navigation retain reachable named controls', async ({ page }) => {

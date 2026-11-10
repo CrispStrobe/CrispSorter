@@ -2,7 +2,7 @@ name: Workflow UX verification
 
 on:
   push:
-    branches: [feat/ux-workflow-essentials]
+    branches: [main, master]
     paths:
       - src/**
       - src-tauri/**

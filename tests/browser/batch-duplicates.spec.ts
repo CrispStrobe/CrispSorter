@@ -4,7 +4,9 @@ import { fixtures } from './fixtures';
 test.beforeEach(async ({ page }) => {
     await fixtures(page);
     await page.goto('/');
-    await expect(page.locator('nav.main-nav')).toBeAttached();
+    // The first visit includes Vite's cold compilation; wait for app readiness
+    // separately from the shorter assertions for individual UI actions.
+    await expect(page.locator('nav.main-nav')).toBeAttached({ timeout: 30000 });
     await expect(page.locator('.batch-container').getByText('Pending scan.png', { exact: true }).first()).toBeVisible();
     await page.evaluate(async () => {
         const root = window as any;

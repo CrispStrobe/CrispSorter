@@ -56,7 +56,7 @@
         inboxClear: 'Der Eingang ist erledigt', inboxClearHint: 'Analysierte Dokumente findest du unter Prüfen. Du kannst weitere Dateien hinzufügen.',
         emptyReview: 'Noch nichts zu prüfen', emptyReviewHint: 'Füge im Eingang Dateien hinzu und starte die Analyse. Die Vorschläge erscheinen hier.',
         addFiles: 'Dateien hinzufügen', addFolder: 'Ordner hinzufügen', shown: 'Dateien angezeigt',
-        drafts: 'Metadatenentwürfe', draft: 'Entwurf', savedDraft: 'Entwurf gespeichert; noch nicht angewendet.', savingDraft: 'Entwurf wird gespeichert…',
+        metadataDraft: 'Metadatenentwurf', drafts: 'Metadatenentwürfe', draft: 'Entwurf', savedDraft: 'Entwurf gespeichert; noch nicht angewendet.', savingDraft: 'Entwurf wird gespeichert…',
         draftError: 'Entwürfe sind nur in dieser Sitzung gesichert. Speichern erneut versuchen.', retry: 'Erneut versuchen',
         draftLoadError: 'Gespeicherte Metadatenentwürfe konnten nicht geladen werden. Bitte erneut versuchen, bevor du sie bearbeitest.',
         draftHint: 'Speichern übernimmt die Änderungen und akzeptiert vollständige Titel und Autoren.',
@@ -65,6 +65,10 @@
         sortDrafts: 'Bitte Metadatenentwürfe akzeptierter Dateien speichern oder verwerfen, bevor du sortierst.',
         clearConfirm: 'Alle Einträge und Metadatenentwürfe aus diesem Stapel entfernen? Deine Dateien bleiben erhalten.',
         removeConfirm: 'Ausgewählte sichtbare Einträge aus dem Stapel entfernen? Deine Dateien bleiben erhalten.',
+        detailsHint: 'Dateinamen antippen, um Details und Metadaten zu prüfen.',
+        reanalyzeAllHint: 'Bereits verarbeitete Dateien zurücksetzen und neu analysieren',
+        indexSelected: 'Zum Index', indexing: 'Indexiere…', indexSelectedHint: 'Ausgewählte Dateien zum Suchindex hinzufügen',
+        indexResult: 'Index: {ok} erfolgreich, {fail} fehlgeschlagen',
     } : {
         all: 'All', clearFilters: 'Clear filters', visible: 'visible', selected: 'selected in this view', hidden: 'hidden; excluded from actions', clearSelection: 'Clear selection',
         noMatches: 'No files match these filters', noMatchesHint: 'Change the search or clear filters to see your files again.',
@@ -72,7 +76,7 @@
         inboxClear: 'Your inbox is clear', inboxClearHint: 'Analyzed documents are in Review. You can add more files here.',
         emptyReview: 'Nothing to review yet', emptyReviewHint: 'Add files in Inbox and start analysis. Suggestions will appear here.',
         addFiles: 'Add files', addFolder: 'Add folder', shown: 'files shown',
-        drafts: 'metadata drafts', draft: 'Draft', savedDraft: 'Draft saved; changes are not applied yet.', savingDraft: 'Saving draft…',
+        metadataDraft: 'metadata draft', drafts: 'metadata drafts', draft: 'Draft', savedDraft: 'Draft saved; changes are not applied yet.', savingDraft: 'Saving draft…',
         draftError: 'Drafts are kept in this session only. Retry saving them.', retry: 'Retry',
         draftLoadError: 'Saved metadata drafts could not be loaded. Retry before editing them.',
         draftHint: 'Saving applies changes and accepts complete titles and authors.',
@@ -81,6 +85,10 @@
         sortDrafts: 'Save or discard metadata drafts for accepted files before sorting.',
         clearConfirm: 'Remove all entries and metadata drafts from this batch? Your files will stay on disk.',
         removeConfirm: 'Remove the selected visible entries from this batch? Your files will stay on disk.',
+        detailsHint: 'Tap a filename to review details and metadata.',
+        reanalyzeAllHint: 'Reset processed files and analyze them again',
+        indexSelected: 'Add to index', indexing: 'Indexing…', indexSelectedHint: 'Add selected files to the search index',
+        indexResult: 'Index: {ok} added, {fail} failed',
     });
 
     let selectedItemId = $state<string | null>(null);
@@ -757,7 +765,7 @@
         }
 
         indexingSelected = false;
-        showToast(`Index: ${ok} erfolgreich, ${fail} fehlgeschlagen`);
+        showToast(reviewLabels.indexResult.replace('{ok}', String(ok)).replace('{fail}', String(fail)));
     }
 
     async function startProcessing() {
@@ -1243,7 +1251,7 @@
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
         </select>
         {#if draftItems.length}
-            <button class="draft-summary" onclick={() => selectedItemId = draftItems[0].id}>{draftItems.length} {reviewLabels.drafts}</button>
+            <button class="draft-summary" onclick={() => selectedItemId = draftItems[0].id}>{draftItems.length} {draftItems.length === 1 ? reviewLabels.metadataDraft : reviewLabels.drafts}</button>
         {/if}
         {#if selectedItem && !isProviderUri(selectedItem.originalPath)}
             {#each availableDocumentTools(selectedItem.originalName, $caps) as tool}
@@ -1308,7 +1316,7 @@
                 {#if activeFilters}<span class="filter-count">{activeFilters}</span>{/if}
             </button>
 
-            <div class="dropdown-container">
+            <div class="dropdown-container column-picker">
                 <button class="action-btn small" onclick={() => showColumnSelector = !showColumnSelector} class:active={showColumnSelector} aria-label="Select Columns">
                     <Columns size={16} />
                 </button>
@@ -1352,9 +1360,9 @@
                 </button>
             {/if}
             {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'review' || i.status === 'ready')}
-                <button class="action-btn small" title="Alle bereits verarbeiteten Dateien zurücksetzen und neu analysieren"
+                <button class="action-btn small" title={reviewLabels.reanalyzeAllHint} disabled={batchBusy}
                         onclick={async () => { await batchManager.resetToQueued(); await batchManager.processAll(); }}>
-                    <RefreshCw size={14} /> Neu analysieren
+                    <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
                 </button>
             {/if}
 
@@ -1537,11 +1545,11 @@
             <div class="toolbar-divider"></div>
             <button class="action-btn small" onclick={addSelectedToIndex}
                 disabled={indexingSelected || batchBusy || !selection.visibleIds.length}
-                title="Ausgewählte zum Suchindex hinzufügen">
+                title={reviewLabels.indexSelectedHint}>
                 {#if indexingSelected}
-                    <Loader2 size={14} class="loader-spin" /> Indexiere …
+                    <Loader2 size={14} class="loader-spin" /> {reviewLabels.indexing}
                 {:else}
-                    <UploadCloud size={14} /> Zum Index
+                    <UploadCloud size={14} /> {reviewLabels.indexSelected}
                 {/if}
             </button>
             <button class="close-btn-minimal" onclick={() => selectedIds = []} aria-label={reviewLabels.clearSelection} title={reviewLabels.clearSelection}>×</button>
@@ -1632,19 +1640,22 @@
         </section>
     {/if}
 
-    <div class="main-split">
+    <div class="main-split" class:has-details={!!selectedItem}>
         <div class="table-container" bind:this={tableContainerEl}>
-            <table class="dense-table" style="width: {tableWidth}px;">
+            <p class="mobile-table-hint">{reviewLabels.detailsHint}</p>
+            <table class="dense-table" style="--table-width: {tableWidth}px;">
                 <thead>
                     <tr>
-                        <th style="width: 35px; min-width: 35px; text-align: center;">
-                            <input type="checkbox" 
-                                   checked={allSelected} indeterminate={selection.someVisible}
-                                   onchange={selectAllVisible} aria-label="Select all visible" />
+                        <th class="select-column">
+                            <label class="row-select">
+                                <input type="checkbox"
+                                       checked={allSelected} indeterminate={selection.someVisible}
+                                       onchange={selectAllVisible} aria-label="Select all visible" />
+                            </label>
                         </th>
                         {#each columns as col, i}
-                            {#if col.visible}
-                                <th style="width: {col.width}px;">
+                            {#if col.visible || col.id === 'file_name'}
+                                <th data-column={col.id} class:desktop-hidden={!col.visible} class:mobile-secondary={!['status', 'accepted', 'file_name'].includes(col.id)} style="--column-width: {col.width}px;">
                                     <div 
                                         class="th-content" 
                                         onclick={() => toggleSort(col.id)}
@@ -1675,7 +1686,12 @@
                             class:selected={selectedIds.includes(item.id)}
                             class:active-row={selectedItemId === item.id}
                             onclick={(e) => handleRowClick(e, item.id)}
-                            onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleRowClick(e, item.id)}
+                            onkeydown={(e) => {
+                                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                                    e.preventDefault();
+                                    handleRowClick(e, item.id);
+                                }
+                            }}
                             class:status-error={item.status === 'error'}
                             class:status-done={item.status === 'done'}
                             class:is-dupe-nonprimary={item.isDuplicatePrimary === false}
@@ -1683,15 +1699,17 @@
                             class:is-chapter-rep={!!item.chapterGroupId && item.isChapterRepresentative}
                             tabindex="0"
                         >
-                            <td onclick={e => { e.stopPropagation(); }} style="width: 35px; text-align: center;">
-                                <input type="checkbox" 
-                                       checked={selectedIds.includes(item.id)} 
-                                       onchange={(e) => { e.stopPropagation(); toggleId(item.id); }}
-                                       aria-label="Select item" />
+                            <td class="select-column" onclick={e => { e.stopPropagation(); }}>
+                                <label class="row-select">
+                                    <input type="checkbox"
+                                           checked={selectedIds.includes(item.id)}
+                                           onchange={(e) => { e.stopPropagation(); toggleId(item.id); }}
+                                           aria-label="Select item" />
+                                </label>
                             </td>
                             {#each columns as col}
-                                {#if col.visible}
-                                    <td style="width: {col.width}px;">
+                                {#if col.visible || col.id === 'file_name'}
+                                    <td data-column={col.id} class:desktop-hidden={!col.visible} class:mobile-secondary={!['status', 'accepted', 'file_name'].includes(col.id)} style="--column-width: {col.width}px;">
                                         {#if col.id === 'status'}
                                             {@const pips = progressPips(item)}
                                             <span class="progress-pips" title={`Metadaten: ${pips.m} · Text: ${pips.t} · LLM: ${pips.l}`}>
@@ -1735,7 +1753,7 @@
                                                 {/if}
                                             </button>
                                         {:else if col.id === 'file_name'}
-                                            <span class="file-name" title={item.originalPath}>{item.originalName}</span>
+                                            <button class="file-name" title={item.originalPath}>{item.originalName}</button>
                                             {#if reviewDrafts.get(item)}<span class="inline-badge draft-badge">{reviewLabels.draft}</span>{/if}
                                             {#if item.isDuplicatePrimary === false}
                                                 <span class="inline-badge dupe-badge"
@@ -1838,6 +1856,7 @@
                         <button class="close-btn" onclick={() => selectedItemId = null} aria-label={reviewLabels.close}>×</button>
                     </div>
                 </div>
+                <p class="detail-filename" title={selectedItem.originalPath}>{selectedItem.originalName}</p>
                 <div class="detail-content">
                     {#if selectedItem.errorMessage}
                         <div class="error-box">{formatErrorCode(selectedItem.errorMessage)}</div>
@@ -2262,8 +2281,9 @@
     .dupe-meta { font-size: 0.65rem; color: #94a3b8; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .dupe-item-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex-shrink: 0; }
 
-    .main-split { display: flex; flex: 1; overflow: hidden; }
-    .table-container { flex: 1; overflow: auto; position: relative; display: flex; flex-direction: column; }
+    .main-split { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .table-container { flex: 1; min-width: 0; min-height: 0; overflow: auto; position: relative; display: flex; flex-direction: column; }
+    .mobile-table-hint { display: none; }
     
     .selection-toolbar {
         display: flex;
@@ -2284,7 +2304,10 @@
     .close-btn-minimal { background: transparent; border: none; color: #bfdbfe; cursor: pointer; font-size: 1.25rem; margin-left: auto; padding: 0 4px; }
     .close-btn-minimal:hover { color: white; }
 
-    .dense-table { min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
+    .dense-table { width: var(--table-width); min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
+    .dense-table [data-column] { width: var(--column-width); }
+    .dense-table .desktop-hidden { display: none; }
+    .dense-table .select-column { width: 35px; min-width: 35px; text-align: center; }
     .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 0; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; height: 32px; overflow: hidden; }
     .th-content { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 100%; cursor: pointer; }
     .th-content:hover { background: #27272a; color: white; }
@@ -2314,6 +2337,8 @@
     .chapter-badge              { background: #1e3a5f55; color: #93c5fd; }
     .chapter-badge.chapter-edited-vol { background: #2e1a5255; color: #c084fc; }
     .history-badge { background: #064e3b88; color: #34d399; }
+    .file-name { max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; white-space: inherit; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; cursor: pointer; }
+    .file-name:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
     
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; border-radius: 4px; font-size: 0.8125rem; color: #f8fafc; }
     .dense-table tr:hover input[type="text"] { background: #0f172a; border-color: #334155; }
@@ -2356,8 +2381,9 @@
     .path-text { font-family: monospace; font-size: 0.7rem; color: #71717a; }
 
     .detail-pane { width: 400px; background: #0f172a; border-left: 1px solid #1e293b; display: flex; flex-direction: column; flex-shrink: 0; }
-    .detail-header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
-    .detail-content { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .detail-header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+    .detail-filename { margin: 0; padding: 8px 12px 0; font-size: 0.75rem; color: #cbd5e1; overflow-wrap: anywhere; flex-shrink: 0; }
+    .detail-content { min-height: 0; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
     
     .detail-section h4 { font-size: 0.65rem; text-transform: uppercase; color: #71717a; margin: 0; letter-spacing: 0.05em; }
     .detail-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -2478,10 +2504,30 @@
         .toolbar { padding: 6px 8px; gap: 6px; }
         .search-box { min-width: 0; flex-basis: 100%; order: -1; }
         .main-split { flex-direction: column; }
-        .detail-pane { width: 100%; max-height: 50vh; border-left: none; border-top: 1px solid #1e293b; }
+        .main-split.has-details .table-container { flex: 1 1 35%; min-height: 96px; }
+        .detail-pane { width: 100%; min-height: 0; flex: 1 1 65%; border-left: none; border-top: 1px solid #1e293b; }
+        .detail-header { padding: 6px 10px; gap: 6px; flex-wrap: wrap; }
+        .detail-section-header, .detail-actions { flex-wrap: wrap; gap: 6px; }
+        .edit-fields input { min-width: 0; }
+        /* Fit the four identity columns to the viewport instead of stretching
+           them across the desktop table width after metadata columns hide. */
+        .dense-table { width: 100%; }
         .dense-table th, .dense-table td { padding: 4px 6px; font-size: 0.75rem; }
-        /* Hide less-important columns on small screens */
-        .dense-table th:nth-child(n+5), .dense-table td:nth-child(n+5) { display: none; }
+        .dense-table .select-column { width: 40px; padding: 0; }
+        .dense-table [data-column="status"] { width: 94px; white-space: normal; }
+        .dense-table [data-column="accepted"] { width: 38px; }
+        .dense-table [data-column="file_name"] { display: table-cell; width: auto; white-space: normal; }
+        .dense-table .mobile-secondary, .column-picker, .resizer { display: none; }
+        .th-content { padding: 0; }
+        .row-select { display: flex; align-items: center; justify-content: center; min-height: 44px; cursor: pointer; }
+        .row-select input { width: 18px; height: 18px; }
+        .progress-pips { display: flex; margin: 0 0 4px; }
+        .status-badge { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+        .file-name { display: block; width: 100%; min-height: 44px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+        .mobile-table-hint { display: block; margin: 0; padding: 6px 8px; color: #a1a1aa; font-size: 0.7rem; line-height: 1.4; }
+        .selection-toolbar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+        .selection-info { flex-basis: 100%; flex-wrap: wrap; gap: 4px; }
+        .selection-toolbar .toolbar-divider { display: none; }
         .filter-bar { flex-wrap: wrap; gap: 8px; padding: 6px 8px; }
         .modal-content, .info-modal { width: 95vw; }
         .status-footer { padding: 4px 8px; font-size: 0.65rem; }
