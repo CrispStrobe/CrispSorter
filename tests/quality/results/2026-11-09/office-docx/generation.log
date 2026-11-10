@@ -1,0 +1,3 @@
+   Compiling crispsorter-office-quality v0.0.0 (/workspace/scratch/82243b18126c/ocr-runtime-temp/crispsorter-office-z17sxpzi)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.83s
+     Running `/workspace/scratch/82243b18126c/ocr-office-local-harness/target/debug/ocr-office-fixtures /workspace/scratch/82243b18126c/ocr06a-qualified`

@@ -1,5 +1,9 @@
 # OCR document workspace
 
+The [OCR implementation roadmap](ocr-roadmap.md) scopes the remaining work,
+dependencies, acceptance checks, and evidence required for release. Features
+listed there as planned or awaiting verification are not completed capabilities.
+
 The OCR tab is a document review workspace built around local CrispEmbed
 processing. A project combines source documents, immutable working page images,
 recognition evidence, corrections, and approval state. It can be resumed without
@@ -241,6 +245,142 @@ needing another OCR run. Undo/redo works through the toolbar, and edits revoke
 the affected approval. Use **Regions** for confidence-colored words, geometry,
 region types, or reading-order changes.
 
+### Edit the full page as a saved draft
+
+Choose **Edit page text** to work across the current page's passages in one text
+area. Use ordinary keyboard selection, typing, cut, copy, and plain-text paste.
+Ctrl/Cmd+Z undoes typing inside the draft. Tables and formulas remain visible as
+protected text; pictures and excluded passages still form editing boundaries
+even when their text is absent from the draft.
+
+Draft changes save with the project, separately from the recognized page. The
+dialog reports **Draft saved · not applied**, saving progress, or a save error.
+**Save draft** retries or flushes its saved state. **Close and keep draft** leaves
+it available through **Resume page text draft**, including after reopening the
+project or navigating to another page. There is one active page draft per
+project. **Discard draft** asks before removing changed draft text; it does not
+apply anything to the recognized page.
+
+Choose **Review changes** to compare the current and proposed page text. Expand
+**Affected passages and source coverage** to inspect exactly which passages and
+image areas the change uses. A change contained in one passage keeps that
+passage's identity and original evidence. A change across adjacent text passages
+combines the full affected span into **one manual paragraph**, preserves its
+original source components, and resets active formatting and structural roles
+as described in the preview. Review any affected caption/note links and section
+placement. Check **Use combined source coverage** before applying a combined
+passage. The chosen area does not create native word boxes or OCR confidence.
+
+Several separate edits are reviewed as the span between the first and last
+change, so unchanged passages between them can also be combined. Apply separate
+edits if you want to keep those passage boundaries. Newlines stay inside the
+resulting passage; they do not create new OCR regions. An edit that crosses a
+table, formula, picture, or excluded passage is rejected. Combined coverage that
+overlaps another included region is also rejected until the source areas or
+scope are corrected.
+
+**Back to editing** changes no recognized text. **Apply page changes** creates
+one project history step and removes the applied draft. Project Undo restores
+the previous OCR text, structure, and saved draft. Unchanged text outside the
+reviewed replacement preserves its original line endings; line endings inside
+the changed span use LF. A no-op draft leaves the page unchanged.
+
+The draft retains its captured source. If that page or document changes before
+Apply, review is blocked and the draft remains available to copy or recover.
+Start a new draft from the current page after recovering any text you need.
+The full-page draft supports plain text across passages; formatting selections
+remain in the per-passage Structure editor.
+
+### Assign document structure and formatting
+
+Open **Structure** in Review and choose **Enable document structure** for the
+current page. This starts a versioned set of logical blocks linked to the
+existing source regions. Text, image areas, and original OCR evidence stay with
+their source regions; the structure records how the passages should be read.
+Older projects can continue using Regions or Text editor without enabling it.
+
+Choose a **Structure passage** to assign its role: paragraph, heading, list
+item, caption, running header/footer, or footnote. Picture, table, and formula
+regions retain their corresponding specialized roles. Headings have levels;
+lists have a type, nesting level, and optional starting number. **Text alignment**
+and **Break before** record alignment and explicit page-break intent.
+
+Select text in **Structure passage text**, then use **Bold**, **Italic**,
+**Underline**, or **Clear**. Ctrl/Cmd+B, I, or U applies the corresponding mark
+to a selected range. The adjacent preview shows the formatting. Typing
+and pasted replacement text use plain formatting; the editor retains formatting
+only on unchanged ranges it can identify exactly. A replacement can remove an
+intersected note reference as well as formatting, so review the notices after
+editing. Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z restore text and metadata together while
+the editor has focus. This editor formats one passage at a time. Use the
+full-page draft for plain-text selection and paste across passages; rich-text
+formatting across passages remains a separate planned increment. Newlines inside
+a passage do not create new OCR regions or source-image boxes.
+
+Use **Move block earlier/later** to change reading order. In **Sections and
+columns**, choose **Start section here** to begin a section at the selected
+block. Choose one or two columns, identify where the second reading column
+starts, then apply the column settings. These are explicit reading-order
+choices, independent of the source geometry. A heading or note that spans the
+page can occupy its own one-column section. **Show structure preview** presents
+the chosen roles, formatting, section order, and columns.
+
+In **Figure and note links**, give a figure alternative text or mark it as
+decorative, then apply the description. A caption's **Caption source** selects
+the figure or table it describes. For a note, first give its passage the
+**Footnote** role; select the reference marker in another passage, choose the
+**Footnote target**, and link the selected text. Use **Follow note** in the
+preview to navigate to that note. Links are explicit and restricted to valid
+targets on the same page; nearby placement alone does not establish a link.
+
+Structure is saved with the project and retained in **Structured JSON**,
+including separate figure source geometry. Builds with structured Word export
+also use the reviewed roles, inline formatting, lists, columns and figures in
+DOCX. Other output formats warn when they flatten these semantics. The
+preview does not promise exact source typography, PDF tagging, or accessibility
+conformance. OCR scores continue to describe the original recognition rather
+than the chosen formatting or document roles.
+
+### Split, merge, and repair passages
+
+Place the caret inside a passage and choose **Split passage**. The preview keeps
+the text on both sides exactly, including whitespace. Choose **Shared source
+bounds** when both passages refer to the same image area, or **Divide source
+area** to specify an explicit cut and which side contains the first passage.
+The app does not infer a source boundary from a newline or invent word boxes
+from your cut. The split requires nonempty text on both sides of a complete
+character; a selected range is not treated as permission to discard text.
+
+**Merge next passage** combines the immediately following compatible passage in
+reading order. It cannot jump over excluded content, tables, pictures, or formulas.
+Inspect **Merged passage preview** and choose **No separator**, **Space**, **Line
+break**, or **Blank line**. No separator preserves the exact concatenation, which
+is useful for restoring a split whose second passage begins with whitespace.
+Each split or merge is one undoable operation and reopens the affected approval.
+
+Structural edits retain **Source components** containing the original text,
+recognition scores, native word evidence when present, and captured source image
+coverage. Expand a component to compare its raw OCR and source crop. Repeated
+split/merge operations reuse these original records rather than nesting or
+duplicating their history. The new passage has manual confidence; original
+scores remain attached to their source records. Text exports preserve explicit
+passage separators; JSON exports also retain the source components.
+
+**Shared source area** means the text passages have unresolved overlapping image
+coverage. Text and JSON remain available, while spatial exports require distinct
+coverage or merging the shared passages back together. A manually divided area
+describes your chosen coverage, not newly measured recognition geometry.
+
+**Repair passage text** proposes one operation at a time: normalize line endings,
+trim trailing spaces, collapse inline spaces, join lines, or remove eligible
+end-of-line hyphens. Inspect **Current passage** and **Proposed passage**, then
+select the exact changes to apply. Spacing changes, line joins, and dehyphenation
+start unchecked because alignment and intentional hyphens may carry meaning.
+The conservative proposals retain tabs, indentation, paragraph breaks, lists,
+numbers, and identifiers; they do not provide semantic paragraph reconstruction.
+Cancel preserves the text, and one Undo restores an accepted repair. Original
+recognition evidence remains available after a repair.
+
 ### Recognize only the text that needs another pass
 
 Select **Re-OCR region** on a region or passage, or use **Re-OCR area** in the
@@ -254,6 +394,11 @@ changing the project. **Use new OCR text** replaces only the covered source
 regions, preserves other corrections, and requires renewed review. Undo restores
 the previous text and evidence. Recognition never overwrites the current text
 before this comparison.
+
+When the covered passages already have source components, an accepted new OCR
+result retains those originals and adds the new recognition snapshot. Current
+word scores describe the new result; earlier evidence remains in its own source
+record.
 
 Empty recognition, failed inference, invalid crop coordinates, or a result for a
 different page image leave the existing text intact. If you navigate while OCR
@@ -324,9 +469,18 @@ individual words.
 
 Click a word to select its exact text in the region editor, then type the
 correction. **Next word to check** cycles through words with missing scores or
-characters below the review threshold within the selected region. Use **Next
+scores below the review threshold within the selected region. Use **Next
 issue** or **F8** to continue through regions and pages. The source magnifier shows
-the selected region; word boxes are not inferred from a line's dimensions.
+the selected word when the recognizer supplies its genuine source box; otherwise
+it shows the selected region. Word boxes are not inferred from a line's dimensions.
+
+**System Tesseract · word evidence** uses an available local Tesseract installation
+and its language data to obtain word scores and source boxes. Its original word
+score controls the word's color directly. The tooltip identifies it as an
+**Original word recognition score**; it is not a character average or minimum.
+Native token boundaries, including punctuation within a token, are retained.
+When a native word has no score, it stays **Unscored** while retaining its box;
+other confidence values are not substituted for the missing score.
 
 When verified Unicode-codepoint recognition scores are available, the displayed
 word score is their **mean**, and the tooltip also reports the **lowest character
@@ -335,9 +489,9 @@ hide an uncertain glyph:
 
 | Color | Meaning |
 | --- | --- |
-| Green · High | Every character meets the project's review threshold, 85% by default. |
-| Amber · Medium | The weakest character is below the review threshold but at least 60%. |
-| Red · Low | The weakest character is below both 60% and the review threshold. |
+| Green · High | The native word score, or every aligned character score, meets the project's review threshold, 85% by default. |
+| Amber · Medium | The native word score, or weakest aligned character, is below the review threshold but at least 60%. |
+| Red · Low | The native word score, or weakest aligned character, is below both 60% and the review threshold. |
 | Gray · Unscored | Verified word confidence is unavailable. |
 | Blue · Edited | The text was manually changed; original scores do not measure the correction. |
 
@@ -345,27 +499,87 @@ A word with an 87% mean and one 20% character is therefore red, even at the
 default 85% review threshold. Changing the threshold in **Recognize → Review
 threshold** updates the colors and review flags together. The legend, optional
 score labels, and tooltips explain the colors. These are review signals, not
-calibrated word accuracy probabilities. Token scores, detector scores, invalid
-arrays, and contradictory alignment metadata cannot produce word scores.
+calibrated word accuracy probabilities. Generic model-token likelihoods, detector
+scores, invalid arrays, and contradictory alignment metadata cannot produce word
+scores. Valid native word evidence takes precedence over character-derived scores.
 
 The currently pinned native CrispEmbed integration does not supply verified word
 offsets or Unicode character alignment, so its words normally appear
-**Unscored**. Its region scores remain useful separately. Word scoring is available
-for recognition adapters that explicitly provide verified character alignment;
-the browser verification fixture exercises that contract. Providing scores for
-the deployed native engines requires matching native bindings and a library
-release that exports that alignment.
+**Unscored**. Its region scores remain useful separately. The separate System
+Tesseract provider supplies direct word evidence; adapters with verified character
+alignment can also supply derived word scores. The two browser fixtures exercise
+these contracts with synthetic inputs. Adding verified alignment to the other
+native engines requires matching bindings and a library release that exports it.
 
 After any text correction, the current region's words turn blue for **Edited**.
 **Original OCR** retains the original text and its available scores for
 comparison; its words are read-only because their offsets may no longer
 match the corrected text. Use **Tab** to focus an original word and **Enter** to
 inspect its available scores without selecting or changing the corrected text.
+When an original word has a source box, inspection also highlights and magnifies
+that saved box. Current words remain **Edited** after any change in the region;
+the app does not guess how original word spans map onto a rewritten passage.
 **Current text** returns to the editable word view.
 Corrections use the existing autosave, undo/redo, approval, and export workflow.
 Editing an approved region revokes approval, and source-image warnings follow the
-same review rules as the issue queue, including low character scores and
+same review rules as the issue queue, including low native word or character scores and
 unapproved corrections.
+
+### Vocabulary and correction rules
+
+Open **Vocabulary and rules** to maintain terms for **This project** or **All
+projects**. Project vocabulary travels with the OCR project. User-wide vocabulary
+is saved separately and is unaffected by undoing a document edit. Give terms and
+rules the intended language; a term in one language is not silently used as a
+dictionary for another.
+
+Select a current word to add it to vocabulary, **Protect identifier**, or **Ignore
+suggestion** for that exact occurrence. These actions do not correct the text,
+approve it, or raise its OCR confidence. Protected terms can represent product
+codes, names, and identifiers that must remain unchanged by suggestions and
+literal correction rules. An ignored occurrence remains tied to its page, source
+image, and exact text version.
+
+Vocabulary suggestions are review aids, not retraining of the OCR model. **Use
+suggestion** opens **Review proposed corrections**; inspect the replacement before
+applying it. Cancel leaves the text unchanged. An accepted correction uses the
+same original-evidence preservation, autosave, approval invalidation, and Undo
+behavior as a manual text edit.
+
+Saved rules replace literal text. Configure language, case matching, and whole
+word matching, then choose the correction scope and preview the rule. The preview
+lists eligible occurrences and reports protected or approved text that was
+skipped. Select only the occurrences you intend to change. Applying the preview
+is one undoable operation; changing a target passage or the vocabulary policy
+makes an old preview invalid rather than applying stale text offsets.
+
+If user-wide vocabulary cannot be saved, the draft stays visible for **Retry
+saving vocabulary**. If its saved data cannot be loaded, user-wide edits remain
+disabled; **Retry loading vocabulary** reads the existing data again before
+allowing changes. A load error is never treated as permission to replace the
+existing vocabulary with an empty list.
+
+Vocabulary JSON import merges entries and rules in the selected scope; export
+retains their languages, case settings, and protection choices. Exact occurrence
+ignores belong to their source project and are not included in portable vocabulary
+exports. **Clear ignored occurrences** makes those occurrences eligible for
+suggestions again without approving or changing their OCR text.
+
+The active proofreading language is separate from recognition language. `und`
+means unspecified; language-neutral protected entries apply across languages.
+Case-insensitive matching uses Unicode case folding, and canonically equivalent
+Unicode spellings retain exact source UTF-16 ranges. An accepted vocabulary word
+does not receive a nearby vocabulary suggestion merely because another word is
+similar. Actual engine alternatives and explicit saved rules remain separate.
+
+Rule previews work on included text passages; tables, formulas, pictures, and
+excluded passages are reported as skipped. Use their dedicated editors or manual
+text editing for those objects. Previews are bounded to 5,000 correction matches
+and one million source characters; large projects can be processed with selected
+pages or passages. Protection matching has its own work limit.
+
+See [Proofreading, recognition hints, and model training](ocr-proofreading-engine-support.md)
+for the inspected engine interfaces and the outstanding requirements for training.
 
 ### Physical page sizes
 
@@ -389,30 +603,125 @@ acceptance is distinct from human page approval.
 
 ## Structured extraction
 
-The **Extract** panel works on the current page or selected region:
+The **Extract** panel works on the current page or selected region. Select a
+source region in **Review**, choose **Fields**, **Table**, or **Formula**, and run
+the corresponding extraction. Each result is saved as a separate object:
+extracting a second table or formula keeps the earlier one available. Use
+**Saved extraction** to choose an object of the current kind, give it an
+**Object name**, or mark it **Exclude object**.
 
-- **Fields:** GLiNER operates on the reviewed text, so corrections affect the
-  resulting values. The layout option runs LiLT against page pixels. Field names,
-  minimum extraction score, and values are editable. Field JSON retains the
-  original value and flags manual corrections; its score always describes the
-  original model extraction. Export the result as JSON.
-- **Tables:** native structure recognition returns a table. Only inert cell text
-  is placed in the editor; returned HTML is not inserted into the live DOM.
-  Cells are editable and export as CSV. Formula-like entries are prefixed as
-  literal text for spreadsheet readers; ordinary numbers remain numeric and the
-  original cell values remain unchanged in the project and structured JSON.
-  Inspect merged cells against the source.
-- **Formulas:** native math recognition returns LaTeX. Edit and copy it, or save a
-  `.tex` file.
+Every object keeps its captured source page, document, image dimensions, selected
+region and bounds, extraction method, and the reviewed text used for text-based
+fields. **Original model output** exposes the exact raw response and the original
+structured data separately from your current edits. Original scores continue to
+describe that original response; changing a field or cell does not create a new
+recognition score.
 
-Extracted results are retained with their source page, selected region, and
-source evidence. Navigation during extraction cannot attach a result to another
-page. Text-based fields become stale when their input text changes; pixel-based
-results become stale when the source image or crop geometry changes. Undo/redo
-restores the matching editor values. Original scores and text remain available
-in structured JSON even after corrections. **Update search index** uses the
-approved corrected text for the current source document, feeding CrispSorter's
-existing chunking and semantic/full-text indexing pipeline.
+- **Fields:** GLiNER reads the reviewed text; the layout option runs LiLT against
+  page pixels. Choose the field labels and minimum extraction score, then correct
+  the returned values. **Save fields as JSON** writes the complete selected
+  object, including original and current values, source captures, review and
+  exclusion state, and the original model response.
+- **Tables:** native recognition returns table HTML and dimensions. The editor
+  displays inert, escaped cell text and retains validated row/column spans;
+  returned HTML is never inserted into the live DOM. Cells accept multiline text.
+  A source box is retained only when it is supplied as genuine cell evidence.
+  **Save table as CSV** writes the selected table's current cell values, placing
+  an empty value at positions covered by a merged cell. Formula-like entries are
+  prefixed as literal text for spreadsheet readers, while the stored cell strings
+  and structured JSON remain unchanged. Inspect merged cells against the captured
+  source; CSV cannot carry their span metadata.
+- **Formulas:** native math recognition returns LaTeX. Correct it in **LaTeX**,
+  inspect the rendered formula preview, then copy it or use **Save formula as
+  LaTeX** for a `.tex` file. The original model LaTeX remains available alongside
+  the current version.
+
+Edits belong to the selected object and participate in project history and
+autosave. Ctrl/Command+Z and Ctrl/Command+Shift+Z inside the extraction editors
+restore the project data together with the displayed value. Saved objects and
+their original evidence survive closing and reopening the project. The document's
+**Structured JSON** export retains the versioned collection at
+`pages[].provenance.extractionObjects`, including original outputs, structured
+baselines, current edits, and source captures.
+
+A result that finishes after page navigation remains attached to its captured
+source page. **Current source** means its inputs still match that page.
+**Historical source** means the image, selected geometry, or reviewed input text
+has since changed. Historical objects remain selectable with their original
+source image and edits available for inspection; a changed page does not silently
+replace or discard them. Review their provenance before using them with a newer
+page image.
+
+**Update search index** uses the approved corrected text for the current source
+document, feeding CrispSorter's existing chunking and semantic/full-text indexing
+pipeline.
+
+### Repairing table structure
+
+Choose **Repair table structure** for the selected saved table. Select the
+**Table operation** and its rows, columns, or cells; positions in these controls
+start at 1. Use **Review table changes** to compare the current and proposed grids
+before applying the operation. The preview shows fully removed
+cell text and any consequences for merged cells. Cancel leaves the table
+unchanged; Apply creates one project-history step.
+
+Inserting a row or column inside a merged cell expands that cell's span. Deleting
+part of a merged cell retains its entire text in the surviving cell; deleting
+the whole cell removes it from the current grid while its original evidence
+remains available. Cell strings, including leading zeros and line breaks, are
+preserved during shifts.
+
+Merging requires a complete rectangle of cells. Choose the separator explicitly:
+none, a space, a line break, or a blank line. Values are joined in row order,
+including empty values; the preview shows the exact resulting text. Splitting a
+merged cell keeps all its text in the top-left cell and creates empty cells in
+the remaining positions. It does not infer how a multiline value should be
+distributed. Header changes are explicit, and merging mixed header/body cells
+warns that the result becomes a body cell.
+
+Structural repairs preserve the original model response, original structured
+table, source captures, and other saved objects. Changed spans, merges, and splits
+clear current cell boxes whose geometry no longer describes the edited cell;
+original evidence remains inspectable. A preview made before its source or
+selected object changes must be reviewed again before it can be applied.
+Historical-source tables can still be repaired with their provenance warning
+visible.
+
+### Joining continuation tables
+
+Select a saved table and choose **Join continuation tables**. Add the other
+source tables, including tables on other pages, and put them in the required
+order. The first input determines the destination page. Give the result a
+**Joined table name**; the preview accepts 2–16 distinct, nonempty inputs.
+
+Tables with the same width can use their current column order. If widths differ,
+set the **Joined column count** and explicitly map every source column in every
+input to a destination. Destinations shown in the UI start at 1. Within each
+input, two source columns cannot share a destination, and the destination columns
+of a merged source cell must remain consecutive. Columns can be reordered;
+unmapped destination positions become empty cells. Nothing infers a matching
+column from a label or numeric-looking value.
+
+Set **Repeated header rows** separately for each continuation. The first table
+keeps its rows. Header removal starts at zero and cannot cut through a merged
+cell. **Review joined table** shows the input order, proposed grid, captured
+sources, and exact omitted header values. A differing header, a removed cell
+that was not marked as a header, or a historical or excluded source produces a
+warning for review. Cancel leaves all objects unchanged.
+
+**Create joined table** adds a separate included result on the first input's
+page and creates one project-history step. Input tables and their inclusion
+settings remain unchanged. The joined object preserves the selected row and
+column order, literal strings, an initial joined structure, a join receipt,
+and flat snapshots of the source tables' original model output and values at
+joining. Inspect these under **Source tables at joining**. Select the joined
+object when saving its CSV; its source inputs remain individually available.
+
+A join is a captured result, so later input edits do not rewrite it. They mark it
+**Historical source**, with the joined values and recorded source snapshots
+retained. If an input changes while a preview is open, review the join again
+before applying it. Save and project reload preserve both the result and its
+source evidence.
 
 ## Output formats
 
@@ -422,7 +731,8 @@ existing chunking and semantic/full-text indexing pipeline.
 | Markdown | Corrected text in page order | All builds |
 | HTML | Escaped corrected text grouped by page | All builds |
 | JSON | Structured page/region data and review evidence | All builds |
-| DOCX | Editable flowing text in page order | Desktop builds |
+| DOCX | Flowing reviewed text; structured builds add headings, styles, lists, columns, figures, and selected tables/formulas | `ocr-text-export` or `ocr-office`; structured export requires `ocr-office` |
+| XLSX | One explicitly named worksheet per selected saved table, with literal strings and merged cells | `ocr-office` builds, included in desktop |
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
 | Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
@@ -449,8 +759,126 @@ or editable recovered typography. Independent native extraction, pixel and
 veraPDF conformance gates must pass for the exact source before deployment;
 the initial implementation checkpoint remains under qualification.
 
-All exports validate dimensions, finite coordinates, nonempty page selection,
-and asset availability. Existing output files require explicit replacement.
+### Reviewed Word documents
+
+Choose **Word document** and the pages to include. When the installed build
+provides structured Word export, the document uses current reviewed text and
+authored structure: heading levels, bold/italic/underline ranges, list levels and
+starting numbers, alignment, explicit page breaks, reading columns, and current
+source figures. Text remains editable and Word lays it out using the exported
+structure. The original scan's fonts, line wrapping and exact page positions are
+not reconstructed. Empty source pages retain explicit page boundaries.
+
+In **Word extracted content**, select the saved tables and formulas you want to
+include. Nothing is selected automatically. Each object initially appends at the
+end of its own source page; move appended objects earlier or later to control
+their order. An excluded object must be included again in Extract before it can
+be selected. Field sets remain available through their JSON export.
+
+To use an extracted table or formula in place of OCR text, choose **Replace one
+OCR passage**, then select an included passage of the same kind. The panel shows
+the exact OCR text that this choice omits. Matching source boxes never choose a
+replacement for you. Other OCR passages remain included, so check the review
+notes for duplicated content when appending a table or using a joined table whose
+input passages are still present. Joined inputs are not selected automatically.
+The choices affect this export without changing project text or source history.
+
+Changing the page scope can leave an earlier choice outside that scope. The
+choice stays visible and export is blocked until it is removed or the scope is
+expanded. Historical extraction objects remain explicitly selectable, with their
+source state and reasons shown. The native boundary validates the selected
+object collection again before interpreting its contents.
+
+Editable Word tables preserve current literal strings, including leading zeroes,
+tabs, line breaks, identifiers, and formula-looking values, along with explicit
+row/column spans. Header-cell text is bold. A table is limited to 63 logical
+columns; use CSV or JSON for a wider table. Empty 0 by 0 tables must be deselected
+or given a row and column first. Page dimensions must not exceed 22 inches
+(1584 points) in either direction.
+
+The current writer has explicit limits:
+
+- Formulas are editable **literal LaTeX text**, with no automatic Word-equation
+  conversion.
+- Headers, footers, footnote bodies, and exact reference markers remain in body
+  reading order. Repeating Word header/footer parts and native footnote objects
+  are not generated. Caption text and source order are retained; caption links
+  are not converted into Word cross-reference fields.
+- Figure alternative text and decorative flags remain in the project and JSON;
+  this writer does not encode them in the Word image. Table header rows do not
+  automatically repeat on subsequent pages.
+- Lists add Word numbering or bullets while preserving any literal marker in the
+  reviewed text. Remove an existing marker in the text editor if it would produce
+  duplicate visible markers.
+- LF and tabs become Word line breaks and tabs. CRLF and lone CR become single
+  visible line breaks, with a warning; original newline bytes stay in the project
+  and JSON. Whitespace is not trimmed. Conflicting inline passage separators and
+  structural boundaries require an explicit text/structure correction.
+
+Review notes appear before export and native writer warnings remain visible
+after a successful save. The actual production writer is exercised separately
+from the browser adapter by the [native package qualification harness](../tests/ocr-workspace/README.md#native-office-package-qualification).
+Its package/XML checks, independent reader rendering, installed-app integration,
+and accessibility/schema qualification are recorded as separate results.
+
+### Saved tables as an Excel workbook
+
+Choose **Excel workbook**, then select the saved tables to include. Each selected
+table becomes one worksheet. Tables from multiple pages can share a workbook,
+and the order in the worksheet list determines the tab order. No table is selected
+automatically; formulas, field sets, and OCR passage text are outside this export.
+Excluded tables must be included again in Extract before selection.
+
+Give each sheet an explicit name and use **Move worksheet earlier/later** to
+change its order. A starter name appears only after selecting a table. Entered
+names are preserved exactly and are never silently shortened or repaired.
+Names must be unique without regard to case and fit within 31 UTF-16 units
+(some emoji count as two units). Names cannot contain `/ \\ ? * : [ ]`, control
+characters, or an apostrophe at either end; **History** is reserved. Correct an
+invalid name in the list before saving.
+
+The page scope controls which table owners can be selected. A previously selected
+table stays visible when its owner moves outside that scope, and saving is
+blocked until the choice or scope is corrected. **Require page approval** applies
+only to owners of the selected tables. Pending OCR on unrelated pages does not
+block a workbook. Saved table strings also remain exportable when a table's
+current page image has changed or its OCR is pending; the historical source
+notice identifies that condition. Workbook export does not open current or
+captured image files.
+
+Every cell is written as literal text. Leading zeroes, date-like identifiers,
+decimal-looking values, and strings beginning with `=`, `+`, `-` or `@` remain
+strings rather than executable formulas or inferred numbers. Tabs, line breaks,
+emoji, and leading/trailing spaces are preserved. Header cells are bold and
+explicit merged rectangles remain merged. A merged value appears only at its
+anchor. A 0 by 0 table produces a named empty worksheet and a visible notice.
+
+The workbook supports the table editor's bounded grids, including more than
+Word's 63 columns. Excel-specific cell limits are checked before export:
+32,767 UTF-16 units and 253 LF line breaks per cell. The exporter rejects
+unsupported control characters and oversized selections with an actionable
+message; it does not truncate or drop values. Source objects, raw model output,
+original cell data, and captured evidence remain unchanged in the project.
+
+Carriage returns and literal Office escape-shaped text use the spreadsheet
+format's escaped-string representation, including in sheet names. The native
+qualification separately checks exact decoding of these values. Some readers,
+including the qualified openpyxl 3.1.5 read path, leave these escapes encoded;
+the receipt lists those reader limitations explicitly. This does not establish
+full Excel rendering or standards conformance. Word and workbook selection
+options are independent, and the final export result reports worksheet count
+with any native warnings.
+
+Builds without the native bidirectional PDF capability reject right-to-left text
+and directional controls before rendering. Their reviewed text remains exportable
+through available text formats. Builds that advertise the capability use the
+matching renderer contract described above; independent extraction, pixel and
+conformance results remain specific to the exact runtime revision.
+
+Export validation follows the chosen format. Formats using source images check
+their dimensions, coordinates and availability. Workbook export validates the
+explicit selected table owners, names, cell data and merged grids without
+requiring current OCR or image files. Existing output files require explicit replacement.
 For direct filesystem exports, original source paths and workspace assets remain
 protected even when replacing an existing export. Mobile external destination
 replacement is controlled by the system save picker, as described above. Writes are staged atomically; a failed render does not
@@ -476,8 +904,12 @@ transport contract and qualification scope.
 | Previous/next page | Alt + Left/Right |
 | Exit drawing mode / close dialog | Escape |
 
-Native editing shortcuts continue to work inside text inputs. Toolbar Undo is
-available for project-level changes while a text field has focus.
+Native editing shortcuts continue to work inside text inputs. When a page has
+document structure, Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z in its passage editors use
+project history so text, formatting, and note references restore together.
+The unapplied full-page draft keeps native textarea Undo until Apply; afterward,
+project Undo restores the applied change. Toolbar Undo remains available outside
+the draft dialog while a text field has focus.
 
 ## Development and verification
 
@@ -510,13 +942,14 @@ browser harness exercises the real component with a deterministic adapter and
 synthetic document fixture; it does not claim model accuracy. See
 `tests/ocr-workspace/README.md` for installation and screenshot output.
 
-The standard CI/release recipes keep their existing CrispEmbed pin. To enable
-new native review diagnostics, use the matching CrispEmbed feature-branch source
-and native library together, then build CrispSorter with
-`--features ocr-workspace` (plus `desktop` for the
-desktop-only features). The paired CI workflow pins an immutable native source
-revision, builds its library, and checks the Rust consumer against that exact
-revision. Never mix a new Rust binding with an older prebuilt native library.
+Desktop release recipes enable the reviewed PDF renderer and keep its source
+and native library pinned together. Runtime capability checks still determine
+whether a particular installed build can export reviewed PDF. The paired CI
+workflow pins an immutable native source revision, builds its library, and
+checks the Rust consumer against that exact revision. For development, use
+`--features ocr-workspace` (plus `desktop` for desktop-only features) with the
+matching native library. Never mix a new Rust binding with an older prebuilt
+native library. Renderer availability does not imply PDF/A or PDF/UA conformance.
 
 ### Release qualification
 
@@ -574,3 +1007,10 @@ interruption, size/length failures, incomplete companion sets, and symlink escap
 They do not download production weights. A source/link check alone does not prove
 mobile inference, and simulator inference does not qualify physical camera capture,
 memory pressure, thermal behavior, or recognition accuracy on real phone photos.
+
+The [OCR workspace qualification guide](../tests/quality/ocr-workspace-qualification.md)
+and its receipt schema keep synthetic UI, native parser, native provider, real
+corpus, device, and standards results separate. A passing browser fixture does
+not qualify live recognition or an installed application. Each receipt records
+the actual source version, runtime and model identities, effective settings,
+input/output checksums, timings, and any blocked or unrun checks.

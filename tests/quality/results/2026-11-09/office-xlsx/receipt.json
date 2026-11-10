@@ -1,0 +1,234 @@
+{
+  "schema": "crispsorter.ocr-office-qualification.v1",
+  "recorded_at": "2026-11-09T22:29:27.538539+00:00",
+  "scope": "Synthetic production-module DOCX/XLSX generation and independent ZIP/XML inspection",
+  "tools": {
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "openpyxl": "3.1.5",
+    "et-xmlfile": "2.0.0",
+    "lxml": "6.1.1"
+  },
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "--color",
+        "never",
+        "test",
+        "--manifest-path",
+        "/workspace/scratch/82243b18126c/ocr-runtime-temp/crispsorter-office-8comyqea/Cargo.toml",
+        "--target-dir",
+        "/workspace/scratch/82243b18126c/ocr-office-local-harness/target",
+        "--lib",
+        "--",
+        "--test-threads=1"
+      ],
+      "working_directory": "/workspace/scratch/82243b18126c/CrispSorter",
+      "log": "native-tests.log",
+      "exit_code": 0,
+      "elapsed_seconds": 6.887
+    },
+    {
+      "command": [
+        "cargo",
+        "--color",
+        "never",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "/workspace/scratch/82243b18126c/ocr-runtime-temp/crispsorter-office-8comyqea/Cargo.toml",
+        "--target-dir",
+        "/workspace/scratch/82243b18126c/ocr-office-local-harness/target",
+        "--bin",
+        "ocr-office-fixtures",
+        "--",
+        "/workspace/scratch/82243b18126c/ocr06b-qualified"
+      ],
+      "working_directory": "/workspace/scratch/82243b18126c/CrispSorter",
+      "log": "generation.log",
+      "exit_code": 0,
+      "elapsed_seconds": 2.325
+    }
+  ],
+  "sources": {
+    "src-tauri/src/ocr_document.rs": {
+      "sha256": "36f38892a7132eebec53e9747113465b98f6fce4ca57edd51aab8c3914f58814",
+      "bytes": 15467
+    },
+    "src-tauri/src/ocr_office.rs": {
+      "sha256": "f3f6a3a8de9d6d34699543ca942b80053430d557a39299d5cdfc8607197d4e49",
+      "bytes": 50235
+    },
+    "src-tauri/src/ocr_docx.rs": {
+      "sha256": "b269e93b00b3643bf63e07e65fa8fa76356918d56dd6cc9b6f8533dbef1a9073",
+      "bytes": 51185
+    },
+    "src-tauri/src/ocr_xlsx.rs": {
+      "sha256": "580c9c5c98b17efd9566354e6feb37663cde225e32935b238c4c5fd8edcbc474",
+      "bytes": 37667
+    },
+    "src-tauri/Cargo.toml": {
+      "sha256": "f9a93c52da64ad37db286382469976595bd4298befae5c39a032720104f3e426",
+      "bytes": 31862
+    },
+    "Cargo.lock": {
+      "sha256": "966f4291b2d5140c2762b74c55ef237c3c883669ffe58b8c4a74daa6f4e01463",
+      "bytes": 380867
+    },
+    "tools/quality/ocr_office_fixture.rs": {
+      "sha256": "8f3f815d971a20eef10a96445e2949e7769623d0afc85be9102a0ee680cb78e2",
+      "bytes": 19880
+    },
+    "tools/quality/check_ocr_office.py": {
+      "sha256": "3b2fb39fb52fa741a70d165a71726d3369dacf450a6cc5d9f3e36809c03e64c4",
+      "bytes": 42188
+    }
+  },
+  "gates": {
+    "production_unit_tests": {
+      "status": "passed",
+      "passed": 39,
+      "module_counts": {
+        "ocr_document": 2,
+        "ocr_office": 13,
+        "ocr_docx": 11,
+        "ocr_xlsx": 13
+      }
+    },
+    "production_generation": {
+      "status": "passed",
+      "documents": 3,
+      "workbooks": 2,
+      "worksheets": 5
+    },
+    "dependency_lock_match": {
+      "status": "passed",
+      "registry_package_count": 112,
+      "meaning": "Exact name/version/source/checksum subset; app feature graph is exercised separately by paired integration."
+    },
+    "independent_package_xml": {
+      "status": "passed",
+      "documents": 3
+    },
+    "independent_xlsx_package_xml": {
+      "status": "passed",
+      "workbooks": 2,
+      "worksheets": 5
+    },
+    "independent_xlsx_reader": {
+      "status": "passed_with_known_limitations",
+      "workbooks": 2,
+      "exact_literal_cells": 96,
+      "known_xstring_exceptions": 7,
+      "meaning": "Xstring exceptions are explicitly recorded and are not exact reader-roundtrip passes."
+    },
+    "independent_office_reader": {
+      "status": "not_run"
+    },
+    "office_schema_validator": {
+      "status": "not_run"
+    },
+    "installed_application": {
+      "status": "not_run"
+    },
+    "live_ocr_corpus": {
+      "status": "not_run"
+    },
+    "device_capture": {
+      "status": "not_run"
+    }
+  },
+  "producing_checkout": {
+    "head_sha": "d8c218eea38a40d17ee3c32fe9210ce32c0c86ba",
+    "changes": "M src-tauri/src/ocr_office.rs\n M tools/quality/check_ocr_office.py\n M tools/quality/ocr_office_fixture.rs\n?? src-tauri/src/ocr_xlsx.rs",
+    "github_workflow_sha": null,
+    "pull_request_head_sha": null,
+    "dirty_sources": true
+  },
+  "artifacts": {
+    "dependency-lock-check.json": {
+      "sha256": "8291d5ba99460a3b11ac56ea4d3637455f300db6538df42599a78181af06f595",
+      "bytes": 25216
+    },
+    "escaped-and-blank-workbook.xlsx": {
+      "sha256": "fef2fdd2ccbbfd725bbf1e53d448f0fb96069b0d03dc8c82ae58520dda3dedaa",
+      "bytes": 2794
+    },
+    "fixture-source.png": {
+      "sha256": "366062f4cc1ce289b48ad67d828922881a25fda6b706ae127813c15da450150b",
+      "bytes": 138
+    },
+    "fixtures.json": {
+      "sha256": "7a6e02cd4c282e203ac548516c5c1a2f820b9b46929d8c2aad1423df0da2aeb5",
+      "bytes": 6850
+    },
+    "generation.log": {
+      "sha256": "afd901ff12b6c26ea29c2c1842a77237325ac0359a5acfb30ee3165dcac00366",
+      "bytes": 352
+    },
+    "harness-Cargo.lock": {
+      "sha256": "3bb4f27b1f5d1d3f2ed21e8b7018838c8bfc0fc0579b40bc2f3ff433f1f773cc",
+      "bytes": 25467
+    },
+    "harness-Cargo.toml": {
+      "sha256": "989280e0acf9b9e27ed9e5750faa3a26c22802b735d767d50d6e3598d8c74c4e",
+      "bytes": 423
+    },
+    "harness-lib.rs": {
+      "sha256": "4546f2237eaac1ec487d33b3d6f27c328dbeb09a1e0dc1cba4a96ebd559c5b8e",
+      "bytes": 532
+    },
+    "harness-main.rs": {
+      "sha256": "662bae542a50d29dc79253b49c0297cd2cc1b5857748c9e81372d741300a8376",
+      "bytes": 244
+    },
+    "inputs.json": {
+      "sha256": "e19fac5384a03bb29829ee515136936e5a09263c1e9020848fdef1f70201b7f7",
+      "bytes": 27162
+    },
+    "native-tests.log": {
+      "sha256": "18f12265c9fbe1c27b408e294429e9bfe6bda4e67c08080aebadff30730f4ca6",
+      "bytes": 4266
+    },
+    "package-xml-report.json": {
+      "sha256": "5d67280a4a2a33957fd2ca132ee7baae68ee063c01bbfa1adf4ff849cac18358",
+      "bytes": 4414
+    },
+    "reviewed-workbook.xlsx": {
+      "sha256": "576367cc6b6760320c43b60352f97cdabdaba3cef55d16d60014a0a470de7f47",
+      "bytes": 3785
+    },
+    "selected-table-figure-formula.docx": {
+      "sha256": "b38fe57d5bc3cc9dd185437463b9c79dd24b3f6d1cdba5a0fe88d0fc015f7ef2",
+      "bytes": 24838
+    },
+    "semantic-text.docx": {
+      "sha256": "5e05e80de876495a693f6adf94c7b14b03dc77ffa3c98c0b35a9141d0714f1ed",
+      "bytes": 25491
+    },
+    "whitespace-blank-pages.docx": {
+      "sha256": "86fd9b10a5e8e58cf68f6633e743be09ff88cb1d439f7726c8dc0d198765d178",
+      "bytes": 21455
+    },
+    "workbook-inputs.json": {
+      "sha256": "c31bed970fe96804279d593fb7b849a6299a27aab6fcf035751a9046be6a01e0",
+      "bytes": 199945
+    },
+    "workbooks.json": {
+      "sha256": "85a86794159fbed8d4e312ae0326f756c343e6a680b64df9f77ce2f9948098df",
+      "bytes": 26815
+    },
+    "xlsx-openpyxl-report.json": {
+      "sha256": "66272329b12d6df357e6c676e1efa349da680f9a30edd680db476fa3102cab2c",
+      "bytes": 2038
+    },
+    "xlsx-package-xml-report.json": {
+      "sha256": "cd67e9b98483e13c7f63103cc20343a42d77467b1e9d87c38e1729f1e2533a0a",
+      "bytes": 8156
+    }
+  },
+  "finished_at": "2026-11-09T22:29:36.980858+00:00"
+}

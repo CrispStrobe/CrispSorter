@@ -1,5 +1,15 @@
 import { restoreBatch, type RecognitionBatch } from './batch';
 import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
+import { readWordEvidence, type WordEvidenceEnvelope } from './wordEvidence';
+import { readProofreadingData, type ProofreadingData } from './proofreadingData';
+import { readSourceComponents, readSharedSourceGroups, collectSourceComponents, mergeSourceComponents, withSourceComponents, validatePageSourceComponents, type SourceComponent } from './passageData';
+import { joinRegionText, hasUnresolvedSharedGeometry, type PassageSeparator } from './text';
+import { deriveStructure, readPageStructure, reconcilePageStructure, projectStructureForRegions, type PageStructure } from './structureData';
+import { readStructureHistory, archiveReplacedStructure } from './structureHistory';
+import { readPageTextDraft, pageTextDraftSourceIsCurrent, type PageTextDraft } from './pageTextDraft';
+import { getExtractionObjects, readExtractionObjects, extractionObjectFreshness } from './extractionObjects';
+import { MAX_DOCX_PAGE_POINTS, prepareOfficeExport, type OfficeExportOptions } from './officeExport';
+import { prepareWorkbookExport, type WorkbookOptions } from './workbookExport';
 
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
@@ -16,6 +26,11 @@ export interface OcrRegion {
     confidence: number | null; char_conf: number[]; confidenceBasis: ConfidenceBasis;
     charConfidenceUnit: 'unicode_codepoint' | 'token' | 'unknown'; charConfidenceAligned: boolean;
     kind: RegionKind; review: ReviewStatus; excluded: boolean;
+    /** Immutable source word evidence, independently versioned for v1 projects. */
+    wordEvidence?: WordEvidenceEnvelope;
+    sourceComponents?: SourceComponent[];
+    separatorBefore?: PassageSeparator;
+    sharedSourceGroups?: string[];
 }
 export interface OcrPage {
     id: string; documentId: string; sourcePage: number; name: string;
@@ -27,6 +42,8 @@ export interface OcrPage {
     provenance: Record<string, unknown>; profileId: string;
     /** Opaque evidence version; queue progress and autosaves do not change it. */
     contentRevision?: string;
+    /** Logical roles and formatting reference current regions; text stays on the region. */
+    structure?: PageStructure;
 }
 export interface OcrDocument { id: string; sourceUri: string; archiveUri?: string; name: string; }
 export interface OcrProject {
@@ -34,6 +51,9 @@ export interface OcrProject {
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
     recognitionSettings?: Record<string, unknown>;
     batch?: RecognitionBatch;
+    proofreading?: ProofreadingData;
+    /** Unapplied page text stays recoverable independently of project undo history. */
+    pageTextDraft?: PageTextDraft;
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
 export interface ImportedDocument { source_uri: string; archive_uri?: string; name: string; pages: ImportedPage[]; }
@@ -48,6 +68,7 @@ export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
     confidence?: number | null; char_conf?: number[];
     confidence_basis?: string; kind?: string; char_conf_aligned?: boolean; char_conf_unit?: string;
+    word_evidence?: unknown;
     [key: string]: unknown;
 }
 export interface RecognitionResult {
@@ -60,7 +81,7 @@ export interface OcrProfile {
 }
 export interface ReviewIssue { pageId: string; regionId: string | null; reason: 'failed' | 'pending' | 'empty' | 'low-confidence' | 'unknown-confidence' | 'changed'; message: string; }
 export interface TextMatch { pageId: string; regionId: string; start: number; end: number; text: string; }
-export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; }
+export interface ExportOptions { pageIds?: string[]; requireReviewed?: boolean; includeExcluded?: boolean; format?: string; officeOptions?: OfficeExportOptions; workbookOptions?: WorkbookOptions; }
 export interface ExportRegion {
     id: string; text: string; original_text: string;
     x: number; y: number; w: number; h: number;
@@ -70,6 +91,8 @@ export interface ExportRegion {
     /** Character scores are attached to current text only with proven alignment. */
     char_conf_aligned: boolean; char_conf: number[];
     original_char_conf: number[]; original_char_conf_aligned: boolean;
+    word_evidence?: WordEvidenceEnvelope; original_word_evidence?: WordEvidenceEnvelope;
+    source_components?: SourceComponent[]; separator_before?: PassageSeparator; shared_source_groups?: string[];
     review: ReviewStatus; kind: RegionKind;
 }
 export interface ExportPage {
@@ -77,8 +100,11 @@ export interface ExportPage {
     page_width_points?: number; page_height_points?: number;
     id?: string; name?: string; source_uri?: string; source_page?: number;
     approved?: boolean; provenance?: Record<string, unknown>;
+    structure?: PageStructure;
+    /** Source geometry for included figures, separate from the plain-text projection. */
+    figure_regions?: ExportRegion[];
 }
-export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; }
+export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; officeOptions?: OfficeExportOptions; workbookOptions?: WorkbookOptions; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
 export interface History {
     past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number;
@@ -149,19 +175,42 @@ export function addDocument(project: OcrProject, imported: ImportedDocument): Oc
 
 export function updatePage(project: OcrProject, pageId: string, patch: Partial<OcrPage>): OcrProject {
     let changed = false;
-    const evidenceKeys: readonly (keyof OcrPage)[] = ['imagePath','width','height','widthPoints','heightPoints','regions','approved','excluded'];
+    const evidenceKeys: readonly (keyof OcrPage)[] = ['imagePath','width','height','widthPoints','heightPoints','regions','approved','excluded','structure'];
     const pages = project.pages.map((page) => {
-        if (page.id !== pageId) return page;
+        if(page.id !== pageId) return page;
         const entries = Object.entries(patch).filter(([key]) => !['id','documentId','contentRevision'].includes(key));
         if (!entries.some(([key,value]) => page[key as keyof OcrPage] !== value)) return page;
         changed = true;
         const evidenceChanged = evidenceKeys.some(key => key in patch && patch[key] !== page[key]);
-        return { ...page, ...Object.fromEntries(entries), contentRevision: evidenceChanged ? id('evidence') : page.contentRevision };
+        const next = { ...page, ...Object.fromEntries(entries), contentRevision: evidenceChanged ? id('evidence') : page.contentRevision } as OcrPage;
+        // Existing mutation paths may clear the old singleton editor projection.
+        // Preserve its raw record and the independent objects for recovery; the
+        // extraction reader decides whether each captured source is still current.
+        const retained=retainedExtractionProvenance(page);
+        for(const key of ['extraction','extractionObjects'] as const) {
+            if(retained[key]!==undefined && next.provenance[key]===undefined)
+                next.provenance={...next.provenance,[key]:retained[key]};
+        }
+        if(patch.provenance?.extractionObjects!==undefined)
+            next.provenance={...next.provenance,extractionObjects:readExtractionObjects(patch.provenance.extractionObjects)};
+        if('structure' in patch) next.structure=readPageStructure(patch.structure,next);
+        else if(patch.regions && page.structure) {
+            const reconciled=reconcilePageStructure(page,next);
+            next.structure=reconciled.structure;
+            if(reconciled.notices.length) next.provenance={...next.provenance,
+                structureNotices:reconciled.notices,structureChangedAt:now()};
+        }
+        if(patch.regions) {
+            const archive=archiveReplacedStructure(page,next);
+            if(archive.history) next.provenance={...next.provenance,structureHistory:archive.history,
+                ...(archive.notice?{structureNotices:[...(Array.isArray(next.provenance.structureNotices)?next.provenance.structureNotices:[]),archive.notice]}:{})};
+        }
+        return next;
     });
     return changed ? touch(project, pages) : project;
 }
 
-export function applyRecognition(project: OcrProject, pageId: string, result: RecognitionResult, profileId = project.profileId): OcrProject {
+export function applyRecognition(project: OcrProject, pageId: string, result: RecognitionResult, profileId = project.profileId, options: {preserveSourceHistory?:boolean} = {}): OcrProject {
     if (!record(result) || !validDimension(result.width) || !validDimension(result.height)) throw new Error('Recognition returned invalid page dimensions.');
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) throw new Error('The page is no longer in this project.');
@@ -190,6 +239,7 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
             confidence: score, char_conf: chars,
             confidenceBasis: regionBasis(region.confidence_basis ?? result.confidence_basis),
             charConfidenceUnit: unit === 'token' ? 'token' : unit === 'unicode_codepoint' ? 'unicode_codepoint' : 'unknown', charConfidenceAligned: aligned,
+            wordEvidence: readWordEvidence(region.word_evidence, region.text, result, region),
             kind: kinds.includes(region.kind as RegionKind) ? region.kind as RegionKind : 'text',
             review: 'unreviewed', excluded: false,
         };
@@ -197,13 +247,19 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
         return normalized;
     });
     const { regions: _regions, ...metadata } = result;
-    return updatePage(project, pageId, {
+    const previousSources = options.preserveSourceHistory === false ? [] : passageSources(page);
+    const imagePage = {...page,width:result.width,height:result.height,imagePath:result.image_path || page.imagePath};
+    const preservedRegions = previousSources.length ? regions.map(region=>withSourceComponents(imagePage,region,previousSources)) : regions;
+    const next = updatePage(project, pageId, {
         width: result.width, height: result.height, imagePath: result.image_path || page.imagePath,
         ...importedPhysicalSize(result, pagePhysicalSize(page)),
-        regions, status: 'recognized', approved: false, error: null,
+        regions:preservedRegions, status: 'recognized', approved: false, error: null,
         elapsedMs: finite(result.elapsed_ms) ? result.elapsed_ms : null,
-        provenance: { ...metadata, recognizedAt: now(), profileId }, profileId,
+        provenance: { ...metadata, recognizedAt: now(), profileId,
+            ...(!preservedRegions.length && previousSources.length ? {passageSources:previousSources} : {}) }, profileId,
     });
+    validatePageSourceComponents(next.pages.find(candidate=>candidate.id===pageId)!);
+    return next;
 }
 
 export function editRegion(project: OcrProject, pageId: string, regionId: string, text: string): OcrProject {
@@ -216,13 +272,13 @@ export function updateRegion(project: OcrProject, pageId: string, regionId: stri
     let changed = false;
     const regions = page.regions.map((region) => {
         if (region.id !== regionId) return region;
-        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf, charConfidenceAligned: region.charConfidenceAligned, charConfidenceUnit: region.charConfidenceUnit };
+        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf, charConfidenceAligned: region.charConfidenceAligned, charConfidenceUnit: region.charConfidenceUnit, wordEvidence: region.wordEvidence, sourceComponents: region.sourceComponents };
         if (typeof next.text !== 'string' || !kinds.includes(next.kind) || !reviews.includes(next.review) || typeof next.excluded !== 'boolean') throw new Error('Region text, type, or review state is invalid.');
         if (!hasBox(next, page)) throw new Error('Region must remain inside the page.');
         if (!Object.keys(next).some(key => next[key as keyof OcrRegion] !== region[key as keyof OcrRegion])) return region;
         changed = true;
         // Any content/geometry/type edit invalidates approval, including exclusion.
-        const contentChanged = ['text','x','y','w','h','kind','excluded'].some((key) => key in patch && patch[key as keyof OcrRegion] !== region[key as keyof OcrRegion]);
+        const contentChanged = ['text','x','y','w','h','kind','excluded','separatorBefore'].some((key) => key in patch && patch[key as keyof OcrRegion] !== region[key as keyof OcrRegion]);
         if (contentChanged) next.review = next.text === next.originalText && region.confidenceBasis !== 'manual' ? 'unreviewed' : 'corrected';
         return next;
     });
@@ -261,7 +317,7 @@ export function removePage(project: OcrProject, pageId: string): OcrProject { re
 export function approvePage(project: OcrProject, pageId: string, approved = true): OcrProject {
     const page = project.pages.find((p) => p.id === pageId);
     if (!page || page.status !== 'recognized' || page.approved === approved) return project;
-    return updatePage(project, pageId, { approved, regions: page.regions.map((region) => ({...region, review: approved ? 'approved' : region.text !== region.originalText ? 'corrected' : 'unreviewed'})) });
+    return updatePage(project, pageId, { approved, regions: page.regions.map((region) => ({...region, review: approved ? 'approved' : region.text !== region.originalText || region.confidenceBasis === 'manual' ? 'corrected' : 'unreviewed'})) });
 }
 
 /** Pointer coordinates are already converted to image pixels by the view. */
@@ -275,11 +331,22 @@ export function normalizeRectangle(start: {x:number;y:number}, end: {x:number;y:
     return {x, y, w: right-x, h: bottom-y};
 }
 
-/** Extracted values describe the old pixels and must not follow a transformed image. */
-function withoutExtraction(provenance: Record<string, unknown>): Record<string, unknown> {
-    const next = { ...provenance };
-    delete next.extraction;
-    return next;
+/** Migrate before replacing source pixels, while their measured geometry is known. */
+function retainedExtractionProvenance(page: OcrPage): Record<string, unknown> {
+    if(page.provenance.extractionObjects!==undefined || page.provenance.extraction===undefined) return page.provenance;
+    const migrated=getExtractionObjects(page);
+    return migrated.collection.objects.length
+        ? {...page.provenance,extractionObjects:migrated.collection}
+        : page.provenance;
+}
+
+function passageSources(page: OcrPage): SourceComponent[] {
+    return mergeSourceComponents(readSourceComponents(page.provenance.passageSources) ?? [],
+        collectSourceComponents(page,page.regions.filter(region=>region.sourceComponents?.length)));
+}
+function archivePassageSources(page: OcrPage): Record<string, unknown> {
+    const sources=passageSources(page);
+    return {...retainedExtractionProvenance(page),...(sources.length ? {passageSources:sources} : {})};
 }
 
 /** Transforming page pixels invalidates recognition rather than warping stale boxes. */
@@ -297,7 +364,7 @@ export function applyPageImage(project: OcrProject, pageId: string, image: Impor
         : operation === 'crop'
             ? {widthPoints:priorSize.widthPoints * image.width / page.width,heightPoints:priorSize.heightPoints * image.height / page.height}
             : priorSize;
-    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, ...importedPhysicalSize(image,fallback), regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...withoutExtraction(page.provenance), lastImageOperation: operation, transformedAt: now() } });
+    return updatePage(project, pageId, { imagePath: image.image_path, width: image.width, height: image.height, ...importedPhysicalSize(image,fallback), regions: [], status: 'pending', approved: false, error: null, elapsedMs: null, provenance: { ...archivePassageSources(page), lastImageOperation: operation, transformedAt: now() } });
 }
 
 /** Replace one spread with independently recognizable pages in reading order. */
@@ -306,12 +373,17 @@ export function splitPage(project: OcrProject, pageId: string, images: ImportedP
     if (!source) return project;
     if (images.length < 2 || images.some((image) => !image.image_path || !validDimension(image.width) || !validDimension(image.height))) throw new Error('Page split must produce at least two valid images.');
     const priorSize = pagePhysicalSize(source);
+    const archive=archiveReplacedStructure(source,{...source,regions:[],structure:undefined});
+    const provenance = {...archivePassageSources(source),...(archive.history?{structureHistory:archive.history}:{}),
+        ...(source.structure?{structureNotices:['The spread was split into new pages. Previous logical structure is available in structure history. Rebuild roles and links for the new recognition.']}:{}),
+        ...(archive.notice?{structureHistoryNotice:archive.notice}:{})};
     const children = images.map((image, index): OcrPage => ({
         ...source, id: id('page'), contentRevision: id('evidence'), name: `${source.name} · part ${index+1}`,
         imagePath: image.image_path, width: image.width, height: image.height,
         ...importedPhysicalSize(image,{widthPoints:priorSize.widthPoints * image.width / source.width,heightPoints:priorSize.heightPoints * image.height / source.height}),
         regions: [], status: 'pending', approved: false, error: null, elapsedMs: null,
-        provenance: {...withoutExtraction(source.provenance), splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
+        structure:undefined,
+        provenance: {...provenance, splitFromPageId: source.id, splitPart: index+1, transformedAt: now()},
     }));
     return touch(project, project.pages.flatMap((page) => page.id === pageId ? children : [page]));
 }
@@ -324,6 +396,13 @@ export function getReviewIssues(project: OcrProject, threshold = project.confide
             continue;
         }
         if (page.approved) continue;
+        if (page.structure && typeof page.provenance.structureChangedAt === 'string') {
+            issues.push({pageId:page.id,regionId:null,reason:'changed',message:'Document structure changes need page approval.'});
+        }
+        if ((page.provenance.extractionObjects!==undefined || page.provenance.extraction!==undefined) &&
+            getExtractionObjects(page).collection.objects.some(object=>!object.excluded && extractionObjectFreshness(project,object).current)) {
+            issues.push({pageId:page.id,regionId:null,reason:'changed',message:'Extracted content needs page approval.'});
+        }
         const regions = activeRegions(page);
         if (!regions.length || regions.every((r) => !r.text.trim())) issues.push({pageId:page.id,regionId:null,reason:'empty',message:'No recognized text. Verify this is an intentionally blank page.'});
         for (const region of regions) {
@@ -373,11 +452,13 @@ export function replaceMatches(project: OcrProject, query: string, replacement: 
         targets.get(match.pageId)!.add(match.regionId);
     }
     if (!targets.size) return project;
-    return touch(project,project.pages.map((page) => targets.has(page.id) ? {
-        ...page, contentRevision:id('evidence'), approved:false, regions:page.regions.map((region) => targets.get(page.id)!.has(region.id) ? {
+    let next=project;
+    for(const page of project.pages) if(targets.has(page.id)) next=updatePage(next,page.id,{
+        approved:false, regions:page.regions.map((region) => targets.get(page.id)!.has(region.id) ? {
             ...region, text:region.text.replace(literalPattern(query,options.caseSensitive),()=>replacement), review:'corrected',
         } : region),
-    } : page));
+    });
+    return next;
 }
 export function nextMatch(matches: TextMatch[], current: Pick<TextMatch,'pageId'|'regionId'|'start'> | null, direction: -1|1 = 1): TextMatch | null {
     if (!matches.length) return null;
@@ -386,13 +467,48 @@ export function nextMatch(matches: TextMatch[], current: Pick<TextMatch,'pageId'
     return matches[(index+direction+matches.length)%matches.length];
 }
 
+function exportRegion(r:OcrRegion):ExportRegion {
+    const originalAligned=hasAlignedCharacterConfidence(r),currentAligned=originalAligned && r.text===r.originalText;
+    return {
+        id:r.id,text:r.text,original_text:r.originalText,x:r.x,y:r.y,w:r.w,h:r.h,
+        confidence:r.confidence,confidence_basis:r.confidenceBasis,
+        char_conf_unit:r.charConfidenceUnit,char_conf_aligned:currentAligned,
+        char_conf:currentAligned?[...r.char_conf]:[],original_char_conf:[...r.char_conf],original_char_conf_aligned:originalAligned,
+        ...(r.wordEvidence?{original_word_evidence:clone(r.wordEvidence),...(r.text===r.originalText?{word_evidence:clone(r.wordEvidence)}:{})}:{}),
+        ...(r.sourceComponents?.length?{source_components:clone(r.sourceComponents)}:{}),
+        ...(r.separatorBefore!==undefined?{separator_before:r.separatorBefore}:{}),
+        ...(r.sharedSourceGroups?.length?{shared_source_groups:[...r.sharedSourceGroups]}:{}),
+        review:r.review,kind:r.kind,
+    };
+}
+
 /** Preflight returns no payload on error. A mixed project can never silently lose pages. */
 export function prepareExport(project: OcrProject, options: ExportOptions = {}): ExportPreflight {
+    if (options.format?.toLowerCase() === 'xlsx') {
+        const workbook = prepareWorkbookExport(project, options.pageIds, options.workbookOptions);
+        const errors = [...workbook.errors], warnings = [...workbook.warnings];
+        const sources = new Map(project.documents.map(document => [document.id, document.sourceUri]));
+        const payload = workbook.ownerPages.map((page): ExportPage => {
+            if (options.requireReviewed && !page.approved) errors.push(`${page.name}: page review is required for its selected tables.`);
+            if (!page.approved) warnings.push(`${page.name}: the source page has not been approved.`);
+            const provenance = clone(page.provenance);
+            provenance.extractionObjects = clone(getExtractionObjects(page).collection);
+            // A workbook reads saved table values, not current OCR or pixels.
+            // Only selected owners are sent, in source-page order; the explicit
+            // worksheet array separately determines tab order.
+            return { id: page.id, name: page.name, source_uri: sources.get(page.documentId), source_page: page.sourcePage,
+                approved: page.approved, provenance, image_path: page.imagePath, width: page.width, height: page.height, regions: [] };
+        });
+        return { pages: errors.length ? [] : payload, errors, warnings: [...new Set(warnings)], text: '', workbookOptions: workbook.options };
+    }
     const errors: string[] = [], warnings: string[] = [];
+    const docx = options.format?.toLowerCase() === 'docx';
     const selectedIds = options.pageIds ? new Set(options.pageIds) : null;
     if (selectedIds && [...selectedIds].some((pageId) => !project.pages.some((page) => page.id===pageId))) errors.push('One or more selected pages no longer exist.');
     const pages = project.pages.filter((p)=>(!p.excluded || options.includeExcluded) && (!selectedIds || selectedIds.has(p.id)));
     if (!pages.length) errors.push('Select at least one included page to export.');
+    const office = docx ? prepareOfficeExport(project, pages.map(page => page.id), options.officeOptions) : undefined;
+    if (office) { errors.push(...office.errors); warnings.push(...office.warnings); }
     const payload: ExportPage[] = [];
     const sources = new Map(project.documents.map(document => [document.id, document.sourceUri]));
     for (const page of pages) {
@@ -400,31 +516,43 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
         if (page.status!=='recognized') errors.push(`${page.name}: recognition is ${page.status}. Recognize or explicitly exclude this page.`);
         if (!page.imagePath || !validDimension(page.width) || !validDimension(page.height)) errors.push(`${page.name}: page image or dimensions are missing.`);
         if (!validPagePoints(physicalSize.widthPoints) || !validPagePoints(physicalSize.heightPoints)) errors.push(`${page.name}: physical page dimensions must be positive and no greater than ${MAX_PAGE_POINTS} points.`);
+        if (docx && (physicalSize.widthPoints > MAX_DOCX_PAGE_POINTS || physicalSize.heightPoints > MAX_DOCX_PAGE_POINTS)) errors.push(`${page.name}: Word pages cannot exceed 1584 points (22 inches) in either dimension. Split or crop this page, or export it as PDF.`);
         if (options.requireReviewed && !page.approved) errors.push(`${page.name}: page review is required.`);
         const regions = activeRegions(page);
+        if (options.format && ['pdf','hocr','alto','xml'].includes(options.format.toLowerCase()) && hasUnresolvedSharedGeometry(regions)) {
+            errors.push(`${page.name}: passages share overlapping source areas. Divide their boxes or merge them before a spatial export; text and JSON preserve the exact edited text.`);
+        }
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
-        if (!regions.some((r)=>r.text.trim())) warnings.push(`${page.name}: this page contains no text and will be retained as an image page.`);
+        if (!regions.some((r)=>r.text.trim())) warnings.push(docx ? `${page.name}: this page contains no included OCR text.` : `${page.name}: this page contains no text and will be retained as an image page.`);
         if (!page.approved) warnings.push(`${page.name}: the page has not been approved.`);
+        const includedRegions=page.regions.filter(region=>!region.excluded);
+        // A transient structure gives legacy figures their proper reading-order
+        // position without changing the saved project or its review status.
+        const sourceStructure = page.structure ?? (docx ? deriveStructure(page) : undefined);
+        const projectedStructure=sourceStructure?projectStructureForRegions(sourceStructure,includedRegions,page.id):undefined;
+        if(projectedStructure) warnings.push(...projectedStructure.notices.map(notice=>`${page.name}: ${notice}`));
+        if(page.structure && options.format && !['json','docx'].includes(options.format.toLowerCase())) {
+            warnings.push(`${page.name}: this output currently uses the plain-text or source-image projection. Logical formatting is retained in the project and JSON; structured document export is a separate capability.`);
+        }
+        const provenance = clone(page.provenance);
+        // Legacy singleton extraction records resolve to deterministic object IDs.
+        // Send the validated collection as a projection, retaining the raw record.
+        if (docx) {
+            const extraction = getExtractionObjects(page);
+            if (extraction.collection.objects.length || page.provenance.extractionObjects !== undefined) provenance.extractionObjects = clone(extraction.collection);
+            warnings.push(...extraction.diagnostics.map(message => `${page.name}: ${message}`));
+        }
         payload.push({
             id:page.id, name:page.name, source_uri:sources.get(page.documentId),
-            source_page:page.sourcePage, approved:page.approved, provenance:clone(page.provenance),
+            source_page:page.sourcePage, approved:page.approved, provenance,
             image_path:page.imagePath, width:page.width, height:page.height,
             page_width_points:physicalSize.widthPoints, page_height_points:physicalSize.heightPoints,
-            regions:regions.map((r): ExportRegion => {
-            const originalAligned = hasAlignedCharacterConfidence(r);
-            const currentAligned = originalAligned && r.text === r.originalText;
-            return {
-                id:r.id, text:r.text, original_text:r.originalText,
-                x:r.x, y:r.y, w:r.w, h:r.h,
-                confidence:r.confidence, confidence_basis:r.confidenceBasis,
-                char_conf_unit:r.charConfidenceUnit, char_conf_aligned:currentAligned,
-                char_conf:currentAligned?[...r.char_conf]:[],
-                original_char_conf:[...r.char_conf], original_char_conf_aligned:originalAligned,
-                review:r.review, kind:r.kind,
-            };
-        })});
+            regions:regions.map(exportRegion),
+            ...(projectedStructure?.structure?{structure:projectedStructure.structure,
+                figure_regions:includedRegions.filter(region=>region.kind==='picture').map(exportRegion)}:{}),
+        });
     }
-    return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>activeRegions(p).map((r)=>r.text).join('\n')).join('\f')};
+    return {pages:errors.length?[]:payload,errors,warnings:[...new Set(warnings)],text:errors.length?'':pages.map((p)=>joinRegionText(activeRegions(p))).join('\f'),...(office ? {officeOptions:office.options} : {})};
 }
 
 const historyEncoder = new TextEncoder();
@@ -469,27 +597,46 @@ function boundedHistory(history: History): History {
     }
     return {...history,past,future,pastBytes:pastSizes,futureBytes:futureSizes};
 }
+/** Ordinary history cannot overwrite a newer unapplied editor draft. */
+function historySnapshot(project: OcrProject, keepDraft = false): OcrProject {
+    return keepDraft ? project : {...project, pageTextDraft: undefined};
+}
+function appliedDraft(project: OcrProject, draft: PageTextDraft): boolean {
+    const marker = project.pages.find(page => page.id === draft.page.id)?.provenance.lastPageTextEdit;
+    if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return false;
+    const applied = marker as Record<string, unknown>;
+    return applied.draftId === draft.id && applied.draftRevision === draft.revision;
+}
 export function commitHistory(history: History, project: OcrProject): History {
     if (project === history.present) return history;
-    const serialized=JSON.stringify(project), previous=JSON.stringify(history.present);
-    if (serialized === previous) return history;
+    const serialized=JSON.stringify(project), currentSerialized=JSON.stringify(history.present);
+    if (serialized === currentSerialized) return history;
+    const draft = history.present.pageTextDraft;
+    const consumesDraft = !!draft && !project.pageTextDraft && appliedDraft(project, draft);
+    const previous = draft && !consumesDraft
+        ? JSON.stringify({...history.present, pageTextDraft: undefined}) : currentSerialized;
     const previousBytes=historyTextBytes(previous);
-    // A snapshot larger than the whole budget would evict all history anyway;
-    // avoid constructing that additional large object before discarding it.
+    // Skip allocating snapshots that cannot fit the history budget.
     if (previousBytes > history.maxBytes) return {...history,past:[],present:JSON.parse(serialized),future:[],pastBytes:[],futureBytes:[]};
     return boundedHistory({...history,past:[...history.past,JSON.parse(previous)],present:JSON.parse(serialized),future:[],
         pastBytes:[...historySizes(history.past,history.pastBytes),previousBytes],futureBytes:[]});
 }
 export function undoHistory(history: History): History {
     if (!history.past.length) return history;
-    const current=historyCopy(history.present);
-    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[current.copy,...history.future],
+    const present = clone(history.past[history.past.length - 1]);
+    if (history.present.pageTextDraft) present.pageTextDraft = clone(history.present.pageTextDraft);
+    const current=historyCopy(historySnapshot(history.present));
+    return boundedHistory({...history,past:history.past.slice(0,-1),present,future:[current.copy,...history.future],
         pastBytes:historySizes(history.past,history.pastBytes).slice(0,-1),futureBytes:[current.bytes,...historySizes(history.future,history.futureBytes)]});
 }
 export function redoHistory(history: History): History {
     if (!history.future.length) return history;
-    const current=historyCopy(history.present);
-    return boundedHistory({...history,past:[...history.past,current.copy],present:clone(history.future[0]),future:history.future.slice(1),
+    const present = clone(history.future[0]), draft = history.present.pageTextDraft;
+    const consumesDraft = !!draft && appliedDraft(present,draft) && pageTextDraftSourceIsCurrent(history.present,draft);
+    if (draft && !consumesDraft) present.pageTextDraft = clone(draft);
+    else delete present.pageTextDraft;
+    const current=historyCopy(historySnapshot(history.present, consumesDraft));
+    return boundedHistory({...history,past:[...history.past,current.copy],present,future:history.future.slice(1),
         pastBytes:[...historySizes(history.past,history.pastBytes),current.bytes],futureBytes:historySizes(history.future,history.futureBytes).slice(1)});
 }
 
@@ -503,6 +650,7 @@ export function parseProject(input: unknown): OcrProject {
     if (typeof p.id!=='string'||!p.id||typeof p.name!=='string'||!Array.isArray(p.pages)||!Array.isArray(p.documents)||p.pages.length>10000) throw new Error('OCR project metadata is invalid.');
     if (!finite(p.confidenceThreshold)||p.confidenceThreshold<0||p.confidenceThreshold>1||typeof p.profileId!=='string') throw new Error('OCR project settings are invalid.');
     if (p.recognitionSettings!==undefined && (!p.recognitionSettings || typeof p.recognitionSettings!=='object' || Array.isArray(p.recognitionSettings))) throw new Error('OCR recognition settings are invalid.');
+    if (p.proofreading!==undefined) p.proofreading=readProofreadingData(p.proofreading);
     const ids=new Set<string>();
     const checkId=(candidate:unknown) => { if (typeof candidate!=='string'||!candidate||ids.has(candidate)) throw new Error('OCR project contains duplicate or invalid identifiers.'); ids.add(candidate); };
     checkId(p.id);
@@ -521,6 +669,7 @@ export function parseProject(input: unknown): OcrProject {
         if (!validPagePoints(physicalSize.widthPoints)||!validPagePoints(physicalSize.heightPoints)) throw new Error('OCR page exceeds the supported physical size at the default 300 DPI.');
         Object.assign(page,physicalSize);
         if (!page.provenance||typeof page.provenance!=='object'||Array.isArray(page.provenance)) page.provenance={};
+        if (page.provenance.extractionObjects!==undefined) page.provenance.extractionObjects=readExtractionObjects(page.provenance.extractionObjects);
         if (typeof page.profileId!=='string') page.profileId=p.profileId;
         if (page.contentRevision !== undefined && (typeof page.contentRevision !== 'string' || !page.contentRevision)) throw new Error('OCR page evidence version is invalid.');
         page.contentRevision ??= id('evidence');
@@ -532,10 +681,18 @@ export function parseProject(input: unknown): OcrProject {
             if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
             if (typeof region.text!=='string'||typeof region.originalText!=='string'||!hasBox(region,page)||!kinds.includes(region.kind)||!reviews.includes(region.review)||!bases.includes(region.confidenceBasis)||typeof region.excluded!=='boolean'||!Array.isArray(region.char_conf)||region.char_conf.some((c)=>confidence(c)===null)||(region.confidence!==null&&confidence(region.confidence)===null)) throw new Error('OCR project contains an invalid region.');
             if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf.length!==Array.from(region.originalText).length) region.charConfidenceAligned=false;
+            region.wordEvidence=readWordEvidence(region.wordEvidence,region.originalText,page);
+            region.sourceComponents=readSourceComponents(region.sourceComponents);
+            if (region.separatorBefore!==undefined && !['',' ','\n','\n\n'].includes(region.separatorBefore)) throw new Error('OCR passage separator is invalid.');
+            region.sharedSourceGroups=readSharedSourceGroups(region.sharedSourceGroups);
         }
+        validatePageSourceComponents(page);
+        page.structure=readPageStructure(page.structure,page);
+        if(page.provenance.structureHistory!==undefined) page.provenance.structureHistory=readStructureHistory(page.provenance.structureHistory);
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
     }
     if (p.batch !== undefined) p.batch = restoreBatch(p.batch);
+    if (p.pageTextDraft !== undefined) p.pageTextDraft = readPageTextDraft(p.pageTextDraft);
     return p;
 }
 export function serializeProject(project: OcrProject): string { return JSON.stringify(parseProject(project),null,2); }

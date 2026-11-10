@@ -1,0 +1,144 @@
+{
+  "reader": "@oai/artifact-tool from the bundled primary runtime",
+  "mode": "read-only import and render",
+  "files": [
+    {
+      "file": "reviewed-workbook.xlsx",
+      "summary": "{\"kind\":\"sheet\",\"id\":\"ws/ffk442\",\"name\":\"測定 values\",\"index\":0,\"range\":\"A1:D4\",\"address\":\"A1:D4\"}\n{\"kind\":\"sheet\",\"id\":\"ws/p9n05v\",\"name\":\"Parts & QA\",\"index\":1,\"range\":\"A1:C3\",\"address\":\"A1:C3\"}\n{\"kind\":\"sheet\",\"id\":\"ws/xl9f0u\",\"name\":\"Wide identifiers\",\"index\":2,\"range\":\"A1:BL1\",\"address\":\"A1:BL1\"}",
+      "sheets": [
+        {
+          "expectedName": "測定 values",
+          "actualName": "測定 values",
+          "cellsChecked": 16,
+          "mismatches": [
+            {
+              "row": 2,
+              "column": 4,
+              "expected": "",
+              "actual": null
+            }
+          ],
+          "formulas": [],
+          "renders": [
+            {
+              "range": "A1:D6",
+              "file": "reviewed-workbook-sheet-1-view-1.png"
+            }
+          ]
+        },
+        {
+          "expectedName": "Parts & QA",
+          "actualName": "Parts & QA",
+          "cellsChecked": 6,
+          "mismatches": [
+            {
+              "row": 3,
+              "column": 3,
+              "expected": "",
+              "actual": null
+            }
+          ],
+          "formulas": [],
+          "renders": [
+            {
+              "range": "A1:C5",
+              "file": "reviewed-workbook-sheet-2-view-1.png"
+            }
+          ]
+        },
+        {
+          "expectedName": "Wide identifiers",
+          "actualName": "Wide identifiers",
+          "cellsChecked": 64,
+          "mismatches": [],
+          "formulas": [],
+          "renders": [
+            {
+              "range": "A1:H3",
+              "file": "reviewed-workbook-sheet-3-view-1.png"
+            },
+            {
+              "range": "BE1:BL3",
+              "file": "reviewed-workbook-sheet-3-view-2.png"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "escaped-and-blank-workbook.xlsx",
+      "summary": "{\"kind\":\"sheet\",\"id\":\"ws/gwpjkj\",\"name\":\"Literal _x005F_x000D_\",\"index\":0,\"range\":\"A1:B8\",\"address\":\"A1:B8\"}\n{\"kind\":\"sheet\",\"id\":\"ws/gonapm\",\"name\":\"Blank table\",\"index\":1}",
+      "sheets": [
+        {
+          "expectedName": "Literal _x000D_",
+          "actualName": "Literal _x005F_x000D_",
+          "cellsChecked": 16,
+          "mismatches": [
+            {
+              "row": 1,
+              "column": 2,
+              "expected": "left\rright",
+              "actual": "left_x000D_right"
+            },
+            {
+              "row": 2,
+              "column": 2,
+              "expected": "a\r\nb",
+              "actual": "a_x000D_\nb"
+            },
+            {
+              "row": 3,
+              "column": 2,
+              "expected": "_x000D_",
+              "actual": "_x005F_x000D_"
+            },
+            {
+              "row": 4,
+              "column": 2,
+              "expected": "_x005F_",
+              "actual": "_x005F_x005F_"
+            },
+            {
+              "row": 5,
+              "column": 2,
+              "expected": "_x000D__x005F_",
+              "actual": "_x005F_x000D__x005F_x005F_"
+            },
+            {
+              "row": 6,
+              "column": 2,
+              "expected": "real\r literal _x000D_ and 😀",
+              "actual": "real_x000D_ literal _x005F_x000D_ and 😀"
+            },
+            {
+              "row": 8,
+              "column": 2,
+              "expected": "",
+              "actual": null
+            }
+          ],
+          "formulas": [],
+          "renders": [
+            {
+              "range": "A1:B8",
+              "file": "escaped-and-blank-workbook-sheet-1-view-1.png"
+            }
+          ]
+        },
+        {
+          "expectedName": "Blank table",
+          "actualName": "Blank table",
+          "cellsChecked": 0,
+          "mismatches": [],
+          "formulas": [],
+          "renders": [
+            {
+              "range": "A1:D6",
+              "file": "escaped-and-blank-workbook-sheet-2-view-1.png"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

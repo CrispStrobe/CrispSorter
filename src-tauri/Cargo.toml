@@ -120,6 +120,8 @@ lopdf       = "0.38"
 feed-rs     = { version = "2", optional = true }
 # Word-level text diff — used for P25.7 document comparison.
 similar     = "2"
+# OCR styled ranges use the same complete-character boundary contract as the editor.
+unicode-segmentation = "1.13"
 # DOCX generation — used for P27.10 export to Word format.
 docx-rs     = { version = "0.4", optional = true, default-features = false }
 unicode-bidi = { version = "0.3.18", optional = true }
@@ -293,7 +295,8 @@ default = []
 # were dead code in every shipped artifact. Kept on ONE line — the compliance
 # guards parse this file line-by-line, and a wrapped feature list is invisible
 # to them.
-desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "ocr-text-export", "drive-filen-native", "drive-internxt-native", "cloud-backup"]
+desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "ocr-text-export", "ocr-office", "drive-filen-native", "drive-internxt-native", "cloud-backup"]
+ocr-office = ["dep:docx-rs", "dep:unicode-bidi"]
 # P36.1 — the right to spawn a helper process, split out of `desktop`.
 #
 # App Sandbox (Mac App Store, iOS) forbids fork/exec of anything outside the

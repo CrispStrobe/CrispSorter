@@ -31,6 +31,13 @@ mod ocr_photo;
 mod ocr_reading_order;
 mod ocr_text_export;
 pub mod model_provisioning;
+pub mod ocr_word_evidence;
+pub mod ocr_document;
+pub mod ocr_office;
+#[cfg(feature = "ocr-office")]
+pub mod ocr_docx;
+#[cfg(feature = "ocr-office")]
+pub mod ocr_xlsx;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;

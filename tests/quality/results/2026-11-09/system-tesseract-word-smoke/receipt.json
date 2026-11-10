@@ -1,0 +1,205 @@
+{
+  "schema": "crispsorter-ocr-workspace-receipt-v1",
+  "recorded_at": "2026-11-09T19:15:59.859138+00:00",
+  "scope": "Actual external System Tesseract CLI on the existing synthetic ocr-task.png; no CrispSorter binary or production Rust parser executed.",
+  "app": {
+    "source_commit": "12caadb15f76afcf11a74fde3479cf3db90ecb83",
+    "version": "0.15.0",
+    "dirty": true,
+    "binary": null
+  },
+  "environment": {
+    "os": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "arch": "x86_64",
+    "device": null,
+    "runtime": "External Linux command-line process",
+    "toolchains": {
+      "python": "3.12.14"
+    }
+  },
+  "engine": {
+    "name": "system_tesseract",
+    "version": "tesseract 5.5.0",
+    "source_commit": null,
+    "binary": {
+      "path": "/usr/bin/tesseract",
+      "sha256": "74b76a5b994adcc18be362bf64ed5118082b2401d5d9a35242e92fc4c62e2b4b",
+      "bytes": 51536
+    },
+    "installed_languages": [
+      "eng",
+      "osd"
+    ]
+  },
+  "models": [
+    {
+      "name": "eng.traineddata",
+      "artifact": {
+        "path": "/usr/share/tesseract-ocr/5/tessdata/eng.traineddata",
+        "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+        "bytes": 4113088
+      }
+    }
+  ],
+  "settings": {
+    "requested": {
+      "languages": [
+        "eng"
+      ],
+      "psm": 3,
+      "outputs": [
+        "tsv",
+        "txt"
+      ],
+      "same_invocation": true
+    },
+    "effective": {
+      "languages": [
+        "eng"
+      ],
+      "psm": 3,
+      "outputs": [
+        "tsv",
+        "txt"
+      ],
+      "preprocessing": "No CrispSorter preprocessing; original PNG passed directly to Tesseract",
+      "zone": null
+    }
+  },
+  "inputs": [
+    {
+      "id": "ocr-task",
+      "kind": "synthetic_fixture",
+      "asset": {
+        "path": "tests/quality/ocr-task.png",
+        "sha256": "25f0e5ee8d518403fc97a94435f88d525526649adbc08c2b937c3469ff4fb4ef",
+        "bytes": 15785
+      },
+      "ground_truth": {
+        "path": "tests/quality/ocr-task.json",
+        "sha256": "7610fbbcc6feb1b1df0f1704f8818d28e53b1a32557a8afc3558c75eadcb138c",
+        "bytes": 337
+      },
+      "width": 1500,
+      "height": 200,
+      "tags": [
+        "en",
+        "synthetic",
+        "native-smoke"
+      ]
+    }
+  ],
+  "checks": {
+    "synthetic_ui": {
+      "status": "not_run",
+      "execution_boundary": "none",
+      "summary": "The new native-word browser scenario has not run for this source snapshot. Earlier browser receipts apply to earlier commits.",
+      "results": []
+    },
+    "native_parser": {
+      "status": "blocked",
+      "execution_boundary": "none",
+      "summary": "The local environment has no Rust toolchain. Production parser/adapter compilation and tests await CI; independent Python inspection is not that gate.",
+      "results": []
+    },
+    "native_provider": {
+      "status": "passed",
+      "execution_boundary": "external_cli",
+      "summary": "Tesseract 5.5.0 produced matching same-run TXT/TSV, five bounded words, and raw scores on one synthetic page.",
+      "results": [
+        {
+          "id": "tesseract-same-run-word-capture",
+          "status": "passed",
+          "command": [
+            "tesseract",
+            "/workspace/scratch/82243b18126c/CrispSorter/tests/quality/ocr-task.png",
+            "/workspace/scratch/82243b18126c/ocr-system-tesseract-check/recognition",
+            "-l",
+            "eng",
+            "--psm",
+            "3",
+            "tsv",
+            "txt"
+          ],
+          "elapsed_ms": 126.138,
+          "input_ids": [
+            "ocr-task"
+          ],
+          "assertions": [
+            "Command exited successfully and produced TXT and TSV from the same invocation.",
+            "TXT matches the existing synthetic fixture transcription, allowing surrounding whitespace.",
+            "Each of five TSV word strings matches the ordered TXT substring with only whitespace gaps.",
+            "Every word box is positive and inside the 1500 by 200 pixel input.",
+            "Every raw Tesseract word score is finite and within 0 to 100; no calibrated accuracy claim."
+          ],
+          "metrics": {
+            "word_count": 5,
+            "raw_confidence_min": 96.03495,
+            "raw_confidence_max": 96.815422
+          },
+          "evidence": [
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/metadata.json",
+              "sha256": "9d2c2b7a54bd2fadf3811cc384f7b27e9edbbcd8618448354a2a61692df8e46d",
+              "bytes": 1929
+            },
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/runtime_metadata.json",
+              "sha256": "61e865d34af19a675ecce5cc34a2e13091a4b295637292dbe2c0dd9d208bc02c",
+              "bytes": 479
+            },
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/recognition.txt",
+              "sha256": "f214a917570bd16fbda6d0112cb33959681acc24fe9e48b7c192ad1df444c234",
+              "bytes": 39
+            },
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/recognition.tsv",
+              "sha256": "ecbe94897855381f943d4ecf4fc918ba242798324fbcfa0a846d5f1e5d50479a",
+              "bytes": 421
+            },
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/stdout.txt",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0
+            },
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/stderr.txt",
+              "sha256": "1cf2fcdbdadb964d103d3a1e52f0cb7a3c7a184aa668b329a37a5a0d2158cbe6",
+              "bytes": 29
+            },
+            {
+              "path": "tests/quality/results/2026-11-09/system-tesseract-word-smoke/validation.json",
+              "sha256": "e6d7bd71da96d4a61b24c18248a1ff78c0b3de9d0a933b0851cb2544402f1977",
+              "bytes": 1397
+            }
+          ]
+        }
+      ]
+    },
+    "live_corpus": {
+      "status": "not_run",
+      "execution_boundary": "none",
+      "summary": "The frozen six-page real-scan panel was not run. This synthetic smoke page cannot qualify real-document OCR quality.",
+      "results": []
+    },
+    "device": {
+      "status": "not_run",
+      "execution_boundary": "none",
+      "summary": "No packaged CrispSorter application was executed on an installed desktop device.",
+      "results": []
+    },
+    "standards": {
+      "status": "not_run",
+      "execution_boundary": "none",
+      "summary": "No exported document or independent standards validator was run.",
+      "results": []
+    }
+  },
+  "limitations": [
+    "App commit/version identify the working checkout only; the external capture did not execute application code.",
+    "The executable and eng language-data file are hashed; dynamically linked libraries and the complete runtime dependency closure are not pinned.",
+    "One synthetic English line does not measure real-corpus accuracy, other languages, rotated/cropped input, performance distributions, or confidence calibration.",
+    "The five word boxes and score values are actual provider output; the normalization and original-evidence contract still require production parser and UI verification."
+  ]
+}

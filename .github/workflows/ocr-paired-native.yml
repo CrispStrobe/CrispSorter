@@ -54,6 +54,11 @@ on:
       - src-tauri/src/model_provisioning/**
       - src-tauri/src/lib.rs
       - src-tauri/src/ocr_reading_order.rs
+      - src-tauri/src/ocr_word_evidence.rs
+      - src-tauri/src/ocr_document.rs
+      - src-tauri/src/ocr_office.rs
+      - src-tauri/src/ocr_docx.rs
+      - src-tauri/src/ocr_xlsx.rs
       - Cargo.lock
       - src-tauri/src/extractors/ocr_crispembed.rs
       - src-tauri/src/extractors/ocr_render.rs
@@ -191,38 +196,53 @@ jobs:
           mkdir -p build src-tauri/bin
           touch src-tauri/bin/.gitkeep
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             ocr_workspace:: -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             ocr_text_export::tests -- --list | rg '^ocr_text_export::tests::.*: test$'
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             ocr_text_export::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             ocr_photo::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             model_provisioning -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             extractors::ocr_crispembed::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             extractors::tests::incomplete_jpeg_cannot_reach_an_ocr_fallback -- --list \
             | rg '^extractors::tests::incomplete_jpeg_cannot_reach_an_ocr_fallback: test$'
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             extractors::tests::incomplete_jpeg_cannot_reach_an_ocr_fallback -- --exact --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             extractors::page_source::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
             ocr_reading_order::tests -- --test-threads=1
           cargo test --locked -p crispsorter --lib --no-default-features \
-            --features ocr-workspace \
+            --features ocr-workspace,ocr-office \
+            ocr_word_evidence::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace,ocr-office \
+            ocr_document::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace,ocr-office \
+            ocr_office::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace,ocr-office \
+            ocr_docx::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace,ocr-office \
+            ocr_xlsx::tests -- --test-threads=1
+          cargo test --locked -p crispsorter --lib --no-default-features \
+            --features ocr-workspace,ocr-office \
             extractors::ocr_render::tests -- --test-threads=1
           cargo check --locked -p crispsorter --lib --no-default-features \
             --features ocr-mobile

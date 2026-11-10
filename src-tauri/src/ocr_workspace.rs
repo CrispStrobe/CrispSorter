@@ -6,7 +6,7 @@
 //! exports use the reviewed pixels and text, never silently rerun recognition.
 
 use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
-use crate::index::tauri_commands::{KieFieldDto, OcrExportResult};
+use crate::index::tauri_commands::KieFieldDto;
 use crate::AppState;
 use crate::ocr_photo::{PhotoAssessment, PhotoPoint};
 use image::DynamicImage;
@@ -241,14 +241,19 @@ const WORKSPACE_ENGINES: &[&str] = &[
 #[tauri::command]
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
+    let system = crate::ocr_word_evidence::capabilities();
+    let mut engines = if native { WORKSPACE_ENGINES.to_vec() } else { vec![] };
+    if system.available { engines.push("system_tesseract"); }
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
     if crate::extractors::ocr_render::reviewed_archival_pdf_available() { formats.push("pdfa"); }
-    if cfg!(feature = "ocr-text-export") { formats.push("docx"); }
+    if cfg!(any(feature = "ocr-text-export", feature = "ocr-office")) { formats.push("docx"); }
+    if cfg!(feature = "ocr-office") { formats.push("xlsx"); }
     json!({
         "schema_version": PROJECT_VERSION,
-        "ocr": native, "crispembed": native,
+        "ocr": native || system.available, "crispembed": native,
+        "system_tesseract": system,
         "camera_import": true, "photo_tools": cfg!(feature = "ocr-photo-tools"),
         "mobile_model_store": crate::model_provisioning::enabled(),
         "default_engine": if crate::model_provisioning::enabled() { "tesseract" } else { "auto" },
@@ -259,18 +264,20 @@ pub fn ocr_workspace_capabilities() -> Value {
         "archival_pdf_export": crate::extractors::ocr_render::reviewed_archival_pdf_available(),
         "pdf_bidi_export": crate::extractors::ocr_render::reviewed_bidi_pdf_available(),
         "pdf_bidi_export_reason": if crate::extractors::ocr_render::reviewed_bidi_pdf_available() { None } else { Some(crate::ocr_text_export::PDF_BIDI_UNAVAILABLE) },
-        "docx_export": cfg!(feature = "ocr-text-export"),
-        "docx_export_reason": if cfg!(feature = "ocr-text-export") { None } else { Some("Word export requires the OCR text export feature in this build. Plain text and HTML document remain available.") },
+        "docx_export": cfg!(any(feature = "ocr-text-export", feature = "ocr-office")),
+        "docx_export_reason": if cfg!(any(feature = "ocr-text-export", feature = "ocr-office")) { None } else { Some("Word export requires the OCR text export feature in this build. Plain text and HTML document remain available.") },
         "pdfa_conformance": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { Some("PDF/A-2b") } else { None },
         "pdfa_export_reason": if crate::extractors::ocr_render::reviewed_archival_pdf_available() { None } else { Some("PDF/A-2b export requires a matching native renderer with archival resources. Choose another available output format with this build.") },
         "cleanup": native, "layout": native, "kie": native, "table": native, "math": native,
         "structured_export": native, "formats": formats,
+        "structured_docx": cfg!(feature = "ocr-office"),
+        "structured_xlsx": cfg!(feature = "ocr-office"),
         "review_diagnostics": cfg!(feature = "ocr-review-diagnostics"),
         // Isolated low-memory Qwen2-VL worker (see `ocr_worker::run_cpu_budget`).
         "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
         "cpu_budget_pixels": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET,
-        "engines": if native { WORKSPACE_ENGINES.to_vec() } else { vec![] },
-        "reason": if native { None } else { Some("Recognition and document models require a build with CrispEmbed. Project editing, import of images and TIFFs, and text exports remain available.") },
+        "engines": engines,
+        "reason": if native || system.available { None } else { Some("Recognition requires CrispEmbed or an installed System Tesseract in a desktop sidecar build. Project editing, image/TIFF import, and text exports remain available.") },
         "pdf_reason": if cfg!(any(feature = "pdf-render", target_os = "android", target_os = "ios")) { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
     })
@@ -751,10 +758,23 @@ pub async fn ocr_workspace_recognize(
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
 ) -> Result<RecognizedPage, String> {
-    if !cfg!(feature = "crispembed") { return Err("Recognition requires a build with CrispEmbed.".into()); }
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
+    if engine.as_deref() == Some("system_tesseract") {
+        if cpu_pixel_budget.unwrap_or(false) {
+            return Err("The low-memory CPU profile applies to Qwen2 VL only. Turn it off for System Tesseract.".into());
+        }
+        let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+        return tokio::task::spawn_blocking(move || {
+            let mut result = recognize_system_tesseract_page(&root, &path, language.as_deref(), zone, size)?;
+            // This adapter never transforms the current working page. Keep the
+            // caller's exact identity after canonical-path validation for I/O.
+            result.page.image_path = page_path;
+            Ok(result)
+        }).await.map_err(|e| format!("System Tesseract worker: {e}"))?;
+    }
+    if !cfg!(feature = "crispembed") { return Err("This recognition engine requires CrispEmbed. Select System Tesseract if it is available.".into()); }
     let config = match config {
         Some(config) => config,
         None => state.bg_ingest.lock().await.ocr_pipeline.clone(),
@@ -805,6 +825,7 @@ fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelin
             confidence: recognition.then_some(r.confidence),
             confidence_basis: if recognition { "recognition" } else { "unknown" }.into(),
             char_conf: r.char_conf, char_conf_unit: "unknown".into(), char_conf_aligned: false,
+            word_evidence: None,
             kind: "text".into(),
         }
     }).collect();
@@ -813,6 +834,57 @@ fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelin
         warnings: vec![format!("Low-memory CPU profile: the vision input was limited to {} pixels, so fine print may be missed. Review the result.", crate::extractors::ocr_worker::CPU_PIXEL_BUDGET)],
         diagnostics: json!({"cpu_pixel_budget": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET, "isolated_worker": true}),
     })
+}
+
+/// Explicit external-engine route: recognize exactly the current pixels and
+/// translate both paragraph and word boxes once after a cropped invocation.
+fn recognize_system_tesseract_page(root: &Path, path: &Path, language: Option<&str>, zone: Option<PixelRect>, physical_size: Option<(f64, f64)>) -> Result<RecognizedPage, String> {
+    let started = std::time::Instant::now();
+    let (width, height) = checked_dimensions(path)?;
+    let (recognition_path, offset) = if let Some(zone) = zone {
+        let (x, y, w, h) = checked_rect(zone, width, height)?;
+        let crop = persist_image(root, &decode_page(path)?.crop_imm(x, y, w, h))?;
+        (PathBuf::from(crop.image_path), (x, y))
+    } else { (path.to_owned(), (0, 0)) };
+    let result = crate::ocr_word_evidence::recognize(&recognition_path, language)?;
+    let mut diagnostics = result.diagnostics;
+    diagnostics["full_text"] = json!(result.full_text);
+    diagnostics["engine"] = json!("system_tesseract");
+    diagnostics["preparation"] = json!("current_working_image");
+    diagnostics["recognition_image_path"] = json!(recognition_path.to_string_lossy());
+    if let Some(zone) = zone {
+        diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?;
+        diagnostics["effective_zone"] = json!({"x":offset.0,"y":offset.1,"w":result.width,"h":result.height});
+        diagnostics["region_offset"] = json!({"x":offset.0,"y":offset.1});
+    }
+    let regions = map_system_tesseract_regions(result.regions, offset, width, height)?;
+    let mut page = PageAsset { image_path:path.to_string_lossy().into_owned(), width, height,
+        page_width_points:None, page_height_points:None };
+    set_physical_size(&mut page, physical_size);
+    Ok(RecognizedPage { page, regions, elapsed_ms:started.elapsed().as_millis() as u64,
+        warnings:result.warnings, diagnostics })
+}
+
+fn map_system_tesseract_regions(source: Vec<crate::ocr_word_evidence::SystemTesseractRegion>, offset: (u32, u32), width: u32, height: u32) -> Result<Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, String> {
+    use crate::extractors::ocr_crispembed::OcrReviewRegion;
+    let mut regions = Vec::with_capacity(source.len());
+    for mut region in source {
+        region.x += offset.0 as f32;
+        region.y += offset.1 as f32;
+        for word in &mut region.word_evidence.words {
+            word.x += offset.0 as f32;
+            word.y += offset.1 as f32;
+        }
+        crate::ocr_word_evidence::validate_word_evidence(&region.word_evidence, &region.text, width, height)?;
+        checked_rect(PixelRect { x:region.x as f64, y:region.y as f64, w:region.w as f64, h:region.h as f64 }, width, height)?;
+        regions.push(OcrReviewRegion {
+            text:region.text, x:region.x, y:region.y, w:region.w, h:region.h,
+            confidence:None, confidence_basis:"unknown".into(),
+            char_conf:Vec::new(), char_conf_unit:"unknown".into(), char_conf_aligned:false,
+            word_evidence:Some(region.word_evidence), kind:"text".into(),
+        });
+    }
+    Ok(regions)
 }
 
 fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool) -> Result<RecognizedPage, String> {
@@ -848,6 +920,13 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     for region in &mut result.regions {
         region.x += offset.0 as f32;
         region.y += offset.1 as f32;
+        if let Some(evidence) = &mut region.word_evidence {
+            for word in &mut evidence.words {
+                word.x += offset.0 as f32;
+                word.y += offset.1 as f32;
+            }
+            crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, page.width, page.height)?;
+        }
         // A malformed native box must not reach a searchable export. Preserve
         // the previous frontend result by failing the whole replacement.
         checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, page.width, page.height)
@@ -1062,6 +1141,64 @@ pub async fn ocr_workspace_list(app: tauri::AppHandle) -> Result<Vec<ProjectSumm
     }).await.map_err(|e| format!("Project list worker: {e}"))?
 }
 
+/// Immutable source coverage and evidence, kept separate from a manual passage.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PassageSourceComponent {
+    pub version: u32,
+    pub id: String,
+    pub source_region_id: String,
+    pub page_id: String,
+    pub image_path: String,
+    pub width: u32,
+    pub height: u32,
+    pub bounds_at_capture: PixelRect,
+    pub kind: String,
+    pub original_text: String,
+    pub text_at_capture: String,
+    pub confidence: Option<f32>,
+    pub confidence_basis: String,
+    #[serde(rename = "char_conf")]
+    pub char_conf: Vec<f32>,
+    pub char_confidence_unit: String,
+    pub char_confidence_aligned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+}
+
+fn validate_source_components(components: &[PassageSourceComponent]) -> Result<usize, String> {
+    let bytes = serde_json::to_vec(components).map_err(|e| e.to_string())?.len();
+    if components.is_empty() || components.len() > 128 || bytes > 8 * 1024 * 1024 {
+        return Err("Passage source history exceeds 128 components or 8 MB. No evidence was truncated.".into());
+    }
+    let valid_id = |value: &str| !value.trim().is_empty() && value.encode_utf16().count() <= 200 && !value.contains('\0');
+    let score = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
+    let mut ids = HashSet::new();
+    for source in components {
+        if source.version != 1 || !valid_id(&source.id) || !ids.insert(&source.id) ||
+            !valid_id(&source.source_region_id) || !valid_id(&source.page_id) ||
+            source.image_path.is_empty() || source.image_path.encode_utf16().count() > 10_000 || source.image_path.contains('\0') ||
+            source.width == 0 || source.height == 0 || source.width > 100_000 || source.height > 100_000 ||
+            u64::from(source.width) * u64::from(source.height) > MAX_PAGE_PIXELS ||
+            !["text","title","table","picture","formula","header","footer"].contains(&source.kind.as_str()) ||
+            !["recognition","detection","unknown","manual"].contains(&source.confidence_basis.as_str()) ||
+            source.confidence.is_some_and(|value| !score(value)) || source.char_conf.len() > 1_000_000 ||
+            source.char_conf.iter().any(|value| !score(*value)) ||
+            !["unicode_codepoint","token","unknown"].contains(&source.char_confidence_unit.as_str()) {
+            return Err("Passage source history contains invalid metadata.".into());
+        }
+        checked_rect(source.bounds_at_capture, source.width, source.height)?;
+        if source.char_confidence_aligned && (source.char_confidence_unit != "unicode_codepoint" ||
+            source.char_conf.is_empty() || source.char_conf.len() != source.original_text.chars().count()) {
+            return Err("Passage source character evidence does not match its original text.".into());
+        }
+        if let Some(words) = &source.word_evidence {
+            crate::ocr_word_evidence::validate_word_evidence(words, &source.original_text, source.width, source.height)?;
+        }
+    }
+    Ok(bytes)
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ExportRegion {
     pub text: String,
@@ -1088,6 +1225,16 @@ pub struct ExportRegion {
     pub original_char_conf: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_char_conf_aligned: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_components: Option<Vec<PassageSourceComponent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separator_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_source_groups: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1116,6 +1263,16 @@ pub struct ExportPage {
     pub approved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure: Option<crate::ocr_document::DocumentStructure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_regions: Option<Vec<ExportRegion>>,
+}
+
+fn structure_sources(regions: &[ExportRegion]) -> Vec<crate::ocr_document::StructureSource<'_>> {
+    regions.iter().map(|region| crate::ocr_document::StructureSource {
+        id:region.id.as_deref().unwrap_or(""),text:region.text.as_str(),kind:region.kind.as_deref().unwrap_or("text"),
+    }).collect()
 }
 
 fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
@@ -1127,12 +1284,48 @@ fn validate_export_pages(pages: &[ExportPage]) -> Result<(), String> {
         }
         checked_physical_size(page.page_width_points, page.page_height_points)
             .map_err(|e| format!("Page {}: {e}", i + 1))?;
-        if page.regions.len() > MAX_REGIONS { return Err(format!("Page {} has too many regions.", i + 1)); }
-        for (j, region) in page.regions.iter().enumerate() {
+        let figures=page.figure_regions.as_deref().unwrap_or(&[]);
+        if page.regions.len() + figures.len() > MAX_REGIONS { return Err(format!("Page {} has too many regions.", i + 1)); }
+        if !figures.is_empty() && page.structure.is_none() { return Err("Figure source records require a document structure.".into()); }
+        if figures.iter().any(|region| region.kind.as_deref()!=Some("picture")) { return Err("Figure source records must describe picture regions.".into()); }
+        if let Some(structure)=&page.structure {
+            crate::ocr_document::validate_structure(structure,&structure_sources(&page.regions),&structure_sources(figures))?;
+        }
+        let mut source_bytes = 0;
+        if let Some(archived) = page.provenance.as_ref().and_then(|value| value.get("passageSources")) {
+            let components: Vec<PassageSourceComponent> = serde_json::from_value(archived.clone()).map_err(|e| format!("Invalid archived passage sources: {e}"))?;
+            source_bytes += validate_source_components(&components)?;
+        }
+        for (j, region) in page.regions.iter().chain(figures).enumerate() {
             checked_rect(PixelRect { x: region.x as f64, y: region.y as f64, w: region.w as f64, h: region.h as f64 }, width, height)
                 .map_err(|e| format!("Page {}, region {}: {e}", i + 1, j + 1))?;
             if region.confidence.is_some_and(|score| !score.is_finite() || !(0.0..=1.0).contains(&score)) {
                 return Err(format!("Page {}, region {} has an invalid confidence.", i + 1, j + 1));
+            }
+            if let Some(evidence) = &region.original_word_evidence {
+                let original = region.original_text.as_deref().ok_or("Original word evidence requires its original text.")?;
+                crate::ocr_word_evidence::validate_word_evidence(evidence, original, width, height)?;
+            }
+            if let Some(evidence) = &region.word_evidence {
+                let original = region.original_text.as_deref().ok_or("Current word evidence requires its original text.")?;
+                if original != region.text {
+                    return Err("Edited text cannot retain the original word confidence or word boxes.".into());
+                }
+                crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, width, height)?;
+            }
+            if let Some(components) = &region.source_components {
+                source_bytes += validate_source_components(components)?;
+            }
+            if source_bytes > 16 * 1024 * 1024 { return Err("Page source history exceeds 16 MB. No evidence was truncated.".into()); }
+            if region.separator_before.as_ref().is_some_and(|separator| !["", " ", "\n", "\n\n"].contains(&separator.as_str())) {
+                return Err("Invalid passage separator.".into());
+            }
+            if let Some(groups) = &region.shared_source_groups {
+                let unique: HashSet<_> = groups.iter().collect();
+                if groups.len() > 128 || unique.len() != groups.len() || groups.iter().any(|group|
+                    group.trim().is_empty() || group.encode_utf16().count() > 200 || group.contains('\0')) {
+                    return Err("Invalid shared source groups.".into());
+                }
             }
         }
     }
@@ -1162,12 +1355,124 @@ fn export_text_pages(pages: &[ExportPage]) -> Vec<Vec<&str>> {
     pages.iter().map(|page| page.regions.iter().map(|region| region.text.as_str()).collect()).collect()
 }
 
+fn joined_text(pages: &[ExportPage]) -> String {
+    pages.iter().map(|page| joined_page_text(page, "\n")).collect::<Vec<_>>().join("\u{000c}")
+}
+
+fn joined_page_text(page: &ExportPage, default_separator: &str) -> String {
+    let mut text = String::new();
+    for (index, region) in page.regions.iter().enumerate() {
+        if index > 0 { text.push_str(region.separator_before.as_deref().unwrap_or(default_separator)); }
+        text.push_str(&region.text);
+    }
+    text
+}
+
+fn has_shared_source_overlap(page: &ExportPage) -> bool {
+    let mut groups: std::collections::HashMap<&str, Vec<&ExportRegion>> = std::collections::HashMap::new();
+    for region in &page.regions {
+        for id in region.shared_source_groups.iter().flatten() {
+            let members = groups.entry(id.as_str()).or_default();
+            if members.iter().any(|other| (other.x + other.w).min(region.x + region.w) > other.x.max(region.x)
+                && (other.y + other.h).min(region.y + region.h) > other.y.max(region.y)) { return true; }
+            members.push(region);
+        }
+    }
+    false
+}
+
 fn transcription_confidence(region: &ExportRegion) -> f32 {
     let unknown = if cfg!(feature = "ocr-reviewed-pdf") { -1.0 } else { 0.0 };
     if region.confidence_basis.as_deref() == Some("recognition")
         && region.original_text.as_deref() == Some(region.text.as_str()) {
         region.confidence.filter(|score| score.is_finite() && (0.0..=1.0).contains(score)).unwrap_or(unknown)
     } else { unknown }
+}
+
+/// Adapt validated current page content to the pure Word writer. Capture paths
+/// in provenance are never opened; pictures come only from the current page
+/// images already admitted by managed_page and validate_export_pages.
+#[cfg(feature = "ocr-office")]
+fn export_docx(pages: &[ExportPage], options: &crate::ocr_office::OfficeOptions) -> Result<crate::ocr_docx::DocxOutput, String> {
+    use crate::ocr_docx::{DocxFigure, DocxPage, DocxRegion};
+    use crate::ocr_office::{OfficeSourcePage, OfficeSourceRegion, select_office_objects};
+    // Positional identities keep plain legacy exports readable, but must never
+    // authorize an explicit extraction selection or removal of source text.
+    for selection in &options.objects {
+        let page = pages.iter().find(|page| page.id.as_deref() == Some(selection.page_id.as_str()))
+            .ok_or("Selected Word content requires the supplied stable page identity within this export scope. Reopen the project and select it again.")?;
+        if selection.placement == "replace-region" && !page.regions.iter().any(|region|
+            region.id.as_deref().is_some_and(|id| Some(id) == selection.region_id.as_deref())) {
+            return Err("Replacing Word source text requires the supplied stable passage identity. Choose the passage again.".into());
+        }
+    }
+    let identities: Vec<_> = pages.iter().enumerate().map(|(index, page)|
+        page.id.clone().unwrap_or_else(|| format!("legacy-page-{}", index + 1))).collect();
+    let region_ids: Vec<Vec<String>> = pages.iter().map(|page| page.regions.iter().enumerate().map(|(index, region)|
+        region.id.clone().unwrap_or_else(|| format!("legacy-region-{}", index + 1))).collect()).collect();
+    let sources: Vec<_> = pages.iter().enumerate().map(|(index, page)| OfficeSourcePage {
+        id: identities[index].as_str(), provenance: page.provenance.as_ref(),
+        regions: page.regions.iter().enumerate().map(|(position, region)| OfficeSourceRegion {
+            id: region_ids[index][position].as_str(), kind: region.kind.as_deref().unwrap_or("text"),
+        }).collect(),
+    }).collect();
+    let selected = select_office_objects(&sources, options)?;
+    let figure_count: usize = pages.iter().map(|page| page.figure_regions.as_ref().map_or(0, Vec::len)).sum();
+    if figure_count > 1_024 { return Err("Word export supports at most 1,024 pictures per document. Export a smaller page selection.".into()); }
+    let mut picture_bytes = 0usize;
+    let mut document = Vec::with_capacity(pages.len());
+    for (index, page) in pages.iter().enumerate() {
+        let width_points = page.page_width_points.unwrap_or(f64::from(page.width) * 72.0 / 300.0);
+        let height_points = page.page_height_points.unwrap_or(f64::from(page.height) * 72.0 / 300.0);
+        let mut figures = vec![];
+        if let Some(regions) = page.figure_regions.as_ref().filter(|regions| !regions.is_empty()) {
+            let image = decode_page(Path::new(&page.image_path))?;
+            for region in regions {
+                let region_id = region.id.as_deref().ok_or("A Word picture needs its stable source region identity.")?;
+                let (x, y, width, height) = checked_rect(PixelRect {
+                    x: f64::from(region.x), y: f64::from(region.y), w: f64::from(region.w), h: f64::from(region.h),
+                }, image.width(), image.height())?;
+                let mut output = std::io::Cursor::new(Vec::new());
+                image.crop_imm(x, y, width, height).write_to(&mut output, image::ImageFormat::Png)
+                    .map_err(|error| format!("Prepare current picture pixels: {error}"))?;
+                let png = output.into_inner();
+                picture_bytes = picture_bytes.saturating_add(png.len());
+                if picture_bytes > 64 * 1024 * 1024 { return Err("Word picture data exceeds 64 MB. Export a smaller page selection.".into()); }
+                figures.push(DocxFigure { region_id: region_id.to_owned(), png, width_px: width, height_px: height,
+                    width_points: f64::from(width) / f64::from(page.width) * width_points,
+                    height_points: f64::from(height) / f64::from(page.height) * height_points });
+            }
+        }
+        document.push(DocxPage {
+            id: identities[index].clone(), page_width_points: width_points, page_height_points: height_points,
+            regions: page.regions.iter().enumerate().map(|(position, region)| DocxRegion {
+                id: region_ids[index][position].clone(), kind: region.kind.clone().unwrap_or_else(|| "text".into()),
+                text: region.text.clone(), separator_before: region.separator_before.clone(),
+            }).collect(),
+            figures, structure: page.structure.clone(),
+            objects: selected.iter().filter(|(page_id, _)| page_id == &identities[index]).map(|(_, object)| object.clone()).collect(),
+        });
+    }
+    crate::ocr_docx::render_docx(&document)
+}
+
+/// A workbook contains only saved table strings. Current page images and OCR
+/// geometry are deliberately not inputs, so historical tables remain exportable
+/// after a source image is removed or a page is waiting for recognition.
+#[cfg(feature = "ocr-office")]
+fn export_xlsx(pages: &[ExportPage], options: &crate::ocr_office::WorkbookOptions) -> Result<crate::ocr_xlsx::XlsxOutput, String> {
+    use crate::ocr_office::{OfficeSourcePage, select_workbook_tables};
+    let sources = pages.iter().map(|page| {
+        Ok(OfficeSourcePage {
+            id: page.id.as_deref().ok_or("Workbook selections require supplied stable page identities. Reopen the project and select the tables again.")?,
+            provenance: page.provenance.as_ref(), regions: vec![],
+        })
+    }).collect::<Result<Vec<_>, String>>()?;
+    let selected = select_workbook_tables(&sources, options)?;
+    let sheets = selected.into_iter().map(|sheet| crate::ocr_xlsx::XlsxSheet {
+        page_id: sheet.page_id, object_id: sheet.object_id, name: sheet.name, table: sheet.table,
+    }).collect::<Vec<_>>();
+    crate::ocr_xlsx::render_xlsx(&sheets)
 }
 
 fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
@@ -1178,7 +1483,7 @@ fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
     if OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf) && !reviewed_pdf_available() {
         return Err("Searchable PDF requires the matching updated CrispEmbed renderer and an OCR workspace build. Choose hOCR, ALTO, text, or JSON with this build.".into());
     }
-    if format == "docx" && !cfg!(feature = "ocr-text-export") {
+    if format == "docx" && !cfg!(any(feature = "ocr-text-export", feature = "ocr-office")) {
         return Err("Word export requires the OCR text export feature in this build. Choose Plain text or HTML document.".into());
     }
     Ok(())
@@ -1192,6 +1497,9 @@ fn validate_export_text(pages: &[ExportPage], format: &str) -> Result<(), String
         && !crate::extractors::ocr_render::reviewed_bidi_pdf_available()
         && pages.iter().any(|page| page.regions.iter().any(|region| crate::ocr_text_export::needs_bidirectional_pdf(&region.text))) {
         return Err(crate::ocr_text_export::PDF_BIDI_UNAVAILABLE.into());
+    }
+    if OcrOutputFormat::from_name(format).is_some_and(|kind| kind.needs_render_binding()) && pages.iter().any(has_shared_source_overlap) {
+        return Err("Passages share overlapping source areas. Divide their boxes or merge the passages before exporting PDF, hOCR, or ALTO. Text and JSON retain the exact edited text.".into());
     }
     if format == "docx" { crate::ocr_text_export::validate_docx(&export_text_pages(pages))?; }
     Ok(())
@@ -1211,17 +1519,25 @@ fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8
     validate_export_format(format, pdfa)?;
     validate_export_text(pages, format)?;
     match format {
-        "text" | "txt" | "plain" => Ok(crate::ocr_text_export::text(&export_text_pages(pages)).into_bytes()),
+        "text" | "txt" | "plain" => Ok(joined_text(pages).into_bytes()),
         "json" => serde_json::to_vec_pretty(&json!({"schema_version": 1, "pages": pages})).map_err(|e| e.to_string()),
-        "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, p.regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
+        "markdown" => Ok(pages.iter().enumerate().map(|(i, p)| format!("<!-- Page {} -->\n\n{}", i + 1, joined_page_text(p, "\n\n"))).collect::<Vec<_>>().join("\n\n---\n\n").into_bytes()),
         "html" => {
-            crate::ocr_text_export::html(&export_text_pages(pages)).map(String::into_bytes)
+            let text = pages.iter().map(|page| joined_page_text(page, "\n\n")).collect::<Vec<_>>();
+            let borrowed = text.iter().map(|text| vec![text.as_str()]).collect::<Vec<_>>();
+            crate::ocr_text_export::html(&borrowed).map(String::into_bytes)
         },
         "docx" => {
-            #[cfg(feature = "ocr-text-export")]
-            { crate::ocr_text_export::docx(&export_text_pages(pages)) }
-            #[cfg(not(feature = "ocr-text-export"))]
-            { Err("Word export requires the OCR text export feature in this build.".into()) }
+            #[cfg(feature = "ocr-office")]
+            { export_docx(pages, &crate::ocr_office::OfficeOptions::default()).map(|output| output.bytes) }
+            #[cfg(all(not(feature = "ocr-office"), feature = "ocr-text-export"))]
+            {
+                let text = pages.iter().map(|page| joined_page_text(page, "\n")).collect::<Vec<_>>();
+                let borrowed = text.iter().map(|text| vec![text.as_str()]).collect::<Vec<_>>();
+                crate::ocr_text_export::docx(&borrowed)
+            }
+            #[cfg(not(any(feature = "ocr-office", feature = "ocr-text-export")))]
+            { Err("Word export requires an OCR text or Office export feature in this build.".into()) }
         },
         _ => {
             let format = OcrOutputFormat::from_name(format).ok_or_else(|| format!("Unsupported OCR export format: {format}"))?;
@@ -1299,6 +1615,37 @@ pub fn ocr_workspace_cancel_export(request_id: String) -> Result<bool, String> {
     export_control::cancel(&request_id)
 }
 
+/// Publish a prepared Office document with the same cancellation and atomic
+/// commit boundary as streamed exports. Cancellation after rendering still
+/// prevents a partially written destination from becoming visible.
+fn write_prepared_export(
+    path: &Path, bytes: &[u8], overwrite: bool, control: &ExportControl,
+    mut progress: impl FnMut(&str, u64),
+) -> Result<usize, String> {
+    control.check().map_err(|error| error.to_string())?;
+    atomic_write_with(path, overwrite, |file| {
+        {
+            let mut writer = ControlledWriter::new(&mut *file, control, |written| progress("writing", written));
+            writer.write_all_checked(bytes).map_err(|error| format!("Write OCR export: {error}"))?;
+            writer.flush().map_err(|error| format!("Flush OCR export: {error}"))?;
+        }
+        if file.metadata().map_err(|error| format!("Check rendered document: {error}"))?.len() != bytes.len() as u64 {
+            return Err("The renderer byte count does not match the staged document. No output was published.".into());
+        }
+        control.begin_commit().map_err(|error| error.to_string())?;
+        progress("committing", bytes.len() as u64);
+        Ok(bytes.len())
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceExportResult {
+    pub saved_path: String, pub bytes: usize, pub pages: usize, pub format: String,
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheets: Option<usize>,
+}
+
 #[tauri::command]
 pub async fn ocr_workspace_export(
     app: tauri::AppHandle,
@@ -1309,22 +1656,70 @@ pub async fn ocr_workspace_export(
     overwrite: Option<bool>,
     source_uris: Option<Vec<String>>,
     request_id: Option<String>,
-) -> Result<OcrExportResult, String> {
+    office_options: Option<crate::ocr_office::OfficeOptions>,
+    workbook_options: Option<crate::ocr_office::WorkbookOptions>,
+) -> Result<WorkspaceExportResult, String> {
     let job = ExportJob::begin(request_id)?;
     let root = workspace_root(&app)?;
     tokio::task::spawn_blocking(move || {
-        for page in &pages { managed_page(&root, &page.image_path)?; }
-        validate_export_pages(&pages)?;
+        if office_options.is_some() && format != "docx" {
+            return Err("Word object placement options are only supported for DOCX export.".into());
+        }
+        if workbook_options.is_some() && format != "xlsx" {
+            return Err("Workbook worksheet choices are only supported for XLSX export.".into());
+        }
+        if format != "xlsx" {
+            for page in &pages { managed_page(&root, &page.image_path)?; }
+            validate_export_pages(&pages)?;
+        } else if pages.is_empty() || pages.len() > MAX_PAGES {
+            return Err("Select saved tables from 1–10,000 source pages for this workbook.".into());
+        }
         let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
-            MAX_STREAMED_PDF_BYTES, job.control(), |phase, bytes| {
-                let _ = app.emit("ocr-workspace-export", json!({
-                    "request_id": job.id(), "phase": phase, "bytes": bytes,
-                }));
-            })?;
-        Ok(OcrExportResult {
-            saved_path: path.to_string_lossy().into_owned(), bytes, pages: pages.len(),
+        let emit_progress = |phase: &str, bytes: u64| {
+            let _ = app.emit("ocr-workspace-export", json!({
+                "request_id": job.id(), "phase": phase, "bytes": bytes,
+            }));
+        };
+        job.control().check().map_err(|error| error.to_string())?;
+        validate_export_format(&format, pdfa)?;
+        validate_export_text(&pages, &format)?;
+        let prepared: Option<(Vec<u8>, Vec<String>, Option<usize>, usize)> = if format == "xlsx" {
+            #[cfg(feature = "ocr-office")]
+            {
+                emit_progress("rendering", 0);
+                let options = workbook_options.ok_or("Select at least one saved table for this workbook.")?;
+                let output = export_xlsx(&pages, &options)?;
+                let owners = options.sheets.iter().map(|sheet| sheet.page_id.as_str()).collect::<HashSet<_>>().len();
+                Some((output.bytes, output.warnings, Some(options.sheets.len()), owners))
+            }
+            #[cfg(not(feature = "ocr-office"))]
+            { return Err("Workbook export is unavailable in this build. Install a build with Office export support.".into()); }
+        } else if format == "docx" && cfg!(feature = "ocr-office") {
+            #[cfg(feature = "ocr-office")]
+            {
+                emit_progress("rendering", 0);
+                let output = export_docx(&pages, &office_options.unwrap_or_default())?;
+                Some((output.bytes, output.warnings, None, pages.len()))
+            }
+            #[cfg(not(feature = "ocr-office"))]
+            { None }
+        } else {
+            if office_options.is_some() { return Err("Structured Word choices require a build with Office export support.".into()); }
+            None
+        };
+        let (bytes, warnings, sheets, exported_pages) = if let Some((data, warnings, sheets, owners)) = prepared {
+            if data.is_empty() { return Err("The renderer produced an empty document.".into()); }
+            let bytes = write_prepared_export(&path, &data, overwrite.unwrap_or(false), job.control(), emit_progress)?;
+            (bytes, warnings, sheets, owners)
+        } else {
+            let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
+                MAX_STREAMED_PDF_BYTES, job.control(), emit_progress)?;
+            (bytes, vec![], None, pages.len())
+        };
+        Ok(WorkspaceExportResult {
+            saved_path: path.to_string_lossy().into_owned(), bytes, pages: exported_pages,
             format: if pdfa { "pdfa".into() } else { format },
+            warnings, sheets,
         })
     }).await.map_err(|e| format!("Export worker: {e}"))?
 }
@@ -1628,8 +2023,10 @@ mod tests {
             text: text.into(), x: 1.0, y: 1.0, w: 6.0, h: 2.0, confidence: Some(0.0), char_conf: vec![],
             id: None, original_text: None, confidence_basis: None, char_conf_unit: None,
             char_conf_aligned: None, original_char_conf: None, original_char_conf_aligned: None,
+            word_evidence: None, original_word_evidence: None,
+            source_components: None, separator_before: None, shared_source_groups: None,
             review: None, kind: None,
-        }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None }
+        }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None, structure:None, figure_regions:None }
     }
 
     #[test]
@@ -1640,6 +2037,115 @@ mod tests {
         assert_eq!(first.image_path, second.image_path);
         assert_eq!(fs::read_dir(root.path().join("assets")).unwrap().count(), 1);
         assert_eq!(image::open(first.image_path).unwrap().to_rgb8(), image().to_rgb8());
+    }
+
+    #[test]
+    fn system_word_boxes_translate_from_crop_once_without_inventing_character_scores() {
+        let tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t100\t40\t-1\t\n5\t1\t1\t1\t1\t1\t2\t3\t30\t20\t42\tInv0ice\n";
+        let native = crate::ocr_word_evidence::parse_tesseract(tsv, "Inv0ice\n", 100, 40).unwrap();
+        let regions = map_system_tesseract_regions(native.regions.clone(), (70, 80), 200, 150).unwrap();
+        assert_eq!((regions[0].x, regions[0].y), (72.0, 83.0));
+        let word = &regions[0].word_evidence.as_ref().unwrap().words[0];
+        assert_eq!((word.x, word.y, word.start, word.end), (72.0, 83.0, 0, 7));
+        assert_eq!(word.confidence, Some(0.42));
+        assert!(regions[0].confidence.is_none());
+        assert!(regions[0].char_conf.is_empty());
+        assert!(!regions[0].char_conf_aligned);
+        assert!(map_system_tesseract_regions(native.regions, (190, 140), 200, 150).is_err());
+    }
+
+    #[test]
+    fn json_export_retains_original_word_evidence_but_rejects_stale_current_ranges() {
+        use crate::ocr_word_evidence::{NativeWordEvidence, WordEvidenceEnvelope};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "Hi");
+        let envelope = WordEvidenceEnvelope { version:1, offset_unit:"utf16".into(), source:"tesseract_tsv".into(), words:vec![
+            NativeWordEvidence { text:"Hi".into(), start:0, end:2, x:1.0, y:1.0, w:2.0, h:1.0,
+                confidence:None, confidence_basis:"recognition".into(), alternatives:None },
+        ] };
+        page.regions[0].original_text = Some("Hi".into());
+        page.regions[0].original_word_evidence = Some(envelope.clone());
+        page.regions[0].word_evidence = Some(envelope.clone());
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        page.regions[0].original_text = None;
+        page.regions[0].original_word_evidence = None;
+        assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("requires its original text"));
+        page.regions[0].original_text = Some("Hi".into());
+        page.regions[0].original_word_evidence = Some(envelope.clone());
+        page.regions[0].text = "Hello".into();
+        assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("Edited text"));
+        page.regions[0].word_evidence = None;
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        let json: Value = serde_json::from_slice(&export_bytes(&[page], "json", false).unwrap()).unwrap();
+        assert_eq!(json["pages"][0]["regions"][0]["original_word_evidence"], serde_json::to_value(envelope).unwrap());
+        assert!(json["pages"][0]["regions"][0].get("word_evidence").is_none());
+    }
+
+    #[test]
+    fn manual_passage_separators_and_original_sources_survive_export() {
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "Hel");
+        let source: PassageSourceComponent = serde_json::from_value(json!({
+            "version":1,"id":"source-a","sourceRegionId":"original-a","pageId":"page-a",
+            "imagePath":page.image_path,"width":8,"height":4,
+            "boundsAtCapture":{"x":1,"y":1,"w":6,"h":2},"kind":"text",
+            "originalText":"Hell0","textAtCapture":"Hello","confidence":null,"confidenceBasis":"unknown",
+            "char_conf":[],"charConfidenceUnit":"unknown","charConfidenceAligned":false,
+            "wordEvidence":{"version":1,"offset_unit":"utf16","source":"fixture","words":[
+                {"text":"Hell0","start":0,"end":5,"x":1,"y":1,"w":6,"h":2,"confidence":0.42,"confidence_basis":"recognition"}
+            ]}
+        })).unwrap();
+        page.regions[0].source_components = Some(vec![source.clone()]);
+        page.regions[0].shared_source_groups = Some(vec!["shared-a".into()]);
+        let mut second = export_page(root.path(), "lo").regions.remove(0);
+        second.source_components = Some(vec![source]);
+        second.shared_source_groups = Some(vec!["shared-a".into()]);
+        second.separator_before = Some(String::new());
+        page.regions.push(second);
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        assert_eq!(export_bytes(std::slice::from_ref(&page), "text", false).unwrap(), b"Hello");
+        let html = String::from_utf8(export_bytes(std::slice::from_ref(&page), "html", false).unwrap()).unwrap();
+        assert!(html.contains("<p>Hello</p>"));
+        let json: Value = serde_json::from_slice(&export_bytes(std::slice::from_ref(&page), "json", false).unwrap()).unwrap();
+        assert_eq!(json["pages"][0]["regions"][1]["separator_before"], "");
+        assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["originalText"], "Hell0");
+        assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["textAtCapture"], "Hello");
+        assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["wordEvidence"]["words"][0]["text"], "Hell0");
+        for format in ["pdf","hocr","alto","XML"] {
+            assert!(export_bytes(std::slice::from_ref(&page), format, false).unwrap_err().contains("overlapping source areas"));
+        }
+        page.regions[0].w = 3.0;
+        page.regions[1].x = 4.0;
+        page.regions[1].w = 3.0;
+        assert!(!has_shared_source_overlap(&page));
+        page.regions[1].separator_before = Some("malformed".into());
+        assert!(validate_export_pages(std::slice::from_ref(&page)).unwrap_err().contains("separator"));
+    }
+
+    #[test]
+    fn logical_structure_and_figure_sources_survive_json_without_changing_plain_text() {
+        let root=tempfile::tempdir().unwrap();
+        let mut page=export_page(root.path(),"Heading");
+        page.regions[0].id=Some("text-a".into()); page.regions[0].kind=Some("title".into());
+        let mut figure=export_page(root.path(),"Not transcription").regions.remove(0);
+        figure.id=Some("figure-a".into()); figure.kind=Some("picture".into());
+        page.figure_regions=Some(vec![figure]);
+        page.structure=Some(serde_json::from_value(json!({
+            "version":1,"sections":[{"id":"section-a","columns":1}],"blocks":[
+                {"id":"heading-a","sourceRegionId":"text-a","sectionId":"section-a","column":1,
+                    "role":"heading","headingLevel":1,"alignment":"center","breakBefore":"none","runs":[{"start":0,"end":7,"bold":true}]},
+                {"id":"image-a","sourceRegionId":"figure-a","sectionId":"section-a","column":1,
+                    "role":"figure","alignment":"start","breakBefore":"none","runs":[],"altText":"A diagram","decorative":false}
+            ]
+        })).unwrap());
+        validate_export_pages(std::slice::from_ref(&page)).unwrap();
+        assert_eq!(export_bytes(std::slice::from_ref(&page),"text",false).unwrap(),b"Heading");
+        let json:Value=serde_json::from_slice(&export_bytes(std::slice::from_ref(&page),"json",false).unwrap()).unwrap();
+        assert_eq!(json["pages"][0]["structure"]["blocks"][0]["runs"][0]["bold"],true);
+        assert_eq!(json["pages"][0]["figure_regions"][0]["id"],"figure-a");
+        assert_eq!(json["pages"][0]["regions"].as_array().unwrap().len(),1);
+        page.figure_regions=None;
+        assert!(validate_export_pages(&[page]).unwrap_err().contains("exactly one block"));
     }
 
     #[test]
@@ -1784,6 +2290,10 @@ mod tests {
         let capabilities = ocr_workspace_capabilities();
         let formats = capabilities["formats"].as_array().unwrap();
         assert_eq!(formats.iter().any(|format| format == "pdf"), reviewed_pdf_available());
+        assert_eq!(formats.iter().any(|format| format == "docx"), cfg!(feature = "ocr-office"));
+        assert_eq!(capabilities["structured_docx"], json!(cfg!(feature = "ocr-office")));
+        assert_eq!(formats.iter().any(|format| format == "xlsx"), cfg!(feature = "ocr-office"));
+        assert_eq!(capabilities["structured_xlsx"], json!(cfg!(feature = "ocr-office")));
         if !reviewed_pdf_available() { assert!(capabilities["pdf_export_reason"].as_str().is_some()); }
         let root = tempfile::tempdir().unwrap();
         let pages = vec![export_page(root.path(), "reviewed")];
@@ -1802,6 +2312,154 @@ mod tests {
             assert!(export_bytes(&pages, "pdf", false).unwrap_err().contains("matching updated CrispEmbed renderer"));
         }
         assert_eq!(export_bytes(&pages, "text", false).unwrap(), b"reviewed");
+    }
+
+    #[cfg(feature = "ocr-office")]
+    fn office_part(bytes: &[u8], name: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut part = archive.by_name(name).unwrap();
+        let mut result = vec![];
+        part.read_to_end(&mut result).unwrap();
+        result
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn docx_adapter_retains_literal_text_and_blank_source_pages() {
+        let root = tempfile::tempdir().unwrap();
+        let mut first = export_page(root.path(), "  Hello\tworld\r\n\n😀 & < >  ");
+        first.page_width_points = Some(612.0); first.page_height_points = Some(792.0);
+        let mut blank = export_page(root.path(), ""); blank.regions.clear();
+        blank.page_width_points = Some(612.0); blank.page_height_points = Some(792.0);
+        let pages = vec![first, blank];
+        validate_export_pages(&pages).unwrap();
+        let output = export_docx(&pages, &crate::ocr_office::OfficeOptions::default()).unwrap();
+        let xml = String::from_utf8(office_part(&output.bytes, "word/document.xml")).unwrap();
+        assert!(xml.contains("  Hello")); assert!(xml.contains("world"));
+        assert!(xml.contains("😀 &amp; &lt; &gt;  "));
+        assert!(xml.contains("<w:tab")); assert!(xml.contains("<w:br"));
+        assert!(output.warnings.iter().any(|warning| warning.contains("CR") || warning.contains("line break")));
+        // Distinct page sections retain the explicit trailing blank source page.
+        assert!(xml.matches("<w:sectPr").count() >= 2 || xml.contains("w:type=\"page\""));
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn docx_adapter_never_selects_or_replaces_by_generated_legacy_identity() {
+        use crate::ocr_office::{OfficeObjectSelection, OfficeOptions};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "This source text must not be replaced by its position.");
+        page.regions[0].kind = Some("table".into());
+        let mut options = OfficeOptions { version: 1, objects: vec![OfficeObjectSelection {
+            page_id: "legacy-page-1".into(), object_id: "table-object".into(),
+            placement: "append".into(), region_id: None,
+        }] };
+        assert!(export_docx(std::slice::from_ref(&page), &options).unwrap_err().contains("supplied stable page identity"));
+        page.id = Some("real-page".into());
+        options.objects[0].page_id = "real-page".into();
+        options.objects[0].placement = "replace-region".into();
+        options.objects[0].region_id = Some("legacy-region-1".into());
+        assert!(export_docx(std::slice::from_ref(&page), &options).unwrap_err().contains("supplied stable passage identity"));
+        page.regions[0].id = Some("real-passage".into());
+        options.objects[0].region_id = Some("real-passage".into());
+        // Real identities advance to object validation; they do not authorize a
+        // nonexistent extraction merely because the page/region are known.
+        assert!(export_docx(&[page], &options).unwrap_err().contains("selected extraction data is missing"));
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn docx_adapter_uses_current_picture_pixels_and_explicit_corrected_table() {
+        use crate::ocr_office::{OfficeObjectSelection, OfficeOptions};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "OCR table passage omitted only by explicit replacement");
+        page.id = Some("page".into()); page.page_width_points = Some(612.0); page.page_height_points = Some(792.0);
+        page.regions[0].id = Some("table-region".into()); page.regions[0].kind = Some("table".into());
+        let mut figure = export_page(root.path(), "").regions.remove(0);
+        figure.id = Some("picture-region".into()); figure.kind = Some("picture".into());
+        figure.x = 2.0; figure.y = 1.0; figure.w = 3.0; figure.h = 2.0;
+        page.figure_regions = Some(vec![figure]);
+        page.structure = Some(serde_json::from_value(json!({"version":1,"sections":[{"id":"section","columns":1}],"blocks":[
+            {"id":"table-block","sourceRegionId":"table-region","sectionId":"section","column":1,"role":"table","alignment":"start","breakBefore":"none","runs":[]},
+            {"id":"picture-block","sourceRegionId":"picture-region","sectionId":"section","column":1,"role":"figure","alignment":"start","breakBefore":"none","runs":[],"altText":"Current measured crop"}
+        ]})).unwrap());
+        let table = |text: &str| json!({"version":1,"rows":1,"columns":1,"cells":[{"id":"cell","row":0,"column":0,"rowSpan":1,"columnSpan":1,"text":text}]});
+        page.provenance = Some(json!({"extractionObjects":{"version":1,"objects":[{
+            "version":1,"id":"table-object","kind":"table","name":"Corrected table","createdAt":"2026-11-09T00:00:00.000Z","updatedAt":"2026-11-09T00:00:00.000Z",
+            "excluded":false,"review":"corrected","captures":[{"id":"capture","pageId":"old-page","documentId":"document","width":8,"height":4,
+                "imagePath":"/never-read/untrusted-provenance.png","regionId":null,"bounds":null,"method":"pixels","text":null}],
+            "originalOutputKind":"model","originalOutput":"<table><td>old</td></table>","originalData":table("old"),"currentData":table("0012 =SUM(A1) & exact")
+        }]}}));
+        let pages = vec![page]; validate_export_pages(&pages).unwrap();
+        let options = OfficeOptions { version:1, objects:vec![OfficeObjectSelection { page_id:"page".into(),object_id:"table-object".into(),placement:"replace-region".into(),region_id:Some("table-region".into()) }] };
+        let output = export_docx(&pages, &options).unwrap();
+        let xml = String::from_utf8(office_part(&output.bytes, "word/document.xml")).unwrap();
+        assert!(xml.contains("0012 =SUM(A1) &amp; exact"));
+        assert!(!xml.contains("OCR table passage omitted")); assert!(xml.contains("<w:tbl"));
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&output.bytes)).unwrap();
+        let media: Vec<_> = archive.file_names().filter(|name| name.starts_with("word/media/") && !name.ends_with('/')).map(str::to_owned).collect();
+        assert_eq!(media.len(), 1);
+        let mut bytes = vec![]; archive.by_name(&media[0]).unwrap().read_to_end(&mut bytes).unwrap();
+        let actual = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(actual, image().crop_imm(2, 1, 3, 2).to_rgba8());
+        let unselected = export_docx(&pages, &OfficeOptions::default()).unwrap();
+        let plain = String::from_utf8(office_part(&unselected.bytes, "word/document.xml")).unwrap();
+        assert!(plain.contains("OCR table passage omitted"));
+        assert!(!plain.contains("0012 =SUM(A1)"));
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn xlsx_adapter_exports_saved_tables_without_current_image_or_ocr_dependencies() {
+        use crate::ocr_office::{WorkbookOptions, WorkbookSheetSelection};
+        let root = tempfile::tempdir().unwrap();
+        let mut page = export_page(root.path(), "UNSELECTED_OCR_PASSAGE_MUST_NOT_EXPORT");
+        page.id = Some("page".into());
+        // The current image/geometry are not workbook input. Historical capture
+        // metadata is validated, but its path is never read either.
+        page.image_path = root.path().join("missing-current-image.png").to_string_lossy().into_owned();
+        page.width = 0; page.height = 0; page.page_width_points = Some(9_000.0);
+        let table = |text: &str| json!({"version":1,"rows":1,"columns":1,"cells":[{"id":"cell","row":0,"column":0,"rowSpan":1,"columnSpan":1,"text":text,"header":true}]});
+        let object = |id: &str, current: Value| json!({
+            "version":1,"id":id,"kind":"table","name":id,"createdAt":"2026-11-09T00:00:00.000Z","updatedAt":"2026-11-09T00:00:00.000Z",
+            "excluded":false,"review":"corrected","captures":[{"id":"capture","pageId":"older-page","documentId":"document","width":8,"height":4,
+                "imagePath":"/never-read/missing-source.png","regionId":null,"bounds":null,"method":"pixels","text":null}],
+            "originalOutputKind":"model","originalOutput":"ORIGINAL_MODEL_OUTPUT_MUST_NOT_EXPORT","originalData":table("ORIGINAL_CELL_MUST_NOT_EXPORT"),"currentData":current
+        });
+        page.provenance = Some(json!({"extractionObjects":{"version":1,"objects":[
+            object("literal",table(" 0012 =2+2 & < > ")),object("blank",json!({"version":1,"rows":0,"columns":0,"cells":[]}))
+        ]}}));
+        let options=WorkbookOptions{version:1,sheets:vec![
+            WorkbookSheetSelection{page_id:"page".into(),object_id:"blank".into(),sheet_name:"Empty capture".into()},
+            WorkbookSheetSelection{page_id:"page".into(),object_id:"literal".into(),sheet_name:"Measurements".into()},
+        ]};
+        let output=export_xlsx(&[page],&options).unwrap();
+        let workbook=String::from_utf8(office_part(&output.bytes,"xl/workbook.xml")).unwrap();
+        assert!(workbook.find("Empty capture").unwrap()<workbook.find("Measurements").unwrap());
+        let blank=String::from_utf8(office_part(&output.bytes,"xl/worksheets/sheet1.xml")).unwrap();
+        let literal=String::from_utf8(office_part(&output.bytes,"xl/worksheets/sheet2.xml")).unwrap();
+        assert!(!blank.contains("<c "));
+        assert!(literal.contains(" 0012 =2+2 &amp; &lt; &gt; "));
+        assert!(literal.contains("t=\"inlineStr\""));
+        assert!(!literal.contains("<f>") && !literal.contains("MUST_NOT_EXPORT"));
+        assert!(!output.warnings.is_empty());
+    }
+
+    #[cfg(feature = "ocr-office")]
+    #[test]
+    fn xlsx_adapter_requires_real_selected_page_identity_and_saved_table_data() {
+        use crate::ocr_office::{WorkbookOptions, WorkbookSheetSelection};
+        let root=tempfile::tempdir().unwrap();
+        let mut page=export_page(root.path(),"Source text");
+        let mut options=WorkbookOptions{version:1,sheets:vec![WorkbookSheetSelection{
+            page_id:"legacy-page-1".into(),object_id:"table".into(),sheet_name:"Values".into(),
+        }]};
+        assert!(export_xlsx(std::slice::from_ref(&page),&options).unwrap_err().contains("supplied stable page identities"));
+        page.id=Some("real-page".into());
+        assert!(export_xlsx(std::slice::from_ref(&page),&options).unwrap_err().contains("scope"));
+        options.sheets[0].page_id="real-page".into();
+        assert!(export_xlsx(std::slice::from_ref(&page),&options).unwrap_err().contains("table data is missing"));
+        assert!(export_xlsx(&[page],&WorkbookOptions::default()).unwrap_err().contains("1–512"));
     }
 
     #[test]
@@ -1908,6 +2566,23 @@ mod tests {
         assert!(output_path(&pages[0].image_path, &pages, &[], &workspace).is_err());
         assert!(output_path("relative.txt", &pages, &[], &workspace).is_err());
         assert!(output_path(root.path().join("reviewed.txt").to_str().unwrap(), &pages, &[], &workspace).is_ok());
+    }
+
+    #[test]
+    fn cancelling_prepared_office_output_preserves_the_previous_document() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("reviewed.docx");
+        fs::write(&path, b"previous complete document").unwrap();
+        let job = ExportJob::begin(None).unwrap();
+        let bytes = vec![42u8; 128 * 1024];
+        let result = write_prepared_export(&path, &bytes, true, job.control(), |phase, count| {
+            if phase == "writing" && count > 0 {
+                assert!(ocr_workspace_cancel_export(job.id().to_owned()).unwrap());
+            }
+        });
+        assert!(result.unwrap_err().contains(export_control::CANCELLED));
+        assert_eq!(fs::read(&path).unwrap(), b"previous complete document");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[cfg(feature = "ocr-reviewed-pdf")]

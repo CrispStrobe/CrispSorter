@@ -1,0 +1,28 @@
+{
+  "recordedAt": "2026-11-09T22:37:12.078609+00:00",
+  "unitTests": {
+    "command": "npm test",
+    "passed": 449,
+    "files": 47,
+    "log": "frontend-tests.log"
+  },
+  "svelteCheck": {
+    "command": "npm run check",
+    "errors": 0,
+    "existingWarnings": 54,
+    "log": "frontend-check.log"
+  },
+  "browserExecution": "not_run_locally; CI pending",
+  "sources": {
+    "src/lib/ocr/workbookExport.ts": "4f1218781daf067a76e6424b461f7e5eb113d0acf10b8510b6942fb6fecf8d50",
+    "src/lib/ocr/workbookExport.test.ts": "2e50f1c3eaad0a4f05d41dcb87981a66ea9bf29c822e060a65d00d48ffa78209",
+    "src/lib/components/ocr/WorkbookExportPanel.svelte": "d9f1bbcd46164542da91e67f14914ee6656d98fa6273de7400685645dc41a3eb",
+    "src/lib/ocr/model.ts": "0a162d82f68b513a31eec894302002bfcae33807677c191896da4d69f1dd66f4",
+    "src/lib/ocr/client.ts": "9f6365f625c894fa3e6c820e89a3da6572c3220ac6b1ea345d8cfe77120ac727",
+    "src/lib/components/OcrWorkbench.svelte": "878c51d226926ec9706ac9e725389d43c8b137f57c5cf04798042e95f632840a"
+  },
+  "logs": {
+    "frontend-tests.log": "266a920ba47a9902be285d6ac0507e0037267331cd219013e9c7593ae11e80c5",
+    "frontend-check.log": "122330d28141d236526bb740e85cfda54ba72b9c7f7d7dc93b8462f85d03d55d"
+  }
+}

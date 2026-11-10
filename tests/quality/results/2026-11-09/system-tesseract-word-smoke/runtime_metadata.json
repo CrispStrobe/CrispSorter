@@ -1,0 +1,15 @@
+{
+  "artifacts": [
+    {
+      "path": "/usr/bin/tesseract",
+      "sha256": "74b76a5b994adcc18be362bf64ed5118082b2401d5d9a35242e92fc4c62e2b4b",
+      "bytes": 51536
+    },
+    {
+      "path": "/usr/share/tesseract-ocr/5/tessdata/eng.traineddata",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "bytes": 4113088
+    }
+  ],
+  "language_probe": "List of available languages in \"/usr/share/tesseract-ocr/5/tessdata/\" (2):\neng\nosd\n"
+}

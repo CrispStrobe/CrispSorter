@@ -1,0 +1,146 @@
+{
+  "validator": "Python stdlib zipfile + ElementTree; independent of docx-rs",
+  "fixtures": [
+    {
+      "name": "semantic-text",
+      "file": "semantic-text.docx",
+      "status": "passed",
+      "package_parts": 14,
+      "relationships": 9,
+      "body_paragraphs": [
+        "Maintenance checklist",
+        "😀 Equipment & safety\nKeep 0012\tintact. See [1].",
+        "7. Retain literal marker",
+        "Nested item",
+        "Right column paragraph",
+        "Source header 0012",
+        "[1] Keep the original note.",
+        "Source footer"
+      ],
+      "tables": [],
+      "images": [],
+      "section_columns": [
+        2,
+        1
+      ],
+      "column_breaks": 1,
+      "page_breaks": 1,
+      "warnings": [
+        "Footnote text and exact note markers remain in body reading order. Automatic Word footnotes/custom markers are not generated.",
+        "Lists use Word numbering or bullets. Existing literal bullets/numbers in reviewed text are preserved and may appear beside the generated markers.",
+        "Page header/footer regions are preserved in body reading order, not converted into repeating Word header/footer parts."
+      ],
+      "limitations": [
+        "XML checks are not Office schema validation or rendered layout qualification."
+      ]
+    },
+    {
+      "name": "whitespace-blank-pages",
+      "file": "whitespace-blank-pages.docx",
+      "status": "passed",
+      "package_parts": 14,
+      "relationships": 8,
+      "body_paragraphs": [
+        "  A 😀 B\tC\nD   ",
+        "After blank source page"
+      ],
+      "tables": [],
+      "images": [],
+      "section_columns": [
+        1,
+        1,
+        1
+      ],
+      "column_breaks": 0,
+      "page_breaks": 2,
+      "warnings": [
+        "CRLF and lone CR characters are represented as single Word line breaks. Their visible lines are preserved; original newline bytes remain in the project and JSON."
+      ],
+      "limitations": [
+        "XML checks are not Office schema validation or rendered layout qualification."
+      ]
+    },
+    {
+      "name": "selected-table-figure-formula",
+      "file": "selected-table-figure-formula.docx",
+      "status": "passed",
+      "package_parts": 15,
+      "relationships": 9,
+      "body_paragraphs": [
+        "Reviewed selected objects",
+        "Figure 1. Captured color test",
+        "\\frac{0012}{03} + x_{LOT-003}"
+      ],
+      "tables": [
+        {
+          "rows": 3,
+          "columns": 3,
+          "anchors": [
+            {
+              "row": 0,
+              "column": 0,
+              "rowSpan": 2,
+              "columnSpan": 2,
+              "text": "Valve\n0012"
+            },
+            {
+              "row": 0,
+              "column": 2,
+              "rowSpan": 1,
+              "columnSpan": 1,
+              "text": "Qty"
+            },
+            {
+              "row": 1,
+              "column": 2,
+              "rowSpan": 1,
+              "columnSpan": 1,
+              "text": "=2+2"
+            },
+            {
+              "row": 2,
+              "column": 0,
+              "rowSpan": 1,
+              "columnSpan": 1,
+              "text": "03"
+            },
+            {
+              "row": 2,
+              "column": 1,
+              "rowSpan": 1,
+              "columnSpan": 1,
+              "text": "LOT-003"
+            },
+            {
+              "row": 2,
+              "column": 2,
+              "rowSpan": 1,
+              "columnSpan": 1,
+              "text": " & < > "
+            }
+          ]
+        }
+      ],
+      "images": [
+        {
+          "width": 8,
+          "height": 4
+        }
+      ],
+      "section_columns": [
+        1
+      ],
+      "column_breaks": 0,
+      "page_breaks": 0,
+      "warnings": [
+        "Table header cells are bold. Automatic repeated table header rows are not supported by this DOCX writer.",
+        "Figure alternative text and decorative metadata remain in the project/JSON; docx-rs 0.4.20 does not write those accessibility attributes.",
+        "Caption text and source order are preserved; caption-to-figure/table links are not converted into Word cross-reference fields.",
+        "Selected formula objects are exported as literal editable LaTeX; they are not converted into Word equation objects (OMML)."
+      ],
+      "limitations": [
+        "XML checks are not Office schema validation or rendered layout qualification."
+      ]
+    }
+  ]
+}

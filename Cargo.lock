@@ -2456,6 +2456,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-bidi",
+ "unicode-segmentation",
  "usls",
  "uuid 1.23.3",
  "walkdir",
