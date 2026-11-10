@@ -24,6 +24,23 @@ use crisp_index_protocol::{IngestBatch as RemoteIngestBatch, IngestChunk as Remo
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
+/// Inspect the local index vocabulary without starting model inference.
+#[tauri::command]
+pub async fn index_vocabulary(
+    state: State<'_, AppState>,
+    prefix: String,
+    limit: Option<usize>,
+) -> Result<Vec<super::fts_index::VocabularyTerm>, String> {
+    if prefix.len() > 128 { return Err("Use a word prefix of at most 128 bytes".into()); }
+    let lock = state.index.lock().await;
+    if !lock.config.enabled { return Err("Enable the local index to browse indexed words".into()); }
+    let fts = lock.engine.as_ref().map(|engine| engine.fts.clone())
+        .ok_or("Indexed words are available after the local text index is initialized")?;
+    drop(lock);
+    tokio::task::spawn_blocking(move || fts.vocabulary(&prefix, limit.unwrap_or(50).clamp(1, 100), &super::SearchFilters::default()))
+        .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn index_search(
     app: tauri::AppHandle,
@@ -47,6 +64,13 @@ pub async fn index_search(
     synonyms: Option<bool>,
     search_filters: Option<super::SearchFilters>,
 ) -> Result<Vec<SearchResult>, String> {
+    if !matches!(mode.as_str(), "text" | "vector" | "hybrid") {
+        return Err("Choose Full text, Semantic, or Hybrid search".into());
+    }
+    if query.trim().is_empty() || query.len() > 8192 {
+        return Err("Enter a search query of at most 8192 bytes".into());
+    }
+    if mode != "vector" { super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?; }
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
     let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
@@ -63,6 +87,19 @@ pub async fn index_search(
     filters.tag = tag.or(filters.tag);
     validate_search_filters(&filters)?;
     let limit = limit.clamp(1, 500);
+    let catalog_eligible = filters.to_lance_sql().is_none()
+        && mode != "vector" && !super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?;
+    let mounted_ids: Option<std::collections::HashSet<String>> = if include_unmounted.unwrap_or(false) { None } else {
+        Some(tokio::task::spawn_blocking(crate::volume::list_mounted_volumes).await
+            .map_err(|e| format!("list_mounted_volumes join: {e}"))?.into_iter().map(|volume| volume.id).collect())
+    };
+    // Filter before the candidate limit so offline hits do not crowd out
+    // available documents. Keep the remote legacy fallback below as well.
+    if lock.engine.is_some() {
+        filters.mounted_volume_ids = mounted_ids.as_ref().map(|ids| {
+            let mut ids: Vec<String> = ids.iter().cloned().collect(); ids.sort(); ids
+        });
+    }
 
     // ── Documents-table channel ──────────────────────────────────────────
     // Run the existing documents-table search first. When the index is
@@ -81,6 +118,9 @@ pub async fn index_search(
         }
         .map_err(|e| e.to_string())?
     } else {
+        if mode != "vector" && super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())? {
+            return Err("Advanced query operators currently require the local text index. Use a plain query for this remote index.".into());
+        }
         // The older remote-index protocol only carries owner/language/year.
         // Refuse unsupported filters instead of returning unfiltered matches.
         ensure_remote_search_filters_supported(&filters)?;
@@ -139,13 +179,10 @@ pub async fn index_search(
     // ── Catalog channel (PLAN P6 4c / P7.1) ──────────────────────────────
     // Substring-match across active-catalog filenames. Independent of the
     // index_init state — a user with cataloged drives but no embedding
-    // index still gets filename hits. We cap the catalog channel at
-    // `limit` total slots, but back off if the documents channel already
-    // returned that many — net result is at most `limit` rows from each
-    // channel, presented in two visually distinct groups (the frontend
-    // uses `catalog_source` to badge them).
-    if let (true, Ok(data_dir)) = (filters.to_lance_sql().is_none(), app.path().app_data_dir()) {
-        let remaining = limit.saturating_sub(results.len()).max(limit / 2);
+    // index still gets filename hits. These references occupy the remaining
+    // slots for plain lexical queries and retain their separate source badge.
+    if let (true, Ok(data_dir)) = (catalog_eligible && results.len() < limit, app.path().app_data_dir()) {
+        let remaining = limit.saturating_sub(results.len());
         if let Ok(hits) =
             crate::catalog::lance::search(&data_dir, &query, Some(remaining)).await
         {
@@ -160,20 +197,14 @@ pub async fn index_search(
     // the caller opts out. Computed once per call (a single shell-out
     // per platform — see `volume::list_mounted_volumes`). Rows without
     // `volume_id` always pass.
-    if !include_unmounted.unwrap_or(false) {
-        let mounted_ids: std::collections::HashSet<String> =
-            tokio::task::spawn_blocking(crate::volume::list_mounted_volumes)
-                .await
-                .map_err(|e| format!("list_mounted_volumes join: {e}"))?
-                .into_iter()
-                .map(|v| v.id)
-                .collect();
+    if let Some(mounted_ids) = mounted_ids {
         results.retain(|r| match &r.volume_id {
             Some(id) => mounted_ids.contains(id),
             None => true,
         });
     }
 
+    results.truncate(limit);
     Ok(results)
 }
 

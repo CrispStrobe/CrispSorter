@@ -2246,6 +2246,7 @@ dependencies = [
 name = "crisp-index-server"
 version = "0.1.0"
 dependencies = [
+ "crisp-search-query",
  "anyhow",
  "arrow",
  "arrow-array",
@@ -2295,6 +2296,14 @@ dependencies = [
  "sha1 0.10.6",
  "sha2 0.10.9",
  "unicode-normalization",
+]
+
+[[package]]
+name = "crisp-search-query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tantivy 0.22.1",
 ]
 
 [[package]]
@@ -2364,6 +2373,7 @@ dependencies = [
 name = "crispsorter"
 version = "0.15.0"
 dependencies = [
+ "crisp-search-query",
  "aes-gcm 0.10.3",
  "anydoc",
  "anyhow",

@@ -166,6 +166,7 @@ pub fn hash_filters(filters: &super::schema::SearchFilters) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     let mut h = DefaultHasher::new();
     filters.owner_id.hash(&mut h);
+    filters.mounted_volume_ids.hash(&mut h);
     filters.language.hash(&mut h);
     filters.year_min.hash(&mut h);
     filters.year_max.hash(&mut h);
@@ -235,6 +236,26 @@ mod tests {
         let mut cache = ResultCache::new_pinned(0);
         cache.put("query", "hybrid", 0, vec![]);
         assert!(cache.get("query", "hybrid", 0).is_none());
+    }
+
+    #[test]
+    fn mounted_volume_changes_do_not_reuse_hidden_source_results() {
+        let unrestricted = super::super::schema::SearchFilters::default();
+        let offline = super::super::schema::SearchFilters {
+            mounted_volume_ids: Some(vec![]),
+            ..Default::default()
+        };
+        let online = super::super::schema::SearchFilters {
+            mounted_volume_ids: Some(vec!["drive-a".into()]),
+            ..Default::default()
+        };
+        assert_ne!(hash_filters(&unrestricted), hash_filters(&offline));
+        assert_ne!(hash_filters(&offline), hash_filters(&online));
+        let mut cache = ResultCache::new_pinned(2);
+        cache.put("same query", "hybrid", hash_request(&online, 20), vec![]);
+        assert!(cache
+            .get("same query", "hybrid", hash_request(&offline, 20))
+            .is_none());
     }
 
     #[test]

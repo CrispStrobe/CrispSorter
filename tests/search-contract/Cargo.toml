@@ -10,6 +10,7 @@ publish = false
 path = "lib.rs"
 
 [dependencies]
+crisp-search-query = { path = "../../crates/crisp-search-query" }
 anyhow = "=1.0.102"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"

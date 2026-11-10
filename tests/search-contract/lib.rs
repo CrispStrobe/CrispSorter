@@ -7,6 +7,7 @@ pub mod schema {
     #[derive(Clone, Default)]
     pub struct SearchFilters {
         pub owner_id: Option<String>,
+        pub mounted_volume_ids: Option<Vec<String>>,
         pub language: Option<String>,
         pub year_min: Option<i32>,
         pub year_max: Option<i32>,

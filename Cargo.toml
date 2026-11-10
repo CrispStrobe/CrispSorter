@@ -32,6 +32,7 @@ members  = [
     "src-tauri",
     "crisp-index-server",
     "crisp-index-protocol",
+    "crates/crisp-search-query",
     "crates/crispcat",
     "crates/crispcat-cli",
     "crates/crisplens-protocol",
