@@ -97,3 +97,28 @@ test('a partial large import retains committed files and retries only the missin
     expect(result.afterFailure).toEqual({ visible: 500, persisted: 500, busy: false });
     expect(result).toMatchObject({ retryCount: 1, visible: 501, persisted: 501, uniquePaths: 501, busy: false });
 });
+
+test('a file arriving during another batch write is queued instead of lost', async ({ page }) => {
+    await page.evaluate(async () => {
+        const root = window as any;
+        const modulePath = '/src/lib/batch/store.svelte.ts';
+        const { batchManager } = await import(modulePath);
+        batchManager.items = [];
+        batchManager.isUpdatingBatch = true;
+        root.__arrivalSettled = false;
+        root.__arrival = batchManager.addItem('/fixtures/watched.pdf', 'watched.pdf', 20)
+            .then(added => { root.__arrivalSettled = true; return added; });
+    });
+    expect(await page.evaluate(() => (window as any).__arrivalSettled)).toBe(false);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'batch_session_upsert_items_bulk'))).toHaveLength(0);
+    const result = await page.evaluate(async () => {
+        const root = window as any;
+        const modulePath = '/src/lib/batch/store.svelte.ts';
+        const { batchManager } = await import(modulePath);
+        batchManager.isUpdatingBatch = false;
+        const added = await root.__arrival;
+        return { added, paths: batchManager.items.map((item: any) => item.originalPath) };
+    });
+    expect(result).toEqual({ added: true, paths: ['/fixtures/watched.pdf'] });
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'batch_session_upsert_items_bulk'))).toHaveLength(1);
+});

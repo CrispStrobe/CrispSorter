@@ -135,11 +135,14 @@ export class BatchManager {
         // of the same path must not each create and persist a different row.
         const requested = entries.map(entry => ({ ...entry }));
         const operation = this.additionQueue.then(async () => {
+            // Watcher arrivals and Library additions can coincide with a short
+            // metadata write or cleanup. Queue them instead of dropping the
+            // request; acquiring the lock below is synchronous after this wait.
+            while (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) {
+                await new Promise<void>(resolve => setTimeout(resolve, 25));
+            }
             if (!this.sessionReady) {
                 throw new Error('Restore the saved batch before adding files. Use Retry in the startup notice.');
-            }
-            if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) {
-                throw new Error('Wait for the current batch changes to finish, then add the files again.');
             }
             this.isUpdatingBatch = true;
             let added = 0;
@@ -230,6 +233,8 @@ export class BatchManager {
      *  or after manually editing metadata on some items. */
     async resetToQueued(ids?: string[]) {
         if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
+        try {
         const targets = ids
             ? this.items.filter(i => ids.includes(i.id))
             : this.items;
@@ -243,6 +248,7 @@ export class BatchManager {
             }
         }
         if (changed.length > 0) await upsertItemsBulk(changed);
+        } finally { this.isUpdatingBatch = false; }
     }
 
     resetStuckItems() {
@@ -277,6 +283,8 @@ export class BatchManager {
 
     async reextractItems(ids: string[], enforceOcr: boolean = false) {
         if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
+        try {
         const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
@@ -289,11 +297,14 @@ export class BatchManager {
             }
         });
         if (targets.length > 0) await upsertItemsBulk(targets);
+        } finally { this.isUpdatingBatch = false; }
         await this.processAll({ enforceOcr, extractionOnly: true }, new Set(ids));
     }
 
     async reprocessItems(ids: string[], overrides?: ProcessOverrides) {
         if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
+        try {
         const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
@@ -306,6 +317,7 @@ export class BatchManager {
             }
         });
         if (targets.length > 0) await upsertItemsBulk(targets);
+        } finally { this.isUpdatingBatch = false; }
         await this.processAll(overrides, new Set(ids));
     }
 
