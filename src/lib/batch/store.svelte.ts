@@ -1385,8 +1385,12 @@ export class BatchManager {
 
     private async commitReplacement(items: BatchItem[], source: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
         if (!confirmReplacement) throw new Error('Confirm the batch replacement from History.');
+        // A restored batch can still have unread metadata drafts after a settings
+        // failure. Read them before describing or discarding the current work.
+        if (!reviewDrafts.ready) await reviewDrafts.load();
+        if (!reviewDrafts.ready) throw new Error('Saved metadata drafts could not be loaded. Retry before replacing the current batch.');
         if (!await confirmReplacement({ incomingCount: items.length, currentCount: this.items.length,
-            currentDraftCount: reviewDrafts.ready ? this.items.filter(item => reviewDrafts.get(item)).length : undefined, source })) return false;
+            currentDraftCount: this.items.filter(item => reviewDrafts.get(item)).length, source })) return false;
         await replaceBatch(items);
         this.items = items;
         // Failed validation/confirmation/SQLite writes must leave every draft intact.

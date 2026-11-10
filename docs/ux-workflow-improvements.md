@@ -180,7 +180,9 @@ retry. Active processing and sorting cannot be force-reset into an overlapping r
 
 History validates every incoming file before offering to replace the current
 batch. The confirmation names the source, incoming and current file counts, and
-the current unapplied draft count. Cancel and Escape retain the current batch;
+the current unapplied draft count. If saved drafts could not be read at startup,
+replacement first retries that read and waits for the drafts before confirming.
+Cancel and Escape retain the current batch;
 keyboard focus returns to the initiating action. Empty imports also require
 confirmation. Loading, failed history reads and failed operations have distinct
 states and retry controls, and History actions fit narrow screens.
@@ -226,10 +228,22 @@ Local verification after the atomic replacement and watcher recovery changes
 passed all **219 frontend unit tests in 32 files**, including 18 new validation
 and replacement-contract tests. Type checking reported **zero errors and the 54
 existing warnings**, and the production build passed. The expanded browser suite
-collects **71 scenarios in 12 files**; discovery and TypeScript checks passed.
+collects **72 scenarios in 13 files**, including unread-draft recovery before
+replacement; discovery and TypeScript checks passed.
 Seven native SQLite replacement regressions cover rollback and retry, full and
 empty text, exact source identity and invalid input. Browser execution and these
 native tests are tracked by the checks on the corresponding remote commit.
+
+The integrated run at `892182bc` passed **70 of 71 browser scenarios**. Its one
+failure was a phone action's fractional intersection with the inner scrollport
+after a minimum-scroll operation. The follow-up explicitly centers each action
+before checking complete visibility; the strict visibility and width checks stay
+in place. The phone preview screenshot and all other recovery scenarios passed.
+At that same checkpoint the full macOS native job passed **1,657 library tests**
+(47 ignored), all five batch-script tests, CLI compilation and the secret-store
+smoke test. Its published log confirms all seven SQLite replacement regressions
+passed individually. Subsequent frontend corrections leave that native source
+unchanged.
 
 | Check | Observed result and scope |
 | --- | --- |

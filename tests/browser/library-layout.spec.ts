@@ -106,7 +106,9 @@ test('phone result titles and local and cloud actions fit without horizontal scr
         await expectNoHorizontalOverflow(card.locator('.result-right'));
         expect((await card.locator('.result-title').boundingBox())!.width).toBeGreaterThan(160);
         for (const action of await card.locator('.result-right button').all()) {
-            await action.scrollIntoViewIfNeeded();
+            // Center deliberately: Chromium's minimum-scroll operation can
+            // leave a fractional edge against the inner scrollport boundary.
+            await action.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
             await expect(action).toBeInViewport({ ratio: 1 });
             await expectWithinWidth(action, root);
         }
