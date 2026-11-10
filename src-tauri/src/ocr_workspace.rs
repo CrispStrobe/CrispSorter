@@ -2103,9 +2103,18 @@ mod tests {
         second.separator_before = Some(String::new());
         page.regions.push(second);
         validate_export_pages(std::slice::from_ref(&page)).unwrap();
-        assert_eq!(export_bytes(std::slice::from_ref(&page), "text", false).unwrap(), b"Hello");
-        let html = String::from_utf8(export_bytes(std::slice::from_ref(&page), "html", false).unwrap()).unwrap();
-        assert!(html.contains("<p>Hello</p>"));
+        for separator in ["", " ", "\n", "\n\n"] {
+            page.regions[1].separator_before = Some(separator.into());
+            let expected = format!("Hel{separator}lo");
+            assert_eq!(export_bytes(std::slice::from_ref(&page), "text", false).unwrap(), expected.as_bytes());
+            let html = String::from_utf8(export_bytes(std::slice::from_ref(&page), "html", false).unwrap()).unwrap();
+            let document = scraper::Html::parse_document(&html);
+            let paragraphs = document.select(&scraper::Selector::parse("section > p").unwrap()).collect::<Vec<_>>();
+            assert_eq!(paragraphs.len(), 1, "a passage separator must not create another HTML paragraph");
+            assert_eq!(paragraphs[0].text().collect::<String>(), expected);
+            assert_eq!(paragraphs[0].value().attr("dir"), Some("auto"));
+        }
+        page.regions[1].separator_before = Some(String::new());
         let json: Value = serde_json::from_slice(&export_bytes(std::slice::from_ref(&page), "json", false).unwrap()).unwrap();
         assert_eq!(json["pages"][0]["regions"][1]["separator_before"], "");
         assert_eq!(json["pages"][0]["regions"][0]["source_components"][0]["originalText"], "Hell0");
