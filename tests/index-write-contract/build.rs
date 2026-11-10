@@ -103,6 +103,91 @@ const TABLE_NAME: &str = "documents";
     parsed.items.retain(|item| !matches!(item, syn::Item::Mod(module) if module.ident == "tauri_commands"));
     fs::write(out.join("jobs.rs"), parsed.into_token_stream().to_string()).unwrap();
 
+    // Qualify federated ranking with the actual wire type, production function
+    // and its pure tests, excluding desktop state and remote HTTP adapters.
+    let file = root.join("../sync/cloud_backup.rs");
+    println!("cargo:rerun-if-changed={}", file.display());
+    let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+    let mut generated = String::from("use serde::{Serialize, Deserialize};");
+    let mut found = false;
+    for item in parsed.items {
+        if let syn::Item::Struct(value) = item {
+            if value.ident == "FederatedHit" {
+                found = true;
+                generated.push_str(&value.into_token_stream().to_string());
+            }
+        }
+    }
+    assert!(found, "production FederatedHit type missing");
+    fs::write(out.join("federated_hit.rs"), generated).unwrap();
+
+    let file = root.join("../sync/tauri_commands.rs");
+    println!("cargo:rerun-if-changed={}", file.display());
+    let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+    let mut generated = String::from("use super::cloud_backup::FederatedHit;");
+    let mut selected = Vec::new();
+    for item in parsed.items {
+        match item {
+            syn::Item::Const(value) if value.ident == "RRF_K" => generated.push_str(&value.into_token_stream().to_string()),
+            syn::Item::Fn(value) if ["rrf_score", "rrf_merge"].contains(&value.sig.ident.to_string().as_str()) => {
+                selected.push(value.sig.ident.to_string());
+                generated.push_str(&value.into_token_stream().to_string());
+            }
+            syn::Item::Mod(mut module) if module.ident == "tests" => {
+                if let Some((_, items)) = &mut module.content {
+                    items.retain(|item| match item {
+                        syn::Item::Use(_) => true,
+                        syn::Item::Fn(value) => {
+                            let name = value.sig.ident.to_string();
+                            name.starts_with("rrf_merge_") || ["make_hit", "make_hit_with_sha"].contains(&name.as_str())
+                        }
+                        _ => false,
+                    });
+                }
+                generated.push_str(&module.into_token_stream().to_string());
+            }
+            _ => {}
+        }
+    }
+    for expected in ["rrf_score", "rrf_merge"] {
+        assert!(selected.iter().any(|name| name == expected), "production function missing: {expected}");
+    }
+    fs::write(out.join("federated_rank.rs"), generated).unwrap();
+
+    // Compile the CLI's real local-hit adapter and owner-identity tests too.
+    let file = root.join("../cli/mod.rs");
+    println!("cargo:rerun-if-changed={}", file.display());
+    let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+    let mut generated = String::new();
+    let mut tests = String::from("#[cfg(test)] mod tests { use super::*;");
+    let mut found = false;
+    for item in parsed.items {
+        match item {
+            syn::Item::Fn(value) if value.sig.ident == "local_result_to_federated" => {
+                found = true;
+                generated.push_str(&value.into_token_stream().to_string());
+            }
+            syn::Item::Mod(module) if module.ident == "tests" => {
+                if let Some((_, items)) = module.content {
+                    for item in items {
+                        if let syn::Item::Fn(value) = item {
+                            if ["mk_local_result", "local_result_maps_to_federated_with_url_tags_and_highlight", "federated_local_identity_retains_owner_when_source_hash_is_absent"]
+                                .contains(&value.sig.ident.to_string().as_str())
+                            {
+                                tests.push_str(&value.into_token_stream().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(found, "production local_result_to_federated function missing");
+    tests.push('}');
+    generated.push_str(&tests);
+    fs::write(out.join("cli_federated.rs"), generated).unwrap();
+
 
     let file = root.join("../extractors/mod.rs");
     println!("cargo:rerun-if-changed={}", file.display());

@@ -2722,44 +2722,62 @@ fn rrf_score(rank: usize) -> f32 {
 /// Merge per-backend ranked lists into a single RRF-fused ranking.
 ///
 /// `lists` is a slice of ranked `FederatedHit` vecs (best-first).
-/// Deduplication key: sha256 when non-empty, otherwise the hit's `id`.
-/// When two backends return the same file (same sha256), their RRF
-/// contributions are summed and only one record is kept (the one with
-/// the higher source-score).  Hits without a sha256 are keyed by `id`
-/// and never merged across backends.
+/// Deduplication key: sha256 when non-empty, otherwise `(source, id)`.
+/// Each key contributes once per source list, at its first (best) rank.
+/// A repeated chunk may supply a better display record without adding another
+/// vote. The representative has the highest finite source score; equal scores
+/// prefer the smaller `(source, id)`, then retain the first occurrence.
+/// Nonfinite source scores do not outrank finite scores or affect RRF scores.
+/// Hits without a sha256 are never merged across backends.
 pub(crate) fn rrf_merge(lists: Vec<Vec<FederatedHit>>, limit: usize) -> Vec<FederatedHit> {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashSet};
 
-    // Map merge_key → (accumulated_score, best hit so far)
-    let mut scores: HashMap<String, (f32, FederatedHit)> = HashMap::new();
+    // Separate content fingerprints from source identities so an opaque ID
+    // cannot accidentally collide with another hit's fingerprint.
+    #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    enum MergeKey {
+        Content(String),
+        SourceId(String, String),
+    }
+    // Keep the original representative score separate from the fused score.
+    let mut scores: BTreeMap<MergeKey, (f64, Option<f32>, FederatedHit)> = BTreeMap::new();
 
     for list in lists {
-        for (rank0, mut hit) in list.into_iter().enumerate() {
-            let contribution = rrf_score(rank0 + 1);
+        let mut seen = HashSet::new();
+        for (rank0, hit) in list.into_iter().enumerate() {
             let key = hit.sha256.as_deref()
                 .filter(|s| !s.is_empty())
-                .map(|s| s.to_owned())
-                .unwrap_or_else(|| hit.id.clone());
-            let entry = scores.entry(key).or_insert_with(|| {
-                hit.score = contribution;
-                (0.0, hit.clone())
-            });
-            entry.0 += contribution;
-            // Keep the hit with the higher source-score as the display record.
-            if hit.score > entry.1.score {
-                entry.1 = hit;
+                .map(|s| MergeKey::Content(s.to_owned()))
+                .unwrap_or_else(|| MergeKey::SourceId(hit.source.clone(), hit.id.clone()));
+            let first_in_list = seen.insert(key.clone());
+            let source_score = hit.score.is_finite().then_some(hit.score);
+            let entry = scores.entry(key).or_insert_with(|| (0.0, source_score, hit.clone()));
+            if first_in_list {
+                entry.0 += f64::from(rrf_score(rank0 + 1));
             }
-            entry.1.score = entry.0;
+            if source_score > entry.1
+                || (source_score == entry.1
+                    && (&hit.source, &hit.id) < (&entry.2.source, &entry.2.id))
+            {
+                entry.1 = source_score;
+                entry.2 = hit;
+            }
         }
     }
 
-    let mut merged: Vec<FederatedHit> = scores.into_values().map(|(_, h)| h).collect();
-    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<_> = scores.into_iter().map(|(key, (score, _, mut hit))| {
+        hit.score = score as f32;
+        (key, hit)
+    }).collect();
+    // Content/identity keys resolve equal fused scores deterministically.
+    merged.sort_by(|(a_key, a), (b_key, b)| {
+        b.score.total_cmp(&a.score).then_with(|| a_key.cmp(b_key))
+    });
     merged.truncate(limit);
-    for (i, h) in merged.iter_mut().enumerate() {
+    for (i, (_, h)) in merged.iter_mut().enumerate() {
         h.rrf_rank = i + 1;
     }
-    merged
+    merged.into_iter().map(|(_, hit)| hit).collect()
 }
 
 /// Stage S — fan out a free-text query to all enabled backends in parallel,
@@ -2877,7 +2895,7 @@ pub async fn sync_federated_search(
             Ok(hits) => {
                 let fed: Vec<FederatedHit> = hits.into_iter().enumerate().map(|(i, r)| {
                     FederatedHit {
-                        id: format!("local:{}", r.doc_id),
+                        id: format!("local:{}", crate::index::fts_index::document_key(&r.owner_id, &r.doc_id)),
                         source: "local".into(),
                         score: r.score,
                         rrf_rank: i + 1,
@@ -3257,6 +3275,95 @@ mod tests {
     fn rrf_merge_empty_lists() {
         let merged = rrf_merge(vec![], 10);
         assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn rrf_merge_counts_repeated_chunks_once_per_source_list() {
+        let local = vec![
+            make_hit("local", "leader", 10.0),
+            make_hit_with_sha("local", "first-chunk", 0.5, Some("shared")),
+            make_hit_with_sha("local", "best-passage", 9.0, Some("shared")),
+            make_hit_with_sha("local", "third-chunk", 0.4, Some("shared")),
+        ];
+        let one_source = rrf_merge(vec![local.clone()], 10);
+        assert_eq!(one_source.len(), 2);
+        assert_eq!(one_source[0].id, "local:leader");
+        assert_eq!(one_source[1].score, rrf_score(2));
+        assert_eq!(one_source[1].id, "local:best-passage");
+
+        let remote = vec![
+            make_hit_with_sha("cloud_backup", "same-content", 0.8, Some("shared")),
+            make_hit_with_sha("cloud_backup", "repeat", 0.7, Some("shared")),
+        ];
+        let both = rrf_merge(vec![local, remote], 10);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].id, "local:best-passage");
+        assert_eq!(both[0].score, rrf_score(2) + rrf_score(1));
+        assert_eq!(both[0].rrf_rank, 1);
+    }
+
+    #[test]
+    fn rrf_merge_keeps_raw_representative_score_separate_from_fusion() {
+        for (higher, lower) in [(100.0, 0.5), (0.0002, 0.0001), (-0.2, -5.0)] {
+            let high = vec![make_hit_with_sha("local", "higher", higher, Some("same"))];
+            let low = vec![make_hit_with_sha("cloud_backup", "lower", lower, Some("same"))];
+            for lists in [vec![high.clone(), low.clone()], vec![low.clone(), high.clone()]] {
+                let merged = rrf_merge(lists, 10);
+                assert_eq!(merged.len(), 1);
+                assert_eq!(merged[0].id, "local:higher");
+                assert_eq!(merged[0].score, 2.0 * rrf_score(1));
+            }
+        }
+    }
+
+    #[test]
+    fn rrf_merge_breaks_rank_and_representative_ties_deterministically() {
+        let lists = vec![
+            vec![make_hit_with_sha("local", "z", 0.5, Some("shared"))],
+            vec![make_hit_with_sha("cloud_backup", "a", 0.5, Some("shared"))],
+            vec![make_hit("local", "z", 0.9)],
+            vec![make_hit("local", "a", 0.9)],
+        ];
+        let expected = rrf_merge(lists.clone(), 10);
+        let mut reversed = lists;
+        reversed.reverse();
+        assert_eq!(rrf_merge(reversed, 10), expected);
+        assert_eq!(expected.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(),
+            vec!["cloud_backup:a", "local:a", "local:z"]);
+        assert_eq!(expected.iter().map(|hit| hit.rrf_rank).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn rrf_merge_nonfinite_source_scores_cannot_replace_a_finite_record() {
+        let lists = vec![
+            vec![make_hit_with_sha("a", "nan", f32::NAN, Some("shared"))],
+            vec![make_hit_with_sha("b", "positive-infinity", f32::INFINITY, Some("shared"))],
+            vec![make_hit_with_sha("c", "negative-infinity", f32::NEG_INFINITY, Some("shared"))],
+            vec![make_hit_with_sha("z", "finite", -100.0, Some("shared"))],
+            vec![make_hit("local", "invalid-only", f32::NAN)],
+        ];
+        let expected = rrf_merge(lists.clone(), 10);
+        assert_eq!(expected[0].id, "z:finite");
+        assert_eq!(expected[0].score, 4.0 * rrf_score(1));
+        assert!(expected.iter().all(|hit| hit.score.is_finite()));
+        let mut reversed = lists;
+        reversed.reverse();
+        assert_eq!(rrf_merge(reversed, 10), expected);
+        assert!(serde_json::to_string(&expected).is_ok());
+    }
+
+    #[test]
+    fn rrf_merge_distinguishes_hashless_source_ids_and_content_keys() {
+        let mut first = make_hit("local", "same", 0.8);
+        let mut second = make_hit("cloud_backup", "same", 0.7);
+        first.id = "opaque".into();
+        second.id = "opaque".into();
+        let content = make_hit_with_sha("local", "hashed", 0.6, Some("opaque"));
+        let lists = vec![vec![first.clone(), first], vec![second], vec![content]];
+        let merged = rrf_merge(lists.clone(), 10);
+        assert_eq!(merged.len(), 3);
+        assert!(merged.iter().all(|hit| hit.score == rrf_score(1)));
+        assert!(rrf_merge(lists, 0).is_empty());
     }
 
     #[test]

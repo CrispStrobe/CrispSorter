@@ -8,10 +8,16 @@
 #[path = "../../src-tauri/src/index/task_failure.rs"] pub mod task_failure_production;
 #[path = "../../shared/source_identity.rs"] pub mod source_identity_production;
 #[path = "../../src-tauri/src/sync/conflict.rs"] pub mod sync_conflict_production;
-pub mod sync { pub use crate::sync_conflict_production as conflict; }
+pub mod sync {
+    pub use crate::sync_conflict_production as conflict;
+    pub mod cloud_backup { include!(concat!(env!("OUT_DIR"), "/federated_hit.rs")); }
+    pub mod tauri_commands { include!(concat!(env!("OUT_DIR"), "/federated_rank.rs")); }
+}
+pub mod cli_federated_contract { include!(concat!(env!("OUT_DIR"), "/cli_federated.rs")); }
 
 #[path = "../../src-tauri/src/index/fts_query.rs"] pub mod fts_query_production;
 #[path = "../../src-tauri/src/index/search_summary.rs"] pub mod search_summary_production;
+#[path = "../../src-tauri/src/index/report_output.rs"] pub mod report_output_production;
 
 pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
@@ -27,6 +33,7 @@ pub mod index {
     pub use crate::synonyms_production as synonyms;
     pub mod fts_index { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/fts_index.rs")); }
     pub use crate::search_summary_production as search_summary;
+    pub use crate::report_output_production as report_output;
     pub mod local_index {
         include!(concat!(env!("OUT_DIR"), "/local_index.rs"));
         mod occurrence { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/occurrence.rs")); }
@@ -36,6 +43,8 @@ pub mod index {
     pub mod ingest { include!(concat!(env!("OUT_DIR"), "/ingest.rs")); }
     pub use fts_index::FtsIndex;
     pub use local_index::LocalIndex;
+    pub use schema::SearchResult;
+    pub use snippet::{highlight_snippet, SNIPPET_WINDOW};
     pub use crate::summary_production as summary;
     pub use crate::barcode_production as barcode;
     pub use crate::task_failure_production as task_failure;
