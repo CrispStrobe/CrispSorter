@@ -6,6 +6,7 @@ interface StartupFaults {
     capabilities?: 'valid' | 'failed' | 'invalid';
     sessionFail?: boolean;
     language?: 'en' | 'de';
+    watchFolders?: string[];
 }
 
 async function startWithFaults(page: Page, faults: StartupFaults) {
@@ -13,11 +14,19 @@ async function startWithFaults(page: Page, faults: StartupFaults) {
     await page.addInitScript(config => {
         const root = window as any;
         root.__startupFaults = { capabilities: 'valid', ...config, holdCapabilities: false, holdSession: false };
+        root.__startupCallbacks = new Map<number, Function>();
+        root.__startupPersistedWatchedPaths = [];
         const wrapped = new WeakSet<object>();
         const wrap = (bridge: any) => {
             if (!bridge || wrapped.has(bridge)) return bridge;
             wrapped.add(bridge);
             const originalInvoke = bridge.invoke;
+            const originalTransformCallback = bridge.transformCallback;
+            bridge.transformCallback = (callback: Function, once?: boolean) => {
+                const id = originalTransformCallback(callback, once);
+                root.__startupCallbacks.set(id, callback);
+                return id;
+            };
             bridge.invoke = async (command: string, args: any = {}) => {
                 const fault = root.__startupFaults;
                 if (command === 'plugin:store|get' && args.key === 'experimentalCrispEmbed' && fault.preferencesFail) {
@@ -33,8 +42,26 @@ async function startWithFaults(page: Page, faults: StartupFaults) {
                     root.__fixtureCalls.push({ command, args });
                     throw new Error('Fixture saved batch is temporarily unavailable');
                 }
+                if (command === 'batch_session_upsert_items_bulk' && fault.watchFolders?.length) {
+                    root.__fixtureCalls.push({ command, args });
+                    if (fault.holdWatcherSave) {
+                        await new Promise<void>(resolve => { root.__releaseWatcherSave = resolve; });
+                    }
+                    if (fault.watcherSaveFailures > 0) {
+                        fault.watcherSaveFailures--;
+                        throw new Error('Fixture watched-file storage is temporarily unavailable');
+                    }
+                    for (const item of args.items) {
+                        const previous = root.__fixtureItems.findIndex((saved: any) => saved.id === item.id);
+                        if (previous === -1) root.__fixtureItems.push(structuredClone(item));
+                        else root.__fixtureItems[previous] = structuredClone(item);
+                        root.__startupPersistedWatchedPaths.push(item.originalPath);
+                    }
+                    return;
+                }
                 const result = await originalInvoke(command, args);
                 if (command === 'plugin:store|get' && args.key === 'language' && fault.language) return [fault.language, true];
+                if (command === 'plugin:store|get' && args.key === 'watchFolders' && fault.watchFolders) return [fault.watchFolders, true];
                 if (command === 'build_capabilities' && fault.holdCapabilities) {
                     return new Promise(resolve => { root.__releaseCapabilities = () => resolve(result); });
                 }
@@ -169,5 +196,76 @@ test('failed batch restore blocks additions and Retry preserves current edits wi
     })).toEqual(expect.arrayContaining([
         { id: 'pending', title: 'Current correction' }, { id: 'warranty', title: 'Warranty' }, { id: 'current', title: undefined },
     ]));
+    expect(await startupCalls(page)).toEqual({ capabilities: 1, session: 2, fileListener: 1, syncListener: 1, indexConfig: 1 });
+});
+
+test('watcher arrivals survive failed restoration and retry saved additions without restarting watchers', async ({ page }) => {
+    await startWithFaults(page, { sessionFail: true, watchFolders: ['/fixtures/watched'] });
+    const sessionNotice = page.getByRole('alert', { name: 'The previous batch could not be restored', exact: true });
+    const watcherNotice = page.getByRole('alert', { name: 'Detected files could not be added', exact: true });
+    const incoming = page.locator('.batch-container table.dense-table .file-name').filter({ hasText: /^Incoming\.pdf$/ });
+    await expect(sessionNotice).toBeVisible();
+    await expect.poll(() => startupCalls(page)).toEqual({ capabilities: 1, session: 1, fileListener: 1, syncListener: 1, indexConfig: 1 });
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'watch_start').length)).toBe(1);
+
+    const emitArrival = () => page.evaluate(() => {
+        const root = window as any;
+        const subscription = root.__fixtureCalls.find((call: any) => call.command === 'plugin:event|listen' && call.args.event === 'folder-watch:added');
+        const callback = root.__startupCallbacks.get(subscription?.args.handler);
+        if (!callback) throw new Error('The folder watcher listener was not registered.');
+        callback({ event: 'folder-watch:added', id: 1, payload: { path: '/fixtures/watched/Incoming.pdf' } });
+    });
+    await emitArrival();
+    await emitArrival();
+    await expect(incoming).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'batch_session_upsert_items_bulk'))).toHaveLength(0);
+
+    await page.evaluate(() => {
+        const fault = (window as any).__startupFaults;
+        fault.sessionFail = false;
+        fault.holdWatcherSave = true;
+        fault.watcherSaveFailures = 1;
+    });
+    await sessionNotice.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseWatcherSave)).toBe('function');
+    await expect(sessionNotice).not.toBeVisible();
+    await expect(incoming).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__startupPersistedWatchedPaths)).toEqual([]);
+
+    // A failed replay must retain the path separately from the now-restored
+    // session. Neither event replay nor a pending write counts as success.
+    await page.evaluate(() => {
+        const root = window as any;
+        root.__startupFaults.holdWatcherSave = false;
+        root.__releaseWatcherSave();
+    });
+    await expect(watcherNotice).toBeVisible();
+    await expect(watcherNotice).toContainText('1 detected file(s) are waiting');
+    await expect(incoming).toHaveCount(0);
+    await expect(sessionNotice).not.toBeVisible();
+    await emitArrival();
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'batch_session_upsert_items_bulk'))).toHaveLength(1);
+
+    await watcherNotice.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(watcherNotice).not.toBeVisible();
+    await expect(incoming).toHaveCount(1);
+    expect(await page.evaluate(() => (window as any).__startupPersistedWatchedPaths)).toEqual(['/fixtures/watched/Incoming.pdf']);
+    expect(await page.evaluate(async () => {
+        const modulePath = '/src/lib/batch/store.svelte.ts';
+        const { batchManager } = await import(modulePath);
+        return batchManager.items.filter((item: any) => item.originalPath === '/fixtures/watched/Incoming.pdf').length;
+    })).toBe(1);
+
+    // A later duplicate notification is checked against the restored batch,
+    // without another persisted row or another watcher registration.
+    await emitArrival();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'plugin:fs|stat' && call.args.path === '/fixtures/watched/Incoming.pdf').length)).toBe(3);
+    await expect.poll(() => page.evaluate(async () => {
+        const modulePath = '/src/lib/batch/store.svelte.ts';
+        const { batchManager } = await import(modulePath);
+        return batchManager.isUpdatingBatch;
+    })).toBe(false);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'batch_session_upsert_items_bulk'))).toHaveLength(2);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'watch_start').length)).toBe(1);
     expect(await startupCalls(page)).toEqual({ capabilities: 1, session: 2, fileListener: 1, syncListener: 1, indexConfig: 1 });
 });

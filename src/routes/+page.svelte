@@ -1,3 +1,9 @@
+<script module lang="ts">
+    // Keep detected paths across shell remounts in the same app session.
+    // Remove a path only after the batch store confirms its addition.
+    const pendingWatchedPaths = new Set<string>();
+</script>
+
 <script lang="ts">
     import { loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
     import { documentToolRequest, supportsOcrWorkbench } from '$lib/workflow';
@@ -83,6 +89,9 @@
     let preferencesError = $state('');
     let sessionRestoring = $state(false);
     let sessionError = $state('');
+    let watcherDraining = $state(false);
+    let watcherError = $state('');
+    let pendingWatcherCount = $state(pendingWatchedPaths.size);
     const sessionBusy = $derived(batchManager.isProcessing || batchManager.isExecuting || batchManager.isUpdatingBatch
         || batchManager.isCleaningDuplicates || reviewDrafts.applyingId != null);
     const startupCopy = $derived(i18n.lang === 'de' ? {
@@ -92,6 +101,8 @@
         preferencesHint: 'Du kannst weiterarbeiten und das Laden deiner gespeicherten Einstellungen erneut versuchen.',
         session: 'Der letzte Stapel konnte nicht wiederhergestellt werden',
         sessionHint: 'Stelle den gespeicherten Stapel wieder her, bevor du Dateien hinzufügst. Bereits vorhandene Einträge und Änderungen in dieser Sitzung bleiben erhalten.',
+        watcher: 'Erkannte Dateien konnten nicht hinzugefügt werden',
+        watcherHint: `${pendingWatcherCount} erkannte Datei(en) warten in dieser Sitzung. Versuche es erneut, sobald der gespeicherte Stapel verfügbar ist.`,
         restoring: 'Der letzte Stapel wird geladen…', retry: 'Erneut versuchen', retrying: 'Wird erneut versucht…', details: 'Fehlerdetails',
     } : {
         capabilities: 'Available tools could not be checked',
@@ -100,6 +111,8 @@
         preferencesHint: 'You can keep working and retry loading your saved preferences.',
         session: 'The previous batch could not be restored',
         sessionHint: 'Restore the saved batch before adding files. Existing entries and edits in this session will be kept.',
+        watcher: 'Detected files could not be added',
+        watcherHint: `${pendingWatcherCount} detected file(s) are waiting in this session. Retry once the saved batch is available.`,
         restoring: 'Restoring the previous batch…', retry: 'Retry', retrying: 'Retrying…', details: 'Error details',
     });
     const startupNotices = $derived([
@@ -109,6 +122,8 @@
             error: preferencesError, busy: preferencesRestoring, disabled: preferencesRestoring, retry: restorePreferences }] : []),
         ...(sessionError ? [{ id: 'session', title: startupCopy.session, hint: startupCopy.sessionHint,
             error: sessionError, busy: sessionRestoring, disabled: sessionRestoring || sessionBusy, retry: restoreSession }] : []),
+        ...(watcherError ? [{ id: 'watcher', title: startupCopy.watcher, hint: startupCopy.watcherHint,
+            error: watcherError, busy: watcherDraining, disabled: watcherDraining || !batchManager.sessionReady || sessionBusy, retry: drainWatchedPaths }] : []),
     ]);
 
     async function restorePreferences() {
@@ -147,6 +162,45 @@
             flog('warn', `Session restore failed: ${String(error)}`);
         } finally {
             if (!shellDisposed) sessionRestoring = false;
+        }
+        // A successful restore releases arrivals retained during the failure.
+        // Their storage errors have a separate Retry and must not undo restore.
+        if (!shellDisposed && batchManager.sessionReady) void drainWatchedPaths();
+    }
+
+    async function drainWatchedPaths() {
+        if (watcherDraining || shellDisposed || !batchManager.sessionReady) return;
+        watcherDraining = true;
+        try {
+            while (pendingWatchedPaths.size && !shellDisposed && batchManager.sessionReady) {
+                const path = pendingWatchedPaths.values().next().value!;
+                const name = path.split(/[\\/]/).pop() || path;
+                let size = 0;
+                try {
+                    const info = await stat(path);
+                    size = Number((info as any).size ?? 0);
+                } catch {
+                    // Preserve the existing import behavior when stat is
+                    // unavailable; source access is checked during processing.
+                }
+                if (shellDisposed) return;
+                const added = await batchManager.addItem(path, name, size);
+                // false means an authoritative, restored batch already has it.
+                // A rejected write keeps the path for an explicit retry.
+                pendingWatchedPaths.delete(path);
+                if (shellDisposed) return;
+                pendingWatcherCount = pendingWatchedPaths.size;
+                if (added) flog('info', `Watcher added: ${name}`);
+            }
+            if (!shellDisposed) watcherError = '';
+        } catch (error) {
+            if (!shellDisposed) watcherError = String(error);
+            flog('warn', `Watcher addition retained for retry: ${String(error)}`);
+        } finally {
+            if (!shellDisposed) {
+                pendingWatcherCount = pendingWatchedPaths.size;
+                watcherDraining = false;
+            }
         }
     }
 
@@ -334,6 +388,9 @@
 
             await restoreSession();
             if (shellDisposed) return;
+            // A remounted shell may inherit a ready batch and pending arrivals
+            // while restoreSession itself was skipped for another active write.
+            void drainWatchedPaths();
 
             // ── Folder watcher ──────────────────────────────────────────
             // Single global listener for folder-watch:added events. The
@@ -343,24 +400,14 @@
             try {
                 const unlistenWatch = await listen<{ path: string }>(
                     'folder-watch:added',
-                    async (event) => {
+                    (event) => {
                         const path = event.payload?.path;
                         if (!path || shellDisposed) return;
-                        const name = path.split(/[\\/]/).pop() || path;
-                        let size = 0;
-                        try {
-                            const info = await stat(path);
-                            size = Number((info as any).size ?? 0);
-                        } catch {
-                            /* file may have been moved between detection and
-                               stat — ignore and import with size=0 */
-                        }
-                        if (shellDisposed) return;
-                        try {
-                            if (await batchManager.addItem(path, name, size)) flog('info', `Watcher added: ${name}`);
-                        } catch (error) {
-                            flog('warn', `Watcher could not add ${name}: ${String(error)}`);
-                        }
+                        pendingWatchedPaths.add(path);
+                        pendingWatcherCount = pendingWatchedPaths.size;
+                        // Do not repeatedly retry a failing disk write on every
+                        // watcher event. The visible Retry owns that recovery.
+                        if (!watcherError) void drainWatchedPaths();
                     }
                 );
                 trackCleanup(unlistenWatch);
