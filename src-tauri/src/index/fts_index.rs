@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 ///                     becomes `None` and the field is skipped for both
 ///                     ingest and search until the user rebuilds.
 ///   language        — STRING STORED (filter)
-use std::{collections::{BTreeSet, HashSet}, path::Path};
+use std::{
+    collections::{BTreeSet, HashSet},
+    path::Path,
+};
 use tantivy::{
     collector::{Count, DocSetCollector, TopDocs},
     query::{BooleanQuery, Occur, Query, TermQuery, TermSetQuery},
@@ -43,9 +46,7 @@ const ASCII_FOLD_TOKENIZER: &str = "ascii_folding";
 
 fn register_tokenizers(index: &Index) {
     let analyzer = text_analyzer();
-    index
-        .tokenizers()
-        .register(ASCII_FOLD_TOKENIZER, analyzer);
+    index.tokenizers().register(ASCII_FOLD_TOKENIZER, analyzer);
 }
 
 pub struct FtsIndex {
@@ -69,21 +70,32 @@ pub struct IndexFields {
 
 /// Add bodies received from a remote index to the local full-text index.
 /// Commit before advancing the sync watermark so failures are retried.
-pub fn index_synced_documents(fts: &FtsIndex, chunks: &[super::schema::DocumentChunk]) -> Result<usize> {
-    let bodies: Vec<_> = chunks.iter().filter(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())).collect();
-    if bodies.is_empty() { return Ok(0); }
+pub fn index_synced_documents(
+    fts: &FtsIndex,
+    chunks: &[super::schema::DocumentChunk],
+) -> Result<usize> {
+    let bodies: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty()))
+        .collect();
+    if bodies.is_empty() {
+        return Ok(0);
+    }
     let mut writer = fts.writer()?;
     for c in &bodies {
         fts.delete_document(&mut writer, &c.doc_id)?;
-        fts.add_document(&mut writer, TantivyInput {
-            doc_id: &c.doc_id,
-            owner_id: &c.owner_id,
-            language: c.language.as_deref().unwrap_or(""),
-            title: c.title.as_deref().unwrap_or(""),
-            headings: c.headings_text.as_deref().unwrap_or(""),
-            body: c.full_text.as_deref().unwrap_or(""),
-            body_translated: c.text_translated.as_deref(),
-        })?;
+        fts.add_document(
+            &mut writer,
+            TantivyInput {
+                doc_id: &c.doc_id,
+                owner_id: &c.owner_id,
+                language: c.language.as_deref().unwrap_or(""),
+                title: c.title.as_deref().unwrap_or(""),
+                headings: c.headings_text.as_deref().unwrap_or(""),
+                body: c.full_text.as_deref().unwrap_or(""),
+                body_translated: c.text_translated.as_deref(),
+            },
+        )?;
     }
     writer.commit()?;
     Ok(bodies.len())
@@ -158,13 +170,26 @@ impl FtsIndex {
     /// counted once. The owner filter is honored before returning vocabulary.
     /// No body text or whole dictionary is materialized. Dead terms can make a
     /// page shorter than requested; the bounded scan is suitable for suggestions.
-    pub fn vocabulary(&self, prefix: &str, limit: usize, filters: &SearchFilters) -> Result<Vec<VocabularyTerm>> {
-        if prefix.len() > 128 { bail!("Vocabulary prefix is too long."); }
-        if !prefix.chars().all(char::is_alphanumeric) { bail!("Vocabulary prefix must be one word without search operators."); }
-        if !prefix.is_empty() && simple_tokenize(prefix).len() != 1 { bail!("Vocabulary prefix must be one indexed word shorter than 40 bytes."); }
+    pub fn vocabulary(
+        &self,
+        prefix: &str,
+        limit: usize,
+        filters: &SearchFilters,
+    ) -> Result<Vec<VocabularyTerm>> {
+        if prefix.len() > 128 {
+            bail!("Vocabulary prefix is too long.");
+        }
+        if !prefix.chars().all(char::is_alphanumeric) {
+            bail!("Vocabulary prefix must be one word without search operators.");
+        }
+        if !prefix.is_empty() && simple_tokenize(prefix).len() != 1 {
+            bail!("Vocabulary prefix must be one indexed word shorter than 40 bytes.");
+        }
         let prefix = fold_accents(prefix);
         let limit = limit.min(100);
-        if limit == 0 { return Ok(Vec::new()); }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.reader.reload()?;
         let searcher = self.reader.searcher();
         let fields = self.search_fields().weighted();
@@ -175,28 +200,60 @@ impl FtsIndex {
                 let index = segment.inverted_index(*field)?;
                 let mut stream = index.terms().range().ge(prefix.as_bytes()).into_stream()?;
                 for _ in 0..scan_limit {
-                    if !stream.advance() { break; }
+                    if !stream.advance() {
+                        break;
+                    }
                     let word = std::str::from_utf8(stream.key())?;
-                    if !word.starts_with(&prefix) { break; }
+                    if !word.starts_with(&prefix) {
+                        break;
+                    }
                     words.insert(word.to_owned());
-                    if words.len() > scan_limit { words.pop_last(); }
+                    if words.len() > scan_limit {
+                        words.pop_last();
+                    }
                 }
             }
         }
         let mut out = Vec::new();
         for word in words {
-            let term_query: Box<dyn Query> = Box::new(BooleanQuery::new(fields.iter().map(|(field, _)| {
-                (Occur::Should, Box::new(TermQuery::new(Term::from_field_text(*field, &word), IndexRecordOption::Basic)) as Box<dyn Query>)
-            }).collect()));
+            let term_query: Box<dyn Query> = Box::new(BooleanQuery::new(
+                fields
+                    .iter()
+                    .map(|(field, _)| {
+                        (
+                            Occur::Should,
+                            Box::new(TermQuery::new(
+                                Term::from_field_text(*field, &word),
+                                IndexRecordOption::Basic,
+                            )) as Box<dyn Query>,
+                        )
+                    })
+                    .collect(),
+            ));
             let query = if let Some(owner) = &filters.owner_id {
                 Box::new(BooleanQuery::new(vec![
                     (Occur::Must, term_query),
-                    (Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.fields.owner_id, owner), IndexRecordOption::Basic))),
+                    (
+                        Occur::Must,
+                        Box::new(TermQuery::new(
+                            Term::from_field_text(self.fields.owner_id, owner),
+                            IndexRecordOption::Basic,
+                        )),
+                    ),
                 ])) as Box<dyn Query>
-            } else { term_query };
+            } else {
+                term_query
+            };
             let doc_freq = searcher.search(&query, &Count)? as u64;
-            if doc_freq > 0 { out.push(VocabularyTerm { term: word, doc_freq }); }
-            if out.len() == limit { break; }
+            if doc_freq > 0 {
+                out.push(VocabularyTerm {
+                    term: word,
+                    doc_freq,
+                });
+            }
+            if out.len() == limit {
+                break;
+            }
         }
         Ok(out)
     }
@@ -205,20 +262,8 @@ impl FtsIndex {
     /// condition. This prevents vector fusion from bypassing NOT, field,
     /// phrase, or proximity constraints. It never scans/materializes all hits.
     pub fn matching_doc_ids(&self, query: &str, ids: &[String]) -> Result<HashSet<String>> {
-        if ids.len() > 1024 { bail!("At most 1024 document candidates can be verified at once."); }
-        self.reader.reload()?;
-        let searcher = self.reader.searcher();
-        let parsed = translate(query, &searcher, &self.search_fields())?;
-        if ids.is_empty() { return Ok(HashSet::new()); }
-        let ids_query = TermSetQuery::new(ids.iter().map(|id| Term::from_field_text(self.fields.doc_id, id)));
-        let query = BooleanQuery::new(vec![(Occur::Must, parsed), (Occur::Must, Box::new(ids_query))]);
-        let docs = searcher.search(&query, &DocSetCollector)?;
-        let mut result = HashSet::with_capacity(docs.len());
-        for address in docs {
-            let doc: TantivyDocument = searcher.doc(address)?;
-            if let Some(id) = owned_str(&doc, self.fields.doc_id) { result.insert(id); }
-        }
-        Ok(result)
+        self.prepare_search(query, &SearchFilters::default())?
+            .matching_doc_ids(ids)
     }
 
     pub fn writer(&self) -> Result<IndexWriter> {
@@ -268,7 +313,8 @@ impl FtsIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<FtsHit>> {
-        self.prepare_search(query_str, filters)?.search_page(limit, 0)
+        self.prepare_search(query_str, filters)?
+            .search_page(limit, 0)
     }
 
     /// Freeze one reader snapshot and parsed query for progressive filtering.
@@ -298,7 +344,11 @@ impl FtsIndex {
             query
         };
 
-        Ok(PreparedFtsSearch { searcher, query: effective_query, doc_id: self.fields.doc_id })
+        Ok(PreparedFtsSearch {
+            searcher,
+            query: effective_query,
+            doc_id: self.fields.doc_id,
+        })
     }
 }
 
@@ -315,9 +365,39 @@ impl PreparedFtsSearch {
         self.searcher.num_docs().min(usize::MAX as u64) as usize
     }
 
+    /// Apply the same parsed query and owner restriction to every retrieval
+    /// channel using this frozen snapshot, including all candidate batches.
+    pub fn matching_doc_ids(&self, ids: &[String]) -> Result<HashSet<String>> {
+        if ids.len() > 1024 {
+            bail!("At most 1024 document candidates can be verified at once.");
+        }
+        if ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let ids_query =
+            TermSetQuery::new(ids.iter().map(|id| Term::from_field_text(self.doc_id, id)));
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, self.query.box_clone()),
+            (Occur::Must, Box::new(ids_query)),
+        ]);
+        let docs = self.searcher.search(&query, &DocSetCollector)?;
+        let mut result = HashSet::with_capacity(docs.len());
+        for address in docs {
+            let doc: TantivyDocument = self.searcher.doc(address)?;
+            if let Some(id) = owned_str(&doc, self.doc_id) {
+                result.insert(id);
+            }
+        }
+        Ok(result)
+    }
+
     pub fn search_page(&self, limit: usize, offset: usize) -> Result<Vec<FtsHit>> {
-        if limit == 0 { return Ok(Vec::new()); }
-        let top_docs = self.searcher.search(&self.query, &TopDocs::with_limit(limit).and_offset(offset))?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let top_docs = self
+            .searcher
+            .search(&self.query, &TopDocs::with_limit(limit).and_offset(offset))?;
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, doc_addr) in top_docs {
             let doc: TantivyDocument = self.searcher.doc(doc_addr)?;
@@ -479,18 +559,35 @@ mod tests {
     #[test]
     fn pulled_bodies_are_searchable_and_replaced_on_retry() {
         let (idx, _dir) = make_index();
-        let mut chunk: super::super::schema::DocumentChunk = serde_json::from_value(serde_json::json!({
-            "id": "a:0", "doc_id": "a", "location_uri": "https://example.invalid/a",
-            "owner_id": "reader", "full_text": "a rare passage in a saved article",
-            "chunk_index": 0, "chunk_total": 1, "indexed_at": 1,
-            "source_hash": "a", "tags": []
-        })).unwrap();
+        let mut chunk: super::super::schema::DocumentChunk =
+            serde_json::from_value(serde_json::json!({
+                "id": "a:0", "doc_id": "a", "location_uri": "https://example.invalid/a",
+                "owner_id": "reader", "full_text": "a rare passage in a saved article",
+                "chunk_index": 0, "chunk_total": 1, "indexed_at": 1,
+                "source_hash": "a", "tags": []
+            }))
+            .unwrap();
         assert_eq!(index_synced_documents(&idx, &[chunk.clone()]).unwrap(), 1);
-        assert_eq!(idx.search("rare", &SearchFilters::default(), 10).unwrap().len(), 1);
+        assert_eq!(
+            idx.search("rare", &SearchFilters::default(), 10)
+                .unwrap()
+                .len(),
+            1
+        );
         chunk.full_text = Some("a revised unique passage".into());
         assert_eq!(index_synced_documents(&idx, &[chunk]).unwrap(), 1);
-        assert_eq!(idx.search("rare", &SearchFilters::default(), 10).unwrap().len(), 0);
-        assert_eq!(idx.search("revised", &SearchFilters::default(), 10).unwrap().len(), 1);
+        assert_eq!(
+            idx.search("rare", &SearchFilters::default(), 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            idx.search("revised", &SearchFilters::default(), 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -954,7 +1051,11 @@ mod tests {
 
         let f = SearchFilters::default();
         let hits = idx.search("hello", &f, 10).unwrap();
-        assert_eq!(hits.len(), 1, "English query should hit only the translated doc");
+        assert_eq!(
+            hits.len(),
+            1,
+            "English query should hit only the translated doc"
+        );
         assert_eq!(hits[0].doc_id, "bs1");
     }
 

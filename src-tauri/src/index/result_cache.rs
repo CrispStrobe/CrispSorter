@@ -68,6 +68,12 @@ impl ResultCache {
         current_gen()
     }
 
+    /// Capture before starting an asynchronous search. Its result must retain
+    /// this generation even if ingestion completes before the search does.
+    pub fn generation_token(&self) -> u64 {
+        self.generation()
+    }
+
     /// Test-only constructor whose generation never moves under it.
     #[cfg(test)]
     fn new_pinned(capacity: usize) -> Self {
@@ -115,17 +121,39 @@ impl ResultCache {
     }
 
     pub fn put(&mut self, query: &str, mode: &str, filters_hash: u64, results: Vec<SearchResult>) {
+        self.put_at_generation(query, mode, filters_hash, results, self.generation());
+    }
+
+    /// Do not relabel a result that started before an index mutation. Stamping
+    /// the captured generation also closes the race with invalidation between
+    /// this comparison and the actual insertion.
+    pub fn put_at_generation(
+        &mut self,
+        query: &str,
+        mode: &str,
+        filters_hash: u64,
+        results: Vec<SearchResult>,
+        generation: u64,
+    ) {
+        if self.capacity == 0 || self.generation() != generation {
+            return;
+        }
         let key = Self::make_key(query, mode, filters_hash);
-        let gen = self.generation();
         // Evict oldest if at capacity
-        while self.entries.len() >= self.capacity {
+        while !self.entries.contains_key(&key) && self.entries.len() >= self.capacity {
             if let Some(oldest) = self.order.pop_front() {
                 self.entries.remove(&oldest);
             } else {
                 break;
             }
         }
-        self.entries.insert(key, CacheEntry { results, generation: gen });
+        self.entries.insert(
+            key,
+            CacheEntry {
+                results,
+                generation,
+            },
+        );
         self.touch(key);
     }
 }
@@ -147,8 +175,14 @@ pub fn hash_filters(filters: &super::schema::SearchFilters) -> u64 {
     filters.source_hash_prefix.hash(&mut h);
     filters.parent_dir_prefix.hash(&mut h);
     // f64 fields: hash by bit pattern (NaN == NaN for cache purposes)
-    filters.audio_duration_min_seconds.map(|v| v.to_bits()).hash(&mut h);
-    filters.audio_duration_max_seconds.map(|v| v.to_bits()).hash(&mut h);
+    filters
+        .audio_duration_min_seconds
+        .map(|v| v.to_bits())
+        .hash(&mut h);
+    filters
+        .audio_duration_max_seconds
+        .map(|v| v.to_bits())
+        .hash(&mut h);
     filters.image_camera_make.hash(&mut h);
     filters.image_camera_model.hash(&mut h);
     filters.omni_search.hash(&mut h);
@@ -175,12 +209,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn in_flight_result_is_not_relabelled_after_index_changes() {
+        let mut cache = ResultCache::new_pinned(2);
+        let before = cache.generation_token();
+        cache.pinned_generation = Some(before.wrapping_add(1));
+        cache.put_at_generation("old", "hybrid", 0, vec![], before);
+        assert!(cache.get("old", "hybrid", 0).is_none());
+        let after = cache.generation_token();
+        cache.put_at_generation("new", "hybrid", 0, vec![], after);
+        assert!(cache.get("new", "hybrid", 0).is_some());
+    }
+
+    #[test]
+    fn replacing_an_entry_at_capacity_does_not_evict_another_query() {
+        let mut cache = ResultCache::new_pinned(2);
+        cache.put("a", "hybrid", 0, vec![]);
+        cache.put("b", "hybrid", 0, vec![]);
+        cache.put("b", "hybrid", 0, vec![]);
+        assert!(cache.get("a", "hybrid", 0).is_some());
+        assert!(cache.get("b", "hybrid", 0).is_some());
+    }
+
+    #[test]
+    fn zero_capacity_is_a_disabled_cache() {
+        let mut cache = ResultCache::new_pinned(0);
+        cache.put("query", "hybrid", 0, vec![]);
+        assert!(cache.get("query", "hybrid", 0).is_none());
+    }
+
+    #[test]
     fn distinct_result_limits_do_not_share_cached_answers() {
         let filters = super::super::schema::SearchFilters::default();
         let mut cache = ResultCache::new_pinned(4);
         cache.put("same query", "hybrid", hash_request(&filters, 5), vec![]);
-        assert!(cache.get("same query", "hybrid", hash_request(&filters, 50)).is_none());
-        assert!(cache.get("same query", "hybrid", hash_request(&filters, 5)).is_some());
+        assert!(cache
+            .get("same query", "hybrid", hash_request(&filters, 50))
+            .is_none());
+        assert!(cache
+            .get("same query", "hybrid", hash_request(&filters, 5))
+            .is_some());
     }
 
     #[test]
@@ -202,7 +269,8 @@ mod tests {
         // asserting a miss-after-invalidate do not.
         let mut cache = ResultCache::new(4);
         cache.put("hello", "hybrid", 0, vec![]);
-        assert!(cache.get("hello", "hybrid", 0).is_some());
+        // Another test may invalidate concurrently, so only the miss after
+        // invalidation is asserted here. Cache hits use pinned generations.
         invalidate();
         assert!(cache.get("hello", "hybrid", 0).is_none());
     }
@@ -262,8 +330,14 @@ mod tests {
         let _ = cache.get("a", "h", 0);
         // Insert "c" → should evict "b" (now the oldest), not "a"
         cache.put("c", "h", 0, vec![]);
-        assert!(cache.get("a", "h", 0).is_some(), "a was touched, must survive");
-        assert!(cache.get("b", "h", 0).is_none(), "b is LRU, must be evicted");
+        assert!(
+            cache.get("a", "h", 0).is_some(),
+            "a was touched, must survive"
+        );
+        assert!(
+            cache.get("b", "h", 0).is_none(),
+            "b is LRU, must be evicted"
+        );
         assert!(cache.get("c", "h", 0).is_some(), "c was just inserted");
     }
 
@@ -327,7 +401,10 @@ mod tests {
         cache.put("a", "h", 0, vec![]);
         cache.put("b", "h", 0, vec![]);
         cache.put("c", "h", 0, vec![]);
-        assert!(cache.get("q", "h", 0).is_some(), "q should still be within capacity 4");
+        assert!(
+            cache.get("q", "h", 0).is_some(),
+            "q should still be within capacity 4"
+        );
     }
 
     #[test]
@@ -336,7 +413,10 @@ mod tests {
         cache.put("a", "h", 0, vec![]);
         assert!(cache.get("a", "h", 0).is_some());
         cache.put("b", "h", 0, vec![]);
-        assert!(cache.get("a", "h", 0).is_none(), "a should be evicted at cap=1");
+        assert!(
+            cache.get("a", "h", 0).is_none(),
+            "a should be evicted at cap=1"
+        );
         assert!(cache.get("b", "h", 0).is_some());
     }
 }

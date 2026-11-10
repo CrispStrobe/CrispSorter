@@ -32,45 +32,23 @@ static SYNONYMS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = Lazy
 /// Expand a query string: each bare word that has synonyms becomes
 /// `(word OR syn1 OR syn2)`.  Returns the expanded query.
 pub fn synonym_expand_query(query: &str) -> String {
-    let mut result = Vec::new();
-    let mut in_quote = false;
-    for token in query.split_whitespace() {
-        if token.starts_with('"') { in_quote = true; }
-        if in_quote {
-            result.push(token.to_string());
-            if token.ends_with('"') && token.len() > 1 { in_quote = false; }
-            continue;
+    super::fts_query::rewrite_bare_words(query, |token| {
+        if token.chars().count() < 3 || !token.chars().all(char::is_alphabetic) {
+            return None;
         }
-        // Skip operators and special syntax
-        if token.eq_ignore_ascii_case("AND")
-            || token.eq_ignore_ascii_case("OR")
-            || token.eq_ignore_ascii_case("NOT")
-            || token.contains("w/") || token.contains("pre/")
-            || token.contains('~') || token.contains('*') || token.contains('?')
-            || token.starts_with('(') || token.ends_with(')')
-            || token.contains(':')
-        {
-            result.push(token.to_string());
-            continue;
-        }
-        // Only expand alphabetic words ≥ 3 chars
         let lower = token.to_lowercase();
-        if lower.len() >= 3
-            && lower.chars().all(|c| c.is_alphabetic())
-            && !lower.chars().all(|c| c.is_ascii_digit())
-        {
-            if let Some(group) = SYNONYMS.get(lower.as_str()) {
-                let others: Vec<&str> = group.iter().copied().filter(|&s| s != lower.as_str()).collect();
-                if !others.is_empty() {
-                    let expanded = format!("({} OR {})", token, others.join(" OR "));
-                    result.push(expanded);
-                    continue;
-                }
-            }
+        let group = SYNONYMS.get(lower.as_str())?;
+        let others: Vec<&str> = group
+            .iter()
+            .copied()
+            .filter(|&word| word != lower)
+            .collect();
+        if others.is_empty() {
+            None
+        } else {
+            Some(format!("({} OR {})", token, others.join(" OR ")))
         }
-        result.push(token.to_string());
-    }
-    result.join(" ")
+    })
 }
 
 // ── English synonym groups ────────────────────────────────────────────
@@ -235,10 +213,11 @@ mod tests {
     }
 
     #[test]
-    fn preserves_parens() {
+    fn expands_words_inside_groups_without_losing_parentheses() {
         let q = synonym_expand_query("(help OR error)");
-        assert!(q.contains("(help"));
-        assert!(q.contains("error)"));
+        assert!(q.starts_with('(') && q.ends_with(')'));
+        assert!(q.contains("assist") && q.contains("mistake"));
+        assert!(super::super::fts_query::has_explicit_syntax(&q).unwrap());
     }
 
     #[test]
@@ -252,7 +231,7 @@ mod tests {
     fn multiple_synonyms_in_query() {
         let q = synonym_expand_query("help create goal");
         assert!(q.contains("assist")); // help
-        assert!(q.contains("build"));  // create
+        assert!(q.contains("build")); // create
         assert!(q.contains("objective")); // goal
     }
 

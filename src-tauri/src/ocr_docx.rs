@@ -553,7 +553,7 @@ mod tests {
         parsed.descendants("w:bidi", &mut directions);
         // The writer omits false because left-to-right is the OOXML default.
         assert_eq!(directions.len(), 1);
-        assert!(["1", "true"].contains(&directions[0].attribute("w:val")));
+        assert!(directions[0].attributes.get("w:val").is_none_or(|value| ["1", "true"].contains(&value.as_str())));
     }
 
     // Inspect the actual packaged XML, including definitions inserted by the
