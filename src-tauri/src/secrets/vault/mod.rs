@@ -106,9 +106,9 @@ impl fmt::Display for Error {
             Error::NoEntry => write!(f, "no secret stored under that account"),
             Error::Denied(s) => write!(
                 f,
-                "the system credential store denied access ({s}). \
-                 CrispSorter will not ask again this run. \
-                 Pick a different secret store in Settings › Security."
+                "the secret store denied access ({s}). \
+                 CrispSorter will not ask again this run; retry or pick a \
+                 different store in Settings › Secret storage."
             ),
             Error::Locked(s) => write!(f, "the secret vault is locked ({s})"),
             Error::Backend(s) => write!(f, "secret store unavailable: {s}"),

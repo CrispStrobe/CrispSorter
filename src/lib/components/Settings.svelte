@@ -11,12 +11,16 @@
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { ProviderRequests, providerConfigurationMatches, providerErrorMessage, type ProviderRequest, type ProviderRequestConfig } from '../llm/providerRequests';
     import { ProviderSaveQueue, prepareProviderSecrets, reconcileProviderSecrets } from '../llm/providerPersistence';
+    import { COST_REPORT_PROVIDERS, costKeyAccount, resolveProviderReportKey, fetchProviderAccountReport } from '../llm/providerCosts';
     import { caps, currentCaps } from '../capabilities';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
     import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
     import {
         resolveSecret,
         bulkSetSecrets,
+        getSecret,
+        setSecret,
+        deleteSecret,
     } from '../secrets';
     import {
         getBackendOptions,
@@ -3020,8 +3024,8 @@
         untrack(() => { void handleRefreshModels(p.id); });
     });
 
-    /** Providers whose API reports the remaining balance for an API key. */
-    const BALANCE_PROVIDERS = ['openrouter'];
+    /** Credit balances and monthly spend remain separate provider reports. */
+    const BALANCE_PROVIDERS = ['openrouter', ...COST_REPORT_PROVIDERS];
     let balance = $state<Record<string, { request: ProviderRequest; text: string; error: boolean; at: number }>>({});
     let balanceRequests = $state<Record<string, ProviderRequest>>({});
     let balanceBusy = $derived(!!balanceRequests[selectedProvider.id]
@@ -3029,29 +3033,81 @@
     let selectedBalance = $derived(balance[selectedProvider.id]
         && providerConfigurationMatches(balance[selectedProvider.id].request.config, selectedProvider)
         ? balance[selectedProvider.id] : null);
+    let costKeyInput = $state<Record<string, string>>({});
+    let costKeySaved = $state<Record<string, boolean>>({});
+    let costKeySaving = $state<Record<string, boolean>>({});
+    let costKeyNotices = $state<Record<string, { text: string; error: boolean }>>({});
+    const costKeyStatusSequence = new Map<string, number>();
+
+    async function refreshCostKeySaved(id: string) {
+        if (!COST_REPORT_PROVIDERS.includes(id)) return;
+        const sequence = (costKeyStatusSequence.get(id) ?? 0) + 1;
+        costKeyStatusSequence.set(id, sequence);
+        let saved = false;
+        try { saved = !!(await getSecret(costKeyAccount(id))); } catch { /* An unavailable store is not a saved-key receipt. */ }
+        if (costKeyStatusSequence.get(id) === sequence) costKeySaved[id] = saved;
+    }
+    $effect(() => { const id = selectedProvider?.id; if (id) untrack(() => { void refreshCostKeySaved(id); }); });
+
+    function invalidateProviderBalance(id: string) {
+        providerRequests.invalidate(id, 'balance');
+        delete balanceRequests[id];
+        delete balance[id];
+    }
+
+    async function saveCostKey() {
+        const id = selectedProvider.id, submitted = costKeyInput[id] ?? '';
+        if (!COST_REPORT_PROVIDERS.includes(id) || costKeySaving[id]) return;
+        const value = submitted.trim();
+        costKeySaving[id] = true;
+        delete costKeyNotices[id];
+        costKeyStatusSequence.set(id, (costKeyStatusSequence.get(id) ?? 0) + 1);
+        invalidateProviderBalance(id);
+        try {
+            await providerSaves.run(async () => {
+                if (value) await setSecret(costKeyAccount(id), value);
+                else await deleteSecret(costKeyAccount(id));
+            });
+            // A delayed vault operation must never clear a newer draft or
+            // permit a report started with the replaced credential to appear.
+            costKeyStatusSequence.set(id, (costKeyStatusSequence.get(id) ?? 0) + 1);
+            costKeySaved[id] = !!value;
+            const unchanged = (costKeyInput[id] ?? '') === submitted;
+            if (unchanged) costKeyInput[id] = '';
+            invalidateProviderBalance(id);
+            costKeyNotices[id] = { text: (value ? 'Admin key saved in the secret store.' : 'Admin key removed.')
+                + (unchanged ? '' : ' New edits are still unsaved.'), error: false };
+        } catch (cause) {
+            costKeyNotices[id] = { text: providerErrorMessage(cause, 'The admin key could not be saved. Your edits are still available.'), error: true };
+        } finally { delete costKeySaving[id]; }
+    }
+
     async function checkBalance() {
+        if (costKeySaving[selectedProvider.id]) return;
         const request = providerRequests.begin('balance', selectedProvider);
         const currentProvider = () => providers.find(p => p.id === request.config.id);
+        const assertCurrent = () => {
+            if (!providerRequests.isCurrent(request, currentProvider())) throw new Error('The provider report request was superseded.');
+        };
         balanceRequests[request.config.id] = request;
         delete balance[request.config.id];
+        let usingAdminKey = false;
         try {
-            const result = await providerRequests.run(request, currentProvider, resolveSecret, async (config, key) => {
-                if (!key) throw new Error('No API key is saved for this provider.');
-                const base = (config.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-                const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
-                const body = await resp.json().catch(() => null) as { data?: { total_credits?: number; total_usage?: number }; error?: { message?: string } } | null;
-                if (!resp.ok) throw new Error(body?.error?.message || `HTTP ${resp.status}`);
-                const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
-                if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
-                const usd = (n: number) => `$${n.toFixed(2)}`;
-                return `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`;
-            });
+            const result = await providerRequests.run(request, currentProvider, async () => {
+                const resolved = await resolveProviderReportKey(request.config, getSecret, resolveSecret);
+                usingAdminKey = resolved.admin;
+                return resolved.key;
+            }, (config, key) => fetchProviderAccountReport(config, key, assertCurrent));
             if (result.current && providerRequests.isCurrent(request, currentProvider())) {
                 balance[request.config.id] = { request, text: result.value, error: false, at: Date.now() };
             }
-        } catch (e: any) {
+        } catch (cause) {
             if (providerRequests.isCurrent(request, currentProvider())) {
-                balance[request.config.id] = { request, text: providerErrorMessage(e, 'The balance could not be loaded. Try again.'), error: true, at: Date.now() };
+                let text = providerErrorMessage(cause, 'The provider account report could not be loaded. Try again.');
+                if (COST_REPORT_PROVIDERS.includes(request.config.id) && !usingAdminKey) {
+                    text += ' Cost reports need an admin or organization-scoped key; add one below.';
+                }
+                balance[request.config.id] = { request, text, error: true, at: Date.now() };
             }
         } finally {
             if (balanceRequests[request.config.id]?.generation === request.generation) delete balanceRequests[request.config.id];
@@ -5877,14 +5933,33 @@
                 {#if !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id) && selectedProvider.id !== 'ollama'}
                     <div class="balance-row">
                         {#if BALANCE_PROVIDERS.includes(selectedProvider.id)}
-                            <button class="action-btn secondary" onclick={checkBalance} disabled={!selectedProvider.apiKey || balanceBusy}>{balanceBusy ? 'Checking balance…' : 'Check balance'}</button>
+                            <button class="action-btn secondary" onclick={checkBalance}
+                                disabled={(!selectedProvider.apiKey && !costKeySaved[selectedProvider.id]) || balanceBusy || costKeySaving[selectedProvider.id]}>
+                                {balanceBusy ? 'Checking account report…' : selectedProvider.id === 'openrouter' ? 'Check balance' : 'Check spend this month'}</button>
                             {#if selectedBalance}
                                 <span role="status" class:balance-error={selectedBalance.error}>{selectedBalance.text}</span>
                             {/if}
                         {:else}
-                            <span class="hint">{selectedProvider.name} does not report the remaining balance through its API; see the provider's console.</span>
+                            <span class="hint">{selectedProvider.name}'s API does not report a balance or spend for an API key; see the provider's console.</span>
                         {/if}
                     </div>
+                    {#if COST_REPORT_PROVIDERS.includes(selectedProvider.id)}
+                        <form class="cost-key-row" onsubmit={(e) => { e.preventDefault(); void saveCostKey(); }}>
+                            <label for="cost-key-{selectedProvider.id}">Admin key for cost reports
+                                {#if costKeySaved[selectedProvider.id]}<span class="cost-key-saved">(saved)</span>{/if}</label>
+                            <input id="cost-key-{selectedProvider.id}" type="password" autocomplete="off"
+                                placeholder={selectedProvider.id === 'anthropic' ? 'sk-ant-admin01-… or an organization-scoped key' : 'sk-admin-…'}
+                                bind:value={costKeyInput[selectedProvider.id]} />
+                            <button class="action-btn secondary" type="submit" disabled={costKeySaving[selectedProvider.id]}>
+                                {costKeySaving[selectedProvider.id] ? 'Saving…' : costKeyInput[selectedProvider.id]?.trim() ? 'Save' : 'Remove'}</button>
+                        </form>
+                        <p class="hint">Cost reports use {selectedProvider.id === 'anthropic' ? 'api.anthropic.com' : 'api.openai.com'} with the separate admin key when saved.</p>
+                        {#if costKeyNotices[selectedProvider.id]}
+                            <p role={costKeyNotices[selectedProvider.id].error ? 'alert' : 'status'} class="hint">
+                                {costKeyNotices[selectedProvider.id].text}
+                            </p>
+                        {/if}
+                    {/if}
                 {/if}
                 <IntendedPurposeGate blocking={false} />
                 {#if testResult}
@@ -6362,6 +6437,9 @@
     .model-unavailable p { margin: 0 0 8px; overflow-wrap: anywhere; }
     .balance-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; font-size: 0.85rem; }
     .balance-row .balance-error { color: #f87171; }
+    .cost-key-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 0.8rem; }
+    .cost-key-row input { flex: 1 1 220px; min-width: 0; }
+    .cost-key-saved { color: #22c55e; margin-left: 4px; }
     .store-option > div { min-width: 0; overflow-wrap: anywhere; }
     .keychain-list { list-style: none; margin: 10px 0 0; padding: 0; }
     .keychain-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 6px; border-top: 1px solid #27272a; }

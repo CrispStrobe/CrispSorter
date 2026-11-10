@@ -67,4 +67,36 @@ describe('provider connection request routing', () => {
         await expect(client.fetchModels('openai', 'key', '')).rejects.toThrow('Base URL');
         expect(mocks.fetch).not.toHaveBeenCalled();
     });
+
+    it('normalizes a saved Gemini endpoint for both model discovery and the captured connection test', async () => {
+        const client = new LLMClient();
+        const legacy = 'https://generativelanguage.googleapis.com/v1beta/';
+        await client.fetchModels('google', 'google-key', legacy);
+        await client.query('google', 'gemini-chat', 'test', 'google-key', 0.3, undefined, undefined, legacy);
+        expect(mocks.fetch.mock.calls.map(call => call[0])).toEqual([
+            'https://generativelanguage.googleapis.com/v1beta/openai/models',
+            'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        ]);
+        expect(mocks.consent).toHaveBeenCalledWith('google', 'https://generativelanguage.googleapis.com/v1beta/openai');
+    });
+
+    it('preserves Anthropic model pagination and its headers at the captured endpoint', async () => {
+        mocks.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'first' }], has_more: true, last_id: 'first/page' })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'second' }], has_more: false })));
+        const client = new LLMClient();
+        await expect(client.fetchModels('anthropic', 'captured-key', 'https://anthropic-proxy.example/v1/')).resolves.toEqual(['first', 'second']);
+        expect(mocks.fetch.mock.calls[1][0]).toBe('https://anthropic-proxy.example/v1/models?limit=1000&after_id=first%2Fpage');
+        for (const [, options] of mocks.fetch.mock.calls) {
+            expect(options.headers).toEqual({ 'x-api-key': 'captured-key', 'anthropic-version': '2023-06-01' });
+        }
+    });
+
+    it('refuses incomplete Anthropic model pagination and an explicitly cleared key', async () => {
+        const client = new LLMClient({ anthropic: 'older-cached-key' });
+        await expect(client.fetchModels('anthropic', '', 'https://api.anthropic.com/v1')).rejects.toThrow('No API key');
+        expect(mocks.fetch).not.toHaveBeenCalled();
+        mocks.fetch.mockImplementation(async () => new Response(JSON.stringify({ data: [{ id: 'one' }], has_more: true, last_id: 'same' })));
+        await expect(client.fetchModels('anthropic', 'current-key')).rejects.toThrow('incomplete model list');
+        expect(mocks.fetch).toHaveBeenCalledTimes(2);
+    });
 });

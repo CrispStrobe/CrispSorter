@@ -188,12 +188,14 @@ impl MacKeychainVault {
 
 /// Quote one `security -i` argument, or `None` when the text could change
 /// how the interactive parser splits the line.
+#[cfg_attr(not(feature = "sidecars"), allow(dead_code))]
 fn security_quote(text: &str) -> Option<String> {
     (!text.chars().any(|c| matches!(c, '"' | '\\') || c.is_control())).then(|| format!("\"{text}\""))
 }
 
 /// `add-generic-password -A` for one item. Sent on stdin, so the secret
 /// never appears in a process listing.
+#[cfg_attr(not(feature = "sidecars"), allow(dead_code))]
 fn permissive_add_command(keychain: &Path, service: &str, account: &str, value: &str) -> Option<String> {
     Some(format!(
         "add-generic-password -U -A -s {} -a {} -w {} {}\n",
@@ -202,6 +204,20 @@ fn permissive_add_command(keychain: &Path, service: &str, account: &str, value: 
     ))
 }
 
+/// Signing team whose builds may read items without a dialog. Override at
+/// build time for a different team.
+const PARTITION_TEAM_ID: &str = match option_env!("CRISPSORTER_TEAM_ID") { Some(team) => team, None => "N9XSJ4M3GT" };
+
+#[cfg_attr(not(feature = "sidecars"), allow(dead_code))]
+fn partition_command(keychain: &Path, service: &str, account: &str, password: &str) -> Option<String> {
+    Some(format!(
+        "set-generic-password-partition-list -S \"apple-tool:,apple:,teamid:{PARTITION_TEAM_ID}\" -s {} -a {} -k {} {}\n",
+        security_quote(service)?, security_quote(account)?, security_quote(password)?,
+        security_quote(keychain.to_str()?)?,
+    ))
+}
+
+#[cfg(feature = "sidecars")]
 fn run_security(command: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -243,10 +259,22 @@ impl Vault for MacKeychainVault {
         // so every rebuild asks again and "Always Allow" cannot stick.
         // Write through `security -A` instead (any app may read while the
         // keychain is unlocked); fall back to the framework on any problem.
+        // Sandboxed builds may not spawn processes (P36.2); they keep the
+        // framework's per-binary access list, which is stable when signed.
+        #[cfg(feature = "sidecars")]
         if let Some(command) = permissive_add_command(&self.path, service, account, value) {
             if let Ok((_password, item)) = kc.find_generic_password(service, account) {
                 item.delete();
             }
+            // Partition list: macOS also requires the reading app's signing
+            // partition. A team ID is stable across rebuilds (unlike an ad-hoc
+            // cdhash), so grant the release team when the password is known.
+            let command = match &self.password {
+                Some(password) => partition_command(&self.path, service, account, password)
+                    .map(|partition| command.clone() + &partition)
+                    .unwrap_or(command),
+                None => command,
+            };
             match run_security(&command) {
                 Ok(()) => return Ok(()),
                 Err(reason) => eprintln!("secrets: permissive keychain write failed ({reason}); using the default access list"),
@@ -278,6 +306,16 @@ impl Vault for MacKeychainVault {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn partition_command_grants_the_release_team() {
+        let path = std::path::Path::new("/k/CrispSorter.keychain-db");
+        let cmd = super::partition_command(path, "CrispSorter.LLM", "llm-provider:groq", "pw123").unwrap();
+        assert!(cmd.starts_with("set-generic-password-partition-list -S \"apple-tool:,apple:,teamid:"));
+        assert!(cmd.contains(&format!("teamid:{}\"", super::PARTITION_TEAM_ID)));
+        assert!(cmd.ends_with("-k \"pw123\" \"/k/CrispSorter.keychain-db\"\n"));
+        assert!(super::partition_command(path, "s", "a", "p\"w").is_none());
+    }
+
     #[test]
     fn permissive_command_quotes_safely_and_refuses_ambiguous_text() {
         let path = std::path::Path::new("/Users/x/Library/Keychains/CrispSorter.keychain-db");

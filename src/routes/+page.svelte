@@ -789,10 +789,16 @@
                         keychain asks for its password after every update. Until you choose,
                         saved keys are not read and new ones are not saved.
                     {:else if secretStoreAlert.denied}
-                        Your system credential store refused to release CrispSorter's
-                        saved keys. On macOS this is the login keychain asking for a
-                        password — CrispSorter cannot supply it, and will stop asking
-                        for the rest of this session.
+                        {#if secretStoreAlert.choice.kind === 'mac-keychain'}
+                            Access to the keychain {secretStoreAlert.choice.path?.split('/').pop()} was
+                            cancelled or refused, so CrispSorter stops asking for the rest of this
+                            session. Retry from Settings › Secret storage once its password is at hand.
+                        {:else}
+                            Your system credential store refused to release CrispSorter's
+                            saved keys. On macOS this is the login keychain asking for a
+                            password — CrispSorter cannot supply it, and will stop asking
+                            for the rest of this session.
+                        {/if}
                     {:else}
                         CrispSorter could not open the store your secrets are kept in, and is
                         running without it: saved keys are unavailable and new ones are not

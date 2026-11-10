@@ -43,6 +43,19 @@ async function providerFixture(page: Page) {
                     for (const [account, value] of args.items) root.__providerSecretValues[account] = value;
                     return args.items.map(([account]: [string, string]) => account);
                 }
+                if (command === 'secret_get' && args.account.startsWith('llm-provider-admin:')) {
+                    return root.__providerSecretValues[args.account] ?? null;
+                }
+                if (['secret_set', 'secret_delete'].includes(command) && args.account.startsWith('llm-provider-admin:')) {
+                    if (root.__providerHoldSecretWrite) {
+                        root.__providerHoldSecretWrite = false;
+                        await new Promise<void>(resolve => { root.__providerReleases['secret-write'] = resolve; });
+                    }
+                    if (root.__providerSecretWriteFailure) throw new Error('The fixture secret store is locked');
+                    if (command === 'secret_set') root.__providerSecretValues[args.account] = args.value;
+                    else delete root.__providerSecretValues[args.account];
+                    return;
+                }
                 if (command === 'secret_get' && args.account.startsWith('llm-provider:')) {
                     const id = args.account.slice('llm-provider:'.length);
                     if (root.__providerHoldSecret === id) {
@@ -214,4 +227,26 @@ test('a failed key migration keeps the editable key and writes no plaintext sett
     await save.click();
     await expect(page.locator('#api-key-input-groq')).toHaveValue('@keyring/llm-provider:groq');
     expect(JSON.stringify(await page.evaluate(() => (window as any).__providerSavedSnapshots))).not.toContain('fixture-retry-key');
+});
+
+test('a pending admin-key save keeps its provider and preserves a newer draft after switching panels', async ({ page }) => {
+    await providerFixture(page);
+    await chooseProvider(page, 'OpenAI');
+    const input = page.locator('#cost-key-openai');
+    await input.fill('fixture-submitted-admin');
+    await page.evaluate(() => { (window as any).__providerHoldSecretWrite = true; });
+    await page.locator('.cost-key-row').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__providerReleases['secret-write'])).toBe('function');
+    await input.fill('fixture-new-unsaved-admin');
+    await chooseProvider(page, 'Groq');
+    await release(page, 'secret-write');
+    await chooseProvider(page, 'OpenAI');
+    await expect(input).toHaveValue('fixture-new-unsaved-admin');
+    await expect(page.getByRole('status').filter({ hasText: 'Admin key saved in the secret store. New edits are still unsaved.' })).toBeVisible();
+    const vault = await page.evaluate(() => (window as any).__providerSecretValues);
+    expect(vault['llm-provider-admin:openai']).toBe('fixture-submitted-admin');
+    expect(vault['llm-provider-admin:groq']).toBeUndefined();
+    const stored = JSON.stringify(await page.evaluate(() => (window as any).__providerSavedSnapshots));
+    expect(stored).not.toContain('fixture-submitted-admin');
+    expect(stored).not.toContain('fixture-new-unsaved-admin');
 });
