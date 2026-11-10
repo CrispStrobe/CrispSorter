@@ -18,6 +18,9 @@
         makeSentinel,
         sentinelAccount,
         llmProviderAccount,
+        getSecret,
+        setSecret,
+        deleteSecret,
     } from '../secrets';
     import {
         getBackendOptions,
@@ -535,7 +538,9 @@
     let localModels = $state<LocalModel[]>([]);
     let loadingModels = $state(false);
     let testingConnection = $state(false);
-    let testResult = $state<{ success: boolean; message: string } | null>(null);
+    /** Connection-test results per provider, so one provider's result never
+     *  shows on another provider's panel. */
+    let testResults = $state<Record<string, { success: boolean; message: string } | null>>({});
     let mlxPort = $state(8000);
     let llamacppPort = $state(8080);
     let mlxRunning = $state(false);
@@ -2605,9 +2610,9 @@
         const pid = selectedProvider.id;
         testingProviders[pid] = true;
         testingConnection = true;
-        testResult = null;
+        testResults[pid] = null;
         if (selectedModelUnavailable) {
-            testResult = { success: false, message: `${selectedProvider.selectedModel} is not in ${selectedProvider.name}'s current model list. Choose one of the offered models above.` };
+            testResults[pid] = { success: false, message: `${selectedProvider.selectedModel} is not in ${selectedProvider.name}'s current model list. Choose one of the offered models above.` };
             delete testingProviders[pid];
             testingConnection = false;
             return;
@@ -2616,13 +2621,13 @@
             const prompt = "Reply with 'OK' and nothing else.";
             const resolvedKey = await resolveSecret(selectedProvider.apiKey);
             const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, prompt, resolvedKey);
-            testResult = { success: true, message: `Connected! Response: ${response}` };
+            testResults[pid] = { success: true, message: `Connected! Response: ${response}` };
         } catch (e: any) {
             // Tauri/IPC rejections are often plain strings or objects, not
             // Error instances; an empty message rendered an empty red box.
             const detail = (e instanceof Error ? e.message : typeof e === 'string' ? e
                 : e?.message ?? (e == null ? '' : JSON.stringify(e)))?.trim();
-            testResult = { success: false, message: detail || 'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.' };
+            testResults[pid] = { success: false, message: detail || 'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.' };
         } finally {
             delete testingProviders[pid];
             testingConnection = false;
@@ -2997,22 +3002,101 @@
         untrack(() => { void handleRefreshModels(); });
     });
 
-    /** Providers whose API reports the remaining balance for an API key. */
-    const BALANCE_PROVIDERS = ['openrouter'];
+    /** What each provider's API can report about money for a key. OpenRouter
+     *  reports the remaining balance; Anthropic and OpenAI report spend
+     *  (cost so far this month) through admin/organization credentials. */
+    const BALANCE_PROVIDERS = ['openrouter', 'anthropic', 'openai'];
+    const COST_REPORT_PROVIDERS = ['anthropic', 'openai'];
     let balance = $state<Record<string, { text: string; error: boolean; at: number }>>({});
+    let costKeyInput = $state<Record<string, string>>({});
+    let costKeySaved = $state<Record<string, boolean>>({});
+    const costKeyAccount = (id: string) => `llm-provider-admin:${id}`;
+    const usd = (n: number) => `$${n.toFixed(2)}`;
+    const monthStart = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); };
+    const apiError = (body: any, status: number) => body?.error?.message || body?.message || `HTTP ${status}`;
+
+    async function refreshCostKeySaved(id: string) {
+        if (!COST_REPORT_PROVIDERS.includes(id)) return;
+        try { costKeySaved[id] = !!(await getSecret(costKeyAccount(id))); } catch { costKeySaved[id] = false; }
+    }
+    $effect(() => { const id = selectedProvider?.id; if (id) untrack(() => { void refreshCostKeySaved(id); }); });
+
+    async function saveCostKey() {
+        const id = selectedProvider.id, value = (costKeyInput[id] ?? '').trim();
+        try {
+            if (value) await setSecret(costKeyAccount(id), value); else await deleteSecret(costKeyAccount(id));
+            costKeyInput[id] = '';
+            await refreshCostKeySaved(id);
+            balance[id] = { text: value ? 'Admin key saved in the secret store.' : 'Admin key removed.', error: false, at: Date.now() };
+        } catch (e: any) {
+            balance[id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
+        }
+    }
+
+    async function openRouterBalance(p: LLMProvider): Promise<string> {
+        const key = await resolveSecret(p.apiKey);
+        if (!key) throw new Error('No API key is saved for this provider.');
+        const base = (p.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+        const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
+        const body = await resp.json().catch(() => null) as any;
+        if (!resp.ok) throw new Error(apiError(body, resp.status));
+        const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
+        if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
+        return `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`;
+    }
+
+    /** Month-to-date cost from Anthropic's Usage and Cost Admin API. Needs an
+     *  Admin API key or an organization-scoped key; workspace keys are refused. */
+    async function anthropicCost(key: string): Promise<string> {
+        const start = monthStart().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const endDate = new Date(); endDate.setUTCHours(24, 0, 0, 0);
+        const end = endDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+        let cents = 0, page: string | null = null;
+        for (let guard = 0; guard < 20; guard++) {
+            const url = `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${start}&ending_at=${end}` + (page ? `&page=${encodeURIComponent(page)}` : '');
+            const resp = await fetch(url, { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
+            const body = await resp.json().catch(() => null) as any;
+            if (!resp.ok) throw new Error(apiError(body, resp.status));
+            for (const bucket of body?.data ?? []) for (const row of bucket?.results ?? []) cents += Number(row?.amount ?? 0);
+            if (!body?.has_more || !body?.next_page) break;
+            page = body.next_page;
+        }
+        return `${usd(cents / 100)} spent this month (Anthropic does not report a remaining balance)`;
+    }
+
+    /** Month-to-date cost from OpenAI's organization Costs API (admin key). */
+    async function openAiCost(key: string): Promise<string> {
+        const startTime = Math.floor(monthStart().getTime() / 1000);
+        let dollars = 0, page: string | null = null;
+        for (let guard = 0; guard < 20; guard++) {
+            const url = `https://api.openai.com/v1/organization/costs?start_time=${startTime}&limit=31` + (page ? `&page=${encodeURIComponent(page)}` : '');
+            const resp = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+            const body = await resp.json().catch(() => null) as any;
+            if (!resp.ok) throw new Error(apiError(body, resp.status));
+            for (const bucket of body?.data ?? []) for (const row of bucket?.results ?? []) dollars += Number(row?.amount?.value ?? 0);
+            if (!body?.has_more || !body?.next_page) break;
+            page = body.next_page;
+        }
+        return `${usd(dollars)} spent this month (OpenAI does not report a remaining balance)`;
+    }
+
     async function checkBalance() {
         const p = selectedProvider;
         try {
-            const key = await resolveSecret(p.apiKey);
-            if (!key) throw new Error('No API key is saved for this provider.');
-            const base = (p.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-            const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
-            const body = await resp.json().catch(() => null) as { data?: { total_credits?: number; total_usage?: number }; error?: { message?: string } } | null;
-            if (!resp.ok) throw new Error(body?.error?.message || `HTTP ${resp.status}`);
-            const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
-            if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
-            const usd = (n: number) => `$${n.toFixed(2)}`;
-            balance[p.id] = { text: `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`, error: false, at: Date.now() };
+            let text: string;
+            if (p.id === 'openrouter') text = await openRouterBalance(p);
+            else {
+                const admin = await getSecret(costKeyAccount(p.id)).catch(() => null);
+                const key = admin || await resolveSecret(p.apiKey);
+                if (!key) throw new Error('No API key is saved for this provider.');
+                try {
+                    text = p.id === 'anthropic' ? await anthropicCost(key) : await openAiCost(key);
+                } catch (e: any) {
+                    const reason = e instanceof Error ? e.message : String(e);
+                    throw new Error(admin ? reason : `${reason} Cost reports need an admin or organization-scoped key; add one below.`);
+                }
+            }
+            balance[p.id] = { text, error: false, at: Date.now() };
         } catch (e: any) {
             balance[p.id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
         }
@@ -5829,17 +5913,30 @@
                 {#if !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id) && selectedProvider.id !== 'ollama'}
                     <div class="balance-row">
                         {#if BALANCE_PROVIDERS.includes(selectedProvider.id)}
-                            <button class="action-btn secondary" onclick={checkBalance} disabled={!selectedProvider.apiKey}>Check balance</button>
+                            <button class="action-btn secondary" onclick={checkBalance}
+                                disabled={!selectedProvider.apiKey && !costKeySaved[selectedProvider.id]}>
+                                {selectedProvider.id === 'openrouter' ? 'Check balance' : 'Check spend this month'}</button>
                             {#if balance[selectedProvider.id]}
                                 <span role="status" class:balance-error={balance[selectedProvider.id].error}>{balance[selectedProvider.id].text}</span>
                             {/if}
                         {:else}
-                            <span class="hint">{selectedProvider.name} does not report the remaining balance through its API; see the provider's console.</span>
+                            <span class="hint">{selectedProvider.name}'s API does not report a balance or spend for an API key; see the provider's console.</span>
                         {/if}
                     </div>
+                    {#if COST_REPORT_PROVIDERS.includes(selectedProvider.id)}
+                        <form class="cost-key-row" onsubmit={(e) => { e.preventDefault(); void saveCostKey(); }}>
+                            <label for="cost-key-{selectedProvider.id}">Admin key for cost reports
+                                {#if costKeySaved[selectedProvider.id]}<span class="cost-key-saved">(saved)</span>{/if}</label>
+                            <input id="cost-key-{selectedProvider.id}" type="password" autocomplete="off"
+                                placeholder={selectedProvider.id === 'anthropic' ? 'sk-ant-admin01-… or an organization-scoped key' : 'sk-admin-…'}
+                                bind:value={costKeyInput[selectedProvider.id]} />
+                            <button class="action-btn secondary" type="submit">{costKeyInput[selectedProvider.id]?.trim() ? 'Save' : 'Remove'}</button>
+                        </form>
+                    {/if}
                 {/if}
                 <IntendedPurposeGate blocking={false} />
-                {#if testResult}
+                {#if testResults[selectedProvider.id]}
+                    {@const testResult = testResults[selectedProvider.id]!}
                     <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
                         {#if testResult.success}<AiGeneratedBadge compact />{/if}
                         <span>{testResult.message}</span>
@@ -6314,6 +6411,9 @@
     .model-unavailable p { margin: 0 0 8px; overflow-wrap: anywhere; }
     .balance-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; font-size: 0.85rem; }
     .balance-row .balance-error { color: #f87171; }
+    .cost-key-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 0.8rem; }
+    .cost-key-row input { flex: 1 1 220px; min-width: 0; }
+    .cost-key-saved { color: #22c55e; margin-left: 4px; }
     .store-option > div { min-width: 0; overflow-wrap: anywhere; }
     .keychain-list { list-style: none; margin: 10px 0 0; padding: 0; }
     .keychain-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 6px; border-top: 1px solid #27272a; }
