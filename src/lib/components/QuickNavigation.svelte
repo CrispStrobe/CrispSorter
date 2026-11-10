@@ -14,6 +14,7 @@
 
     let dialog: HTMLDialogElement;
     let input: HTMLInputElement;
+    let closeButton: HTMLButtonElement;
     let resultList: HTMLDivElement;
     let query = $state('');
     let selectedIndex = $state(0);
@@ -54,6 +55,20 @@
         }
     }
 
+    function onDialogKey(event: KeyboardEvent) {
+        if (event.key !== 'Tab' || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+        // Close and search are the only Tab stops; result options are reached
+        // through the combobox's arrow keys. Native modal dialogs can hand the
+        // last Tab stop to browser chrome, so wrap both boundaries explicitly.
+        if (!event.shiftKey && document.activeElement === input) {
+            event.preventDefault();
+            closeButton.focus();
+        } else if (event.shiftKey && document.activeElement === closeButton) {
+            event.preventDefault();
+            input.focus();
+        }
+    }
+
     function onBackdropClick(event: MouseEvent) {
         if (event.target !== dialog) return;
         const rect = dialog.getBoundingClientRect();
@@ -62,10 +77,10 @@
 </script>
 
 <dialog class="quick-navigation" bind:this={dialog} aria-labelledby="quick-navigation-title"
-    oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={onBackdropClick}>
+    oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={onBackdropClick} onkeydown={onDialogKey}>
     <div class="palette-header">
         <h2 id="quick-navigation-title">{copy.title}</h2>
-        <button class="close-button" aria-label={copy.close} onclick={onClose}><X size={18} /></button>
+        <button bind:this={closeButton} class="close-button" aria-label={copy.close} onclick={onClose}><X size={18} /></button>
     </div>
     <div class="search-field">
         <Search size={20} aria-hidden="true" />

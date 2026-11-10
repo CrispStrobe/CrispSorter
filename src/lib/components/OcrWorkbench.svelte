@@ -71,6 +71,7 @@
   import {
     expandRecognitionZone,
     effectiveRecognitionZone,
+    hasRecognizedText,
     mergeZoneRegions,
   } from "$lib/ocr/zones";
   import {
@@ -1050,6 +1051,7 @@
       const page = activePage;
       busy = "Recognizing selected zone";
       error = "";
+      notice = "";
       try {
         const zone = expandRecognitionZone(page, rect);
         const result = await client.recognize({
@@ -1062,6 +1064,13 @@
           zone,
           cpuPixelBudget: cpuBudget,
         });
+        // No replacement text means no project mutation: retain approval,
+        // corrected regions, provenance and the current Undo/Redo history.
+        if (!hasRecognizedText(result.regions)) {
+          notice =
+            "No text was recognized in the selected zone. The existing text was preserved.";
+          return;
+        }
         const recognized = applyRecognition(
           project,
           page.id,

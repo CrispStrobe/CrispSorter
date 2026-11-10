@@ -24,6 +24,9 @@ test('search sends metadata filters and restores distinct complete bookmarks', a
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await page.getByRole('button', { name: 'Search filters', exact: true }).click();
     const options = page.getByRole('region', { name: 'Search options' });
+    // A wrapping label also contains the option text. Match the combobox's
+    // accessible name, which is just the caption, rather than label textContent.
+    const resultLimit = options.getByRole('combobox', { name: 'Maximum results', exact: true });
     await options.getByLabel('File type', { exact: true }).fill('.PDF, docx');
     await options.getByLabel('Language', { exact: true }).fill('de');
     await options.getByLabel('Year from', { exact: true }).fill('2020');
@@ -37,7 +40,8 @@ test('search sends metadata filters and restores distinct complete bookmarks', a
     await options.getByLabel('Camera model', { exact: true }).fill('R5');
     await options.getByLabel('Typo tolerance', { exact: true }).check();
     await options.getByLabel('Synonyms', { exact: true }).check();
-    await options.getByLabel('Maximum results', { exact: true }).selectOption('50');
+    await resultLimit.selectOption('50');
+    await expect(resultLimit).toHaveValue('50');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await expect(page.locator('.search-root').getByRole('status')).toContainText('Search saved with filters.');
     await page.locator('.search-btn').click();
@@ -48,6 +52,7 @@ test('search sends metadata filters and restores distinct complete bookmarks', a
             audio_duration_max_seconds: 300, image_camera_make: 'Canon', image_camera_model: 'R5' },
     });
     await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
+    await resultLimit.selectOption('20');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await expect(page.locator('.saved-dropdown .saved-name')).toHaveCount(2);
@@ -55,7 +60,8 @@ test('search sends metadata filters and restores distinct complete bookmarks', a
     await expect(options.getByLabel('Language', { exact: true })).toHaveValue('de');
     await expect(options.getByLabel('Year from', { exact: true })).toHaveValue('2020');
     await expect(options.getByLabel('Synonyms', { exact: true })).toBeChecked();
-    await expect.poll(() => lastSearch(page)).toMatchObject({ tag: 'reviewed', searchFilters: { ext: ['docx', 'pdf'], language: 'de' } });
+    await expect(resultLimit).toHaveValue('50');
+    await expect.poll(() => lastSearch(page)).toMatchObject({ limit: 50, tag: 'reviewed', searchFilters: { ext: ['docx', 'pdf'], language: 'de' } });
     await page.getByRole('button', { name: 'Search filters', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Remove Language', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Remove Language', exact: true }).click();

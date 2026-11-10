@@ -19,6 +19,13 @@ const contains = (outer: PixelRectangle, inner: PixelRectangle) =>
   inner.y + inner.h <= outer.y + outer.h + edgeTolerance;
 const replaceable = (r: OcrRegion) => !r.excluded && r.kind !== "picture";
 
+/** An empty/blank OCR response is not an instruction to remove reviewed text. */
+export function hasRecognizedText(
+  regions: readonly Pick<OcrRegion, "text">[],
+): boolean {
+  return regions.some((region) => region.text.trim().length > 0);
+}
+
 /** Native diagnostics must describe a real integer crop of this page. */
 export function effectiveRecognitionZone(
   page: OcrPage,
@@ -112,6 +119,9 @@ export function mergeZoneRegions(
   zone: PixelRectangle,
   recognized: OcrRegion[],
 ): OcrRegion[] {
+  // This merge is only for recognition results. Intentional region removal
+  // uses deleteRegion; a failed-to-read crop must preserve the original array.
+  if (!hasRecognizedText(recognized)) return page.regions;
   const replaced = page.regions.filter(
     (r) => replaceable(r) && contains(zone, r),
   );

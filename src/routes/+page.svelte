@@ -780,9 +780,9 @@
 
     .nav-top { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
     .nav-bottom { flex-shrink: 0; }
-    .quick-navigation-trigger { display: grid; grid-template-columns: 20px 1fr; gap: 3px 10px; padding: 10px 18px; font-size: 0.8rem; }
+    .nav-item.quick-navigation-trigger { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 3px 10px; padding: 10px 18px; font-size: 0.8rem; }
     .quick-navigation-trigger :global(svg) { grid-row: 1 / 3; }
-    .quick-navigation-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .quick-navigation-trigger span { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
     .quick-navigation-trigger kbd { font: inherit; font-size: 0.65rem; color: #a1a1aa; grid-column: 2; }
     .collapsed .quick-navigation-trigger { display: flex; padding: 12px 22px; }
 

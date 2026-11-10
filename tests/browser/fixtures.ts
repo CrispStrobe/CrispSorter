@@ -1,5 +1,7 @@
 // Explicit IPC/provider fixtures; native and model qualification are separate.
 import type { Page } from '@playwright/test';
+import type { ProjectEnvelope, WorkspaceCapabilities } from '../../src/lib/ocr/client';
+import type { ImportedDocument, OcrProject, RecognitionResult } from '../../src/lib/ocr/model';
 
 export async function fixtures(page: Page) {
     await page.addInitScript(() => {
@@ -21,7 +23,10 @@ export async function fixtures(page: Page) {
         root.__fixturePrompts = [];
         root.__fixtureItems = items;
         root.__fixtureEmptyEvidence = false;
-        root.__fixtureRegionEmpty = false;
+        root.__fixtureOcrPageFailures = {};
+        root.__fixtureOcrZoneOutcome = 'success';
+        const ocrProjects = new Map<string, ProjectEnvelope>();
+        let latestOcrProjectId: string | null = null;
         const result = { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8, source_hash: 'a'.repeat(64), snippet: 'Cobalt warranty' };
         root.__fixtureResults = [result];
         root.__fixtureSortGate = false;
@@ -100,8 +105,63 @@ export async function fixtures(page: Page) {
                 if (command === 'index_get_config') return { enabled: true, mode: 'Hybrid', backend_type: 'Local', use_vector: true };
                 if (command === 'sync_status') return { pending_count: 0, last_push_ts: null, remote_online: false };
                 if (command === 'index_retrieve_passages') return root.__fixtureEmptyEvidence ? [] : [{ document: { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8 }, passage: { text: 'The cobalt warranty expires in November 2031.', start_char: 4000, end_char: 4045, offset_unit: 'utf8_bytes' } }];
-                if (command === 'ocr_doc_open') return { count: 2, pages: ['/fixtures/page1.png', '/fixtures/page2.png'] };
-                if (command === 'ocr_page_regions') return { width: 500, height: 700, regions: args.region && root.__fixtureRegionEmpty ? [] : [{ text: args.region ? 'Corrected crop text.' : 'Warranty expires in November 2031.', x: 10, y: 20, w: 350, h: 40, confidence: args.pagePath.endsWith('page2.png') ? 0.9 : 0.2, char_conf: [] }] };
+                if (command === 'ocr_workspace_capabilities') return {
+                    ocr: capabilities.desktop, crispembed: capabilities.desktop, pdf_import: capabilities.pdf_render,
+                    formats: ['text', 'json'], engines: ['auto', 'tesseract', 'qwen2vl'],
+                    layout: true, kie: false, table: false, math: false,
+                    cpu_budget: true, cpu_budget_pixels: 262144,
+                } satisfies WorkspaceCapabilities;
+                if (command === 'ocr_workspace_load') {
+                    const saved = ocrProjects.get(args.projectId ?? latestOcrProjectId ?? '');
+                    return saved ? JSON.parse(JSON.stringify(saved)) : null;
+                }
+                if (command === 'ocr_workspace_list') return [...ocrProjects.values()].map(({ project, revision }) => ({
+                    id: project.id, name: project.name, updated_at: project.updatedAt,
+                    page_count: project.pages.length, revision,
+                }));
+                if (command === 'ocr_workspace_save') {
+                    const project: OcrProject = JSON.parse(JSON.stringify(args.project));
+                    const revision = ocrProjects.get(project.id)?.revision ?? 0;
+                    if (args.expectedRevision !== revision) throw new Error('Fixture OCR project revision conflict');
+                    const saved: ProjectEnvelope = {
+                        project, revision: revision + 1, saved_at: Date.now(),
+                        path: `/fixtures/ocr-projects/${project.id}.json`,
+                    };
+                    ocrProjects.set(project.id, saved);
+                    latestOcrProjectId = project.id;
+                    return JSON.parse(JSON.stringify(saved));
+                }
+                if (command === 'ocr_workspace_import') {
+                    const paths = /\.pdf$/i.test(args.locationUri)
+                        ? ['/fixtures/page1.png', '/fixtures/page2.png'] : [args.locationUri];
+                    return {
+                        source_uri: args.locationUri, name: args.locationUri.split(/[\\/]/).pop(),
+                        pages: paths.map(image_path => ({
+                            image_path, width: 500, height: 700, page_width_points: 120, page_height_points: 168,
+                        })),
+                    } satisfies ImportedDocument;
+                }
+                if (command === 'ocr_workspace_recognize') {
+                    if (root.__fixtureOcrPageFailures[args.pagePath] > 0) {
+                        root.__fixtureOcrPageFailures[args.pagePath] -= 1;
+                        throw new Error('Fixture page recognition failed');
+                    }
+                    if (args.zone && root.__fixtureOcrZoneOutcome === 'error') throw new Error('Fixture zone recognition failed');
+                    return {
+                        image_path: args.pagePath, width: 500, height: 700,
+                        page_width_points: 120, page_height_points: 168, elapsed_ms: 5,
+                        regions: args.zone && root.__fixtureOcrZoneOutcome === 'empty' ? [] : [{
+                            text: args.zone ? 'Corrected crop text.' : args.pagePath.endsWith('page2.png')
+                                ? 'Archive reference 42.' : 'Warranty expires in November 2031.',
+                            x: 10, y: 20, w: 350, h: 40,
+                            confidence: args.pagePath.endsWith('page2.png') ? 0.95 : 0.2,
+                            confidence_basis: 'recognition', char_conf: [], char_conf_aligned: false,
+                        }],
+                    } satisfies RecognitionResult;
+                }
+                // Unexpected workspace calls must fail explicitly instead of
+                // returning a null that can make a test silently pass.
+                if (command.startsWith('ocr_workspace_')) throw new Error(`Unmocked OCR workspace command: ${command}`);
                 if (command === 'plugin:http|fetch') {
                     const id = rid++;
                     const config = args.clientConfig;
