@@ -531,7 +531,12 @@ mod system {
         let stdout = directory.path().join("stdout");
         let stderr = directory.path().join("stderr");
         let mut command = Command::new("tesseract");
-        command.arg(path).arg(&base).arg("-l").arg(&language).args(["--psm", "3", "tsv", "txt"]);
+        // Explicit parameters work with standalone traineddata directories as
+        // well as system installations. Named config files are optional in
+        // language-pack deployments and can be ignored with a zero exit code.
+        command.arg(path).arg(&base).arg("-l").arg(&language).args([
+            "--psm", "3", "-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=1",
+        ]);
         let started = Instant::now();
         let status = run(command, &stdout, &stderr, &[(&tsv, MAX_TSV_BYTES as u64), (&txt, MAX_TEXT_BYTES as u64)], RECOGNITION_TIMEOUT)?;
         if !status.success() { return Err(format!("System Tesseract recognition failed ({status}): {}", diagnostics(&stderr))); }

@@ -51,8 +51,8 @@ def main() -> None:
     if args.profile == "release":
         command.append("--release")
     started = time.monotonic()
-    built = subprocess.run(command, cwd=repository, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    (output / "build.log").write_text(built.stderr, encoding="utf-8")
+    with (output / "build.log").open("w", encoding="utf-8") as build_log:
+        built = subprocess.run(command, cwd=repository, text=True, stdout=subprocess.PIPE, stderr=build_log)
     if built.returncode:
         raise RuntimeError(f"Native benchmark compilation failed; inspect {output / 'build.log'}")
     after = source_hashes(repository)
@@ -70,6 +70,7 @@ def main() -> None:
                  "executableSha256": digest(executable), "buildProfile": args.profile, "buildSeconds": time.monotonic() - started,
                  "rustc": subprocess.check_output(["rustc", "-Vv"], text=True).strip(),
                  "platform": platform.platform(), "machine": platform.machine(), "logicalCpus": os.cpu_count(),
+                 "nativeThreadEnvironment": {name: os.environ.get(name) for name in ["RAYON_NUM_THREADS", "OMP_NUM_THREADS", "OMP_THREAD_LIMIT", "TOKIO_WORKER_THREADS"]},
                  "scope": "Focused production native search/index harness; full desktop, network, and model-adapter integration are separate gates."}
     (output / "execution.json").write_text(json.dumps(execution, indent=2) + "\n", encoding="utf-8")
     environment = {**os.environ, "CRISP_QUALITY_INPUT": str(args.input.resolve()), "CRISP_QUALITY_OUTPUT": str(output),
