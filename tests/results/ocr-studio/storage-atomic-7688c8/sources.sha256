@@ -1,0 +1,4 @@
+8892972fd17d4b14c44a22e504dfcd6dfa638e19f98017c8225f50a2fc5e53dc  src-tauri/src/model_storage.rs
+028056dfcd04cd3c323c8223d1e292602241e692c121291a6484bbf6dc611578  src-tauri/src/model_storage_types.rs
+6da72a800cd579eb8c9afd26fdc62f87e9d263a1dfd4b416570cda06f9e4ad98  src-tauri/src/ocr_atomic_output.rs
+354070e4d613280977c4f1181ce4902590ac9beddf3ade18eb1c82370e4e213b  tests/model-storage-contract/Cargo.lock

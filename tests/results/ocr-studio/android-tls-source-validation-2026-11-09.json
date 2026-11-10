@@ -1,0 +1,18 @@
+{
+  "base_sorter_commit": "3e430cc72e7927537ed25bac2573b44d2a0d093a",
+  "paired_embed_commit": "fde19180f4726a7708186eb130b9f37099a622c7",
+  "rust_execution": "blocked: cargo/rustc/rustup and caches absent",
+  "manifest_toml": "parsed",
+  "lock_toml": "parsed",
+  "lock_versions_and_checksums": "unchanged",
+  "lock_dependency_edge_added": "crispsorter -> webpki-root-certs 1.0.8",
+  "root_bundle_source": "https://github.com/rustls/webpki-roots/blob/v/1.0.8/webpki-root-certs/src/lib.rs",
+  "root_bundle_source_sha256": "a1a83fdf2cd85729c21932c068f350091f4cad3014d1adbefd2eaf73fcd9c328",
+  "root_certificates_loaded": 118,
+  "python_openssl_store": {
+    "x509": 118,
+    "crl": 0,
+    "x509_ca": 118
+  },
+  "validation_scope": "Actual DER bundle parsing and trust-store construction with Python/OpenSSL only; does not compile or execute the Rust/Android client."
+}

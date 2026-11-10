@@ -3,6 +3,7 @@ pub mod audio;
 pub mod audit;
 pub mod batch_session;
 mod batch_file_ops;
+mod duplicate_file_ops;
 mod batch_script;
 pub mod capabilities;
 pub mod bg_ingest;
@@ -26,7 +27,10 @@ pub mod kindle_import;
 pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
+mod ocr_photo;
 mod ocr_reading_order;
+mod ocr_text_export;
+pub mod model_provisioning;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;
@@ -469,15 +473,37 @@ async fn catalog_save_caf(
 /// Returns an error string if the file is unreadable.
 #[tauri::command]
 async fn file_sha256(path: String) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
     tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
-        let mut h = Sha256::new();
-        h.update(&bytes);
-        Ok(hex::encode(h.finalize()))
+        let mut file = std::fs::File::open(&path).map_err(|e| format!("read {path}: {e}"))?;
+        sha256_open_file(&mut file).map_err(|e| format!("read {path}: {e}"))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+fn sha256_open_file(file: &mut std::fs::File) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
+/// Verify a distinct retained file and the reviewed hash in the same native
+/// operation as deletion. Arbitrary delete_files cannot provide this guarantee.
+#[tauri::command]
+async fn delete_duplicate_copy(keep_path: String, path: String, expected_sha256: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        duplicate_file_ops::delete_verified_copy(
+            std::path::Path::new(&keep_path), std::path::Path::new(&path),
+            &expected_sha256, sha256_open_file,
+        )
+    }).await.map_err(|error| format!("duplicate verification task failed: {error}"))?
 }
 
 /// `hash_algo` is one of `"md5"`, `"sha1"`, `"sha256"`, or absent for
@@ -2893,6 +2919,9 @@ pub fn run() {
 
             // Initialise job queue + store data_dir now that it is known.
             if let Ok(data_dir) = app.path().app_data_dir() {
+                if let Err(error) = model_provisioning::initialize(&data_dir) {
+                    app_log!("error", "OCR model store: {error}");
+                }
                 // Before anything can read a secret: pin the vault to the
                 // real data dir, so the user's chosen store is in force from
                 // the first read rather than from whenever Settings is
@@ -3223,6 +3252,7 @@ pub fn run() {
             check_mlx_models_cached,
             delete_mlx_model,
             delete_files,
+            delete_duplicate_copy,
             extract_pdf_native,
             extract_pdf_metadata,
             feed_fetch_and_parse,
@@ -3439,7 +3469,15 @@ pub fn run() {
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
+            model_provisioning::ocr_workspace_install_mobile_models,
+            model_provisioning::ocr_workspace_model_storage,
+            model_provisioning::ocr_workspace_clean_model_storage,
+            model_provisioning::ocr_workspace_remove_mobile_model,
             ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_import_image,
+            ocr_workspace::ocr_workspace_import_bytes,
+            ocr_workspace::ocr_workspace_cancel_import,
+            ocr_workspace::ocr_workspace_assess_photo,
             ocr_workspace::ocr_workspace_transform,
             ocr_workspace::ocr_workspace_prepare,
             ocr_workspace::ocr_workspace_recognize,
@@ -3447,6 +3485,9 @@ pub fn run() {
             ocr_workspace::ocr_workspace_load,
             ocr_workspace::ocr_workspace_list,
             ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_cancel_export,
+            ocr_workspace::ocr_workspace_export_target,
+            ocr_workspace::ocr_workspace_discard_export,
             ocr_workspace::ocr_workspace_write_text,
             ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
@@ -3461,6 +3502,7 @@ pub fn run() {
             index::tauri_commands::index_model_download_mb,
             index::tauri_commands::embedder_registry_list,
             index::tauri_commands::embedder_download_registry_model,
+            index::tauri_commands::embedder_model_license_info,
             index::tauri_commands::embedder_model_license,
             index::tauri_commands::embedder_accept_model_license,
             index::tauri_commands::index_benchmark_embedder,
@@ -3674,6 +3716,7 @@ pub fn run() {
             scan_folder,
             download_file,
             delete_files,
+            delete_duplicate_copy,
             extract_pdf_native,
             extract_pdf_metadata,
             get_app_data_dir,
@@ -3882,7 +3925,15 @@ pub fn run() {
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
+            model_provisioning::ocr_workspace_install_mobile_models,
+            model_provisioning::ocr_workspace_model_storage,
+            model_provisioning::ocr_workspace_clean_model_storage,
+            model_provisioning::ocr_workspace_remove_mobile_model,
             ocr_workspace::ocr_workspace_import,
+            ocr_workspace::ocr_workspace_import_image,
+            ocr_workspace::ocr_workspace_import_bytes,
+            ocr_workspace::ocr_workspace_cancel_import,
+            ocr_workspace::ocr_workspace_assess_photo,
             ocr_workspace::ocr_workspace_transform,
             ocr_workspace::ocr_workspace_prepare,
             ocr_workspace::ocr_workspace_recognize,
@@ -3890,6 +3941,9 @@ pub fn run() {
             ocr_workspace::ocr_workspace_load,
             ocr_workspace::ocr_workspace_list,
             ocr_workspace::ocr_workspace_export,
+            ocr_workspace::ocr_workspace_cancel_export,
+            ocr_workspace::ocr_workspace_export_target,
+            ocr_workspace::ocr_workspace_discard_export,
             ocr_workspace::ocr_workspace_write_text,
             ocr_workspace::ocr_workspace_extract_fields,
             index::tauri_commands::ocr_doc_open,
@@ -3904,6 +3958,7 @@ pub fn run() {
             index::tauri_commands::index_model_download_mb,
             index::tauri_commands::embedder_registry_list,
             index::tauri_commands::embedder_download_registry_model,
+            index::tauri_commands::embedder_model_license_info,
             index::tauri_commands::embedder_model_license,
             index::tauri_commands::embedder_accept_model_license,
             index::tauri_commands::index_benchmark_embedder,

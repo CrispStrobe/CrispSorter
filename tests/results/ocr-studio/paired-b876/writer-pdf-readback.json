@@ -1,0 +1,37 @@
+{
+  "reader": "PyMuPDF",
+  "version": "1.26.6",
+  "observations": [
+    {
+      "file": "archival-rust-file.pdf",
+      "pages": 2,
+      "dimensions": [
+        [
+          160.0,
+          120.0
+        ],
+        [
+          180.0,
+          135.0
+        ]
+      ],
+      "text": [
+        "Rust file page one caf\u00e9 \u4e2d\u6587 \ud83d\ude00\n",
+        "Rust file page two complete\n"
+      ]
+    },
+    {
+      "file": "archival-rust-short.pdf",
+      "pages": 1,
+      "dimensions": [
+        [
+          160.0,
+          120.0
+        ]
+      ],
+      "text": [
+        "Rust short writes caf\u00e9 \u4e2d\u6587 \ud83d\ude00\n"
+      ]
+    }
+  ]
+}

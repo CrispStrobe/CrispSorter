@@ -11,9 +11,43 @@ private struct PickerResponse: Encodable {
 
 private struct ReadArgs: Decodable { let uri: String }
 private struct ReadResponse: Encodable { let data: String }
+private struct ExportArgs: Decodable { let path: String; let name: String }
+private struct ExportResponse: Encodable { let cancelled: Bool; let saved_path: String? }
+private struct RasterizeArgs: Decodable { let sourcePath: String; let outputDir: String; let kind: String }
 
 class MobileProviderPlugin: Plugin, UIDocumentPickerDelegate {
   private var pending: (invoke: Invoke, folder: Bool)?
+  private var pendingExport: Invoke?
+
+  @objc public func documentCapabilities(_ invoke: Invoke) {
+    invoke.resolve(DocumentRasterizer.capabilities())
+  }
+
+  @objc public func rasterizeDocument(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(RasterizeArgs.self)
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        invoke.resolve(try DocumentRasterizer().rasterize(sourcePath: args.sourcePath, outputDir: args.outputDir, kind: args.kind))
+      } catch { invoke.reject(error.localizedDescription) }
+    }
+  }
+
+  @objc public func exportFile(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(ExportArgs.self)
+    let source = try ExportAccess.source(path: args.path, name: args.name)
+    DispatchQueue.main.async {
+      guard self.pending == nil, self.pendingExport == nil else { invoke.reject("A document picker is already open."); return }
+      guard let controller = self.manager.viewController, controller.presentedViewController == nil else {
+        invoke.reject("The export picker cannot be presented right now.")
+        return
+      }
+      self.pendingExport = invoke
+      let picker = UIDocumentPickerViewController(forExporting: [source], asCopy: true)
+      picker.delegate = self
+      picker.isModalInPresentation = true
+      controller.present(picker, animated: true)
+    }
+  }
 
   @objc public func pickFiles(_ invoke: Invoke) {
     presentPicker(invoke, folder: false)
@@ -25,7 +59,7 @@ class MobileProviderPlugin: Plugin, UIDocumentPickerDelegate {
 
   private func presentPicker(_ invoke: Invoke, folder: Bool) {
     DispatchQueue.main.async {
-      guard self.pending == nil else { invoke.reject("A document picker is already open."); return }
+      guard self.pending == nil, self.pendingExport == nil else { invoke.reject("A document picker is already open."); return }
       guard let controller = self.manager.viewController, controller.presentedViewController == nil else {
         invoke.reject("The document picker cannot be presented right now.")
         return
@@ -39,12 +73,23 @@ class MobileProviderPlugin: Plugin, UIDocumentPickerDelegate {
   }
 
   func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+    if let invocation = pendingExport {
+      pendingExport = nil
+      invocation.resolve(ExportResponse(cancelled: true, saved_path: nil))
+      return
+    }
     let invocation = pending?.invoke
     pending = nil
     invocation?.resolve(PickerResponse(cancelled: true, files: []))
   }
 
   func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    if let invocation = pendingExport {
+      pendingExport = nil
+      guard let destination = urls.first else { invocation.reject("The export picker returned no destination."); return }
+      invocation.resolve(ExportResponse(cancelled: false, saved_path: destination.absoluteString))
+      return
+    }
     guard let request = pending else { return }
     pending = nil
     DispatchQueue.global(qos: .userInitiated).async {

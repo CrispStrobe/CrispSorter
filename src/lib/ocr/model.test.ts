@@ -4,7 +4,7 @@ import {
     createHistory, createProject, deleteRegion, editRegion, findMatches, getMetrics,
     getReviewIssues, movePage, moveRegion, nextMatch, normalizeRectangle, parseProject,
     prepareExport, redoHistory, removePage, replaceMatches, serializeProject, splitPage, undoHistory,
-    updatePage, updateRegion, type OcrProject,
+    updatePage, updateRegion, findSourceDocument, type OcrProject,
 } from './model';
 
 const imported = (name='invoice.pdf', count=2) => ({source_uri:`/sources/${name}`,name,pages:Array.from({length:count},(_,i)=>({image_path:`/cache/${name}-${i}.png`,width:1000,height:1400}))});
@@ -14,6 +14,47 @@ function recognize(p:OcrProject, index=0, text='Original text', confidence:numbe
 }
 
 describe('OCR project and recognition',()=>{
+    it('retains provider identity and the immutable archive separately across save and restore',()=>{
+        const source='content://provider/Case%3AA%2FB';
+        const archive='/private/ocr-workspace/sources/123.heic';
+        const p=addDocument(createProject(),{...imported('Phone.HEIC',1),source_uri:source,archive_uri:archive});
+        const restored=parseProject(serializeProject(p));
+        expect(restored.documents[0].sourceUri).toBe(source);
+        expect(restored.documents[0].archiveUri).toBe(archive);
+        expect(findSourceDocument(restored, source)?.id).toBe(restored.documents[0].id);
+        expect(findSourceDocument(restored, archive)?.id).toBe(restored.documents[0].id);
+        expect(findSourceDocument(restored, 'content://other/provider', archive)?.id).toBe(restored.documents[0].id);
+        expect(findSourceDocument(restored, source.toLowerCase())).toBeUndefined();
+        const malformed=structuredClone(restored);
+        malformed.documents[0].archiveUri=42 as never;
+        expect(()=>parseProject(malformed)).toThrow(/archive metadata/);
+    });
+    it('rejects malformed native payloads and dimension drift while preserving reviewed work',()=>{
+        const recognized=recognize(project(1));
+        const p=approvePage(recognized,recognized.pages[0].id);
+        const before=JSON.stringify(p), pageId=p.pages[0].id;
+        for (const value of [null,{width:1000,height:1400,regions:null},{width:1000,height:1400,regions:[null]},
+            {width:1000,height:1400,regions:[{text:99,x:1,y:2,w:20,h:30}]},
+            {width:1000,height:1400,regions:[{text:'x',char_conf:42,x:1,y:2,w:20,h:30}]},
+            {width:2000,height:2800,regions:[]}]) {
+            expect(()=>applyRecognition(p,pageId,value as never)).toThrow(/Recognition/);
+            expect(JSON.stringify(p)).toBe(before);
+        }
+    });
+    it('honors explicit unaligned evidence and never promotes token or unspecified scores through a boolean flag',()=>{
+        const p=project(1), pageId=p.pages[0].id;
+        const result={width:1000,height:1400,regions:[{text:'Hi',x:0,y:0,w:20,h:20,confidence:0.95,char_conf:[0.1,0.99],confidence_basis:'recognition'}]};
+        for (const metadata of [
+            {char_conf_unit:'token',char_conf_aligned:true},
+            {char_conf_aligned:true},
+            {char_conf_unit:'unicode_codepoint',char_conf_aligned:false},
+        ]) {
+            const out=applyRecognition(p,pageId,{...result,...metadata});
+            expect(out.pages[0].regions[0].charConfidenceAligned).toBe(false);
+            expect(getReviewIssues(out)).toEqual([]);
+            expect(prepareExport(out).pages[0].regions[0].char_conf_aligned).toBe(false);
+        }
+    });
     it('retains import identity and original source order across multiple documents',()=>{
         const p=addDocument(project(),imported('book.tif',3));
         expect(new Set([...p.documents.map(d=>d.id),...p.pages.map(p=>p.id)]).size).toBe(7);
@@ -175,6 +216,19 @@ describe('physical paper size',()=>{
 });
 
 describe('proofreading and geometry',()=>{
+    it('preserves approval and evidence version for identical text, geometry, order, and image edits',()=>{
+        let p=recognize(project(1));
+        p=approvePage(p,p.pages[0].id);
+        const page=p.pages[0], region=page.regions[0];
+        expect(editRegion(p,page.id,region.id,region.text)).toBe(p);
+        expect(updateRegion(p,page.id,region.id,{x:region.x,y:region.y})).toBe(p);
+        expect(moveRegion(p,page.id,region.id,-1)).toBe(p);
+        expect(applyPageImage(p,page.id,{image_path:page.imagePath,width:page.width,height:page.height},'scan repair')).toBe(p);
+        expect(approvePage(p,page.id)).toBe(p);
+        expect(updatePage(p,'missing',{approved:false})).toBe(p);
+        expect(p.pages[0].approved).toBe(true);
+        expect(p.pages[0].contentRevision).toBe(page.contentRevision);
+    });
     it('edits preserve raw recognition evidence and revoke page approval',()=>{
         let p=recognize(project(1));
         const pageId=p.pages[0].id, regionId=p.pages[0].regions[0].id;
@@ -340,6 +394,14 @@ describe('find, replace and export',()=>{
 });
 
 describe('durable project recovery and history',()=>{
+    it('rejects null document/page/region records with recovery errors rather than raw property errors',()=>{
+        const p=recognize(project(1));
+        for (const corrupt of [{...p,documents:[null]}, {...p,pages:[null]}, {...p,pages:[{...p.pages[0],regions:[null]}]}]) {
+            expect(()=>parseProject(corrupt)).toThrow(/OCR/);
+        }
+        const restored=parseProject({...p,pages:[{...p.pages[0],regions:[{...p.pages[0].regions[0],charConfidenceUnit:'token',charConfidenceAligned:true,char_conf:Array.from(p.pages[0].regions[0].text).map(()=>0.1)}]}]});
+        expect(restored.pages[0].regions[0].charConfidenceAligned).toBe(false);
+    });
     it('round trips arbitrary native provenance and interrupted jobs become retryable',()=>{
         let p=recognize(project(1));
         p=updatePage(p,p.pages[0].id,{status:'running',provenance:{engine:'surya',diagnostics:{stages:[1,2]}}});
@@ -375,6 +437,43 @@ describe('durable project recovery and history',()=>{
         const p=project(1);
         p.recognitionSettings={engine:'surya',language:'deu',cleanup:{deskew:true}};
         expect(parseProject(serializeProject(p)).recognitionSettings).toEqual(p.recognitionSettings);
+    });
+    it('large multilingual projects retain exact undo state and UTF-8 bounds through coalesced edits',()=>{
+        const original=recognize(project(1000),512,'日本語 العربية עברית 😀 e\u0301');
+        const pid=original.pages[512].id,rid=original.pages[512].regions[0].id;
+        const size=(p:OcrProject)=>new TextEncoder().encode(JSON.stringify(p)).byteLength;
+        let history=createHistory(original,50,size(original)*3+1024);
+        for (let index=0;index<8;index++) {
+            history=commitHistory(history,editRegion(history.present,pid,rid,`修正 ${index} العربية 😀`));
+            // The workbench coalesces typing by replacing only the live present.
+            history={...history,present:editRegion(history.present,pid,rid,`修正 ${index} العربية 😀 complete`)};
+        }
+        const committedText=history.present.pages[512].regions[0].text;
+        expect(history.past.length).toBeGreaterThan(0);
+        expect(history.pastBytes).toEqual(history.past.map(size));
+        expect([...history.past,...history.future].reduce((sum,p)=>sum+size(p),0)).toBeLessThanOrEqual(history.maxBytes);
+        history=undoHistory(history);
+        expect(history.present.pages[512].regions[0].text).toBe('修正 6 العربية 😀 complete');
+        expect(history.futureBytes).toEqual(history.future.map(size));
+        history=redoHistory(history);
+        expect(history.present.pages[512].regions[0].text).toBe(committedText);
+        expect(history.present.pages.map(p=>p.id)).toEqual(original.pages.map(p=>p.id));
+        expect(original.pages[512].regions[0].text).toBe('日本語 العربية עברית 😀 e\u0301');
+        expect(history.pastBytes).toEqual(history.past.map(size));
+    });
+    it('oversized history snapshots preserve the live edit without retaining discarded copies',()=>{
+        const original=recognize(project(2));
+        const pid=original.pages[0].id,rid=original.pages[0].regions[0].id;
+        const next=editRegion(original,pid,rid,'a'.repeat(40000));
+        let history=commitHistory(createHistory(original,50,1),next);
+        expect(history.past).toEqual([]);
+        expect(history.pastBytes).toEqual([]);
+        next.pages[0].regions[0].text='external mutation';
+        expect(history.present.pages[0].regions[0].text).toHaveLength(40000);
+        history=commitHistory(history,editRegion(history.present,pid,rid,'smaller'));
+        expect(history.present.pages[0].regions[0].text).toBe('smaller');
+        expect(history.past).toEqual([]);
+        expect(createHistory(original,50,NaN).maxBytes).toBe(24*1024*1024);
     });
     it('undo/redo is bounded, immutable and a new edit discards future history',()=>{
         let p=recognize(project(1));

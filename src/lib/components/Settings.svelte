@@ -11,6 +11,7 @@
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { caps, currentCaps } from '../capabilities';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
+    import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
     import {
         resolveSecret,
         bulkSetSecrets,
@@ -102,6 +103,7 @@
     import { stat, remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
+    import { modelDownloadLabel, type ModelDownloadProgress } from '$lib/ocr/client';
     import AutomationPanel from './AutomationPanel.svelte';
     import SyncPairPanel from './SyncPairPanel.svelte';
     import WallabagImport from './WallabagImport.svelte';
@@ -605,6 +607,14 @@
     let indexEmbedderModel  = $state<string>('bge_m3');
     let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+    // A catalog or saved preference may have come from a desktop. Reflect
+    // the mobile ONNX runtime's actual CPU provider in the selected value.
+    $effect(() => {
+        if ($caps.mobile && indexEmbedderBackend === 'onnx'
+            && (indexDevice === 'metal' || indexDevice === 'cuda')) {
+            indexDevice = 'cpu';
+        }
+    });
     /** Master switch for vector capabilities. When false, no embedder is
      *  ever loaded — saves multi-GB downloads + minutes of init time when
      *  the user only wants offline file cataloguing (L1 + L2) and
@@ -922,8 +932,16 @@
             let lic: string | null = null;
             try { lic = await invoke<string | null>('embedder_model_license', { name }); } catch { lic = null; }
             if (lic) {
-                const ok = await ask(i18n.t.settings.index.non_commercial_confirm, {
-                    title: `License confirmation — ${lic}`,
+                // Generic dialog: built for this model — its name, its licence
+                // and its model card — not the Jina-specific text.
+                let info: Pick<ModelLicenseInfo, 'label' | 'spdx' | 'model_card_url'> = { label: lic, spdx: '', model_card_url: '' };
+                try {
+                    const got = await invoke<ModelLicenseInfo>('embedder_model_license_info', { name });
+                    info = { ...got, label: got.label || lic };
+                } catch { /* older backend: label only */ }
+                const dialog = buildLicenseConsentDialog(i18n.t.settings.index, name, info);
+                const ok = await ask(dialog.message, {
+                    title: dialog.title,
                     kind: 'warning'
                 });
                 if (!ok) { registryDownloadMsg = 'Download cancelled (license not accepted).'; return; }
@@ -933,7 +951,11 @@
         }
         registryDownloadBusy = name;
         registryDownloadMsg  = '';
+        let stopProgress: (() => void) | undefined;
         try {
+            stopProgress = await listen<ModelDownloadProgress>('crispembed-model-download', (event) => {
+                if (event.payload.name === name) registryDownloadMsg = modelDownloadLabel(event.payload);
+            });
             await invoke('embedder_download_registry_model', { name, acceptLicense: accepted });
             // Refresh the registry list so `cached` flags update.
             embedderRegistry = await invoke<EmbedderRegistryEntry[]>('embedder_registry_list');
@@ -941,6 +963,7 @@
         } catch (e: any) {
             registryDownloadMsg = String(e);
         } finally {
+            try { stopProgress?.(); } catch { /* The window may have closed during installation. */ }
             registryDownloadBusy = '';
         }
     }
@@ -4123,7 +4146,7 @@
                             </div>
                         {/if}
                         {#if registryDownloadMsg}
-                            <div style="font-size:11px; color: #6b7280; margin-bottom:4px;">{registryDownloadMsg}</div>
+                            <div role="status" aria-live="polite" style="font-size:11px; color: #6b7280; margin-bottom:4px; overflow-wrap:anywhere;">{registryDownloadMsg}</div>
                         {/if}
                         <ul style="margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px;">
                             {#each embedderRegistry as entry}
@@ -4871,9 +4894,12 @@
                     <select id="index-device-select" bind:value={indexDevice} class="styled-select">
                         <option value="auto">{i18n.t.settings.index.device_auto}</option>
                         <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
-                        {#if isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
-                        <option value="cuda">{i18n.t.settings.index.device_cuda}</option>
+                        {#if !$caps.mobile && isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
+                        {#if !$caps.mobile}<option value="cuda">{i18n.t.settings.index.device_cuda}</option>{/if}
                     </select>
+                    {#if $caps.mobile}
+                        <p class="hint">ONNX embeddings run on this device's CPU. Desktop GPU preferences use CPU here.</p>
+                    {/if}
                 {:else}
                     <!-- GGUF: CPU is always available; the linked GPU
                          backend (or `null` if CrispEmbed itself is off) is

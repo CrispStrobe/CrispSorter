@@ -121,7 +121,8 @@ feed-rs     = { version = "2", optional = true }
 # Word-level text diff — used for P25.7 document comparison.
 similar     = "2"
 # DOCX generation — used for P27.10 export to Word format.
-docx-rs     = { version = "0.4", optional = true }
+docx-rs     = { version = "0.4", optional = true, default-features = false }
+unicode-bidi = { version = "0.3.18", optional = true }
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.
@@ -265,6 +266,8 @@ usls = { version = "=0.2.0-alpha.3", default-features = false, features = ["visi
 
 [dev-dependencies]
 sysinfo = "0.33"
+# Exercise the Android installer's real trust-bundle configuration on host CI.
+webpki-root-certs = "=1.0.8"
 # Mock HTTP server for unit tests covering the cloud-backup and
 # CrispLens wire commands.  Async API — `Server::new_async()` + the
 # `match_query` / `match_header` predicates fit the existing
@@ -290,7 +293,7 @@ default = []
 # were dead code in every shipped artifact. Kept on ONE line — the compliance
 # guards parse this file line-by-line, and a wrapped feature list is invisible
 # to them.
-desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs", "drive-filen-native", "drive-internxt-native", "cloud-backup"]
+desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "ocr-text-export", "drive-filen-native", "drive-internxt-native", "cloud-backup"]
 # P36.1 — the right to spawn a helper process, split out of `desktop`.
 #
 # App Sandbox (Mac App Store, iOS) forbids fork/exec of anything outside the
@@ -393,6 +396,12 @@ pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]
 crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
+# Per-model native licence acceptance (`CrispEmbed::resolve_model_accepting`,
+# CrispEmbed PR #191, released in v0.17.17). Without it, a
+# consented restricted model still resolves from the cache, but a fresh
+# download is refused by CrispEmbed's own gate. CRISPEMBED_ACCEPT_LICENSE is
+# never set as a workaround.
+crispembed-license-api = ["crispembed"]
 # Additive review snapshots (CrispEmbed >= 0.17.16). Builds without this
 # feature still run the workspace, without the provenance extension.
 ocr-review-diagnostics = ["crispembed"]
@@ -400,7 +409,17 @@ ocr-review-diagnostics = ["crispembed"]
 # raster embedding, Unicode text, and document-sized page tables.
 ocr-reviewed-pdf = ["ocr-review-diagnostics"]
 # Complete paired OCR workspace without imposing desktop-only integrations.
-ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf"]
+# Requires the matching native photo API and Rust binding from the paired build.
+# Keep ordinary released-library builds independent of the additive ABI.
+ocr-photo-tools = ["crispembed"]
+# Text-only OOXML is portable; it does not enable desktop integrations or the
+# docx-rs image decoder feature. Keep the generic desktop export API separate.
+ocr-text-export = ["dep:docx-rs", "dep:unicode-bidi"]
+ocr-workspace = ["crispembed", "pdf-render", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools", "ocr-text-export"]
+# Paired mobile OCR includes app-private model provisioning and native document
+# import through mobile-provider. PDF/phone-format capabilities come from the
+# actual platform decoder; searchable PDF export uses CrispEmbed's writer.
+ocr-mobile = ["crispembed", "ocr-review-diagnostics", "ocr-reviewed-pdf", "ocr-photo-tools", "ocr-text-export", "dep:webpki-root-certs"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
 crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
@@ -446,6 +465,11 @@ crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
 # Cross-platform clipboard access — desktop only (arboard has no Android/iOS backend).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 arboard = "3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The model installer uses public roots without an uninitialized JVM verifier.
+# This version is already pinned transitively in the workspace lockfile.
+webpki-root-certs = { version = "=1.0.8", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows

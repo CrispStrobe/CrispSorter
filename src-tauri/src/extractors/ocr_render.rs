@@ -146,9 +146,11 @@ fn render_region(region: &OcrRegion, width: i32, height: i32) -> Result<OcrRegio
 ///
 /// `Text` is produced in Rust; structured formats use the native renderer.
 /// PDF requires a matching renderer with decoded images and Unicode support.
-/// Archival conformance has not been validated, so `pdfa` fails explicitly.
+/// PDF/A requests require the native PDF/A-2b capability. Bidirectional text
+/// remains a separate capability, so older renderers retain valid Latin PDF.
 pub fn render(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> Result<Vec<u8>> {
-    anyhow::ensure!(!pdfa, "PDF/A output is unavailable because archival conformance has not been validated");
+    anyhow::ensure!(!pdfa || fmt == OcrOutputFormat::Pdf, "PDF/A applies only to PDF output");
+    anyhow::ensure!(!pdfa || reviewed_archival_pdf_available(), "PDF/A-2b requires a matching archival-capable native renderer");
     if fmt == OcrOutputFormat::Pdf && !reviewed_pdf_render_available() {
         anyhow::bail!("PDF output requires a matching crispembed ocr_render build with the ocr-reviewed-pdf feature");
     }
@@ -163,6 +165,56 @@ pub fn reviewed_pdf_render_available() -> bool {
     { crispembed::ocr_render_capabilities() & 7 == 7 }
     #[cfg(not(feature = "ocr-reviewed-pdf"))]
     { false }
+}
+
+pub fn reviewed_archival_pdf_available() -> bool {
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    { crispembed::ocr_render_capabilities() & 15 == 15 }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    { false }
+}
+
+pub fn reviewed_bidi_pdf_available() -> bool {
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    { crispembed::ocr_render_capabilities() & 23 == 23 }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    { false }
+}
+
+pub fn reviewed_streaming_pdf_available() -> bool {
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    { crispembed::ocr_render_capabilities() & 39 == 39 }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    { false }
+}
+
+/// Render directly to the caller's staged file instead of returning a complete
+/// PDF buffer. The native writer is synchronous and flushes before success;
+/// callers must publish their destination only after this function succeeds.
+pub fn render_pdf_to_writer<W: std::io::Write>(
+    pages: &[RenderPage],
+    pdfa: bool,
+    max_bytes: u64,
+    writer: &mut W,
+) -> Result<u64> {
+    anyhow::ensure!(reviewed_streaming_pdf_available(),
+        "Streaming PDF requires a matching native renderer with file-writer support");
+    anyhow::ensure!(!pdfa || reviewed_archival_pdf_available(),
+        "PDF/A-2b requires a matching archival-capable native renderer");
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    {
+        let regions = native_page_regions(pages)?;
+        let inputs = native_page_inputs(pages, &regions);
+        let sizes = native_page_sizes(pages);
+        crispembed::ocr_render_pdf_to_writer_checked(
+            &inputs, pdfa, Some(&sizes), reviewed_bidi_pdf_available(), max_bytes, writer,
+        ).map_err(anyhow::Error::from)
+    }
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    {
+        let _ = (pages, max_bytes, writer);
+        anyhow::bail!("Streaming PDF requires the ocr-reviewed-pdf feature")
+    }
 }
 
 /// Whether structured (hOCR/ALTO) rendering is wired up. True when the
@@ -242,9 +294,30 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> 
         OcrOutputFormat::Pdf => "pdf",
         OcrOutputFormat::Text => "text", // (render() routes Text away; total for safety)
     };
-    // Convert to crispembed regions, keeping the per-page Vecs alive for the
-    // duration of the `ocr_render_pages` call (the inputs borrow them).
-    let page_regions: Vec<Vec<crispembed::OcrRegion>> = pages
+    let page_regions = native_page_regions(pages)?;
+    let inputs = native_page_inputs(pages, &page_regions);
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    let bytes = {
+        let sizes = native_page_sizes(pages);
+        let rendered = if crispembed::ocr_render_capabilities() & 16 != 0 {
+            crispembed::ocr_render_pages_checked_with_options(&inputs, fmt_str, pdfa, Some(&sizes), true)
+        } else {
+            crispembed::ocr_render_pages_checked_with_sizes(&inputs, fmt_str, pdfa, Some(&sizes))
+        };
+        rendered
+            .map_err(|e| anyhow::anyhow!("Native OCR export: {e}"))?
+    };
+    #[cfg(not(feature = "ocr-reviewed-pdf"))]
+    let bytes = crispembed::ocr_render_pages(&inputs, fmt_str, pdfa)
+        .ok_or_else(|| anyhow::anyhow!("crispembed::ocr_render_pages returned None ({fmt_str})"))?;
+    if fmt == OcrOutputFormat::Alto { validate_alto_output(pages, &bytes)?; }
+    Ok(bytes)
+}
+
+/// Both byte and writer APIs use the same reviewed text and enclosing geometry.
+#[cfg(feature = "crispembed")]
+fn native_page_regions(pages: &[RenderPage]) -> Result<Vec<Vec<crispembed::OcrRegion>>> {
+    pages
         .iter()
         .map(|p| {
             p.regions
@@ -252,24 +325,28 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> 
                 .map(|r| {
                     let r = render_region(r, p.page_width, p.page_height)?;
                     Ok(crispembed::OcrRegion {
-                    text: r.text.clone(),
-                    x: r.x,
-                    y: r.y,
-                    w: r.w,
-                    h: r.h,
-                    confidence: r.confidence,
-                    // Added to `OcrResult` upstream after v0.16.1. These
-                    // regions come from our own detector, which does not
-                    // rotate anything, so the honest value is `false` — the
-                    // renderer only reads it to decide whether a box's
-                    // coordinates were already de-skewed.
-                    orientation_corrected: false,
+                        text: r.text.clone(),
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
+                        confidence: r.confidence,
+                        // These regions use the supplied page coordinates.
+                        // No separate detector-side rotation was applied.
+                        orientation_corrected: false,
                     })
                 })
                 .collect::<Result<Vec<_>>>()
         })
-        .collect::<Result<Vec<_>>>()?;
-    let inputs: Vec<crispembed::OcrRenderPageInput> = pages
+        .collect::<Result<Vec<_>>>()
+}
+
+#[cfg(feature = "crispembed")]
+fn native_page_inputs<'a>(
+    pages: &'a [RenderPage],
+    page_regions: &'a [Vec<crispembed::OcrRegion>],
+) -> Vec<crispembed::OcrRenderPageInput<'a>> {
+    pages
         .iter()
         .enumerate()
         .map(|(i, p)| crispembed::OcrRenderPageInput {
@@ -282,19 +359,15 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> 
                 Some(p.image_path.as_str())
             },
         })
-        .collect();
-    #[cfg(feature = "ocr-reviewed-pdf")]
-    let bytes = {
-        let sizes: Vec<_> = pages.iter().map(|p| p.physical_size_points
-            .unwrap_or((p.page_width as f32 * 72.0 / 300.0, p.page_height as f32 * 72.0 / 300.0))).collect();
-        crispembed::ocr_render_pages_checked_with_sizes(&inputs, fmt_str, pdfa, Some(&sizes))
-            .map_err(|e| anyhow::anyhow!("Native OCR export: {e}"))?
-    };
-    #[cfg(not(feature = "ocr-reviewed-pdf"))]
-    let bytes = crispembed::ocr_render_pages(&inputs, fmt_str, pdfa)
-        .ok_or_else(|| anyhow::anyhow!("crispembed::ocr_render_pages returned None ({fmt_str})"))?;
-    if fmt == OcrOutputFormat::Alto { validate_alto_output(pages, &bytes)?; }
-    Ok(bytes)
+        .collect()
+}
+
+#[cfg(feature = "ocr-reviewed-pdf")]
+fn native_page_sizes(pages: &[RenderPage]) -> Vec<(f32, f32)> {
+    pages.iter().map(|page| page.physical_size_points.unwrap_or((
+        page.page_width as f32 * 72.0 / 300.0,
+        page.page_height as f32 * 72.0 / 300.0,
+    ))).collect()
 }
 
 /// Older linked renderers used a fixed text buffer for ALTO. Validate both
@@ -416,12 +489,35 @@ mod tests {
         for encoded in images {
             assert_eq!(encoded.get_plain_content().unwrap(), image.as_raw().as_slice(), "canonical PNG pixels remain exact");
         }
-        assert!(render(&pages, OcrOutputFormat::Pdf, true).unwrap_err().to_string().contains("PDF/A"));
+        let archival = render(&pages, OcrOutputFormat::Pdf, true).unwrap();
+        let archival_document = lopdf::Document::load_mem(&archival).unwrap();
+        assert_eq!(archival_document.get_pages().len(), 64);
+        assert!(archival_document.catalog().unwrap().has(b"OutputIntents"));
+        assert!(archival_document.catalog().unwrap().has(b"Metadata"));
         let rtl = RenderPage::from_regions(vec![OcrRegion {
             text:"العربية 123 ABC".into(), x:0.0, y:0.0, w:100.0, h:20.0, confidence:0.9,
         }], 100, 120, path.to_string_lossy()).with_physical_size(600.0, 720.0);
-        let error = render(&[rtl], OcrOutputFormat::Pdf, false).unwrap_err().to_string();
-        assert!(error.contains("right-to-left"), "unsupported bidi must fail explicitly before writing: {error}");
+        // Right-to-left PDF text depends on the native BIDI capability. A
+        // renderer without it (CrispEmbed withdrew it until its logical-order
+        // qualification passes) must refuse safely rather than write a
+        // reversed text layer; with it, the logical text must round-trip.
+        if !reviewed_bidi_pdf_available() {
+            let refused = render(&[rtl], OcrOutputFormat::Pdf, false).unwrap_err().to_string();
+            assert!(refused.contains("bidirectional"), "RTL PDF without BIDI must be refused: {refused}");
+            return;
+        }
+        let rtl_bytes = render(&[rtl], OcrOutputFormat::Pdf, false).unwrap();
+        let rtl_document = lopdf::Document::load_mem(&rtl_bytes).unwrap();
+        let page_id = *rtl_document.get_pages().get(&1).unwrap();
+        let content = lopdf::content::Content::decode(&rtl_document.get_page_content(page_id).unwrap()).unwrap();
+        let mut logical = String::new();
+        for operation in content.operations.iter().filter(|op| op.operator == "BDC") {
+            let bytes = operation.operands[1].as_dict().unwrap().get(b"ActualText").unwrap().as_str().unwrap();
+            assert_eq!(&bytes[..2], &[0xfe, 0xff]);
+            let scalars: Vec<_> = bytes[2..].chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect();
+            logical.push_str(&String::from_utf16(&scalars).unwrap());
+        }
+        assert_eq!(logical, "العربية 123 ABC", "the consumer retains reviewed logical Unicode");
     }
 
     #[cfg(feature = "ocr-reviewed-pdf")]

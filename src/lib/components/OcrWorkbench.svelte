@@ -55,24 +55,41 @@
     PanelLeftOpen,
     ScanLine,
     ShieldCheck,
+    Camera,
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
+  import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
+  import ModelStorage from "./ocr/ModelStorage.svelte";
+  import { CORNER_NAMES, captureFileError, initialPhotoQuad, photoQuadError, type PhotoQuad } from "$lib/ocr/photo";
+  import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
+  import WordReview from "./ocr/WordReview.svelte";
+  import PageTextEditor from "./ocr/PageTextEditor.svelte";
+  import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
+  import type { WordEvidence } from "$lib/ocr/words";
   import {
     workspaceClient,
+    modelDownloadLabel,
+    importProgressLabel,
+    exportProgressLabel,
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
     type ExtractionField,
     type TransformOptions,
     type ExportRequest,
+    type ExportProgress,
+    type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
+  import { checkExportText, resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
-    expandRecognitionZone,
-    effectiveRecognitionZone,
-    mergeZoneRegions,
-  } from "$lib/ocr/zones";
+    captureZoneReview,
+    prepareZoneReview,
+    applyZoneReview,
+    type ZoneReviewPreview,
+  } from "$lib/ocr/zoneReview";
+  import type { PixelRectangle } from "$lib/ocr/zones";
   import {
     captureExtractionSource,
     extractionSourceIsCurrent,
@@ -95,6 +112,7 @@
     updateRegion,
     addRegion,
     deleteRegion,
+    findSourceDocument,
     moveRegion,
     movePage,
     removePage,
@@ -143,6 +161,20 @@
   let pageWindowStart = $state(0);
   const pageWindowSize = 100;
   let pageRail = $state(true);
+  let mobileView = $state<"pages" | "image" | "tools">("image");
+  let photoOpen = $state(false);
+  let perspective = $state(false);
+  let photoToolsButton = $state<HTMLButtonElement>();
+  let photoFocusBack = $state<HTMLButtonElement>();
+  let photoFocusCoordinatesOpen = $state(false);
+  let photoQuad = $state<PhotoQuad>(initialPhotoQuad(100, 100));
+  let photoAssessment = $state<PhotoAssessment | null>(null);
+  let photoAngle = $state(0);
+  let modelProgress = $state("");
+  let modelStorageRevision = $state(0);
+  let modelSetupPanel = $state<HTMLElement>();
+  let cameraInput = $state<HTMLInputElement>();
+  let lastPhotoSource = "";
   let inspector = $state<"review" | "recognition" | "extract" | "export">(
     "review",
   );
@@ -166,6 +198,12 @@
     error = $state(""),
     notice = $state("");
   let saveStatus = $state<SaveStatus>({ state: "saved" });
+  let importController = $state<AbortController | null>(null);
+  let importStopping = $state(false);
+  let exportController = $state<AbortController | null>(null);
+  let exportStopping = $state(false);
+  let exportPhase = $state<ExportProgress["phase"] | null>(null);
+  const exportCancellable = $derived(!!exportController && (exportPhase === "rendering" || exportPhase === "writing"));
   let capabilities = $state<WorkspaceCapabilities>({
     ocr: false,
     crispembed: false,
@@ -186,6 +224,7 @@
     label: string;
     action: () => void | Promise<void>;
     splitWidth?: number;
+    ocrPreview?: ZoneReviewPreview;
   } | null>(null);
   let splitPosition = $state(0);
   let queueState = $state<QueueState>({
@@ -196,7 +235,9 @@
     currentId: null,
     remainingIds: [],
   });
-  let queuePromise: Promise<void> | null = null;
+  let queuePromise = $state<Promise<void> | null>(null);
+  let runningProjectId = "", runningBatchId = "";
+  let checkpointFailed = false;
   let autosave: ProjectAutosave<OcrProject> | null = null;
   let mounted = true;
   let editGroup: string | null = null;
@@ -221,6 +262,7 @@
     requireReviewed = $state(true);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
+  const pdfExportSelected = $derived(exportFormat === "pdf" || exportFormat === "pdfa");
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
@@ -236,6 +278,17 @@
   const activePage = $derived(
     project.pages.find((p) => p.id === selectedPageId) ?? project.pages[0],
   );
+  $effect(() => {
+    const key = `${project.id}:${activePage?.id}:${activePage?.imagePath}`;
+    if (key === lastPhotoSource) return;
+    lastPhotoSource = key;
+    photoAssessment = null;
+    photoAngle = 0;
+    perspective = false;
+    photoQuad = initialPhotoQuad(activePage?.width ?? 100, activePage?.height ?? 100);
+  });
+  const savedBatchPending = $derived(project.batch?.jobs.filter(job => job.state === "pending" || job.state === "running").length ?? 0);
+  const savedBatchFailed = $derived(project.batch?.jobs.filter(job => job.state === "failed").length ?? 0);
   const pageIndex = $derived(
     activePage ? project.pages.findIndex((p) => p.id === activePage.id) : -1,
   );
@@ -304,6 +357,7 @@
   const recognitionWarnings = $derived([
     ...new Set(
       [
+        activePage?.provenance.importWarnings,
         activePage?.provenance.warnings,
         activePage?.provenance.preparationWarnings,
       ]
@@ -317,13 +371,13 @@
   const queueActive = $derived(
     ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
   );
-  const locked = $derived(booting || closing || !!busy || queueActive);
+  const locked = $derived(booting || closing || !!busy || queueActive || queuePromise !== null);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
-    typeof settings.engine === "string" ? settings.engine : "auto",
+    typeof settings.engine === "string" ? settings.engine : (capabilities.default_engine ?? "auto"),
   );
   const language = $derived(
-    typeof settings.language === "string" ? settings.language : "auto",
+    typeof settings.language === "string" ? settings.language : (capabilities.default_language ?? "auto"),
   );
   // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
   const cpuBudget = $derived(
@@ -352,6 +406,8 @@
   const preflight = $derived(
     prepareExport(project, { pageIds: exportIds, requireReviewed }),
   );
+  const exportTextCheck = $derived(checkExportText(exportFormat, capabilities, preflight.pages));
+  const exportErrors = $derived([...preflight.errors, ...exportTextCheck.errors]);
   const pageText = $derived(
     activePage?.regions
       .filter((r) => !r.excluded && r.kind !== "picture")
@@ -371,6 +427,7 @@
   );
   const formatNames: Record<string, string> = {
     pdf: "Searchable PDF",
+    pdfa: "Archival PDF/A-2b",
     hocr: "hOCR",
     alto: "ALTO XML",
     text: "Plain text",
@@ -413,31 +470,31 @@
 
   const queue = new SequentialQueue<RecognitionResult>({
     canStart: () => !busy && capabilities.ocr,
-    isCurrent: (job) => project.pages.some((p) => p.id === job.id),
+    isCurrent: (job) => project.id === runningProjectId && project.batch?.id === runningBatchId && batchPageIsCurrent(project, job.id),
     onState: (state) => {
       queueState = { ...state, remainingIds: [...state.remainingIds] };
     },
-    onStart: (job) => {
-      change(
-        updatePage(project, job.id, { status: "running", error: null }),
-        false,
-      );
+    onStart: async (job) => {
+      change(updateBatchPage(updatePage(project, job.id, { status: "running", error: null }), job.id, "running"), false);
+      await autosave?.flush();
     },
-    onResult: (job, result) => {
-      change(
-        applyRecognition(project, job.id, result, project.profileId),
-        false,
-      );
+    onResult: async (job, result) => {
+      const next = applyRecognition(project, job.id, result, project.batch?.profileId ?? project.profileId);
+      change(updateBatchPage(next, job.id, "completed"), false);
+      await autosave?.flush();
     },
-    onError: (job, failure) => {
-      change(
-        updatePage(project, job.id, {
-          status: "failed",
-          error: message(failure),
-          approved: false,
-        }),
-        false,
-      );
+    onError: async (job, failure) => {
+      const next = updatePage(project, job.id, { status: "failed", error: message(failure), approved: false });
+      change(updateBatchPage(next, job.id, "failed", message(failure)), false);
+      await autosave?.flush();
+    },
+    onCheckpointError: (failure, job, stage) => {
+      checkpointFailed = true;
+      let next = project;
+      if (stage === "start") next = updateBatchPage(updatePage(next, job.id, { status: "pending" }), job.id, "pending");
+      change(updateBatchPhase(next, "stopped"), false);
+      const reason = saveStatus.state === "error" ? "its project checkpoint could not be saved" : "a recognition result or checkpoint could not be accepted";
+      error = `Recognition stopped because ${reason}. Your current results remain in this workspace. Resolve the reported problem, save the project, then resume the saved batch. ${message(failure)}`;
     },
   });
 
@@ -549,21 +606,33 @@
     error = "";
     busy = "Choosing documents";
     try {
+      // Resolve an earlier save failure before adding more source documents.
+      await autosave?.flush();
       const selected = paths ?? (await client.pickDocuments());
       if (!selected.length) return;
+      const controller = new AbortController();
+      importController = controller;
+      importStopping = false;
       busy = "Importing documents";
       let added = 0;
+      let importSaveFailed = false;
       const errors: string[] = [];
       for (const path of selected) {
+        if (controller.signal.aborted) break;
         try {
-          if (project.documents.some((d) => d.sourceUri === path)) {
+          if (findSourceDocument(project, path)) {
             errors.push(
               `${path.split(/[\\/]/).pop()}: already in this project`,
             );
             continue;
           }
           busy = `Importing ${path.split(/[\\/]/).pop()}`;
-          const imported = await client.importDocument(path);
+          const imported = await client.importDocument(path, { signal: controller.signal,
+            onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); } });
+          if (findSourceDocument(project, imported.source_uri, imported.archive_uri)) {
+            errors.push(`${imported.name}: this original document is already in the project`);
+            continue;
+          }
           const next = addDocument(project, imported);
           if (!project.pages.length) {
             next.name = imported.name.replace(/\.[^.]+$/, "") || "OCR project";
@@ -571,18 +640,134 @@
           }
           change(next);
           added += imported.pages.length;
-          await autosave?.flush();
+          try {
+            await autosave?.flush();
+          } catch (e) {
+            // The autosaver retains this snapshot for Retry. Stop the import
+            // before accepting another document into an unsaved project.
+            importSaveFailed = true;
+            errors.push(`${imported.name}: project save failed: ${message(e)}`);
+            break;
+          }
         } catch (e) {
+          if (controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) break;
           errors.push(`${path.split(/[\\/]/).pop()}: ${message(e)}`);
         }
       }
-      notice = `${added} ${added === 1 ? "page" : "pages"} added`;
+      notice = `${added} ${added === 1 ? "page" : "pages"} added${importSaveFailed
+        ? ". Import stopped because saving failed. Use Save to retry; keep this workspace open."
+        : controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
     } catch (e) {
       fail(e);
     } finally {
+      importController = null;
+      importStopping = false;
       busy = "";
     }
+  }
+  async function capturePhoto(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || locked || !client.importImage) return;
+    error = "";
+    const invalid = captureFileError(file, capabilities.image_import_formats);
+    if (invalid) { error = invalid; return; }
+    busy = "Importing photo";
+    const controller = new AbortController();
+    importController = controller;
+    importStopping = false;
+    try {
+      const imported = await client.importImage(file.name || "Camera photo.jpg", new Uint8Array(await file.arrayBuffer()), {
+        signal: controller.signal, onProgress: progress => { if (!controller.signal.aborted) busy = importProgressLabel(progress); },
+      });
+      const existing = findSourceDocument(project, imported.source_uri, imported.archive_uri);
+      if (existing) {
+        const first = project.pages.find(page => page.documentId === existing.id);
+        if (first) selectPage(first.id);
+        notice = "This original photo is already in the project.";
+        return;
+      }
+      const before = project.pages.length;
+      const next = addDocument(project, imported);
+      if (!before) next.name = imported.name.replace(/\.[^.]+$/, "") || "Photo project";
+      change(next);
+      selectPage(next.pages[before].id);
+      photoOpen = true;
+      mobileView = "image";
+      await autosave?.flush();
+      notice = "Photo added. Check its edges, tilt and lighting before recognition.";
+    } catch (failure) {
+      if (controller.signal.aborted || (failure instanceof DOMException && failure.name === "AbortError")) notice = "Photo import cancelled.";
+      else fail(failure);
+    }
+    finally { busy = ""; importController = null; importStopping = false; }
+  }
+  function cancelImport() {
+    if (!importController || importStopping) return;
+    importStopping = true;
+    busy = "Stopping import after the current step…";
+    importController.abort();
+  }
+  async function assessPhoto() {
+    const page = activePage;
+    if (!page || locked || !client.assessPhoto) return;
+    busy = "Checking photo quality";
+    error = "";
+    try {
+      const result = await client.assessPhoto(page.imagePath);
+      if (activePage?.id !== page.id || activePage.imagePath !== page.imagePath) return;
+      photoAssessment = result;
+      photoAngle = result.correction_degrees ?? 0;
+      notice = result.correction_degrees === null ? "Inspect the page and adjust tilt manually if needed." : "Tilt estimated. Apply the correction, then inspect the preview.";
+    } catch (failure) { fail(failure); }
+    finally { busy = ""; }
+  }
+  function showPhotoTools() {
+    photoOpen = !photoOpen;
+    mobileView = "image";
+    showOriginal = false;
+    drawMode = "select";
+    if (!photoOpen) perspective = false;
+  }
+  function setPerspective(enabled: boolean) {
+    const leavingPhoneFocus = !enabled && !!photoFocusBack?.getClientRects().length;
+    perspective = enabled;
+    showOriginal = false;
+    drawMode = "select";
+    mobileView = "image";
+    if (enabled) {
+      fit = "page";
+      photoFocusCoordinatesOpen = false;
+    }
+    void tick().then(() => {
+      if (enabled && perspective && photoFocusBack?.getClientRects().length) {
+        photoFocusBack.focus({ preventScroll: true });
+      } else if (leavingPhoneFocus) {
+        photoToolsButton?.focus({ preventScroll: true });
+      }
+    });
+  }
+  function setPhotoCoordinate(index: number, axis: "x" | "y", value: number) {
+    photoQuad = photoQuad.map((point, i) => i === index ? { ...point, [axis]: value } : { ...point }) as PhotoQuad;
+  }
+  async function applyPerspective() {
+    if (!activePage) return;
+    const invalid = photoQuadError(photoQuad, activePage.width, activePage.height);
+    if (invalid) { error = invalid; return; }
+    await transform("perspective", { quad: photoQuad.map(point => ({ ...point })) as PhotoQuad });
+  }
+  async function flattenShadows() {
+    await prepareImage({
+      denoise: false, dewarp: false, restore: false, sr: false, cleanup_enabled: true,
+      stages: [{ cleanup: { enabled: true, deskew: false, crop_borders: false, whiten_background: true,
+        binarize: false, despeckle: false, blackfilter: false, auto_crop: false, page_split: false } }],
+    });
+  }
+  function openInspector(panel: typeof inspector) {
+    inspector = panel;
+    mobileView = "tools";
   }
   // Handle each hand-off once, after the last project has been restored (so
   // the document joins it instead of being replaced by it) and while no batch,
@@ -595,7 +780,7 @@
     untrack(() => void openRequestedDocument(uri));
   });
   async function openRequestedDocument(uri: string) {
-    const existing = project.documents.find((d) => d.sourceUri === uri);
+    const existing = findSourceDocument(project, uri);
     const firstPage =
       existing && project.pages.find((p) => p.documentId === existing.id);
     if (firstPage) {
@@ -650,6 +835,7 @@
     if (next) selectPage(next.id);
   }
   async function selectRegion(id: string) {
+    mobileView = "tools";
     selectedRegionId = id;
     inspector = "review";
     textView = "regions";
@@ -658,6 +844,47 @@
     editorPane
       ?.querySelector<HTMLElement>(`[data-region-id="${id}"]`)
       ?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }
+  async function selectWord(r: OcrRegion, word: WordEvidence) {
+    if (!activePage || locked || r.excluded) return;
+    const pageId = activePage.id;
+    const sourceText = r.text;
+    if (sourceText.slice(word.start, word.end) !== word.text) return;
+    await selectRegion(r.id);
+    // The selection is valid only for the text version that supplied its
+    // offsets. Navigation or an edit during the render must not target another
+    // page, a changed word, or original OCR offsets in corrected text.
+    if (
+      activePage?.id !== pageId ||
+      activePage.regions.find((item) => item.id === r.id)?.text !== sourceText
+    ) return;
+    const editor = editorPane?.querySelector<HTMLTextAreaElement>(
+      `[data-region-id="${r.id}"] textarea`,
+    );
+    editor?.focus();
+    editor?.setSelectionRange(word.start, word.end);
+  }
+  async function editPassage(r: OcrRegion) {
+    if (!activePage || locked || r.excluded || r.kind === "picture") return;
+    const pageId = activePage.id;
+    currentMatch = null;
+    selectedRegionId = r.id;
+    inspector = "review";
+    textView = "text";
+    editGroup = null;
+    await tick();
+    if (activePage?.id !== pageId || selectedRegionId !== r.id) return;
+    const editor = editorPane?.querySelector<HTMLTextAreaElement>(
+      `[data-passage-id="${r.id}"] textarea`,
+    );
+    editor?.focus();
+    editor?.scrollIntoView({ block: "nearest" });
+  }
+  function drawRecognitionArea() {
+    if (!activePage || locked || !capabilities.ocr) return;
+    drawMode = "recognize";
+    showOriginal = false;
+    notice = "Draw an area on the page. You can compare the new OCR text before using it.";
   }
   function togglePage(id: string) {
     checkedPages = checkedPages.includes(id)
@@ -740,7 +967,7 @@
     const issue = reviewIssues[(current + 1) % reviewIssues.length];
     selectPage(issue.pageId);
     if (issue.regionId) void selectRegion(issue.regionId);
-    else inspector = "review";
+    else openInspector("review");
   }
   function approveRegion() {
     if (activePage && region) {
@@ -769,6 +996,30 @@
       recognitionSettings: { ...settings, [key]: value },
       updatedAt: new Date().toISOString(),
     });
+  }
+  async function openMobileModels() {
+    openInspector("recognition");
+    await tick();
+    modelSetupPanel?.scrollIntoView({ block: "nearest" });
+    modelSetupPanel?.querySelector<HTMLButtonElement>("button")?.focus();
+  }
+  async function installBasicModels() {
+    if (locked || !capabilities.mobile_model_store || !client.installMobileModels) return;
+    busy = "Installing OCR models";
+    error = ""; notice = ""; modelProgress = "Checking model installation…";
+    try {
+      const names = await client.installMobileModels(language === "auto" ? "eng" : language, (progress) => {
+        if (mounted) modelProgress = modelDownloadLabel(progress);
+      });
+      if (mounted) {
+        notice = `Basic OCR models are installed (${names.join(", ")}). ${engine === "tesseract" ? "Ready to recognize this document." : "Select Tesseract LSTM to use them."}`;
+        modelStorageRevision += 1;
+      }
+    } catch (value) {
+      if (mounted) fail(value);
+    } finally {
+      if (mounted) { busy = ""; modelProgress = ""; }
+    }
   }
   function setConfig(key: string, value: unknown) {
     setSetting("config", {
@@ -848,69 +1099,87 @@
     error = "";
     selectedRegionId = null;
     showOriginal = false;
-    const configSnapshot = JSON.parse(JSON.stringify(config)),
-      engineSnapshot = engine,
-      languageSnapshot = language,
-      cpuBudgetSnapshot = cpuBudget,
-      projectId = project.id;
-    // One undo boundary covers the entire batch. Each page result is still autosaved.
-    change(
-      updatePage(project, pages[0].id, { status: "running", error: null }),
-    );
+    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudget };
+    change(beginBatch(project, pages.map(page => page.id), options));
+    await runPreparedBatch(pages.map(page => page.id), options);
+  }
+  async function finishQueueSegment() {
+    const phase = queueState.phase === "paused" ? "paused" : queueState.phase === "cancelled" ? "stopped" : "completed";
+    let next = project;
+    for (const id of queueState.remainingIds) {
+      if (next.pages.find(page => page.id === id)?.status === "running") {
+        next = updateBatchPage(updatePage(next, id, { status: "pending" }), id, "pending");
+      }
+    }
+    change(updateBatchPhase(next, phase), false);
+    if (checkpointFailed) return;
+    await autosave?.flush();
+    notice = phase === "paused" ? "Queue paused. Completed pages are saved." : phase === "stopped"
+      ? "Queue stopped. Resume the saved batch to finish its original selection."
+      : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
+  }
+  async function runPreparedBatch(pageIds: string[], options: BatchOptions) {
+    busy = "Saving recognition batch";
+    checkpointFailed = false;
     try {
-      const started = queue.start(
-        pages.map((p) => ({
-          id: p.id,
-          run: async () => {
-            if (project.id !== projectId)
-              throw new Error("The active project changed.");
-            const current = project.pages.find((page) => page.id === p.id);
-            if (!current) throw new Error("The page was removed.");
-            return client.recognize({
-              pagePath: current.imagePath,
-              pageWidthPoints: current.widthPoints,
-              pageHeightPoints: current.heightPoints,
-              config: configSnapshot,
-              engine: engineSnapshot,
-              language: languageSnapshot,
-              cpuPixelBudget: cpuBudgetSnapshot,
-            });
-          },
-        })),
-      );
+      // Persist exact intent and settings before the first native invocation.
+      await autosave?.flush();
+      runningProjectId = project.id;
+      runningBatchId = project.batch?.id ?? "";
+      busy = "";
+      const started = queue.start(pageIds.map(id => ({
+        id,
+        run: async () => {
+          if (!batchPageIsCurrent(project, id)) throw new Error("The saved page changed. Start a new recognition selection.");
+          const current = project.pages.find(page => page.id === id)!;
+          return client.recognize({ pagePath: current.imagePath, pageWidthPoints: current.widthPoints,
+            pageHeightPoints: current.heightPoints, config: options.config, engine: options.engine, language: options.language, cpuPixelBudget: options.cpuPixelBudget ?? false });
+        },
+      })));
       if (!started) throw new Error("The recognition queue is already active.");
       queuePromise = queue.whenSettled();
       await queuePromise;
-      await autosave?.flush();
-      notice =
-        queueState.phase === "paused"
-          ? "Queue paused. Completed pages are saved."
-          : queueState.phase === "cancelled"
-            ? "Queue stopped. Completed pages are saved; remaining pages are ready to resume."
-            : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
-    } catch (e) {
-      fail(e);
-    } finally {
-      queuePromise = null;
-    }
+      await finishQueueSegment();
+    } catch (failure) {
+      change(updateBatchPhase(project, "stopped"), false);
+      fail(failure);
+    } finally { busy = ""; queuePromise = null; }
+  }
+  async function resumeSavedBatch(retryFailed = false) {
+    if (locked || !capabilities.ocr) return;
+    error = "";
+    const plan = resumeBatch(project, { retryFailed });
+    if (plan.conflicts.length) { error = plan.conflicts.join("\n"); return; }
+    if (!plan.pageIds.length || !plan.options) { notice = "No unfinished pages in the saved batch"; return; }
+    change(plan.project);
+    await runPreparedBatch(plan.pageIds, plan.options);
+  }
+  async function stopQueue() {
+    const paused = queue.state.phase === "paused";
+    // The previous segment owns its final checkpoint until it clears this lock.
+    if (paused && queuePromise) return;
+    queue.cancel();
+    if (!paused) return; // A running segment saves its stopped phase on settlement.
+    const stopped = Promise.resolve().then(() => finishQueueSegment());
+    queuePromise = stopped;
+    try { await stopped; }
+    catch (failure) { fail(failure); }
+    finally { if (queuePromise === stopped) queuePromise = null; }
   }
   async function resumeQueue() {
-    if (!queue.resume()) return;
-    queuePromise = queue.whenSettled();
+    if (busy || queuePromise) return;
+    busy = "Saving recognition checkpoint";
+    checkpointFailed = false;
     try {
-      await queuePromise;
+      change(updateBatchPhase(project, "running"), false);
       await autosave?.flush();
-      notice =
-        queueState.phase === "paused"
-          ? "Queue paused"
-          : queueState.phase === "cancelled"
-            ? "Queue stopped. Completed pages are saved."
-            : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed` : ""}`;
-    } catch (e) {
-      fail(e);
-    } finally {
-      queuePromise = null;
-    }
+      busy = "";
+      if (!queue.resume()) return;
+      queuePromise = queue.whenSettled();
+      await queuePromise;
+      await finishQueueSegment();
+    } catch (failure) { change(updateBatchPhase(project, "paused"), false); fail(failure); }
+    finally { busy = ""; queuePromise = null; }
   }
   function persistExtraction() {
     if (!activePage || locked || extractionPageId !== activePage.id) return;
@@ -963,6 +1232,8 @@
         operation,
         ...options,
       });
+      const first = result.pages[0];
+      const pixelsChanged = result.pages.length !== 1 || !first || first.image_path !== page.imagePath || first.width !== page.width || first.height !== page.height;
       if (result.pages.length > 1) {
         const before = project.pages.findIndex((p) => p.id === page.id);
         change(splitPage(project, page.id, result.pages));
@@ -973,14 +1244,16 @@
       } else throw new Error("The operation produced no pages.");
       showOriginal = false;
       drawMode = "select";
-      notice = "Page updated. Recognize the new pixels before export.";
+      notice = pixelsChanged
+        ? "Page updated. Recognize the new pixels before export."
+        : "The page pixels are unchanged. Reviewed text and approval were retained.";
     } catch (e) {
       fail(e);
     } finally {
       busy = "";
     }
   }
-  async function prepareImage() {
+  async function prepareImage(override?: Record<string, unknown>) {
     if (!activePage || locked) return;
     const page = activePage;
     busy = "Repairing scan";
@@ -988,7 +1261,7 @@
     try {
       const result = await client.prepare(
         page.imagePath,
-        config,
+        override ?? config,
         page.widthPoints,
         page.heightPoints,
       );
@@ -1037,6 +1310,60 @@
       busy = "";
     }
   }
+  async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
+    if (!pageId || locked || !capabilities.ocr) return;
+    error = "";
+    try {
+      const request = captureZoneReview(project, pageId, rect);
+      const configSnapshot = JSON.parse(JSON.stringify(config));
+      const engineSnapshot = engine;
+      const languageSnapshot = language;
+      const cpuBudgetSnapshot = cpuBudget;
+      const profileSnapshot = project.profileId;
+      const page = request.page;
+      busy = "Recognizing selected area";
+      showOriginal = false;
+      const result = await client.recognize({
+        pagePath: page.imagePath,
+        pageWidthPoints: page.widthPoints,
+        pageHeightPoints: page.heightPoints,
+        config: configSnapshot,
+        engine: engineSnapshot,
+        language: languageSnapshot,
+        zone: request.zone,
+        cpuPixelBudget: cpuBudgetSnapshot,
+      });
+      const preview = prepareZoneReview(project, request, result, profileSnapshot);
+      if (!mounted || !active) {
+        notice = "Partial OCR finished without replacing text. Open the OCR workspace and run it again to review the result.";
+        return;
+      }
+      const zone = request.zone;
+      confirm = {
+        title: "Review new OCR text",
+        message: `${page.name}. The area covers ${zone.w} × ${zone.h} pixels at (${zone.x}, ${zone.y}) and ${request.affectedRegionIds.length} existing text regions. Intersecting passages are covered in full. Compare the result before replacing their text.`,
+        label: "Use new OCR text",
+        ocrPreview: preview,
+        action: () => {
+          safe(() => {
+            change(applyZoneReview(project, preview));
+            selectPage(page.id);
+            inspector = "review";
+            textView = "regions";
+            const first = preview.regions[0];
+            if (first) void selectRegion(first.id);
+            notice = "New OCR text applied to the selected area. Review it before approval; Undo restores the previous text.";
+          });
+        },
+      };
+      notice = "Partial OCR is ready to compare. Current text has been kept.";
+    } catch (e) {
+      fail(e);
+    } finally {
+      busy = "";
+      drawMode = "select";
+    }
+  }
   async function onRectangle(
     rect: { x: number; y: number; w: number; h: number },
     mode: string,
@@ -1047,53 +1374,7 @@
       return;
     }
     if (mode === "recognize") {
-      const page = activePage;
-      busy = "Recognizing selected zone";
-      error = "";
-      try {
-        const zone = expandRecognitionZone(page, rect);
-        const result = await client.recognize({
-          pagePath: page.imagePath,
-          pageWidthPoints: page.widthPoints,
-          pageHeightPoints: page.heightPoints,
-          config,
-          engine,
-          language,
-          zone,
-          cpuPixelBudget: cpuBudget,
-        });
-        const recognized = applyRecognition(
-          project,
-          page.id,
-          result,
-          project.profileId,
-        ).pages.find((p) => p.id === page.id)!;
-        const effective = effectiveRecognitionZone(
-          page,
-          zone,
-          (result.diagnostics as { effective_zone?: unknown } | undefined)
-            ?.effective_zone,
-        );
-        const { extraction: _staleExtraction, ...provenance } = page.provenance;
-        change(
-          updatePage(project, page.id, {
-            regions: mergeZoneRegions(page, effective, recognized.regions),
-            status: "recognized",
-            approved: false,
-            error: null,
-            provenance: {
-              ...provenance,
-              lastZoneRecognition: recognized.provenance,
-            },
-          }),
-        );
-        notice = `${recognized.regions.length} regions recognized. Intersecting text regions were covered in full and reading order was preserved.`;
-      } catch (e) {
-        fail(e);
-      } finally {
-        busy = "";
-        drawMode = "select";
-      }
+      await recognizeZone(rect, activePage.id);
       return;
     }
     safe(() => {
@@ -1159,13 +1440,22 @@
   ) {
     if (locked) return;
     error = "";
-    if (!snapshot && preflight.errors.length) {
-      error = preflight.errors.join("\n");
+    let exportMode = { format: exportFormat, pdfa: false };
+    if (!snapshot) {
+      try { exportMode = resolveExportFormat(exportFormat, capabilities); }
+      catch (cause) { error = cause instanceof Error ? cause.message : String(cause); return; }
+    }
+    const textCheck = snapshot
+      ? checkExportText(snapshot.pdfa ? "pdfa" : snapshot.format, capabilities, snapshot.pages)
+      : exportTextCheck;
+    const errors = [...(!snapshot ? preflight.errors : []), ...textCheck.errors];
+    if (errors.length) {
+      error = errors.join("\n");
       return;
     }
     if (
       !snapshot &&
-      exportFormat === "pdf" &&
+      pdfExportSelected &&
       pdfScale === "dpi" &&
       (!Number.isFinite(pdfDpi) || pdfDpi < 36 || pdfDpi > 2400)
     ) {
@@ -1176,10 +1466,9 @@
       snapshot ??
       (JSON.parse(
         JSON.stringify({
-          format: exportFormat,
-          pdfa: false,
+          ...exportMode,
           pages:
-            exportFormat === "pdf" && pdfScale === "dpi"
+            pdfExportSelected && pdfScale === "dpi"
               ? preflight.pages.map((p) => ({
                   ...p,
                   page_width_points: (p.width * 72) / pdfDpi,
@@ -1194,8 +1483,16 @@
         request.format
       ] ?? request.format;
     let target = path;
-    busy = "Choosing export destination";
+    const controller = new AbortController();
+    exportController = controller;
+    exportStopping = false;
+    exportPhase = null;
+    busy = "Saving project before export";
     try {
+      // Finish saving before allocating a mobile staging destination.
+      await autosave?.flush();
+      if (controller.signal.aborted) throw new DOMException("Document export cancelled.", "AbortError");
+      busy = "Choosing export destination";
       target =
         path ??
         (await client.pickExport(
@@ -1204,16 +1501,26 @@
         )) ??
         undefined;
       if (!target) return;
-      busy = "Exporting reviewed document";
-      await autosave?.flush();
+      exportPhase = "rendering";
+      busy = exportProgressLabel({ request_id: "", phase: "rendering", bytes: 0 });
       const result = await client.exportDocument({
         ...request,
         outputPath: target,
         overwrite,
+      }, {
+        signal: controller.signal,
+        onProgress: progress => {
+          if (exportController !== controller) return;
+          exportPhase = progress.phase;
+          if (progress.phase === "committing" || progress.phase === "destination") exportStopping = false;
+          busy = exportStopping ? "Stopping export after the current step…" : exportProgressLabel(progress);
+        },
       });
-      notice = `Exported ${result.pages} pages · ${result.saved_path}`;
+      notice = result.cancelled ? "Export cancelled" : `Exported ${result.pages} pages · ${result.saved_path}`;
     } catch (e) {
-      if (
+      if (e instanceof DOMException && e.name === "AbortError") {
+        notice = "Export cancelled";
+      } else if (
         !overwrite &&
         target &&
         /already exists|file exists/i.test(message(e))
@@ -1227,8 +1534,17 @@
         );
       } else fail(e);
     } finally {
+      exportController = null;
+      exportStopping = false;
+      exportPhase = null;
       busy = "";
     }
+  }
+  function cancelExport() {
+    if (!exportController || !exportCancellable || exportStopping) return;
+    exportStopping = true;
+    busy = "Stopping export after the current step…";
+    exportController.abort();
   }
   function tableFromHtml(html: string): string[][] {
     // Parse into an inert template; only cell text reaches the live document.
@@ -1377,7 +1693,7 @@
       );
       if (!outputPath) return;
       const result = await client.writeText(outputPath, text, sources);
-      notice = `Saved ${result.saved_path}`;
+      notice = result.cancelled ? "Export cancelled" : `Saved ${result.saved_path}`;
     } catch (e) {
       fail(e);
     } finally {
@@ -1424,6 +1740,7 @@
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       searchOpen = true;
+      openInspector("review");
       return;
     }
     if (
@@ -1451,6 +1768,7 @@
     }
     if (event.key === "Escape") {
       drawMode = "select";
+      if (perspective) setPerspective(false);
       confirm = null;
       helpOpen = false;
       recentOpen = false;
@@ -1469,7 +1787,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (queueActive || busy || autosave?.hasUnsavedChanges()) {
+    if (queueActive || queuePromise || busy || autosave?.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1518,7 +1836,7 @@
             event.preventDefault();
             return;
           }
-          if (busy || (queueActive && queueState.phase !== "paused")) {
+          if (busy || queuePromise || (queueActive && queueState.phase !== "paused")) {
             event.preventDefault();
             await nativeMessage(
               "A document operation is still running. Stop the recognition queue or wait for the current operation to finish, then close the window again. Completed pages are saved automatically.",
@@ -1527,7 +1845,10 @@
             return;
           }
           closing = true;
-          if (queueState.phase === "paused") queue.cancel();
+          if (queueState.phase === "paused") {
+            queue.cancel();
+            change(updateBatchPhase(project, "stopped"), false);
+          }
           try {
             // Tauri waits for this handler before honoring the user's close.
             await autosave?.flush();
@@ -1548,6 +1869,8 @@
         .catch(fail);
     return () => {
       mounted = false;
+      importController?.abort();
+      exportController?.abort();
       unlisten?.();
       unlistenClose?.();
       queue.cancel();
@@ -1559,9 +1882,27 @@
   });
 </script>
 
+{#snippet mobileModelSetup()}
+{#if capabilities.mobile_model_store && client.installMobileModels}
+  <section bind:this={modelSetupPanel} class="model-install" aria-label="On-device OCR models">
+    <h3>On-device OCR models</h3>
+    <p class="field-hint">Install the text detector and selected Tesseract language before recognition. English is used for Model default. Downloads are verified and stored on this device.</p>
+    <button class="button" onclick={installBasicModels} disabled={locked}>
+      <Download size={16} /> Install basic OCR models
+    </button>
+    {#if modelProgress}<p class="model-progress" role="status" aria-live="polite">{modelProgress}</p>{/if}
+    <p class="field-hint">Other engines and learned image tools need their own models. Install them from the CrispEmbed registry in Settings. Missing models never start an automatic download on mobile.</p>
+    <ModelStorage {client} disabled={locked} revision={modelStorageRevision} onerror={fail} onnotice={(value) => { notice = value; error = ""; }} />
+  </section>
+{/if}
+{/snippet}
+
 <svelte:window onkeydown={keydown} onbeforeunload={beforeUnload} />
 
-<section class="ocr-workspace" aria-label="OCR document workspace">
+<section class="ocr-workspace" class:photo-focusing={photoOpen && perspective && mobileView === "image"} aria-label="OCR document workspace">
+  <!-- Android's native chooser requires the image/* token to enter camera capture.
+       Unsupported image formats are checked after selection, before import. -->
+  <input class="camera-input" bind:this={cameraInput} type="file" accept="image/*" capture="environment" aria-label="Camera photo file" onchange={capturePhoto} />
   <header class="workspace-header">
     <div class="workspace-mark"><ScanText size={22} /></div>
     <div class="workspace-title">
@@ -1616,7 +1957,7 @@
         ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
       ><button class="button subtle" onclick={newProject} disabled={locked}
         ><Plus size={15} /> New</button
-      ><button class="button subtle" onclick={flush} disabled={booting}
+      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save"
         ><Save size={15} /><span class="optional-label">Save</span></button
       >
     </div>
@@ -1628,6 +1969,8 @@
       onclick={() => importFiles()}
       disabled={locked}><Plus size={16} /> Add documents</button
     >
+    {#if capabilities.camera_import && client.importImage}<button class="button" onclick={() => cameraInput?.click()} disabled={locked}><Camera size={16} /> Capture photo</button>{/if}
+    {#if capabilities.mobile_model_store && client.installMobileModels}<button class="button" onclick={openMobileModels} disabled={locked}><Download size={16} /> OCR models</button>{/if}
     <div class="command-separator"></div>
     <button
       class="button"
@@ -1650,8 +1993,7 @@
     >
     <button
       class="button subtle"
-      onclick={() =>
-        (inspector = inspector === "recognition" ? "review" : "recognition")}
+      onclick={() => openInspector(inspector === "recognition" ? "review" : "recognition")}
       class:active={inspector === "recognition"}
       title="Recognition settings"
       ><SlidersHorizontal size={15} /><span class="optional-label"
@@ -1676,7 +2018,7 @@
     </div>
     <button
       class="button export-button"
-      onclick={() => (inspector = "export")}
+      onclick={() => openInspector("export")}
       disabled={!project.pages.length}
       ><Download size={15} /> Export <ChevronRight size={14} /></button
     >
@@ -1752,7 +2094,8 @@
       {#if queueActive}<div class="queue-actions">
           {#if queueState.phase === "paused"}<button
               class="button small"
-              onclick={resumeQueue}><Play size={13} /> Resume</button
+              onclick={resumeQueue}
+              disabled={!!busy || queuePromise !== null}><Play size={13} /> Resume</button
             >{:else}<button
               class="button small"
               onclick={() => queue.pause()}
@@ -1760,8 +2103,8 @@
               ><Pause size={13} /> Pause</button
             >{/if}<button
             class="button small"
-            onclick={() => queue.cancel()}
-            disabled={queueState.phase === "cancelling"}
+            onclick={stopQueue}
+            disabled={queueState.phase === "cancelling" || (queueState.phase === "paused" && queuePromise !== null)}
             ><Square size={12} /> Stop</button
           >
         </div>{:else if queueState.failed}<button
@@ -1772,6 +2115,13 @@
     </div>
   {/if}
 
+  {#if !queueActive && project.batch && (savedBatchPending || savedBatchFailed)}
+    <div class="batch-recovery" role="region" aria-label="Saved recognition batch">
+      <div><strong>{project.batch.phase === "interrupted" ? "Interrupted batch recovered" : "Saved recognition batch"}</strong><span>{savedBatchPending} unfinished · {savedBatchFailed} failed · original selection and settings retained</span></div>
+      {#if savedBatchPending}<button class="button small" onclick={() => resumeSavedBatch()} disabled={locked || !capabilities.ocr}><Play size={13} /> Resume saved batch</button>{/if}
+      {#if savedBatchFailed}<button class="button small" onclick={() => resumeSavedBatch(true)} disabled={locked || !capabilities.ocr}><RefreshCw size={13} /> Retry saved failures</button>{/if}
+    </div>
+  {/if}
   {#if booting}
     <div class="loading-state">
       <LoaderCircle size={30} class="spin" />
@@ -1794,7 +2144,8 @@
           onclick={() => importFiles()}
           disabled={locked}><Plus size={18} /> Add documents</button
         >
-        <div class="supported">PDF · TIFF · PNG · JPEG · BMP · WebP</div>
+        <div class="supported">{#if capabilities.pdf_import}PDF · {/if}TIFF · PNG · JPEG · BMP · WebP{#each capabilities.image_import_formats ?? [] as format} · {format.toUpperCase()}{/each}</div>
+        {@render mobileModelSetup()}
         {#if !capabilities.ocr}<div class="capability-note">
             <AlertTriangle size={16} /><span
               >{capabilities.reason ??
@@ -1834,13 +2185,18 @@
       </div>
     </div>
   {:else}
-    <div class="work-area" class:rail-hidden={!pageRail}>
-      {#if pageRail}
+    <nav class="mobile-workspace-nav" aria-label="Workspace views">
+      <button class:active={mobileView === "pages"} aria-pressed={mobileView === "pages"} onclick={() => { mobileView = "pages"; pageRail = true; }}><Layers size={16} /> Pages <span>{project.pages.length}</span></button>
+      <button class:active={mobileView === "image"} aria-pressed={mobileView === "image"} onclick={() => (mobileView = "image")}><Image size={16} /> Page image</button>
+      <button class:active={mobileView === "tools"} aria-pressed={mobileView === "tools"} onclick={() => (mobileView = "tools")}><FileText size={16} /> Text & tools</button>
+    </nav>
+    <div class="work-area" class:rail-hidden={!pageRail} data-mobile-view={mobileView}>
+      {#if pageRail || mobileView === "pages"}
         <aside class="page-rail" aria-label="Document pages">
           <div class="rail-heading">
             <strong>Pages <span>{project.pages.length}</span></strong><button
               class="icon-button"
-              onclick={() => (pageRail = false)}
+              onclick={() => { pageRail = false; mobileView = "image"; }}
               aria-label="Hide page list"><PanelLeftClose size={16} /></button
             >
           </div>
@@ -1907,7 +2263,7 @@
                 />
                 <button
                   class="page-card-main"
-                  onclick={() => selectPage(page.id)}
+                  onclick={() => { selectPage(page.id); mobileView = "image"; }}
                   aria-label={`Page ${number}: ${page.name}`}
                   aria-current={activePage?.id === page.id ? "page" : undefined}
                 >
@@ -2045,7 +2401,7 @@
         <div class="image-toolbar">
           {#if !pageRail}<button
               class="icon-button"
-              onclick={() => (pageRail = true)}
+              onclick={() => { pageRail = true; mobileView = "pages"; }}
               aria-label="Show page list"><PanelLeftOpen size={16} /></button
             >{/if}
           <div class="tool-group">
@@ -2067,6 +2423,16 @@
                 value="recognize"
                 disabled={!capabilities.ocr}>Recognize a zone</option
               ><option value="crop">Crop page</option></select
+            >
+          </div>
+          <div class="tool-group">
+            <button
+              class="button small subtle"
+              class:active={drawMode === "recognize"}
+              onclick={drawRecognitionArea}
+              disabled={locked || !activePage || !capabilities.ocr}
+              title="Draw an area to recognize again, then compare before replacing text"
+              ><ScanLine size={15} /> Re-OCR area</button
             >
           </div>
           <div class="tool-group">
@@ -2110,10 +2476,39 @@
           ><button
             class="button small subtle"
             class:active={showOriginal}
-            onclick={() => (showOriginal = !showOriginal)}
+            onclick={() => { showOriginal = !showOriginal; perspective = false; }}
             title="Compare with the preserved original image">Original</button
           >
         </div>
+        {#if activePage && capabilities.photo_tools}
+          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} bind:this={photoToolsButton} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
+          {#if photoOpen}<PhotoPreparation width={activePage.width} height={activePage.height} assessment={photoAssessment} assessing={busy === "Checking photo quality"} disabled={locked}
+            {perspective} quad={photoQuad} angle={photoAngle} canWhiten={capabilities.ocr} onassess={assessPhoto} onperspective={setPerspective} onquad={(quad) => (photoQuad = quad)}
+            onangle={(angle) => (photoAngle = angle)} onapplyperspective={applyPerspective} onapplyangle={() => transform("deskew", { angle: photoAngle })} onwhiten={flattenShadows}
+            onclose={() => { photoOpen = false; perspective = false; }} />{/if}
+          {#if photoOpen && perspective}
+            {@const cornerError = photoQuadError(photoQuad, activePage.width, activePage.height)}
+            <div class="photo-focus-controls" role="region" aria-label="Photo corner editing">
+              <div class="photo-focus-actions">
+                <button class="button" bind:this={photoFocusBack} onclick={() => setPerspective(false)}><ChevronLeft size={16} />Back to photo tools</button>
+                <button class="button primary" onclick={applyPerspective} disabled={locked || !!cornerError}><Check size={16} />Apply perspective</button>
+              </div>
+              {#if cornerError}<p class="photo-focus-error" role="status">{cornerError}</p>{/if}
+              <details class="photo-focus-coordinates" bind:open={photoFocusCoordinatesOpen}>
+                <summary>Exact corner positions</summary>
+                <div class="photo-focus-coordinate-grid">
+                  {#each photoQuad as point, index}
+                    <fieldset>
+                      <legend>{CORNER_NAMES[index]}</legend>
+                      <label>X<input type="number" min="0" max={activePage.width - 1} step="1" value={point.x} aria-label={`${CORNER_NAMES[index]} corner X`} oninput={(event) => setPhotoCoordinate(index, "x", event.currentTarget.valueAsNumber)} disabled={locked} /></label>
+                      <label>Y<input type="number" min="0" max={activePage.height - 1} step="1" value={point.y} aria-label={`${CORNER_NAMES[index]} corner Y`} oninput={(event) => setPhotoCoordinate(index, "y", event.currentTarget.valueAsNumber)} disabled={locked} /></label>
+                    </fieldset>
+                  {/each}
+                </div>
+              </details>
+            </div>
+          {/if}
+        {/if}
         {#if activePage}
           <PageCanvas
             page={activePage}
@@ -2121,6 +2516,8 @@
             selectedId={selectedRegionId}
             threshold={project.confidenceThreshold}
             mode={drawMode}
+            photoQuad={perspective ? photoQuad : null}
+            onphotoquad={(quad) => (photoQuad = quad)}
             {overlays}
             original={showOriginal}
             {zoom}
@@ -2136,14 +2533,14 @@
         {/if}
         <div class="image-footer">
           <button
-            class="icon-button"
+            class="icon-button page-navigation"
             onclick={() => gotoPage(-1)}
             disabled={pageIndex <= 0}
             aria-label="Previous page"><ChevronLeft size={17} /></button
-          ><span class="page-counter"
+          ><span class="page-counter page-navigation"
             >{pageIndex + 1} <span>/ {project.pages.length}</span></span
           ><button
-            class="icon-button"
+            class="icon-button page-navigation"
             onclick={() => gotoPage(1)}
             disabled={pageIndex >= project.pages.length - 1}
             aria-label="Next page"><ChevronRight size={17} /></button
@@ -2200,25 +2597,25 @@
           <button
             role="tab"
             aria-selected={inspector === "review"}
-            onclick={() => (inspector = "review")}
+            onclick={() => openInspector("review")}
             class:active={inspector === "review"}
             ><CheckCheck size={15} /> Review</button
           ><button
             role="tab"
             aria-selected={inspector === "recognition"}
-            onclick={() => (inspector = "recognition")}
+            onclick={() => openInspector("recognition")}
             class:active={inspector === "recognition"}
             ><SlidersHorizontal size={15} /> Recognize</button
           ><button
             role="tab"
             aria-selected={inspector === "extract"}
-            onclick={() => (inspector = "extract")}
+            onclick={() => openInspector("extract")}
             class:active={inspector === "extract"}
             ><Braces size={15} /> Extract</button
           ><button
             role="tab"
             aria-selected={inspector === "export"}
-            onclick={() => (inspector = "export")}
+            onclick={() => openInspector("export")}
             class:active={inspector === "export"}
             ><Download size={15} /> Export</button
           >
@@ -2293,8 +2690,8 @@
               >
             </div>{/if}
           <div class="review-options">
-            <label class="check-label"
-              ><input type="checkbox" bind:checked={onlyIssues} /> Needs attention</label
+            <label class="check-label" title="Filters the Regions view; Text editor shows all included passages"
+              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView === "text"} /> Needs attention</label
             >
             <div class="toolbar-spacer"></div>
             <button
@@ -2310,7 +2707,10 @@
               onclick={() => (textView = "regions")}>Regions</button
             ><button
               class:active={textView === "text"}
-              onclick={() => (textView = "text")}>Reading order</button
+              onclick={() => {
+                currentMatch = null;
+                textView = "text";
+              }}>Text editor</button
             ><span>{activePage?.width} × {activePage?.height} px</span>
           </div>
           {#if recognitionWarnings.length}
@@ -2378,16 +2778,20 @@
                 >
               </div>
             {:else if textView === "text"}<div class="reading-order">
-                <p class="muted">
-                  Text follows the region order below. Reorder regions to change
-                  the exported reading order.
-                </p>
-                <textarea
-                  class="plain-text"
-                  readonly
-                  value={pageText}
-                  aria-label="Page text in reading order"
-                ></textarea><button
+                <PageTextEditor
+                  page={activePage}
+                  selectedId={selectedRegionId}
+                  disabled={locked}
+                  ocrAvailable={capabilities.ocr}
+                  onfocus={(id) => {
+                    currentMatch = null;
+                    selectedRegionId = id;
+                  }}
+                  onedit={editText}
+                  onblur={() => (editGroup = null)}
+                  onrecognize={(r) => recognizeZone(r, activePage.id)}
+                />
+                <button
                   class="button small"
                   onclick={() => copy(pageText)}
                   disabled={!pageText}><Copy size={13} /> Copy page text</button
@@ -2425,18 +2829,20 @@
                       onclick={() => selectRegion(r.id)}>{r.kind}</button
                     ><span
                       class="confidence"
-                      class:unknown={r.confidenceBasis !== "recognition"}
+                      class:unknown={r.confidenceBasis !== "recognition" || r.confidence === null}
                       title={r.confidenceBasis === "recognition"
-                        ? "Recognition score; a review signal, not calibrated accuracy"
+                        ? r.text !== r.originalText
+                          ? "Original OCR region score. Manual corrections do not produce a new recognition score; this is a review signal, not calibrated accuracy."
+                          : "Region recognition score; a review signal, not calibrated accuracy. Word scores are shown separately when available."
                         : r.confidenceBasis === "detection"
                           ? "Detection score only; text confidence is unknown"
                           : "Recognition confidence unavailable"}
                       >{r.confidenceBasis === "recognition" &&
                       r.confidence !== null
-                        ? `${Math.round(r.confidence * 100)}%`
+                        ? `Region ${Math.round(r.confidence * 100)}%`
                         : r.confidenceBasis === "manual"
-                          ? "Manual"
-                          : "Unscored"}</span
+                          ? "Manual region"
+                          : "Region: unscored"}</span
                     >{#if r.review === "approved"}<span
                         class="region-approved"
                         title="Approved"><Check size={14} /></span
@@ -2444,12 +2850,13 @@
                         class="edited-badge">Edited</span
                       >{/if}
                   </div>
-                  {#if r.charConfidenceAligned && r.char_conf.length === Array.from(r.originalText).length}<div
+                  {#if hasAlignedCharacterConfidence(r)}<div
                       class="character-evidence"
                       aria-label="Original text with character confidence"
                     >
                       <span class="evidence-label">OCR</span
                       >{#each Array.from(r.originalText) as ch, index}<span
+                          title={`Original character score: ${Math.round(r.char_conf[index] * 100)}%`}
                           class:uncertain={(r.char_conf[index] ?? 1) <
                             project.confidenceThreshold}>{ch}</span
                         >{/each}
@@ -2474,6 +2881,30 @@
                     spellcheck="true"
                     dir="auto"
                   ></textarea>
+                  {#if r.id === selectedRegionId}
+                    <div class="region-edit-actions">
+                      <button
+                        class="text-button"
+                        onclick={() => editPassage(r)}
+                        disabled={locked || r.excluded || r.kind === "picture"}
+                        title="Open the page text editor for full sentences and paragraphs"
+                        ><FileText size={13} /> Edit passage</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => recognizeZone(r, activePage.id)}
+                        disabled={locked || r.excluded || !capabilities.ocr}
+                        title="Recognize this source region again and compare before replacing text"
+                        ><ScanLine size={13} /> Re-OCR region</button
+                      >
+                    </div>
+                    <WordReview
+                      region={r}
+                      threshold={project.confidenceThreshold}
+                      disabled={locked || r.excluded}
+                      onselect={(word) => selectWord(r, word)}
+                    />
+                  {/if}
                   {#if r.id === selectedRegionId}<div class="region-actions">
                       <button
                         class="text-button"
@@ -2685,6 +3116,7 @@
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
             </p>
+            {@render mobileModelSetup()}
             {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
                 class="setting-toggle"
                 ><span
@@ -2761,7 +3193,7 @@
               {/if}
               <button
                 class="button full"
-                onclick={prepareImage}
+                onclick={() => prepareImage()}
                 disabled={locked || !activePage || !capabilities.ocr}
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
@@ -3130,7 +3562,7 @@
               >Output format<select bind:value={exportFormat} disabled={locked}
                 >{#each capabilities.formats as format}<option value={format}
                     >{formatNames[format] ?? format}</option
-                  >{/each}</select
+                  >{/each}{#if !capabilities.formats.includes("pdfa")}<option value="pdfa" disabled>Archival PDF/A-2b — unavailable</option>{/if}</select
               ></label
             >
             <div class="format-card">
@@ -3138,10 +3570,12 @@
               <div>
                 <strong>{formatNames[exportFormat] ?? exportFormat}</strong>
                 <p>
-                  {exportFormat === "pdf"
+                  {exportFormat === "pdfa"
+                    ? "Archival PDF/A-2b with embedded fonts, an sRGB color profile, and your searchable reviewed text."
+                    : exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
                     : exportFormat === "docx"
-                      ? "Editable text in page order. Complex page layout is converted to flowing text."
+                      ? "Editable paragraphs in page order, with text direction and blank lines preserved. Line endings become paragraph breaks; Plain text keeps the original line-ending characters. Complex page layout becomes flowing text."
                       : exportFormat === "alto" || exportFormat === "hocr"
                         ? "Machine-readable text and page coordinates for downstream processing."
                         : exportFormat === "json"
@@ -3153,7 +3587,13 @@
             {#if capabilities.pdf_export_reason}<p class="field-hint">
                 {capabilities.pdf_export_reason}
               </p>{/if}
-            {#if exportFormat === "pdf"}
+            {#if !capabilities.archival_pdf_export}<p class="field-hint">
+                {capabilities.pdfa_export_reason ?? "PDF/A-2b export requires the matching archival renderer."}
+              </p>{/if}
+            {#if !capabilities.formats.includes("docx") && capabilities.docx_export_reason}<p class="field-hint">
+                {capabilities.docx_export_reason}
+              </p>{/if}
+            {#if pdfExportSelected}
               <label class="field-label"
                 >Page sizes
                 <select bind:value={pdfScale} disabled={locked}>
@@ -3200,21 +3640,21 @@
                 disabled={locked}
               /></label
             >
-            <div class="preflight-card" class:ready={!preflight.errors.length}>
+            <div class="preflight-card" class:ready={!exportErrors.length}>
               <div class="section-heading">
-                {#if preflight.errors.length}<AlertTriangle size={17} /><strong
-                    >{preflight.errors.length} checks need attention</strong
+                {#if exportErrors.length}<AlertTriangle size={17} /><strong
+                    >{exportErrors.length} checks need attention</strong
                   >{:else}<CircleCheck size={17} /><strong
                     >Ready to export {preflight.pages.length} pages</strong
                   >{/if}
               </div>
-              {#if preflight.errors.length}<ul>
-                  {#each preflight.errors.slice(0, 8) as problem}<li>
+              {#if exportErrors.length}<ul>
+                  {#each exportErrors.slice(0, 8) as problem}<li>
                       {problem}
                     </li>{/each}
                 </ul>
-                {#if preflight.errors.length > 8}<p>
-                    And {preflight.errors.length - 8} more pages need attention.
+                {#if exportErrors.length > 8}<p>
+                    And {exportErrors.length - 8} more checks need attention.
                   </p>{/if}{:else}<div class="preflight-check">
                   <Check size={14} /> Every selected page is accounted for
                 </div>
@@ -3227,6 +3667,17 @@
                 {#if requireReviewed}<div class="preflight-check">
                     <Check size={14} /> All selected pages approved
                   </div>{/if}{/if}
+              {#if exportTextCheck.affectedPages.length}<p class="field-hint">
+                  Affected pages: {exportTextCheck.affectedPages.slice(0, 5).join(", ")}{exportTextCheck.affectedPages.length > 5 ? ` and ${exportTextCheck.affectedPages.length - 5} more` : ""}.
+                </p>{/if}
+              {#if exportTextCheck.alternatives.length}<div class="export-alternatives">
+                  <p>Your page selection and reviewed text stay the same. Choose an available text format:</p>
+                  <div class="button-grid">
+                    {#each exportTextCheck.alternatives as format}<button class="button" disabled={locked}
+                        onclick={() => { exportFormat = format; error = ""; }}>Use {formatNames[format] ?? format}</button>{/each}
+                  </div>
+                </div>{/if}
+              {#each exportTextCheck.warnings as warning}<p class="inline-warning" role="status">{warning}</p>{/each}
               {#if preflight.warnings.length}<details>
                   <summary>{preflight.warnings.length} review notes</summary>
                   <ul>
@@ -3239,7 +3690,7 @@
             <button
               class="button primary full large"
               onclick={() => exportProject()}
-              disabled={locked || !!preflight.errors.length}
+              disabled={locked || !!exportErrors.length}
               ><Download size={17} /> Save {formatNames[exportFormat] ??
                 exportFormat}</button
             >
@@ -3276,8 +3727,12 @@
     <span class="status-dot" class:working={!!busy || queueActive}></span><span
       class="status-message">{busy || notice || "Ready"}</span
     >
+    {#if importController}<button class="button cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
+    {#if exportController && exportPhase}<button class="button cancel-export" onclick={cancelExport} disabled={!exportCancellable || exportStopping}
+        title={exportPhase === "destination" ? "Use the system save dialog to finish or cancel" : exportPhase === "committing" ? "The export is finishing" : "Stop the export before it is saved"}
+      >{exportStopping ? "Stopping…" : "Cancel export"}</button>{/if}
     <div class="toolbar-spacer"></div>
-    {#if project.pages.length}<span
+    {#if project.pages.length && !importController && !exportController}<span
         >{metrics.recognized}/{metrics.included} recognized</span
       ><span class="status-divider"></span><span class="approved-stat"
         ><CheckCheck size={12} />{metrics.approved} approved</span
@@ -3290,12 +3745,45 @@
 
 {#if confirm}<dialog
     class="workspace-dialog"
+    class:ocr-preview-dialog={!!confirm.ocrPreview}
     bind:this={actionDialog}
-    onclose={() => (confirm = null)}
+    onclose={() => {
+      if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
+      confirm = null;
+    }}
     aria-labelledby="ocr-confirm-title"
   >
     <h2 id="ocr-confirm-title">{confirm.title}</h2>
     <p>{confirm.message}</p>
+    {#if confirm.ocrPreview}
+      <div class="ocr-preview-comparison">
+        <label>
+          Current text
+          <textarea
+            readonly
+            aria-label="Current text"
+            value={confirm.ocrPreview.request.previousText}
+            placeholder="No existing text in this area"
+            dir="auto"
+          ></textarea>
+        </label>
+        <label>
+          New OCR text
+          <textarea
+            readonly
+            aria-label="New OCR text"
+            value={confirm.ocrPreview.replacementText}
+            dir="auto"
+          ></textarea>
+        </label>
+      </div>
+      {#if confirm.ocrPreview.warnings.length}
+        <ul class="ocr-preview-warnings">
+          {#each confirm.ocrPreview.warnings as warning}<li>{warning}</li>{/each}
+        </ul>
+      {/if}
+      <p class="ocr-preview-note">Using the new result replaces text only in this area and clears its approval. Other passages keep their corrections. Undo restores the previous result.</p>
+    {/if}
     {#if confirm.splitWidth}
       <label class="field-label"
         >Split position from left edge (pixels)
@@ -3313,7 +3801,10 @@
       </label>
     {/if}
     <div class="dialog-actions">
-      <button class="button" onclick={() => (confirm = null)}>Cancel</button
+      <button class="button" onclick={() => {
+        if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
+        confirm = null;
+      }}>{confirm.ocrPreview ? "Keep current text" : "Cancel"}</button
       ><button
         class="button primary"
         disabled={!!confirm.splitWidth &&
@@ -4289,6 +4780,17 @@
     align-items: center;
     min-width: 0;
   }
+  .region-edit-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px 14px;
+    padding: 7px 10px;
+    border-top: 1px solid #34465c;
+  }
+  .region-edit-actions .text-button {
+    font-size: 11px;
+  }
   .region-actions .icon-button {
     min-width: 23px;
     min-height: 23px;
@@ -4363,13 +4865,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    height: 100%;
-  }
-  .plain-text {
-    resize: vertical;
-    flex: 1;
-    min-height: 180px;
-    font-size: 12px !important;
+    min-height: 100%;
   }
   .panel-message {
     display: flex;
@@ -4554,6 +5050,15 @@
     color: #f1aaa2;
     font-size: 10px;
   }
+  .model-install {
+    margin: 14px 0;
+    padding: 14px;
+    border: 1px solid var(--ocr-border, #3b414b);
+    border-radius: 8px;
+  }
+  .model-install h3 { margin: 0 0 8px; font-size: 13px; }
+  .model-install .button { min-height: 44px; white-space: normal; width: 100%; justify-content: center; }
+  .model-progress { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
   .inline-warning {
     font-size: 10px;
     line-height: 1.7;
@@ -4752,6 +5257,14 @@
     align-items: center;
     padding: 4px 0;
   }
+  .export-alternatives .button-grid {
+    flex-wrap: wrap;
+  }
+  .export-alternatives .button {
+    min-height: 44px;
+    flex-basis: 130px;
+    white-space: normal;
+  }
   .muted {
     color: #8296b3;
     font-size: 10px;
@@ -4768,6 +5281,11 @@
     border-top: 1px solid var(--line);
     font-size: 9px;
     color: #7f94b1;
+  }
+  .cancel-import, .cancel-export {
+    min-height: 44px;
+    padding: 0 12px;
+    white-space: nowrap;
   }
   .status-dot {
     background: #4ab892;
@@ -4940,8 +5458,9 @@
     right: 25px;
     top: 68px;
     width: 350px;
-    max-height: 500px;
+    max-height: min(500px, calc(100% - 80px));
     overflow: auto;
+    overscroll-behavior: contain;
     padding: 15px;
     background: #1b2a3e;
     border: 1px solid #405777;
@@ -4984,8 +5503,23 @@
     backdrop-filter: blur(3px);
   }
   .workspace-dialog {
+    /* Top-layer dialogs are positioned against the viewport, outside the
+       padded workspace. Inset all four edges before centering the dialog. */
+    position: fixed;
+    inset: calc(12px + env(safe-area-inset-top, 0px))
+      calc(12px + env(safe-area-inset-right, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-left, 0px));
+    margin: auto;
     width: 430px;
-    max-width: 100%;
+    height: fit-content;
+    max-width: calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    max-height: calc(100vh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+    overflow: auto;
+    overscroll-behavior: contain;
+    overflow-wrap: anywhere;
     background: #1a293d;
     border: 1px solid #3b587c;
     border-radius: 11px;
@@ -5004,12 +5538,70 @@
     color: #9cb4d4;
     margin: 0 0 20px;
   }
+  .workspace-dialog.ocr-preview-dialog {
+    box-sizing: border-box;
+    width: min(800px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+  }
+  .ocr-preview-comparison {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .ocr-preview-comparison label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    color: #d4e4f8;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .ocr-preview-comparison textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 200px;
+    resize: vertical;
+    border: 1px solid #47627f;
+    border-radius: 5px;
+    padding: 10px;
+    background: #101e30;
+    color: #dce9fa;
+    font: inherit;
+    font-weight: 400;
+    line-height: 1.65;
+  }
+  .ocr-preview-warnings {
+    color: #e5c58a;
+    font-size: 12px;
+    line-height: 1.65;
+    padding-left: 20px;
+  }
+  .workspace-dialog .ocr-preview-note {
+    margin-top: 14px;
+    margin-bottom: 0;
+  }
+  @media (max-width: 600px) {
+    .ocr-preview-comparison {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ocr-preview-comparison textarea {
+      min-height: 130px;
+    }
+    .ocr-preview-dialog .dialog-actions {
+      flex-wrap: wrap;
+    }
+  }
   .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 24px;
   }
+  .workspace-dialog button { min-height: 44px; }
+  .workspace-dialog .icon-button { min-width: 44px; }
   .shortcuts {
     display: grid;
     grid-template-columns: 1fr auto;
@@ -5394,6 +5986,85 @@
     .image-footer {
       height: 35px;
     }
+  }
+  .camera-input { display: none; }
+  .mobile-workspace-nav { display: none; }
+  .photo-tool-toggle { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #152030; flex: none; }
+  .photo-tool-toggle > span { font-size: 10px; color: var(--muted); }
+  .photo-focus-controls { display: none; }
+  .batch-recovery { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: #1d2d3e; border-bottom: 1px solid #3a526c; flex: none; }
+  .batch-recovery > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .batch-recovery span { color: #adbed2; font-size: 10px; }
+  @media (max-width: 780px) {
+    .mobile-workspace-nav { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid #3b526c; background: #131f2f; flex: none; }
+    .mobile-workspace-nav button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 48px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #aabdd4; font-size: 11px; padding: 8px 3px; }
+    .mobile-workspace-nav button.active { color: #c9e4ff; background: #243a56; border-bottom-color: #70aeff; }
+    .mobile-workspace-nav span { border-radius: 4px; padding: 1px 4px; background: #324960; }
+    .work-area, .work-area.rail-hidden { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    .work-area .page-rail, .work-area .document-pane, .work-area .inspector { display: none; height: 100%; min-height: 0; flex: 1; min-width: 0; overflow: hidden; }
+    .work-area[data-mobile-view="pages"] .page-rail, .work-area[data-mobile-view="image"] .document-pane, .work-area[data-mobile-view="tools"] .inspector { display: flex; }
+    .work-area .inspector { border: 0; }
+    .work-area .document-pane :global(.canvas-shell) { min-height: 120px; flex: 1; }
+    .work-area :global(.canvas-hint) { padding: 0 10px; }
+    .work-area :global(.viewport) { padding: 24px; }
+    .region-list { min-height: 0; max-height: none; flex: 1; }
+    .panel-scroll { overflow: auto; min-height: 0; }
+    .page-card { padding: 10px 12px; min-height: 100px; }
+    .page-card-info > strong { font-size: 13px; }
+    .page-filename, .page-state { font-size: 11px; }
+    .thumbnail { width: 48px; height: 70px; }
+    .page-card-main { gap: 12px; }
+    .page-checkbox { width: 22px !important; height: 22px !important; margin: 22px 9px 0 0 !important; }
+    .ocr-workspace .button, .ocr-workspace .icon-button, .ocr-workspace .text-button { min-height: 44px; }
+    .ocr-workspace .icon-button { min-width: 44px; padding: 8px; }
+    .command-bar .undo-group .icon-button { min-width: 44px; }
+    .workspace-header .header-actions .button { min-height: 44px; }
+    .command-bar { column-gap: 5px; row-gap: 4px; padding: 5px 8px; }
+    .command-bar .button { font-size: 10px; }
+    .command-bar .undo-group { margin-left: auto; }
+    .command-bar .toolbar-spacer { display: none; }
+    .image-toolbar { min-height: 48px; flex: none; overflow-x: auto; justify-content: flex-start; gap: 6px; }
+    .image-toolbar .tool-group { flex: none; }
+    .work-area .document-pane .image-toolbar > .button { display: inline-flex; flex: none; }
+    .image-toolbar select { max-width: 140px; min-height: 44px; font-size: 12px !important; }
+    .image-footer { height: auto; min-height: 48px; flex: none; gap: 2px; padding: 3px 5px; }
+    .image-footer .icon-button { min-width: 36px; }
+    .image-footer select { max-width: 92px; }
+    .photo-tool-toggle { padding: 3px 10px; }
+    .photo-tool-toggle .button { min-height: 40px; }
+    .inspector-tabs > button { min-height: 48px; font-size: 11px; }
+    .batch-recovery { flex-wrap: wrap; padding: 8px 10px; gap: 5px; }
+    .batch-recovery > div { flex-basis: 100%; }
+    .queue-bar { flex-wrap: wrap; }
+    .queue-label { min-width: 0; }
+    .queue-label strong { font-size: 11px; }
+    .queue-actions .button { min-height: 40px; }
+    .approval-bar .button { font-size: 11px; }
+    .ocr-workspace :global(textarea), .ocr-workspace :global(input:not([type="checkbox"]):not([type="range"])), .ocr-workspace :global(select) { font-size: 16px; }
+    .workspace-title input { font-size: 14px !important; }
+    .photo-tool-toggle > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ocr-workspace.photo-focusing .workspace-header,
+    .ocr-workspace.photo-focusing .command-bar,
+    .ocr-workspace.photo-focusing .mobile-workspace-nav,
+    .ocr-workspace.photo-focusing .image-toolbar,
+    .ocr-workspace.photo-focusing .photo-tool-toggle,
+    .ocr-workspace.photo-focusing .document-pane :global(.photo-preparation) { display: none; }
+    .photo-focusing .photo-focus-controls { display: block; flex: none; background: #172435; border-bottom: 1px solid #35516e; padding: 8px; }
+    .photo-focus-actions { display: flex; gap: 8px; }
+    .photo-focus-actions .button { flex: 1; min-width: 0; min-height: 44px; padding: 8px 5px; font-size: 11px; white-space: normal; }
+    .photo-focus-error { margin: 7px 4px 0; color: #efc58b; line-height: 1.4; font-size: 11px; }
+    .photo-focus-coordinates { margin-top: 4px; }
+    .photo-focus-coordinates summary { min-height: 44px; padding: 12px 5px; color: #bfdcff; cursor: pointer; font-size: 11px; }
+    .photo-focus-coordinate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: clamp(132px, 30dvh, 250px); overflow: auto; overscroll-behavior: contain; padding: 2px 2px 8px; }
+    .photo-focus-coordinate-grid fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; padding: 5px 7px 8px; border: 1px solid #44607c; border-radius: 6px; min-width: 0; }
+    .photo-focus-coordinate-grid legend { padding: 0 4px; color: #bfdcff; font-size: 11px; }
+    .photo-focus-coordinate-grid label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 10px; min-width: 0; }
+    .photo-focus-coordinate-grid input { width: 100%; min-height: 44px; padding: 6px !important; font-size: 16px !important; }
+    .photo-focusing .image-footer .page-navigation,
+    .photo-focusing .image-footer .toolbar-spacer { display: none; }
+    .photo-focusing .image-footer { justify-content: center; gap: 8px; }
+    .ocr-workspace.photo-focusing .image-footer .icon-button { min-width: 44px; }
+    .photo-focusing .image-footer select { min-height: 44px; min-width: 120px; max-width: 140px; font-size: 14px !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     .button {

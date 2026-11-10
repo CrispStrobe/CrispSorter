@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "kind": "ocr-browser-mobile-ui-qualification",
+  "source_commit": "fbc03f742ff92fea6f88b531f0e2d9794cdef674",
+  "workflow_run": 42631253524,
+  "job_id": 129207832348,
+  "artifact_id": 13681643484,
+  "artifact_sha256": "8e4a723a15fa4f7f2744ef8a3a6797a4b042084164dda6aaa443b903a50a5709",
+  "artifact_download_sha256_verified": true,
+  "overall_job_conclusion": "failure",
+  "frontend_tests": {
+    "passed": 233,
+    "failed": 0
+  },
+  "svelte": {
+    "errors": 0,
+    "warnings": 54
+  },
+  "production_build": "passed",
+  "history_benchmark": "passed",
+  "browser": {
+    "passed": 31,
+    "failed": 2,
+    "browser_errors": []
+  },
+  "case_results": [
+    {
+      "name": "phone export progress waits for cancellation and a retry preserves the committed result",
+      "status": "passed",
+      "duration_ms": 877
+    },
+    {
+      "name": "phone export failures unlock retry and destination transfer belongs to the system dialog",
+      "status": "passed",
+      "duration_ms": 760
+    },
+    {
+      "name": "phone corner editing fits a usable page, accepts touch drags, and changes pixels only on Apply",
+      "status": "passed",
+      "duration_ms": 1468
+    }
+  ],
+  "original_failures": [
+    {
+      "name": "unsupported archival output is disabled with its native capability reason",
+      "status": "failed",
+      "duration_ms": 577,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n\n    at file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:280:20\n    at async test (file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:81:17)\n    at async file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:276:9"
+    },
+    {
+      "name": "corner controls reject invalid selections and perspective undo restores review evidence",
+      "status": "failed",
+      "duration_ms": 747,
+      "error": "locator.click: Error: strict mode violation: getByText('Exact corner positions', { exact: true }) resolved to 2 elements:\n    1) <summary class=\"s-KQnSBtA6zEXO\">Exact corner positions</summary> aka getByLabel('Photo preparation', { exact: true }).getByText('Exact corner positions')\n    2) <summary class=\"s-rnpr-64swH1a\">Exact corner positions</summary> aka getByLabel('Photo corner editing').getByText('Exact corner positions')\n\nCall log:\n  - waiting for getByText('Exact corner positions', { exact: true })\n\n    at /home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:958:77\n    at async test (/home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:81:17)\n    at async file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:946:9"
+    }
+  ],
+  "source_files_sha256": {
+    "src/lib/components/OcrWorkbench.svelte": "f5c2e977bbd73fbe30d6eaa6c64944dc30c2d9d9c11806c2688d6ae0a98a45d4",
+    "src/lib/ocr/client.ts": "da92cc9e20c2f0df59ae2a5573b8511c4ebdc12f2ad8444ec81f3cc40e19dcb1",
+    "tests/ocr-workspace/fixture.ts": "d88d32c7bb499f7f67bae388fbb770aa1db9f05e1ee60a78786a1df58ae09dcc",
+    "tests/ocr-workspace/smoke.mjs": "1111e9cc3299f7af2609101d9c7340da262fca8b5aa7c6dbe0326a450a4d73cc",
+    "src/lib/components/ocr/PhotoPreparation.svelte": "b447cde65d6b47c316789c2e3efa792dc378869967718a7e8f8f1027497b2cd7"
+  },
+  "retained_files_sha256": {
+    "failure-31.png": "06053a27142d4b4f2429657e8e3d0089a754b94b6ce2247c8e7cf87cb6731087",
+    "failure-9.png": "14e49a7c1e2b0f56ca296ca9c6d3337e5db86ecf3a3678eab92fe7d80dd60db7",
+    "ocr-history-benchmark.json": "62fda24357827d32f481890069fd3d42f0f43f2f89750ad1e373a9be478646e2",
+    "ocr-phone-corner-focus.png": "195a9306d743d0213a0896058fbb951c380ebfac9ca7a3d8873158f577967613",
+    "ocr-phone-photo-preparation.png": "db4507bfe91af3f7e032983553108d526259fd5eb7d97bd667a47492da4bcaf8",
+    "report.json": "906a8de4b26722311f5ec070c86b1989c59a699ce69addd66c5a70e8ca7d035a"
+  },
+  "scope": "Hosted Chromium interaction tests of production Svelte components with a synthetic client. No native transform, recognition, camera/provider, or physical-phone qualification.",
+  "known_followups": {
+    "archival_negative_control": "76bf5d8d9f388f93b7109558b8bcaf834d8e0c14 checks native option disabled state and keyboard exclusion; this historical report remains unchanged.",
+    "desktop_corner_locator": "9e0f0fe19a7aa5dd6c536b1e1283aedc9f0f1171 scopes the desktop selector to its preparation region; this historical report remains unchanged."
+  },
+  "phone_corner_evidence": {
+    "screen": {
+      "width": 390,
+      "height": 844
+    },
+    "viewport": {
+      "x": 0,
+      "y": 143,
+      "width": 390,
+      "height": 620
+    },
+    "paper": {
+      "x": 24,
+      "y": 213.59375,
+      "width": 342,
+      "height": 478.796875
+    },
+    "handles": [
+      {
+        "x": 2,
+        "y": 191.59375,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 343.65625,
+        "y": 191.59375,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 343.65625,
+        "y": 670.046875,
+        "width": 44,
+        "height": 44
+      },
+      {
+        "x": 2,
+        "y": 670.046875,
+        "width": 44,
+        "height": 44
+      }
+    ],
+    "drag": {
+      "screenDelta": {
+        "x": 36,
+        "y": 42
+      },
+      "imagePoint": {
+        "x": 105,
+        "y": 123
+      },
+      "events": [
+        {
+          "pointerType": "touch",
+          "trusted": true
+        }
+      ]
+    },
+    "transformsBeforeApply": 0
+  }
+}

@@ -1,0 +1,46 @@
+2026-11-09T13:11:13.9343411Z [licenses] cargo-license: cargo-license --json failed — continuing without it.
+2026-11-09T13:11:13.9344988Z [licenses] stderr: /bin/sh: 1: cargo-license: not found
+2026-11-09T13:11:13.9426334Z Successfully generated 19 licenses (19 frontend, 0 backend) at /home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/static/licenses.json
+2026-11-09T13:11:13.9549963Z 
+2026-11-09T13:11:13.9550845Z > tauri-app@0.15.0 build
+2026-11-09T13:11:13.9551449Z > vite build
+2026-11-09T13:11:13.9551764Z 
+2026-11-09T13:37:40.2946261Z warning: `crispsorter` (lib) generated 18 warnings (run `cargo fix --lib -p crispsorter` to apply 6 suggestions)
+2026-11-09T13:37:40.2947660Z     Finished `dev` profile [unoptimized] target(s) in 25m 45s
+2026-11-09T13:37:40.6221270Z         Info symlinking lib "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" in jniLibs dir "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/src-tauri/gen/android/app/src/main/jniLibs/x86_64"
+2026-11-09T13:37:41.6599263Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libcrispembed.so"
+2026-11-09T13:37:41.6604103Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libonnxruntime.so"
+2026-11-09T13:37:41.6608064Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libandroid.so"
+2026-11-09T13:59:00.3326484Z warning: `crispsorter` (lib) generated 18 warnings (run `cargo fix --lib -p crispsorter` to apply 6 suggestions)
+2026-11-09T13:59:00.3328865Z     Finished `dev` profile [unoptimized] target(s) in 19m 29s
+2026-11-09T13:59:00.4327291Z         Info symlinking lib "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" in jniLibs dir "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/src-tauri/gen/android/app/src/main/jniLibs/x86_64"
+2026-11-09T13:59:00.4332415Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libcrispembed.so"
+2026-11-09T13:59:00.4336400Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libonnxruntime.so"
+2026-11-09T13:59:00.4339681Z         Info "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/target/x86_64-linux-android/debug/libtauri_app_lib.so" requires shared lib "libandroid.so"
+2026-11-09T13:59:57.5334882Z For more on this, please refer to https://docs.gradle.org/8.14.3/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+2026-11-09T13:59:57.9097108Z     Finished 1 APK at:
+2026-11-09T13:59:57.9099974Z         /home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+2026-11-09T13:59:57.9101960Z 
+2026-11-09T14:00:00.8690607Z Traceback (most recent call last):
+2026-11-09T14:00:00.8693067Z   File "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/scripts/ocr_mobile_build_receipt.py", line 303, in <module>
+2026-11-09T14:00:00.8694615Z     main()
+2026-11-09T14:00:00.8696497Z   File "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/scripts/ocr_mobile_build_receipt.py", line 294, in main
+2026-11-09T14:00:00.8698773Z     receipt = record(args.source, args.platform, args.artifact, args.runtime_receipt, args.ort_runtime_receipt)
+2026-11-09T14:00:00.8705944Z   File "/home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/scripts/ocr_mobile_build_receipt.py", line 102, in android_identity
+2026-11-09T14:00:00.8754887Z ##[error]    raise ValueError('APK native library exceeds the evidence size bound')
+2026-11-09T14:00:00.8757021Z ValueError: APK native library exceeds the evidence size bound
+2026-11-09T14:00:00.8937515Z ##[error]Process completed with exit code 1.
+2026-11-09T14:00:00.9028052Z ##[group]Run actions/upload-artifact@v4
+2026-11-09T14:00:00.9028389Z with:
+2026-11-09T14:00:00.9028625Z   name: ocr-mobile-android-x86_64
+2026-11-09T14:00:00.9030003Z   path: /home/runner/work/_temp/ocr-mobile-runtime/runtime-build.json
+2026-11-09T14:00:14.0605482Z Uploaded bytes 137552791
+2026-11-09T14:00:14.1349263Z Finished uploading artifact content to blob storage!
+2026-11-09T14:00:14.1353229Z SHA256 digest of uploaded artifact zip is 32dbd5b35d3ee43e065332409eb5df314ddd1aa265070923941b97ccf21e4e34
+2026-11-09T14:00:14.1355007Z Finalizing artifact upload
+2026-11-09T14:00:14.7959922Z Artifact ocr-mobile-android-x86_64.zip successfully finalized. Artifact ID 13680572109
+2026-11-09T14:00:14.7963020Z Artifact ocr-mobile-android-x86_64 has been successfully uploaded! Final size is 137552791 bytes. Artifact ID is 13680572109
+2026-11-09T14:00:14.7970324Z Artifact download URL: https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/artifacts/13680572109
+2026-11-09T14:00:14.8240226Z Post job cleanup.
+2026-11-09T14:00:14.9751089Z (node:46173) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-09T14:00:14.9752950Z (Use `node --trace-deprecation ...` to show where the warning was created)

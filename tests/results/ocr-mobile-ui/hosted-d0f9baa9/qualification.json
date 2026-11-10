@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "kind": "ocr-browser-mobile-ui-qualification",
+  "source_commit": "d0f9baa9d424a4aaa3d439ae08965191de715cc8",
+  "workflow_run": 42625583821,
+  "job_id": 129188364154,
+  "artifact_id": 13680821947,
+  "artifact_sha256": "a0ac91d50aafc3a8ee06f416a94148a0c3dc958835cffbb55e0069ab2e98835e",
+  "artifact_download_sha256_verified": true,
+  "overall_job_conclusion": "failure",
+  "frontend_tests": {
+    "passed": 233,
+    "failed": 0
+  },
+  "svelte": {
+    "errors": 0,
+    "warnings": 54
+  },
+  "production_build": "passed",
+  "history_benchmark": "passed",
+  "browser": {
+    "passed": 31,
+    "failed": 1,
+    "browser_errors": []
+  },
+  "case_results": [
+    {
+      "name": "phone export progress waits for cancellation and a retry preserves the committed result",
+      "status": "passed",
+      "duration_ms": 896
+    },
+    {
+      "name": "phone export failures unlock retry and destination transfer belongs to the system dialog",
+      "status": "passed",
+      "duration_ms": 810
+    }
+  ],
+  "original_failures": [
+    {
+      "name": "unsupported archival output is disabled with its native capability reason",
+      "status": "failed",
+      "duration_ms": 610,
+      "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\nfalse !== true\n\n    at file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:279:20\n    at async test (file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:80:17)\n    at async file:///home/runner/work/CrispSorter/CrispSorter/tests/ocr-workspace/smoke.mjs:275:9"
+    }
+  ],
+  "source_files_sha256": {
+    "src/lib/components/OcrWorkbench.svelte": "6544b3f67e69bc47af5ae8c48e26a40d03a2bf3f3bef93ef7fe2ae4bf53d523d",
+    "src/lib/ocr/client.ts": "da92cc9e20c2f0df59ae2a5573b8511c4ebdc12f2ad8444ec81f3cc40e19dcb1",
+    "tests/ocr-workspace/fixture.ts": "d88d32c7bb499f7f67bae388fbb770aa1db9f05e1ee60a78786a1df58ae09dcc",
+    "tests/ocr-workspace/smoke.mjs": "717cd8f8967631b30259f78b17d5be196f29b7acff7f36c88ffbfd079c83cfe9"
+  },
+  "retained_files_sha256": {
+    "failure-9.png": "14e49a7c1e2b0f56ca296ca9c6d3337e5db86ecf3a3678eab92fe7d80dd60db7",
+    "ocr-history-benchmark.json": "b80c682edc736d9cc8b46fdef8408ebb022686bacc4d357f8b626efc9e2f32a7",
+    "ocr-phone-export-progress.png": "ed8cc66b76a6a64ac095ffb68cd260b54a2e9d786712de82c904a11337dcca7e",
+    "report.json": "422919fd88fbc0af74064d3ef46ba9bd850191138c0bee8b871c7c7026348064"
+  },
+  "scope": "Hosted Chromium interaction tests of production Svelte components with a synthetic client. No native transform, recognition, camera/provider, or physical-phone qualification.",
+  "known_followups": {
+    "archival_negative_control": "76bf5d8d9f388f93b7109558b8bcaf834d8e0c14 checks native option disabled state and keyboard exclusion; this historical report remains unchanged."
+  }
+}

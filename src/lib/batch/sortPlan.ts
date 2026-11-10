@@ -14,7 +14,7 @@ export interface SortPlan {
     items: SortPlanItem[];
 }
 
-const SORTABLE = new Set(['review', 'error', 'unfinished', 'queued']);
+const SORTABLE = new Set(['review', 'ready', 'error', 'unfinished', 'queued']);
 
 function candidate(item: BatchItem): SortPlanItem {
     const { id, originalPath, originalName, extension, status, targetPath, isDuplicatePrimary, suggestedTitle, suggestedAuthor, suggestedYear, extractedText } = item;

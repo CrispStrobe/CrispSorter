@@ -9,6 +9,11 @@
         }
     });
     const workflowItems = $derived(batchManager.filteredItems.filter(item => inWorkflow(item, workflow)));
+    const stageItems = $derived(batchManager.items.filter(item => inWorkflow(item, workflow)));
+    const activeFilters = $derived(Number(!!batchManager.searchQuery.trim()) + Number(batchManager.filterExtension !== 'all') + Number(batchManager.filterStatus !== 'all') + Number(batchManager.filterMinSize > 0));
+    const availableExtensions = $derived([...new Set([...stageItems.map(item => item.extension.toLowerCase()), ...(batchManager.filterExtension === 'all' ? [] : [batchManager.filterExtension])])].filter(Boolean).sort());
+    const availableStatuses = $derived((['queued', 'unfinished', 'extracting', 'analyzing', 'review', 'ready', 'moving', 'error'] as BatchStatus[]).filter(status => inWorkflow({ status }, workflow)));
+    const batchBusy = $derived(batchManager.isProcessing || batchManager.isExecuting || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
     import {
         probeFolder,
         requestFolderAccess,
@@ -19,6 +24,7 @@
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { createSortPlan, textSidecarPath, type SortMode, type SortPlan } from '../batch/sortPlan';
+    import { deleteVerifiedCopies, type VerifiedDuplicateGroup, type DuplicateIssue } from '../batch/duplicates';
     import { isProviderUri, pickProviderDocuments } from '../mobileProvider';
     import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
     import { i18n } from '../i18n.svelte';
@@ -40,6 +46,50 @@
     } from 'lucide-svelte';
     import { buildBibFile } from '../export/bibtex';
     import { logInfo, logWarn } from '../log';
+    import { reviewSelection, toggleVisibleSelection, itemMetadata, sameMetadata, type ReviewMetadata } from '../batch/review';
+    import { reviewDrafts } from '../batch/reviewDrafts.svelte';
+
+    const reviewLabels = $derived(i18n.lang === 'de' ? {
+        all: 'Alle', clearFilters: 'Filter zurücksetzen', visible: 'sichtbar', selected: 'in dieser Ansicht ausgewählt', hidden: 'ausgeblendet; von Aktionen ausgenommen', clearSelection: 'Auswahl aufheben',
+        noMatches: 'Keine passenden Dateien', noMatchesHint: 'Passe die Suche oder Filter an, um deine Dateien wieder zu sehen.',
+        emptyInbox: 'Füge deine ersten Dokumente hinzu', emptyInboxHint: 'Dateien hinzufügen oder hier ablegen. Danach analysieren, prüfen und sortieren.',
+        inboxClear: 'Der Eingang ist erledigt', inboxClearHint: 'Analysierte Dokumente findest du unter Prüfen. Du kannst weitere Dateien hinzufügen.',
+        emptyReview: 'Noch nichts zu prüfen', emptyReviewHint: 'Füge im Eingang Dateien hinzu und starte die Analyse. Die Vorschläge erscheinen hier.',
+        addFiles: 'Dateien hinzufügen', addFolder: 'Ordner hinzufügen', shown: 'Dateien angezeigt',
+        metadataDraft: 'Metadatenentwurf', drafts: 'Metadatenentwürfe', draft: 'Entwurf', savedDraft: 'Entwurf gespeichert; noch nicht angewendet.', savingDraft: 'Entwurf wird gespeichert…',
+        draftError: 'Entwürfe sind nur in dieser Sitzung gesichert. Speichern erneut versuchen.', retry: 'Erneut versuchen',
+        draftLoadError: 'Gespeicherte Metadatenentwürfe konnten nicht geladen werden. Bitte erneut versuchen, bevor du sie bearbeitest.',
+        draftHint: 'Speichern übernimmt die Änderungen und akzeptiert vollständige Titel und Autoren.',
+        changed: 'Die Metadaten wurden seit Beginn dieses Entwurfs geändert. Bitte vor dem Speichern vergleichen.',
+        save: 'Speichern', discard: 'Entwurf verwerfen', saveNext: 'Speichern und weiter', previous: 'Vorherige Datei', next: 'Nächste Datei', close: 'Details schließen',
+        sortDrafts: 'Bitte Metadatenentwürfe akzeptierter Dateien speichern oder verwerfen, bevor du sortierst.',
+        clearConfirm: 'Alle Einträge und Metadatenentwürfe aus diesem Stapel entfernen? Deine Dateien bleiben erhalten.',
+        removeConfirm: 'Ausgewählte sichtbare Einträge aus dem Stapel entfernen? Deine Dateien bleiben erhalten.',
+        detailsHint: 'Dateinamen antippen, um Details und Metadaten zu prüfen.',
+        reanalyzeAllHint: 'Bereits verarbeitete Dateien zurücksetzen und neu analysieren',
+        indexSelected: 'Zum Index', indexing: 'Indexiere…', indexSelectedHint: 'Ausgewählte Dateien zum Suchindex hinzufügen',
+        indexResult: 'Index: {ok} erfolgreich, {fail} fehlgeschlagen',
+    } : {
+        all: 'All', clearFilters: 'Clear filters', visible: 'visible', selected: 'selected in this view', hidden: 'hidden; excluded from actions', clearSelection: 'Clear selection',
+        noMatches: 'No files match these filters', noMatchesHint: 'Change the search or clear filters to see your files again.',
+        emptyInbox: 'Add your first documents', emptyInboxHint: 'Add files or drop them here. Then analyze, review, and sort them.',
+        inboxClear: 'Your inbox is clear', inboxClearHint: 'Analyzed documents are in Review. You can add more files here.',
+        emptyReview: 'Nothing to review yet', emptyReviewHint: 'Add files in Inbox and start analysis. Suggestions will appear here.',
+        addFiles: 'Add files', addFolder: 'Add folder', shown: 'files shown',
+        metadataDraft: 'metadata draft', drafts: 'metadata drafts', draft: 'Draft', savedDraft: 'Draft saved; changes are not applied yet.', savingDraft: 'Saving draft…',
+        draftError: 'Drafts are kept in this session only. Retry saving them.', retry: 'Retry',
+        draftLoadError: 'Saved metadata drafts could not be loaded. Retry before editing them.',
+        draftHint: 'Saving applies changes and accepts complete titles and authors.',
+        changed: 'The metadata changed after this draft was started. Compare the values before saving.',
+        save: 'Save', discard: 'Discard draft', saveNext: 'Save & next', previous: 'Previous document', next: 'Next document', close: 'Close details',
+        sortDrafts: 'Save or discard metadata drafts for accepted files before sorting.',
+        clearConfirm: 'Remove all entries and metadata drafts from this batch? Your files will stay on disk.',
+        removeConfirm: 'Remove the selected visible entries from this batch? Your files will stay on disk.',
+        detailsHint: 'Tap a filename to review details and metadata.',
+        reanalyzeAllHint: 'Reset processed files and analyze them again',
+        indexSelected: 'Add to index', indexing: 'Indexing…', indexSelectedHint: 'Add selected files to the search index',
+        indexResult: 'Index: {ok} added, {fail} failed',
+    });
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
@@ -62,26 +112,24 @@
     let reanalModelsFetched = $state<string[]>([]);
     let reanalModelsLoading = $state(false);
 
-    // Detail pane local edit state (buffered — not immediately written to item)
-    let detailTitle  = $state('');
-    let detailAuthor = $state('');
-    let detailYear   = $state('');
-    let detailDirty  = $derived(
-        selectedItem != null && (
-            detailTitle  !== (selectedItem.suggestedTitle  ?? '') ||
-            detailAuthor !== (selectedItem.suggestedAuthor ?? '') ||
-            detailYear   !== (selectedItem.suggestedYear   ?? '')
-        )
-    );
+    // Per-document drafts are independent of selection and approval.
+    const detailDraft = $derived(selectedItem ? reviewDrafts.get(selectedItem) : undefined);
+    const detailMetadata = $derived(detailDraft ?? (selectedItem ? itemMetadata(selectedItem) : { title: '', author: '', year: '' }));
+    const detailDirty = $derived(!!detailDraft);
+    const draftItems = $derived(stageItems.filter(item => reviewDrafts.get(item)));
+    const detailSaving = $derived(reviewDrafts.applyingId != null);
+    let detailSaveError = $state('');
 
-    // Sync local state when the selected item changes
-    $effect(() => {
-        if (selectedItem) {
-            detailTitle  = selectedItem.suggestedTitle  ?? '';
-            detailAuthor = selectedItem.suggestedAuthor ?? '';
-            detailYear   = selectedItem.suggestedYear   ?? '';
-        }
-    });
+    function editDetail(field: keyof ReviewMetadata, value: string) {
+        if (!selectedItem || detailSaving || batchBusy || preparingSort || confirmingSort || sortPlan || selectedItem.status === 'done') return;
+        detailSaveError = '';
+        reviewDrafts.set(selectedItem, { ...detailMetadata, [field]: value });
+    }
+
+    function stepDocument(direction: -1 | 1) {
+        const next = sortedItems[selectedIndex + direction];
+        if (next) { selectedItemId = next.id; detailSaveError = ''; }
+    }
 
     /** Audio/video extensions warrant a "Transcribing" badge instead
      *  of the generic "Extracting" — the user knows they dropped an
@@ -107,33 +155,80 @@
         return map[status] ?? status;
     }
 
-    async function saveDetailChanges() {
-        if (!selectedItem) return;
-        selectedItem.suggestedTitle  = detailTitle;
-        selectedItem.suggestedAuthor = detailAuthor;
-        selectedItem.suggestedYear   = detailYear;
-        await batchManager.recalculateTargetPath(selectedItem.id);
+    async function saveDetailChanges(advance = false) {
+        if (!selectedItem || !detailDraft || detailSaving || batchBusy) return;
+        const item = selectedItem;
+        const draft = { ...detailDraft };
+        const previous = { suggestedTitle: item.suggestedTitle, suggestedAuthor: item.suggestedAuthor,
+            suggestedYear: item.suggestedYear, targetPath: item.targetPath, isAccepted: item.isAccepted };
+        const nextId = sortedItems[selectedIndex + 1]?.id;
+        reviewDrafts.applyingId = item.id;
+        detailSaveError = '';
+        try {
+            item.suggestedTitle = draft.title;
+            item.suggestedAuthor = draft.author;
+            item.suggestedYear = draft.year;
+            await batchManager.recalculateTargetPath(item.id);
+            reviewDrafts.discard([item.id]);
+            await reviewDrafts.flush();
+            if (advance && nextId && selectedItemId === item.id) selectedItemId = nextId;
+        } catch (error) {
+            // Retain the draft and old applied values if persistence failed.
+            Object.assign(item, previous);
+            detailSaveError = String(error);
+        } finally { reviewDrafts.applyingId = null; }
     }
 
     /** Enter on any of the three metadata inputs commits, Escape reverts. */
     function onMetaKey(e: KeyboardEvent) {
+        if (detailSaving) return;
         if (e.key === 'Enter') {
             e.preventDefault();
             if (detailDirty) saveDetailChanges();
         } else if (e.key === 'Escape' && selectedItem && detailDirty) {
             e.preventDefault();
-            detailTitle  = selectedItem.suggestedTitle  ?? '';
-            detailAuthor = selectedItem.suggestedAuthor ?? '';
-            detailYear   = selectedItem.suggestedYear   ?? '';
+            e.stopPropagation();
+            reviewDrafts.discard([selectedItem.id]);
         }
     }
 
     // Duplicates panel
     let showDuplicates = $state(false);
     let showSortOptions = $state(false);
-    let duplicateGroups = $state<Array<{ size: number; items: BatchItem[] }>>([]);
+    let duplicateGroups = $state<VerifiedDuplicateGroup<BatchItem>[]>([]);
     let checkingDuplicates = $state(false);
-    let deepDupeCheck = $state(false);
+    let duplicateProgress = $state({ checked: 0, total: 0 });
+    let duplicateIssues = $state<DuplicateIssue<BatchItem>[]>([]);
+    let duplicateError = $state('');
+    let duplicateNotice = $state('');
+    let duplicateBusy = $derived(checkingDuplicates || batchBusy);
+    let duplicateLabels = $derived(i18n.lang === 'de' ? {
+        verified: 'Inhaltsgleiche Dateien', checking: 'Dateiinhalte werden geprüft', refresh: 'Erneut prüfen',
+        description: 'Nur übereinstimmende SHA-256-Prüfsummen gelten als Duplikat. Mindestens eine Kopie bleibt erhalten.',
+        empty: 'Keine inhaltsgleichen Dateien unter den geprüften Dateien gefunden.',
+        skipped: 'Dateien konnten nicht geprüft werden', retry: 'Zugriff prüfen und erneut versuchen.',
+        keep: 'Diesen Eintrag behalten', delete: 'Andere Kopien löschen',
+        keepHint: 'Andere Einträge nur aus dem Stapel entfernen. Dateien bleiben erhalten.',
+        deleteHint: 'Diese Datei behalten und die übrigen inhaltsgleichen Kopien dauerhaft löschen.',
+        confirm: 'Dauerhaft löschen', cancel: 'Abbrechen', keeper: 'Diese Datei bleibt erhalten:', targets: 'Diese Kopien werden dauerhaft gelöscht:',
+        busy: 'Bitte warten, bis Verarbeitung oder Sortierung abgeschlossen ist.',
+        failed: 'Nicht gelöschte Dateien bleiben im Stapel. Zugriff prüfen und erneut versuchen.',
+        removed: 'Andere Einträge entfernt. Dateien auf dem Datenträger bleiben erhalten.',
+        deleted: 'Kopie(n) gelöscht. Die ausgewählte Datei bleibt erhalten.',
+    } : {
+        verified: 'Identical files', checking: 'Verifying file contents', refresh: 'Check again',
+        description: 'Only matching SHA-256 checksums count as duplicates. At least one copy is kept.',
+        empty: 'No identical files found among the files checked.',
+        skipped: 'files could not be checked', retry: 'Check access and try again.',
+        keep: 'Keep this entry', delete: 'Delete other copies',
+        keepHint: 'Remove other entries from the batch only. Files stay on disk.',
+        deleteHint: 'Keep this file and permanently delete the other identical copies.',
+        confirm: 'Permanently delete', cancel: 'Cancel', keeper: 'Keep this file:', targets: 'Permanently delete these copies:',
+        busy: 'Wait for processing or sorting to finish before cleaning up duplicates.',
+        failed: 'Files that could not be deleted remain in the batch. Check access and try again.',
+        removed: 'Other entries removed. Files on disk are unchanged.',
+        deleted: 'copy/copies deleted. The selected file was kept.',
+    });
 
     // Sorting state
     let sortPlan = $state.raw<SortPlan | null>(null);
@@ -284,7 +379,10 @@
         });
     });
 
+    const selectedIndex = $derived(sortedItems.findIndex(item => item.id === selectedItemId));
+
     onMount(() => {
+        void reviewDrafts.load();
         let cleanup = () => {};
 
         (async () => {
@@ -293,6 +391,7 @@
             scaleColumnsToContainer();
 
             const handleKeyDown = async (e: KeyboardEvent) => {
+                if (e.defaultPrevented || e.isComposing || document.querySelector('dialog[open]')) return;
                 // Skip when the user is typing into an input/textarea/contenteditable.
                 const target = e.target as HTMLElement | null;
                 const isEditable = !!target && (
@@ -312,12 +411,9 @@
 
                 // Delete / Backspace removes the selected entries (Stapel view).
                 if (!isEditable && (e.key === 'Delete' || e.key === 'Backspace')) {
-                    if (selectedIds.length === 0) return;
+                    if (selection.visibleIds.length === 0 || batchBusy) return;
                     e.preventDefault();
-                    if (confirm(i18n.t.history.delete_confirm)) {
-                        await batchManager.removeItems(selectedIds);
-                        selectedIds = [];
-                    }
+                    await handleBatchRemove();
                 }
             };
             window.addEventListener('keydown', handleKeyDown);
@@ -363,7 +459,7 @@
             };
         })();
 
-        return () => cleanup();
+        return () => { cleanup(); if (reviewDrafts.saving) void reviewDrafts.flush(); };
     });
 
     async function handleAddFiles() {
@@ -424,45 +520,75 @@
     }
 
     async function handleFindDuplicates() {
+        if (duplicateBusy) return;
         checkingDuplicates = true;
-        duplicateGroups = await batchManager.getDuplicateGroups(deepDupeCheck);
-        checkingDuplicates = false;
+        duplicateGroups = [];
+        duplicateIssues = [];
+        duplicateError = '';
         showDuplicates = true;
+        try {
+            const scan = await batchManager.getDuplicateGroups((checked, total) => {
+                duplicateProgress = { checked, total };
+            });
+            duplicateGroups = scan.groups;
+            duplicateIssues = [...scan.failed, ...scan.skipped];
+        } catch (error) {
+            duplicateError = `${String(error)}. ${duplicateLabels.retry}`;
+        } finally {
+            checkingDuplicates = false;
+        }
     }
 
     async function keepOnlyInGroup(groupIdx: number, keepId: string, deleteFromDisk: boolean) {
-        const group = duplicateGroups[groupIdx];
-        const toRemove = group.items.filter(i => i.id !== keepId);
-        if (deleteFromDisk && toRemove.some(i => isProviderUri(i.originalPath))) {
-            showToast('Provider documents are read-only and cannot be deleted here.');
+        if (duplicateBusy) {
+            showToast(duplicateLabels.busy);
             return;
         }
-        if (deleteFromDisk) {
-            const paths = toRemove.map(i => i.originalPath).filter(path => !isProviderUri(path));
-            await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
-        }
-        await batchManager.removeItems(toRemove.map(i => i.id));
-        await handleFindDuplicates();
-    }
-
-    async function keepNewestInGroup(groupIdx: number, deleteFromDisk: boolean) {
         const group = duplicateGroups[groupIdx];
-        const newest = group.items.reduce((a, b) => (a.modifiedAt > b.modifiedAt ? a : b));
-        await keepOnlyInGroup(groupIdx, newest.id, deleteFromDisk);
-    }
-
-    async function removeAllInGroup(groupIdx: number, deleteFromDisk: boolean) {
-        const group = duplicateGroups[groupIdx];
-        if (deleteFromDisk && group.items.some(i => isProviderUri(i.originalPath))) {
-            showToast('Provider documents are read-only and cannot be deleted here.');
-            return;
+        const keeper = group?.items.find(item => item.id === keepId);
+        if (!group || !keeper) return;
+        const toRemove = group.items.filter(item => item.id !== keepId);
+        batchManager.isCleaningDuplicates = true;
+        duplicateError = '';
+        duplicateNotice = '';
+        let refresh = false;
+        try {
+            if (deleteFromDisk) {
+                const confirmed = await ask(
+                    `${duplicateLabels.keeper}\n${keeper.originalPath}\n\n${duplicateLabels.targets} (${toRemove.length})\n${toRemove.map(item => item.originalPath).join('\n')}`,
+                    { title: duplicateLabels.verified, kind: 'warning', okLabel: duplicateLabels.confirm, cancelLabel: duplicateLabels.cancel },
+                );
+                if (!confirmed) return;
+                const outcome = await deleteVerifiedCopies(group, keepId, () => batchManager.items,
+                    path => invoke<string>('file_sha256', { path }),
+                    async path => {
+                        await invoke('delete_duplicate_copy', { keepPath: keeper.originalPath, path, expectedSha256: group.sha256 });
+                    });
+                if (outcome.deleted.length) await batchManager.removeItems(outcome.deleted.map(item => item.id));
+                if (outcome.failed.length) {
+                    duplicateError = `${duplicateLabels.failed}\n${outcome.failed.map(issue => `${issue.item.originalName}: ${issue.reason}`).join('\n')}`;
+                }
+                if (outcome.deleted.length) duplicateNotice = `${outcome.deleted.length} ${duplicateLabels.deleted}`;
+            } else {
+                if (!batchManager.items.some(item => item.id === keeper.id && item.originalPath === keeper.originalPath)) {
+                    throw new Error(i18n.lang === 'de' ? 'Der zu behaltende Eintrag wurde geändert. Erneut prüfen.' : 'The entry to keep changed. Refresh and review the group again.');
+                }
+                const current = toRemove.filter(scanned => batchManager.items.some(item => item.id === scanned.id && item.originalPath === scanned.originalPath));
+                await batchManager.removeItems(current.map(item => item.id));
+                duplicateNotice = duplicateLabels.removed;
+            }
+            refresh = true;
+        } catch (error) {
+            duplicateError = `${String(error)}. ${duplicateLabels.retry}`;
+        } finally {
+            batchManager.isCleaningDuplicates = false;
         }
-        if (deleteFromDisk) {
-            const paths = group.items.map(i => i.originalPath).filter(path => !isProviderUri(path));
-            await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
+        if (refresh) {
+            // Refresh the scan while retaining actionable deletion failures.
+            const actionError = duplicateError;
+            await handleFindDuplicates();
+            if (actionError) duplicateError = [actionError, duplicateError].filter(Boolean).join('\n');
         }
-        await batchManager.removeItems(group.items.map(i => i.id));
-        await handleFindDuplicates();
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
@@ -500,14 +626,11 @@
         lastClickedId = id;
     }
 
-    let allSelected = $derived(sortedItems.length > 0 && selectedIds.length === sortedItems.length);
+    const selection = $derived(reviewSelection(selectedIds, sortedItems, batchManager.items));
+    const allSelected = $derived(selection.allVisible);
 
     function selectAllVisible() {
-        if (allSelected) {
-            selectedIds = [];
-        } else {
-            selectedIds = sortedItems.map(i => i.id);
-        }
+        selectedIds = toggleVisibleSelection(selectedIds, sortedItems);
     }
 
     function toggleId(id: string) {
@@ -519,12 +642,12 @@
     }
 
     async function handleRedoSelected() {
-        if (selectedIds.length === 0) return;
-        await batchManager.reprocessItems(selectedIds);
+        if (selection.visibleIds.length === 0 || batchBusy) return;
+        await batchManager.reprocessItems(selection.visibleIds);
     }
 
     async function handleRedoWithOptions() {
-        if (selectedIds.length === 0) return;
+        if (selection.visibleIds.length === 0 || batchBusy) return;
         showReanalyzeOpts = false;
         const overrides: ProcessOverrides = {
             providerId: reanalProviderId || undefined,
@@ -532,7 +655,7 @@
             maxChars: reanalMaxChars || undefined,
             authorSort: reanalAuthorSort
         };
-        await batchManager.reprocessItems(selectedIds, overrides);
+        await batchManager.reprocessItems(selection.visibleIds, overrides);
     }
 
     async function onReanalProviderChange() {
@@ -555,37 +678,52 @@
     }
 
     async function handleBatchReextract() {
-        if (selectedIds.length === 0) return;
-        await batchManager.reextractItems(selectedIds);
+        if (selection.visibleIds.length === 0 || batchBusy) return;
+        await batchManager.reextractItems(selection.visibleIds);
     }
 
     async function handleBatchRemove() {
-        if (selectedIds.length === 0) return;
-        if (confirm(i18n.t.history.delete_confirm)) {
-            await batchManager.removeItems(selectedIds);
-            selectedIds = [];
+        if (selection.visibleIds.length === 0 || batchBusy) return;
+        const ids = [...selection.visibleIds];
+        if (confirm(`${ids.length} — ${reviewLabels.removeConfirm}`)) {
+            try {
+                await batchManager.removeItems(ids);
+                selectedIds = selectedIds.filter(id => !ids.includes(id));
+            } catch (error) { showToast(String(error)); }
         }
     }
 
-    async function handleBatchEnforceOcr() {
-        if (selectedIds.length === 0) return;
-        await batchManager.reprocessItems(selectedIds, { enforceOcr: true });
+    async function handleClearBatch() {
+        if (batchBusy || !batchManager.items.length || !confirm(`${batchManager.items.length} — ${reviewLabels.clearConfirm}`)) return;
+        try { await batchManager.clear(); selectedIds = []; selectedItemId = null; }
+        catch (error) { showToast(String(error)); }
     }
 
-    function handleBatchAccept(val: boolean) {
-        if (selectedIds.length === 0) return;
-        batchManager.setAcceptedItems(selectedIds, val);
+    async function handleBatchEnforceOcr() {
+        if (selection.visibleIds.length === 0 || batchBusy) return;
+        await batchManager.reprocessItems(selection.visibleIds, { enforceOcr: true });
+    }
+
+    async function handleBatchAccept(val: boolean) {
+        if (selection.visibleIds.length === 0 || batchBusy) return;
+        try { await batchManager.setAcceptedItems(selection.visibleIds, val); }
+        catch (error) { showToast(String(error)); }
     }
 
     async function addSelectedToIndex() {
-        if (selectedIds.length === 0) return;
+        if (batchBusy) return;
+        await addItemsToIndex(selection.visibleIds);
+    }
+
+    async function addItemsToIndex(ids: readonly string[]) {
+        if (ids.length === 0) return;
         const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
         if (!cfg.enabled) {
             showToast('Search index is not enabled. Enable it in Settings → Search Index.');
             return;
         }
         indexingSelected = true;
-        const items = batchManager.items.filter(i => selectedIds.includes(i.id));
+        const items = batchManager.items.filter(i => ids.includes(i.id));
         const BATCH_SIZE = 16;
         let ok = 0, fail = 0;
 
@@ -627,7 +765,7 @@
         }
 
         indexingSelected = false;
-        showToast(`Index: ${ok} erfolgreich, ${fail} fehlgeschlagen`);
+        showToast(reviewLabels.indexResult.replace('{ok}', String(ok)).replace('{fail}', String(fail)));
     }
 
     async function startProcessing() {
@@ -635,6 +773,7 @@
     }
 
     function toggleSelectionAccepted(val: boolean) {
+        if (batchBusy) return;
         const targetIds = workflowItems.map(i => i.id);
         batchManager.setAcceptedItems(targetIds, val);
     }
@@ -762,7 +901,7 @@
             showToast('Sorting iOS imports is unavailable until their original provider identity can be retained.');
             return;
         }
-        if (batchManager.isExecuting || preparingSort || confirmingSort || sortPlan) {
+        if (batchBusy || detailSaving || preparingSort || confirmingSort || sortPlan) {
             showToast(i18n.t.batch.executing);
             return;
         }
@@ -775,6 +914,13 @@
             for (const item of missing) await batchManager.recalculateTargetPath(item.id, false);
             const saveTxt = await getSetting('saveTxt', true) as boolean;
             const plan = createSortPlan(batchManager.items, mode, skipDuplicates, saveTxt);
+            const planIds = new Set(plan.items.map(item => item.id));
+            const unapplied = batchManager.items.find(item => planIds.has(item.id) && reviewDrafts.get(item));
+            if (unapplied) {
+                selectedItemId = unapplied.id;
+                showToast(`${unapplied.originalName}: ${reviewLabels.sortDrafts}`);
+                return;
+            }
             if (!plan.items.length) {
                 const missingTargets = plan.candidates.filter(i => !i.targetPath).length;
                 const excluded = plan.candidates.length - missingTargets;
@@ -797,6 +943,7 @@
         if (!plan || confirmingSort) return;
         confirmingSort = true;
         try {
+            if (plan.items.some(planned => { const item = batchManager.items.find(candidate => candidate.id === planned.id); return item && reviewDrafts.get(item); })) throw new Error(reviewLabels.sortDrafts);
             if (!(await ensureDestinationsWritable(plan.items)) || sortPlan !== plan) return;
             const stats = await batchManager.executeBatch(plan);
             sortPlan = null;
@@ -808,9 +955,7 @@
                 : null;
             showReportModal = true;
             if (planIndexAfterSort && !plan.mode.startsWith('script')) {
-                selectedIds = plan.items.map(i => i.id);
-                await addSelectedToIndex();
-                selectedIds = [];
+                await addItemsToIndex(plan.items.map(i => i.id));
             }
         } catch (e: any) {
             logWarn(`Sort aborted: ${e?.message ?? e}`);
@@ -978,6 +1123,7 @@
     }
 
     async function checkAndUpdateSources() {
+        if (batchBusy) return;
         console.log('[BatchReview] checkAndUpdateSources called, total items:', batchManager.items.length);
         let missingCount = 0;
         let providerCount = 0;
@@ -1099,10 +1245,14 @@
 
     <div class="workflow-actions">
         <strong>{workflow === 'inbox' ? 'Inbox' : 'Review'}</strong>
+        <span class="view-count" aria-live="polite">{sortedItems.length} / {stageItems.length} {reviewLabels.shown}</span>
         <label for="batch-processing-preset">Processing</label> <select id="batch-processing-preset" aria-label="Processing preset" bind:value={processingPreset} disabled={batchManager.isProcessing}>
             <option value="fast">Fast</option><option value="balanced">Balanced</option>
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
         </select>
+        {#if draftItems.length}
+            <button class="draft-summary" onclick={() => selectedItemId = draftItems[0].id}>{draftItems.length} {draftItems.length === 1 ? reviewLabels.metadataDraft : reviewLabels.drafts}</button>
+        {/if}
         {#if selectedItem && !isProviderUri(selectedItem.originalPath)}
             {#each availableDocumentTools(selectedItem.originalName, $caps) as tool}
                 <button onclick={() => documentToolRequest.set({ tool, locationUri: selectedItem.originalPath, filename: selectedItem.originalName })}>{tool === 'pdf' ? 'Edit PDF' : tool === 'ocr' ? 'OCR selected document' : 'Translate selected document'}</button>
@@ -1112,19 +1262,19 @@
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
-                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown'} title={i18n.t.batch.add_files}>
+                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown' || batchManager.isCleaningDuplicates} title={reviewLabels.addFiles} aria-label={reviewLabels.addFiles}>
                     <Plus size={18} />
                 </button>
-                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'unknown'} title={i18n.t.batch.add_folder}>
+                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'unknown' || batchManager.isCleaningDuplicates} title={reviewLabels.addFolder} aria-label={reviewLabels.addFolder}>
                     <FolderOpen size={18} />
                 </button>
-                <button class="icon-btn-main danger" onclick={() => batchManager.clear()} title={i18n.t.batch.clear_all}>
+                <button class="icon-btn-main danger" onclick={handleClearBatch} disabled={batchBusy || !batchManager.items.length} title={i18n.t.batch.clear_all} aria-label={i18n.t.batch.clear_all}>
                     <Trash2 size={18} />
                 </button>
             </div>
 
             <button class="action-btn small" onclick={checkAndUpdateSources} title={i18n.t.batch.update_sources}
-                    disabled={batchManager.items.length === 0 || batchManager.isProcessing}>
+                    disabled={batchManager.items.length === 0 || batchBusy}>
                 <RefreshCw size={14} />
             </button>
 
@@ -1161,11 +1311,12 @@
                 <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} aria-label="Search items" />
             </div>
 
-            <button class="action-btn small" onclick={() => showFilters = !showFilters} class:active={showFilters} aria-label="Show Filters">
+            <button class="action-btn small" onclick={() => showFilters = !showFilters} class:active={showFilters || activeFilters > 0} aria-label="Show Filters" aria-expanded={showFilters} aria-controls="batch-filters">
                 <Filter size={16} />
+                {#if activeFilters}<span class="filter-count">{activeFilters}</span>{/if}
             </button>
 
-            <div class="dropdown-container">
+            <div class="dropdown-container column-picker">
                 <button class="action-btn small" onclick={() => showColumnSelector = !showColumnSelector} class:active={showColumnSelector} aria-label="Select Columns">
                     <Columns size={16} />
                 </button>
@@ -1185,7 +1336,7 @@
         </div>
 
         <div class="right-actions">
-            <button class="action-btn small" onclick={handleFindDuplicates} disabled={checkingDuplicates} title={i18n.t.batch.find_dupes}>
+            <button class="action-btn small" onclick={handleFindDuplicates} disabled={duplicateBusy} title={i18n.t.batch.find_dupes} aria-label={i18n.t.batch.find_dupes}>
                 <Copy size={14} />
                 {#if checkingDuplicates}<span class="loader-anim"><Loader2 size={14} /></span>{/if}
             </button>
@@ -1196,7 +1347,7 @@
                 </button>
             {:else}
                 <button class="action-btn success small" onclick={startProcessing}
-                        disabled={batchManager.items.filter(i => i.status === 'queued' || i.status === 'error').length === 0}>
+                        disabled={batchBusy || detailSaving || batchManager.items.filter(i => i.status === 'queued' || i.status === 'error').length === 0}>
                     <Play size={16} /> {i18n.t.batch.start_batch}
                 </button>
             {/if}
@@ -1209,9 +1360,9 @@
                 </button>
             {/if}
             {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'review' || i.status === 'ready')}
-                <button class="action-btn small" title="Alle bereits verarbeiteten Dateien zurücksetzen und neu analysieren"
+                <button class="action-btn small" title={reviewLabels.reanalyzeAllHint} disabled={batchBusy}
                         onclick={async () => { await batchManager.resetToQueued(); await batchManager.processAll(); }}>
-                    <RefreshCw size={14} /> Neu analysieren
+                    <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
                 </button>
             {/if}
 
@@ -1300,7 +1451,7 @@
             : 'Provider documents are read-only (PDF, DOCX, EPUB, TXT, Markdown, HTML; up to 16 MiB). Moving and copying are not yet supported.'}</p>
     {/if}
 
-    {#if selectedIds.length > 0}
+    {#if selection.visibleIds.length > 0 || selection.hiddenIds.length > 0}
         <!-- Bulk-selection toolbar — only appears when items are ticked
              via the left-edge checkbox / shift-click / cmd-click.  Plain
              row click only sets `selectedItemId` (detail-panel focus)
@@ -1309,12 +1460,13 @@
         <div class="selection-toolbar">
             <span class="selection-info">
                 <CheckSquare size={14} />
-                {i18n.t.batch.selected_count.replace('{count}', selectedIds.length.toString())}
+                {selection.visibleIds.length} {reviewLabels.selected}
+                {#if selection.hiddenIds.length}<span class="hidden-selection"> · {selection.hiddenIds.length} {reviewLabels.hidden}</span>{/if}
             </span>
             <div class="toolbar-divider"></div>
             <div class="dropdown-container">
                 <div class="split-btn-group">
-                    <button class="action-btn small" onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
+                    <button class="action-btn small" disabled={batchBusy || !selection.visibleIds.length} onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
                         <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
                     </button>
                     <button class="action-btn small split-caret" onclick={() => showReanalyzeOpts = !showReanalyzeOpts} title="Options">
@@ -1353,8 +1505,8 @@
                             <label for="reanalAuthorSort">{i18n.t.batch.reanalyze_author_step}</label>
                             <input id="reanalAuthorSort" type="checkbox" bind:checked={reanalAuthorSort} />
                         </div>
-                        <button class="action-btn small primary opts-run" onclick={handleRedoWithOptions}>
-                            <Play size={12} /> {i18n.t.batch.reanalyze_run} ({selectedIds.length})
+                        <button class="action-btn small primary opts-run" disabled={batchBusy || !selection.visibleIds.length} onclick={handleRedoWithOptions}>
+                            <Play size={12} /> {i18n.t.batch.reanalyze_run} ({selection.visibleIds.length})
                         </button>
                     </div>
                 {/if}
@@ -1362,7 +1514,7 @@
 
             <div class="dropdown-container">
                 <div class="split-btn-group">
-                    <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
+                    <button class="action-btn small" disabled={batchBusy || !selection.visibleIds.length} onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
                         <FileSearch size={14} /> {i18n.t.batch.reextract}
                     </button>
                     <button class="action-btn small split-caret" onclick={() => showReextractOpts = !showReextractOpts} title="Options">
@@ -1381,51 +1533,56 @@
                 {/if}
             </div>
 
-            <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
+            <button class="action-btn small" disabled={batchBusy || !selection.visibleIds.length} onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
                 <Check size={14} /> {i18n.t.batch.confirm}
             </button>
-            <button class="action-btn small" onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
+            <button class="action-btn small" disabled={batchBusy || !selection.visibleIds.length} onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
                 <X size={14} /> {i18n.t.batch.ignore}
             </button>
-            <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
+            <button class="action-btn small danger" disabled={batchBusy || !selection.visibleIds.length} onclick={handleBatchRemove} title={i18n.t.batch.remove}>
                 <Trash2 size={14} /> {i18n.t.batch.remove}
             </button>
             <div class="toolbar-divider"></div>
             <button class="action-btn small" onclick={addSelectedToIndex}
-                disabled={indexingSelected}
-                title="Ausgewählte zum Suchindex hinzufügen">
+                disabled={indexingSelected || batchBusy || !selection.visibleIds.length}
+                title={reviewLabels.indexSelectedHint}>
                 {#if indexingSelected}
-                    <Loader2 size={14} class="loader-spin" /> Indexiere …
+                    <Loader2 size={14} class="loader-spin" /> {reviewLabels.indexing}
                 {:else}
-                    <UploadCloud size={14} /> Zum Index
+                    <UploadCloud size={14} /> {reviewLabels.indexSelected}
                 {/if}
             </button>
-            <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
+            <button class="close-btn-minimal" onclick={() => selectedIds = []} aria-label={reviewLabels.clearSelection} title={reviewLabels.clearSelection}>×</button>
         </div>
     {/if}
 
+    {#if activeFilters > 0}
+        <div class="active-batch-filters" aria-label={i18n.lang === 'de' ? 'Aktive Stapelfilter' : 'Active batch filters'}>
+            {#if batchManager.searchQuery.trim()}<span>“{batchManager.searchQuery.trim()}”</span>{/if}
+            {#if batchManager.filterExtension !== 'all'}<span>{batchManager.filterExtension.toUpperCase()}</span>{/if}
+            {#if batchManager.filterStatus !== 'all'}<span>{statusLabel(batchManager.filterStatus as BatchStatus)}</span>{/if}
+            {#if batchManager.filterMinSize > 0}<span>≥ {batchManager.filterMinSize} KB</span>{/if}
+            <button class="action-btn small" onclick={() => batchManager.resetFilters()}>{reviewLabels.clearFilters}</button>
+        </div>
+    {/if}
+    {#if reviewDrafts.error}
+        <div class="draft-storage-error" role="alert">{reviewDrafts.ready ? reviewLabels.draftError : reviewLabels.draftLoadError} <button onclick={() => reviewDrafts.ready ? reviewDrafts.flush() : reviewDrafts.load()}>{reviewLabels.retry}</button></div>
+    {/if}
+
     {#if showFilters}
-        <div class="filter-bar">
+        <div class="filter-bar" id="batch-filters">
             <div class="filter-group">
                 <label for="ext-filter">{i18n.t.batch.filter_type}</label>
                 <select id="ext-filter" bind:value={batchManager.filterExtension}>
-                    <option value="all">All</option>
-                    <option value="pdf">PDF</option>
-                    <option value="docx">DOCX</option>
-                    <option value="txt">TXT</option>
+                    <option value="all">{reviewLabels.all}</option>
+                    {#each availableExtensions as extension}<option value={extension}>{extension.toUpperCase()}</option>{/each}
                 </select>
             </div>
             <div class="filter-group">
                 <label for="status-filter">{i18n.t.batch.filter_status}</label>
                 <select id="status-filter" bind:value={batchManager.filterStatus}>
-                    <option value="all">All</option>
-                    <option value="queued">{i18n.t.batch.status_queued}</option>
-                    <option value="unfinished">{i18n.t.batch.status_unfinished}</option>
-                    <option value="extracting">{i18n.t.batch.status_extracting}</option>
-                    <option value="analyzing">{i18n.t.batch.status_analyzing}</option>
-                    <option value="review">{i18n.t.batch.status_review}</option>
-                    <option value="done">{i18n.t.batch.status_done}</option>
-                    <option value="error">{i18n.t.batch.status_error}</option>
+                    <option value="all">{reviewLabels.all}</option>
+                    {#each availableStatuses as status}<option value={status}>{statusLabel(status)}</option>{/each}
                 </select>
             </div>
             <div class="filter-group">
@@ -1436,47 +1593,43 @@
     {/if}
 
     {#if showDuplicates}
-        <div class="dupes-panel">
+        <section class="dupes-panel" aria-label={duplicateLabels.verified} aria-busy={checkingDuplicates || batchManager.isCleaningDuplicates}>
             <div class="dupes-header">
-                <span><Copy size={14} /> {i18n.t.batch.find_dupes} — {duplicateGroups.length} {i18n.t.batch.dupe_groups}</span>
+                <span><Copy size={14} /> {duplicateLabels.verified} — {duplicateGroups.length} {i18n.t.batch.dupe_groups}</span>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <label class="dupe-deep-label" for="deep-dupe-check">
-                        <input type="checkbox" id="deep-dupe-check" bind:checked={deepDupeCheck} onchange={handleFindDuplicates} />
-                        {i18n.t.batch.dupe_deep}
-                    </label>
-                    <button class="close-btn-minimal" onclick={() => showDuplicates = false}>×</button>
+                    <button class="action-btn small" onclick={handleFindDuplicates} disabled={duplicateBusy}><RefreshCw size={13} /> {duplicateLabels.refresh}</button>
+                    <button class="close-btn-minimal" onclick={() => showDuplicates = false} aria-label={i18n.lang === 'de' ? 'Duplikatprüfung schließen' : 'Close duplicate review'}>×</button>
                 </div>
             </div>
-            {#if duplicateGroups.length === 0}
-                <div class="dupes-empty">{i18n.t.batch.dupe_none}</div>
+            <p class="dupes-description">{duplicateLabels.description}</p>
+            {#if duplicateNotice}<p class="dupes-description" role="status">{duplicateNotice}</p>{/if}
+            {#if duplicateError}<p class="dupes-error" role="alert">{duplicateError}</p>{/if}
+            {#if duplicateIssues.length > 0}
+                <details class="dupes-issues">
+                    <summary>{duplicateIssues.length} {duplicateLabels.skipped}</summary>
+                    <ul>{#each duplicateIssues as issue}<li>{issue.item.originalName}: {issue.reason}</li>{/each}</ul>
+                </details>
+            {/if}
+            {#if checkingDuplicates}
+                <div class="dupes-empty" role="status"><Loader2 size={14} class="loader-spin" /> {duplicateLabels.checking} · {duplicateProgress.checked} / {duplicateProgress.total}</div>
+            {:else if duplicateGroups.length === 0}
+                <div class="dupes-empty">{duplicateLabels.empty}</div>
             {:else}
                 <div class="dupes-list">
                     {#each duplicateGroups as group, gi}
                         <div class="dupe-group">
                             <div class="dupe-group-header">
-                                <span class="dupe-size">{(group.size / 1024).toFixed(1)} KB — {group.items.length} files</span>
-                                <div class="dupe-group-actions">
-                                    <button class="action-btn small" onclick={() => keepNewestInGroup(gi, false)} title={i18n.t.batch.dupe_keep_newest_remove}>
-                                        Newest
-                                    </button>
-                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} disabled={group.items.some(item => isProviderUri(item.originalPath))} title={i18n.t.batch.dupe_keep_newest_delete}>
-                                        Newest + 🗑
-                                    </button>
-                                    <button class="action-btn small danger" onclick={() => { if (confirm(i18n.t.batch.dupe_confirm_delete_all)) removeAllInGroup(gi, true); }} disabled={group.items.some(item => isProviderUri(item.originalPath))} title={i18n.t.batch.dupe_delete_all}>
-                                        All 🗑
-                                    </button>
-                                </div>
+                                <span class="dupe-size">{formatSize(group.size)} — {group.items.length} {i18n.lang === 'de' ? 'Dateien' : 'files'} · SHA-256 {group.sha256.slice(0, 12)}…</span>
                             </div>
                             {#each group.items as item}
                                 <div class="dupe-row" class:selected={selectedIds.includes(item.id)}>
                                     <div class="dupe-info">
                                         <span class="dupe-name" title={item.originalPath}>{item.originalName}</span>
-                                        <span class="dupe-meta">{item.originalPath.substring(0, item.originalPath.lastIndexOf('/') + 1)} · {new Date(item.modifiedAt).toLocaleDateString()}</span>
+                                        <span class="dupe-meta" title={item.originalPath}>{item.originalPath}</span>
                                     </div>
                                     <div class="dupe-item-actions">
-                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} title={i18n.t.batch.dupe_keep_only}>Keep</button>
-                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} disabled={group.items.some(other => other.id !== item.id && isProviderUri(other.originalPath))} title={i18n.t.batch.dupe_keep_only_delete}>Keep+🗑</button>
-                                        <button class="close-btn-minimal" onclick={() => batchManager.removeItems([item.id]).then(() => handleFindDuplicates())} title={i18n.t.settings.action_remove_from_list}>×</button>
+                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} disabled={duplicateBusy} title={duplicateLabels.keepHint}>{duplicateLabels.keep}</button>
+                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} disabled={duplicateBusy} title={duplicateLabels.deleteHint}>{duplicateLabels.delete}</button>
                                     </div>
                                 </div>
                             {/each}
@@ -1484,22 +1637,25 @@
                     {/each}
                 </div>
             {/if}
-        </div>
+        </section>
     {/if}
 
-    <div class="main-split">
+    <div class="main-split" class:has-details={!!selectedItem}>
         <div class="table-container" bind:this={tableContainerEl}>
-            <table class="dense-table" style="width: {tableWidth}px;">
+            <p class="mobile-table-hint">{reviewLabels.detailsHint}</p>
+            <table class="dense-table" style="--table-width: {tableWidth}px;">
                 <thead>
                     <tr>
-                        <th style="width: 35px; min-width: 35px; text-align: center;">
-                            <input type="checkbox" 
-                                   checked={selectedIds.length === sortedItems.length && sortedItems.length > 0} 
-                                   onchange={selectAllVisible} aria-label="Select all visible" />
+                        <th class="select-column">
+                            <label class="row-select">
+                                <input type="checkbox"
+                                       checked={allSelected} indeterminate={selection.someVisible}
+                                       onchange={selectAllVisible} aria-label="Select all visible" />
+                            </label>
                         </th>
                         {#each columns as col, i}
-                            {#if col.visible}
-                                <th style="width: {col.width}px;">
+                            {#if col.visible || col.id === 'file_name'}
+                                <th data-column={col.id} class:desktop-hidden={!col.visible} class:mobile-secondary={!['status', 'accepted', 'file_name'].includes(col.id)} style="--column-width: {col.width}px;">
                                     <div 
                                         class="th-content" 
                                         onclick={() => toggleSort(col.id)}
@@ -1530,7 +1686,12 @@
                             class:selected={selectedIds.includes(item.id)}
                             class:active-row={selectedItemId === item.id}
                             onclick={(e) => handleRowClick(e, item.id)}
-                            onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleRowClick(e, item.id)}
+                            onkeydown={(e) => {
+                                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                                    e.preventDefault();
+                                    handleRowClick(e, item.id);
+                                }
+                            }}
                             class:status-error={item.status === 'error'}
                             class:status-done={item.status === 'done'}
                             class:is-dupe-nonprimary={item.isDuplicatePrimary === false}
@@ -1538,15 +1699,17 @@
                             class:is-chapter-rep={!!item.chapterGroupId && item.isChapterRepresentative}
                             tabindex="0"
                         >
-                            <td onclick={e => { e.stopPropagation(); }} style="width: 35px; text-align: center;">
-                                <input type="checkbox" 
-                                       checked={selectedIds.includes(item.id)} 
-                                       onchange={(e) => { e.stopPropagation(); toggleId(item.id); }}
-                                       aria-label="Select item" />
+                            <td class="select-column" onclick={e => { e.stopPropagation(); }}>
+                                <label class="row-select">
+                                    <input type="checkbox"
+                                           checked={selectedIds.includes(item.id)}
+                                           onchange={(e) => { e.stopPropagation(); toggleId(item.id); }}
+                                           aria-label="Select item" />
+                                </label>
                             </td>
                             {#each columns as col}
-                                {#if col.visible}
-                                    <td style="width: {col.width}px;">
+                                {#if col.visible || col.id === 'file_name'}
+                                    <td data-column={col.id} class:desktop-hidden={!col.visible} class:mobile-secondary={!['status', 'accepted', 'file_name'].includes(col.id)} style="--column-width: {col.width}px;">
                                         {#if col.id === 'status'}
                                             {@const pips = progressPips(item)}
                                             <span class="progress-pips" title={`Metadaten: ${pips.m} · Text: ${pips.t} · LLM: ${pips.l}`}>
@@ -1582,7 +1745,7 @@
                                                 {/if}
                                             {/if}
                                         {:else if col.id === 'accepted'}
-                                            <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; upsertItem(item); }} title={i18n.t.batch.dupe_toggle_accept}>
+                                            <button class="ghost-toggle-btn" disabled={batchBusy} onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; upsertItem(item); }} title={i18n.t.batch.dupe_toggle_accept}>
                                                 {#if item.isAccepted}
                                                     <Check size={16} style="color: #10b981;" />
                                                 {:else}
@@ -1590,7 +1753,8 @@
                                                 {/if}
                                             </button>
                                         {:else if col.id === 'file_name'}
-                                            <span class="file-name" title={item.originalPath}>{item.originalName}</span>
+                                            <button class="file-name" title={item.originalPath}>{item.originalName}</button>
+                                            {#if reviewDrafts.get(item)}<span class="inline-badge draft-badge">{reviewLabels.draft}</span>{/if}
                                             {#if item.isDuplicatePrimary === false}
                                                 <span class="inline-badge dupe-badge"
                                                       title="Inhaltsidentisches Duplikat (Gruppe {item.duplicateGroupId}). Wird beim Sortieren übersprungen wenn 'Duplikate überspringen' aktiv ist."
@@ -1619,11 +1783,11 @@
                                                 </span>
                                             {/if}
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}
@@ -1652,7 +1816,20 @@
                     {/each}
                     {#if sortedItems.length === 0}
                         <tr>
-                            <td colspan={columns.filter(c => c.visible).length + 1} class="empty-row">{i18n.t.batch.empty}</td>
+                            <td colspan={columns.filter(c => c.visible).length + 1} class="empty-row">
+                                <div class="batch-empty-state">
+                                    {#if activeFilters > 0 && stageItems.length > 0}
+                                        <strong>{reviewLabels.noMatches}</strong><p>{reviewLabels.noMatchesHint}</p>
+                                        <button class="action-btn primary" onclick={() => batchManager.resetFilters()}>{reviewLabels.clearFilters}</button>
+                                    {:else if workflow === 'review'}
+                                        <strong>{reviewLabels.emptyReview}</strong><p>{reviewLabels.emptyReviewHint}</p>
+                                    {:else}
+                                        <strong>{batchManager.items.length ? reviewLabels.inboxClear : reviewLabels.emptyInbox}</strong>
+                                        <p>{batchManager.items.length ? reviewLabels.inboxClearHint : reviewLabels.emptyInboxHint}</p>
+                                        <button class="action-btn primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown'}><Plus size={16} />{reviewLabels.addFiles}</button>
+                                    {/if}
+                                </div>
+                            </td>
                         </tr>
                     {/if}
                 </tbody>
@@ -1672,8 +1849,14 @@
                             <Info size={14} />
                         </button>
                     </div>
-                    <button class="close-btn" onclick={() => selectedItemId = null}>×</button>
+                    <div class="detail-navigation">
+                        <button class="action-btn small" onclick={() => stepDocument(-1)} disabled={selectedIndex <= 0 || detailSaving} aria-label={reviewLabels.previous}>←</button>
+                        <span>{selectedIndex >= 0 ? `${selectedIndex + 1} / ${sortedItems.length}` : reviewLabels.hidden}</span>
+                        <button class="action-btn small" onclick={() => stepDocument(1)} disabled={selectedIndex < 0 || selectedIndex >= sortedItems.length - 1 || detailSaving} aria-label={reviewLabels.next}>→</button>
+                        <button class="close-btn" onclick={() => selectedItemId = null} aria-label={reviewLabels.close}>×</button>
+                    </div>
                 </div>
+                <p class="detail-filename" title={selectedItem.originalPath}>{selectedItem.originalName}</p>
                 <div class="detail-content">
                     {#if selectedItem.errorMessage}
                         <div class="error-box">{formatErrorCode(selectedItem.errorMessage)}</div>
@@ -1694,33 +1877,38 @@
                             <AiGeneratedBadge compact />
                             {#if detailDirty}
                                 <div class="detail-actions">
-                                    <button class="action-btn small danger" onclick={() => {
-                                        detailTitle  = selectedItem!.suggestedTitle  ?? '';
-                                        detailAuthor = selectedItem!.suggestedAuthor ?? '';
-                                        detailYear   = selectedItem!.suggestedYear   ?? '';
-                                    }}>
-                                        <X size={12} /> Revert
+                                    <button class="action-btn small danger" disabled={detailSaving} onclick={() => reviewDrafts.discard([selectedItem!.id])}>
+                                        <X size={12} /> {reviewLabels.discard}
                                     </button>
-                                    <button class="action-btn small success" onclick={saveDetailChanges}>
-                                        <Check size={12} /> Save
+                                    <button class="action-btn small success" disabled={detailSaving || batchBusy} onclick={() => saveDetailChanges()}>
+                                        <Check size={12} /> {reviewLabels.save}
                                     </button>
                                 </div>
                             {/if}
                         </div>
+                        {#if detailSaveError}<div class="error-box" role="alert">{detailSaveError}</div>{/if}
+                        {#if detailDraft}
+                            <p class="draft-status" role="status">{reviewDrafts.saving ? reviewLabels.savingDraft : reviewDrafts.error ? reviewLabels.draftError : reviewLabels.savedDraft}</p>
+                            {#if !sameMetadata(detailDraft.base, itemMetadata(selectedItem))}<p class="draft-conflict">{reviewLabels.changed}</p>{/if}
+                        {/if}
                         <div class="edit-fields" role="group" aria-label="Edit metadata">
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.title}</span>
-                                <input type="text" bind:value={detailTitle} onkeydown={onMetaKey} aria-label="Edit Title" />
+                                <input type="text" value={detailMetadata.title} oninput={event => editDetail('title', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || batchBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Title" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.author}</span>
-                                <input type="text" bind:value={detailAuthor} onkeydown={onMetaKey} aria-label="Edit Author" />
+                                <input type="text" value={detailMetadata.author} oninput={event => editDetail('author', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || batchBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Author" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.year}</span>
-                                <input type="text" bind:value={detailYear} onkeydown={onMetaKey} aria-label="Edit Year" />
+                                <input type="text" value={detailMetadata.year} oninput={event => editDetail('year', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || batchBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Year" />
                             </div>
                         </div>
+                        <p class="draft-hint">{reviewLabels.draftHint}</p>
+                        {#if detailDirty && selectedIndex >= 0 && selectedIndex < sortedItems.length - 1}
+                            <button class="action-btn small success" disabled={detailSaving || batchBusy} onclick={() => saveDetailChanges(true)}>{reviewLabels.saveNext} →</button>
+                        {/if}
                     </div>
 
                     <div class="detail-section">
@@ -1981,6 +2169,20 @@
 {/if}
 
 <style>
+    .view-count { color: #a1a1aa; font-size: 0.8rem; }
+    .active-batch-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #3f3f46; }
+    .active-batch-filters > span { background: #27272a; color: #e4e4e7; border: 1px solid #52525b; padding: 3px 8px; border-radius: 12px; font-size: 0.75rem; overflow-wrap: anywhere; }
+    .filter-count { font-size: 0.7rem; font-weight: 600; }
+    .hidden-selection { color: #fbbf24; font-size: 0.75rem; }
+    .batch-empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 32px 16px; white-space: normal; }
+    .batch-empty-state strong { color: #e4e4e7; font-size: 1rem; }
+    .batch-empty-state p { max-width: 480px; color: #a1a1aa; margin: 0 0 8px; line-height: 1.5; }
+    .detail-navigation { display: flex; align-items: center; gap: 6px; }
+    .detail-navigation > span { color: #a1a1aa; font-size: 0.7rem; }
+    .draft-status, .draft-hint { font-size: 0.75rem; line-height: 1.5; color: #a1a1aa; margin: 8px 0; }
+    .draft-conflict, .draft-storage-error { color: #fbbf24; font-size: 0.8rem; line-height: 1.5; }
+    .draft-storage-error { padding: 8px 16px; border-bottom: 1px solid #713f12; }
+    .draft-badge { color: #fbbf24; background: #422006; }
     .provider-import-note { margin: 0.5rem 0; color: #a1a1aa; font-size: 0.8rem; }
     .workflow-actions { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #3f3f46; }
     .workflow-actions select, .workflow-actions button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 5px; padding: 5px; }
@@ -2060,24 +2262,28 @@
     .action-btn.danger:hover { background: #ef4444; color: white; border-color: #ef4444; }
     .small { padding: 4px 8px; font-size: 0.75rem; }
 
-    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 320px; display: flex; flex-direction: column; }
+    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 420px; display: flex; flex-direction: column; overflow: auto; }
     .dupes-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; border-bottom: 1px solid #1e293b; font-size: 0.8125rem; font-weight: 600; color: #94a3b8; flex-shrink: 0; }
-    .dupes-empty { padding: 12px 16px; font-size: 0.8125rem; color: #52525b; }
+    .dupes-empty { padding: 12px 16px; font-size: 0.8125rem; color: #a1a1aa; display: flex; gap: 8px; align-items: center; }
+    .dupes-description, .dupes-error { margin: 0; padding: 6px 16px; font-size: 0.75rem; color: #cbd5e1; }
+    .dupes-error { color: #fca5a5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .dupes-issues { padding: 4px 16px; font-size: 0.75rem; color: #fbbf24; }
+    .dupes-issues summary { cursor: pointer; }
+    .dupes-issues li { overflow-wrap: anywhere; }
     .dupes-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
     .dupe-group { background: #020617; border: 1px solid #1e293b; border-radius: 6px; overflow: hidden; }
     .dupe-group-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; background: #1e293b; gap: 8px; }
     .dupe-size { font-size: 0.65rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; letter-spacing: 0.05em; }
-    .dupe-group-actions { display: flex; gap: 4px; }
     .dupe-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-top: 1px solid #0f172a; gap: 8px; }
     .dupe-row.selected { background: #1e3a8a33; }
     .dupe-info { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
     .dupe-name { font-size: 0.75rem; color: #cbd5e1; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dupe-meta { font-size: 0.65rem; color: #475569; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dupe-item-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
-    .dupe-deep-label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; cursor: pointer; }
+    .dupe-meta { font-size: 0.65rem; color: #94a3b8; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dupe-item-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex-shrink: 0; }
 
-    .main-split { display: flex; flex: 1; overflow: hidden; }
-    .table-container { flex: 1; overflow: auto; position: relative; display: flex; flex-direction: column; }
+    .main-split { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+    .table-container { flex: 1; min-width: 0; min-height: 0; overflow: auto; position: relative; display: flex; flex-direction: column; }
+    .mobile-table-hint { display: none; }
     
     .selection-toolbar {
         display: flex;
@@ -2098,7 +2304,10 @@
     .close-btn-minimal { background: transparent; border: none; color: #bfdbfe; cursor: pointer; font-size: 1.25rem; margin-left: auto; padding: 0 4px; }
     .close-btn-minimal:hover { color: white; }
 
-    .dense-table { min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
+    .dense-table { width: var(--table-width); min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
+    .dense-table [data-column] { width: var(--column-width); }
+    .dense-table .desktop-hidden { display: none; }
+    .dense-table .select-column { width: 35px; min-width: 35px; text-align: center; }
     .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 0; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; height: 32px; overflow: hidden; }
     .th-content { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 100%; cursor: pointer; }
     .th-content:hover { background: #27272a; color: white; }
@@ -2128,6 +2337,8 @@
     .chapter-badge              { background: #1e3a5f55; color: #93c5fd; }
     .chapter-badge.chapter-edited-vol { background: #2e1a5255; color: #c084fc; }
     .history-badge { background: #064e3b88; color: #34d399; }
+    .file-name { max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; white-space: inherit; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; cursor: pointer; }
+    .file-name:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
     
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; border-radius: 4px; font-size: 0.8125rem; color: #f8fafc; }
     .dense-table tr:hover input[type="text"] { background: #0f172a; border-color: #334155; }
@@ -2170,8 +2381,9 @@
     .path-text { font-family: monospace; font-size: 0.7rem; color: #71717a; }
 
     .detail-pane { width: 400px; background: #0f172a; border-left: 1px solid #1e293b; display: flex; flex-direction: column; flex-shrink: 0; }
-    .detail-header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
-    .detail-content { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .detail-header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+    .detail-filename { margin: 0; padding: 8px 12px 0; font-size: 0.75rem; color: #cbd5e1; overflow-wrap: anywhere; flex-shrink: 0; }
+    .detail-content { min-height: 0; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
     
     .detail-section h4 { font-size: 0.65rem; text-transform: uppercase; color: #71717a; margin: 0; letter-spacing: 0.05em; }
     .detail-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -2292,10 +2504,30 @@
         .toolbar { padding: 6px 8px; gap: 6px; }
         .search-box { min-width: 0; flex-basis: 100%; order: -1; }
         .main-split { flex-direction: column; }
-        .detail-pane { width: 100%; max-height: 50vh; border-left: none; border-top: 1px solid #1e293b; }
+        .main-split.has-details .table-container { flex: 1 1 35%; min-height: 96px; }
+        .detail-pane { width: 100%; min-height: 0; flex: 1 1 65%; border-left: none; border-top: 1px solid #1e293b; }
+        .detail-header { padding: 6px 10px; gap: 6px; flex-wrap: wrap; }
+        .detail-section-header, .detail-actions { flex-wrap: wrap; gap: 6px; }
+        .edit-fields input { min-width: 0; }
+        /* Fit the four identity columns to the viewport instead of stretching
+           them across the desktop table width after metadata columns hide. */
+        .dense-table { width: 100%; }
         .dense-table th, .dense-table td { padding: 4px 6px; font-size: 0.75rem; }
-        /* Hide less-important columns on small screens */
-        .dense-table th:nth-child(n+5), .dense-table td:nth-child(n+5) { display: none; }
+        .dense-table .select-column { width: 40px; padding: 0; }
+        .dense-table [data-column="status"] { width: 94px; white-space: normal; }
+        .dense-table [data-column="accepted"] { width: 38px; }
+        .dense-table [data-column="file_name"] { display: table-cell; width: auto; white-space: normal; }
+        .dense-table .mobile-secondary, .column-picker, .resizer { display: none; }
+        .th-content { padding: 0; }
+        .row-select { display: flex; align-items: center; justify-content: center; min-height: 44px; cursor: pointer; }
+        .row-select input { width: 18px; height: 18px; }
+        .progress-pips { display: flex; margin: 0 0 4px; }
+        .status-badge { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+        .file-name { display: block; width: 100%; min-height: 44px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+        .mobile-table-hint { display: block; margin: 0; padding: 6px 8px; color: #a1a1aa; font-size: 0.7rem; line-height: 1.4; }
+        .selection-toolbar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+        .selection-info { flex-basis: 100%; flex-wrap: wrap; gap: 4px; }
+        .selection-toolbar .toolbar-divider { display: none; }
         .filter-bar { flex-wrap: wrap; gap: 8px; padding: 6px 8px; }
         .modal-content, .info-modal { width: 95vw; }
         .status-footer { padding: 4px 8px; font-size: 0.65rem; }

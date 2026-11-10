@@ -1,0 +1,37 @@
+{
+  "scope": "Synthetic production-component browser controls, not native PDF conformance",
+  "historical_failure": {
+    "source_sha": "d0f9baa9d424a4aaa3d439ae08965191de715cc8",
+    "run_id": 42625583821,
+    "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42625583821",
+    "passed_scenarios": 31,
+    "failed_scenarios": 1,
+    "scenario": "unsupported archival output is disabled with its native capability reason",
+    "selector": "select option[value=\"pdfa\"]",
+    "playwright_is_disabled": false,
+    "old_asserted_value": true,
+    "artifact": {
+      "id": 13680821947,
+      "name": "ocr-workspace-browser-report",
+      "bytes": 826784,
+      "sha256": "a0ac91d50aafc3a8ee06f416a94148a0c3dc958835cffbb55e0069ab2e98835e"
+    }
+  },
+  "source_inspection": {
+    "review_fixture_advertises_pdfa": false,
+    "review_fixture_archival_pdf_export": false,
+    "fallback_option_has_native_disabled_attribute": true,
+    "native_reason": "PDF/A-2b requires the archival-capable native renderer in this build.",
+    "playwright_version": "1.62.1",
+    "primary_source": "https://github.com/microsoft/playwright/blob/v1.62.1/packages/injected/src/injectedScript.ts",
+    "trace": "elementState for disabled calls retarget with follow-label. OPTION is absent from the exempt control selector. Its enclosing label targets the enabled SELECT, so the API checks that SELECT instead of the OPTION."
+  },
+  "replacement_acceptance": [
+    "Retain the original isDisabled observation in archival-option-state.json",
+    "Require the actual HTMLOptionElement.disabled property and :disabled pseudo-class",
+    "Require the parent SELECT to remain enabled for supported formats",
+    "Use real keyboard ArrowUp/ArrowDown to prove navigation works but cannot enter pdfa after docx",
+    "Require the exact native capability reason and zero export calls"
+  ],
+  "new_browser_result": "pending exact-source hosted execution"
+}

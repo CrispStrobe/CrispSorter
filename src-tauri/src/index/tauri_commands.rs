@@ -44,6 +44,8 @@ pub async fn index_search(
     fuzzy: Option<bool>,
     doc_id_scope: Option<Vec<String>>,
     tag: Option<String>,
+    synonyms: Option<bool>,
+    search_filters: Option<super::SearchFilters>,
 ) -> Result<Vec<SearchResult>, String> {
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
@@ -52,13 +54,15 @@ pub async fn index_search(
     let lock = state.index.lock().await;
     let config_enabled = lock.config.enabled;
 
-    let filters = super::SearchFilters {
-        owner_id,
-        fuzzy: fuzzy.unwrap_or(false),
-        doc_id_scope: doc_id_scope.unwrap_or_default(),
-        tag,
-        ..Default::default()
-    };
+    let mut filters = search_filters.unwrap_or_default();
+    // Keep older callers working while the UI sends the complete filter set.
+    filters.owner_id = owner_id.or(filters.owner_id);
+    if let Some(value) = fuzzy { filters.fuzzy = value; }
+    if let Some(value) = synonyms { filters.synonyms = value; }
+    if let Some(value) = doc_id_scope { filters.doc_id_scope = value; }
+    filters.tag = tag.or(filters.tag);
+    validate_search_filters(&filters)?;
+    let limit = limit.clamp(1, 500);
 
     // ── Documents-table channel ──────────────────────────────────────────
     // Run the existing documents-table search first. When the index is
@@ -77,6 +81,9 @@ pub async fn index_search(
         }
         .map_err(|e| e.to_string())?
     } else {
+        // The older remote-index protocol only carries owner/language/year.
+        // Refuse unsupported filters instead of returning unfiltered matches.
+        ensure_remote_search_filters_supported(&filters)?;
         // ── Remote path: embed query locally, then call backend ───────
         let backend = lock
             .backend
@@ -137,7 +144,7 @@ pub async fn index_search(
     // returned that many — net result is at most `limit` rows from each
     // channel, presented in two visually distinct groups (the frontend
     // uses `catalog_source` to badge them).
-    if let (true, Ok(data_dir)) = (filters.tag.is_none() && filters.doc_id_scope.is_empty(), app.path().app_data_dir()) {
+    if let (true, Ok(data_dir)) = (filters.to_lance_sql().is_none(), app.path().app_data_dir()) {
         let remaining = limit.saturating_sub(results.len()).max(limit / 2);
         if let Ok(hits) =
             crate::catalog::lance::search(&data_dir, &query, Some(remaining)).await
@@ -168,6 +175,39 @@ pub async fn index_search(
     }
 
     Ok(results)
+}
+
+/// Validate ranges at the IPC boundary as well as in the form.
+fn validate_search_filters(filters: &super::SearchFilters) -> Result<(), String> {
+    if !filters.tags.is_empty() {
+        return Err("The legacy 'tags' list is not supported for search. Use the singular 'tag' filter for one exact tag.".into());
+    }
+    for year in [filters.year_min, filters.year_max].into_iter().flatten() {
+        if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999.".into()); }
+    }
+    if matches!((filters.year_min, filters.year_max), (Some(min), Some(max)) if min > max) {
+        return Err("The minimum publication year must not exceed the maximum.".into());
+    }
+    for seconds in [filters.audio_duration_min_seconds, filters.audio_duration_max_seconds].into_iter().flatten() {
+        if !seconds.is_finite() || seconds < 0.0 { return Err("Audio duration must be a non-negative number of seconds.".into()); }
+    }
+    if matches!((filters.audio_duration_min_seconds, filters.audio_duration_max_seconds), (Some(min), Some(max)) if min > max) {
+        return Err("The minimum audio duration must not exceed the maximum.".into());
+    }
+    Ok(())
+}
+
+fn ensure_remote_search_filters_supported(filters: &super::SearchFilters) -> Result<(), String> {
+    let mut unsupported = filters.clone();
+    unsupported.owner_id = None;
+    unsupported.language = None;
+    unsupported.year_min = None;
+    unsupported.year_max = None;
+    if unsupported.to_lance_sql().is_some() || !unsupported.tags.is_empty() || unsupported.fuzzy || unsupported.synonyms
+        || unsupported.colbert_rerank || unsupported.omni_search {
+        return Err("This remote index supports only language and publication-year filters. Clear the other search options or switch to the local index.".into());
+    }
+    Ok(())
 }
 
 /// Synthesise a `SearchResult` from a catalog hit so the documents-table
@@ -2452,7 +2492,7 @@ pub struct EmbedderRegistryEntry {
 /// "Select" button for already-downloaded models and a "Download" button
 /// for the rest, without a separate round-trip.
 #[tauri::command]
-pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
+pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<EmbedderRegistryEntry>, String> {
     #[cfg(feature = "crispembed")]
     {
         use std::path::PathBuf;
@@ -2469,12 +2509,15 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
             }
         };
 
+        tokio::task::spawn_blocking(move || {
         crispembed::CrispEmbed::list_models()
             .into_iter()
             .map(|m| {
-                let cached = cache_dir.as_ref().map_or(false, |d| {
-                    d.join(&m.filename).exists()
-                });
+                let cached = if crate::model_provisioning::enabled() {
+                    crate::model_provisioning::is_installed(&m.name)
+                } else {
+                    cache_dir.as_ref().map_or(false, |d| d.join(&m.filename).exists())
+                };
                 EmbedderRegistryEntry {
                     name: m.name,
                     desc: m.desc,
@@ -2483,12 +2526,13 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
                     cached,
                 }
             })
-            .collect()
+            .collect::<Vec<_>>()
+        }).await.map_err(|error| format!("Read model registry: {error}"))
     }
     #[cfg(not(feature = "crispembed"))]
     {
         let _ = state;
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
@@ -2498,6 +2542,7 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
 /// a no-op.  Returns `Ok(path)` with the resolved cache path on success.
 #[tauri::command]
 pub async fn embedder_download_registry_model(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: String,
     accept_license: Option<bool>,
@@ -2508,8 +2553,19 @@ pub async fn embedder_download_registry_model(
         crate::index::license_consent::accept(&name);
     }
     crate::index::license_consent::ensure_for_registry_name(&name).map_err(|e| e.to_string())?;
-    #[cfg(feature = "crispembed")]
+    #[cfg(feature = "ocr-mobile")]
     {
+        use tauri::Emitter;
+        let _ = state;
+        return tokio::task::spawn_blocking(move || {
+            crate::model_provisioning::download(&name, |update| {
+                let _ = app.emit(crate::model_provisioning::PROGRESS_EVENT, update);
+            })
+        }).await.map_err(|error| format!("Model installer: {error}"))?;
+    }
+    #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
+    {
+        let _ = app;
         use std::path::PathBuf;
         let cache_dir: Option<PathBuf> = {
             if let Ok(lock) = state.index.try_lock() {
@@ -2526,7 +2582,9 @@ pub async fn embedder_download_registry_model(
             if let Some(ref d) = cache_dir {
                 unsafe { std::env::set_var("CRISPEMBED_CACHE_DIR", d.as_os_str()) };
             }
-            crispembed::CrispEmbed::resolve_model(&name, Some(true))
+            // Passes the per-model consent recorded above on to CrispEmbed's
+            // download gate as that model's exact licence tag, for this call.
+            crate::index::license_consent::resolve_registry_model(&name, Some(true))
                 .map_err(|e| format!("crispembed resolve_model failed: {e}"))
         })
         .await
@@ -2539,7 +2597,7 @@ pub async fn embedder_download_registry_model(
     }
     #[cfg(not(feature = "crispembed"))]
     {
-        let _ = (state, name);
+        let _ = (app, state, name);
         Err("crispembed feature not enabled".into())
     }
 }
@@ -2551,6 +2609,10 @@ pub async fn embedder_download_registry_model(
 /// whether to show the confirmation dialog for any model — not a hardcoded list.
 #[tauri::command]
 pub fn embedder_model_license(name: String) -> Option<String> {
+    #[cfg(feature = "ocr-mobile")]
+    if let Ok(Some(info)) = crispembed::CrispEmbed::model_download_info(&name) {
+        if info.requires_license_acceptance { return Some(info.license); }
+    }
     let lic = crate::index::license_consent::license_for_registry_name(&name);
     lic.requires_consent().then(|| lic.label().to_string())
 }
@@ -2558,6 +2620,13 @@ pub fn embedder_model_license(name: String) -> Option<String> {
 /// Record consent for one or more restrictive models (by registry/consent key).
 /// Called by the GUI after the user confirms the license dialog, and replayed
 /// on startup from the persisted accepted-list so search/ingest don't re-prompt.
+/// Licence facts for the GUI consent dialog: reviewed label, CrispEmbed's
+/// licence tag, model card URL and description for one registry model.
+#[tauri::command]
+pub fn embedder_model_license_info(name: String) -> crate::index::license_consent::LicenseInfo {
+    crate::index::license_consent::license_info(&name)
+}
+
 #[tauri::command]
 pub fn embedder_accept_model_license(keys: Vec<String>) {
     for k in keys {
@@ -5310,4 +5379,48 @@ async fn get_template_store(state: &State<'_, AppState>) -> Result<super::templa
     let data_dir = state.data_dir.lock().await;
     let dir = data_dir.as_ref().ok_or("App data dir not set")?;
     super::templates::TemplateStore::open_or_create(dir).map_err(|e| e.to_string())
+}
+
+
+#[cfg(test)]
+mod search_filter_boundary_tests {
+    use super::{ensure_remote_search_filters_supported, validate_search_filters};
+    use crate::index::SearchFilters;
+
+    #[test]
+    fn search_ranges_fail_closed() {
+        let tag_error = validate_search_filters(&SearchFilters {
+            tags: vec!["invoice".into()], ..Default::default()
+        }).unwrap_err();
+        assert!(tag_error.contains("singular 'tag'"));
+        assert!(validate_search_filters(&SearchFilters {
+            year_min: Some(2025), year_max: Some(2020), ..Default::default()
+        }).is_err());
+        assert!(validate_search_filters(&SearchFilters {
+            audio_duration_min_seconds: Some(-1.0), ..Default::default()
+        }).is_err());
+        assert!(validate_search_filters(&SearchFilters {
+            audio_duration_max_seconds: Some(f64::NAN), ..Default::default()
+        }).is_err());
+        assert!(validate_search_filters(&SearchFilters {
+            audio_duration_min_seconds: Some(0.0), audio_duration_max_seconds: Some(0.0),
+            ..Default::default()
+        }).is_ok());
+    }
+
+    #[test]
+    fn remote_index_refuses_filters_missing_from_its_wire_protocol() {
+        assert!(ensure_remote_search_filters_supported(&SearchFilters {
+            language: Some("de".into()), year_min: Some(2000), year_max: Some(2025),
+            ..Default::default()
+        }).is_ok());
+        for filters in [
+            SearchFilters { ext: vec!["pdf".into()], ..Default::default() },
+            SearchFilters { tag: Some("invoice".into()), ..Default::default() },
+            SearchFilters { synonyms: true, ..Default::default() },
+            SearchFilters { doc_id_scope: vec!["one".into()], ..Default::default() },
+        ] {
+            assert!(ensure_remote_search_filters_supported(&filters).is_err());
+        }
+    }
 }

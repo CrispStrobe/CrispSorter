@@ -33,9 +33,9 @@ env:
   # arrow in a comment should not be able to break a release build.
   PYTHONIOENCODING: utf-8
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.16   # keep equal to ci.yml's CRISPEMBED_REF
+  CRISPEMBED_REF: v0.17.17   # keep equal to ci.yml's CRISPEMBED_REF
   # Exact source of that tag; must equal scripts/crispembed-runtime-lock.json.
-  CRISPEMBED_COMMIT: e4ee71937a68f1ff9d28f4d7cdbd66bda68ba05a
+  CRISPEMBED_COMMIT: 2cbf0b9e2f4b55ee01877b60c0825d990f2636cd
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.32  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
@@ -231,7 +231,7 @@ jobs:
             # family (ttf-parser, rsa, p256, zune-jpeg) to a cross-compile
             # that only started working today is a risk worth taking
             # separately, not as a side effect of this flip.
-            tauri_args: '--target aarch64-apple-darwin --features desktop,sidecars,audio-glint,crispasr-metal,crispembed-metal,ocr-reviewed-pdf,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
+            tauri_args: '--target aarch64-apple-darwin --features desktop,sidecars,audio-glint,crispasr-metal,crispembed-metal,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
@@ -261,7 +261,7 @@ jobs:
             # resources/bin/ which the loader can't find), so we
             # delete it from the release in the same post-step. Users
             # download the portable .zip, unzip, run.
-            tauri_args: '--features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,ocr-reviewed-pdf,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
+            tauri_args: '--features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
             pdfium_asset: pdfium-win-x64.tgz
@@ -274,7 +274,7 @@ jobs:
             # Same translate features as macOS — see the comment there
             # for what these enable. The crispembed + crispasr libs are
             # already pulled in by the vulkan variants.
-            tauri_args: '--bundles deb --features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,ocr-reviewed-pdf,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
+            tauri_args: '--bundles deb --features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
             pdfium_asset: pdfium-linux-x64.tgz
@@ -1884,7 +1884,7 @@ jobs:
           # The capability patch above is still required, not redundant: the
           # plugins being absent means `shell:default` / `process:default`
           # would be *unresolvable* permission strings, not merely unused.
-          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf,pdf-render,crispembed-metal,ocr-reviewed-pdf,crispasr-metal 2>&1 | tail -50
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop-mas,audio-glint,pdf-zpdf,pdf-render,crispembed-metal,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr-metal 2>&1 | tail -50
           # `find` over a non-existent path (src-tauri/target) exits non-zero and
           # would trip `set -e` AFTER the .app was already built — tolerate it.
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)

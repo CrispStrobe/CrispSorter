@@ -1,0 +1,67 @@
+{
+  "artifact_id": 13677615531,
+  "bytes": 19042515,
+  "sha256": "c71fddd1c890ac4fe0d1939ef5087f8960966bc662e00c740b337977bc661b83",
+  "files": [
+    {
+      "path": "ggml/src/libggml-base.so",
+      "bytes": 917880,
+      "sha256": "310036e953e517a0496a9bd163bb199f7bed3fb67bc35be01553a5d97ee159bc"
+    },
+    {
+      "path": "ggml/src/libggml-base.so.0",
+      "bytes": 917880,
+      "sha256": "310036e953e517a0496a9bd163bb199f7bed3fb67bc35be01553a5d97ee159bc"
+    },
+    {
+      "path": "ggml/src/libggml-base.so.0.17.0",
+      "bytes": 917880,
+      "sha256": "310036e953e517a0496a9bd163bb199f7bed3fb67bc35be01553a5d97ee159bc"
+    },
+    {
+      "path": "ggml/src/libggml-cpu.so",
+      "bytes": 1158056,
+      "sha256": "14faac9724f0ef1255cd4a9b9851a8ae9e00529aecaca96c634436ae350bbe40"
+    },
+    {
+      "path": "ggml/src/libggml-cpu.so.0",
+      "bytes": 1158056,
+      "sha256": "14faac9724f0ef1255cd4a9b9851a8ae9e00529aecaca96c634436ae350bbe40"
+    },
+    {
+      "path": "ggml/src/libggml-cpu.so.0.17.0",
+      "bytes": 1158056,
+      "sha256": "14faac9724f0ef1255cd4a9b9851a8ae9e00529aecaca96c634436ae350bbe40"
+    },
+    {
+      "path": "ggml/src/libggml.so",
+      "bytes": 56376,
+      "sha256": "f6d565308bb1dfe28ac4c20a1b552a12150a6944c07e64d2209bbc191a3662d2"
+    },
+    {
+      "path": "ggml/src/libggml.so.0",
+      "bytes": 56376,
+      "sha256": "f6d565308bb1dfe28ac4c20a1b552a12150a6944c07e64d2209bbc191a3662d2"
+    },
+    {
+      "path": "ggml/src/libggml.so.0.17.0",
+      "bytes": 56376,
+      "sha256": "f6d565308bb1dfe28ac4c20a1b552a12150a6944c07e64d2209bbc191a3662d2"
+    },
+    {
+      "path": "libcrispembed.so",
+      "bytes": 12170072,
+      "sha256": "27f3f5207c97a9b4e123826b7b93729707f73f2824a0b214823fe738450b4325"
+    },
+    {
+      "path": "libcrispembed.so.0",
+      "bytes": 12170072,
+      "sha256": "27f3f5207c97a9b4e123826b7b93729707f73f2824a0b214823fe738450b4325"
+    },
+    {
+      "path": "libcrispembed.so.0.17.16",
+      "bytes": 12170072,
+      "sha256": "27f3f5207c97a9b4e123826b7b93729707f73f2824a0b214823fe738450b4325"
+    }
+  ]
+}

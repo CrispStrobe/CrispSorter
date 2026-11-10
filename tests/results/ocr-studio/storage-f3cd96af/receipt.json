@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "source_commit": "f3cd96af7aa6ab0e1bb0b19598e1e31a9bc376ea",
+  "run": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42609934442",
+  "job_id": 129135451089,
+  "artifact_id": 13669494593,
+  "artifact_zip_sha256": "eb8330076816039fc7d649413de3321e0c8915e51783b89e84d2f46f5fac5d67",
+  "source_hashes_verified_against_integration": "33f456ee8c78f27b5ecb78d85aef6c88dc45b509",
+  "dependency_lock_sha256": "354070e4d613280977c4f1181ce4902590ac9beddf3ade18eb1c82370e4e213b",
+  "tests": 10,
+  "failed": 0,
+  "ignored": 0,
+  "duration_seconds": 2.07,
+  "includes_subprocess_usage_lease": true,
+  "scope": [
+    "Actual production storage module and response types",
+    "Managed-path and alias leases; external paths remain untouched",
+    "Current/in-use versions, interrupted downloads, stale removal and malformed manifests",
+    "Cross-process usage lease and store contention",
+    "Symlink and WAL rejection"
+  ],
+  "limits": "Application command registration, complete native app packaging and physical devices remain separate gates. The child-process invocation is included in the ten-test total, not counted again."
+}

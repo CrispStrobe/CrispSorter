@@ -1,0 +1,175 @@
+2026-11-09T15:00:56.7717984Z OCR review snapshot: 0 failure(s)
+2026-11-09T15:00:56.7862152Z OCR renderer — unit tests
+2026-11-09T15:00:56.7862465Z 
+2026-11-09T15:00:56.7862647Z === Plain text renderer ===
+2026-11-09T15:00:56.7862905Z   Output:
+2026-11-09T15:00:56.7863100Z ---
+2026-11-09T15:00:56.7863414Z Hello World
+2026-11-09T15:00:56.7863684Z Line two
+2026-11-09T15:00:56.7863968Z Second page
+2026-11-09T15:00:56.7864261Z Last line.
+2026-11-09T15:00:56.7864519Z ---
+2026-11-09T15:00:56.7865015Z   [PASS] contains Hello World
+2026-11-09T15:00:56.7865723Z   [PASS] contains Line two
+2026-11-09T15:00:56.7866265Z   [PASS] contains Second page
+2026-11-09T15:00:56.7866765Z   [PASS] contains page separator (\f)
+2026-11-09T15:00:56.7867252Z   [PASS] output size > 0
+2026-11-09T15:00:56.7867617Z   [PASS] custom separator
+2026-11-09T15:00:56.7867862Z 
+2026-11-09T15:00:56.7868033Z === hOCR renderer ===
+2026-11-09T15:00:56.7868457Z   [PASS] valid XML declaration
+2026-11-09T15:00:56.7869093Z   [PASS] html root element
+2026-11-09T15:00:56.7869404Z   [PASS] ocr_page class
+2026-11-09T15:00:56.7869711Z   [PASS] ocr_line class
+2026-11-09T15:00:56.7869997Z   [PASS] ocrx_word class
+2026-11-09T15:00:56.7870292Z   [PASS] bbox in title
+2026-11-09T15:00:56.7870596Z   [PASS] word Hello present
+2026-11-09T15:00:56.7870900Z   [PASS] word confidence
+2026-11-09T15:00:56.7871191Z   [PASS] page 2 present
+2026-11-09T15:00:56.7871492Z   [PASS] closes html
+2026-11-09T15:00:56.7871645Z 
+2026-11-09T15:00:56.7871754Z === ALTO renderer ===
+2026-11-09T15:00:56.7872030Z   [PASS] ALTO namespace
+2026-11-09T15:00:56.7872345Z   [PASS] MeasurementUnit pixel
+2026-11-09T15:00:56.7872671Z   [PASS] CrispEmbed software
+2026-11-09T15:00:56.7872978Z   [PASS] Page element
+2026-11-09T15:00:56.7873272Z   [PASS] Page dimensions
+2026-11-09T15:00:56.7873597Z   [PASS] TextBlock element
+2026-11-09T15:00:56.7873907Z   [PASS] TextLine element
+2026-11-09T15:00:56.7874200Z   [PASS] String element
+2026-11-09T15:00:56.7874471Z   [PASS] SP element
+2026-11-09T15:00:56.7874761Z   [PASS] word confidence WC
+2026-11-09T15:00:56.7875041Z   [PASS] closes alto
+2026-11-09T15:00:56.7875192Z 
+2026-11-09T15:00:56.7875297Z === PDF renderer ===
+2026-11-09T15:00:56.7875816Z   [PASS] PDF header
+2026-11-09T15:00:56.7876093Z   [PASS] has %%EOF
+2026-11-09T15:00:56.7876361Z   [PASS] has xref
+2026-11-09T15:00:56.7876613Z   [PASS] has Catalog
+2026-11-09T15:00:56.7876925Z   [PASS] has Unicode map
+2026-11-09T15:00:56.7877221Z   [PASS] has embedded font
+2026-11-09T15:00:56.7877555Z   [PASS] no renderer error
+2026-11-09T15:00:56.7877919Z   [PASS] PDF capabilities exclude unqualified bidi
+2026-11-09T15:00:56.7878319Z 
+2026-11-09T15:00:56.7878418Z === XML escaping ===
+2026-11-09T15:00:56.7878700Z   [PASS] & escaped to &amp;
+2026-11-09T15:00:56.7878994Z   [PASS] < escaped to &lt;
+2026-11-09T15:00:56.7879291Z   [PASS] " escaped to &quot;
+2026-11-09T15:00:56.7879594Z   [PASS] no raw <b> tag
+2026-11-09T15:00:56.7879738Z 
+2026-11-09T15:00:56.7879877Z === Errors and long corrections ===
+2026-11-09T15:00:56.7880202Z   [PASS] long ALTO content is complete
+2026-11-09T15:00:56.7880563Z   [PASS] ALTO retains Unicode suffix
+2026-11-09T15:00:56.7880964Z   [PASS] ALTO attribute whitespace survives XML parsing
+2026-11-09T15:00:56.7881357Z   [PASS] unknown confidence is omitted
+2026-11-09T15:00:56.7881734Z   [PASS] genuine zero confidence is preserved
+2026-11-09T15:00:56.7882097Z   [PASS] unknown confidence is omitted
+2026-11-09T15:00:56.7882458Z   [PASS] genuine zero confidence is preserved
+2026-11-09T15:00:56.7882851Z   [PASS] archival mode produces a complete document
+2026-11-09T15:00:56.7883240Z   [PASS] archival profile is explicit
+2026-11-09T15:00:56.7883611Z   [PASS] missing PDF image fails explicitly
+2026-11-09T15:00:56.7884016Z   [PASS] missing image does not silently disappear
+2026-11-09T15:00:56.7884388Z   [PASS] out-of-page text is rejected
+2026-11-09T15:00:56.7884568Z 
+2026-11-09T15:00:56.7884697Z === Whole-document PDF limits ===
+2026-11-09T15:00:56.7885063Z   [PASS] configured page limit accepts its boundary
+2026-11-09T15:00:56.7885505Z   [PASS] page beyond configured limit fails before rendering
+
+2026-11-09T15:01:51.6397717Z Recorded 1106 backend licenses for x86_64-unknown-linux-gnu from the locked application graph.
+
+2026-11-09T15:01:52.8483798Z Successfully generated 1126 licenses (19 frontend, 1106 backend) at /home/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/static/licenses.json
+
+2026-11-09T15:02:33.0022793Z Verified 1106 packaged backend license entries against the exact native metadata.
+
+2026-11-09T15:02:35.0306634Z running 11 tests
+2026-11-09T15:02:35.0329552Z test writer_contracts::cancellation_preserves_interrupted_and_stops_callbacks ... ok
+2026-11-09T15:02:35.0375737Z test writer_contracts::flush_failure_is_returned_after_complete_write ... ok
+2026-11-09T15:02:35.0376861Z test writer_contracts::invalid_configuration_does_not_touch_the_writer ... ok
+2026-11-09T15:02:35.0421882Z test writer_contracts::low_limit_never_writes_past_the_requested_bound ... ok
+2026-11-09T15:02:35.0423151Z test writer_contracts::panic_payload_destructor_cannot_unwind_across_c ... ok
+2026-11-09T15:02:35.0424490Z test writer_contracts::preserves_the_original_operating_system_error ... ok
+2026-11-09T15:02:35.1496283Z test writer_contracts::real_file_retains_two_pages_and_physical_sizes ... ok
+2026-11-09T15:02:35.1538069Z test writer_contracts::short_writes_preserve_the_complete_pdf ... ok
+2026-11-09T15:02:35.1538880Z test writer_contracts::streams_above_the_legacy_buffer_limit ... ignored, explicit hosted large-file gate with retained PDF and resource receipt
+2026-11-09T15:02:35.1585886Z test writer_contracts::writer_panic_never_unwinds_across_c_and_next_job_recovers ... ok
+2026-11-09T15:02:35.1592948Z test writer_contracts::zero_progress_is_write_zero ... ok
+2026-11-09T15:02:35.1593719Z 
+2026-11-09T15:02:35.1594244Z test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.13s
+2026-11-09T15:02:35.1594738Z 
+
+2026-11-09T15:29:44.4377459Z 
+2026-11-09T15:29:44.4378119Z running 55 tests
+2026-11-09T15:29:44.4403709Z test ocr_workspace::atomic_output::tests::byte_output_requires_explicit_replacement ... ok
+2026-11-09T15:29:44.4412901Z test ocr_workspace::atomic_output::tests::completed_stream_is_published_only_after_the_writer_finishes ... ok
+2026-11-09T15:29:44.4421391Z test ocr_workspace::atomic_output::tests::destination_created_during_render_is_not_overwritten_without_consent ... ok
+2026-11-09T15:29:44.4423546Z test ocr_workspace::atomic_output::tests::existing_unconfirmed_output_does_not_start_rendering ... ok
+2026-11-09T15:29:44.4426966Z test ocr_workspace::atomic_output::tests::failed_stream_preserves_old_output_and_removes_new_staging ... ok
+2026-11-09T15:29:44.4431600Z test ocr_workspace::atomic_output::tests::renderer_unwind_cleans_staging_without_publishing_partial_bytes ... ok
+2026-11-09T15:29:44.4444090Z test ocr_workspace::document_import::tests::archives_modern_images_without_rewriting_original_bytes_or_provider_identity ... ok
+2026-11-09T15:29:44.4445236Z test ocr_workspace::document_import::tests::detects_phone_formats_by_bounded_brands_and_rejects_malformed_boxes ... ok
+2026-11-09T15:29:44.4479887Z test ocr_workspace::document_import::tests::native_adoption_rejects_path_escape_bad_counts_and_truncated_png ... ok
+2026-11-09T15:29:44.4484637Z test ocr_workspace::document_import::tests::rejects_source_archive_and_rendered_page_symlinks ... ok
+2026-11-09T15:29:44.4486223Z test ocr_workspace::document_import::tests::source_pinned_pdf_fixture_is_intact ... ok
+2026-11-09T15:29:44.4489726Z test ocr_workspace::export_control::tests::accepted_stop_prevents_atomic_publication_and_cleans_staging ... ok
+2026-11-09T15:29:44.4491138Z test ocr_workspace::export_control::tests::before_start_stops_survive_but_finished_cancelled_or_failed_jobs_stay_terminal ... ok
+2026-11-09T15:29:44.4492028Z test ocr_workspace::export_control::tests::cancellation_before_start_is_retained_without_stopping_another_job ... ok
+2026-11-09T15:29:44.4493676Z test ocr_workspace::export_control::tests::cancellation_between_bounded_writes_stops_without_retrying_interrupted ... ok
+2026-11-09T15:29:44.4500982Z test ocr_workspace::export_control::tests::completed_ids_are_bounded_and_expire_without_extending_on_late_stops ... ok
+2026-11-09T15:29:44.4502151Z test ocr_workspace::export_control::tests::late_stop_after_finished_publication_is_refused_and_cannot_reuse_its_id ... ok
+2026-11-09T15:29:44.4505016Z test ocr_workspace::export_control::tests::pending_stops_are_bounded_expiring_and_deduplicated ... ok
+2026-11-09T15:29:44.4506277Z test ocr_workspace::export_control::tests::stop_and_publication_have_one_winner ... ok
+2026-11-09T15:29:44.4507269Z test ocr_workspace::export_control::tests::writer_preserves_original_io_errors_and_rejects_zero_progress ... ok
+2026-11-09T15:29:44.4531026Z test ocr_workspace::tests::blank_reviewed_pages_preserve_document_page_positions ... ok
+2026-11-09T15:29:44.4583931Z test ocr_workspace::tests::camera_import_cannot_reuse_an_asset_symlink_or_write_through_a_cache_alias ... ok
+2026-11-09T15:29:44.4664694Z test ocr_workspace::tests::camera_reimport_rejects_damaged_existing_pixels_and_preserves_originals ... ok
+2026-11-09T15:29:44.4679381Z test ocr_workspace::tests::cancelling_the_native_pdf_writer_after_output_starts_preserves_the_previous_export ... ok
+2026-11-09T15:29:44.4681274Z test ocr_workspace::tests::capture_rejects_empty_unsupported_and_nonprovider_input_before_archiving ... ok
+2026-11-09T15:29:44.4741320Z test ocr_workspace::tests::captured_bytes_are_archived_and_imported_by_signature_without_modifying_sources ... ok
+2026-11-09T15:29:44.4817899Z test ocr_workspace::tests::complete_jpeg_metadata_and_trailing_bytes_keep_archive_identity_and_orientation ... ok
+2026-11-09T15:29:44.4819339Z test ocr_workspace::tests::cpu_budget_is_limited_to_qwen2vl_in_spawn_capable_builds ... ok
+2026-11-09T15:29:44.4820677Z test ocr_workspace::tests::crop_bounds_reject_invalid_values_and_include_fractional_edges ... ok
+2026-11-09T15:29:44.4841153Z test ocr_workspace::tests::crop_scales_paper_size_but_repair_preserves_sampling_independence ... ok
+2026-11-09T15:29:44.4842338Z test ocr_workspace::tests::engine_and_language_choices_produce_explicit_config ... ok
+2026-11-09T15:29:44.4843772Z test ocr_workspace::tests::engine_changes_do_not_inherit_another_recognizers_weights ... ok
+2026-11-09T15:29:44.4847897Z test ocr_workspace::tests::every_offered_engine_builds_a_single_stage_with_registry_defaults ... ok
+2026-11-09T15:29:44.4848788Z test ocr_workspace::tests::exif_orientation_is_baked_into_pixels ... ok
+2026-11-09T15:29:44.4897193Z test ocr_workspace::tests::explicit_photo_geometry_keeps_identity_and_rejects_invalid_corners ... ok
+2026-11-09T15:29:44.4917600Z test ocr_workspace::tests::export_capabilities_never_offer_an_unverified_pdf_renderer ... ok
+2026-11-09T15:29:44.4920393Z test ocr_workspace::tests::export_cleanup_only_removes_a_private_staged_file ... ok
+2026-11-09T15:29:44.4931466Z test ocr_workspace::tests::export_never_overwrites_sources_or_internal_assets ... ok
+2026-11-09T15:29:44.4946062Z test ocr_workspace::tests::export_rejects_stale_page_geometry_and_outside_regions ... ok
+2026-11-09T15:29:44.4955134Z test ocr_workspace::tests::html_export_escapes_recognized_markup ... ok
+2026-11-09T15:29:44.4970093Z test ocr_workspace::tests::identical_page_snapshots_are_deduplicated_and_readable ... ok
+2026-11-09T15:29:44.4975215Z test ocr_workspace::tests::image_import_preserves_original_and_creates_durable_snapshot ... FAILED
+2026-11-09T15:29:44.4976345Z test ocr_workspace::tests::invalid_configuration_never_reaches_native_models ... ok
+2026-11-09T15:29:44.4999541Z test ocr_workspace::tests::invalid_projects_cannot_replace_saved_work ... ok
+2026-11-09T15:29:44.5026481Z test ocr_workspace::tests::jpeg_file_and_camera_imports_reject_incomplete_sources_before_persisting_pixels ... ok
+2026-11-09T15:29:44.5368807Z test ocr_workspace::tests::jpeg_import_preserves_exif_resolution_and_rotated_paper_axes ... ok
+2026-11-09T15:29:44.5386342Z test ocr_workspace::tests::json_export_preserves_unknown_confidence_and_review_evidence ... ok
+2026-11-09T15:29:44.5413893Z test ocr_workspace::tests::missing_assets_do_not_prevent_saving_reviewed_text ... ok
+2026-11-09T15:29:44.5473817Z test ocr_workspace::tests::recovery_preserves_a_valid_previous_revision_after_corruption ... ok
+2026-11-09T15:29:44.5489752Z test ocr_workspace::tests::rotation_keeps_source_bytes_and_changes_snapshot_dimensions ... ok
+2026-11-09T15:29:44.5532548Z test ocr_workspace::tests::save_rejects_stale_writers_without_losing_newer_edits ... ok
+2026-11-09T15:29:44.5554622Z test ocr_workspace::tests::split_preserves_both_halves_and_the_last_pixel ... ok
+2026-11-09T15:29:44.5578954Z test ocr_workspace::tests::streamed_pdf_is_atomic_and_a_native_limit_failure_preserves_the_previous_file ... ok
+2026-11-09T15:29:44.5587764Z test ocr_workspace::tests::structured_confidence_requires_unchanged_transcription_evidence ... ok
+2026-11-09T15:29:44.5596837Z test ocr_workspace::tests::transparent_scans_use_the_same_white_paper_for_preview_and_recognition ... ok
+2026-11-09T15:29:44.5597188Z 
+2026-11-09T15:29:44.5597284Z failures:
+2026-11-09T15:29:44.5597394Z 
+2026-11-09T15:29:44.5597747Z ---- ocr_workspace::tests::image_import_preserves_original_and_creates_durable_snapshot stdout ----
+2026-11-09T15:29:44.5598108Z 
+2026-11-09T15:29:44.5598662Z thread 'ocr_workspace::tests::image_import_preserves_original_and_creates_durable_snapshot' (39268) panicked at src-tauri/src/ocr_workspace.rs:1944:61:
+2026-11-09T15:29:44.5599487Z called `Result::unwrap()` on an `Err` value: "Open private page cache: No such file or directory (os error 2)"
+2026-11-09T15:29:44.5599827Z 
+2026-11-09T15:29:44.5599832Z 
+2026-11-09T15:29:44.5599920Z failures:
+2026-11-09T15:29:44.5600316Z     ocr_workspace::tests::image_import_preserves_original_and_creates_durable_snapshot
+2026-11-09T15:29:44.5600599Z 
+2026-11-09T15:29:44.5600925Z test result: FAILED. 54 passed; 1 failed; 0 ignored; 0 measured; 1526 filtered out; finished in 0.12s
+2026-11-09T15:29:44.5601233Z 
+2026-11-09T15:29:44.5738451Z error: test failed, to rerun pass `-p crispsorter --lib`
+2026-11-09T15:29:44.6008993Z ##[error]Process completed with exit code 101.
+2026-11-09T15:29:44.6087332Z ##[group]Run actions/upload-artifact@v4
+2026-11-09T15:29:44.6087594Z with:
+2026-11-09T15:29:44.6087808Z   name: ocr-paired-desktop-startup-linux

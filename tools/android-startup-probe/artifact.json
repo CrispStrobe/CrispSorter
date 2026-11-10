@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repository": "CrispStrobe/CrispSorter",
+  "run_id": 42634608233,
+  "job_id": 129223215632,
+  "application_source": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+  "application_tree": "2aadc1f0fd15f19a17e4df8f09bf30acd9d92490",
+  "artifact_id": 13688893223,
+  "artifact_name": "ocr-mobile-android-x86_64",
+  "artifact_bytes": 146806054,
+  "artifact_sha256": "ad95dd60bef91c6e6c138ce02a1795c654d4ce8270ab31257d1ad416a82014ee",
+  "apk_member": "ocr-mobile-app/CrispSorter-ocr.apk",
+  "apk_bytes": 481699327,
+  "apk_sha256": "e3ce605f312b09162fd9d2be90043905575570d4c20a40c58d64e286df9ae303",
+  "build_receipt_member": "ocr-mobile-app/build-receipt.json",
+  "build_receipt_sha256": "289ae7983899a2a9646fb2e2320d2d9e9ac6532605aeac97180e43f1ca0b17c6",
+  "package": "com.crispstrobe.crispsorter",
+  "abi": "x86_64",
+  "scope": "Retained APK startup diagnosis only. The original run failed before application workspace commands. No rebuild, OCR workflow, or physical-device qualification."
+}

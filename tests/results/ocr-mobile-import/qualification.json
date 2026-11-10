@@ -1,0 +1,848 @@
+{
+  "schema_version": 1,
+  "scope": "Native mobile-provider PDF/image decoding and provider/export access on emulators/simulators. This is not a physical-camera or physical-device qualification.",
+  "latest_qualified_native_source": "76de6dad49f9474aa1034e3030f95cd3f4a6d144",
+  "runs": [
+    {
+      "run_id": 42608320536,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42608320536",
+      "source_commit": "7b5a7791c592e2e178b85724cb8cd26c5ac3558a",
+      "conclusion": "failure",
+      "android": {
+        "job_id": 129129867825,
+        "environment": "Android 10 / API 29 emulator",
+        "passed": 18,
+        "failed": 0,
+        "skipped": 1,
+        "skip_reason": "The runtime does not advertise an AVIF decoder.",
+        "artifact": {
+          "id": 13669748506,
+          "sha256": "40a9fd7fa763d8ae11559fee342767c06affd3e984b9adc36d803687953b3291",
+          "download_hash_verified": true
+        },
+        "tests": [
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "cancelsBeforeOpeningAndBetweenPagesWithoutReturningAPartialDocument",
+            "status": "passed",
+            "detail": "passed (0.217s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "capsRasterMemoryWithoutOverflowOrDegenerateDimensions",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesAvifOnlyWhenTheRuntimeActuallySupportsIt",
+            "status": "skipped",
+            "detail": "ignored (-)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesOrientationInPixelsBeforeRecognition",
+            "status": "passed",
+            "detail": "passed (0.010s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "pinnedFixturesMatchTheirDeclaredSources",
+            "status": "passed",
+            "detail": "passed (0.033s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rejectsIncompleteImagePayloadsInsteadOfImportingPartialPixels",
+            "status": "passed",
+            "detail": "passed (0.003s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rejectsOutOfBoundsSourcesSymlinksAndReusedStaging",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rendersEveryPdfPageWithInkPhysicalSizeAndUnchangedOriginal",
+            "status": "passed",
+            "detail": "passed (0.718s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "respectsPdfRotationAndFailsLockedOrDamagedDocuments",
+            "status": "passed",
+            "detail": "passed (0.333s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "providerOpenAndCopyErrorsNeverReportSuccessOrConsumeSource",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsAnExportRootSymlinkOutsideTheCache",
+            "status": "passed",
+            "detail": "passed (0.002s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsFileAndDirectorySymlinksThatEscapeStaging",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsOversizedStagingWithoutReadingItsWholeContents",
+            "status": "passed",
+            "detail": "passed (0.008s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "resolverCopyCompletesWithExactBytesAndPreservesSource",
+            "status": "passed",
+            "detail": "passed (0.026s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "validatesOnlyPreparedNamedRegularFilesWithoutChangingSource",
+            "status": "passed",
+            "detail": "passed (0.005s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "cyclicFolderIsAnErrorRatherThanAPartialImport",
+            "status": "passed",
+            "detail": "passed (0.034s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "fileReadsUseProviderUriAndSupportUnknownSize",
+            "status": "passed",
+            "detail": "passed (0.029s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "folderTraversalPreservesTreeUrisAndCase",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "readLimitAndRevokedAccessProduceErrors",
+            "status": "passed",
+            "detail": "passed (0.029s)"
+          }
+        ]
+      },
+      "ios": {
+        "job_id": 129129867202,
+        "environment": "iOS simulator, Xcode 16.4, iPhoneSimulator 18.5 SDK",
+        "passed": 16,
+        "failed": 2,
+        "skipped": 0,
+        "artifact": {
+          "id": 13669339511,
+          "sha256": "ed36750a9ea3c1ae12750b88d63fd930336d65846ec74e78f2068769d3e400f0",
+          "download_hash_verified": false,
+          "digest_source": "GitHub artifact metadata; assertions read from the hosted job log"
+        },
+        "tests": [
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testBakesExifOrientationIntoThePixelsBeforeRecognition",
+            "status": "passed",
+            "seconds": 0.172
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testCancellationBeforeOpeningAndBetweenPagesNeverReturnsAPartialDocument",
+            "status": "passed",
+            "seconds": 0.207
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testCapsRasterMemoryAndRejectsDegenerateDimensions",
+            "status": "passed",
+            "seconds": 0.001
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testDecodesAvifOnlyWhenImageIOActuallyAdvertisesIt",
+            "status": "passed",
+            "seconds": 0.196
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testNativeHeicRoundTripWhenEncoderAndDecoderAreAvailable",
+            "status": "passed",
+            "seconds": 0.126
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testPinnedFixturesMatchTheirDeclaredSources",
+            "status": "passed",
+            "seconds": 0.003
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testPreservesPdfRotationAndRejectsLockedOrDamagedInput",
+            "status": "passed",
+            "seconds": 0.182
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRejectsIncompleteImagesInsteadOfImportingPartialPixels",
+            "status": "failed",
+            "seconds": 1.766
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRejectsPathsOutsideStagingSymlinksReusedDirectoriesAndOversizedSources",
+            "status": "passed",
+            "seconds": 0.02
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRendersAllPagesWithInkPhysicalDimensionsAndUnchangedOriginal",
+            "status": "failed",
+            "seconds": 0.311
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testPreparedFilesInBothTauriCacheLayoutsPreserveTheSource",
+            "status": "passed",
+            "seconds": 0.007
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOrdinaryFilesMismatchedNamesAndUnsafeNames",
+            "status": "passed",
+            "seconds": 0.007
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOutsideCacheAndPrefixLookalikePaths",
+            "status": "passed",
+            "seconds": 0.078
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOversizedFileUsingMetadataWithoutReadingItsContents",
+            "status": "passed",
+            "seconds": 0.005
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsSourceAndStagingRootSymlinkEscapes",
+            "status": "passed",
+            "seconds": 0.009
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testBookmarkRecordUsesExactIdentityAndRequiresReselectionWhenMissing",
+            "status": "passed",
+            "seconds": 0.036
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testReadBoundedPreservesBinaryAndRejectsOversize",
+            "status": "passed",
+            "seconds": 0.044
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testReadRejectsAnUnselectedURL",
+            "status": "passed",
+            "seconds": 0.003
+          }
+        ],
+        "failures": [
+          {
+            "name": "testRejectsIncompleteImagesInsteadOfImportingPartialPixels",
+            "cause": "ImageIO returned a thumbnail and complete status for a JPEG missing its final 100 bytes.",
+            "corrected_in": "dd8d9b1419e5b5d339c8a432118cb94218cdbce3",
+            "correction": "Validate JPEG scan/segment boundaries and HEIF/AVIF container lengths before native image decode."
+          },
+          {
+            "name": "testRendersAllPagesWithInkPhysicalDimensionsAndUnchangedOriginal",
+            "cause": "The 8-pixel sampling grid found 27 dark points, missing thin glyph strokes relative to its arbitrary threshold of 30.",
+            "corrected_in": "dd8d9b1419e5b5d339c8a432118cb94218cdbce3",
+            "correction": "Count every dark pixel and require more than 500; blank rasters still fail."
+          }
+        ]
+      }
+    },
+    {
+      "run_id": 42609744777,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42609744777",
+      "source_commit": "dd8d9b1419e5b5d339c8a432118cb94218cdbce3",
+      "conclusion": "success",
+      "android": {
+        "job_id": 129134845403,
+        "environment": "Android 10 / API 29 emulator",
+        "passed": 18,
+        "failed": 0,
+        "skipped": 1,
+        "skip_reason": "The runtime does not advertise an AVIF decoder.",
+        "artifact": {
+          "id": 13670198472,
+          "sha256": "b8314ae1b2974f1fb52a71be748d865637f79d54f122250a0c188fcea7c6c2ed",
+          "download_hash_verified": true
+        },
+        "tests": [
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "cancelsBeforeOpeningAndBetweenPagesWithoutReturningAPartialDocument",
+            "status": "passed",
+            "detail": "passed (0.206s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "capsRasterMemoryWithoutOverflowOrDegenerateDimensions",
+            "status": "passed",
+            "detail": "passed (0.006s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesAvifOnlyWhenTheRuntimeActuallySupportsIt",
+            "status": "skipped",
+            "detail": "ignored (-)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesOrientationInPixelsBeforeRecognition",
+            "status": "passed",
+            "detail": "passed (0.002s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "pinnedFixturesMatchTheirDeclaredSources",
+            "status": "passed",
+            "detail": "passed (0.030s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rejectsIncompleteImagePayloadsInsteadOfImportingPartialPixels",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rejectsOutOfBoundsSourcesSymlinksAndReusedStaging",
+            "status": "passed",
+            "detail": "passed (0.029s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rendersEveryPdfPageWithInkPhysicalSizeAndUnchangedOriginal",
+            "status": "passed",
+            "detail": "passed (0.706s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "respectsPdfRotationAndFailsLockedOrDamagedDocuments",
+            "status": "passed",
+            "detail": "passed (0.328s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "providerOpenAndCopyErrorsNeverReportSuccessOrConsumeSource",
+            "status": "passed",
+            "detail": "passed (0.004s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsAnExportRootSymlinkOutsideTheCache",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsFileAndDirectorySymlinksThatEscapeStaging",
+            "status": "passed",
+            "detail": "passed (0.004s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsOversizedStagingWithoutReadingItsWholeContents",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "resolverCopyCompletesWithExactBytesAndPreservesSource",
+            "status": "passed",
+            "detail": "passed (0.003s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "validatesOnlyPreparedNamedRegularFilesWithoutChangingSource",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "cyclicFolderIsAnErrorRatherThanAPartialImport",
+            "status": "passed",
+            "detail": "passed (0.029s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "fileReadsUseProviderUriAndSupportUnknownSize",
+            "status": "passed",
+            "detail": "passed (0.004s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "folderTraversalPreservesTreeUrisAndCase",
+            "status": "passed",
+            "detail": "passed (0.003s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "readLimitAndRevokedAccessProduceErrors",
+            "status": "passed",
+            "detail": "passed (0.053s)"
+          }
+        ]
+      },
+      "ios": {
+        "job_id": 129134844827,
+        "environment": "iOS simulator, Xcode 16.4, iPhoneSimulator 18.5 SDK",
+        "passed": 18,
+        "failed": 0,
+        "skipped": 0,
+        "artifact": {
+          "id": 13670402903,
+          "sha256": "75b7300c61d9a327e7c3d09ee0b996e729315acc97802f4e9d34c7d0351d5431",
+          "download_hash_verified": true
+        },
+        "tests": [
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testBakesExifOrientationIntoThePixelsBeforeRecognition",
+            "status": "passed",
+            "seconds": 0.198
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testCancellationBeforeOpeningAndBetweenPagesNeverReturnsAPartialDocument",
+            "status": "passed",
+            "seconds": 0.215
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testCapsRasterMemoryAndRejectsDegenerateDimensions",
+            "status": "passed",
+            "seconds": 0.001
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testDecodesAvifOnlyWhenImageIOActuallyAdvertisesIt",
+            "status": "passed",
+            "seconds": 0.157
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testNativeHeicRoundTripWhenEncoderAndDecoderAreAvailable",
+            "status": "passed",
+            "seconds": 0.063
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testPinnedFixturesMatchTheirDeclaredSources",
+            "status": "passed",
+            "seconds": 0.004
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testPreservesPdfRotationAndRejectsLockedOrDamagedInput",
+            "status": "passed",
+            "seconds": 0.282
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRejectsIncompleteImagesInsteadOfImportingPartialPixels",
+            "status": "passed",
+            "seconds": 0.017
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRejectsPathsOutsideStagingSymlinksReusedDirectoriesAndOversizedSources",
+            "status": "passed",
+            "seconds": 0.007
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRendersAllPagesWithInkPhysicalDimensionsAndUnchangedOriginal",
+            "status": "passed",
+            "seconds": 0.663
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testPreparedFilesInBothTauriCacheLayoutsPreserveTheSource",
+            "status": "passed",
+            "seconds": 0.005
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOrdinaryFilesMismatchedNamesAndUnsafeNames",
+            "status": "passed",
+            "seconds": 0.005
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOutsideCacheAndPrefixLookalikePaths",
+            "status": "passed",
+            "seconds": 0.006
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOversizedFileUsingMetadataWithoutReadingItsContents",
+            "status": "passed",
+            "seconds": 0.002
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsSourceAndStagingRootSymlinkEscapes",
+            "status": "passed",
+            "seconds": 0.003
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testBookmarkRecordUsesExactIdentityAndRequiresReselectionWhenMissing",
+            "status": "passed",
+            "seconds": 0.013
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testReadBoundedPreservesBinaryAndRejectsOversize",
+            "status": "passed",
+            "seconds": 0.013
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testReadRejectsAnUnselectedURL",
+            "status": "passed",
+            "seconds": 0.002
+          }
+        ]
+      }
+    },
+    {
+      "run_id": 42612700801,
+      "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42612700801",
+      "source_commit": "76de6dad49f9474aa1034e3030f95cd3f4a6d144",
+      "conclusion": "success",
+      "android": {
+        "job_id": 129144873966,
+        "environment": "Android 10 / API 29 emulator",
+        "passed": 19,
+        "failed": 0,
+        "skipped": 1,
+        "skip_reason": "The runtime does not advertise an AVIF decoder.",
+        "artifact": {
+          "id": 13673011519,
+          "sha256": "9214fb1787d8ab217d77b45f93fe2d69412099f2bd0714d951e92e17f6d32b44",
+          "bytes": 7913,
+          "download_hash_verified": true
+        },
+        "tests": [
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "cancelsBeforeOpeningAndBetweenPagesWithoutReturningAPartialDocument",
+            "status": "passed",
+            "detail": "passed (0.129s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "capsRasterMemoryWithoutOverflowOrDegenerateDimensions",
+            "status": "passed",
+            "detail": "passed (0.006s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesAvifOnlyWhenTheRuntimeActuallySupportsIt",
+            "status": "skipped",
+            "detail": "ignored (-)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesOrientationInPixelsBeforeRecognition",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "decodesPinnedHeicWhenTheRuntimeAdvertisesIt",
+            "status": "passed",
+            "detail": "passed (0.100s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "pinnedFixturesMatchTheirDeclaredSources",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rejectsIncompleteImagePayloadsInsteadOfImportingPartialPixels",
+            "status": "passed",
+            "detail": "passed (0.002s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rejectsOutOfBoundsSourcesSymlinksAndReusedStaging",
+            "status": "passed",
+            "detail": "passed (0.025s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "rendersEveryPdfPageWithInkPhysicalSizeAndUnchangedOriginal",
+            "status": "passed",
+            "detail": "passed (0.470s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.DocumentRasterizerTest",
+            "name": "respectsPdfRotationAndFailsLockedOrDamagedDocuments",
+            "status": "passed",
+            "detail": "passed (0.208s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "providerOpenAndCopyErrorsNeverReportSuccessOrConsumeSource",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsAnExportRootSymlinkOutsideTheCache",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsFileAndDirectorySymlinksThatEscapeStaging",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "rejectsOversizedStagingWithoutReadingItsWholeContents",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "resolverCopyCompletesWithExactBytesAndPreservesSource",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.ExportAccessTest",
+            "name": "validatesOnlyPreparedNamedRegularFilesWithoutChangingSource",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "cyclicFolderIsAnErrorRatherThanAPartialImport",
+            "status": "passed",
+            "detail": "passed (0.033s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "fileReadsUseProviderUriAndSupportUnknownSize",
+            "status": "passed",
+            "detail": "passed (0s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "folderTraversalPreservesTreeUrisAndCase",
+            "status": "passed",
+            "detail": "passed (0.001s)"
+          },
+          {
+            "class": "com.crispstrobe.mobileprovider.SafReaderTest",
+            "name": "readLimitAndRevokedAccessProduceErrors",
+            "status": "passed",
+            "detail": "passed (0.025s)"
+          }
+        ]
+      },
+      "ios": {
+        "job_id": 129144874470,
+        "environment": "iOS simulator, Xcode 16.4, iPhoneSimulator 18.5 SDK",
+        "passed": 19,
+        "failed": 0,
+        "skipped": 0,
+        "artifact": {
+          "id": 13672221831,
+          "sha256": "9e4b1a7267d285d47c3ea1161dfc9cc4ea115454abbdd61c8b20942495d161d4",
+          "bytes": 81974,
+          "download_hash_verified": true
+        },
+        "tests": [
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testBakesExifOrientationIntoThePixelsBeforeRecognition",
+            "status": "passed",
+            "seconds": 0.114
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testCancellationBeforeOpeningAndBetweenPagesNeverReturnsAPartialDocument",
+            "status": "passed",
+            "seconds": 0.13
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testCapsRasterMemoryAndRejectsDegenerateDimensions",
+            "status": "passed",
+            "seconds": 0.001
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testDecodesAvifOnlyWhenImageIOActuallyAdvertisesIt",
+            "status": "passed",
+            "seconds": 0.185
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testDecodesPinnedHeicWhenImageIOAdvertisesIt",
+            "status": "passed",
+            "seconds": 0.054
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testNativeHeicRoundTripWhenEncoderAndDecoderAreAvailable",
+            "status": "passed",
+            "seconds": 0.075
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testPinnedFixturesMatchTheirDeclaredSources",
+            "status": "passed",
+            "seconds": 0.008
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testPreservesPdfRotationAndRejectsLockedOrDamagedInput",
+            "status": "passed",
+            "seconds": 0.141
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRejectsIncompleteImagesInsteadOfImportingPartialPixels",
+            "status": "passed",
+            "seconds": 0.019
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRejectsPathsOutsideStagingSymlinksReusedDirectoriesAndOversizedSources",
+            "status": "passed",
+            "seconds": 0.006
+          },
+          {
+            "class": "DocumentRasterizerTests",
+            "name": "testRendersAllPagesWithInkPhysicalDimensionsAndUnchangedOriginal",
+            "status": "passed",
+            "seconds": 0.735
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testPreparedFilesInBothTauriCacheLayoutsPreserveTheSource",
+            "status": "passed",
+            "seconds": 0.006
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOrdinaryFilesMismatchedNamesAndUnsafeNames",
+            "status": "passed",
+            "seconds": 0.004
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOutsideCacheAndPrefixLookalikePaths",
+            "status": "passed",
+            "seconds": 0.006
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsOversizedFileUsingMetadataWithoutReadingItsContents",
+            "status": "passed",
+            "seconds": 0.003
+          },
+          {
+            "class": "ExportAccessTests",
+            "name": "testRejectsSourceAndStagingRootSymlinkEscapes",
+            "status": "passed",
+            "seconds": 0.006
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testBookmarkRecordUsesExactIdentityAndRequiresReselectionWhenMissing",
+            "status": "passed",
+            "seconds": 0.007
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testReadBoundedPreservesBinaryAndRejectsOversize",
+            "status": "passed",
+            "seconds": 0.013
+          },
+          {
+            "class": "ProviderAccessTests",
+            "name": "testReadRejectsAnUnselectedURL",
+            "status": "passed",
+            "seconds": 0.003
+          }
+        ]
+      }
+    }
+  ],
+  "additional_heic_fixture": {
+    "sha256": "e8091ae32edebf1739bc6556e9ec245b155bf82e49d92fa15344974a00531ae2",
+    "bytes": 2826,
+    "source": "Self-authored four-color pixels encoded as one HEVC Main image.",
+    "independent_decode": {
+      "decoder": "ImageMagick 7.1.1-43 / libheif 1.23.6",
+      "dimensions": [
+        120,
+        80
+      ],
+      "corner_rgb": [
+        [
+          231,
+          30,
+          29
+        ],
+        [
+          30,
+          190,
+          49
+        ],
+        [
+          29,
+          60,
+          221
+        ],
+        [
+          240,
+          220,
+          30
+        ]
+      ]
+    },
+    "native_qualification": {
+      "run_id": 42612700801,
+      "source_commit": "76de6dad49f9474aa1034e3030f95cd3f4a6d144",
+      "android": "passed",
+      "ios": "passed",
+      "scope": "Both framework decoders produced the expected dimensions and corner colors and preserved the identical archived source bytes. This is a registered provider helper test, not a physical-camera or complete-application result."
+    }
+  }
+}

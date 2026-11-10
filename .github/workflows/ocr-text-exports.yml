@@ -1,0 +1,114 @@
+name: Reviewed OCR text export contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-pdf-text-alternatives', 'feat/ocr-document-studio']
+    paths:
+      - src-tauri/src/ocr_text_export.rs
+      - src-tauri/src/ocr_workspace.rs
+      - src-tauri/Cargo.toml
+      - Cargo.lock
+      - tests/ocr-text-export-contract/**
+      - .github/workflows/ocr-text-exports.yml
+  pull_request:
+    paths:
+      - src-tauri/src/ocr_text_export.rs
+      - src-tauri/src/ocr_workspace.rs
+      - src-tauri/Cargo.toml
+      - Cargo.lock
+      - tests/ocr-text-export-contract/**
+      - .github/workflows/ocr-text-exports.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-text-exports-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  portable-documents:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify frozen application pins for the isolated production module
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/ocr-text-exports
+          python3 tests/ocr-text-export-contract/pins.py check test-results/ocr-text-exports
+          cargo test --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --no-default-features -- --test-threads=1 2>&1 | tee test-results/ocr-text-exports/plain-contracts.log
+      - name: Generate documents with the actual checked-in exporter
+        shell: bash
+        env:
+          OCR_TEXT_EXPORT_ARTIFACTS: ${{ github.workspace }}/test-results/ocr-text-exports
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --features ocr-text-export -- --test-threads=1 2>&1 | tee test-results/ocr-text-exports/word-contracts.log
+          cargo tree --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --features ocr-text-export > test-results/ocr-text-exports/dependency-tree.txt
+          sha256sum src-tauri/src/ocr_text_export.rs src-tauri/src/ocr_workspace.rs src-tauri/Cargo.toml Cargo.lock tests/ocr-text-export-contract/Cargo.lock > test-results/ocr-text-exports/source-pins.sha256
+      - name: Check Android compilation of the portable production exporter
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --features ocr-text-export --target aarch64-linux-android 2>&1 | tee test-results/ocr-text-exports/android-check.log
+      - name: Independently read actual Word, HTML and plain text artifacts
+        run: |
+          python3 -m pip install python-docx==1.2.0
+          python3 tests/ocr-text-export-contract/check.py test-results/ocr-text-exports
+      - name: Check the generated HTML in a phone and desktop browser
+        shell: bash
+        env:
+          PLAYWRIGHT_MODULE_PATH: ${{ runner.temp }}/ocr-text-browser/node_modules/playwright
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/ocr-text-browser" --no-save --package-lock=false playwright@1.62.1
+          node "$RUNNER_TEMP/ocr-text-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          node tests/ocr-text-export-contract/check-html.mjs test-results/ocr-text-exports
+      - name: Preserve actual files, independent readers and resolved exact pins
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-reviewed-text-exports
+          path: |
+            test-results/ocr-text-exports
+            tests/ocr-text-export-contract/Cargo.lock
+          retention-days: 30
+  ios-portable-exporter:
+    needs: portable-documents
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: actions/download-artifact@v4
+        with:
+          name: ocr-reviewed-text-exports
+          path: retained
+      - name: Check the same exact exporter and dependency pins for iOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp retained/tests/ocr-text-export-contract/Cargo.lock tests/ocr-text-export-contract/Cargo.lock
+          mkdir -p test-results/ocr-text-exports-ios
+          python3 tests/ocr-text-export-contract/pins.py check test-results/ocr-text-exports-ios
+          cargo check --locked --manifest-path tests/ocr-text-export-contract/Cargo.toml --features ocr-text-export --target aarch64-apple-ios 2>&1 | tee test-results/ocr-text-exports-ios/ios-check.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ocr-reviewed-text-exports-ios
+          path: test-results/ocr-text-exports-ios
+          retention-days: 30

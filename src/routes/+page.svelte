@@ -3,7 +3,7 @@
     import { documentToolRequest, supportsOcrWorkbench } from '$lib/workflow';
     import { uriToPath } from '$lib/components/viewer/types';
     import WorkflowSummary from '$lib/components/WorkflowSummary.svelte';
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
     import { stat } from '@tauri-apps/plugin-fs';
@@ -15,7 +15,7 @@
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
-    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText, Search } from 'lucide-svelte';
     import { CORE_TABS, AITOOLKIT_TABS, MOBILE_TABS, visibleTabs } from '$lib/tabs';
     import { aitoolkitCaps } from '$lib/aitoolkit';
     import { caps, buildFlags, loadCapabilities } from '$lib/capabilities';
@@ -31,6 +31,8 @@
     import DriveBrowser from '$lib/components/DriveBrowser.svelte';
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
     import { getBackendStatus, retryBackend, type BackendStatus } from '$lib/secretBackend';
+    import QuickNavigation from '$lib/components/QuickNavigation.svelte';
+    import { isNavigationShortcut, navigationCopy, navigationDestinations } from '$lib/navigation';
 
     $effect(() => { if ($documentToolRequest && ($documentToolRequest.tool !== 'ocr' || supportsOcrWorkbench($caps))) activeTab = $documentToolRequest.tool; });
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
@@ -71,6 +73,57 @@
     let navCollapsed = $state(false);
     let showMobileTools = $state(false);
     let showLogs = $state(false);
+    let showQuickNavigation = $state(false);
+    let mobileToolsTrigger = $state<HTMLButtonElement>();
+    let mobileToolsMenu = $state<HTMLDivElement>();
+    const navCopy = $derived(navigationCopy[i18n.lang]);
+
+    function navigate(tab: string) {
+        showMobileTools = false;
+        if (tab === 'logs') showLogs = true;
+        else activeTab = tab;
+    }
+
+    function openQuickNavigation() {
+        // A mobile menu action is about to disappear; restore its persistent
+        // trigger first so the dialog has somewhere useful to return focus.
+        if (showMobileTools) mobileToolsTrigger?.focus();
+        showMobileTools = false;
+        showQuickNavigation = true;
+    }
+
+    async function toggleMobileTools() {
+        showMobileTools = !showMobileTools;
+        if (showMobileTools) {
+            await tick();
+            mobileToolsMenu?.querySelector<HTMLButtonElement>('button')?.focus();
+        }
+    }
+
+    function closeMobileTools(restoreFocus = false) {
+        showMobileTools = false;
+        if (restoreFocus) mobileToolsTrigger?.focus();
+    }
+
+    function onWindowKey(event: KeyboardEvent) {
+        if (isNavigationShortcut(event)) {
+            // Respect another modal's keyboard scope and content editors' link
+            // shortcut. Ordinary text inputs can still open quick navigation.
+            if (!showQuickNavigation && (document.querySelector('dialog[open], [aria-modal="true"]')
+                || (event.target instanceof HTMLElement && event.target.isContentEditable))) return;
+            event.preventDefault();
+            if (showQuickNavigation) showQuickNavigation = false;
+            else openQuickNavigation();
+        } else if (showMobileTools && event.key === 'Escape' && !event.isComposing) {
+            event.preventDefault();
+            closeMobileTools(true);
+        }
+    }
+
+    function onWindowClick(event: MouseEvent) {
+        if (showMobileTools && event.target instanceof Node
+            && !mobileToolsMenu?.contains(event.target) && !mobileToolsTrigger?.contains(event.target)) closeMobileTools();
+    }
 
     $effect(() => subscribeBrowserContext(() => { activeTab = 'drives'; }));
 
@@ -166,6 +219,9 @@
     // connected AIToolkit backend. Merged here rather than in `tabs.ts` so
     // the registry stays a plain data file with no store imports.
     let allCaps = $derived(new Set([...$buildFlags, ...$aitoolkitCaps]));
+    const navigationItems = $derived(navigationDestinations(
+        [...CORE_TABS, ...AITOOLKIT_TABS], allCaps, i18n.t.nav as Record<string, string>, i18n.lang,
+    ));
 
     onMount(() => {
         let cleanup = () => {};
@@ -426,23 +482,32 @@
     });
 
     function switchToBatch() {
-        activeTab = 'batch';
+        navigate('batch');
     }
 </script>
 
+<svelte:window onkeydown={onWindowKey} onclick={onWindowClick} />
+
 <div class="app-shell">
-    <nav class="main-nav" class:collapsed={navCollapsed}>
+    <nav class="main-nav" class:collapsed={navCollapsed} aria-label={navCopy.primary}>
         <div class="nav-top">
             <div class="logo-area">
                 <div class="logo-icon">C</div>
                 {#if !navCollapsed}<span class="logo-text">CrispSorter</span>{/if}
             </div>
-            
+            <button class="nav-item quick-navigation-trigger" onclick={openQuickNavigation}
+                aria-label={navCopy.open} aria-keyshortcuts="Control+k Meta+k" title={`${navCopy.open} (Ctrl/⌘ K)`}>
+                <Search size={20} aria-hidden="true" />
+                {#if !navCollapsed}<span>{navCopy.open}</span><kbd>⌘/Ctrl K</kbd>{/if}
+            </button>
+            <div class="nav-separator"></div>
             {#each visibleTabs([...CORE_TABS, ...AITOOLKIT_TABS], allCaps) as tab (tab.id)}
                 {#if tab.separatorBefore}<div class="nav-separator"></div>{/if}
                 {@const Icon = tab.icon}
-                <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}>
-                    <Icon size={20} />
+                {@const label = (i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}
+                <button class="nav-item" class:active={activeTab === tab.id} onclick={() => navigate(tab.id)} title={label}
+                    aria-label={label} aria-current={activeTab === tab.id ? 'page' : undefined}>
+                    <Icon size={20} aria-hidden="true" />
                     {#if !navCollapsed}<span>{((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}</span>{/if}
                 </button>
             {/each}
@@ -536,17 +601,20 @@
                     {/if}
                 </button>
             {/if}
-            <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title={i18n.t.nav.logs}>
-                <Terminal size={20} />
+            <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title={i18n.t.nav.logs}
+                aria-label={i18n.t.nav.logs} aria-expanded={showLogs}>
+                <Terminal size={20} aria-hidden="true" />
                 {#if !navCollapsed}<span>{i18n.t.nav.logs}</span>{/if}
             </button>
 
-            <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'} title={i18n.t.nav.settings}>
-                <SettingsIcon size={20} />
+            <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => navigate('settings')} title={i18n.t.nav.settings}
+                aria-label={i18n.t.nav.settings} aria-current={activeTab === 'settings' ? 'page' : undefined}>
+                <SettingsIcon size={20} aria-hidden="true" />
                 {#if !navCollapsed}<span>{i18n.t.nav.settings}</span>{/if}
             </button>
 
-            <button class="collapse-toggle" onclick={() => navCollapsed = !navCollapsed}>
+            <button class="collapse-toggle" onclick={() => navCollapsed = !navCollapsed}
+                aria-label={navCollapsed ? navCopy.expand : navCopy.collapse} title={navCollapsed ? navCopy.expand : navCopy.collapse} aria-expanded={!navCollapsed}>
                 {#if navCollapsed}<ChevronRight size={16} />{:else}<ChevronLeft size={16} />{/if}
             </button>
         </div>
@@ -579,7 +647,7 @@
             </div>
         {/if}
         {#if ['batch', 'review', 'catalog'].includes(activeTab)}
-            <WorkflowSummary navigate={(tab) => activeTab = tab} />
+            <WorkflowSummary {navigate} />
         {/if}
         <div class="content-area">
             {#if activeTab === 'settings'}
@@ -637,41 +705,90 @@
          covered without any call site knowing it exists. -->
     <ThirdPartyAiConsent />
 
+    {#if showQuickNavigation}
+        <QuickNavigation destinations={navigationItems} current={activeTab} language={i18n.lang}
+            onNavigate={navigate} onClose={() => showQuickNavigation = false} />
+    {/if}
+
     <!-- Mobile bottom tab bar — visible only on small screens -->
-    <nav class="mobile-nav">
+    <nav class="mobile-nav" aria-label={navCopy.mobile}>
         {#each visibleTabs(MOBILE_TABS, allCaps).slice(0, 4) as tab (tab.id)}
             {@const Icon = tab.icon}
-            <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
-                <Icon size={20} /><span>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</span>
+            <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => navigate(tab.id)} aria-current={activeTab === tab.id ? 'page' : undefined}>
+                <Icon size={20} aria-hidden="true" /><span>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</span>
             </button>
         {/each}
-        <button class="mobile-tab" aria-expanded={showMobileTools} aria-controls="mobile-tools-menu" onclick={() => showMobileTools = !showMobileTools}>
-            <span aria-hidden="true">⋯</span><span>Tools</span>
+        <button class="mobile-tab" bind:this={mobileToolsTrigger} class:active={!['batch', 'review', 'catalog', 'chat', 'settings'].includes(activeTab)}
+            aria-expanded={showMobileTools} aria-controls="mobile-tools-menu" onclick={toggleMobileTools}>
+            <span aria-hidden="true">⋯</span><span>{navCopy.tools}</span>
         </button>
         {#if showMobileTools}
-            <div id="mobile-tools-menu" class="mobile-tools-menu">
+            <div id="mobile-tools-menu" class="mobile-tools-menu" bind:this={mobileToolsMenu} role="group" aria-label={navCopy.tools}
+                onfocusout={(event) => {
+                    if (event.relatedTarget instanceof Node && !mobileToolsMenu?.contains(event.relatedTarget)
+                        && !mobileToolsTrigger?.contains(event.relatedTarget)) closeMobileTools();
+                }}>
+                <button class="mobile-quick-navigation" onclick={openQuickNavigation}><Search size={16} aria-hidden="true" />{navCopy.open}</button>
                 {#each visibleTabs(MOBILE_TABS, allCaps).slice(4) as tab}
-                    <button onclick={() => { activeTab = tab.id; showMobileTools = false; }}>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</button>
+                    <button onclick={() => navigate(tab.id)} aria-current={activeTab === tab.id ? 'page' : undefined}>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</button>
                 {/each}
-                <button onclick={() => { activeTab = 'pdf'; showMobileTools = false; }}>PDF tools</button>
-                <button onclick={() => { activeTab = 'drives'; showMobileTools = false; }}>Drives</button>
-                <button onclick={() => { activeTab = 'history'; showMobileTools = false; }}>History</button>
+                {#each ['pdf', 'drives', 'history'] as tab}
+                    <button onclick={() => navigate(tab)} aria-current={activeTab === tab ? 'page' : undefined}>{(i18n.t.nav as Record<string, string>)[tab]}</button>
+                {/each}
+                <button onclick={() => navigate('logs')}>{i18n.t.nav.logs}</button>
             </div>
         {/if}
-        <button class="mobile-tab" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
-            <SettingsIcon size={20} /><span>{i18n.t.nav.settings}</span>
+        <button class="mobile-tab" class:active={activeTab === 'settings'} onclick={() => navigate('settings')} aria-current={activeTab === 'settings' ? 'page' : undefined}>
+            <SettingsIcon size={20} aria-hidden="true" /><span>{i18n.t.nav.settings}</span>
         </button>
     </nav>
 </div>
 
 <style>
-    .mobile-tools-menu { position: fixed; bottom: 75px; right: 12px; background: #18181b; border: 1px solid #52525b; border-radius: 8px; padding: 8px; z-index: 100; display: flex; flex-direction: column; }
-    .mobile-tools-menu button { background: transparent; border: 0; color: #eee; padding: 10px 20px; text-align: left; cursor: pointer; }
+    .mobile-tools-menu {
+        position: absolute;
+        /* The containing navigation already sits inside all four safe edges.
+           Its actual height can grow with text; anchor above that height. */
+        bottom: calc(100% + 8px);
+        right: 12px;
+        max-width: calc(100% - 24px);
+        max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 100% - 16px);
+        max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 100% - 16px);
+        overflow-y: auto;
+        background: #18181b;
+        border: 1px solid #52525b;
+        border-radius: 8px;
+        padding: 8px;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+    }
+    .mobile-tools-menu button {
+        background: transparent;
+        border: 0;
+        color: #eee;
+        padding: 10px 20px;
+        min-height: 44px;
+        font-size: 16px;
+        text-align: left;
+        cursor: pointer;
+    }
+    .mobile-tools-menu button:hover, .mobile-tools-menu button[aria-current="page"] { background: #27272a; }
+    .mobile-tools-menu .mobile-quick-navigation { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #3f3f46; margin-bottom: 4px; }
+    .main-nav button:focus-visible, .mobile-nav button:focus-visible { outline: 2px solid #93c5fd; outline-offset: -3px; }
 
     .app-shell {
         display: flex;
         width: 100vw;
         height: 100vh;
+        height: 100dvh;
+        /* app.html opts out of WebKit's automatic content inset. Keep the
+           entire flex shell inside the safe area exactly once, including
+           landscape cutouts and the home indicator below its navigation. */
+        box-sizing: border-box;
+        padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+                 env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+        overflow: hidden;
         background: #09090b;
         color: #fafafa;
     }
@@ -693,6 +810,14 @@
     .main-nav.collapsed {
         width: 64px;
     }
+
+    .nav-top { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .nav-bottom { flex-shrink: 0; }
+    .nav-item.quick-navigation-trigger { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 3px 10px; padding: 10px 18px; font-size: 0.8rem; }
+    .quick-navigation-trigger :global(svg) { grid-row: 1 / 3; }
+    .quick-navigation-trigger span { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
+    .quick-navigation-trigger kbd { font: inherit; font-size: 0.65rem; color: #a1a1aa; grid-column: 2; }
+    .collapsed .quick-navigation-trigger { display: flex; padding: 12px 22px; }
 
     .logo-area {
         display: flex;
@@ -766,6 +891,7 @@
 
     .main-content {
         flex: 1;
+        min-width: 0;
         overflow: hidden;
         position: relative;
         display: flex;
@@ -869,6 +995,7 @@
 
     /* ── Mobile bottom tab bar ─────────────────────────────────────── */
     .mobile-nav {
+        position: relative;
         display: none;
     }
 
@@ -886,6 +1013,7 @@
         font-weight: 500;
         flex: 1;
         min-width: 0;
+        min-height: 44px;
     }
     .mobile-tab.active {
         color: #3b82f6;
@@ -906,7 +1034,6 @@
             background: #18181b;
             border-top: 1px solid #27272a;
             padding: 4px 0;
-            padding-bottom: env(safe-area-inset-bottom, 4px);
             flex-shrink: 0;
         }
         .main-content {
@@ -925,8 +1052,15 @@
         }
         .main-nav .logo-text,
         .main-nav .nav-item span,
+        .main-nav .quick-navigation-trigger kbd,
         .main-nav .collapse-toggle {
             display: none;
         }
+        .main-nav .quick-navigation-trigger { display: flex; padding: 12px 22px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .main-nav, .nav-item, .collapse-toggle { transition: none; }
+        .worker-dot.active { animation: none; }
     }
 </style>

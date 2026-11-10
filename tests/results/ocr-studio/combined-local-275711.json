@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "source_commit": "2757114091f55620873e4d4245a6a42e1ecf8313",
+  "checked_utc": "2026-11-09T13:43:53.354922+00:00",
+  "checks": [
+    {
+      "command": "npm run check",
+      "errors": 0,
+      "warnings": 54,
+      "warning_files": 8
+    },
+    {
+      "command": "npm test -- --run",
+      "tests_passed": 233,
+      "test_files": 29,
+      "failed": 0
+    },
+    {
+      "command": "python -m unittest discover -s tests/scripts",
+      "tests_passed": 83,
+      "failed": 0
+    },
+    {
+      "command": "node --test tests/scripts/test_mobile_ocr_probe_utils.mjs tests/scripts/test_mobile_ocr_quality.mjs",
+      "tests_passed": 11,
+      "failed": 0
+    }
+  ],
+  "selected_source_sha256": {
+    "src/lib/ocr/client.ts": "da92cc9e20c2f0df59ae2a5573b8511c4ebdc12f2ad8444ec81f3cc40e19dcb1",
+    "src/lib/ocr/client.test.ts": "2207b3ae203da5e025e62327b8f9c78d86ee9e5c949290e4187f7bc879a1da89",
+    "src/lib/components/OcrWorkbench.svelte": "6544b3f67e69bc47af5ae8c48e26a40d03a2bf3f3bef93ef7fe2ae4bf53d523d",
+    "tests/ocr-workspace/fixture.ts": "d88d32c7bb499f7f67bae388fbb770aa1db9f05e1ee60a78786a1df58ae09dcc",
+    "tests/ocr-workspace/smoke.mjs": "717cd8f8967631b30259f78b17d5be196f29b7acff7f36c88ffbfd079c83cfe9",
+    "scripts/build_mobile_crispembed.py": "7491337d5662e6b73276ae3e663227989575666d775c0da0f49d3090e016bba1",
+    "scripts/mobile_native_provenance.py": "537b525a635ed7ad5a2fa01f97e5bf6a31aae406c0908df40aff842cde90e77a",
+    "scripts/ocr_mobile_build_receipt.py": "c0dbc575aa38ee063a666f1486a49a3ae01b7501ff97488eb6b867d451d7dfb8",
+    "scripts/desktop_ocr_startup_smoke.py": "f48c71df6db9d4a54a2c431f680a94d247c5027ad7bf8823bedce61562f27f96"
+  },
+  "scope": "Combined frontend and build/probe helper code. No local Chromium, Rust/native build, OCR model, complete Tauri executable, or device execution was performed by these checks. The later terminal-ID patch changes only Rust export control and requires its own hosted gate."
+}

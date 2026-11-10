@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "paired-native-artifact-audit",
+  "status": "passed",
+  "scope": "Artifact integrity, source-manifest hashes, and independent replay of the resolved backend inventory. This is not desktop application execution.",
+  "application_source": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+  "archive_bytes": 19667170,
+  "archive_sha256": "d82d057451aa1ee69b2d4107a900033a42dec872154852121706006a6e113427",
+  "zip_crc_verified": true,
+  "license_counts": {
+    "frontend": 19,
+    "backend": 1106,
+    "native": 1,
+    "total": 1126
+  },
+  "required_native_packages": {
+    "crispembed": [
+      "0.17.16"
+    ],
+    "crispembed-sys": [
+      "0.17.16"
+    ],
+    "ort": [
+      "2.0.0-rc.11"
+    ],
+    "ort-sys": [
+      "2.0.0-rc.11"
+    ]
+  },
+  "locked_graph": {
+    "schema_version": 1,
+    "kind": "locked-native-license-metadata",
+    "source_commit": "b876fb43eb19cc7de44760400e50735aa27c2c78",
+    "cargo_lock_sha256": "21df8e3819aea26c3757b0748793b6a2a718dc15c14cfaed140e3d3865e97859",
+    "application_manifest_sha256": "42010736de049529f163002a037fcfb5c477e113bb084a8b4ae9ef9fecb64e27",
+    "workspace_manifest_sha256": "73814d68d28452a7f4ac0ef14c95d82c8dbbc4f8d4efd8732284ca5063cd7d21",
+    "target": "x86_64-unknown-linux-gnu",
+    "features": [
+      "desktop",
+      "ocr-workspace"
+    ],
+    "default_features": false,
+    "cargo_version": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "backend_count": 1106,
+    "metadata_sha256": "66ae8cc35b50d05e597df5e5573679b939858b34ea9aacc0bed5fdacc799e937"
+  },
+  "independent_inventory_comparison": "all1106 exact entries from normal/build dependency traversal, excluding dev-only edges",
+  "members": [
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml-base.so",
+      "bytes": 917880,
+      "sha256": "310036e953e517a0496a9bd163bb199f7bed3fb67bc35be01553a5d97ee159bc"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml-base.so.0",
+      "bytes": 917880,
+      "sha256": "310036e953e517a0496a9bd163bb199f7bed3fb67bc35be01553a5d97ee159bc"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml-base.so.0.17.0",
+      "bytes": 917880,
+      "sha256": "310036e953e517a0496a9bd163bb199f7bed3fb67bc35be01553a5d97ee159bc"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml-cpu.so",
+      "bytes": 1158056,
+      "sha256": "14faac9724f0ef1255cd4a9b9851a8ae9e00529aecaca96c634436ae350bbe40"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml-cpu.so.0",
+      "bytes": 1158056,
+      "sha256": "14faac9724f0ef1255cd4a9b9851a8ae9e00529aecaca96c634436ae350bbe40"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml-cpu.so.0.17.0",
+      "bytes": 1158056,
+      "sha256": "14faac9724f0ef1255cd4a9b9851a8ae9e00529aecaca96c634436ae350bbe40"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml.so",
+      "bytes": 56376,
+      "sha256": "f6d565308bb1dfe28ac4c20a1b552a12150a6944c07e64d2209bbc191a3662d2"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml.so.0.17.0",
+      "bytes": 56376,
+      "sha256": "f6d565308bb1dfe28ac4c20a1b552a12150a6944c07e64d2209bbc191a3662d2"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/ggml/src/libggml.so.0",
+      "bytes": 56376,
+      "sha256": "f6d565308bb1dfe28ac4c20a1b552a12150a6944c07e64d2209bbc191a3662d2"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/libcrispembed.so",
+      "bytes": 12301760,
+      "sha256": "5991da43eeddbcfcea7da35161de6651e631679ea8e583b01cee0c54942ebe7f"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/libcrispembed.so.0",
+      "bytes": 12301760,
+      "sha256": "5991da43eeddbcfcea7da35161de6651e631679ea8e583b01cee0c54942ebe7f"
+    },
+    {
+      "name": "CrispSorter/CrispSorter/repos/CrispEmbed/build/libcrispembed.so.0.17.16",
+      "bytes": 12301760,
+      "sha256": "5991da43eeddbcfcea7da35161de6651e631679ea8e583b01cee0c54942ebe7f"
+    },
+    {
+      "name": "_temp/ocr-paired-writer/archival-rust-file.pdf",
+      "bytes": 11988,
+      "sha256": "e45466de15dd50aa1795febb3bfc738c0a234ced8bb944f9cf4ae0156523a487"
+    },
+    {
+      "name": "_temp/ocr-paired-writer/archival-rust-short.pdf",
+      "bytes": 8881,
+      "sha256": "aaef8417e9d8c724031ee01fc3124611ac9f6f8832c7f6ba83b19b84aeb9935c"
+    },
+    {
+      "name": "_temp/ocr-paired-writer/rgb.png",
+      "bytes": 230415,
+      "sha256": "ff578a87eecc01a60b6c22a79bc62117d4d2a1349cc1a8268f5e9317c2199e07"
+    },
+    {
+      "name": "_temp/ocr-desktop-licenses/cargo-metadata.json",
+      "bytes": 5999408,
+      "sha256": "7942bea99202a36aba96ae151a7688c6ebbff75a018bfb142dae7689a150e264"
+    },
+    {
+      "name": "_temp/ocr-desktop-licenses/licenses.json",
+      "bytes": 271558,
+      "sha256": "cf7a71acb68bb6e26e53f56c8e7eae695ad57919821cae0ca45ca59b61cd5dd2"
+    }
+  ]
+}

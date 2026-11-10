@@ -5,6 +5,26 @@ This harness mounts the production `OcrWorkbench.svelte` component with its type
 fixtures. It exercises the actual UI, project model, queue and autosave code without
 native model downloads, user files, or a desktop runtime.
 
+## Safe-area overlays
+
+The `safe-overlays` scenario mounts the actual workspace, model-removal dialog,
+and third-party disclosure component. It uses Chromium's
+[`Emulation.setSafeAreaInsetsOverride`](https://chromedevtools.github.io/devtools-protocol/tot/Emulation/#method-setSafeAreaInsetsOverride)
+to supply asymmetric CSS `env()` insets at 740×360 and 390×844. The harness
+asserts the computed insets, without replacing production overlay CSS, then
+measures the real rectangles, centering, scroll ranges and hit-testable actions.
+Long saved-project lists, filenames, model names and disclosed endpoints force
+the scrolling cases. A method missing from the pinned browser fails the test.
+
+The consent test runs the production gate and UI with only persistent-store IPC
+mocked: declining does not save permission; approving saves exactly the chosen
+provider. It never issues a model/network request. Native modal state, contained
+focus, cancellation and Escape remain checked. `safe-overlay-state.json` records
+component hashes, browser version, every measured rectangle and outcomes; it is
+written on failure too. These are synthetic browser insets and fixture content,
+not physical-device or complete application-shell qualification. The separate
+native WKWebView geometry lane has its own source and platform scope.
+
 ## Run
 
 Install the repository's normal npm dependencies, run `npx svelte-kit sync`, and
@@ -40,18 +60,67 @@ For interactive inspection:
 node tests/ocr-workspace/smoke.mjs --serve --port=4178
 ```
 
-The fixture can be selected using `?scenario=review`, `?scenario=queue-failure`,
-`?scenario=queue-control`, `?scenario=extraction-delay`,
-`?scenario=project-recovery`, or `?scenario=prepare-unchanged`. The queue and
+The fixture can be selected using `?scenario=review`, `?scenario=word-review`,
+`?scenario=zone-empty`, `?scenario=zone-delay`, `?scenario=queue-failure`,
+`?scenario=queue-control`, `?scenario=batch-recovery`, `?scenario=extraction-delay`,
+`?scenario=project-recovery`, `?scenario=prepare-unchanged`, `?scenario=mobile-models`,
+`?scenario=mobile-storage`, or `?scenario=import-control`. The queue and
 extraction scenarios hold native responses until the harness releases them. The recovery scenario includes an
 unsupported saved project, and saves can be held to exercise revision races
 without relying on debounce timing.
+The `batch-recovery` fixture stores an interrupted two-page selection with
+recognition settings that differ from the toolbar and an unrelated pending page.
+The adapter can also reject saves so the harness can verify recovery after a
+successful recognition result cannot be committed.
+The `mobile-models` fixture starts with an empty project and no installed models.
+It holds explicit install requests so the harness can exercise progress, interruption,
+retry, and recognition readiness without network requests or real model weights.
+The `mobile-storage` fixture exposes installed, in-use and reclaimable versions.
+Cleanup can be held or failed, and the current generation can change after a
+confirmation dialog opens. These are UI boundary controls; real SQLite leases
+are exercised separately in the native model-storage contract lane.
+
+The word-review scenario supplies synthetic, explicitly aligned Unicode character
+recognition scores, plus contradictory token metadata and detector-only evidence.
+It verifies the UI contract for capable adapters; it does not assert that current
+native engines supply verified per-word confidence. Its uncertain word has a high
+mean score but one low character score; other words cover medium and high scores.
+A leading emoji exercises UTF-16 text selection offsets, and punctuation and
+whitespace must survive the flowing colored-text display unchanged.
+
+Partial OCR fixtures honor the requested crop: returned regions remain in
+full-page coordinates, only contained regions are included, and
+`diagnostics.effective_zone` identifies the exact crop. The zone-empty scenario
+returns no text. The zone-delay scenario holds recognition until explicitly
+released, allowing page navigation before the result arrives.
 
 ## Assertions
 
 - A recovered three-page project retains page/source identities and revision leases.
 - Corrections preserve original recognition, undo/redo works, and editing invalidates
   page approval.
+- Words show numeric scores only for verified character recognition evidence.
+  Token, detector-only, and unaligned results remain unscored. The weakest
+  character flags a word even when its mean and region score exceed the threshold.
+- Green/high, amber/medium, red/low, gray/unscored, and blue/edited words have
+  distinct text and background colors. Bands follow the weakest character;
+  changing the project threshold updates colors and flags consistently. The
+  optional score labels leave source punctuation, spacing, and text intact.
+- Clicking a word or using Next word to check selects its exact Unicode text in
+  the editor. Corrections clear scores for current text, preserve read-only
+  original evidence, and survive save, undo/redo, and export without rerunning OCR.
+- Source overlays flag low character evidence and unapproved corrections
+  consistently with the review queue. Word controls fit desktop and compact
+  layouts, with dedicated screenshots for both.
+- The passage editor accepts multiline sentences and paragraphs, while save,
+  undo/redo, and export preserve their source geometry and original evidence.
+- Partial OCR presents current and proposed text before applying changes.
+  Cancel preserves corrections; acceptance replaces only the covered regions;
+  Undo restores the prior result. Drawing a small area expands to its complete
+  source passage, and Escape cancels an unfinished gesture without recognizing.
+- Empty partial results retain corrected text and approval. A delayed result
+  stays attached to its captured source page after navigation, and the preview
+  blocks page-navigation shortcuts until the comparison is resolved.
 - The review queue traverses uncertain text and pending pages.
 - Preparation that returns the same image preserves corrections, recognition
   evidence, physical dimensions, and approval while showing its returned warning.
@@ -60,6 +129,37 @@ without relying on debounce timing.
   raster dimensions, source pixels, and text region geometry.
 - Batch errors remain attached to their pages; retry processes only failed work.
 - Pause/resume/stop never overlaps native operations or drops pending pages.
+- Interrupted batches use their original page selection and settings, retain
+  completed results, and leave unrelated pending pages untouched.
+- A failed result checkpoint halts further recognition without turning a good
+  result into an OCR error. Saving and resuming completes only unfinished pages.
+- Starting another batch, changing projects, and Undo remain locked until the
+  final batch checkpoint has actually saved, even after the native calls finish.
+- Model setup is reachable in a new empty mobile workspace and never starts a
+  download merely by opening the workspace or model controls. Explicit installation
+  shows byte progress and locks document actions; failure remains retryable, and
+  successful installation is followed by recognition with the selected engine and
+  language. The phone progress screen is captured as `ocr-phone-model-setup.png`.
+- Storage inspection never starts cleanup. Cleanup failure remains retryable,
+  concurrent storage controls stay disabled while work is pending, and successful
+  cleanup clears the old error while preserving installed models and corrected,
+  approved pages.
+- Model removal requires a confirmation, preserves Escape/Keep cancellation,
+  disables removal for in-use models, and submits the displayed exact generation.
+  A stale-generation rejection preserves the model until the user refreshes and
+  explicitly confirms again. Phone storage and confirmation screens are retained.
+- Camera import rejects unsupported image formats before transferring bytes,
+  preserves a valid photo, and opens preparation without starting recognition.
+- Held document imports expose correlated progress and a reachable phone Cancel
+  control, stay locked until the current native step finishes, and save completed
+  documents while rejecting the cancelled document without starting later files.
+- A failed import checkpoint stops later documents, keeps the imported pages in
+  the pending project, and allows Save to retry them without importing duplicates.
+- Four-corner correction exposes touch-sized keyboard-operable handles, rejects
+  invalid geometry, invalidates stale text after correction, and restores the
+  original review evidence with Undo.
+- Measured tilt can be adjusted manually within bounds. Shadow cleanup uses the
+  corrected page without repeating geometric repair; both steps remain undoable.
 - Table model output becomes inert cell text, with active HTML removed.
 - Delayed extraction remains attached to its captured page after navigation;
   editing and undo restore both the visible cells and exported CSV.
@@ -67,15 +167,28 @@ without relying on debounce timing.
   current project flushes pending edits without rolling back text or its revision.
 - Confirmation dialogs suppress page navigation shortcuts and retain their target.
 - Replacing after a query change never applies stale offsets to another match.
-- Desktop and compact layouts produce screenshots and retain the review controls.
+- Desktop and phone layouts produce screenshots and retain the review controls.
+  On phones, Pages, Page image, and Text & tools each remain reachable; selecting
+  another page changes the reviewed text, and view controls have touch-sized
+  targets. The harness checks 390-pixel and 320-pixel portrait widths and an
+  844-by-390-pixel landscape screen with the page preview inside the viewport.
   Fit page keeps the complete paper within its viewport, fills one available axis,
   and requires no scrolling; this catches duplicate padding deductions.
 
 The `OCR workspace browser verification` GitHub Actions workflow runs the same
-harness on feature-branch changes and attaches its JSON report and screenshots as
+harness on OCR changes pushed to `feat/ocr-document-studio`,
+`feat/ocr-native-validation`, or `feat/ocr-studio-integration` and on relevant pull
+requests, and attaches its JSON report and screenshots as
 `ocr-workspace-browser-report`. This provides a browser execution environment when
 local container restrictions prevent Chromium from creating its process sockets.
+The same job runs `history-benchmark.mjs` and retains
+`test-results/ocr-history-benchmark.json`. That receipt measures the production
+history model against its pinned baseline in separate Node processes. Integrity,
+unchanged text/IDs and UTF-8 history-byte bounds are gates; wall-clock timings are
+observations, not a mobile rendering or native OCR benchmark.
 
 These tests validate interaction and integration contracts. They do not measure
 recognition accuracy or substitute for native engine, PDF conformance, or installed
-application testing.
+application testing. Photo input and transform responses are deterministic
+fixtures: the browser checks the actual production controls and state changes,
+while native geometry and actual text-quality tests remain separate.

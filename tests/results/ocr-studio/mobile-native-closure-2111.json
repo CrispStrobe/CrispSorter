@@ -1,0 +1,55 @@
+{
+  "kind": "static-mobile-native-closure-audit",
+  "source_commit": "2111db64d845b4ef6a374da2a2f69c202f1d1ce7",
+  "vendor_tree": "c39bc929d47b3a770995df2d155b942bc4edac4e",
+  "upstream_commit": "cfe430e7375a7845b679adae9d51dac6deaa8858",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "git_blob": "5502fc564e0ec704a1f9d69ea98ad49356cd3ceb",
+      "bytes": 87591,
+      "sha256": "6270bdb626a6e796fdb731b74004627287afab32ee0f570eb1c1307ac1fb2459"
+    },
+    {
+      "path": "src/ocr_render.cpp",
+      "git_blob": "fd0c3ca8dd552702a51ec27a75d84cde61529527",
+      "bytes": 64248,
+      "sha256": "248019861a42d493152aef9b4354269613cef67f17851c763d697055af7365be"
+    },
+    {
+      "path": "vendor/sheenbidi/Source/SheenBidi.c",
+      "git_blob": "bc2c41c4660ae5710b4e28e42ff5e90614991d52",
+      "bytes": 1671,
+      "sha256": "14f1708e5afda180ee89f263d2833ecebc8c92be33ee79a62eb860d950419ae2"
+    },
+    {
+      "path": "vendor/sheenbidi/LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "NOTICE.sheenbidi",
+      "git_blob": "bab2508ea6426d8936d3fffc4d90527fc87a0229",
+      "bytes": 423,
+      "sha256": "66d555f0f993491cbe01bf539e087038d049df70d1ffcb002ec1dd3e56f0033c"
+    },
+    {
+      "path": "vendor/sheenbidi/UPSTREAM.md",
+      "git_blob": "7be3353ec16a571bbafe1df636a4534179350339",
+      "bytes": 925,
+      "sha256": "47862cacbad69704313bf4bfe8f71e02e5779c928dd023aa86969c790b43b04b"
+    }
+  ],
+  "observations": [
+    "SheenBidi unity C source is part of CRISPEMBED_SOURCES before static and shared targets.",
+    "iOS packaging flattens libcrispembed-static.a into libcrispembed.a alongside the existing core/ggml archives.",
+    "Android builds the same C source into libcrispembed.so with static ggml; no additional SheenBidi shared library is required.",
+    "The prior mobile builder bypassed CMake install, so native license/notice files were omitted. The accompanying builder now copies and hashes committed notices and verifies defined renderer dependency symbols; the app receipt checks actual packaged notice bytes."
+  ],
+  "execution_status": "Static source inspection and helper rejection controls only. No final native artifact or target execution is qualified by this audit.",
+  "capabilities": {
+    "pdf": 47,
+    "general_bidi_bit_16": false
+  }
+}

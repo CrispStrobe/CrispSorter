@@ -1,0 +1,25 @@
+{
+  "scope": "Reviewed logical Unicode and whitespace, including explicit empty pages; no OCR model or page-image fidelity claim.",
+  "cases": [
+    {
+      "id": "reviewed-mixed-whitespace",
+      "pages": [
+        [
+          "  123 مَرْحَبًا ABC\t  \n\nLatin العربية é <script>alert('x')</script> & \"  ",
+          "\tשָׁלוֹם 42 / XYZ\r  ",
+          "⁧العربية⁩ Latin 7",
+          "CRLF one\r\nCRLF two\r\n"
+        ],
+        [],
+        ["𞤀𞤢 123 ABC  ", "Neutral 42 😀\n", ""],
+        ["\n \t\r\n"]
+      ],
+      "paragraph_rtl": [
+        [true, false, false, true, false, false, false, false, false],
+        [false],
+        [true, false, false, false],
+        [false, false, false]
+      ]
+    }
+  ]
+}

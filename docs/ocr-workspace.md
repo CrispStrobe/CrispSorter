@@ -7,8 +7,9 @@ rerunning completed recognition.
 
 ## Work through a document
 
-1. **Add documents.** Select one or more PDFs, TIFFs, or page images. PDFs require
-   the PDF rendering build feature and PDFium. JPEG orientation is baked into the
+1. **Add documents.** Select one or more PDFs, TIFFs, or page images. Desktop PDFs require
+   the PDF rendering build feature and PDFium. Mobile PDFs use the registered
+   Android or iOS document reader. JPEG orientation is baked into the
    working pixels. TIFF frames are imported in order; unsupported frames stop the
    import with an error rather than silently disappearing.
 2. **Arrange and prepare.** Use the page rail to select pages, filter by status,
@@ -20,13 +21,33 @@ rerunning completed recognition.
    Pause and Stop take effect after the current native call; completed page
    results are retained. A failed page does not stop the remaining batch.
 4. **Review.** Select a source region to see a magnified detail and its text. Edit
-   text, move/resize its box, change its region type, and reorder its position in
-   the exported text. Follow **Next issue** or press **F8** to move through the
+   words in **Regions**, or open **Text editor** to revise complete sentences and
+   paragraphs. Re-OCR a region or drawn area and compare the proposed text before
+   applying it. Move/resize boxes, change region types, and reorder their position
+   in exported text. Follow **Next issue** or press **F8** to move through the
    project. Approve individual regions or the complete page after inspecting it.
 5. **Export.** Select a format and page scope. Export preflight accounts for every
    selected included page. Unrecognized or invalid pages block export; page
    approval is required by default and can be relaxed explicitly. Choose the
    output filename. Corrected text is used directly; export never reruns OCR.
+
+### Choose an output format
+
+Searchable PDF preserves current page images and reviewed text geometry. Archival
+PDF/A-2b additionally embeds its required font, color and metadata resources when
+the matching renderer advertises that capability. Preflight checks the selected
+text before the destination picker; text requiring an unavailable bidirectional
+PDF path receives a reason and buttons for the supported alternatives.
+
+Word exports editable paragraphs in reviewed reading order, with text direction,
+tabs, empty paragraphs and source-page breaks. Complex page layout becomes flowing
+text. It is available in the desktop and mobile OCR build profiles. Plain text
+keeps region characters and line endings exactly, including trailing whitespace;
+HTML supplies mobile-readable paragraphs with automatic text direction. JSON
+preserves reviewed region text and geometry. Invalid rich-document characters
+receive an explicit Text/JSON alternative instead of silently disappearing.
+See [text-export compatibility](ocr-text-export-compatibility.md) for the exact
+format rules and qualification scope.
 
 ### Projects and recovery
 
@@ -40,6 +61,23 @@ modified. The workspace stays alive across tab changes, so its queue and save wr
 another saved project; **New** starts a fresh one after flushing the current
 project. Interrupted running pages return to pending when a project is restored.
 
+A recognition batch also saves its exact selected page order, working-image and
+review revisions, profile, engine, language, and configuration before the first
+native invocation. **Resume saved batch** continues only its unfinished entries;
+other pending pages and later toolbar settings do not change that selection.
+**Retry saved failures** includes failed entries when continuing the saved batch.
+Completed entries are retained. A source, inclusion, or reviewed-text change blocks
+continuation with an explanation, so a new explicit selection is required for
+changed pages.
+
+Page-start, result, and error checkpoints finish saving before the next native
+call. If a checkpoint cannot be saved, processing stops and the current result
+stays in memory. Resolve the reported problem, use **Save**, and resume the saved
+batch. A successful OCR result is not converted into a recognition failure merely
+because its save failed. Pause and Stop also take effect while a start checkpoint
+is saving, before entering native inference. The workspace stays locked through
+the final batch save; interruption recovery does not depend on the in-memory queue.
+
 Writes use a same-directory staging file, filesystem synchronization, atomic
 replacement, a previous-revision recovery copy, and an expected-revision check.
 A SQLite write lock serializes separate application processes. A stale writer
@@ -47,8 +85,9 @@ receives a conflict instead of overwriting newer work. Missing page assets are
 reported while text corrections remain recoverable; recognition and export
 require their images to be available.
 
-Undo/redo stores bounded project snapshots, with both a count limit and an
-approximately 24 MiB memory budget. Consecutive typing in one region is one undo
+Undo/redo stores bounded project snapshots, with a 50-entry limit and a 24 MiB
+serialized UTF-8 history budget. The live project, decoded images, and native
+runtime memory are separate from that budget. Consecutive typing in one region is one undo
 step. Pixel edits invalidate the old recognition geometry; Undo restores the
 previous working image and result together. The original image comparison hides
 working-image overlays so transformed coordinates are never drawn on the wrong
@@ -66,19 +105,162 @@ image.
 - Picture regions remain on the source image and are excluded from the text
   layer. Excluding a text region removes its text, not the underlying image.
   This control is not a redaction tool.
-- Zone recognition expands a selected rectangle to cover intersecting text
-  regions completely, preserves their reading-order position, and retains
-  unaffected regions. The effective crop and its page offset are recorded.
-  It does not geometrically repair the crop, because its boxes must map back
-  to the unchanged page.
+- **Re-OCR region** recognizes a selected source region again; **Re-OCR area**
+  lets you draw a rectangle. The area expands to cover intersecting text regions
+  completely. A comparison preview lets you keep the current text or apply the
+  proposed replacement; unaffected regions and their reading order are retained.
+  The effective crop and its page offset are recorded. Partial OCR does not
+  geometrically repair the crop, because its boxes must map back to the unchanged
+  page.
 - Spread splitting starts at the center and accepts an exact vertical split
   position in pixels. Large projects display the page rail in groups of 100;
   range selection and batch processing still cover the full project.
-- The Reading order view shows the text sequence used by export. Move regions
-  earlier/later to change that sequence.
+- **Text editor** shows editable passages in the sequence used by export. Move
+  regions earlier/later in **Regions** to change that sequence.
 - Find/replace works across included pages, handles literal Unicode text, and
   treats replacement text literally. Replace-all is undoable and invalidates
   approvals on changed pages.
+
+## Phone capture and photo preparation
+
+On a phone, **Pages**, **Page image**, and **Text & tools** switch between the
+page list, source image, and full review/settings/extraction/export controls.
+The page list supports the same selection, filtering, ordering, exclusion, and
+removal actions as desktop. Choosing a page opens its image; selecting a text
+region or following a review issue opens the text tools. Desktop retains the
+side-by-side workspace.
+
+**Capture photo** uses the camera/photo selection supplied by the system webview.
+Available choices depend on the platform. It accepts JPEG, PNG, WebP, and BMP
+images up to 32 MiB. HEIC, HEIF, and AVIF are offered only when the device reports
+the matching native decoder; unsupported formats require a JPEG/PNG copy. The
+native import archives original bytes, applies image orientation, and creates
+an immutable working page before returning. An imported photo opens **Prepare
+photo** where the paired photo tools are available; recognition is a separate
+explicit action.
+
+On mobile, PDFs render one page at a time at 200 DPI, with a 16 megapixel raster
+cap. Their physical page dimensions are retained when a large page must be
+reduced. A document must fit the 32 MiB native input limit, 10,000 page limit,
+and 512 MiB rendered-output limit; the document-provider bridge currently has
+a stricter 16 MiB transfer limit. Oversized, damaged, and password-protected
+PDFs produce an actionable error. No partial document is added on failure.
+**Cancel import** stops after the current native step; earlier completed
+documents in the selection remain saved. The original provider URI and private
+source archive are stored separately, and repeated selections of the same
+archived original are detected even when their provider identifiers differ.
+See [mobile document import](ocr-mobile-import.md) for the native contracts,
+limits, fixtures, and qualification scope.
+
+The capture input requests `image/*` with `capture="environment"`, which is
+required by the locked Android webview's delegated camera path. Android declares
+the `IMAGE_CAPTURE` intent query for package visibility; no direct camera access
+permission is required for that external camera intent. The iOS configuration
+includes camera and photo-library purpose strings. These integration contracts
+are checked separately from simulated file selection; actual device capture is
+still part of release qualification below.
+
+A useful preparation sequence is:
+
+1. **Check photo quality.** Inspect the returned hints about resolution, lighting,
+   contrast, and focus. A measured tilt populates the correction field, but
+   neither image measurements nor angle estimates are calibrated probabilities
+   of OCR accuracy. An absent estimate can mean an aligned page or insufficient
+   evidence; inspect text baselines before deciding to rotate.
+2. **Correct perspective.** Place the four handles on the paper corners, in
+   clockwise order from top left. Drag with a mouse or touch; arrow keys move a
+   focused handle by one image pixel and Shift moves it by ten. Exact coordinates
+   are also editable. Crossed, concave, collapsed, or out-of-image selections
+   cannot be applied. This is manual corner selection with a true projective
+   warp, not automatic border detection.
+3. **Apply tilt correction.** Review the suggested angle or enter a value between
+   −20° and +20°. Positive values rotate clockwise. Native processing uses bounded
+   analysis while sampling the full-resolution source for the output.
+4. **Flatten shadows** when lighting remains uneven. This action uses the existing
+   background-whitening primitive without additional deskew, border cropping,
+   binarization, or learned restoration. Inspect the result: rotation alone can
+   make shadowed text harder to recognize when new white margins meet a dark
+   photographed background.
+5. Compare **Original** with the working page, use **Undo** for any unwanted
+   change, then recognize and review. Changed pixels invalidate old recognition
+   geometry and approval. Byte-identical operations preserve reviewed text and
+   approval. Original comparison hides working-image overlays and exits corner
+   editing.
+
+Photo assessment and correction keep their captured source page even if the
+user navigates while a native call is running. Assessment results are discarded
+when that page is no longer selected; pixel operations remain attached to their
+captured page. Navigation to a different source resets corner and angle controls.
+
+On mobile, **Add documents** uses the native document-provider picker. The
+provider bridge currently limits each document to 16 MiB; larger documents must
+be reduced or imported as smaller page images. Export renders into private
+staging, opens the native save picker, and reports success only after the
+provider copy completes. The system picker owns external destination selection
+and any replacement confirmation; a user-confirmed replacement may overwrite
+that selected external file. The imported original bytes and immutable workspace
+images remain preserved inside the application. Cancelling the picker reports
+cancellation. Temporary export staging is removed after completion, cancellation,
+or failure.
+
+Export progress shows the rendering, writing, and finishing stages with the
+current byte count. **Cancel export** remains available while rendering or
+writing; **Stopping…** keeps the workspace locked until the worker has stopped.
+Once publication begins, cancellation is disabled and the completed result is
+reported. On mobile, **Saving to a destination** means the system save dialog
+owns the operation. Finish or cancel there; the application waits for the
+provider copy before removing its private staging file.
+
+The **Prepare photo** controls are advertised only with `ocr-photo-tools`,
+included in `ocr-workspace`, and require the matching CrispEmbed source and native
+library. Camera byte import and ordinary image review remain available without
+that feature. The app calls explicit native photo APIs; it does not change
+process-wide experimental geometry flags for unrelated OCR operations.
+
+The paired geometry tests use generated text pages with rotation, perspective,
+lighting gradients, noise, and JPEG compression, then measure text through an
+independent reader. They support the declared synthetic cases and retain the
+negative deskew-only shadow results. They do not qualify physical phone cameras,
+all native recognition models, or every document type. Physical-device capture,
+provider round trips, and representative real-camera documents remain release
+qualification work. See the paired CrispEmbed
+[phone-photo evidence and repeatable checks](https://github.com/CrispStrobe/CrispEmbed/blob/feat/ocr-photo-preprocessing/docs/ocr-phone-photo.md).
+
+### Edit complete sentences and paragraphs
+
+Choose **Text editor** above the review list, or select a region and click **Edit
+passage** to focus its passage directly. Each text area accepts whole sentences,
+pasted replacements, and multiple paragraphs with line breaks. Focus a passage
+to inspect its magnified source region alongside the text. **Copy page text**
+copies all included passages in their export order.
+
+Passages remain linked to their source regions. Editing their text preserves the
+page image, source geometry, original OCR text, and original confidence evidence.
+The corrected text is autosaved and exported with its line breaks, without
+needing another OCR run. Undo/redo works through the toolbar, and edits revoke
+the affected approval. Use **Regions** for confidence-colored words, geometry,
+region types, or reading-order changes.
+
+### Recognize only the text that needs another pass
+
+Select **Re-OCR region** on a region or passage, or use **Re-OCR area** in the
+source-image toolbar and drag over the relevant text. Drawing across part of an
+existing passage includes the whole passage so recognition cannot silently erase
+its remaining words. Press **Escape** to cancel an unfinished drawing.
+
+After recognition, **Review new OCR text** displays the current text and the
+proposed OCR text side by side. **Keep current text** dismisses the result without
+changing the project. **Use new OCR text** replaces only the covered source
+regions, preserves other corrections, and requires renewed review. Undo restores
+the previous text and evidence. Recognition never overwrites the current text
+before this comparison.
+
+Empty recognition, failed inference, invalid crop coordinates, or a result for a
+different page image leave the existing text intact. If you navigate while OCR
+is running, the result remains attached to the source page captured when the
+operation started; applying it returns to that page. A stale result cannot
+overwrite intervening changes to its source page. Navigating or leaving drawing
+mode cancels an unfinished source-image gesture.
 
 ## Recognition and scan repair
 
@@ -129,6 +311,63 @@ Per-character highlighting requires explicit Unicode-codepoint alignment and an
 exact codepoint count. Some native engines expose token likelihoods in the same
 legacy sequence buffer; those are never treated as character offsets just
 because the array length happens to match the text.
+
+### Inspect and correct individual words
+
+Select a region in the page image or its numbered review card to open **Word
+confidence** beneath the text editor. Words are colored in flowing text that
+preserves the source punctuation, whitespace, and line breaks. Turn on **Show
+scores** to display percentages beside the words, or **Unscored** when the
+recognizer did not supply evidence that can be aligned to a word. The separate
+**Region** badge describes the whole original OCR region; it is never copied onto
+individual words.
+
+Click a word to select its exact text in the region editor, then type the
+correction. **Next word to check** cycles through words with missing scores or
+characters below the review threshold within the selected region. Use **Next
+issue** or **F8** to continue through regions and pages. The source magnifier shows
+the selected region; word boxes are not inferred from a line's dimensions.
+
+When verified Unicode-codepoint recognition scores are available, the displayed
+word score is their **mean**, and the tooltip also reports the **lowest character
+score**. The word's color follows its weakest character, so a high mean cannot
+hide an uncertain glyph:
+
+| Color | Meaning |
+| --- | --- |
+| Green · High | Every character meets the project's review threshold, 85% by default. |
+| Amber · Medium | The weakest character is below the review threshold but at least 60%. |
+| Red · Low | The weakest character is below both 60% and the review threshold. |
+| Gray · Unscored | Verified word confidence is unavailable. |
+| Blue · Edited | The text was manually changed; original scores do not measure the correction. |
+
+A word with an 87% mean and one 20% character is therefore red, even at the
+default 85% review threshold. Changing the threshold in **Recognize → Review
+threshold** updates the colors and review flags together. The legend, optional
+score labels, and tooltips explain the colors. These are review signals, not
+calibrated word accuracy probabilities. Token scores, detector scores, invalid
+arrays, and contradictory alignment metadata cannot produce word scores.
+
+The currently pinned native CrispEmbed integration does not supply verified word
+offsets or Unicode character alignment, so its words normally appear
+**Unscored**. Its region scores remain useful separately. Word scoring is available
+for recognition adapters that explicitly provide verified character alignment;
+the browser verification fixture exercises that contract. Providing scores for
+the deployed native engines requires matching native bindings and a library
+release that exports that alignment.
+
+After any text correction, the current region's words turn blue for **Edited**.
+**Original OCR** retains the original text and its available scores for
+comparison; its words are read-only because their offsets may no longer
+match the corrected text. Use **Tab** to focus an original word and **Enter** to
+inspect its available scores without selecting or changing the corrected text.
+**Current text** returns to the editable word view.
+Corrections use the existing autosave, undo/redo, approval, and export workflow.
+Editing an approved region revokes approval, and source-image warnings follow the
+same review rules as the issue queue, including low character scores and
+unapproved corrections.
+
+### Physical page sizes
 
 Physical page sizes are kept separately from raster dimensions. PDF import
 retains the source page size. Raster import reads per-frame TIFF resolution,
@@ -187,25 +426,43 @@ existing chunking and semantic/full-text indexing pipeline.
 | hOCR | Text and pixel geometry | CrispEmbed |
 | ALTO | Structured XML text and pixel geometry | CrispEmbed |
 | Searchable PDF | Working page image plus invisible corrected text | Paired updated CrispEmbed build |
+| Archival PDF/A-2b | Searchable PDF with embedded fonts, sRGB output intent and archival metadata | Paired archival-capable renderer |
 
 Searchable PDF export requires the matching updated native renderer and the
-`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Older native builds retain the other export
-formats. Archival PDF/A export is not advertised: it requires embedded resources
-and independent conformance validation. DOCX export produces flowing text, not
+`ocr-reviewed-pdf` feature (included in `ocr-workspace`). Its native capability
+mask must include decoded images and Unicode mappings. Bidirectional layout is
+advertised independently, so older capable builds retain ordinary searchable
+PDF with their existing script limits. The PDF/A-2b option also
+requires the archival capability; unsupported builds show a disabled option and
+the native capability reason. Both PDF choices retain source page dimensions or
+the explicitly selected scan resolution and save with a `.pdf` extension.
+DOCX export produces flowing text, not
 an exact reconstruction of arbitrary page typography. Exports preserve empty recognized
 pages as image pages when the output supports images.
 
-The reviewed PDF renderer rejects right-to-left text and directional controls
-with an actionable error. Its current text mapping cannot preserve their logical
-order consistently across PDF readers. Such documents can still be reviewed and
-exported as text, JSON, hOCR, or ALTO without publishing a reversed searchable
-layer. Full bidirectional PDF support needs a separately validated renderer.
+The matching renderer accepts logical reviewed text and resolves Unicode 17
+bidirectional paragraphs before positioning the invisible text. Original page
+images stay visible; text selection geometry is estimated within each supplied
+OCR region. The application enables the new native option only when the runtime
+advertises its matching capability bit. PDF/A-2b does not claim accessible PDF/UA
+or editable recovered typography. Independent native extraction, pixel and
+veraPDF conformance gates must pass for the exact source before deployment;
+the initial implementation checkpoint remains under qualification.
 
 All exports validate dimensions, finite coordinates, nonempty page selection,
 and asset availability. Existing output files require explicit replacement.
-Original source files and workspace assets remain protected even when replacing
-an existing export. Writes are staged atomically; a failed render does not
+For direct filesystem exports, original source paths and workspace assets remain
+protected even when replacing an existing export. Mobile external destination
+replacement is controlled by the system save picker, as described above. Writes are staged atomically; a failed render does not
 truncate an existing file.
+
+The project is saved before an export destination is allocated. Export takes a
+snapshot of the selected pages and reviewed text, so a replacement confirmation
+uses the same content. A late stop cannot turn a successfully committed file into
+a cancellation message. If a mobile export stops after private rendering but
+before the system picker opens, the private output is discarded and no picker is
+shown. See [Export progress and cancellation](ocr-export-control.md) for the
+transport contract and qualification scope.
 
 ## Keyboard shortcuts
 
@@ -224,17 +481,27 @@ available for project-level changes while a text field has focus.
 
 ## Development and verification
 
+The [9 November continuation record](ocr-studio-continuation-2026-11-09.md) records
+exact tested revisions, retained phone-photo results, corrected CI evidence, and
+native application and physical-device gates. The earlier checkpoint remains
+available as historical evidence.
+
 The main implementation is split between:
 
 - `src/lib/ocr/model.ts`: versioned state, geometry, approvals, search, history,
   and export preflight;
-- `src/lib/ocr/queue.ts`: sequential native work with cooperative pause/stop;
+- `src/lib/ocr/queue.ts`: sequential native work with cooperative pause/stop and awaited durable checkpoints;
+- `src/lib/ocr/batch.ts`: persisted selection, frozen settings, source checks, and interruption recovery;
+- `src/lib/ocr/photo.ts`: capture validation and four-corner geometry;
 - `src/lib/ocr/autosave.ts`: serialized, revision-aware save coordinator;
 - `src/lib/ocr/client.ts`: typed Tauri transport and test adapter;
 - `src/lib/components/OcrWorkbench.svelte` and `ocr/PageCanvas.svelte`: workspace
   and source-image editing;
+- `src/lib/components/ocr/PhotoPreparation.svelte`: capture guidance, measured/manual
+  tilt, perspective selection, and background whitening;
 - `src-tauri/src/ocr_workspace.rs`: durable assets/projects, import, transforms,
   processing, extraction, and atomic export;
+- `src-tauri/src/ocr_photo.rs`: bounded capture measurements and paired native photo geometry;
 - `src-tauri/src/extractors/ocr_crispembed.rs`: configuration-keyed native
   pipelines and review provenance.
 
@@ -266,3 +533,44 @@ reading order, tables, and formulas; independently validate archival output; and
 exercise large documents, low disk space, process interruption, and recovery on
 each supported desktop platform. Scanner drivers, exact typography reconstruction,
 and automatic layout equivalence are outside the implemented workspace contract.
+
+## Mobile OCR model installation
+
+The paired `ocr-mobile` Cargo profile enables image and TIFF OCR, photo correction,
+review diagnostics, and searchable PDF export. It uses Android PdfRenderer or iOS
+CoreGraphics for PDF import through the registered native document bridge;
+desktop's `pdf-render`/PDFium feature is not required on those mobile targets.
+HEIC/HEIF/AVIF support follows the codecs actually available on the device.
+Release defaults and release runtime pins are unchanged.
+
+The mobile profile provisions models in the application's private `ocr-models`
+store. Downloads are explicit user actions; recognition only loads an installed,
+verified model or a user-supplied local GGUF path. The workbench's basic installer
+uses `dbnet-det` and `tesseract-<language>` (English by default). Other registered
+engines use the existing Settings model browser and the same installer.
+
+The installer reads exact-name download metadata from the paired CrispEmbed
+registry. Every primary and declared companion file needs a real SHA-256 pin;
+unpinned entries fail with an actionable error. Rust streams HTTPS responses with
+a 64 KiB buffer, a 2 GiB limit per file, bounded redirects, and a 30-minute request
+timeout. It checks length, digest, and the primary GGUF header before publication.
+It respects the existing offline flags and model licence-consent checks. It never
+uses a shell downloader or changes the process environment on mobile.
+
+Android model downloads use the pinned public TLS root bundle and normal Rustls
+certificate/hostname verification; this client does not consult user/private
+Android trust anchors. The independent artifact SHA-256 check is still required
+before a model becomes ready.
+
+Each model has its own directory, so companion filenames cannot collide across
+models. A complete verified version is published through an atomic manifest;
+interrupted downloads and failed companion downloads leave the previous version
+intact. Readiness validates every declared artifact, with verification cached only
+while the immutable file's size and modification time match. Explicit local GGUF
+paths retain the existing behavior and are outside the managed download limit.
+
+These provisioning tests use tiny synthetic streams, including corruption,
+interruption, size/length failures, incomplete companion sets, and symlink escapes.
+They do not download production weights. A source/link check alone does not prove
+mobile inference, and simulator inference does not qualify physical camera capture,
+memory pressure, thermal behavior, or recognition accuracy on real phone photos.

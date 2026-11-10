@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed"
-version = "0.17.16"
+version = "0.17.17"
 dependencies = [
  "crispembed-sys",
  "libc",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed-sys"
-version = "0.17.16"
+version = "0.17.17"
 
 [[package]]
 name = "crisplens-protocol"
@@ -2455,9 +2455,11 @@ dependencies = [
  "tokenizers 0.22.2",
  "tokio",
  "tokio-util",
+ "unicode-bidi",
  "usls",
  "uuid 1.23.3",
  "walkdir",
+ "webpki-root-certs",
  "zeroize",
  "zip 7.2.0",
  "zpdf",
@@ -3779,7 +3781,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed73cbf5e1c37baa23f4132569ac1187829f03922c206bd68fe109e3001a343d"
 dependencies = [
  "base64 0.22.1",
- "image",
  "quick-xml 0.36.2",
  "serde",
  "serde_json",

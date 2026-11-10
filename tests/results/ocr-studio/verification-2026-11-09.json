@@ -1,0 +1,279 @@
+{
+  "schema": "crisp-ocr-studio-checkpoint-v1",
+  "recorded_date_utc": "2026-11-09",
+  "qualification": "Feature-branch implementation checkpoint; complete mobile application and physical-device qualification remain open.",
+  "repositories": {
+    "sorter": {
+      "name": "CrispStrobe/CrispSorter",
+      "branch": "feat/ocr-document-studio",
+      "implementation_checkpoint": "f1a4ff50631c9effe0766b5190a9e7e9c1a9d7fd",
+      "draft_pr": 29
+    },
+    "embed": {
+      "name": "CrispStrobe/CrispEmbed",
+      "branch": "feat/ocr-photo-preprocessing",
+      "tested_native_source": "fde19180f4726a7708186eb130b9f37099a622c7",
+      "draft_pr": 189,
+      "paired_source_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+      "production_code_unchanged_from_tested_source": true
+    }
+  },
+  "frontend": {
+    "source": "81bc2c4d687cf156aef20b6c9d4b84ddc8fd002e",
+    "unit": {
+      "command": "npm test -- --run",
+      "result": "passed",
+      "tests": 207,
+      "files": 28,
+      "duration_seconds": 1.53
+    },
+    "typecheck": {
+      "command": "npm run check",
+      "result": "passed",
+      "errors": 0,
+      "warnings": 54,
+      "warning_files": 8,
+      "note": "Existing warning count unchanged; no new OCR/model installer errors."
+    },
+    "production_build": {
+      "command": "npm run build",
+      "result": "passed",
+      "build_seconds": 28.2
+    },
+    "initial_setup": {
+      "result": "resolved",
+      "detail": "Fresh worktree needed svelte-kit sync before Vitest collection."
+    },
+    "browser": {
+      "result": "blocked_before_test_execution",
+      "actual_passed": 0,
+      "reason": "Chromium process socket denied (Operation not permitted).",
+      "scenarios_in_source": 23
+    }
+  },
+  "local_tools": {
+    "node": "v24.22.1",
+    "npm": "11.9.0",
+    "python": "3.12.14",
+    "cxx": "Debian GCC 14.2.0-19"
+  },
+  "mobile_build_contracts": {
+    "source": "3e430cc72e7927537ed25bac2573b44d2a0d093a",
+    "paired_embed": "fde19180f4726a7708186eb130b9f37099a622c7",
+    "python_tests": {
+      "command": "python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v",
+      "result": "passed",
+      "tests": 12
+    },
+    "script_syntax": {
+      "result": "passed",
+      "node": "scripts/mobile_ocr_webview_smoke.mjs",
+      "bash": [
+        "tools/mobile-ocr-probe/run_android.sh",
+        "tools/mobile-ocr-probe/run_ios.sh"
+      ]
+    },
+    "cpp_syntax": {
+      "command": "c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I <paired-source>/src tools/mobile-ocr-probe/probe.cpp",
+      "result": "passed"
+    },
+    "native_compilation": false,
+    "native_execution": false,
+    "latest_helper_source": "d3e903404347019f0936cf6d81deefdfa48d1a1d",
+    "latest_python_tests_passed": 21,
+    "latest_python_command": "python3 -m unittest discover -s tests/scripts -p 'test_*mobile*.py' -v",
+    "yaml_parse": "passed",
+    "newly_saved_cargo_handoff_tests": 9,
+    "meaning": "Build, configuration and fixture contracts only; no Android/iOS application compilation or inference was executed locally."
+  },
+  "browser_hosted": {
+    "run_id": 42584160924,
+    "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42584160924",
+    "source": "292742a5df2d62cf1af5a1eb907f6f36464615ef",
+    "passed": 20,
+    "failed": 0,
+    "browser_errors": 0,
+    "screenshots_inspected": 5,
+    "synthetic_ui_only": true,
+    "current_scenarios_in_source": 23,
+    "current_scenario_execution": "pending",
+    "artifact_id": 13658733386,
+    "artifact_sha256": "31c5d84617b425f8dbe479af559f33e577a7029ba78e3a4ed98b7e4ea623f2ed"
+  },
+  "mobile_provider_hosted": {
+    "run_id": 42586987764,
+    "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42586987764",
+    "source": "de40879f2133572b8094a5b271c7e7a818e7cdef",
+    "android_tests_passed": 10,
+    "ios_tests_passed": 8,
+    "actual_system_picker_tested": false,
+    "physical_camera_tested": false,
+    "artifacts": [
+      {
+        "id": 13660898896,
+        "platform": "Android",
+        "sha256": "39fbb42e96897ec91c451a8da1b87bc3b366193d7b36221c886376e233bfb8d1"
+      },
+      {
+        "id": 13660857592,
+        "platform": "iOS",
+        "sha256": "cb5cbcb7266d462968f3e259b53daf2307d93d0793fda90a86a8317dcbec7245"
+      }
+    ]
+  },
+  "native_photo_hosted": {
+    "source_commit": "fde19180f4726a7708186eb130b9f37099a622c7",
+    "tested_merge_commit": "ab3af517a34543e049ec20f109ea84964f6549ca",
+    "tested_tree": "9f9a9771d1b502beccaf0d631dc669aae7757040",
+    "run_id": 42590335637,
+    "url": "https://github.com/CrispStrobe/CrispEmbed/actions/runs/42590335637",
+    "artifact_id": 13662697232,
+    "artifact_sha256": "d9a990c2b4140e5b37629d7f34054ecd307bb35de236a3a30d7256ea08881377",
+    "report_sha256": "6f6cd6e59bc1a2c1cd9984120b57983b903d95a5de7f1bb45500cdfb658357d1",
+    "recognition_engine": "tesseract 5.3.4",
+    "synthetic_only": true,
+    "physical_devices_tested": false,
+    "native_recognition_models_qualified": false,
+    "passed": true,
+    "cases": [
+      {
+        "name": "aligned",
+        "rotation_ccw_degrees": 0,
+        "raw_cer": 0,
+        "public_api_prepared_cer": 0,
+        "public_api_deskew_only_cer": 0,
+        "other_prepared_arms": {
+          "legacy": 0,
+          "bounded": 0
+        }
+      },
+      {
+        "name": "clockwise",
+        "rotation_ccw_degrees": -4.2,
+        "raw_cer": 0.026970954356846474,
+        "public_api_prepared_cer": 0,
+        "public_api_deskew_only_cer": 0,
+        "other_prepared_arms": {
+          "legacy": 0,
+          "bounded": 0
+        }
+      },
+      {
+        "name": "counterclockwise_shadow",
+        "rotation_ccw_degrees": 6.7,
+        "raw_cer": 0.02074688796680498,
+        "public_api_prepared_cer": 0,
+        "public_api_deskew_only_cer": 0.6639004149377593,
+        "other_prepared_arms": {
+          "legacy": 0,
+          "bounded": 0
+        }
+      },
+      {
+        "name": "steep_shadow",
+        "rotation_ccw_degrees": -10,
+        "raw_cer": 0.12448132780082988,
+        "public_api_prepared_cer": 0,
+        "public_api_deskew_only_cer": 0.7759336099585062,
+        "other_prepared_arms": {
+          "legacy": 0,
+          "bounded": 0
+        }
+      },
+      {
+        "name": "perspective_shadow",
+        "rotation_ccw_degrees": null,
+        "raw_cer": 0.14522821576763487,
+        "public_api_prepared_cer": 0.012448132780082987,
+        "public_api_deskew_only_cer": null,
+        "other_prepared_arms": {
+          "legacy": 0.008298755186721992,
+          "projective": 0.004149377593360996
+        }
+      }
+    ],
+    "geometry": {
+      "projective_mean_absolute_error": 0.283081,
+      "legacy_mean_absolute_error": 11.1119,
+      "corner_permutations": 24,
+      "controls": "passed"
+    },
+    "rust_wrapper_tests_passed": 3,
+    "retained_report": "https://github.com/CrispStrobe/CrispEmbed/blob/d49a8967f94e41061492a825c6c2b88a68228c75/tests/results/ocr-phone-photo/quality-fde19180.json"
+  },
+  "native_target_policy_hosted": {
+    "run_id": 42590335633,
+    "url": "https://github.com/CrispStrobe/CrispEmbed/actions/runs/42590335633",
+    "source": "fde19180f4726a7708186eb130b9f37099a622c7",
+    "tested_tree": "9f9a9771d1b502beccaf0d631dc669aae7757040",
+    "rust_policy_tests_passed": 6,
+    "actual_build_script_controls_passed": 4,
+    "artifact_id": 13662311548,
+    "artifact_sha256": "66ea67ce1a66e07d8da8371ca44fec935de272b787b5aa119f45f32ced9b285f",
+    "native_mobile_binary_link_or_execution": false
+  },
+  "metadata_gate_audit": {
+    "run_id": 42590335645,
+    "url": "https://github.com/CrispStrobe/CrispEmbed/actions/runs/42590335645",
+    "source": "fde19180f4726a7708186eb130b9f37099a622c7",
+    "github_reported_conclusion": "success",
+    "audited_conclusion": "failed",
+    "native_c_controls": "aborted",
+    "native_sanitizer_controls": "aborted",
+    "rust_wrapper_tests_passed": 4,
+    "failure": "An overstrict HTTPS assertion rejected truthful local-only model entries. Piping through tee without pipefail hid the native test failures.",
+    "artifact_id": 13662356780,
+    "artifact_sha256": "1d81d4f7ca74d4edc763ae95ea93152f14a460f94874961342f6beeb966c88e7",
+    "empty_native_receipts": [
+      "registry.json",
+      "sanitized.json"
+    ],
+    "correction_commit": "d49a8967f94e41061492a825c6c2b88a68228c75",
+    "corrected_run": {
+      "id": 42596751398,
+      "url": "https://github.com/CrispStrobe/CrispEmbed/actions/runs/42596751398",
+      "status": "queued_at_recording"
+    },
+    "retained_audit": "https://github.com/CrispStrobe/CrispEmbed/blob/d49a8967f94e41061492a825c6c2b88a68228c75/tests/results/ocr-phone-photo/hosted-contract-review-fde19180.json"
+  },
+  "android_installer_tls": {
+    "correction_commit": "f1a4ff50631c9effe0766b5190a9e7e9c1a9d7fd",
+    "validation": {
+      "base_sorter_commit": "3e430cc72e7927537ed25bac2573b44d2a0d093a",
+      "paired_embed_commit": "fde19180f4726a7708186eb130b9f37099a622c7",
+      "rust_execution": "blocked: cargo/rustc/rustup and caches absent",
+      "manifest_toml": "parsed",
+      "lock_toml": "parsed",
+      "lock_versions_and_checksums": "unchanged",
+      "lock_dependency_edge_added": "crispsorter -> webpki-root-certs 1.0.8",
+      "root_bundle_source": "https://github.com/rustls/webpki-roots/blob/v/1.0.8/webpki-root-certs/src/lib.rs",
+      "root_bundle_source_sha256": "a1a83fdf2cd85729c21932c068f350091f4cad3014d1adbefd2eaf73fcd9c328",
+      "root_certificates_loaded": 118,
+      "python_openssl_store": {
+        "x509": 118,
+        "crl": 0,
+        "x509_ca": 118
+      },
+      "validation_scope": "Actual DER bundle parsing and trust-store construction with Python/OpenSSL only; does not compile or execute the Rust/Android client."
+    },
+    "real_rust_installer_tests_in_source": 6,
+    "real_rust_tests_executed_locally": false,
+    "android_download_executed_locally": false,
+    "trust_scope": "Pinned public roots; Android user/private trust anchors are not consulted."
+  },
+  "remaining_gates": [
+    "Rerun the corrected native C/sanitizer metadata contract with reliable pipeline exit propagation.",
+    "Complete the source-pinned Sorter desktop and mobile Rust integration checks.",
+    "Build the Android ARM64 and x86_64 APKs and the iOS ARM64 simulator app.",
+    "Execute synthetic native inference on Android/iOS and the real Android app installer/import/preparation/review-export commands.",
+    "Run all 23 current browser scenarios.",
+    "Qualify physical cameras and system provider pickers, memory/thermal behavior, multilingual and complex-layout corpora, and large-document recovery."
+  ],
+  "capability_limits": [
+    "The ocr-mobile profile imports supported images/TIFF and exports reviewed PDFs; it does not include PDF rasterization for PDF import.",
+    "Camera/photo input rejects HEIC/HEIF/AVIF with a conversion message.",
+    "The reviewed PDF renderer does not advertise PDF/A conformance and rejects unsupported right-to-left text mapping.",
+    "Mobile model versions are retained; automatic model-cache garbage collection is not implemented."
+  ],
+  "recorded_at_utc": "2026-11-09 09:54:04 UTC"
+}

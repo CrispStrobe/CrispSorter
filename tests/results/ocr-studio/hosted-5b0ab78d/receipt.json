@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "recorded_date_utc": "2026-11-09",
+  "source": {
+    "executed_commit": "5b0ab78d7ec70a051ae415b56066e90495c40484",
+    "branch": "feat/ocr-studio-integration",
+    "actual_checkout_verified_in_log": true
+  },
+  "browser": {
+    "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42613157935",
+    "job_id": 129146405573,
+    "status": "passed",
+    "log_checked": true,
+    "synthetic_ui_only": true,
+    "tests_passed": 28,
+    "tests_failed": 0,
+    "browser_errors": 0,
+    "unit_tests_passed": 218,
+    "unit_test_files": 28,
+    "type_errors": 0,
+    "type_warnings": 54,
+    "type_warning_files": 8,
+    "production_build": "passed",
+    "artifact_id": 13672233847,
+    "artifact_sha256": "d04401319108c87ef798eebaeacc0eb5b5b572bf703cbf32b8e3aa19d68cd015",
+    "artifact_bytes": 595815,
+    "artifact_digest_verified": true,
+    "screenshots_visually_inspected": 9,
+    "retained_files": [
+      {
+        "path": "history-benchmark.json",
+        "bytes": 3329,
+        "sha256": "df3fc0c7288e8f2bc395bfdf1dfeff9a9f36f980613c791ea128dedb607d3a1a"
+      },
+      {
+        "path": "ocr-phone-import-progress.png",
+        "bytes": 50679,
+        "sha256": "6bbba00753178b2e550410860b98c07e43b7659d02508ba5ea831b9360695838"
+      },
+      {
+        "path": "ocr-phone-model-removal-confirmation.png",
+        "bytes": 60220,
+        "sha256": "d6142d21168653bf98e5d0e5742cff1f895715207a1cb3c7912c96f759f14b68"
+      },
+      {
+        "path": "ocr-phone-model-setup.png",
+        "bytes": 69351,
+        "sha256": "73e1f854044553586da82d22f6bb0767a521aa7874ac1ece3c01121725ad974e"
+      },
+      {
+        "path": "ocr-phone-model-storage.png",
+        "bytes": 62974,
+        "sha256": "d7017c72c6f04c377bac6ef2b14f4b96cc5b0aa1d3dc419cf54952984ffc69a5"
+      },
+      {
+        "path": "ocr-phone-page-list.png",
+        "bytes": 51706,
+        "sha256": "14d34c71b00deee4e7d0791033d0b1e13d07c2c6550808ec7e70eff58939d611"
+      },
+      {
+        "path": "ocr-phone-photo-preparation.png",
+        "bytes": 59525,
+        "sha256": "1c95cabb2388cd13584ad472d61629846c3841dd71e04cf77ae40c8b0fb1ee77"
+      },
+      {
+        "path": "ocr-phone-text-review.png",
+        "bytes": 50114,
+        "sha256": "8ba65648efcf7f6ff9244aa9044c1e52a1305af333552d75e60384b1d2e233eb"
+      },
+      {
+        "path": "ocr-workspace-compact.png",
+        "bytes": 54798,
+        "sha256": "6f685c16df5dffe60b1edb1cf5062cb363571e6b85e005c07c72ea605aa7b35f"
+      },
+      {
+        "path": "ocr-workspace-desktop.png",
+        "bytes": 152892,
+        "sha256": "fddc7a0162e426a38f98c83c3ad42dc17a9e46f1bd059559bf71ec7f95a3825b"
+      },
+      {
+        "path": "report.json",
+        "bytes": 4891,
+        "sha256": "bf556f2ee03f5bbd5449cdd98eaf09fc35dbf1fbea6e606e7cee4873981e5747"
+      }
+    ],
+    "report_note": "The original report lists eight screenshots. The import-progress PNG is present in the artifact, visually inspected, and retained here; the original report is preserved unchanged.",
+    "import_save_recovery": {
+      "name": "a failed import checkpoint stops further documents and Save retries the retained pages",
+      "status": "passed",
+      "duration_ms": 496,
+      "scope": "Real browser UI with controlled synthetic native adapter, not disk-failure injection in the native application.",
+      "asserted": [
+        "The first imported document retains two new pages after its save fails.",
+        "Only one native import call occurs; the next document is not started.",
+        "No active native call or pending import remains.",
+        "The workspace displays Save failed and its recovery instructions.",
+        "Explicit Save retry preserves the original three pages plus both imported pages and their exact source/archive URIs.",
+        "All changes saved appears only after the retry succeeds."
+      ]
+    },
+    "audited_log_excerpt": "log-excerpt.txt"
+  },
+  "history": {
+    "scope": "Node model/history CPU and memory receipt; excludes WebView rendering, page pixels and native model inference.",
+    "integrity": "passed",
+    "history_byte_budgets": "passed",
+    "timing_gate": "No fragile wall-clock threshold. Integrity and history-byte bounds are required.",
+    "memory_observation": "The 1,000-page optimized process had higher sampled and high-water memory than baseline. The 5,000-page optimized process had lower sampled and high-water memory. No universal memory reduction is claimed.",
+    "interpretation": "Single hosted Node benchmark receipt; no WebView paint, page pixels or native model inference. Compare exact measurements in history-benchmark.json."
+  },
+  "limits": {
+    "native_ocr_application_qualified": false,
+    "physical_devices_tested": false,
+    "physical_camera_tested": false,
+    "system_picker_tested": false,
+    "recognition_quality_qualified": false,
+    "note": "This exact integrated source passed the production frontend harness using synthetic native adapters. Later feature commits require their own qualification."
+  }
+}

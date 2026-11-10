@@ -18,7 +18,12 @@ export class ProjectAutosave<T> {
         private readonly delay = 600,
     ) { this.revision = revision; }
 
-    private report(status: SaveStatus) { this.status = status; this.onStatus(status); }
+    private report(status: SaveStatus) {
+        this.status = status;
+        // An observer cannot own the write lock or make a committed revision
+        // look like a failed write. The pending snapshot survives UI errors.
+        try { this.onStatus({ ...status }); } catch { /* writer state remains authoritative */ }
+    }
 
     schedule(project: T): void {
         if (this.closed) return;
@@ -37,17 +42,20 @@ export class ProjectAutosave<T> {
             return;
         }
         if (this.pending === undefined) return;
-        this.active = this.drain();
+        const first = this.pending;
+        this.pending = undefined;
+        // Install the lock before any observer/writer can re-enter flush().
+        this.active = Promise.resolve().then(() => this.drain(first));
         try { await this.active; } finally { this.active = undefined; }
     }
 
-    private async drain(): Promise<void> {
-        while (this.pending !== undefined) {
-            const snapshot = this.pending;
-            this.pending = undefined;
+    private async drain(first: T): Promise<void> {
+        let snapshot = first;
+        while (true) {
             this.report({ ...this.status, state: 'saving', error: undefined });
             try {
                 const result = await this.writer(snapshot, this.revision);
+                if (!Number.isSafeInteger(result?.revision) || result.revision <= this.revision) throw new Error('Project save returned an invalid revision. The latest edits remain pending.');
                 this.revision = result.revision;
                 this.report({ state: this.pending === undefined ? 'saved' : 'pending', savedAt: result.saved_at });
             } catch (error) {
@@ -57,11 +65,15 @@ export class ProjectAutosave<T> {
                 this.report({ ...this.status, state: 'error', error: message });
                 throw error;
             }
+            if (this.pending === undefined) return;
+            snapshot = this.pending;
+            this.pending = undefined;
         }
     }
 
     hasUnsavedChanges(): boolean { return this.pending !== undefined || this.active !== undefined; }
     getRevision(): number { return this.revision; }
+    getStatus(): SaveStatus { return { ...this.status }; }
     /** Flush before replacing the project or closing; callers surface a failure. */
     async close(): Promise<void> {
         // A saved-status observer can enqueue an edit in a microtask after the

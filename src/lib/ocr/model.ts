@@ -1,3 +1,6 @@
+import { restoreBatch, type RecognitionBatch } from './batch';
+import { hasAlignedCharacterConfidence, regionReviewReason } from './confidence';
+
 /** Versioned, renderer-independent OCR project model. All geometry is image pixels. */
 export const PROJECT_VERSION = 1 as const;
 /** Raster sources with no physical-size metadata are interpreted at 300 DPI. */
@@ -22,15 +25,25 @@ export interface OcrPage {
     status: RecognitionStatus; regions: OcrRegion[]; excluded: boolean; approved: boolean;
     error: string | null; elapsedMs: number | null;
     provenance: Record<string, unknown>; profileId: string;
+    /** Opaque evidence version; queue progress and autosaves do not change it. */
+    contentRevision?: string;
 }
-export interface OcrDocument { id: string; sourceUri: string; name: string; }
+export interface OcrDocument { id: string; sourceUri: string; archiveUri?: string; name: string; }
 export interface OcrProject {
     version: typeof PROJECT_VERSION; id: string; name: string; createdAt: string; updatedAt: string;
     documents: OcrDocument[]; pages: OcrPage[]; confidenceThreshold: number; profileId: string;
     recognitionSettings?: Record<string, unknown>;
+    batch?: RecognitionBatch;
 }
 export interface ImportedPage { image_path: string; width: number; height: number; page_width_points?: number; page_height_points?: number; warnings?: string[]; }
-export interface ImportedDocument { source_uri: string; name: string; pages: ImportedPage[]; }
+export interface ImportedDocument { source_uri: string; archive_uri?: string; name: string; pages: ImportedPage[]; }
+
+/** Provider identities stay opaque; immutable archives identify a repeated file
+ * selected from another provider without changing its original source identity. */
+export function findSourceDocument(project: OcrProject, sourceUri: string, archiveUri?: string): OcrDocument | undefined {
+    return project.documents.find(document => document.sourceUri === sourceUri || document.archiveUri === sourceUri
+        || (!!archiveUri && document.archiveUri === archiveUri));
+}
 export interface RecognitionRegion {
     text: string; x: number; y: number; w: number; h: number;
     confidence?: number | null; char_conf?: number[];
@@ -67,7 +80,11 @@ export interface ExportPage {
 }
 export interface ExportPreflight { pages: ExportPage[]; errors: string[]; warnings: string[]; text: string; }
 export interface ProjectMetrics { pages: number; included: number; recognized: number; pending: number; failed: number; approved: number; regions: number; characters: number; needsReview: number; meanConfidence: number | null; }
-export interface History { past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number; }
+export interface History {
+    past: OcrProject[]; present: OcrProject; future: OcrProject[]; limit: number; maxBytes: number;
+    /** Sizes belong to the corresponding immutable history copies, not the editable present. */
+    pastBytes?: number[]; futureBytes?: number[];
+}
 
 export const PROFILES: readonly OcrProfile[] = [
     { id: 'balanced', name: 'Balanced document', description: 'Automatic routing with classical scan cleanup.', config: { enabled: true, router: true, cleanup_enabled: true } },
@@ -89,6 +106,7 @@ const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const validDimension = (value: unknown): value is number => finite(value) && value > 0 && value <= 100_000;
 const validPagePoints = (value: unknown): value is number => finite(value) && value > 0 && value <= MAX_PAGE_POINTS;
+const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 interface PhysicalSize { widthPoints: number; heightPoints: number; }
 const rasterPhysicalSize = (width: number, height: number): PhysicalSize => ({ widthPoints: width * 72 / DEFAULT_PAGE_DPI, heightPoints: height * 72 / DEFAULT_PAGE_DPI });
 const pagePhysicalSize = (page: Pick<OcrPage, 'width'|'height'|'widthPoints'|'heightPoints'>): PhysicalSize => ({
@@ -115,26 +133,41 @@ export function createProject(name = 'Untitled OCR project'): OcrProject {
 export function addDocument(project: OcrProject, imported: ImportedDocument): OcrProject {
     if (!imported.source_uri || !imported.pages.length) throw new Error('The document contains no readable pages.');
     if (imported.pages.some((page) => !page.image_path || !validDimension(page.width) || !validDimension(page.height))) throw new Error('Imported page dimensions or image paths are invalid.');
-    const document: OcrDocument = { id: id('document'), sourceUri: imported.source_uri, name: imported.name || imported.source_uri.split(/[\\/]/).pop() || 'Document' };
+    const document: OcrDocument = { id: id('document'), sourceUri: imported.source_uri,
+        ...(imported.archive_uri ? { archiveUri: imported.archive_uri } : {}),
+        name: imported.name || imported.source_uri.split(/[\\/]/).pop() || 'Document' };
     const pages: OcrPage[] = imported.pages.map((page, index) => ({
         id: id('page'), documentId: document.id, sourcePage: index + 1, name: `${document.name} · ${index + 1}`,
         imagePath: page.image_path, originalImagePath: page.image_path, width: page.width, height: page.height,
         ...importedPhysicalSize(page, rasterPhysicalSize(page.width, page.height)),
         status: 'pending', regions: [], excluded: false, approved: false, error: null, elapsedMs: null,
-        provenance: {}, profileId: project.profileId,
+        provenance: page.warnings?.length ? { importWarnings: [...page.warnings] } : {}, profileId: project.profileId, contentRevision: id('evidence'),
     }));
     if (pages.some((page)=>!validPagePoints(page.widthPoints)||!validPagePoints(page.heightPoints))) throw new Error('Imported page exceeds the supported physical size at the default 300 DPI. Supply valid physical page dimensions.');
     return { ...touch(project, [...project.pages, ...pages]), documents: [...project.documents, document] };
 }
 
 export function updatePage(project: OcrProject, pageId: string, patch: Partial<OcrPage>): OcrProject {
-    return touch(project, project.pages.map((page) => page.id === pageId ? { ...page, ...patch, id: page.id, documentId: page.documentId } : page));
+    let changed = false;
+    const evidenceKeys: readonly (keyof OcrPage)[] = ['imagePath','width','height','widthPoints','heightPoints','regions','approved','excluded'];
+    const pages = project.pages.map((page) => {
+        if (page.id !== pageId) return page;
+        const entries = Object.entries(patch).filter(([key]) => !['id','documentId','contentRevision'].includes(key));
+        if (!entries.some(([key,value]) => page[key as keyof OcrPage] !== value)) return page;
+        changed = true;
+        const evidenceChanged = evidenceKeys.some(key => key in patch && patch[key] !== page[key]);
+        return { ...page, ...Object.fromEntries(entries), contentRevision: evidenceChanged ? id('evidence') : page.contentRevision };
+    });
+    return changed ? touch(project, pages) : project;
 }
 
 export function applyRecognition(project: OcrProject, pageId: string, result: RecognitionResult, profileId = project.profileId): OcrProject {
-    if (!validDimension(result.width) || !validDimension(result.height)) throw new Error('Recognition returned invalid page dimensions.');
+    if (!record(result) || !validDimension(result.width) || !validDimension(result.height)) throw new Error('Recognition returned invalid page dimensions.');
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) throw new Error('The page is no longer in this project.');
+    if (!Array.isArray(result.regions) || result.regions.length > 100000) throw new Error('Recognition returned an invalid region list. The existing result was preserved.');
+    if (result.image_path !== undefined && (typeof result.image_path !== 'string' || !result.image_path)) throw new Error('Recognition returned an invalid page image.');
+    if (!result.image_path && (result.width !== page.width || result.height !== page.height)) throw new Error('Recognition changed page dimensions without returning the matching image. The existing result was preserved.');
     const regionBasis = (raw: unknown): ConfidenceBasis => {
         if (bases.includes(raw as ConfidenceBasis)) return raw as ConfidenceBasis;
         // Token likelihoods and detector scores must never masquerade as
@@ -142,10 +175,14 @@ export function applyRecognition(project: OcrProject, pageId: string, result: Re
         return 'unknown';
     };
     const regions: OcrRegion[] = result.regions.map((region) => {
+        if (!record(region) || typeof region.text !== 'string' || (region.char_conf !== undefined && !Array.isArray(region.char_conf))) throw new Error('Recognition returned an invalid text region. The existing result was preserved.');
         const score = confidence(region.confidence);
         const chars = (region.char_conf ?? []).filter((c) => confidence(c) !== null);
         const unit = region.char_conf_unit ?? result.char_conf_unit;
-        const aligned = (region.char_conf_aligned === true || result.char_conf_aligned === true || unit === 'unicode_codepoint') &&
+        // An explicit Unicode unit is an alignment contract; an explicit false
+        // flag overrides it. Region metadata takes precedence over page defaults.
+        const alignment = region.char_conf_aligned ?? result.char_conf_aligned;
+        const aligned = unit === 'unicode_codepoint' && alignment !== false &&
             chars.length > 0 && chars.length === Array.from(region.text).length && chars.length === (region.char_conf ?? []).length;
         const normalized: OcrRegion = {
             id: id('region'), text: region.text, originalText: region.text,
@@ -179,8 +216,10 @@ export function updateRegion(project: OcrProject, pageId: string, regionId: stri
     let changed = false;
     const regions = page.regions.map((region) => {
         if (region.id !== regionId) return region;
-        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf };
+        const next = { ...region, ...patch, id: region.id, originalText: region.originalText, confidence: region.confidence, confidenceBasis: region.confidenceBasis, char_conf: region.char_conf, charConfidenceAligned: region.charConfidenceAligned, charConfidenceUnit: region.charConfidenceUnit };
+        if (typeof next.text !== 'string' || !kinds.includes(next.kind) || !reviews.includes(next.review) || typeof next.excluded !== 'boolean') throw new Error('Region text, type, or review state is invalid.');
         if (!hasBox(next, page)) throw new Error('Region must remain inside the page.');
+        if (!Object.keys(next).some(key => next[key as keyof OcrRegion] !== region[key as keyof OcrRegion])) return region;
         changed = true;
         // Any content/geometry/type edit invalidates approval, including exclusion.
         const contentChanged = ['text','x','y','w','h','kind','excluded'].some((key) => key in patch && patch[key as keyof OcrRegion] !== region[key as keyof OcrRegion]);
@@ -193,7 +232,7 @@ export function updateRegion(project: OcrProject, pageId: string, regionId: stri
 export function addRegion(project: OcrProject, pageId: string, rectangle: {x:number;y:number;w:number;h:number}, kind: RegionKind = 'text'): OcrProject {
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) return project;
-    if (!hasBox(rectangle, page)) throw new Error('Draw a region inside the page.');
+    if (!hasBox(rectangle, page) || !kinds.includes(kind)) throw new Error('Draw a valid region inside the page.');
     const region: OcrRegion = { id: id('region'), text: '', originalText: '', ...rectangle, confidence: null, char_conf: [], confidenceBasis: 'manual', charConfidenceUnit: 'unknown', charConfidenceAligned: false, kind, review: 'unreviewed', excluded: false };
     return updatePage(project, pageId, { regions: [...page.regions, region], approved: false, status: 'recognized' });
 }
@@ -214,12 +253,14 @@ function move<T extends {id:string}>(items:T[], itemId:string, direction:-1|1): 
 export function movePage(project: OcrProject, pageId: string, direction: -1 | 1): OcrProject { return touch(project, move(project.pages, pageId, direction)); }
 export function moveRegion(project: OcrProject, pageId: string, regionId: string, direction: -1 | 1): OcrProject {
     const page = project.pages.find((p) => p.id === pageId);
-    return page ? updatePage(project, pageId, { regions: move(page.regions, regionId, direction), approved: false }) : project;
+    if (!page) return project;
+    const regions = move(page.regions, regionId, direction);
+    return regions === page.regions ? project : updatePage(project, pageId, { regions, approved: false });
 }
 export function removePage(project: OcrProject, pageId: string): OcrProject { return touch(project, project.pages.filter((page) => page.id !== pageId)); }
 export function approvePage(project: OcrProject, pageId: string, approved = true): OcrProject {
     const page = project.pages.find((p) => p.id === pageId);
-    if (!page || page.status !== 'recognized') return project;
+    if (!page || page.status !== 'recognized' || page.approved === approved) return project;
     return updatePage(project, pageId, { approved, regions: page.regions.map((region) => ({...region, review: approved ? 'approved' : region.text !== region.originalText ? 'corrected' : 'unreviewed'})) });
 }
 
@@ -247,6 +288,10 @@ export function applyPageImage(project: OcrProject, pageId: string, image: Impor
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) return project;
     const priorSize = pagePhysicalSize(page);
+    if (image.image_path === page.imagePath && image.width === page.width && image.height === page.height) {
+        // Content-addressed identical pixels keep corrections and approvals.
+        return updatePage(project, pageId, importedPhysicalSize(image, priorSize));
+    }
     const fallback = operation === 'rotate' && image.width === page.height && image.height === page.width
         ? {widthPoints:priorSize.heightPoints,heightPoints:priorSize.widthPoints}
         : operation === 'crop'
@@ -262,7 +307,7 @@ export function splitPage(project: OcrProject, pageId: string, images: ImportedP
     if (images.length < 2 || images.some((image) => !image.image_path || !validDimension(image.width) || !validDimension(image.height))) throw new Error('Page split must produce at least two valid images.');
     const priorSize = pagePhysicalSize(source);
     const children = images.map((image, index): OcrPage => ({
-        ...source, id: id('page'), name: `${source.name} · part ${index+1}`,
+        ...source, id: id('page'), contentRevision: id('evidence'), name: `${source.name} · part ${index+1}`,
         imagePath: image.image_path, width: image.width, height: image.height,
         ...importedPhysicalSize(image,{widthPoints:priorSize.widthPoints * image.width / source.width,heightPoints:priorSize.heightPoints * image.height / source.height}),
         regions: [], status: 'pending', approved: false, error: null, elapsedMs: null,
@@ -283,10 +328,7 @@ export function getReviewIssues(project: OcrProject, threshold = project.confide
         if (!regions.length || regions.every((r) => !r.text.trim())) issues.push({pageId:page.id,regionId:null,reason:'empty',message:'No recognized text. Verify this is an intentionally blank page.'});
         for (const region of regions) {
             if (region.review === 'approved') continue;
-            let reason: ReviewIssue['reason'] | null = null;
-            if (region.review === 'corrected') reason = 'changed';
-            else if (region.confidenceBasis !== 'recognition' || region.confidence === null) reason = 'unknown-confidence';
-            else if (region.confidence < threshold || (region.charConfidenceAligned && region.char_conf.some((c) => c < threshold))) reason = 'low-confidence';
+            const reason = regionReviewReason(region, threshold);
             if (reason) issues.push({ pageId: page.id, regionId: region.id, reason, message: reason === 'changed' ? 'Corrected text needs approval.' : reason === 'unknown-confidence' ? 'Recognition confidence is unavailable; inspect the source.' : 'Recognition confidence is below the review threshold.' });
         }
     }
@@ -332,7 +374,7 @@ export function replaceMatches(project: OcrProject, query: string, replacement: 
     }
     if (!targets.size) return project;
     return touch(project,project.pages.map((page) => targets.has(page.id) ? {
-        ...page, approved:false, regions:page.regions.map((region) => targets.get(page.id)!.has(region.id) ? {
+        ...page, contentRevision:id('evidence'), approved:false, regions:page.regions.map((region) => targets.get(page.id)!.has(region.id) ? {
             ...region, text:region.text.replace(literalPattern(query,options.caseSensitive),()=>replacement), review:'corrected',
         } : region),
     } : page));
@@ -369,8 +411,7 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
             image_path:page.imagePath, width:page.width, height:page.height,
             page_width_points:physicalSize.widthPoints, page_height_points:physicalSize.heightPoints,
             regions:regions.map((r): ExportRegion => {
-            const originalAligned = r.charConfidenceAligned && r.charConfidenceUnit !== 'token' &&
-                r.char_conf.length > 0 && r.char_conf.length === Array.from(r.originalText).length;
+            const originalAligned = hasAlignedCharacterConfidence(r);
             const currentAligned = originalAligned && r.text === r.originalText;
             return {
                 id:r.id, text:r.text, original_text:r.originalText,
@@ -386,34 +427,70 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     return {pages:errors.length?[]:payload,errors,warnings,text:errors.length?'':pages.map((p)=>activeRegions(p).map((r)=>r.text).join('\n')).join('\f')};
 }
 
+const historyEncoder = new TextEncoder();
+const historyEncodingBuffer = new Uint8Array(64 * 1024);
+const DEFAULT_HISTORY_BYTES = 24 * 1024 * 1024;
+
+// Count UTF-8 without allocating a second project-sized byte array. Text is
+// already serialized for the defensive copy, and the small scratch buffer is
+// reused synchronously. This also counts surrogate pairs consistently with
+// actual JSON serialization.
+function historyTextBytes(text: string): number {
+    if (!historyEncoder.encodeInto) return historyEncoder.encode(text).byteLength;
+    let offset = 0, bytes = 0;
+    while (offset < text.length) {
+        const chunk = historyEncoder.encodeInto(text.slice(offset), historyEncodingBuffer);
+        offset += chunk.read; bytes += chunk.written;
+    }
+    return bytes;
+}
+function historySizes(entries: OcrProject[], sizes?: number[]): number[] {
+    if (sizes?.length === entries.length && sizes.every((value) => Number.isSafeInteger(value) && value >= 0)) return sizes;
+    // Older in-memory callers may not yet carry accounting metadata.
+    return entries.map((entry) => historyTextBytes(JSON.stringify(entry)));
+}
+function historyCopy(project: OcrProject): { copy: OcrProject; bytes: number } {
+    const serialized = JSON.stringify(project);
+    return { copy: JSON.parse(serialized), bytes: historyTextBytes(serialized) };
+}
 /** History is bounded by count and UTF-8 snapshot bytes, excluding the live project. */
 export function createHistory(project: OcrProject, limit = 50, maxBytes = 24 * 1024 * 1024): History {
-    return {past:[],present:clone(project),future:[],limit:Math.max(1,Math.min(200,Math.floor(limit)||50)),maxBytes:Math.max(0,Math.floor(maxBytes))};
+    return {past:[],present:clone(project),future:[],pastBytes:[],futureBytes:[],limit:Math.max(1,Math.min(200,Math.floor(limit)||50)),maxBytes:Number.isFinite(maxBytes)?Math.max(0,Math.floor(maxBytes)):DEFAULT_HISTORY_BYTES};
 }
 function boundedHistory(history: History): History {
     const past = history.past.slice(-history.limit), future = history.future.slice(0,history.limit);
-    const encoder = new TextEncoder();
-    const size = (project:OcrProject) => encoder.encode(JSON.stringify(project)).byteLength;
-    const pastSizes=past.map(size), futureSizes=future.map(size);
+    const pastSizes=historySizes(history.past,history.pastBytes).slice(-history.limit);
+    const futureSizes=historySizes(history.future,history.futureBytes).slice(0,history.limit);
     let bytes=[...pastSizes,...futureSizes].reduce((sum,value)=>sum+value,0);
     while (bytes>history.maxBytes && (past.length || future.length)) {
         // Retain the nearest edit on each side for as long as possible.
         if (past.length >= future.length) { past.shift(); bytes-=pastSizes.shift()!; }
         else { future.pop(); bytes-=futureSizes.pop()!; }
     }
-    return {...history,past,future};
+    return {...history,past,future,pastBytes:pastSizes,futureBytes:futureSizes};
 }
 export function commitHistory(history: History, project: OcrProject): History {
-    if (project === history.present || JSON.stringify(project) === JSON.stringify(history.present)) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(project),future:[]});
+    if (project === history.present) return history;
+    const serialized=JSON.stringify(project), previous=JSON.stringify(history.present);
+    if (serialized === previous) return history;
+    const previousBytes=historyTextBytes(previous);
+    // A snapshot larger than the whole budget would evict all history anyway;
+    // avoid constructing that additional large object before discarding it.
+    if (previousBytes > history.maxBytes) return {...history,past:[],present:JSON.parse(serialized),future:[],pastBytes:[],futureBytes:[]};
+    return boundedHistory({...history,past:[...history.past,JSON.parse(previous)],present:JSON.parse(serialized),future:[],
+        pastBytes:[...historySizes(history.past,history.pastBytes),previousBytes],futureBytes:[]});
 }
 export function undoHistory(history: History): History {
     if (!history.past.length) return history;
-    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[clone(history.present),...history.future]});
+    const current=historyCopy(history.present);
+    return boundedHistory({...history,past:history.past.slice(0,-1),present:clone(history.past[history.past.length-1]),future:[current.copy,...history.future],
+        pastBytes:historySizes(history.past,history.pastBytes).slice(0,-1),futureBytes:[current.bytes,...historySizes(history.future,history.futureBytes)]});
 }
 export function redoHistory(history: History): History {
     if (!history.future.length) return history;
-    return boundedHistory({...history,past:[...history.past,clone(history.present)],present:clone(history.future[0]),future:history.future.slice(1)});
+    const current=historyCopy(history.present);
+    return boundedHistory({...history,past:[...history.past,current.copy],present:clone(history.future[0]),future:history.future.slice(1),
+        pastBytes:[...historySizes(history.past,history.pastBytes),current.bytes],futureBytes:historySizes(history.future,history.futureBytes).slice(1)});
 }
 
 /** Strict boundary validation; interrupted jobs return to pending on restore. */
@@ -430,10 +507,13 @@ export function parseProject(input: unknown): OcrProject {
     const checkId=(candidate:unknown) => { if (typeof candidate!=='string'||!candidate||ids.has(candidate)) throw new Error('OCR project contains duplicate or invalid identifiers.'); ids.add(candidate); };
     checkId(p.id);
     for (const document of p.documents) {
+        if (!record(document)) throw new Error('OCR document metadata is invalid.');
         checkId(document.id);
         if (typeof document.sourceUri!=='string'||typeof document.name!=='string') throw new Error('OCR document metadata is invalid.');
+        if (document.archiveUri!==undefined && (typeof document.archiveUri!=='string'||!document.archiveUri)) throw new Error('OCR document archive metadata is invalid.');
     }
     for (const page of p.pages) {
+        if (!record(page)) throw new Error('OCR project contains an invalid page.');
         checkId(page.id);
         if (!p.documents.some((d)=>d.id===page.documentId)||typeof page.name!=='string'||!Number.isInteger(page.sourcePage)||page.sourcePage<1||typeof page.imagePath!=='string'||!page.imagePath||typeof page.originalImagePath!=='string'||!page.originalImagePath||!validDimension(page.width)||!validDimension(page.height)||!statuses.includes(page.status)||!Array.isArray(page.regions)||page.regions.length>100000||typeof page.excluded!=='boolean'||typeof page.approved!=='boolean') throw new Error('OCR project contains an invalid page.');
         if ((page.widthPoints!==undefined&&!validPagePoints(page.widthPoints))||(page.heightPoints!==undefined&&!validPagePoints(page.heightPoints))) throw new Error('OCR project contains invalid physical page dimensions.');
@@ -442,15 +522,20 @@ export function parseProject(input: unknown): OcrProject {
         Object.assign(page,physicalSize);
         if (!page.provenance||typeof page.provenance!=='object'||Array.isArray(page.provenance)) page.provenance={};
         if (typeof page.profileId!=='string') page.profileId=p.profileId;
+        if (page.contentRevision !== undefined && (typeof page.contentRevision !== 'string' || !page.contentRevision)) throw new Error('OCR page evidence version is invalid.');
+        page.contentRevision ??= id('evidence');
         for (const region of page.regions) {
+            if (!record(region)) throw new Error('OCR project contains an invalid region.');
             checkId(region.id);
             // Earlier v1 snapshots omitted this metadata; default to no character tint.
             if (!['unicode_codepoint','token','unknown'].includes(region.charConfidenceUnit)) region.charConfidenceUnit='unknown';
-            if (region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
+            if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf?.length!==Array.from(region.originalText ?? '').length) region.charConfidenceAligned=false;
             if (typeof region.text!=='string'||typeof region.originalText!=='string'||!hasBox(region,page)||!kinds.includes(region.kind)||!reviews.includes(region.review)||!bases.includes(region.confidenceBasis)||typeof region.excluded!=='boolean'||!Array.isArray(region.char_conf)||region.char_conf.some((c)=>confidence(c)===null)||(region.confidence!==null&&confidence(region.confidence)===null)) throw new Error('OCR project contains an invalid region.');
+            if (region.charConfidenceUnit!=='unicode_codepoint' || region.charConfidenceAligned!==true || region.char_conf.length!==Array.from(region.originalText).length) region.charConfidenceAligned=false;
         }
         if (page.status==='running') { page.status='pending'; page.error='Interrupted recognition can be resumed.'; page.approved=false; }
     }
+    if (p.batch !== undefined) p.batch = restoreBatch(p.batch);
     return p;
 }
 export function serializeProject(project: OcrProject): string { return JSON.stringify(parseProject(project),null,2); }

@@ -42,6 +42,7 @@ pub mod export;
 #[cfg(feature = "desktop")]
 pub mod feed;
 pub mod html;
+pub(crate) mod image_input;
 pub mod layout;
 pub mod math_ocr;
 pub mod ocr;
@@ -1288,10 +1289,16 @@ pub fn extract_text_from_path_with_opts(
             // Decode the file into per-page images (multi-frame TIFF → N pages;
             // single-page formats → the original path), OCR each page through
             // the same pipeline/ladder, and concatenate with page separators.
-            let pages = page_source::rasterize_pages(path, &ext).unwrap_or_else(|e| {
-                eprintln!("[ocr] page-source failed ({e:#}); treating as single page");
-                page_source::PageImages::single(path)
-            });
+            let pages = match page_source::rasterize_pages(path, &ext) {
+                Ok(pages) => pages,
+                Err(error) => {
+                    // A tolerant OCR fallback must not accept a photo whose
+                    // source validation already found an incomplete transfer.
+                    image_input::validate_file(path).context("Validate OCR source image")?;
+                    eprintln!("[ocr] page-source failed ({error:#}); treating as single page");
+                    page_source::PageImages::single(path)
+                },
+            };
             let mut full_text = String::new();
             let mut any_ok = false;
             let mut last_err: Option<anyhow::Error> = None;
@@ -2087,6 +2094,23 @@ mod tests {
         // image_exif will be None for these fake bytes (no real EXIF
         // header), but the doc is still valid — the L2 contract only
         // requires Ok(_), not necessarily populated EXIF.
+    }
+
+    #[test]
+    fn incomplete_jpeg_cannot_reach_an_ocr_fallback() {
+        use base64::Engine;
+        let encoded = include_str!("../../../tests/fixtures/mobile-documents/oriented.jpg.b64")
+            .split_whitespace().collect::<String>();
+        let complete = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xef, 0, 4, 0xff, 0xd9];
+        bytes.extend_from_slice(&complete[2..complete.len() - 2]);
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("phone.jpg");
+        std::fs::write(&source, &bytes).unwrap();
+        let error = extract_text_from_path_with_opts(&source,
+            ExtractOptions { try_ocr: true, ..Default::default() }).unwrap_err();
+        assert!(format!("{error:#}").contains("JPEG source is incomplete or malformed"), "{error:#}");
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
     }
 
     #[test]

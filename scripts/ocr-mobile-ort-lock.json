@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "rust_binding": "2.0.0-rc.11",
+  "api_version": 23,
+  "header_sha256": "71125e66180a991d65c9bdbad4aa20daaa1f7a48c7a5c0fa5f18f250ac839a02",
+  "android": {
+    "version": "1.23.2",
+    "url": "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar",
+    "filename": "onnxruntime-android-1.23.2.aar",
+    "bytes": 30241654,
+    "sha256": "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827",
+    "published_sha1": "6c74a76bb284681c2d73288095c7320f1f7079b2",
+    "libraries": {
+      "arm64-v8a": { "bytes": 19347616, "sha256": "e40f09d07dc53726b8bfbf48a7907673b8f86718a057655a62790a39874a7302" },
+      "x86_64": { "bytes": 23181616, "sha256": "972c17c056eaae946a415d9efdd8018b729639974df075e495f0092441478fb7" }
+    }
+  },
+  "ios": {
+    "version": "1.23.0",
+    "url": "https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.23.0.zip",
+    "filename": "pod-archive-onnxruntime-c-1.23.0.zip",
+    "bytes": 49207123,
+    "sha256": "756a78e0168f29840bc614b43aeb03e63673f44022e0221d21698a2c8ed747ef",
+    "specification": "https://github.com/CocoaPods/Specs/blob/master/Specs/3/a/a/onnxruntime-c/1.23.0/onnxruntime-c.podspec.json",
+    "libraries": {
+      "ios-arm64_x86_64-simulator": { "bytes": 83004696, "sha256": "08842f65bce8c305e6848ce1fd838437a01801829b5139c54af7f97f8ecfebd3" },
+      "ios-arm64": { "bytes": 38398152, "sha256": "780df6a7b7355a1fbc78e560ccb0dac9d349cd463adfe9d4ec9e773a165b9477" }
+    }
+  },
+  "notices": [
+    { "filename": "LICENSE", "bytes": 1073, "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c" },
+    { "filename": "ThirdPartyNotices.txt", "bytes": 326866, "sha256": "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc" }
+  ],
+  "provenance": "Official Microsoft Android Maven AAR and published iOS CocoaPod archive, retrieved over HTTPS and inspected on 2026-11-09. Android published SHA-1 is recorded as a distribution cross-check; extraction requires the committed SHA-256. Both platforms carry the same API-23 header bytes. iOS 1.23.2 is not published, so its available API-compatible 1.23.0 static framework is pinned explicitly. Full application and tiny Add-model execution remain required."
+}

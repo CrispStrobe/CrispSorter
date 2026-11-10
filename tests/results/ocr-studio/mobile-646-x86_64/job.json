@@ -1,0 +1,308 @@
+{
+  "id": 129170291516,
+  "run_id": 42619149388,
+  "workflow_name": "OCR mobile native integration",
+  "head_branch": "feat/ocr-document-studio",
+  "run_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/actions/runs/42619149388",
+  "run_attempt": 1,
+  "node_id": "CR_kwDORmMbys8AAAAeEyY7PA",
+  "head_sha": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "url": "https://api.github.com/repos/CrispStrobe/CrispSorter/actions/jobs/129170291516",
+  "html_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/job/129170291516",
+  "status": "completed",
+  "conclusion": "failure",
+  "created_at": "2026-11-09T12:49:57Z",
+  "started_at": "2026-11-09T13:05:34Z",
+  "completed_at": "2026-11-09T14:00:19Z",
+  "name": "mobile (ubuntu-24.04, android-x86_64, x86_64-linux-android, x86_64, x86_64, true)",
+  "steps": [
+    {
+      "name": "Set up job",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 1,
+      "started_at": "2026-11-09T13:05:35Z",
+      "completed_at": "2026-11-09T13:05:38Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 2,
+      "started_at": "2026-11-09T13:05:38Z",
+      "completed_at": "2026-11-09T13:05:41Z"
+    },
+    {
+      "name": "Read immutable feature runtime source",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 3,
+      "started_at": "2026-11-09T13:05:41Z",
+      "completed_at": "2026-11-09T13:05:41Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 4,
+      "started_at": "2026-11-09T13:05:41Z",
+      "completed_at": "2026-11-09T13:05:49Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 5,
+      "started_at": "2026-11-09T13:05:49Z",
+      "completed_at": "2026-11-09T13:05:53Z"
+    },
+    {
+      "name": "Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 6,
+      "started_at": "2026-11-09T13:05:53Z",
+      "completed_at": "2026-11-09T13:05:54Z"
+    },
+    {
+      "name": "Run dtolnay/rust-toolchain@stable",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 7,
+      "started_at": "2026-11-09T13:05:54Z",
+      "completed_at": "2026-11-09T13:05:57Z"
+    },
+    {
+      "name": "Run Swatinem/rust-cache@v2",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 8,
+      "started_at": "2026-11-09T13:05:57Z",
+      "completed_at": "2026-11-09T13:05:59Z"
+    },
+    {
+      "name": "Run actions/setup-node@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 9,
+      "started_at": "2026-11-09T13:05:59Z",
+      "completed_at": "2026-11-09T13:06:04Z"
+    },
+    {
+      "name": "Run actions/setup-python@v5",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 10,
+      "started_at": "2026-11-09T13:06:04Z",
+      "completed_at": "2026-11-09T13:06:04Z"
+    },
+    {
+      "name": "Run actions/setup-java@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 11,
+      "started_at": "2026-11-09T13:06:04Z",
+      "completed_at": "2026-11-09T13:06:04Z"
+    },
+    {
+      "name": "Run android-actions/setup-android@v3",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 12,
+      "started_at": "2026-11-09T13:06:04Z",
+      "completed_at": "2026-11-09T13:06:15Z"
+    },
+    {
+      "name": "Configure Android native toolchain",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 13,
+      "started_at": "2026-11-09T13:06:15Z",
+      "completed_at": "2026-11-09T13:06:55Z"
+    },
+    {
+      "name": "Prepare iOS project tools",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 14,
+      "started_at": "2026-11-09T13:06:55Z",
+      "completed_at": "2026-11-09T13:06:55Z"
+    },
+    {
+      "name": "Build matching native runtime",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 15,
+      "started_at": "2026-11-09T13:06:55Z",
+      "completed_at": "2026-11-09T13:10:38Z"
+    },
+    {
+      "name": "Stage pinned mobile ONNX runtime for existing indexing support",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 16,
+      "started_at": "2026-11-09T13:10:38Z",
+      "completed_at": "2026-11-09T13:10:39Z"
+    },
+    {
+      "name": "Preserve runtime and host compiler paths through nested mobile Cargo calls",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 17,
+      "started_at": "2026-11-09T13:10:39Z",
+      "completed_at": "2026-11-09T13:10:39Z"
+    },
+    {
+      "name": "Prepare immutable synthetic probe inputs",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 18,
+      "started_at": "2026-11-09T13:10:39Z",
+      "completed_at": "2026-11-09T13:10:42Z"
+    },
+    {
+      "name": "Link actual target photo and inference probe",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 19,
+      "started_at": "2026-11-09T13:10:42Z",
+      "completed_at": "2026-11-09T13:10:43Z"
+    },
+    {
+      "name": "Build Android OCR application",
+      "status": "completed",
+      "conclusion": "failure",
+      "number": 20,
+      "started_at": "2026-11-09T13:10:43Z",
+      "completed_at": "2026-11-09T14:00:00Z"
+    },
+    {
+      "name": "Build iOS OCR simulator application",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 21,
+      "started_at": "2026-11-09T14:00:00Z",
+      "completed_at": "2026-11-09T14:00:00Z"
+    },
+    {
+      "name": "Install pinned Android WebView test driver",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 22,
+      "started_at": "2026-11-09T14:00:00Z",
+      "completed_at": "2026-11-09T14:00:00Z"
+    },
+    {
+      "name": "Enable Android emulator acceleration",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 23,
+      "started_at": "2026-11-09T14:00:00Z",
+      "completed_at": "2026-11-09T14:00:00Z"
+    },
+    {
+      "name": "Execute native OCR, real app model installation and review export on Android",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 24,
+      "started_at": "2026-11-09T14:00:00Z",
+      "completed_at": "2026-11-09T14:00:00Z"
+    },
+    {
+      "name": "Execute native OCR and app startup on iOS",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 25,
+      "started_at": "2026-11-09T14:00:00Z",
+      "completed_at": "2026-11-09T14:00:00Z"
+    },
+    {
+      "name": "Save native runtime, probe and application evidence",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 26,
+      "started_at": "2026-11-09T14:00:00Z",
+      "completed_at": "2026-11-09T14:00:14Z"
+    },
+    {
+      "name": "Post Run actions/setup-java@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 45,
+      "started_at": "2026-11-09T14:00:14Z",
+      "completed_at": "2026-11-09T14:00:14Z"
+    },
+    {
+      "name": "Post Run actions/setup-python@v5",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 46,
+      "started_at": "2026-11-09T14:00:14Z",
+      "completed_at": "2026-11-09T14:00:14Z"
+    },
+    {
+      "name": "Post Run actions/setup-node@v4",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 47,
+      "started_at": "2026-11-09T14:00:14Z",
+      "completed_at": "2026-11-09T14:00:14Z"
+    },
+    {
+      "name": "Post Run Swatinem/rust-cache@v2",
+      "status": "completed",
+      "conclusion": "skipped",
+      "number": 48,
+      "started_at": "2026-11-09T14:00:14Z",
+      "completed_at": "2026-11-09T14:00:14Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 49,
+      "started_at": "2026-11-09T14:00:14Z",
+      "completed_at": "2026-11-09T14:00:15Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 50,
+      "started_at": "2026-11-09T14:00:15Z",
+      "completed_at": "2026-11-09T14:00:15Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 51,
+      "started_at": "2026-11-09T14:00:15Z",
+      "completed_at": "2026-11-09T14:00:15Z"
+    },
+    {
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 52,
+      "started_at": "2026-11-09T14:00:15Z",
+      "completed_at": "2026-11-09T14:00:16Z"
+    },
+    {
+      "name": "Complete job",
+      "status": "completed",
+      "conclusion": "success",
+      "number": 53,
+      "started_at": "2026-11-09T14:00:16Z",
+      "completed_at": "2026-11-09T14:00:16Z"
+    }
+  ],
+  "check_run_url": "https://api.github.com/repos/CrispStrobe/CrispSorter/check-runs/129170291516",
+  "labels": [
+    "ubuntu-24.04"
+  ],
+  "runner_id": 1000448358,
+  "runner_name": "GitHub Actions 1000448358",
+  "runner_group_id": 0,
+  "runner_group_name": "GitHub Actions"
+}

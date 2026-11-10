@@ -1,0 +1,19 @@
+Audited iOS simulator build/inference/startup log excerpts.
+Source: https://github.com/CrispStrobe/CrispSorter/actions/runs/42619149388/job/129170291385
+Native OCR and ORT results are retained verbatim in their separate artifact receipts/logs.
+
+2026-11-09T13:00:07.8476880Z 646dbc486438d0e8955af193b30e6382632cdf45
+2026-11-09T13:00:19.2085700Z d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T13:00:28.9417790Z   stable-aarch64-apple-darwin updated - rustc 1.99.1 (58cf8f9c3 2026-10-13) (from rustc 1.99.1 (58cf8f9c3 2026-10-13))
+2026-11-09T13:00:29.1134060Z   stable-aarch64-apple-darwin unchanged - rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T13:00:29.6379150Z rustc 1.99.1 (58cf8f9c3 2026-10-13)
+2026-11-09T13:05:25.9294650Z [licenses] cargo-license: tool not installed — skipping. (install `cargo install cargo-license` or set LICENSES_REQUIRE=1 to make this fatal.)
+2026-11-09T13:05:25.9467410Z Successfully generated 19 licenses (19 frontend, 0 backend) at /Users/runner/work/CrispSorter/CrispSorter/repos/CrispSorter/static/licenses.json
+2026-11-09T13:06:34.2143930Z { platform:iOS Simulator, arch:arm64, id:4A57FB15-6E7C-49CC-BE93-450B18BD286E, OS:18.5, name:iPhone 16 Pro }
+2026-11-09T13:43:25.0956250Z     Finished `dev` profile [unoptimized] target(s) in 36m 38s
+2026-11-09T13:43:40.1942830Z ** BUILD SUCCEEDED **
+2026-11-09T13:43:43.5690690Z { platform:iOS Simulator, arch:arm64, id:4A57FB15-6E7C-49CC-BE93-450B18BD286E, OS:18.5, name:iPhone 16 Pro }
+2026-11-09T13:50:41.4972640Z   "source_bundle_sha256": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+2026-11-09T13:50:41.4975360Z   "installed_bundle_sha256": "a86a9f6fb3d8e39383716be1d3318bc17bcdf96f0b18902699df85bf2d66b7c3",
+2026-11-09T13:50:41.4979610Z   "screenshot_sha256": "b85ba50258e3a89f206e42dfd52f41d43ef06a1174a16efc4842b2ad846631ed"
+2026-11-09T13:51:58.3074760Z ... Saving cache ...

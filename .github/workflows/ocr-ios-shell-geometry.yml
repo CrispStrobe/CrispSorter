@@ -1,0 +1,70 @@
+name: Native WebKit shell geometry controls
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ocr-ios-shell-geometry']
+    paths:
+      - tools/ios-shell-geometry/**
+      - .github/workflows/ocr-ios-shell-geometry.yml
+      - src/routes/+page.svelte
+      - src/app.html
+      - src/app.css
+permissions:
+  contents: read
+concurrency:
+  group: ocr-ios-shell-geometry-${{ github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  browser-geometry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare exact source CSS and pinned browser
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 646dbc486438d0e8955af193b30e6382632cdf45
+          python3 tools/ios-shell-geometry/prepare.py --output "$RUNNER_TEMP/ocr-shell-browser/Resources"
+          npm install --prefix "$RUNNER_TEMP/ocr-shell-browser-tools" --no-save --package-lock=false playwright@1.62.1
+          "$RUNNER_TEMP/ocr-shell-browser-tools/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Verify desktop and short landscape popup bounds
+        run: |
+          PLAYWRIGHT_MODULE_PATH="$RUNNER_TEMP/ocr-shell-browser-tools/node_modules/playwright/index.mjs" \
+            node tools/ios-shell-geometry/browser.mjs "$RUNNER_TEMP/ocr-shell-browser"
+      - name: Preserve browser geometry evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-shell-browser-geometry
+          path: ${{ runner.temp }}/ocr-shell-browser/
+          if-no-files-found: warn
+          retention-days: 14
+  native-geometry:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare the source-matched geometry host
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 646dbc486438d0e8955af193b30e6382632cdf45
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          python3 -m py_compile tools/ios-shell-geometry/*.py
+      - name: Measure baseline and corrected native WebKit geometry
+        timeout-minutes: 20
+        run: python3 tools/ios-shell-geometry/run.py --output "$RUNNER_TEMP/ocr-shell-geometry"
+      - name: Preserve native controls and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-ios-shell-geometry
+          path: |
+            ${{ runner.temp }}/ocr-shell-geometry/*.json
+            ${{ runner.temp }}/ocr-shell-geometry/*.log
+            ${{ runner.temp }}/ocr-shell-geometry/Resources/
+            ${{ runner.temp }}/ocr-shell-geometry/evidence/
+            ${{ runner.temp }}/ocr-shell-geometry/host-metrics/
+            ${{ runner.temp }}/ocr-shell-geometry/attachments/
+            ${{ runner.temp }}/ocr-shell-geometry/Geometry.xcresult/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,18 @@
+[package]
+name = "ocr-model-storage-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# An isolated, model-free native gate using the application's real modules.
+# Direct versions match the application lock. The complete resolved lockfile was
+# retained from the first passing native run; CI now requires it unchanged.
+[workspace]
+
+[dependencies]
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+uuid = { version = "=1.23.3", features = ["v4"] }
+tempfile = "=3.27.0"

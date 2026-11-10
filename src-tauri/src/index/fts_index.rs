@@ -207,6 +207,16 @@ impl FtsIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<FtsHit>> {
+        self.prepare_search(query_str, filters)?.search_page(limit, 0)
+    }
+
+    /// Freeze one reader snapshot and parsed query for progressive filtering.
+    /// Index changes during a search cannot reorder already-examined pages.
+    pub fn prepare_search(
+        &self,
+        query_str: &str,
+        filters: &SearchFilters,
+    ) -> Result<PreparedFtsSearch> {
         self.reader.reload()?;
         let searcher = self.reader.searcher();
         let sf = self.search_fields();
@@ -227,12 +237,30 @@ impl FtsIndex {
             query
         };
 
-        let top_docs = searcher.search(&effective_query, &TopDocs::with_limit(limit))?;
+        Ok(PreparedFtsSearch { searcher, query: effective_query, doc_id: self.fields.doc_id })
+    }
+}
 
+/// Reusable query snapshot. TopDocs still examines the prefix through the
+/// requested offset, so callers grow the candidate window geometrically.
+pub struct PreparedFtsSearch {
+    searcher: tantivy::Searcher,
+    query: Box<dyn Query>,
+    doc_id: Field,
+}
+
+impl PreparedFtsSearch {
+    pub fn doc_count(&self) -> usize {
+        self.searcher.num_docs().min(usize::MAX as u64) as usize
+    }
+
+    pub fn search_page(&self, limit: usize, offset: usize) -> Result<Vec<FtsHit>> {
+        if limit == 0 { return Ok(Vec::new()); }
+        let top_docs = self.searcher.search(&self.query, &TopDocs::with_limit(limit).and_offset(offset))?;
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, doc_addr) in top_docs {
-            let doc: TantivyDocument = searcher.doc(doc_addr)?;
-            let doc_id = owned_str(&doc, self.fields.doc_id).unwrap_or_default();
+            let doc: TantivyDocument = self.searcher.doc(doc_addr)?;
+            let doc_id = owned_str(&doc, self.doc_id).unwrap_or_default();
             hits.push(FtsHit { doc_id, score });
         }
         Ok(hits)

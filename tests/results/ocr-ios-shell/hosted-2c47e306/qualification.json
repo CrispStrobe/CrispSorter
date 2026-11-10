@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "ios-shell-probe-qualification",
+  "probe_source": "2c47e3060eb90ab4c88636839cbfb80224be7ea4",
+  "application_source": "646dbc486438d0e8955af193b30e6382632cdf45",
+  "run_id": 42635676372,
+  "job_id": 129223066815,
+  "artifact_id": 13682698504,
+  "artifact_sha256": "ca8b81fc049fbdc4c996b51643b002de557b78689b0db511744df2686b9d0f76",
+  "download_sha256_verified": true,
+  "status": "infrastructure_failure",
+  "retained_artifact_staging": "passed",
+  "app_installed": false,
+  "ui_tests_started": false,
+  "navigation_result": "not_executed",
+  "failure": "The first CoreSimulator runtime inventory command timed out after 60 seconds, before application installation or UI-test compilation.",
+  "followup": "The probe now retries simulator inventory once with bounded 90/180-second attempts and retains each result. Navigation assertions are unchanged.",
+  "files_sha256": {
+    "build-receipt.json": "82ecbd31ef43e1f0c99e40da36e161728ff66e16a1cf0d2e4e7a0f3b558cd913",
+    "input-receipt.json": "e8f358f868c4ca36e927550d70349b90a619281918bfda0a041c6e049c8845ea",
+    "ocr-ios-shell-artifact.json": "143dda0875267c64a52203c4739c9513ee0273e892cb7fe08c31c53c4281a70f",
+    "probe-receipt.json": "3d1d28d8c1ec7743571234c259a0747e65e5234bb19ebe45b31a1b6305d76d29"
+  }
+}

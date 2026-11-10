@@ -63,7 +63,7 @@ pub fn detect_faces(image_path: &Path, conf_threshold: f32) -> Result<Vec<FaceDe
         .context("image path is not valid UTF-8")?;
 
     let detector = FACE_DETECTOR.get_or_init(|| {
-        let resolved = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))
+        let resolved = crate::model_provisioning::resolve_model(DEFAULT_DET_MODEL, Some(true))
             .unwrap_or_else(|_| DEFAULT_DET_MODEL.to_string());
         let d = crispembed::CrispFace::new(&resolved, 0)
             .expect("face detector init failed");

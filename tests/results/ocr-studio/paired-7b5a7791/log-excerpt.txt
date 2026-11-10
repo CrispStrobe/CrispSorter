@@ -1,0 +1,69 @@
+2026-11-09T11:45:48.7430817Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:50.7408175Z 7b5a7791c592e2e178b85724cb8cd26c5ac3558a
+2026-11-09T11:45:50.7712806Z   ref: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:50.7720156Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:51.0066914Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:54.8778803Z [command]/usr/bin/git checkout --progress --force d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.1694188Z d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.2029962Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.2194202Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.2359174Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.2471684Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.2599582Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.5527253Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.5809449Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.6290411Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.6391283Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.6498602Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.6910727Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.7160368Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:45:59.7436468Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:46:01.0742152Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-11-09T11:46:01.0799644Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:46:53.8253433Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:54:01.1955025Z OCR review snapshot: 0 failure(s)
+2026-11-09T11:54:01.2008455Z === Results: 51 passed, 0 failed ===
+2026-11-09T11:54:01.2095052Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:54:05.3310731Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:54:06.0764734Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:54:06.8680589Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T11:54:10.1902564Z     Updating crispembed v0.17.15 (/home/runner/work/CrispSorter/CrispSorter/repos/CrispEmbed/crispembed) -> v0.17.16
+2026-11-09T11:54:10.1904028Z     Updating crispembed-sys v0.17.15 (/home/runner/work/CrispSorter/CrispSorter/repos/CrispEmbed/crispembed-sys) -> v0.17.16
+2026-11-09T11:54:10.6904121Z   Downloaded hmac-sha256 v1.1.14
+2026-11-09T12:08:19.1699691Z    Compiling hmac-sha256 v1.1.14
+2026-11-09T12:15:18.7952251Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 21m 11s
+2026-11-09T12:15:19.3637826Z test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 1520 filtered out; finished in 0.10s
+2026-11-09T12:16:27.1809328Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+2026-11-09T12:16:27.2872884Z test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1553 filtered out; finished in 0.01s
+2026-11-09T12:16:27.8727331Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+2026-11-09T12:16:28.0349405Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1554 filtered out; finished in 0.04s
+2026-11-09T12:16:30.0664767Z test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 1541 filtered out; finished in 2.13s
+2026-11-09T12:16:30.6548254Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+2026-11-09T12:16:30.7201768Z test extractors::ocr_crispembed::tests::cleaned_page_image_live ... ignored
+2026-11-09T12:16:30.7204507Z test extractors::ocr_crispembed::tests::dewarp_live ... ignored
+2026-11-09T12:16:30.7213864Z test extractors::ocr_crispembed::tests::ocr_crispembed_custom_models_live ... ignored
+2026-11-09T12:16:30.7214837Z test extractors::ocr_crispembed::tests::ocr_crispembed_live ... ignored
+2026-11-09T12:16:30.7215755Z test extractors::ocr_crispembed::tests::ocr_engines_charconf_small_live ... ignored
+2026-11-09T12:16:30.7216737Z test extractors::ocr_crispembed::tests::ocr_engines_charconf_vlm_live ... ignored
+2026-11-09T12:16:30.7217683Z test extractors::ocr_crispembed::tests::ocr_pipeline_live_simple ... ignored
+2026-11-09T12:16:30.7218547Z test extractors::ocr_crispembed::tests::ocr_pipeline_live_tesseract_stage ... ignored
+2026-11-09T12:16:30.7219425Z test extractors::ocr_crispembed::tests::ocr_regions_detailed_live ... ignored
+2026-11-09T12:16:30.7221138Z test extractors::ocr_crispembed::tests::ocr_task_presets_live ... ignored, downloads OCR weights; run on an admitted inference worker
+2026-11-09T12:16:30.7229735Z test extractors::ocr_crispembed::tests::restore_engines_live ... ignored
+2026-11-09T12:16:30.7230570Z test extractors::ocr_crispembed::tests::restore_live ... ignored
+2026-11-09T12:16:30.7235480Z test extractors::ocr_crispembed::tests::sr_engines_live ... ignored
+2026-11-09T12:16:30.7251788Z test result: ok. 20 passed; 0 failed; 13 ignored; 0 measured; 1522 filtered out; finished in 0.00s
+2026-11-09T12:16:31.3082069Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+2026-11-09T12:16:31.3808446Z test extractors::page_source::tests::pdf_rasterize_live ... ignored
+2026-11-09T12:16:31.3947351Z test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 1543 filtered out; finished in 0.02s
+2026-11-09T12:16:31.9929522Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+2026-11-09T12:16:32.0672477Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1548 filtered out; finished in 0.00s
+2026-11-09T12:16:32.6757238Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
+2026-11-09T12:16:32.7509228Z test extractors::ocr_render::tests::hocr_render_live ... ignored
+2026-11-09T12:16:32.9323618Z test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 1545 filtered out; finished in 0.18s
+2026-11-09T12:20:24.5505872Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 51s
+2026-11-09T12:24:50.2596282Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 25s
+2026-11-09T12:24:50.3666715Z   OCR_CRISPEMBED_REF: d49a8967f94e41061492a825c6c2b88a68228c75
+2026-11-09T12:24:53.4931489Z SHA256 digest of uploaded artifact zip is 9bee989ae84e3ceb2e465fe277b66bf9dac6289954720a49ae3252fee5987685
+2026-11-09T12:24:53.9791109Z Artifact ocr-paired-native-linux.zip successfully finalized. Artifact ID 13673565288
+2026-11-09T12:24:53.9793214Z Artifact ocr-paired-native-linux has been successfully uploaded! Final size is 19042515 bytes. Artifact ID is 13673565288

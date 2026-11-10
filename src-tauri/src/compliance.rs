@@ -563,6 +563,88 @@ mod tests {
         }
     }
 
+    /// Licence consent is per model, all the way down to CrispEmbed.
+    ///
+    /// The user consents to one model key in the GUI. That must reach
+    /// CrispEmbed's own download gate as that one model's licence tag for that
+    /// one call (`license_consent::resolve_registry_model`), never as
+    /// `CRISPEMBED_ACCEPT_LICENSE`: the variable is process-wide, races with
+    /// other threads, and accepts every model sharing the tag — or every
+    /// restricted model at all with `all`.
+    ///
+    /// If you are here because this test failed: do not set the variable to
+    /// make a download work. Route the call through `resolve_registry_model`.
+    #[test]
+    fn licence_consent_never_becomes_a_native_blanket() {
+        for path in workspace_rust_sources() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                assert!(
+                    !code.contains("CRISPEMBED_ACCEPT_LICENSE"),
+                    "{}:{} touches CRISPEMBED_ACCEPT_LICENSE: {line}",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
+
+        let consent = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/index/license_consent.rs"),
+        )
+        .expect("read license_consent.rs");
+        assert!(
+            consent.contains("resolve_model_accepting(name, auto_download, &spdx)"),
+            "restricted registry models must reach CrispEmbed with their own licence tag"
+        );
+        assert!(
+            consent.contains(r#"if spdx == "all" || spdx == "*""#),
+            "the per-model path must refuse a blanket licence tag"
+        );
+
+        let commands = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/index/tauri_commands.rs"),
+        )
+        .expect("read tauri_commands.rs")
+        // A Windows checkout has CRLF endings; the body is sliced at "\n}\n".
+        .replace("\r\n", "\n");
+        let start = commands
+            .find("pub async fn embedder_download_registry_model(")
+            .expect("the GUI registry download command moved; re-point this guard");
+        let body = &commands[start..start + commands[start..].find("\n}\n").unwrap_or(0)];
+        assert!(body.contains("license_consent::resolve_registry_model(&name"));
+        assert!(!body.contains("CrispEmbed::resolve_model("));
+    }
+
+    /// The generic registry-download consent dialog names the model the user
+    /// picked, its licence and its terms — not the Jina-v5 / CC-BY-NC-4.0
+    /// sentence, which is only correct for the Jina dialogs.
+    #[test]
+    fn generic_licence_dialog_is_built_for_the_selected_model() {
+        let root = repo_root();
+        let settings = std::fs::read_to_string(root.join("src/lib/components/Settings.svelte"))
+            .expect("read Settings.svelte");
+        let start = settings
+            .find("async function downloadRegistryModel")
+            .expect("downloadRegistryModel moved; re-point this guard");
+        let end = start + settings[start..].find("function selectRegistryModel").expect("end marker");
+        let body = &settings[start..end];
+        assert!(body.contains("buildLicenseConsentDialog("), "dialog must be built per model");
+        assert!(body.contains("'embedder_model_license_info'"), "dialog must use the model's real licence info");
+        assert!(!body.contains("non_commercial_confirm"), "the Jina-specific text must not be the generic dialog");
+
+        let i18n = std::fs::read_to_string(root.join("src/lib/i18n.svelte.ts")).expect("read i18n");
+        let confirms: Vec<&str> = i18n
+            .lines()
+            .filter(|l| l.trim_start().starts_with("registry_license_confirm:"))
+            .collect();
+        assert_eq!(confirms.len(), 2, "EN and DE both carry the generic text");
+        for line in confirms {
+            assert!(line.contains("{model}") && line.contains("{license}"), "{line}");
+            assert!(!line.to_ascii_lowercase().contains("jina"), "{line}");
+        }
+    }
+
     /// Every `.svelte` file under the frontend `src/`.
     fn svelte_sources() -> Vec<PathBuf> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
