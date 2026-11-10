@@ -17,20 +17,13 @@ on:
         default: false
 
 concurrency:
-  # Branches and PRs: superseding a stale run is the right trade — nobody needs a
-  # verdict on a commit that has already been replaced.
-  #
-  # `main` is the opposite: every commit there is something we want verified, and
-  # a *cancelled* run is not a green one. It reads as "not red" at a glance, which
-  # is exactly how a library that had stopped compiling for everyone survived on
-  # main unnoticed — the last completed run had been cancelled, not failed. With
-  # several agents pushing to main minutes apart, `cancel-in-progress` meant most
-  # runs never reached a conclusion at all.
-  #
-  # So on main the group is unique per commit (nothing to collide with, nothing
-  # cancelled) and cancellation is off; elsewhere the old behaviour stands.
+  # Native builds can take longer than the interval between saved checkpoints.
+  # Let the running build finish so it can expose compiler/test failures. For a
+  # PR or branch GitHub retains only the newest pending run in this group; stale
+  # queued checkpoints do not all consume another complete platform build.
+  # Main keeps a distinct group per commit so every merged revision is checked.
   group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: false
 
 env:
   # Sibling repos referenced by src-tauri/Cargo.toml as path deps:

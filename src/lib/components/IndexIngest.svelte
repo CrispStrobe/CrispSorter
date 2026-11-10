@@ -35,6 +35,7 @@
     } from 'lucide-svelte';
     import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
+    import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
     import CafCatalog from './Catalog.svelte';
     import CorpusDashboard from './CorpusDashboard.svelte';
@@ -3538,6 +3539,7 @@
 
     <!-- ══════════════════ HINZUFÜGEN (queue + ingest run) ══════════════════ -->
     {#if activeTab === 'add'}
+        <BackgroundIngestStatus ensureReady={() => ensureIndexReady(true)} />
         <div class="toolbar">
             <div class="toolbar-actions">
                 <button class="tb-btn" onclick={addFiles} disabled={queueBusy || !queueRestored}><FileText size={14} /> Dateien</button>
@@ -3717,6 +3719,7 @@
 
     <!-- ══════════════════ QUELLEN (managed folders + .caf import/export) ══════════════════ -->
     {#if activeTab === 'sources'}
+        <BackgroundIngestStatus ensureReady={() => ensureIndexReady(true)} />
         <div class="folders-toolbar">
             <button class="tb-btn" onclick={addFolder}><FolderOpen size={14} /> Ordner hinzufügen</button>
             <button class="tb-btn" onclick={openDriveDialog}

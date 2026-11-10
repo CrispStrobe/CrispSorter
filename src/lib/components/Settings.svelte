@@ -572,6 +572,19 @@
     let sidecarLogEl: HTMLTextAreaElement | null = $state(null);
     let mlxReady = $state(false);
     let saveIndicator = $state(false);
+    let settingsSaveError = $state('');
+    let ocrPersistenceError = $state('');
+
+    async function syncBackgroundOcr(): Promise<boolean> {
+        const results = await Promise.allSettled([
+            invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }),
+            invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }),
+        ]);
+        const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
+        ocrPersistenceError = failures.length > 0
+            ? `OCR-Einstellungen konnten für die gespeicherten Hintergrundaufträge nicht übernommen werden: ${failures.join('; ')}` : '';
+        return failures.length === 0;
+    }
     let customModelInput = $state('');
 
     // MLX Model Management
@@ -1284,7 +1297,6 @@
         ocrEnabled = await getSetting('ocrEnabled', false);
         ocrTier    = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
         ocrRecLang = await getSetting('ocrRecLang', 'auto') as 'auto' | 'latin' | 'cjk';
-        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         ocrPipelineEnabled  = await getSetting('ocrPipelineEnabled', false) as boolean;
         ocrPipelineRouter   = await getSetting('ocrPipelineRouter', true) as boolean;
         ocrPipelineCleanup  = await getSetting('ocrPipelineCleanup', true) as boolean;
@@ -1309,7 +1321,7 @@
         ocrPipelineVlmModel  = await getSetting('ocrPipelineVlmModel', '') as string;
         ocrPipelineVlmEngine = await getSetting('ocrPipelineVlmEngine', 'qwen2vl') as string;
         ocrPipelineTruecase  = await getSetting('ocrPipelineTruecase', '') as string;
-        invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
+        await syncBackgroundOcr();
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
@@ -1711,9 +1723,8 @@
         await saveSetting('ocrPipelineVlmModel',  ocrPipelineVlmModel);
         await saveSetting('ocrPipelineVlmEngine', ocrPipelineVlmEngine);
         await saveSetting('ocrPipelineTruecase',  ocrPipelineTruecase);
-        invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
+        if (!(await syncBackgroundOcr())) throw new Error(ocrPersistenceError);
         // Sync OCR options to the background ingest worker.
-        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
@@ -2500,11 +2511,15 @@
     }
 
     async function handleSave() {
-        console.log(`[Settings] Saving global settings...`);
-        await saveSettingsSilent();
-        console.log(`[Settings] All settings saved.`);
-        saveIndicator = true;
-        setTimeout(() => saveIndicator = false, 2000);
+        settingsSaveError = '';
+        saveIndicator = false;
+        try {
+            await saveSettingsSilent();
+            saveIndicator = true;
+            setTimeout(() => saveIndicator = false, 2000);
+        } catch (error) {
+            settingsSaveError = `Einstellungen wurden nicht vollständig gespeichert: ${String(error)}`;
+        }
     }
 
     async function handleSaveProvider() {
@@ -3130,6 +3145,13 @@
     </aside>
 
     <div class="content">
+        {#if settingsSaveError || ocrPersistenceError}
+            <div role="alert" class="settings-persistence-error">
+                <AlertCircle size={16} />
+                <span>{settingsSaveError || ocrPersistenceError}</span>
+                <button class="save-btn" onclick={handleSave}>Speichern erneut versuchen</button>
+            </div>
+        {/if}
         {#if selectedProviderId === 'global'}
             <div class="header">
                 <h1>{i18n.t.settings.general}</h1>
@@ -6094,6 +6116,9 @@
 {/if}
 
 <style>
+    .settings-persistence-error { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 12px; border: 1px solid #7f1d1d; border-radius: 7px; color: #fecaca; background: #2d1111; font-size: 0.85rem; }
+    .settings-persistence-error span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
     /* P36.13 — allowed third-party AI providers. */
     .consented-list {
         list-style: none;

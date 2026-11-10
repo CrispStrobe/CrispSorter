@@ -859,7 +859,7 @@ fn recognize_system_tesseract_page(root: &Path, path: &Path, language: Option<&s
     }
     let regions = map_system_tesseract_regions(result.regions, offset, width, height)?;
     let mut page = PageAsset { image_path:path.to_string_lossy().into_owned(), width, height,
-        page_width_points:None, page_height_points:None };
+        page_width_points:None, page_height_points:None, warnings:Vec::new() };
     set_physical_size(&mut page, physical_size);
     Ok(RecognizedPage { page, regions, elapsed_ms:started.elapsed().as_millis() as u64,
         warnings:result.warnings, diagnostics })

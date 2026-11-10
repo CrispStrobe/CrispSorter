@@ -10,7 +10,7 @@ async function seedQueue(page: Page, files: SeedFile[], status = 'paused') {
     await page.evaluate(({ files, status }) => {
         const root = window as any;
         const original = root.__TAURI_INTERNALS__.invoke;
-        const rows = files.map((file, index) => ({
+        const rows: any[] = files.map((file, index) => ({
             rowId: index + 1, jobId: 'queue-fixture', filePath: `/fixtures/${file.name}`,
             docId: null, targetLevel: 3, status: file.status as QueueStatus,
             errorText: file.status === 'error' ? 'Saved extraction failure' : null, retryCount: 0,
@@ -236,4 +236,44 @@ test('whole-job counts and error filtering remain correct beyond the visible pag
     await page.getByRole('button', { name: /L1 Quick-Scan/ }).click();
     await expect(page.locator('.stats-bar')).toContainText('551 fertig');
     expect((await queueCalls(page, 'index_ingest_l1'))[0].args.files.map((file: any) => file.locationUri)).toEqual(['/fixtures/last-error.txt']);
+});
+
+test('restored background work exposes resume controls and keeps failed control actions visible', async ({ page }) => {
+    await page.evaluate(() => {
+        const root = window as any;
+        const original = root.__TAURI_INTERNALS__.invoke;
+        const state = { status: 'paused', pending: 2, active: 0, current: null, done: 3, errored: 1, last_error: 'Saved source failure' };
+        root.__backgroundControlFailure = '';
+        root.__backgroundCalls = [];
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any, options: any) => {
+            if (command === 'bg_ingest_status') return { ...state };
+            if (['bg_ingest_resume', 'bg_ingest_pause', 'bg_ingest_cancel', 'bg_ingest_clear'].includes(command)) {
+                root.__backgroundCalls.push(command);
+                if (command === root.__backgroundControlFailure) throw new Error('Fixture background storage failure');
+                if (command === 'bg_ingest_resume') { state.status = 'running'; state.active = 1; }
+                if (command === 'bg_ingest_pause' || command === 'bg_ingest_cancel') { state.status = 'paused'; state.active = 0; }
+                if (command === 'bg_ingest_clear') { state.pending = 0; state.done = 0; state.errored = 0; state.last_error = ''; }
+                return;
+            }
+            return original(command, args, options);
+        };
+    });
+    await seedQueue(page, [{ name: 'manual.txt', status: 'pending' }]);
+    const panel = page.getByRole('region', { name: 'Hintergrund-Indexierung', exact: true });
+    await expect(panel).toContainText('2 ausstehend');
+    await expect(panel).toContainText('3 gespeichert');
+    await page.evaluate(() => { (window as any).__backgroundControlFailure = 'bg_ingest_resume'; });
+    await panel.getByRole('button', { name: /Hintergrund fortsetzen/ }).click();
+    await expect(panel.getByRole('alert')).toContainText('Fixture background storage failure');
+    await expect(panel.getByRole('button', { name: /Hintergrund fortsetzen/ })).toBeEnabled();
+    await page.evaluate(() => { (window as any).__backgroundControlFailure = ''; });
+    await panel.getByRole('button', { name: /Hintergrund fortsetzen/ }).click();
+    await expect(panel.getByRole('button', { name: 'Hintergrund pausieren', exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Hintergrundliste leeren', exact: true })).toBeDisabled();
+    await panel.getByRole('button', { name: 'Hintergrund stoppen', exact: true }).click();
+    await expect(panel.getByRole('button', { name: /Hintergrund fortsetzen/ })).toBeVisible();
+    await page.evaluate(() => { (window as any).__backgroundControlFailure = 'bg_ingest_clear'; });
+    await panel.getByRole('button', { name: 'Hintergrundliste leeren', exact: true }).click();
+    await expect(panel.getByRole('alert')).toContainText('Fixture background storage failure');
+    await expect(panel).toContainText('2 ausstehend');
 });
