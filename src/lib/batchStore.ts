@@ -92,6 +92,13 @@ export async function clearBatch(): Promise<void> {
     return invoke('batch_session_clear');
 }
 
+/** One transaction owns rows and full text; publish the new visible batch only after success. */
+export async function replaceBatch(items: readonly BatchItem[]): Promise<void> {
+    return invoke('batch_session_replace', {
+        items: items.map(item => ({ item: batchItemToRow(item), extractedText: item.extractedText })),
+    });
+}
+
 /** Persist the full extracted text for an item.
  *  Kept out of the item row so status updates don't carry MB of text over IPC. */
 export async function setExtractedText(itemId: string, text: string): Promise<void> {

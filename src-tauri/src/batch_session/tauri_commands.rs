@@ -4,7 +4,7 @@
 /// blocked by a synchronous Mutex acquisition.
 use tauri::State;
 
-use super::{BatchItemRow, BatchSessionStore, ProcessedHistoryRow};
+use super::{BatchItemRow, BatchReplacementItem, BatchSessionStore, ProcessedHistoryRow};
 use crate::AppState;
 
 fn get_store(state: &AppState) -> Result<BatchSessionStore, String> {
@@ -58,6 +58,19 @@ pub async fn batch_session_upsert_items_bulk(
     }
     let store = get_store(&state)?;
     tokio::task::spawn_blocking(move || store.upsert_items_bulk(&items))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Commit a validated batch replacement and its full text in one transaction.
+#[tauri::command]
+pub async fn batch_session_replace(
+    state: State<'_, AppState>,
+    items: Vec<BatchReplacementItem>,
+) -> Result<(), String> {
+    let store = get_store(&state)?;
+    tokio::task::spawn_blocking(move || store.replace(&items))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())

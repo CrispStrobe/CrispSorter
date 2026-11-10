@@ -6,7 +6,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
 import { getSetting } from '../store';
 import {
-    loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch,
+    loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch, replaceBatch,
     setExtractedText, getExtractedText, migrateFromJson,
     recordProcessed, lookupHistory,
 } from '../batchStore';
@@ -14,7 +14,6 @@ import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
-import type { BatchSession } from '../types';
 import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
@@ -23,6 +22,7 @@ import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvid
 import { reviewDrafts } from './reviewDrafts.svelte';
 import { findVerifiedDuplicates } from './duplicates';
 import { canProcessBatchItem } from './recovery';
+import { validateBatchItems, validateSessions, type ConfirmBatchReplacement } from './sessionTransfer';
 
 export interface ProcessOverrides {
     extractionWorkers?: number;
@@ -1383,41 +1383,78 @@ export class BatchManager {
         }
     }
 
-    async loadSession(id: string) {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        const saved = await getSetting('sessions', {}) as Record<string, BatchSession>;
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        const session = saved[id];
-        if (session?.items) {
-            this.items = session.items;
-            await clearBatch();
-            await upsertItemsBulk(this.items);
+    private async commitReplacement(items: BatchItem[], source: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        if (!confirmReplacement) throw new Error('Confirm the batch replacement from History.');
+        if (!await confirmReplacement({ incomingCount: items.length, currentCount: this.items.length,
+            currentDraftCount: reviewDrafts.ready ? this.items.filter(item => reviewDrafts.get(item)).length : undefined, source })) return false;
+        await replaceBatch(items);
+        this.items = items;
+        // Failed validation/confirmation/SQLite writes must leave every draft intact.
+        try {
+            reviewDrafts.retainItems(this.items);
+            await reviewDrafts.flush();
+        } catch (error) {
+            // The database commit has succeeded. Report cleanup separately so a
+            // caller cannot mislabel this as a failed/rolled-back replacement.
+            reviewDrafts.error = String(error);
+            logDebug(`Replacement committed; metadata draft cleanup failed: ${error}`);
+        }
+        return true;
+    }
+
+    async loadSession(id: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return false;
+        if (!this.sessionReady) throw new Error('Retry restoring the current batch before replacing it.');
+        this.isUpdatingBatch = true;
+        try {
+            const sessions = validateSessions(await getSetting('sessions', {}));
+            const session = sessions.find(entry => entry.id === id);
+            if (!session) throw new Error('This saved session is no longer available. Refresh History and choose another session.');
+            return await this.commitReplacement(session.items, new Date(session.startTime).toLocaleString(), confirmReplacement);
+        } finally {
+            this.isUpdatingBatch = false;
         }
     }
 
-    async exportBatch() {
-        const { save } = await import('@tauri-apps/plugin-dialog');
-        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-        const path = await save({ defaultPath: 'batch.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
-        if (path) {
-            await writeTextFile(path, JSON.stringify($state.snapshot(this.items), null, 2));
-        }
-    }
-
-    async importBatch() {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const { readTextFile } = await import('@tauri-apps/plugin-fs');
-        const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] });
-        if (typeof path === 'string') {
-            const text = await readTextFile(path);
-            if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-            const items = JSON.parse(text) as BatchItem[];
-            if (Array.isArray(items)) {
-                this.items = items;
-                await clearBatch();
-                await upsertItemsBulk(this.items);
+    async exportBatch(): Promise<boolean> {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return false;
+        if (!this.sessionReady) throw new Error('Retry restoring the current batch before exporting it.');
+        this.isUpdatingBatch = true;
+        try {
+            const { save } = await import('@tauri-apps/plugin-dialog');
+            const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+            const path = await save({ defaultPath: 'batch.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+            if (!path) return false;
+            const items = $state.snapshot(this.items);
+            // Full text is normally lazy-loaded. Include it so an exported batch
+            // can be restored on another device without losing extraction work.
+            for (let index = 0; index < items.length; index += 50) {
+                await Promise.all(items.slice(index, index + 50).map(async item => {
+                    if (item.extractedText != null) return;
+                    const text = await getExtractedText(item.id);
+                    if (text != null) item.extractedText = text;
+                }));
             }
+            await writeTextFile(path, JSON.stringify(items, null, 2));
+            return true;
+        } finally {
+            this.isUpdatingBatch = false;
+        }
+    }
+
+    async importBatch(confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return false;
+        if (!this.sessionReady) throw new Error('Retry restoring the current batch before replacing it.');
+        this.isUpdatingBatch = true;
+        try {
+            const { open } = await import('@tauri-apps/plugin-dialog');
+            const { readTextFile } = await import('@tauri-apps/plugin-fs');
+            const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] });
+            if (typeof path !== 'string') return false;
+            const items = validateBatchItems(JSON.parse(await readTextFile(path)));
+            return await this.commitReplacement(items, path.split(/[\\/]/).pop() || path, confirmReplacement);
+        } finally {
+            this.isUpdatingBatch = false;
         }
     }
 
