@@ -9,6 +9,7 @@
     import CrispEmbedServiceSettings from './CrispEmbedServiceSettings.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
+    import { ProviderRequests, providerConfigurationMatches, providerErrorMessage, type ProviderRequest, type ProviderRequestConfig } from '../llm/providerRequests';
     import { caps, currentCaps } from '../capabilities';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
     import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
@@ -533,9 +534,22 @@
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
-    let loadingModels = $state(false);
-    let testingConnection = $state(false);
-    let testResult = $state<{ success: boolean; message: string } | null>(null);
+    const providerRequests = new ProviderRequests();
+    onDestroy(() => providerRequests.dispose());
+    let modelRequests = $state<Record<string, ProviderRequest>>({});
+    let loadingModels = $derived(!!modelRequests[selectedProvider.id]
+        && providerConfigurationMatches(modelRequests[selectedProvider.id].config, selectedProvider));
+    let testingProviders = $state<Record<string, ProviderRequest>>({});
+    let testingConnection = $derived(!!testingProviders[selectedProvider.id]
+        && providerConfigurationMatches(testingProviders[selectedProvider.id].config, selectedProvider, true));
+    let testResults = $state<Record<string, { request: ProviderRequest; success: boolean; message: string }>>({});
+    let testResult = $derived(testResults[selectedProvider.id]
+        && providerConfigurationMatches(testResults[selectedProvider.id].request.config, selectedProvider, true)
+        ? testResults[selectedProvider.id] : null);
+    let modelRefreshErrors = $state<Record<string, { request: ProviderRequest; message: string }>>({});
+    let modelRefreshError = $derived(modelRefreshErrors[selectedProvider.id]
+        && providerConfigurationMatches(modelRefreshErrors[selectedProvider.id].request.config, selectedProvider)
+        ? modelRefreshErrors[selectedProvider.id].message : '');
     let mlxPort = $state(8000);
     let llamacppPort = $state(8080);
     let mlxRunning = $state(false);
@@ -1536,7 +1550,7 @@
         });
 
         if (activeProviderId === 'ollama') {
-            handleRefreshModels();
+            handleRefreshModels('ollama');
         }
 
         // Check if Ollama is already running
@@ -2569,63 +2583,74 @@
         if (selected) exportPath = selected as string;
     }
 
-    async function handleRefreshModels() {
-        loadingModels = true;
-        try {
-            const resolvedKey = await resolveSecret(selectedProvider.apiKey);
-            const models = await llmClient.fetchModels(selectedProvider.id, resolvedKey, selectedProvider.baseUrl);
-            selectedProvider.models = models;
-            modelListChecked[selectedProvider.id] = true;
-            if (models.length > 0 && !selectedProvider.selectedModel) {
-                selectedProvider.selectedModel = models[0];
-            }
-            await handleSave();
-        } catch (e: any) {
-            console.error(`Failed to fetch models for ${selectedProvider.id}:`, e);
-            // Do not retry in a loop; the refresh button stays available.
-            modelListChecked[selectedProvider.id] = true;
-        } finally {
-            loadingModels = false;
+    function invalidateProviderRequests(providerId: string, modelOnly = false) {
+        providerRequests.invalidate(providerId, modelOnly ? 'connection' : undefined);
+        delete testingProviders[providerId];
+        delete testResults[providerId];
+        if (!modelOnly) {
+            delete modelRequests[providerId];
+            delete modelListChecked[providerId];
+            delete modelRefreshErrors[providerId];
+            delete balanceRequests[providerId];
+            delete balance[providerId];
         }
     }
 
-    /**
-     * Per-provider testing state.  Reading `testingProviders[id]` is the
-     * source of truth for the Test button's disabled state.  The legacy
-     * single `testingConnection` boolean still tracks the active panel
-     * so the spinner icon stays correct; it just no longer locks the
-     * Test buttons across other providers' panels.
-     *
-     * Reported: "testen of providers is blocked on all as long as one
-     * provider test runs" — the global flag was the cause.
-     */
-    let testingProviders = $state<Record<string, boolean>>({});
+    async function handleRefreshModels(providerId = selectedProvider.id) {
+        const provider = providers.find(p => p.id === providerId);
+        if (!provider) return;
+        const request = providerRequests.begin('models', provider);
+        const currentProvider = () => providers.find(p => p.id === request.config.id);
+        modelRequests[provider.id] = request;
+        modelListAttempted[provider.id] = true;
+        delete modelRefreshErrors[provider.id];
+        try {
+            const result = await providerRequests.run(request, currentProvider, resolveSecret,
+                (config, key) => llmClient.fetchModels(config.id, key, config.baseUrl));
+            if (!result.current || !providerRequests.isCurrent(request, currentProvider())) return;
+            const target = currentProvider()!;
+            target.models = result.value;
+            modelListChecked[target.id] = request.config;
+            if (result.value.length > 0 && !target.selectedModel) {
+                target.selectedModel = result.value[0];
+            }
+            await handleSave();
+        } catch (e: any) {
+            if (providerRequests.isCurrent(request, currentProvider())) {
+                modelRefreshErrors[request.config.id] = { request, message: providerErrorMessage(e,
+                    'The model list could not be loaded. Check the endpoint and key, then refresh to retry.') };
+            }
+        } finally {
+            if (modelRequests[request.config.id]?.generation === request.generation) delete modelRequests[request.config.id];
+        }
+    }
 
     async function handleTestConnection() {
-        const pid = selectedProvider.id;
-        testingProviders[pid] = true;
-        testingConnection = true;
-        testResult = null;
+        const provider = selectedProvider;
+        const request = providerRequests.begin('connection', provider);
+        const currentProvider = () => providers.find(p => p.id === request.config.id);
+        const pid = request.config.id;
+        testingProviders[pid] = request;
+        delete testResults[pid];
         if (selectedModelUnavailable) {
-            testResult = { success: false, message: `${selectedProvider.selectedModel} is not in ${selectedProvider.name}'s current model list. Choose one of the offered models above.` };
+            testResults[pid] = { request, success: false, message: `${request.config.selectedModel} is not in ${provider.name}'s current model list. Choose one of the offered models above.` };
             delete testingProviders[pid];
-            testingConnection = false;
             return;
         }
         try {
             const prompt = "Reply with 'OK' and nothing else.";
-            const resolvedKey = await resolveSecret(selectedProvider.apiKey);
-            const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, prompt, resolvedKey);
-            testResult = { success: true, message: `Connected! Response: ${response}` };
+            const result = await providerRequests.run(request, currentProvider, resolveSecret,
+                (config, key) => llmClient.query(config.id, config.selectedModel, prompt, key, 0.3, undefined, undefined, config.baseUrl));
+            if (result.current && providerRequests.isCurrent(request, currentProvider())) {
+                testResults[pid] = { request, success: true, message: `Connected! Response: ${result.value}` };
+            }
         } catch (e: any) {
-            // Tauri/IPC rejections are often plain strings or objects, not
-            // Error instances; an empty message rendered an empty red box.
-            const detail = (e instanceof Error ? e.message : typeof e === 'string' ? e
-                : e?.message ?? (e == null ? '' : JSON.stringify(e)))?.trim();
-            testResult = { success: false, message: detail || 'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.' };
+            if (providerRequests.isCurrent(request, currentProvider())) {
+                testResults[pid] = { request, success: false, message: providerErrorMessage(e,
+                    'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.') };
+            }
         } finally {
-            delete testingProviders[pid];
-            testingConnection = false;
+            if (testingProviders[pid]?.generation === request.generation) delete testingProviders[pid];
         }
     }
 
@@ -2895,7 +2920,7 @@
             }
             console.log(`[Settings] Ollama pull complete: ${tag}`);
             delete ollamaPulling[tag];
-            await handleRefreshModels();
+            await handleRefreshModels('ollama');
         } catch(e) {
             console.error('[Settings] Ollama pull failed:', e);
             alert('Pull failed: ' + e);
@@ -2974,13 +2999,15 @@
         }
     }
 
-    /** Providers whose model list was fetched in this session. */
-    let modelListChecked = $state<Record<string, boolean>>({});
+    /** Auto-refresh once per panel; manual refresh is available after edits or errors. */
+    let modelListAttempted = $state<Record<string, boolean>>({});
+    let modelListChecked = $state<Record<string, ProviderRequestConfig>>({});
     const LOCAL_MODEL_PROVIDERS = ['mistralrs', 'llamacpp', 'mlx', 'webllm', 'ort'];
     /** The saved model is missing from the provider's current /models list. */
     let selectedModelUnavailable = $derived(
         !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id)
         && !!modelListChecked[selectedProvider.id]
+        && providerConfigurationMatches(modelListChecked[selectedProvider.id], selectedProvider)
         && !!selectedProvider.selectedModel
         && (selectedProvider.models?.length ?? 0) > 0
         && !selectedProvider.models!.includes(selectedProvider.selectedModel));
@@ -2991,30 +3018,47 @@
     // Check the selected model against the provider's live /models list once
     // per session, when its panel is opened and it can be queried.
     $effect(() => {
-        const p = selectedProvider;
-        if (!p || LOCAL_MODEL_PROVIDERS.includes(p.id) || modelListChecked[p.id] || loadingModels) return;
+        const p = providers.find(provider => provider.id === selectedProviderId);
+        if (!p || LOCAL_MODEL_PROVIDERS.includes(p.id) || modelListAttempted[p.id]) return;
         if (!['ollama'].includes(p.id) && !p.apiKey) return;
-        untrack(() => { void handleRefreshModels(); });
+        untrack(() => { void handleRefreshModels(p.id); });
     });
 
     /** Providers whose API reports the remaining balance for an API key. */
     const BALANCE_PROVIDERS = ['openrouter'];
-    let balance = $state<Record<string, { text: string; error: boolean; at: number }>>({});
+    let balance = $state<Record<string, { request: ProviderRequest; text: string; error: boolean; at: number }>>({});
+    let balanceRequests = $state<Record<string, ProviderRequest>>({});
+    let balanceBusy = $derived(!!balanceRequests[selectedProvider.id]
+        && providerConfigurationMatches(balanceRequests[selectedProvider.id].config, selectedProvider));
+    let selectedBalance = $derived(balance[selectedProvider.id]
+        && providerConfigurationMatches(balance[selectedProvider.id].request.config, selectedProvider)
+        ? balance[selectedProvider.id] : null);
     async function checkBalance() {
-        const p = selectedProvider;
+        const request = providerRequests.begin('balance', selectedProvider);
+        const currentProvider = () => providers.find(p => p.id === request.config.id);
+        balanceRequests[request.config.id] = request;
+        delete balance[request.config.id];
         try {
-            const key = await resolveSecret(p.apiKey);
-            if (!key) throw new Error('No API key is saved for this provider.');
-            const base = (p.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-            const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
-            const body = await resp.json().catch(() => null) as { data?: { total_credits?: number; total_usage?: number }; error?: { message?: string } } | null;
-            if (!resp.ok) throw new Error(body?.error?.message || `HTTP ${resp.status}`);
-            const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
-            if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
-            const usd = (n: number) => `$${n.toFixed(2)}`;
-            balance[p.id] = { text: `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`, error: false, at: Date.now() };
+            const result = await providerRequests.run(request, currentProvider, resolveSecret, async (config, key) => {
+                if (!key) throw new Error('No API key is saved for this provider.');
+                const base = (config.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+                const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
+                const body = await resp.json().catch(() => null) as { data?: { total_credits?: number; total_usage?: number }; error?: { message?: string } } | null;
+                if (!resp.ok) throw new Error(body?.error?.message || `HTTP ${resp.status}`);
+                const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
+                if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
+                const usd = (n: number) => `$${n.toFixed(2)}`;
+                return `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`;
+            });
+            if (result.current && providerRequests.isCurrent(request, currentProvider())) {
+                balance[request.config.id] = { request, text: result.value, error: false, at: Date.now() };
+            }
         } catch (e: any) {
-            balance[p.id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
+            if (providerRequests.isCurrent(request, currentProvider())) {
+                balance[request.config.id] = { request, text: providerErrorMessage(e, 'The balance could not be loaded. Try again.'), error: true, at: Date.now() };
+            }
+        } finally {
+            if (balanceRequests[request.config.id]?.generation === request.generation) delete balanceRequests[request.config.id];
         }
     }
 
@@ -5762,7 +5806,8 @@
             {#if !['mistralrs', 'webllm', 'ort'].includes(selectedProvider.id)}
                 <div class="form-group">
                     <label for="base-url-input-{selectedProvider.id}">{i18n.t.settings.base_url}</label>
-                    <input id="base-url-input-{selectedProvider.id}" type="text" bind:value={selectedProvider.baseUrl} />
+                    <input id="base-url-input-{selectedProvider.id}" type="text" bind:value={selectedProvider.baseUrl}
+                        oninput={() => invalidateProviderRequests(selectedProvider.id)} />
                 </div>
             {/if}
 
@@ -5771,7 +5816,8 @@
                     <input type="text" name="username" value="api-key" style="display:none;" autocomplete="username" />
                     <div class="form-group">
                         <label for="api-key-input-{selectedProvider.id}">{i18n.t.settings.api_key}</label>
-                        <input id="api-key-input-{selectedProvider.id}" type="password" name="password" bind:value={selectedProvider.apiKey} autocomplete="current-password" />
+                        <input id="api-key-input-{selectedProvider.id}" type="password" name="password" bind:value={selectedProvider.apiKey} autocomplete="current-password"
+                            oninput={() => invalidateProviderRequests(selectedProvider.id)} />
                     </div>
                 </form>
             {/if}
@@ -5780,26 +5826,30 @@
             <div class="form-group">
                 <label for="model-select-input-{selectedProvider.id}">{i18n.t.settings.select_model}</label>
                 <div class="input-with-action">
-                    <select id="model-select-input-{selectedProvider.id}" bind:value={selectedProvider.selectedModel} class="styled-select" onchange={() => handleSave()}>
+                    <select id="model-select-input-{selectedProvider.id}" bind:value={selectedProvider.selectedModel} class="styled-select"
+                        onchange={() => { invalidateProviderRequests(selectedProvider.id, true); void handleSave(); }}>
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each availableModels as model}
                             <option value={model}>{model.split(/[\\/]/).pop()}</option>
                         {/each}
                     </select>
                     {#if selectedProvider.id !== 'mistralrs'}
-                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_refresh_models}>
+                        <button class="action-btn small" onclick={() => handleRefreshModels()} disabled={loadingModels} aria-label={i18n.t.settings.action_refresh_models}>
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
                     {/if}
                 </div>
             </div>
             {/if}
+            {#if modelRefreshError}
+                <p class="hint" role="alert" style="color:#f87171;">{modelRefreshError}</p>
+            {/if}
             {#if selectedModelUnavailable}
                 <div class="model-unavailable" role="alert">
                     <p><strong>{selectedProvider.selectedModel}</strong> is no longer offered by {selectedProvider.name}.
                         Choose one of the models it currently lists:</p>
                     <select aria-label="Replacement model" class="styled-select"
-                        onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { selectedProvider.selectedModel = v; void handleSave(); } }}>
+                        onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { invalidateProviderRequests(selectedProvider.id, true); selectedProvider.selectedModel = v; void handleSave(); } }}>
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each selectedProvider.models ?? [] as model}<option value={model}>{model}</option>{/each}
                     </select>
@@ -5819,9 +5869,9 @@
                 <div class="actions">
                     <button class="action-btn test-btn"
                             onclick={handleTestConnection}
-                            disabled={!!testingProviders[selectedProvider.id] || !selectedProvider.selectedModel}>
-                        <span class={testingProviders[selectedProvider.id] ? "loader-spin" : ""}>
-                            {#if testingProviders[selectedProvider.id]}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
+                            disabled={testingConnection || !selectedProvider.selectedModel}>
+                        <span class={testingConnection ? "loader-spin" : ""}>
+                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
                         </span>
                         {i18n.t.settings.test_connection}
                     </button>
@@ -5829,9 +5879,9 @@
                 {#if !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id) && selectedProvider.id !== 'ollama'}
                     <div class="balance-row">
                         {#if BALANCE_PROVIDERS.includes(selectedProvider.id)}
-                            <button class="action-btn secondary" onclick={checkBalance} disabled={!selectedProvider.apiKey}>Check balance</button>
-                            {#if balance[selectedProvider.id]}
-                                <span role="status" class:balance-error={balance[selectedProvider.id].error}>{balance[selectedProvider.id].text}</span>
+                            <button class="action-btn secondary" onclick={checkBalance} disabled={!selectedProvider.apiKey || balanceBusy}>{balanceBusy ? 'Checking balance…' : 'Check balance'}</button>
+                            {#if selectedBalance}
+                                <span role="status" class:balance-error={selectedBalance.error}>{selectedBalance.text}</span>
                             {/if}
                         {:else}
                             <span class="hint">{selectedProvider.name} does not report the remaining balance through its API; see the provider's console.</span>
@@ -5868,7 +5918,7 @@
                                     <Rocket size={14} /> {i18n.t.settings.ollama_start}
                                 </button>
                             {/if}
-                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_fetch_installed_ollama}>
+                            <button class="action-btn small" onclick={() => handleRefreshModels()} disabled={loadingModels} aria-label={i18n.t.settings.action_fetch_installed_ollama}>
                                 <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> {i18n.t.settings.ollama_fetch_installed}
                             </button>
                         </div>

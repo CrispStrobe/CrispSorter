@@ -182,8 +182,8 @@ export class LLMClient {
 
         // Sentinel-resolve so callers can pass either the raw key or a
         // `@keyring/llm-provider:<id>` sentinel from settings.json.
-        const key = await resolveSecret(apiKey || this.keys[providerId]);
-        const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const key = await resolveSecret(apiKey ?? this.keys[providerId]);
+        const base = baseUrl ?? OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
         if (!base) {
             console.error(`[LLMClient] Missing Base URL for ${providerId}`);
@@ -223,7 +223,7 @@ export class LLMClient {
         }
     }
 
-    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal, maxOutputTokens?: number): Promise<string> {
+    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal, maxOutputTokens?: number, baseUrlOverride?: string): Promise<string> {
         flog('info', `LLM query: provider=${providerId} model=${modelId} prompt_len=${prompt.length}`);
         if (maxOutputTokens != null && (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 1)) throw new Error('Invalid answer token budget');
         const outputTokenBudget = maxOutputTokens == null ? undefined : Math.floor(maxOutputTokens);
@@ -277,8 +277,8 @@ export class LLMClient {
 
         // Sentinel-resolve so callers can pass either the raw key or a
         // `@keyring/llm-provider:<id>` sentinel from settings.json.
-        const key = await resolveSecret(apiKey || this.keys[providerId]);
-        const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const key = await resolveSecret(apiKey ?? this.keys[providerId]);
+        const baseUrl = (baseUrlOverride ?? OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE])?.replace(/\/+$/, '');
 
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
 
