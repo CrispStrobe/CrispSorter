@@ -8,6 +8,11 @@ function item(id: string, overrides: Partial<BatchItem> = {}): BatchItem {
 }
 
 describe('sort preview snapshot', () => {
+    it('includes accepted ready files while excluding completed and moving files', () => {
+        const plan = createSortPlan([item('ready', { status: 'ready' }), item('done', { status: 'done' }), item('moving', { status: 'moving' })], 'move', false, false);
+        expect(plan.items.map(item => item.id)).toEqual(['ready']);
+        expect(plan.candidates).toHaveLength(3);
+    });
     it('lists exactly the eligible accepted files, respecting duplicate and status filters', () => {
         const items = [item('one'), item('dupe', { isDuplicatePrimary: false }), item('busy', { status: 'analyzing' }), item('missing', { targetPath: undefined }), item('unchecked', { isAccepted: false })];
         const plan = createSortPlan(items, 'copy', true, true);

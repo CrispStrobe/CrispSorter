@@ -7,6 +7,12 @@
     import { writeFile } from '@tauri-apps/plugin-fs';
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
+    import { i18n } from '$lib/i18n.svelte';
+    import { searchLabels } from '$lib/search/labels';
+    import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
+        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, validateSearchFilters,
+        type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
+    const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import FieldEvidencePanel from './FieldEvidencePanel.svelte';
@@ -94,6 +100,9 @@
     let compareResults = $state<SearchResult[]>([]);
     let loading     = $state(false);
     let error       = $state('');
+    let searchNotice = $state('');
+    let searchRequest = 0;
+    let displayedRecipeKey = $state<string | null>(null);
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
@@ -280,7 +289,14 @@
 
     async function runFederatedSearch() {
         const q = query.trim();
-        if (!q) return;
+        if (!q || !validateFilters()) return;
+        // The current remote federation wire paths do not carry these
+        // options. Never silently broaden an explicitly filtered search.
+        if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length
+            || (activeFilterKeys.length > 0 && fedBackendsActive.some(backend => backend !== 'local'))) {
+            fedSearched = true; fedResults = []; fedErrors = { global: labels.remoteUnsupported };
+            return;
+        }
         fedLoading  = true;
         fedSearched = true;
         fedQuery = q;
@@ -325,8 +341,10 @@
     let skeletonAuthors    = $state<SkeletonHit[]>([]);
     let skeletonParentDirs = $state<SkeletonHit[]>([]);
     let skeletonVisible    = $state(false);
+    let skeletonRequest = 0;
 
     async function runSkeletonSearch(q: string) {
+        const request = ++skeletonRequest;
         if (!q.trim()) {
             skeletonAuthors = [];
             skeletonParentDirs = [];
@@ -337,11 +355,12 @@
             const r = await invoke<{ authors: SkeletonHit[]; parent_dirs: SkeletonHit[] }>(
                 'sync_skeleton_search', { query: q.trim() }
             );
+            if (request !== skeletonRequest || q.trim() !== query.trim()) return;
             skeletonAuthors    = r.authors    ?? [];
             skeletonParentDirs = r.parent_dirs ?? [];
             skeletonVisible    = skeletonAuthors.length > 0 || skeletonParentDirs.length > 0;
         } catch {
-            skeletonVisible = false;
+            if (request === skeletonRequest) skeletonVisible = false;
         }
     }
 
@@ -609,6 +628,8 @@
     }
 
     async function findByField(tag: string, value: string) {
+        const request = ++searchRequest;
+        resetFilters(); searchNotice = ''; displayedRecipeKey = null; imageSearchLoading = false;
         loading = true; error = ''; searched = true;
         filterTag = tag; query = value; clearTranslations();
         try {
@@ -617,9 +638,9 @@
                 sort: { column: 'filename', direction: 'asc' },
                 page: { limit, cursor: null },
             });
-            results = page.rows;
-        } catch (e) { error = String(e); }
-        finally { loading = false; }
+            if (request === searchRequest) results = page.rows;
+        } catch (e) { if (request === searchRequest) error = String(e); }
+        finally { if (request === searchRequest) loading = false; }
     }
 
     async function useReviewedFields(values: Record<string, string>) {
@@ -645,59 +666,107 @@
     }
 
 
-    // ── Saved searches (PLAN P7.5) ────────────────────────────────────────────
-    // Persist (name, query, mode, limit) tuples in tauri-plugin-store under
-    // `savedSearches`. Click → load into the query bar + run. Lightweight
-    // first cut — no per-saved-search filter persistence yet (filters reset
-    // to defaults on load); that's the next iteration once the filter shape
-    // settles.
-
-    interface SavedSearch {
-        name: string;
-        query: string;
-        mode: 'hybrid' | 'text' | 'vector';
-        limit: number;
-        savedAt: number; // unix ms
-    }
-
+    // Saved searches and history retain the complete query, not just its text.
     let savedSearches = $state<SavedSearch[]>([]);
+    let savedSearchBusy = $state(false);
+    let savedSearchesLoaded = $state(false);
+    let savedSearchesLoading = $state(true);
+    let savedSearchesLoadError = $state('');
     let showSavedDropdown = $state(false);
-
-    // P24.2 — Search history (last 50 queries)
-    interface HistoryEntry {
-        query: string;
-        mode: string;
-        ts: number;
-        resultCount: number;
-    }
-    let searchHistory = $state<HistoryEntry[]>([]);
+    let searchHistory = $state<SearchHistoryEntry[]>([]);
     let showHistory = $state(false);
     const MAX_HISTORY = 50;
 
-    async function addToHistory(q: string, m: string, count: number) {
-        // Dedup on (query, mode) — re-running bumps to top
+    const currentFilters = $derived<SearchFilters>({
+        ext: filterExt, language: filterLang, yearMin: filterYearMin ?? null,
+        yearMax: filterYearMax ?? null, folderPrefix: filterFolderPrefix,
+        urlDomain: filterUrlDomain, tag: filterTag, audioMin: filterAudioDurMin ?? null,
+        audioMax: filterAudioDurMax ?? null, cameraMake: filterCameraMake,
+        cameraModel: filterCameraModel, colbert: filterColbert, omni: filterOmniSearch,
+        fuzzy: filterFuzzy, synonyms: filterSynonyms, includeUnmounted,
+    });
+    const activeFilterKeys = $derived(activeSearchFilters(currentFilters));
+    const searchOptionsChanged = $derived(displayedRecipeKey !== null && displayedRecipeKey !== searchRecipeKey(currentRecipe()));
+
+    function currentRecipe(): SearchRecipe {
+        return normalizeSearchRecipe({ query, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope });
+    }
+
+    function applyFilters(f: SearchFilters): void {
+        filterExt = f.ext; filterLang = f.language;
+        filterYearMin = f.yearMin; filterYearMax = f.yearMax;
+        filterFolderPrefix = f.folderPrefix; filterUrlDomain = f.urlDomain; filterTag = f.tag;
+        filterAudioDurMin = f.audioMin; filterAudioDurMax = f.audioMax;
+        filterCameraMake = f.cameraMake; filterCameraModel = f.cameraModel;
+        filterColbert = f.colbert; filterOmniSearch = f.omni;
+        filterFuzzy = f.fuzzy; filterSynonyms = f.synonyms; includeUnmounted = f.includeUnmounted;
+    }
+
+    function applyRecipe(recipe: SearchRecipe): void {
+        query = recipe.query;
+        void runSkeletonSearch(query);
+        mode = !vectorEnabled && recipe.mode !== 'text' ? 'text' : recipe.mode;
+        limit = recipe.limit; smartSearch = recipe.smart;
+        refinementScope = [...recipe.docIdScope];
+        applyFilters(recipe.filters);
+    }
+
+    function resetFilters(): void {
+        applyFilters(defaultSearchFilters());
+        refinementScope = [];
+        smartSearch = false;
+        searchNotice = '';
+    }
+
+    function removeFilter(key: keyof SearchFilters): void {
+        applyFilters({ ...currentFilters, [key]: defaultSearchFilters()[key] });
+    }
+
+    function validateFilters(): boolean {
+        const issue = validateSearchFilters(currentFilters);
+        if (issue) { error = labels[issue]; return false; }
+        if ((filterColbert || filterOmniSearch) && !crispembedAvailable) {
+            error = labels.nativeOptionsUnavailable; return false;
+        }
+        return true;
+    }
+
+    async function addToHistory(recipe: SearchRecipe, count: number) {
+        const key = searchRecipeKey(recipe);
         searchHistory = [
-            { query: q, mode: m, ts: Date.now(), resultCount: count },
-            ...searchHistory.filter(h => !(h.query === q && h.mode === m)),
+            { ...recipe, ts: Date.now(), resultCount: count },
+            ...searchHistory.filter(h => searchRecipeKey(h) !== key),
         ].slice(0, MAX_HISTORY);
         await saveSetting('searchHistory', searchHistory);
     }
 
-    async function loadHistoryEntry(h: HistoryEntry) {
-        query = h.query;
-        mode = h.mode as any;
+    async function loadHistoryEntry(h: SearchHistoryEntry) {
+        applyRecipe(h);
         showHistory = false;
         await runSearch();
     }
 
     async function deleteHistoryEntry(idx: number) {
         searchHistory = searchHistory.filter((_, i) => i !== idx);
-        await saveSetting('searchHistory', searchHistory);
+        try { await saveSetting('searchHistory', searchHistory); }
+        catch (e) { searchNotice = String(e); }
     }
 
     async function clearHistory() {
         searchHistory = [];
-        await saveSetting('searchHistory', []);
+        try { await saveSetting('searchHistory', []); }
+        catch (e) { searchNotice = String(e); }
+    }
+
+    async function restoreBookmarks() {
+        savedSearchesLoading = true; savedSearchesLoadError = '';
+        try {
+            savedSearches = restoreSavedSearches(await getSetting('savedSearches', null));
+            savedSearchesLoaded = true;
+        } catch (e) {
+            savedSearchesLoadError = String(e);
+            savedSearchesLoaded = false;
+        } finally { savedSearchesLoading = false; }
     }
 
     onMount(async () => {
@@ -707,10 +776,10 @@
             if (!vectorEnabled) mode = 'text';
         } catch { /* use the normal default until configuration is available */ }
         await loadExperimentalCrispEmbed().catch(e => console.warn('Could not restore experimental service settings', e));
-        const stored = (await getSetting('savedSearches', null)) as SavedSearch[] | null;
-        savedSearches = stored ?? [];
-        const hist = (await getSetting('searchHistory', null)) as HistoryEntry[] | null;
-        searchHistory = hist ?? [];
+        await restoreBookmarks();
+        try {
+            searchHistory = restoreSearchHistory(await getSetting('searchHistory', null));
+        } catch (e) { searchNotice = String(e); }
         try {
             const caps = await invoke<{ crispembed: boolean }>('index_capabilities');
             crispembedAvailable = !!caps.crispembed;
@@ -719,39 +788,40 @@
         }
     });
 
-    async function persistSavedSearches() {
-        await saveSetting('savedSearches', savedSearches);
-    }
-
     async function saveCurrentSearch() {
-        const q = query.trim();
-        if (!q) return;
-        // Default name = first 40 chars of the query, or user-edited later.
-        const name = q.length > 40 ? q.slice(0, 37) + '…' : q;
-        // Dedup on (name, query) — re-saving the same search updates timestamp.
-        const idx = savedSearches.findIndex(s => s.name === name && s.query === q);
-        const entry: SavedSearch = {
-            name, query: q, mode, limit, savedAt: Date.now(),
-        };
-        if (idx >= 0) {
-            savedSearches[idx] = entry;
-        } else {
-            savedSearches = [...savedSearches, entry];
-        }
-        await persistSavedSearches();
+        if (!savedSearchesLoaded || savedSearchBusy || !query.trim() || !validateFilters()) return;
+        const recipe = currentRecipe();
+        const key = searchRecipeKey(recipe);
+        const idx = savedSearches.findIndex(s => searchRecipeKey(s) === key);
+        const name = query.trim().length > 40 ? query.trim().slice(0, 37) + '…' : query.trim();
+        const entry: SavedSearch = { ...recipe, name, savedAt: Date.now() };
+        const next = [...savedSearches];
+        if (idx >= 0) next[idx] = entry;
+        else next.push(entry);
+        savedSearchBusy = true;
+        try {
+            await saveSetting('savedSearches', next);
+            savedSearches = next;
+            searchNotice = labels.saved;
+        } catch (e) { searchNotice = String(e); }
+        finally { savedSearchBusy = false; }
     }
 
     async function loadSavedSearch(s: SavedSearch) {
-        query = s.query;
-        mode = s.mode;
-        limit = s.limit;
+        applyRecipe(s);
         showSavedDropdown = false;
         await runSearch();
     }
 
     async function deleteSavedSearch(idx: number) {
-        savedSearches = savedSearches.filter((_, i) => i !== idx);
-        await persistSavedSearches();
+        if (!savedSearchesLoaded || savedSearchBusy) return;
+        savedSearchBusy = true;
+        const next = savedSearches.filter((_, i) => i !== idx);
+        try {
+            await saveSetting('savedSearches', next);
+            savedSearches = next;
+        } catch (e) { searchNotice = String(e); }
+        finally { savedSearchBusy = false; }
     }
 
     // Group results by doc_id
@@ -812,76 +882,71 @@
     // ── Search ─────────────────────────────────────────────────────────────────
 
     async function runSearch() {
-        if (!query.trim()) return;
-        loading  = true;
-        error    = '';
-        searched = true;
-        similarHeader = '';
-        compareResults = [];
-        batchSelection = new Set();
-        // P13.5 — wipe per-result translation state on every new
-        // query.  Otherwise the user types a different query and
-        // sees stale "Translated en" badges on rows that haven't
-        // been translated yet (the Map key is doc_id:chunk_index
-        // which can collide across queries).
-        clearTranslations();
-        // Drop any tag-cloud narrowing from the previous result set; the new
-        // hits have their own tag distribution.
-        searchTags = new Set();
+        if (!query.trim() || !validateFilters()) return;
+        const request = ++searchRequest;
+        const recipe = currentRecipe();
+        imageSearchLoading = false;
+        loading = true; error = ''; searchNotice = ''; searched = true;
+        similarHeader = ''; compareResults = []; batchSelection = new Set();
+        clearTranslations(); searchTags = new Set();
         try {
-            // P22.4 — Smart search: parse NL query into filters + cleaned query
-            let searchQuery = query.trim();
-            if (smartSearch) {
+            let searchQuery = recipe.query;
+            if (recipe.smart) {
                 try {
                     const parsed = await invoke<{ cleaned_query: string; filters: any }>(
                         'index_parse_nl_query', { query: searchQuery }
                     );
+                    if (request !== searchRequest) return;
                     searchQuery = parsed.cleaned_query || searchQuery;
-                    // Apply extracted filters (only override non-empty values)
-                    if (parsed.filters.language) filterLang = parsed.filters.language;
-                    if (parsed.filters.year_min) filterYearMin = parsed.filters.year_min;
-                    if (parsed.filters.year_max) filterYearMax = parsed.filters.year_max;
-                    if (parsed.filters.ext?.length) filterExt = parsed.filters.ext.join(',');
-                    if (parsed.filters.parent_dir_prefix) filterFolderPrefix = parsed.filters.parent_dir_prefix;
-                    if (parsed.filters.url_domain) filterUrlDomain = parsed.filters.url_domain;
-                    if (parsed.filters.tag) filterTag = parsed.filters.tag;
-                } catch { /* fall through with raw query */ }
-            }
-            results = await invoke<SearchResult[]>('index_search', {
-                query: searchQuery,
-                mode,
-                limit: $experimentalCrispEmbed.moedern ? Math.max(limit, 50) : limit,
-                ownerId: null,
-                includeUnmounted,
-                fuzzy: filterFuzzy || null,
-                synonyms: filterSynonyms || null,
-                docIdScope: refinementScope.length > 0 ? refinementScope : null,
-                tag: filterTag || null,
-            });
-            if ($experimentalCrispEmbed.moedern && $experimentalCrispEmbed.endpoint && results.length) {
-                const original = results;
-                try {
-                    const report = await invoke<{ results: SearchResult[] }>('crispembed_rerank_passages', {
-                        endpoint: $experimentalCrispEmbed.endpoint, query: searchQuery, candidates: results.slice(0, 100), limit,
-                    });
-                    results = report.results;
+                    const f = recipe.filters;
+                    if (parsed.filters.language) f.language = parsed.filters.language;
+                    if (parsed.filters.year_min != null) f.yearMin = parsed.filters.year_min;
+                    if (parsed.filters.year_max != null) f.yearMax = parsed.filters.year_max;
+                    if (parsed.filters.ext?.length) f.ext = parsed.filters.ext.join(',');
+                    if (parsed.filters.parent_dir_prefix) f.folderPrefix = parsed.filters.parent_dir_prefix;
+                    if (parsed.filters.url_domain) f.urlDomain = parsed.filters.url_domain;
+                    if (parsed.filters.tag) f.tag = parsed.filters.tag;
+                    recipe.filters = normalizeSearchRecipe(recipe).filters;
+                    applyFilters(recipe.filters);
+                    const issue = validateSearchFilters(recipe.filters);
+                    if (issue) { error = labels[issue]; return; }
                 } catch (e) {
-                    results = original.slice(0, limit);
-                    error = `Experimental reranking unavailable; showing the original search order. ${String(e)}`;
+                    if (request !== searchRequest) return;
+                    // Retain the literal query if the optional parser is unavailable.
+                    searchNotice = `${labels.warning}: ${String(e)}`;
                 }
             }
-            // After a refinement search, clear the scope so the next
-            // plain search isn't scoped.
-            if (refinementScope.length > 0) refinementScope = [];
-            // P24.2 — record in search history
-            addToHistory(searchQuery, mode, results.length);
-            // P25.2 — audit trail
-            auditSearch(searchQuery);
+            if (request !== searchRequest) return;
+            let found = await invoke<SearchResult[]>('index_search', localSearchArguments(
+                { ...recipe, query: searchQuery }, $experimentalCrispEmbed.moedern ? Math.max(recipe.limit, 50) : recipe.limit,
+            ));
+            if (request !== searchRequest) return;
+            if ($experimentalCrispEmbed.moedern && $experimentalCrispEmbed.endpoint && found.length) {
+                const original = found;
+                try {
+                    const report = await invoke<{ results: SearchResult[] }>('crispembed_rerank_passages', {
+                        endpoint: $experimentalCrispEmbed.endpoint, query: searchQuery, candidates: found.slice(0, 100), limit: recipe.limit,
+                    });
+                    if (request !== searchRequest) return;
+                    found = report.results;
+                } catch (e) {
+                    if (request !== searchRequest) return;
+                    found = original.slice(0, recipe.limit);
+                    searchNotice = `Experimental reranking unavailable; showing the original search order. ${String(e)}`;
+                }
+            }
+            results = found;
+            displayedRecipeKey = searchRecipeKey(recipe);
+            // Keep the scope visible until explicitly cleared; repeated searches
+            // and bookmarks must not silently broaden the user's selection.
+            try { await addToHistory(recipe, results.length); }
+            catch (e) { if (request === searchRequest) searchNotice = String(e); }
+            void auditSearch(searchQuery);
         } catch (e: any) {
-            error   = String(e);
-            results = [];
+            if (request !== searchRequest) return;
+            error = String(e); results = [];
         } finally {
-            loading = false;
+            if (request === searchRequest) loading = false;
         }
     }
 
@@ -892,6 +957,8 @@
     let similarHeader = $state('');
 
     async function findSimilar(r: SearchResult) {
+        const request = ++searchRequest;
+        displayedRecipeKey = null; imageSearchLoading = false;
         loading = true;
         error = '';
         searched = true;
@@ -900,16 +967,18 @@
         searchTags = new Set();
         batchSelection = new Set();
         try {
-            results = await invoke<SearchResult[]>('index_find_similar', {
+            const found = await invoke<SearchResult[]>('index_find_similar', {
                 docId: r.doc_id,
                 chunkIndex: r.chunk_index >= 0 ? r.chunk_index : 0,
                 limit,
             });
+            if (request === searchRequest) results = found;
         } catch (e: any) {
+            if (request !== searchRequest) return;
             error = String(e);
             results = [];
         } finally {
-            loading = false;
+            if (request === searchRequest) loading = false;
         }
     }
 
@@ -951,6 +1020,7 @@
         refinementScope = docIds;
         // Clear query so the user can type a new one
         query = '';
+        void runSkeletonSearch('');
     }
 
     function onKeydown(e: KeyboardEvent) {
@@ -971,22 +1041,26 @@
         const imagePath = typeof selected === 'string' ? selected : (selected as any).path;
         if (!imagePath) return;
 
-        imageSearchLoading = true;
+        const request = ++searchRequest;
+        displayedRecipeKey = null;
+        loading = true; imageSearchLoading = true;
         error    = '';
         searched = true;
         clearTranslations();
         searchTags = new Set();
         batchSelection = new Set();
         try {
-            results = await invoke<SearchResult[]>('index_search_by_image', {
+            const found = await invoke<SearchResult[]>('index_search_by_image', {
                 imagePath,
                 limit,
             });
+            if (request === searchRequest) results = found;
         } catch (e: any) {
+            if (request !== searchRequest) return;
             error   = String(e);
             results = [];
         } finally {
-            imageSearchLoading = false;
+            if (request === searchRequest) { loading = false; imageSearchLoading = false; }
         }
     }
 
@@ -997,7 +1071,14 @@
     // alongside FTS — true hybrid retrieval.
     async function runRemoteSearch() {
         const q = query.trim();
-        if (!q) return;
+        if (!q || !validateFilters()) return;
+        const recipe = currentRecipe();
+        const f = recipe.filters;
+        if (f.audioMin != null || f.audioMax != null || f.cameraMake || f.cameraModel || f.fuzzy
+            || f.synonyms || f.colbert || f.omni || f.includeUnmounted || recipe.smart || recipe.docIdScope.length) {
+            remoteSearched = true; remoteResults = []; remoteError = labels.remoteUnsupported;
+            return;
+        }
         remoteLoading  = true;
         remoteError    = '';
         remoteSearched = true;
@@ -1005,12 +1086,14 @@
         try {
             const r = await invoke<any>('sync_cb_v2_search', {
                 params: {
-                    q,
-                    embedText:  q,        // server-side fastembed for the vector arm
+                    q: mode === 'vector' ? null : q,
+                    embedText:  mode === 'text' ? null : q, // server-side semantic channel
                     embedModel: 'e5-large', // matches the LanceDB default-dim table
                     limit,
                     rrfK: 60,
-                    filters: {},
+                    filters: { ext: f.ext ? f.ext.split(',') : [], languages: f.language ? [f.language] : [],
+                        year_min: f.yearMin, year_max: f.yearMax, parent_dir_prefix: f.folderPrefix || null,
+                        url_domain: f.urlDomain || null, tag: f.tag || null },
                 },
             });
             remoteResults    = (r.rows ?? []) as RemoteHit[];
@@ -1105,6 +1188,11 @@
     }
 
     function clearSearch() {
+        searchRequest += 1;
+        loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
+        displayedRecipeKey = null; similarHeader = '';
+        void runSkeletonSearch('');
+        clearTranslations(); searchTags = new Set();
         query    = '';
         results  = [];
         compareResults = [];
@@ -1454,29 +1542,32 @@
                 class="query-input"
                 type="text"
                 bind:value={query}
-                oninput={() => runSkeletonSearch(query)}
+                oninput={event => runSkeletonSearch(event.currentTarget.value)}
                 onkeydown={onKeydown}
-                placeholder="Suche in indizierten Dokumenten …"
+                aria-label={labels.query}
+                placeholder={labels.placeholder}
                 title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
                 autofocus
             />
             {#if query}
-                <button class="clear-btn" onclick={clearSearch} title="Löschen"><X size={14} /></button>
+                <button class="clear-btn" onclick={clearSearch} title={labels.clear} aria-label={labels.clear}><X size={14} /></button>
             {/if}
         </div>
         <button class="search-btn" onclick={runSearch} disabled={loading || !query.trim()}>
             {#if loading}<Loader2 size={15} class="spin" />{:else}<Search size={15} />{/if}
-            Suchen
+            {labels.search}
         </button>
         <!-- P13.7 Stage M — search the cloud-backup VPS over HTTPS.
              Uses the same query string; the server runs FTS5 + a
              server-side embedding pass and RRF-fuses both arms. -->
+        {#if $caps.cloud_backup}
         <button class="filter-toggle" onclick={runRemoteSearch}
                 disabled={remoteLoading || !query.trim()}
                 title="Search the cloud-backup VPS over HTTPS">
             {#if remoteLoading}<Loader2 size={15} class="spin" />{:else}🌐{/if}
             Cloud
         </button>
+        {/if}
         <!-- Stage S — federated search across all backends. -->
         <button class="filter-toggle fed-btn" onclick={runFederatedSearch}
                 disabled={fedLoading || !query.trim() || fedBackendsActive.length === 0}
@@ -1493,8 +1584,10 @@
         <button
             class="filter-toggle"
             onclick={saveCurrentSearch}
-            disabled={!query.trim()}
-            title="Save this search"
+            disabled={!savedSearchesLoaded || savedSearchBusy || !query.trim()}
+            aria-busy={savedSearchesLoading || savedSearchBusy}
+            title={labels.save}
+            aria-label={labels.save}
         >
             <BookmarkPlus size={15} />
         </button>
@@ -1504,7 +1597,9 @@
                 class:active={showSavedDropdown}
                 onclick={() => showSavedDropdown = !showSavedDropdown}
                 disabled={savedSearches.length === 0}
-                title="Saved searches ({savedSearches.length})"
+                title={`${labels.savedList} (${savedSearches.length})`}
+                aria-label={labels.savedList}
+                aria-expanded={showSavedDropdown}
             >
                 <Bookmark size={15} />
                 {#if savedSearches.length > 0}
@@ -1513,18 +1608,21 @@
             </button>
             {#if showSavedDropdown && savedSearches.length > 0}
                 <div class="saved-dropdown">
-                    {#each savedSearches as s, i (s.name + s.savedAt)}
+                    <p class="saved-help">{labels.restoreHint}</p>
+                    {#each savedSearches as s, i}
                         <div class="saved-item">
                             <button
                                 class="saved-name"
                                 onclick={() => loadSavedSearch(s)}
-                                title={s.query}
+                                title={`${s.query} · ${activeSearchFilters(s.filters).map(key => labels.filtersLabel[key]).join(", ")}`}
                             >
                                 {s.name}
                                 <span class="saved-meta">
-                                    {s.mode} · {s.limit}
+                                    {s.mode} · {s.limit} · {activeSearchFilters(s.filters).length} {labels.filterCount}
+                                    {#if s.docIdScope.length} · {s.docIdScope.length} {labels.scope}{/if}
                                 </span>
                             </button>
+                            {#if activeSearchFilters(s.filters).length === 0 && s.docIdScope.length === 0 && !s.smart}
                             <button
                                 class="saved-context"
                                 onclick={() => requestBrowserContext(searchResultsPanel(s.query, `Saved search: ${s.name}`))}
@@ -1533,9 +1631,11 @@
                             >
                                 <FolderOpen size={12} />
                             </button>
+                            {/if}
                             <button
                                 class="saved-del"
                                 onclick={() => deleteSavedSearch(i)}
+                                disabled={!savedSearchesLoaded || savedSearchBusy}
                                 title="Delete saved search"
                             >
                                 <Trash2 size={12} />
@@ -1551,19 +1651,21 @@
                 class:active={showHistory}
                 onclick={() => showHistory = !showHistory}
                 disabled={searchHistory.length === 0}
-                title="Search history ({searchHistory.length})"
+                title={`${labels.history} (${searchHistory.length})`}
+                aria-label={labels.history}
+                aria-expanded={showHistory}
             >
                 <Clock size={15} />
             </button>
             {#if showHistory && searchHistory.length > 0}
                 <div class="saved-dropdown history-dropdown">
                     <div class="history-header">
-                        <span>Recent searches</span>
+                        <span>{labels.history}</span>
                         <button class="saved-del" onclick={clearHistory} title="Clear all history">
                             <Trash2 size={11} /> Clear
                         </button>
                     </div>
-                    {#each searchHistory as h, i (h.query + h.ts)}
+                    {#each searchHistory as h, i}
                         <div class="saved-item">
                             <button
                                 class="saved-name"
@@ -1572,7 +1674,7 @@
                             >
                                 {h.query.length > 50 ? h.query.slice(0, 47) + '…' : h.query}
                                 <span class="saved-meta">
-                                    {h.mode} · {h.resultCount} hits · {new Date(h.ts).toLocaleTimeString()}
+                                    {h.mode} · {h.resultCount} hits · {activeSearchFilters(h.filters).length} {labels.filterCount} · {new Date(h.ts).toLocaleTimeString()}
                                 </span>
                             </button>
                             <button
@@ -1592,7 +1694,8 @@
             <span class="smart-label">Smart</span>
         </label>
         <button class="filter-toggle" class:active={showFilters}
-            onclick={() => showFilters = !showFilters} title="Optionen">
+            onclick={() => showFilters = !showFilters} title={labels.filters}
+            aria-label={labels.filters} aria-expanded={showFilters} aria-controls="library-search-filters">
             <SlidersHorizontal size={15} />
         </button>
     </div>
@@ -1603,23 +1706,50 @@
             <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
                     title={!vectorEnabled && m !== 'text' ? 'Enable vector embeddings in Search Index settings.' : ''}
                     onclick={() => mode = m}>
-                { m === 'hybrid' ? 'Hybrid (RRF)' : m === 'text' ? 'Volltext (BM25)' : 'Vektor (ANN)' }
+                {labels[m]}
             </button>
         {/each}
     </div>
 
+    <p class="search-help">{labels.modesHint}</p>
+    {#if activeFilterKeys.length || refinementScope.length || smartSearch}
+        <div class="active-filters" aria-label={labels.active}>
+            {#each activeFilterKeys as key}
+                <button class="filter-chip" onclick={() => removeFilter(key)}
+                    aria-label={`${labels.remove} ${labels.filtersLabel[key]}`}>
+                    {labels.filtersLabel[key]}{typeof currentFilters[key] !== 'boolean' ? `: ${currentFilters[key]}` : ''}
+                    <X size={12} />
+                </button>
+            {/each}
+            {#if refinementScope.length}
+                <button class="filter-chip" onclick={() => refinementScope = []}>{refinementScope.length} {labels.scope} <X size={12} /></button>
+            {/if}
+            {#if smartSearch}<button class="filter-chip" onclick={() => smartSearch = false}>Smart <X size={12} /></button>{/if}
+            <button class="reset-filters" onclick={resetFilters}>{labels.reset}</button>
+        </div>
+    {/if}
+    {#if savedSearchesLoadError}
+        <div class="search-notice" role="alert">
+            {labels.restoreFailed} <button class="reset-filters" onclick={restoreBookmarks} disabled={savedSearchesLoading}>{labels.retry}</button>
+            <details><summary>{labels.details}</summary>{savedSearchesLoadError}</details>
+        </div>
+    {/if}
+    {#if searchOptionsChanged && !loading}<p class="search-help">{labels.changed}</p>{/if}
+    {#if searchNotice}<div class="search-notice" role="status">{searchNotice}</div>{/if}
+
     <!-- ── Filters ─────────────────────────────────────────────────────────────── -->
     {#if showFilters}
+        <section id="library-search-filters" class="search-filters" aria-label={labels.options}>
         <div class="filter-row">
             <label class="filter-field">
-                <span>Max. Ergebnisse</span>
+                <span>{labels.max}</span>
                 <select bind:value={limit}>
                     {#each [10, 20, 50, 100] as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>
             <label class="filter-field" title="Include hits from drives that aren't currently mounted">
                 <input type="checkbox" bind:checked={includeUnmounted} />
-                <span>Inkl. nicht eingehängter Laufwerke</span>
+                <span>{labels.mounted}</span>
             </label>
             <!-- P13.5 on-demand translation — target language for the
                  per-result "Translate to …" button.  m2m100 covers
@@ -1642,97 +1772,108 @@
         <!-- Advanced filters -->
         <div class="filter-row" style="flex-wrap:wrap;">
             <label class="filter-field" title="Comma-separated file extensions (e.g. pdf,docx)">
-                <span>Extension</span>
+                {labels.filtersLabel.ext}
                 <input type="text" bind:value={filterExt} placeholder="pdf,docx" style="width:110px;" />
             </label>
             <label class="filter-field" title="ISO 639-1 language code (e.g. en, de)">
-                <span>Language</span>
+                {labels.filtersLabel.language}
                 <input type="text" bind:value={filterLang} placeholder="en" style="width:60px;" />
             </label>
             <label class="filter-field" title="Minimum publication year">
-                <span>Year min</span>
+                {labels.filtersLabel.yearMin}
                 <input type="number" bind:value={filterYearMin} placeholder="2000" style="width:80px;" />
             </label>
             <label class="filter-field" title="Maximum publication year">
-                <span>Year max</span>
+                {labels.filtersLabel.yearMax}
                 <input type="number" bind:value={filterYearMax} placeholder="2026" style="width:80px;" />
             </label>
             <label class="filter-field" title="Folder prefix filter (path starts with)">
-                <span>Folder prefix</span>
+                {labels.filtersLabel.folderPrefix}
                 <input type="text" bind:value={filterFolderPrefix} placeholder="/home/user/docs" style="width:160px;" />
             </label>
             <label class="filter-field" title="URL domain filter (e.g. spiegel.de)">
-                <span>URL domain</span>
+                {labels.filtersLabel.urlDomain}
                 <input type="text" bind:value={filterUrlDomain} placeholder="spiegel.de" style="width:120px;" />
             </label>
             <label class="filter-field" title="Tag filter">
-                <span>Tag</span>
+                {labels.filtersLabel.tag}
                 <input type="text" bind:value={filterTag} placeholder="invoice" style="width:100px;" />
             </label>
             <label class="filter-field" title="Min audio duration (seconds)">
-                <span>Audio min (s)</span>
+                {labels.filtersLabel.audioMin}
                 <input type="number" bind:value={filterAudioDurMin} placeholder="0" style="width:70px;" />
             </label>
             <label class="filter-field" title="Max audio duration (seconds)">
-                <span>Audio max (s)</span>
+                {labels.filtersLabel.audioMax}
                 <input type="number" bind:value={filterAudioDurMax} placeholder="3600" style="width:70px;" />
             </label>
             <label class="filter-field" title="Camera make (e.g. Canon, Nikon)">
-                <span>Camera make</span>
+                {labels.filtersLabel.cameraMake}
                 <input type="text" bind:value={filterCameraMake} placeholder="Canon" style="width:100px;" />
             </label>
             <label class="filter-field" title="Camera model (e.g. EOS R5)">
-                <span>Camera model</span>
+                {labels.filtersLabel.cameraModel}
                 <input type="text" bind:value={filterCameraModel} placeholder="EOS R5" style="width:100px;" />
             </label>
             <label class="filter-field" title="ColBERT late-interaction reranking" style="flex-direction:row; align-items:center; gap:6px;">
-                <input type="checkbox" bind:checked={filterColbert} />
-                <span>ColBERT rerank</span>
+                <input type="checkbox" bind:checked={filterColbert} disabled={!crispembedAvailable} />
+                {labels.filtersLabel.colbert}
             </label>
             <label class="filter-field" title="Include omni cross-modal search channel (text → image/audio)" style="flex-direction:row; align-items:center; gap:6px;">
-                <input type="checkbox" bind:checked={filterOmniSearch} />
-                <span>Omni cross-modal</span>
+                <input type="checkbox" bind:checked={filterOmniSearch} disabled={!crispembedAvailable} />
+                {labels.filtersLabel.omni}
             </label>
             <label class="filter-field" title="Fuzzy matching: tolerate typos and OCR errors (~1 edit distance)" style="flex-direction:row; align-items:center; gap:6px;">
                 <input type="checkbox" bind:checked={filterFuzzy} />
-                <span>Fuzzy (typo-tolerant)</span>
+                {labels.filtersLabel.fuzzy}
             </label>
             <label class="filter-field" title="Expand query terms with offline synonyms (EN + DE)" style="flex-direction:row; align-items:center; gap:6px;">
                 <input type="checkbox" bind:checked={filterSynonyms} />
-                <span>Synonyms (EN+DE)</span>
+                {labels.filtersLabel.synonyms}
             </label>
         </div>
+        <p class="search-help">{labels.nativeOnly}</p>
+        <p class="search-help">{labels.catalogHint}</p>
+        {#if !crispembedAvailable}<p class="search-help">{labels.nativeOptionsUnavailable}</p>{/if}
+        </section>
     {/if}
 
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
     <div class="results-and-preview">
     <div class="results-area" class:with-preview={previewing !== null}>
         {#if loading}
-            <div class="state-msg"><Loader2 size={22} class="spin" /> Suche läuft …</div>
+            <div class="state-msg" role="status"><Loader2 size={22} class="spin" /> {labels.loading}</div>
 
         {:else if error}
-            <div class="state-msg error">
+            <div class="state-msg error" role="alert">
                 {error}
+                <button class="reset-filters" onclick={runSearch}>{labels.retry}</button>
                 {#if error.includes('not initialised') || error.includes('disabled')}
                     <br /><small>Bitte den Index in Einstellungen → Search Index aktivieren und initialisieren.</small>
                 {/if}
             </div>
 
         {:else if searched && grouped.length === 0}
-            <div class="state-msg">Keine Ergebnisse für „{query}"</div>
+            <div class="state-hint">
+                <Search size={32} />
+                <p>{labels.noResults}</p><p class="hint-sub">{labels.noResultsHint}</p>
+                {#if activeFilterKeys.length || refinementScope.length || smartSearch}
+                    <button class="reset-filters" onclick={() => { resetFilters(); void runSearch(); }}>{labels.reset}</button>
+                {/if}
+            </div>
 
         {:else if !searched}
             <div class="state-hint">
                 <Search size={32} style="color:#3f3f46;" />
-                <p>Suchbegriff eingeben und Enter drücken</p>
-                <p class="hint-sub">Hybrid-Modus kombiniert Volltext (BM25) und Vektoren (ANN) über RRF</p>
+                <p>{labels.start}</p>
+                <p class="hint-sub">{labels.startHint}</p>
             </div>
 
         {:else}
             {#if similarHeader}
                 <div class="similar-header">
                     Similar to: <strong>{similarHeader}</strong>
-                    <button class="clear-similar" onclick={() => { similarHeader = ''; results = []; batchSelection = new Set(); searched = false; }}>
+                    <button class="clear-similar" onclick={clearSearch}>
                         <X size={12} /> Clear
                     </button>
                 </div>
@@ -1762,6 +1903,7 @@
                         Refine
                     </button>
                 {/if}
+                {#if !activeFilterKeys.length && !refinementScope.length && !smartSearch}
                 <button
                     class="tagcloud-toggle"
                     onclick={openSearchResultsContext}
@@ -1769,6 +1911,7 @@
                 >
                     <FolderOpen size={11} /> Context
                 </button>
+                {/if}
                 {#if batchSelection.size > 0}
                     <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} title="Add selected local results to batch sorter">
                         <ListPlus size={11} /> Batch ({batchSelection.size})
@@ -2510,6 +2653,14 @@
         box-sizing: border-box; gap: 12px; overflow: hidden;
     }
 
+    .search-help { margin: 0; font-size: .78rem; color: #a1a1aa; }
+    .search-filters { flex-shrink: 0; max-height: 34vh; overflow-y: auto; display: grid; gap: 10px; padding: 10px; border: 1px solid #3f3f46; border-radius: 8px; }
+    .active-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; max-height: 110px; overflow-y: auto; flex-shrink: 0; }
+    .filter-chip, .reset-filters { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #3f3f46; border-radius: 6px; background: #18181b; color: #e4e4e7; padding: 5px 9px; font-size: .75rem; cursor: pointer; overflow-wrap: anywhere; }
+    .filter-chip:hover, .reset-filters:hover { background: #27272a; border-color: #818cf8; }
+    .reset-filters { color: #c7d2fe; }
+    .search-notice { padding: 9px 12px; background: #182235; color: #bfdbfe; border: 1px solid #334155; border-radius: 6px; font-size: .8rem; flex-shrink: 0; overflow-wrap: anywhere; }
+    .saved-help { color: #a1a1aa; margin: 7px 9px; font-size: .75rem; }
     /* PLAN P7.5 — saved-searches bookmark dropdown */
     .saved-wrap { position: relative; display: inline-flex; }
     .saved-count {

@@ -1,0 +1,58 @@
+name: Workflow UX verification
+
+on:
+  push:
+    branches: [feat/ux-workflow-essentials]
+    paths:
+      - src/**
+      - src-tauri/**
+      - tests/browser/**
+      - package.json
+      - package-lock.json
+      - playwright.config.ts
+      - .github/workflows/workflow-ux.yml
+  pull_request:
+    paths:
+      - src/**
+      - src-tauri/**
+      - tests/browser/**
+      - package.json
+      - package-lock.json
+      - playwright.config.ts
+      - .github/workflows/workflow-ux.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-ux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - name: Verify guarded duplicate filesystem operations
+        run: |
+          rustc --edition 2021 --test src-tauri/src/duplicate_file_ops.rs -o "$RUNNER_TEMP/duplicate-file-ops"
+          "$RUNNER_TEMP/duplicate-file-ops"
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+      - name: Keep browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-ux-browser-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
