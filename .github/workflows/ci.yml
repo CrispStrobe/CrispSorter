@@ -36,9 +36,9 @@ env:
   # `OcrPipelineResult.markdown` / `.reading_order` exist on main and not on
   # v0.13.0, so code using them passes CI and breaks the release build.
   # Keep these two values equal; bump them together.
-  CRISPEMBED_REF: v0.17.17
+  CRISPEMBED_REF: v0.17.18
   # Exact source of that tag; must equal scripts/crispembed-runtime-lock.json.
-  CRISPEMBED_COMMIT: 2cbf0b9e2f4b55ee01877b60c0825d990f2636cd
+  CRISPEMBED_COMMIT: e14136d3a99572367e68619045943fe77a299caa
   CRISPASR_REPO: CrispStrobe/CrispASR
   # Pinned to the same tag release.yml uses, for the reason spelled out above
   # CRISPEMBED_REF. This one had drifted 18 patch versions: CI tracked `main`
