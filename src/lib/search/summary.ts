@@ -19,6 +19,32 @@ export interface LexicalSummary {
     facetValueLimit: number;
     facets: Record<CorpusFacet, CorpusFacetSummary>;
 }
+export type CorpusReportFormat = 'csv' | 'json';
+export type CorpusReportSort = 'filename' | 'title' | 'year-asc' | 'year-desc' | 'location';
+export interface CorpusReportReceipt {
+    path: string;
+    documents: number;
+    scope: 'local_indexed_documents';
+    generation: string;
+    format: CorpusReportFormat;
+    sort: CorpusReportSort;
+}
+
+export function lexicalExportArguments(recipe: SearchRecipe, executedQuery: string, options: {
+    requestId: string; path: string; format: CorpusReportFormat; sort: CorpusReportSort; expectedGeneration: string | null;
+}) {
+    return { request: { ...lexicalSummaryArguments(recipe, executedQuery, options.requestId), ...options } };
+}
+
+export function readCorpusReportReceipt(value: unknown, format: CorpusReportFormat, sort: CorpusReportSort): CorpusReportReceipt {
+    const raw = value as Partial<CorpusReportReceipt> | null;
+    if (!raw || typeof raw.path !== 'string' || !raw.path || raw.scope !== 'local_indexed_documents'
+        || typeof raw.generation !== 'string' || !raw.generation || raw.format !== format || raw.sort !== sort
+        || typeof raw.documents !== 'number' || !Number.isSafeInteger(raw.documents) || raw.documents < 0) {
+        throw new Error('The index returned an invalid complete-report receipt. Check the selected destination before trying again.');
+    }
+    return raw as CorpusReportReceipt;
+}
 
 /** Keep malformed/legacy responses from turning an absent total into zero. */
 export function readLexicalSummary(value: unknown, expectedQuery: string): LexicalSummary {

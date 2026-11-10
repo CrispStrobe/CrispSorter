@@ -42,6 +42,7 @@ pub mod schema;
 pub mod search;
 pub mod search_summary;
 pub mod summary_commands;
+pub mod report_output;
 pub mod snippet;
 pub mod token_highlight;
 pub mod summary;

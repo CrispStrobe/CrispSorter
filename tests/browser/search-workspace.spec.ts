@@ -209,9 +209,9 @@ test('an active remote index visibly caps a saved request and its report at 200 
         const original = root.__TAURI_INTERNALS__.invoke;
         root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
             if (command === 'index_get_config') return Promise.resolve({ enabled: true, backend_type: 'remote', use_vector: true });
-            if (command === 'plugin:fs|write_file') {
-                root.__remoteWindowReport = JSON.parse(new TextDecoder().decode(new Uint8Array(args)));
-                return Promise.resolve();
+            if (command === 'index_write_search_report') {
+                root.__remoteWindowReport = JSON.parse(args.content);
+                return Promise.resolve(args.path);
             }
             return original(command, args, options);
         };
@@ -318,4 +318,88 @@ test('same document IDs from distinct owners retain separate selection, preview 
     await page.evaluate(() => (window as any).__resolveAlphaPassage());
     await expect(page.getByRole('region', { name: 'Indexed passage', exact: true })).not.toContainText('Stored content for alpha');
     expect(await page.evaluate(() => (window as any).__passageOwners)).toEqual(['alpha', 'beta']);
+});
+
+test('complete export captures exact query scope and reports completion when publication has already started', async ({ page }) => {
+    await summaryFixture(page);
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'plugin:dialog|save') return Promise.resolve('/reports/all.json');
+            if (command === 'index_export_lexical_report') {
+                root.__completeExport = args.request;
+                return new Promise(resolve => { root.__finishCompleteExport = () => resolve({ path: args.request.path,
+                    documents: 633, scope: 'local_indexed_documents', generation: args.request.expectedGeneration,
+                    format: args.request.format, sort: args.request.sort }); });
+            }
+            if (command === 'index_cancel_search_summary') return Promise.resolve(false);
+            return original(command, args, options);
+        };
+    });
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await search(page);
+    await page.getByRole('button', { name: 'Tags in returned results', exact: true }).click();
+    await page.locator('.search-tagcloud-wrap .tc-chip').filter({ hasText: /^reviewed/ }).click();
+    await expect(page.locator('.result-card')).toHaveCount(2);
+    await page.getByRole('combobox', { name: 'Complete report format', exact: true }).selectOption('json');
+    await page.getByRole('combobox', { name: 'Complete report sort', exact: true }).selectOption('title');
+    await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__completeExport)).toMatchObject({ query: 'warranty', mode: 'text',
+        tag: null, docIdScope: null, format: 'json', sort: 'title', expectedGeneration: 'snapshot-1', path: '/reports/all.json' });
+    const request = await page.evaluate(() => (window as any).__completeExport);
+    expect(request).not.toHaveProperty('limit'); expect(request).not.toHaveProperty('displayTags');
+    await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('edited while exporting');
+    await page.getByRole('button', { name: 'Cancel complete export', exact: true }).click();
+    await expect(page.locator('.corpus-export-feedback')).toContainText('The report is being published. Waiting for its final result.');
+    await page.evaluate(() => (window as any).__finishCompleteExport());
+    await expect(page.locator('.corpus-export-feedback')).toContainText('Exported all 633 matching documents: /reports/all.json');
+    await expect(page.locator('.corpus-export-feedback')).not.toContainText('cancelled');
+    expect((await page.evaluate(() => (window as any).__completeExport)).query).toBe('warranty');
+});
+
+test('an index switch during the Save dialog cannot silently export a different corpus', async ({ page }) => {
+    await summaryFixture(page);
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'plugin:dialog|save') return new Promise(resolve => { root.__finishReportDialog = () => resolve('/reports/captured.csv'); });
+            if (command === 'index_export_lexical_report') {
+                root.__capturedExport = args.request;
+                return args.request.expectedGeneration !== root.__summaryGeneration
+                    ? Promise.reject(new Error('The active index changed. Previous report preserved.'))
+                    : Promise.resolve({ path: args.request.path, documents: 0, scope: 'local_indexed_documents',
+                        generation: root.__summaryGeneration, format: 'csv', sort: 'filename' });
+            }
+            return original(command, args, options);
+        };
+    });
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await search(page);
+    await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean((window as any).__finishReportDialog))).toBe(true);
+    await page.evaluate(() => { const root = window as any; root.__summaryGeneration = 'different-index'; root.__finishReportDialog(); });
+    await expect(page.locator('.corpus-export-feedback')).toContainText('The active index changed. Previous report preserved.');
+    expect((await page.evaluate(() => (window as any).__capturedExport)).expectedGeneration).toBe('snapshot-1');
+    await expect(page.locator('.corpus-export-feedback')).not.toContainText('Exported all');
+    await expect(page.locator('.result-card')).toHaveCount(3);
+});
+
+test('accepted cancellation reports no completed full-corpus file', async ({ page }) => {
+    await summaryFixture(page);
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_export_lexical_report') return new Promise((_resolve, reject) => { root.__cancelCompleteExport = reject; });
+            if (command === 'index_cancel_search_summary') { root.__cancelCompleteExport(new Error('The matching-document scan was cancelled')); return Promise.resolve(true); }
+            return original(command, args, options);
+        };
+    });
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await search(page);
+    await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Cancel complete export', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Cancel complete export', exact: true }).click();
+    await expect(page.locator('.corpus-export-feedback')).toContainText('The matching-document scan was cancelled');
+    await expect(page.locator('.corpus-export-feedback')).not.toContainText('Exported all');
+    await expect(page.getByRole('button', { name: 'Export all full-text matches', exact: true })).toBeEnabled();
 });

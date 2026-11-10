@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSearchRecipe } from './recipe';
-import { canCountLexicalMatches, lexicalSummaryArguments, readLexicalSummary, recipeWithCorpusFacet } from './summary';
+import { canCountLexicalMatches, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet } from './summary';
 
 const facet = { values: [{ value: 'reviewed', documents: 633 }], distinctValues: 31, omittedValues: 30, missingDocuments: 0 };
 const response = () => ({ version: 1, scope: 'local_indexed_documents', query: 'needle', effectiveQuery: 'needle',
@@ -50,5 +50,25 @@ describe('exhaustive lexical summary contracts', () => {
         }
         expect(() => recipeWithCorpusFacet(recipe, 'years', 'unknown')).toThrow();
         expect(recipe.view.displayTags).toEqual(['hidden']);
+    });
+
+    it('freezes complete-export query, owner and filters without an interactive limit or display-tag constraint', () => {
+        const recipe = normalizeSearchRecipe({ query: 'draft', mode: 'text', ownerId: 'reader', docIdScope: ['source'],
+            filters: { tag: 'reviewed' }, view: { displayTags: ['window-only'] } });
+        const args = lexicalExportArguments(recipe, 'executed', { requestId: 'export-1', path: '/reports/all.csv',
+            format: 'csv', sort: 'year-desc', expectedGeneration: 'snapshot-1' });
+        expect(args.request).toMatchObject({ query: 'executed', ownerId: 'reader', tag: 'reviewed', docIdScope: ['source'],
+            expectedGeneration: 'snapshot-1', format: 'csv', sort: 'year-desc' });
+        expect(args.request).not.toHaveProperty('limit');
+        expect(args.request).not.toHaveProperty('displayTags');
+    });
+
+    it('validates success receipts without fabricating missing complete-export counts', () => {
+        const receipt = { path: '/reports/all.csv', documents: 0, scope: 'local_indexed_documents', generation: 'one', format: 'csv', sort: 'filename' };
+        expect(readCorpusReportReceipt(receipt, 'csv', 'filename').documents).toBe(0);
+        for (const invalid of [null, {}, { ...receipt, documents: undefined }, { ...receipt, documents: -1 },
+            { ...receipt, scope: 'returned_window' }, { ...receipt, format: 'json' }, { ...receipt, sort: 'title' }]) {
+            expect(() => readCorpusReportReceipt(invalid, 'csv', 'filename')).toThrow();
+        }
     });
 });

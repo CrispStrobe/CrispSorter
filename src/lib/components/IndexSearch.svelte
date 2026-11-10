@@ -12,8 +12,8 @@
     import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
         restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, searchResultLimitForBackend, validateSearchFilters,
         type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
-    import { canCountLexicalMatches, lexicalSummaryArguments, readLexicalSummary, recipeWithCorpusFacet,
-        type CorpusFacet, type LexicalSummary } from '$lib/search/summary';
+    import { canCountLexicalMatches, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet,
+        type CorpusFacet, type LexicalSummary, type CorpusReportFormat, type CorpusReportSort } from '$lib/search/summary';
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
@@ -172,7 +172,13 @@
     let summaryNotice = $state('');
     let summaryRequestId: string | null = null;
     let summarySequence = 0;
-    let generationChecking = false;
+    let generationCheck: { sequence: number; promise: Promise<boolean> } | null = null;
+    let corpusReportFormat = $state<CorpusReportFormat>('csv');
+    let corpusReportSort = $state<CorpusReportSort>('filename');
+    let corpusExportBusy = $state(false), corpusExportCancelling = $state(false);
+    let corpusExportRequestId = $state<string | null>(null);
+    let corpusExportQuery = $state('');
+    let corpusExportNotice = $state(''), corpusExportError = $state(false);
     const corpusFacets: { key: CorpusFacet; en: string; de: string }[] = [
         { key: 'extensions', en: 'File types', de: 'Dateitypen' },
         { key: 'languages', en: 'Languages', de: 'Sprachen' },
@@ -189,26 +195,31 @@
 
     async function verifySummaryGeneration(): Promise<boolean> {
         const snapshot = corpusSummary, recipe = executedRecipe;
-        if (!snapshot || !recipe || generationChecking) return false;
+        if (!snapshot || !recipe) return false;
         const sequence = summarySequence;
-        generationChecking = true;
-        try {
-            const generation = await invoke<string>('index_search_summary_generation', { includeUnmounted: recipe.filters.includeUnmounted });
-            if (sequence !== summarySequence || corpusSummary?.generation !== snapshot.generation) return false;
-            if (generation !== snapshot.generation) {
-                clearCorpusSummary(i18n.lang === 'de' ? 'Index oder eingebundene Quellen haben sich geändert. Erneut zählen, um aktuelle Gesamtzahlen zu sehen.'
-                    : 'The index or mounted sources changed. Count again to refresh the totals.');
+        if (generationCheck?.sequence === sequence) return generationCheck.promise;
+        const check = (async () => {
+            try {
+                const generation = await invoke<string>('index_search_summary_generation', { includeUnmounted: recipe.filters.includeUnmounted });
+                if (sequence !== summarySequence || corpusSummary?.generation !== snapshot.generation) return false;
+                if (generation !== snapshot.generation) {
+                    clearCorpusSummary(i18n.lang === 'de' ? 'Index oder eingebundene Quellen haben sich geändert. Erneut zählen, um aktuelle Gesamtzahlen zu sehen.'
+                        : 'The index or mounted sources changed. Count again to refresh the totals.');
+                    return false;
+                }
+                return true;
+            } catch (cause) {
+                if (sequence === summarySequence) clearCorpusSummary(String(cause));
                 return false;
             }
-            return true;
-        } catch (cause) {
-            if (sequence === summarySequence) clearCorpusSummary(String(cause));
-            return false;
-        } finally { generationChecking = false; }
+        })();
+        generationCheck = { sequence, promise: check };
+        try { return await check; }
+        finally { if (generationCheck?.promise === check) generationCheck = null; }
     }
 
     async function countAllMatches(): Promise<void> {
-        if (!executedRecipe || !canCountLexicalMatches(executedRecipe, activeBackend) || searchOptionsChanged) return;
+        if (!executedRecipe || !canCountLexicalMatches(executedRecipe, activeBackend) || searchOptionsChanged || corpusExportBusy) return;
         clearCorpusSummary();
         const sequence = summarySequence, request = searchRequest;
         const recipe = normalizeSearchRecipe(executedRecipe), searchedQuery = executedQuery;
@@ -238,10 +249,54 @@
         } catch (cause) { summaryNotice = String(cause); }
     }
 
+    async function exportAllMatches(): Promise<void> {
+        if (!executedRecipe || corpusExportBusy || summaryLoading || searchOptionsChanged || !canCountLexicalMatches(executedRecipe, activeBackend)) return;
+        const recipe = normalizeSearchRecipe(executedRecipe), searchedQuery = executedQuery;
+        const format = corpusReportFormat, sort = corpusReportSort;
+        corpusExportBusy = true; corpusExportError = false; corpusExportNotice = ''; corpusExportQuery = searchedQuery;
+        try {
+            if (corpusSummary && !(await verifySummaryGeneration())) return;
+            const expectedGeneration = corpusSummary?.generation ?? await invoke<string>('index_search_summary_generation', {
+                includeUnmounted: recipe.filters.includeUnmounted,
+            });
+            if (typeof expectedGeneration !== 'string' || !expectedGeneration) throw new Error('The active index snapshot could not be captured for export.');
+            const path = await save({ defaultPath: `CrispSorter-all-text-matches-${new Date().toISOString().slice(0, 10)}.${format}`,
+                filters: [{ name: `Complete matching-document report (${format.toUpperCase()})`, extensions: [format] }] });
+            if (!path) return;
+            const requestId = crypto.randomUUID(); corpusExportRequestId = requestId;
+            const receipt = readCorpusReportReceipt(await invoke<unknown>('index_export_lexical_report',
+                lexicalExportArguments(recipe, searchedQuery, { requestId, path, format, sort, expectedGeneration })), format, sort);
+            corpusExportNotice = i18n.lang === 'de'
+                ? `${receipt.documents.toLocaleString()} passende Dokumente exportiert: ${receipt.path}`
+                : `Exported all ${receipt.documents.toLocaleString()} matching documents: ${receipt.path}`;
+        } catch (cause) {
+            corpusExportError = !/cancelled/i.test(String(cause));
+            corpusExportNotice = String(cause);
+        } finally { corpusExportBusy = false; corpusExportCancelling = false; corpusExportRequestId = null; }
+    }
+
+    async function cancelCorpusExport(): Promise<void> {
+        const requestId = corpusExportRequestId;
+        if (!requestId || corpusExportCancelling) return;
+        corpusExportCancelling = true;
+        try {
+            const accepted = await invoke<boolean>('index_cancel_search_summary', { requestId });
+            if (corpusExportRequestId !== requestId) return;
+            corpusExportNotice = accepted
+                ? (i18n.lang === 'de' ? 'Export wird abgebrochen …' : 'Cancelling export…')
+                : (i18n.lang === 'de' ? 'Der Bericht wird veröffentlicht. Das endgültige Ergebnis folgt.' : 'The report is being published. Waiting for its final result.');
+        } catch (cause) {
+            if (corpusExportRequestId === requestId) { corpusExportCancelling = false; corpusExportNotice = String(cause); }
+        }
+    }
+
     onMount(() => {
         const onFocus = () => { if (corpusSummary) void verifySummaryGeneration(); };
         window.addEventListener('focus', onFocus);
-        return () => { window.removeEventListener('focus', onFocus); clearCorpusSummary(); };
+        return () => {
+            window.removeEventListener('focus', onFocus); clearCorpusSummary();
+            if (corpusExportRequestId) void invoke('index_cancel_search_summary', { requestId: corpusExportRequestId }).catch(() => {});
+        };
     });
     let resultSort = $state<ResultSort>('relevance');
     let reportFormat = $state<'json' | 'csv' | 'html'>('html');
@@ -1123,13 +1178,14 @@
             scope: selectedOnly ? 'selected' : 'displayed', returnedDocuments: grouped.length,
             returnedPassages: results.length, groups });
         const format = reportFormat;
+        const protectedSourceUris = [...new Set(groups.flatMap(group => group.chunks.map(hit => hit.location_uri)))];
         const content = format === 'json' ? JSON.stringify(report, null, 2)
             : format === 'csv' ? searchReportCsv(report) : searchReportHtml(report);
         await runResultAction('report', async () => {
             const path = await save({ defaultPath: `CrispSorter-search-${report.exportedAt.slice(0, 10)}.${format}`,
                 filters: [{ name: `Search report (${format.toUpperCase()})`, extensions: [format] }] });
             if (!path) return null;
-            await writeFile(path, new TextEncoder().encode(content));
+            await invoke('index_write_search_report', { path, content, protectedSourceUris });
             return `${i18n.lang === 'de' ? 'Suchbericht gespeichert' : 'Search report saved'}: ${path}`;
         }, i18n.lang === 'de' ? 'Suchbericht konnte nicht gespeichert werden' : 'Could not save search report');
     }
@@ -2162,6 +2218,16 @@
             </button>
         </div>
     {/if}
+    {#if corpusExportBusy || corpusExportNotice}
+        <div class="corpus-export-feedback" class:action-error={corpusExportError} role={corpusExportError ? 'alert' : 'status'}>
+            {#if corpusExportBusy}<Loader2 size={14} class="spin" /><span>{i18n.lang === 'de' ? 'Vollständiger Bericht für' : 'Complete report for'} “{corpusExportQuery}”</span>
+                {#if corpusExportRequestId}<button class="reset-filters" onclick={cancelCorpusExport} disabled={corpusExportCancelling}
+                    aria-label={i18n.lang === 'de' ? 'Vollständigen Export abbrechen' : 'Cancel complete export'}>{i18n.lang === 'de' ? 'Abbrechen' : 'Cancel'}</button>{/if}
+            {/if}
+            {#if corpusExportNotice}<span>{corpusExportNotice}</span>{/if}
+            {#if !corpusExportBusy}<button class="action-dismiss" onclick={() => corpusExportNotice = ''} aria-label={labels.dismissAction}><X size={14} /></button>{/if}
+        </div>
+    {/if}
 
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
     <div class="results-and-preview">
@@ -2176,7 +2242,7 @@
                             <button class="reset-filters" onclick={() => clearCorpusSummary(i18n.lang === 'de' ? 'Zählung abgebrochen.' : 'Match count cancelled.')}
                                 aria-label={i18n.lang === 'de' ? 'Trefferzählung abbrechen' : 'Cancel match count'}>{i18n.lang === 'de' ? 'Abbrechen' : 'Cancel'}</button>
                         {:else}
-                            <button class="reset-filters" onclick={countAllMatches} disabled={searchOptionsChanged}>
+                            <button class="reset-filters" onclick={countAllMatches} disabled={searchOptionsChanged || corpusExportBusy}>
                                 {corpusSummary ? (i18n.lang === 'de' ? 'Gesamtzahlen aktualisieren' : 'Refresh all-match counts')
                                     : (i18n.lang === 'de' ? 'Alle Texttreffer zählen' : 'Count all full-text matches')}
                             </button>
@@ -2185,6 +2251,27 @@
                     <p class="corpus-scope">{i18n.lang === 'de'
                         ? 'Exakte Dokumentzahlen über alle Texttreffer der ausgeführten Abfrage und Filter. Separate Katalog-Dateinamen sind ausgeschlossen. Die Zählung kann bei großen Indizes dauern.'
                         : 'Exact document totals across all full-text matches for the executed query and filters. Separate catalog filename references are excluded. Large indexes can take time to count.'}</p>
+                    <div class="corpus-export-controls">
+                        <label>{i18n.lang === 'de' ? 'Vollständiges Berichtsformat' : 'Complete report format'}
+                            <select bind:value={corpusReportFormat} disabled={corpusExportBusy}><option value="csv">CSV</option><option value="json">JSON</option></select>
+                        </label>
+                        <label>{i18n.lang === 'de' ? 'Vollständige Berichtssortierung' : 'Complete report sort'}
+                            <select bind:value={corpusReportSort} disabled={corpusExportBusy}>
+                                <option value="filename">{i18n.lang === 'de' ? 'Dateiname' : 'Filename'}</option>
+                                <option value="title">{i18n.lang === 'de' ? 'Titel' : 'Title'}</option>
+                                <option value="year-desc">{i18n.lang === 'de' ? 'Neueste Publikationsjahre' : 'Newest publication years'}</option>
+                                <option value="year-asc">{i18n.lang === 'de' ? 'Älteste Publikationsjahre' : 'Oldest publication years'}</option>
+                                <option value="location">{i18n.lang === 'de' ? 'Quellpfad' : 'Source location'}</option>
+                            </select>
+                        </label>
+                        <button class="reset-filters" onclick={exportAllMatches} disabled={summaryLoading || corpusExportBusy || searchOptionsChanged}>
+                            {i18n.lang === 'de' ? 'Alle Texttreffer exportieren' : 'Export all full-text matches'}
+                        </button>
+                    </div>
+                    <p class="corpus-scope">{i18n.lang === 'de'
+                        ? 'Der vollständige Bericht verwendet die Abfragefilter und eine globale Metadatensortierung. Anzeige-Tags des Ergebnisfensters gelten hier nicht.'
+                        : 'The complete report uses the query filters and a global metadata sort. Returned-window display tags do not restrict this export.'}
+                        {#if corpusReportFormat === 'csv'} {i18n.lang === 'de' ? 'CSV enthält eine Berichts-Metadatenzeile vor den Dokumentzeilen.' : 'CSV includes a report metadata row before the document rows.'}{/if}</p>
                     {#if corpusSummary}
                         <p class="corpus-total" aria-live="polite"><strong>{corpusSummary.matchingDocuments.toLocaleString()}</strong>
                             {i18n.lang === 'de' ? 'passende indexierte Dokumente insgesamt' : 'matching indexed documents in total'}
@@ -3110,6 +3197,10 @@
 </div>
 
 <style>
+    .corpus-export-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 10px; }
+    .corpus-export-controls label { display: flex; flex-direction: column; gap: 4px; font-size: .7rem; color: #a1a1aa; }
+    .corpus-export-controls select { color: #e4e4e7; background: #18181b; border: 1px solid #52525b; border-radius: 4px; padding: 5px; }
+    .corpus-export-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid #334155; border-radius: 6px; background: #111c2e; color: #bfdbfe; font-size: .78rem; overflow-wrap: anywhere; }
     .corpus-summary { margin: 10px 16px; padding: 10px 12px; border: 1px solid #334155; border-radius: 7px; background: #111c2e; font-size: .78rem; }
     .corpus-summary-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
     .corpus-summary-heading span { display: inline-flex; align-items: center; gap: 6px; }

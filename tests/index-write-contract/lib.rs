@@ -115,6 +115,9 @@ mod filter_contract;
 #[cfg(test)]
 mod search_summary_contract;
 
+#[cfg(test)]
+mod search_export_contract;
+
 pub mod images { pub mod vit_embed {
     pub fn embed_image(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Image models are unavailable") }
 } }
