@@ -51,6 +51,9 @@ def evaluate_report(case: dict, report: dict, k: int) -> dict:
         require(recipe.get("filters") == case["filters"], f"Search filters differ for {case['id']}")
     if "docIdScope" in case:
         require(recipe.get("docIdScope") == case["docIdScope"], f"Document scope differs for {case['id']}")
+    if "ownerId" in case:
+        require(case["ownerId"] is None or isinstance(case["ownerId"], str), "ownerId must be a string or null")
+        require(recipe.get("ownerId") == case["ownerId"], f"Owner scope differs for {case['id']}")
     grades = case.get("relevance", {})
     require(isinstance(grades, dict), "Relevance judgments must be an object keyed by document ID")
     require(all(isinstance(key, str) and key and isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3 for key, value in grades.items()), "Relevance grades must be integers from 0 to 3")

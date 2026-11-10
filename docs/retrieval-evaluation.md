@@ -73,7 +73,8 @@ Coverage counts must also agree with the exported document list and the recipe's
 requested limit. A manually shortened report cannot qualify as the complete
 returned window. An optional `docIdScope` on a judged query requires the exact
 document scope from its recipe. Additive view preferences in newer recipes do
-not change retrieval metrics.
+not change retrieval metrics. An optional `ownerId` requires the exact owner
+restriction recorded in the recipe, including an explicit empty owner.
 
 Reports retain `ownerId` and a collision-free `documentKey` for each result. When
 several owners can use the same document ID, set a judged query's `identity` to

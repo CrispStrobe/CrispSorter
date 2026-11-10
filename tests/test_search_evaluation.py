@@ -72,6 +72,10 @@ class SearchEvaluationTests(unittest.TestCase):
             evaluate.evaluate_report(case, saved, 10)
         saved["recipe"].update(version=3, docIdScope=["a"], view={"compact": True})
         self.assertEqual(evaluate.evaluate_report(case, saved, 10)["recallAtK"], 1)
+        with self.assertRaisesRegex(ValueError, "Owner scope"):
+            evaluate.evaluate_report({**case, "ownerId": "reader"}, saved, 10)
+        saved["recipe"]["ownerId"] = "reader"
+        self.assertEqual(evaluate.evaluate_report({**case, "ownerId": "reader"}, saved, 10)["recallAtK"], 1)
 
     def test_fraction_thresholds_and_boolean_empty_expectations_are_validated(self):
         with self.assertRaisesRegex(ValueError, "boolean"):

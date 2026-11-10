@@ -3981,36 +3981,15 @@ async fn cmd_index_async(
                 let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                     .await
                     .map_err(|e| e.to_string())?;
-                // Repair any interrupted paired write and keep the same
-                // generation throughout lexical search and row hydration.
-                let _guard = local.read_guard(&fts).await
-                    .map_err(|e| format!("preparing consistent search: {e:#}"))?;
-                let hits = fts
-                    .search(q_trimmed, &filters, limit.saturating_mul(4))
-                    .map_err(|e| e.to_string())?;
-
-                // Fetch metadata for each hit + apply the SearchFilters
-                // scalar SQL (ext, hash prefix, folder prefix, audio
-                // duration range, image camera, source language, year
-                // range, prefer-translated-lang) as a LanceDB-side
-                // predicate.  Rows that don't pass the SQL are dropped
-                // here, preserving the BM25 ranking on what remains.
-                let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
-                let extra_sql = filters.to_lance_sql();
-                let meta_map: std::collections::HashMap<String, crate::index::SearchResult> =
-                    local
-                        .fetch_search_results_by_ids_filtered(&doc_ids, extra_sql.as_deref())
-                        .await
-                        .map_err(|e| format!("loading indexed search results: {e:#}"))?
-                        .into_iter()
-                        .map(|r| (r.doc_id.clone(), r))
-                        .collect();
-                hits.iter()
-                    .filter_map(|h| meta_map.get(&h.doc_id).cloned().map(|mut row| {
-                        row.score = h.score;
-                        row
-                    }))
-                    .collect()
+                // The shared engine pages metadata eligibility before limits,
+                // retains exact owner/document identities, and owns the paired
+                // read lease through best-passage hydration. Keep extra rows
+                // for the CLI-only size/date constraints below.
+                let engine = crate::index::SearchEngine::new(
+                    std::sync::Arc::new(fts), std::sync::Arc::new(local), None,
+                );
+                engine.search_text(q_trimmed, &filters, limit.saturating_mul(4))
+                    .await.map_err(|e| format!("loading indexed search results: {e:#}"))?
             };
 
             // Post-hoc filter: size + date.  metadata_json shape:
@@ -8039,7 +8018,7 @@ fn local_result_to_federated(
 ) -> crate::sync::cloud_backup::FederatedHit {
     use crate::index::{highlight_snippet, SNIPPET_WINDOW};
     crate::sync::cloud_backup::FederatedHit {
-        id: format!("local:{}", r.doc_id),
+        id: format!("local:{}", crate::index::fts_index::document_key(&r.owner_id, &r.doc_id)),
         source: "local".into(),
         score: r.score,
         rrf_rank: i + 1,
@@ -8212,30 +8191,11 @@ async fn cmd_search_async(
                 let li = crate::index::LocalIndex::open_or_create(data_dir, 1024)
                     .await
                     .map_err(|e| e.to_string())?;
-                let _guard = li.read_guard(&fts).await
-                    .map_err(|e| format!("preparing consistent search: {e:#}"))?;
-                let hits = fts
-                    .search(&q, &filters, limit.saturating_mul(4))
-                    .map_err(|e| e.to_string())?;
-                let ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
-                let extra_sql = filters.to_lance_sql();
-                let meta: std::collections::HashMap<String, crate::index::SearchResult> = li
-                    .fetch_search_results_by_ids_filtered(&ids, extra_sql.as_deref())
-                    .await
-                    .map_err(|e| format!("loading indexed search results: {e:#}"))?
-                    .into_iter()
-                    .map(|r| (r.doc_id.clone(), r))
-                    .collect();
-                // Preserve BM25 order from the FTS pass; drop rows the Lance
-                // scalar filters removed.
-                let rows: Vec<crate::index::SearchResult> = hits
-                    .iter()
-                    .filter_map(|h| meta.get(&h.doc_id).cloned().map(|mut row| {
-                        row.score = h.score;
-                        row
-                    }))
-                    .take(limit)
-                    .collect();
+                let engine = crate::index::SearchEngine::new(
+                    std::sync::Arc::new(fts), std::sync::Arc::new(li), None,
+                );
+                let rows = engine.search_text(&q, &filters, limit).await
+                    .map_err(|e| format!("loading indexed search results: {e:#}"))?;
                 Ok(rows
                     .into_iter()
                     .enumerate()
@@ -8397,22 +8357,11 @@ async fn cmd_cloud_backup_federated(
                     let local_res: Result<Vec<_>, String> = async {
                         let li = crate::index::LocalIndex::open_or_create(data_dir, 1024)
                             .await.map_err(|e| e.to_string())?;
-                        let _guard = li.read_guard(&fts).await
-                            .map_err(|e| format!("preparing consistent search: {e:#}"))?;
-                        let hits = fts.search(&q, &Default::default(), limit.saturating_mul(4))
-                            .map_err(|e| e.to_string())?;
-                        let ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
-                        let meta: std::collections::HashMap<String, _> = li
-                            .fetch_search_results_by_ids_filtered(&ids, None)
-                            .await
-                            .map_err(|e| format!("loading indexed search results: {e:#}"))?
-                            .into_iter()
-                            .map(|r| (r.doc_id.clone(), r))
-                            .collect();
-                        Ok(hits.iter().filter_map(|h| meta.get(&h.doc_id).cloned().map(|mut row| {
-                            row.score = h.score;
-                            row
-                        })).collect())
+                        let engine = crate::index::SearchEngine::new(
+                            std::sync::Arc::new(fts), std::sync::Arc::new(li), None,
+                        );
+                        engine.search_text(&q, &Default::default(), limit.saturating_mul(4))
+                            .await.map_err(|e| format!("loading indexed search results: {e:#}"))
                     }.await;
                     match local_res {
                         Err(e) => { errors.insert("local", e); }
@@ -8420,7 +8369,7 @@ async fn cmd_cloud_backup_federated(
                             let fed: Vec<FederatedHit> = rows.into_iter()
                                 .enumerate()
                                 .map(|(i, r)| FederatedHit {
-                                    id: format!("local:{}", r.doc_id),
+                                    id: format!("local:{}", crate::index::fts_index::document_key(&r.owner_id, &r.doc_id)),
                                     source: "local".into(),
                                     score: r.score,
                                     rrf_rank: i + 1,
@@ -11401,13 +11350,24 @@ mod tests {
     fn local_result_maps_to_federated_with_url_tags_and_highlight() {
         let fed = local_result_to_federated(0, mk_local_result(), "schimmelpilz");
         assert_eq!(fed.source, "local");
-        assert_eq!(fed.id, "local:doc-1");
+        assert_eq!(fed.id, "local:0:doc-1");
         assert_eq!(fed.rrf_rank, 1);
         assert_eq!(fed.url.as_deref(), Some("https://www.spiegel.de/wirtschaft/x"));
         assert_eq!(fed.tags.as_deref(), Some(&["pocket-import".to_string()][..]));
         assert_eq!(fed.sha256.as_deref(), Some("abc123"));
         let snip = fed.snippet.expect("snippet");
         assert!(snip.contains("<mark>Schimmelpilz</mark>"), "got: {snip}");
+    }
+
+    #[test]
+    fn federated_local_identity_retains_owner_when_source_hash_is_absent() {
+        let mut first = mk_local_result();
+        first.owner_id = "first".into(); first.source_hash.clear();
+        let mut second = first.clone(); second.owner_id = "second".into();
+        let first = local_result_to_federated(0, first, "text");
+        let second = local_result_to_federated(1, second, "text");
+        assert_ne!(first.id, second.id);
+        assert!(first.sha256.is_none() && second.sha256.is_none());
     }
 
     #[test]
