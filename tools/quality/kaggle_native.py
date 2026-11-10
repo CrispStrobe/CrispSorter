@@ -76,7 +76,7 @@ try:
     admitted = kh.safe_build_jobs(gpu=False)
     env['CARGO_BUILD_JOBS'] = str(min(2, os.cpu_count() or 2)) if admitted == '$(nproc)' else str(min(2, int(admitted)))
     archive = root / 'crispembed-linux-x86_64.tar.gz'
-    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.17/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
+    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.18/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
         shutil.copyfileobj(response, stream)
     run(['python', 'scripts/verify_crispembed_bundle.py', str(archive), '--asset', archive.name, '--source', str(root / 'CrispEmbed')], cwd=app, env=env)
     libs = root / 'CrispEmbed/build'
