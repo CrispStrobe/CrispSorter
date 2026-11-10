@@ -19,7 +19,7 @@ async function openSearch(page: Page, mobile = false) {
         ];
         const original = root.__TAURI_INTERNALS__.invoke;
         root.__TAURI_INTERNALS__.invoke = async (command: string, args: any) => {
-            if (command === 'plugin:fs|read_text_file') return 'Warranty coverage remains available through November 2031.';
+            if (command === 'plugin:fs|read_text_file') return Array.from(new TextEncoder().encode('Warranty coverage remains available through November 2031.'));
             const result = await original(command, args);
             if (command === 'index_get_fields' && mobile) {
                 return result.map((field: any) => ({ ...field,

@@ -222,11 +222,14 @@ batch cancellation, partial-import, phone Library and session-transfer coverage;
 [the checks on PR #37](https://github.com/CrispStrobe/CrispSorter/pull/37/checks)
 record the result for each exact commit.
 
-Local verification after the atomic replacement implementation at `82041212`
+Local verification after the atomic replacement and watcher recovery changes
 passed all **219 frontend unit tests in 32 files**, including 18 new validation
-and replacement-contract tests. Seven native SQLite replacement regressions cover
-rollback and retry, full and empty text, exact source identity and invalid input;
-their execution is tracked by the native CI on the implementation commit.
+and replacement-contract tests. Type checking reported **zero errors and the 54
+existing warnings**, and the production build passed. The expanded browser suite
+collects **71 scenarios in 12 files**; discovery and TypeScript checks passed.
+Seven native SQLite replacement regressions cover rollback and retry, full and
+empty text, exact source identity and invalid input. Browser execution and these
+native tests are tracked by the checks on the corresponding remote commit.
 
 | Check | Observed result and scope |
 | --- | --- |
