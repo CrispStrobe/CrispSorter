@@ -56,6 +56,7 @@
     ScanLine,
     ShieldCheck,
     Camera,
+    BookOpen,
   } from "lucide-svelte";
   import PageCanvas from "./ocr/PageCanvas.svelte";
   import PhotoPreparation from "./ocr/PhotoPreparation.svelte";
@@ -64,8 +65,39 @@
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import WordReview from "./ocr/WordReview.svelte";
   import PageTextEditor from "./ocr/PageTextEditor.svelte";
+  import StructurePanel from "./ocr/StructurePanel.svelte";
+  import PreviousStructure from "./ocr/PreviousStructure.svelte";
+  import PageTextDraftDialog from "./ocr/PageTextDraftDialog.svelte";
+  import ExtractionObjectsPanel from "./ocr/ExtractionObjectsPanel.svelte";
+  import TableRepairDialog from "./ocr/TableRepairDialog.svelte";
+  import TableJoinDialog from "./ocr/TableJoinDialog.svelte";
+  import OfficeExportPanel from "./ocr/OfficeExportPanel.svelte";
+  import WorkbookExportPanel from "./ocr/WorkbookExportPanel.svelte";
+  import PassageToolsDialog from "./ocr/PassageToolsDialog.svelte";
+  import PassageSources from "./ocr/PassageSources.svelte";
+  import ProofreadingPanel from "./ocr/ProofreadingPanel.svelte";
+  import WordSuggestions from "./ocr/WordSuggestions.svelte";
+  import CorrectionPreviewPanel from "./ocr/CorrectionPreview.svelte";
+  import {
+    emptyProofreadingData, readProofreadingData, createVocabularyEntry,
+    mergeProofreadingData, exportProofreadingData, normalizeProofreadingLanguage,
+    updateProjectProofreading, suggestCorrections, ignoreSuggestion, isSuggestionIgnored,
+    captureCorrectionPreview, applyCorrectionPreview,
+    type ProofreadingData, type ProofreadingSelection, type CorrectionSuggestion,
+    type CorrectionRule, type CorrectionRequest, type CorrectionPreview,
+  } from "$lib/ocr/proofreading";
+  import { createProofreadingWriter, type ProofreadingSaveStatus } from "$lib/ocr/proofreadingStore";
   import { hasAlignedCharacterConfidence } from "$lib/ocr/confidence";
   import type { WordEvidence } from "$lib/ocr/words";
+  import { joinRegionText, sourceOffsetForTextarea } from "$lib/ocr/text";
+  import {
+    createPageTextDraft, updatePageTextDraft, discardPageTextDraft,
+    preparePageTextEdit, applyPageTextEdit, type PageTextEditPreview,
+  } from "$lib/ocr/pageTextDraft";
+  import {
+    passageEligibility, isPassageBoundary, applyPassagePreview, applyPassageRepair, readSourceComponents,
+    type PassagePreview, type RepairPreview,
+  } from "$lib/ocr/passages";
   import {
     workspaceClient,
     modelDownloadLabel,
@@ -74,7 +106,6 @@
     type WorkspaceClient,
     type WorkspaceCapabilities,
     type ProjectSummary,
-    type ExtractionField,
     type TransformOptions,
     type ExportRequest,
     type ExportProgress,
@@ -90,13 +121,16 @@
     type ZoneReviewPreview,
   } from "$lib/ocr/zoneReview";
   import type { PixelRectangle } from "$lib/ocr/zones";
+  import type { ExtractionSource } from "$lib/ocr/extraction";
+  import { applyTableOperation, type TableOperationPreview, type TableExtractionObject } from "$lib/ocr/tableOperations";
+  import { applyContinuationJoin, type ContinuationJoinPreview } from "$lib/ocr/continuationJoin";
   import {
-    captureExtractionSource,
-    extractionSourceIsCurrent,
-    readExtraction,
-    tableToCsv,
-    type ExtractionSource,
-  } from "$lib/ocr/extraction";
+    captureExtractionRequest, appendExtractionObject, getExtractionObjects,
+    extractionObjectFreshness, type ExtractionObject,
+  } from "$lib/ocr/extractionObjects";
+  import { prepareExtractionExport } from "$lib/ocr/extractionExport";
+  import { emptyOfficeExportOptions, type OfficeExportOptions } from "$lib/ocr/officeExport";
+  import { emptyWorkbookOptions, type WorkbookOptions } from "$lib/ocr/workbookExport";
   import {
     PROFILES,
     createProject,
@@ -154,6 +188,19 @@
     untrack(() => initialProject)?.pages[0]?.id ?? null,
   );
   let selectedRegionId = $state<string | null>(null);
+  let wordInspection = $state<{
+    projectId: string;
+    pageId: string;
+    imagePath: string;
+    pageWidth: number;
+    pageHeight: number;
+    regionId: string;
+    currentText: string;
+    originalText: string;
+    regionGeometry: string;
+    source: "current" | "original";
+    word: WordEvidence;
+  } | null>(null);
   let checkedPages = $state<string[]>([]);
   let pageFilter = $state("all");
   let pageQuery = $state("");
@@ -186,12 +233,32 @@
   let overlays = $state(true);
   let showOriginal = $state(false);
   let onlyIssues = $state(false);
-  let textView = $state<"regions" | "text">("regions");
+  let textView = $state<"regions" | "text" | "structure">("regions");
   let searchOpen = $state(false);
   let query = $state(""),
     replacement = $state(""),
     matchCase = $state(false);
   let currentMatch = $state<TextMatch | null>(null);
+  let passageAction = $state<{
+    project: OcrProject;
+    pageId: string;
+    regionId: string;
+    mode: "split" | "merge" | "repair";
+    offset?: number;
+  } | null>(null);
+  let tableRepair = $state<{ projectId: string; pageId: string; object: TableExtractionObject; cellId: string | null } | null>(null);
+  let tableJoin = $state<{ projectId: string; pageId: string; object: TableExtractionObject } | null>(null);
+  let pageTextDraftOpen = $state(false);
+  let pageTextDraftLocalUnsaved = $state(false);
+  let proofreadingOpen = $state(false);
+  let userProofreading = $state<ProofreadingData>(emptyProofreadingData());
+  let userProofreadingLoad = $state<"loading" | "ready" | "error" | "unavailable">("loading");
+  let userProofreadingError = $state("");
+  let userProofreadingStatus = $state<ProofreadingSaveStatus>({ state: "saved", error: null });
+  let correctionSelectedIds = $state<string[]>([]);
+  let correctionDraft = $state<{ from: string; to: string; language: string; nonce: number } | null>(null);
+  let correctionDraftNonce = 0;
+  let userProofreadingLoadAttempt = 0;
   let booting = $state(true),
     closing = $state(false),
     busy = $state(""),
@@ -225,6 +292,7 @@
     action: () => void | Promise<void>;
     splitWidth?: number;
     ocrPreview?: ZoneReviewPreview;
+    correctionPreview?: CorrectionPreview;
   } | null>(null);
   let splitPosition = $state(0);
   let queueState = $state<QueueState>({
@@ -240,7 +308,12 @@
   let checkpointFailed = false;
   let autosave: ProjectAutosave<OcrProject> | null = null;
   let mounted = true;
+  const userProofreadingWriter = createProofreadingWriter(async (data) => {
+    if (!client.saveUserProofreading) throw new Error("All-project vocabulary storage is unavailable in this build.");
+    await client.saveUserProofreading(data);
+  }, (status) => { if (mounted) userProofreadingStatus = status; });
   let editGroup: string | null = null;
+  let lastReviewIssueKey: string | null = null;
   let editorPane = $state<HTMLDivElement>();
   let actionDialog = $state<HTMLDialogElement>();
   let helpDialog = $state<HTMLDialogElement>();
@@ -253,6 +326,10 @@
   $effect(() => {
     if (!active) {
       confirm = null;
+      passageAction = null;
+      tableRepair = null;
+      tableJoin = null;
+      if (!pageTextDraftLocalUnsaved) pageTextDraftOpen = false;
       helpOpen = false;
       recentOpen = false;
     }
@@ -260,17 +337,17 @@
   let exportFormat = $state("pdf"),
     exportScope = $state("all"),
     requireReviewed = $state(true);
+  let officeOptions = $state<OfficeExportOptions>(emptyOfficeExportOptions());
+  let workbookOptions = $state<WorkbookOptions>(emptyWorkbookOptions());
+  let exportResultNotes = $state<{ path: string; format: string; warnings: string[] } | null>(null);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
   const pdfExportSelected = $derived(exportFormat === "pdf" || exportFormat === "pdfa");
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
-  let fields = $state<ExtractionField[]>([]),
-    tableRows = $state<string[][]>([]),
-    formula = $state("");
   let extractionKind = $state<"fields" | "table" | "formula">("fields");
-  let extractionPageId = $state<string | null>(null);
+  let extractionSelection = $state<Record<string, string>>({});
   let geometryOpen = $state(false);
   let advancedConfig = $state(""),
     configError = $state("");
@@ -295,6 +372,59 @@
   const region = $derived(
     activePage?.regions.find((r) => r.id === selectedRegionId),
   );
+  const selectedPassageEligibility = $derived(activePage && region ? passageEligibility(activePage, region.id) : null);
+  const earlierSourceComponents = $derived(activePage ? readSourceComponents(activePage.provenance.passageSources) ?? [] : []);
+  const inspectedWord = $derived.by(() => {
+    const selection = wordInspection;
+    if (
+      !selection || !activePage || !region || showOriginal ||
+      drawMode !== "select" || inspector !== "review" || textView !== "regions" ||
+      selection.projectId !== project.id || selection.pageId !== activePage.id ||
+      selection.imagePath !== activePage.imagePath ||
+      selection.pageWidth !== activePage.width || selection.pageHeight !== activePage.height ||
+      selection.regionId !== region.id || selection.currentText !== region.text ||
+      selection.originalText !== region.originalText ||
+      selection.regionGeometry !== `${region.x},${region.y},${region.w},${region.h}`
+    ) return null;
+    const text = selection.source === "original" ? region.originalText : region.text;
+    return text.slice(selection.word.start, selection.word.end) === selection.word.text
+      ? selection.word : null;
+  });
+  const wordSource = $derived(inspectedWord?.bounds ? {
+    text: inspectedWord.text,
+    start: inspectedWord.sourceStart ?? inspectedWord.start,
+    end: inspectedWord.sourceEnd ?? inspectedWord.end,
+    bounds: inspectedWord.bounds,
+  } : null);
+  const loupeViewBox = $derived.by(() => {
+    const box = wordSource?.bounds ?? region;
+    if (!box || !activePage) return "";
+    const x = Math.max(0, box.x - 10), y = Math.max(0, box.y - 6);
+    const right = Math.min(activePage.width, box.x + box.w + 10);
+    const bottom = Math.min(activePage.height, box.y + box.h + 6);
+    return `${x} ${y} ${right - x} ${bottom - y}`;
+  });
+  $effect(() => {
+    if (wordInspection && !inspectedWord) wordInspection = null;
+  });
+  const projectProofreading = $derived(project.proofreading ?? emptyProofreadingData());
+  const proofreadingReady = $derived(userProofreadingLoad === "ready" || userProofreadingLoad === "unavailable");
+  const userProofreadingWritable = $derived(userProofreadingLoad === "ready" && !!client.saveUserProofreading);
+  const proofreadingSelection = $derived<ProofreadingSelection | null>(
+    inspectedWord && wordInspection?.source === "current" && activePage && region &&
+    !["picture", "formula", "table"].includes(region.kind) && !region.excluded && !activePage.excluded
+      ? { pageId: activePage.id, regionId: region.id, start: inspectedWord.start, end: inspectedWord.end, text: inspectedWord.text }
+      : null,
+  );
+  const proofreadingSuggestions = $derived.by((): { items: CorrectionSuggestion[]; error: string } => {
+    if (!proofreadingReady || !proofreadingSelection) return { items: [], error: "" };
+    try {
+      return { items: suggestCorrections(project, proofreadingSelection, userProofreading, projectProofreading.language), error: "" };
+    } catch (failure) {
+      return { items: [], error: message(failure) };
+    }
+  });
+  const proofreadingIgnored = $derived(proofreadingSelection ? isSuggestionIgnored(project, proofreadingSelection) : false);
   const metrics = $derived(getMetrics(project));
   const reviewIssues = $derived(getReviewIssues(project));
   const pageIssues = $derived(
@@ -372,6 +502,11 @@
     ["running", "pausing", "paused", "cancelling"].includes(queueState.phase),
   );
   const locked = $derived(booting || closing || !!busy || queueActive || queuePromise !== null);
+  const visibleSaveStatus = $derived<SaveStatus>(saveStatus.state === "error" ? saveStatus
+    : userProofreadingStatus.state === "error" ? { state: "error", error: userProofreadingStatus.error ?? "All-project vocabulary save failed." }
+    : saveStatus.state === "saving" || userProofreadingStatus.state === "saving" ? { state: "saving" }
+    : saveStatus.state === "pending" || userProofreadingStatus.state === "pending" ? { state: "pending" }
+    : saveStatus);
   const settings = $derived(project.recognitionSettings ?? {});
   const engine = $derived(
     typeof settings.engine === "string" ? settings.engine : (capabilities.default_engine ?? "auto"),
@@ -379,6 +514,12 @@
   const language = $derived(
     typeof settings.language === "string" ? settings.language : (capabilities.default_language ?? "auto"),
   );
+  const systemLanguages = $derived(capabilities.system_tesseract?.languages ?? []);
+  const recognitionAvailable = $derived(capabilities.ocr && (
+    engine === "system_tesseract"
+      ? (capabilities.system_tesseract?.available ?? capabilities.engines.includes(engine))
+      : capabilities.crispembed
+  ));
   // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
   const cpuBudget = $derived(
     settings.cpuPixelBudget === true &&
@@ -404,24 +545,20 @@
         : undefined,
   );
   const preflight = $derived(
-    prepareExport(project, { pageIds: exportIds, requireReviewed }),
+    prepareExport(project, { pageIds: exportIds, requireReviewed, format: exportFormat,
+      ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions } : {}),
+      ...(exportFormat === "xlsx" && capabilities.structured_xlsx ? { workbookOptions } : {}) }),
   );
   const exportTextCheck = $derived(checkExportText(exportFormat, capabilities, preflight.pages));
   const exportErrors = $derived([...preflight.errors, ...exportTextCheck.errors]);
   const pageText = $derived(
-    activePage?.regions
-      .filter((r) => !r.excluded && r.kind !== "picture")
-      .map((r) => r.text)
-      .join("\n") ?? "",
+    joinRegionText(activePage?.regions.filter((r) => !r.excluded && r.kind !== "picture") ?? []),
   );
   const allText = $derived(
     project.pages
       .filter((p) => !p.excluded)
       .map((p) =>
-        p.regions
-          .filter((r) => !r.excluded && r.kind !== "picture")
-          .map((r) => r.text)
-          .join("\n"),
+        joinRegionText(p.regions.filter((r) => !r.excluded && r.kind !== "picture")),
       )
       .join("\f"),
   );
@@ -435,6 +572,7 @@
     html: "HTML document",
     markdown: "Markdown",
     docx: "Word document",
+    xlsx: "Excel workbook",
   };
   const engineNames: Record<string, string> = {
     auto: "Automatic pipeline",
@@ -442,6 +580,7 @@
     parseq: "PARSeq scene text",
     surya: "Surya multilingual",
     tesseract: "Tesseract LSTM",
+    system_tesseract: "System Tesseract · word evidence",
     tesseract_fraktur: "Tesseract LSTM · Fraktur",
     ppocrv6: "PP-OCRv6 (CJK lines)",
     easyocr: "EasyOCR",
@@ -458,6 +597,12 @@
     lightonocr: "LightOnOCR",
     unlimited_ocr: "Unlimited OCR",
   };
+  const languageNames: Record<string, string> = {
+    eng: "English", deu: "German", fra: "French", spa: "Spanish",
+    ita: "Italian", por: "Portuguese", nld: "Dutch", pol: "Polish",
+    rus: "Russian", ara: "Arabic", chi_sim: "Chinese, simplified",
+    chi_tra: "Chinese, traditional", jpn: "Japanese", kor: "Korean",
+  };
   const regionsKinds: RegionKind[] = [
     "text",
     "title",
@@ -469,7 +614,7 @@
   ];
 
   const queue = new SequentialQueue<RecognitionResult>({
-    canStart: () => !busy && capabilities.ocr,
+    canStart: () => !busy && recognitionAvailable,
     isCurrent: (job) => project.id === runningProjectId && project.batch?.id === runningBatchId && batchPageIsCurrent(project, job.id),
     onState: (state) => {
       queueState = { ...state, remainingIds: [...state.remainingIds] };
@@ -533,25 +678,150 @@
   async function flush() {
     try {
       await autosave?.flush();
+      if (!await userProofreadingWriter.flush()) throw new Error(userProofreadingStatus.error ?? "All-project vocabulary could not be saved. Retry saving it before closing.");
       notice = "Project saved";
       error = "";
     } catch (e) {
       fail(e);
     }
   }
+  async function loadUserProofreading() {
+    const attempt = ++userProofreadingLoadAttempt;
+    if (!client.loadUserProofreading) {
+      userProofreadingLoad = "unavailable";
+      return;
+    }
+    userProofreadingLoad = "loading";
+    userProofreadingError = "";
+    try {
+      const data = readProofreadingData(await client.loadUserProofreading());
+      if (!mounted || attempt !== userProofreadingLoadAttempt) return;
+      userProofreading = data;
+      userProofreadingLoad = "ready";
+    } catch (failure) {
+      if (!mounted || attempt !== userProofreadingLoadAttempt) return;
+      userProofreadingLoad = "error";
+      userProofreadingError = message(failure);
+    }
+  }
+  function setProjectProofreading(data: ProofreadingData, expectedProjectId = project.id) {
+    if (locked) return;
+    safe(() => {
+      if (project.id !== expectedProjectId) throw new Error("The active project changed. Apply the vocabulary change again in the intended project.");
+      change(updateProjectProofreading(project, data));
+    });
+  }
+  function setUserProofreading(data: ProofreadingData) {
+    if (locked || !userProofreadingWritable) return;
+    safe(() => {
+      userProofreading = readProofreadingData(data);
+      userProofreadingWriter.schedule(userProofreading);
+    });
+  }
+  function setProofreadingLanguage(value: string) {
+    if (locked) return;
+    safe(() => change(updateProjectProofreading(project, {
+      ...projectProofreading, language: normalizeProofreadingLanguage(value),
+    })));
+  }
+  function addSelectedVocabulary(kind: "word" | "protected", scope: "project" | "user") {
+    const selection = proofreadingSelection;
+    if (!selection || locked || (scope === "user" && !userProofreadingWritable)) return;
+    safe(() => {
+      const entry = createVocabularyEntry(selection.text, kind === "protected" ? "und" : projectProofreading.language, kind, true);
+      const current = scope === "project" ? projectProofreading : userProofreading;
+      const data = mergeProofreadingData(current, { ...emptyProofreadingData(), entries: [entry] });
+      if (scope === "project") setProjectProofreading(data); else setUserProofreading(data);
+      notice = `${kind === "protected" ? "Protected identifier" : "Vocabulary entry"} added to ${scope === "project" ? "this project" : "all projects"}. OCR scores and approval are unchanged.`;
+    });
+  }
+  function ignoreSelectedSuggestion() {
+    if (!proofreadingSelection || locked) return;
+    safe(() => change(ignoreSuggestion(project, proofreadingSelection!)));
+  }
+  function previewCorrections(request: CorrectionRequest) {
+    if (locked || !proofreadingReady) return;
+    safe(() => {
+      const preview = captureCorrectionPreview(project, request, userProofreading);
+      correctionSelectedIds = preview.matches.map((match) => match.id);
+      confirm = {
+        title: "Review proposed corrections",
+        message: "Choose the occurrences to change. Protected identifiers are retained, and current source text is checked again when you apply.",
+        label: "Apply corrections", correctionPreview: preview,
+        action: () => safe(() => {
+          const next = applyCorrectionPreview(project, preview, correctionSelectedIds, userProofreading);
+          const count = correctionSelectedIds.length;
+          change(next);
+          currentMatch = null;
+          wordInspection = null;
+          notice = `Applied ${count} correction${count === 1 ? "" : "s"}. Undo restores the previous text.`;
+        }),
+      };
+    });
+  }
+  function previewSuggestion(suggestion: CorrectionSuggestion) {
+    const selection = proofreadingSelection;
+    if (!selection) return;
+    previewCorrections({
+      from: selection.text, to: suggestion.text, language: projectProofreading.language,
+      caseSensitive: true, wholeWord: false, scope: "passage", pageId: selection.pageId,
+      regionId: selection.regionId, selection: { ...selection }, includeApproved: true,
+    });
+  }
+  function previewRule(rule: CorrectionRule, scope: CorrectionRequest["scope"], includeApproved: boolean) {
+    if (!rule.enabled) return;
+    previewCorrections({ from: rule.from, to: rule.to, language: rule.language,
+      caseSensitive: rule.caseSensitive, wholeWord: rule.wholeWord, scope, includeApproved,
+      pageId: activePage?.id, regionId: region?.id, pageIds: [...checkedPages],
+    });
+  }
+  function rememberCorrection(suggestion: CorrectionSuggestion) {
+    if (!proofreadingSelection || locked) return;
+    correctionDraft = { from: proofreadingSelection.text, to: suggestion.text,
+      language: projectProofreading.language, nonce: ++correctionDraftNonce };
+    wordInspection = null;
+    proofreadingOpen = true;
+  }
+  function toggleProofreading() {
+    correctionDraft = null;
+    wordInspection = null;
+    proofreadingOpen = !proofreadingOpen;
+  }
+  async function exportProofreading(data: ProofreadingData, scope: "project" | "user") {
+    if (locked) return;
+    const sources = project.documents.map((document) => document.sourceUri);
+    busy = "Exporting vocabulary";
+    error = "";
+    try {
+      const text = exportProofreadingData(data);
+      const path = await client.pickExport(scope === "project" ? "project-vocabulary" : "user-vocabulary", "json");
+      if (!path) return;
+      const result = await client.writeText(path, text, sources);
+      notice = `Saved ${result.saved_path}`;
+    } catch (failure) { fail(failure); }
+    finally { busy = ""; }
+  }
   async function activate(next: OcrProject, revision = 0) {
     // Validate before closing the current writer: an invalid file must never
     // leave the still-visible project with an autosaver that silently ignores edits.
     const parsed = parseProject(next);
+    if (pageTextDraftLocalUnsaved) throw new Error("The page draft contains input that has not been stored. Reduce or copy that input before changing projects.");
     await autosave?.close();
     history = createHistory(parsed);
     selectedPageId = history.present.pages[0]?.id ?? null;
     selectedRegionId = null;
+    pageTextDraftOpen = false;
+    pageTextDraftLocalUnsaved = false;
+    tableRepair = null;
+    tableJoin = null;
+    proofreadingOpen = false;
+    correctionDraft = null;
     checkedPages = [];
-    fields = [];
-    tableRows = [];
-    formula = "";
-    extractionPageId = null;
+    extractionSelection = {};
+    officeOptions = emptyOfficeExportOptions();
+    workbookOptions = emptyWorkbookOptions();
+    exportResultNotes = null;
+    lastReviewIssueKey = null;
     saveStatus = { state: "saved" };
     bindSave(revision);
     recentOpen = false;
@@ -794,8 +1064,10 @@
     if (added) selectPage(added.id);
   }
   function selectPage(id: string) {
+    lastReviewIssueKey = null;
     selectedPageId = id;
     selectedRegionId = null;
+    wordInspection = null;
     editGroup = null;
     showOriginal = false;
     drawMode = "select";
@@ -824,9 +1096,9 @@
     splitPosition = Math.floor(page.width / 2);
     confirmation(
       "Split this spread?",
-      `Split ${page.name} at a vertical line. Each half becomes an independent page. Existing recognition is kept in Undo.`,
+      `Split ${page.name} at a vertical line. Each half becomes an independent page. Existing recognition is kept in Undo.${page.structure ? " Current formatting and links must be reviewed after recognizing the new pages. Previous document structure remains available in the saved history." : ""}`,
       "Split page",
-      () => transform("split", { splitX: Math.round(splitPosition) }, page.id),
+      () => transform("split", { splitX: Math.round(splitPosition) }, page.id, true),
       page.width,
     );
   }
@@ -836,7 +1108,10 @@
   }
   async function selectRegion(id: string) {
     mobileView = "tools";
+    lastReviewIssueKey = null;
     selectedRegionId = id;
+    wordInspection = null;
+    proofreadingOpen = false;
     inspector = "review";
     textView = "regions";
     if (onlyIssues && !issueRegionIds.has(id)) onlyIssues = false;
@@ -847,27 +1122,62 @@
   }
   async function selectWord(r: OcrRegion, word: WordEvidence) {
     if (!activePage || locked || r.excluded) return;
+    const projectId = project.id;
     const pageId = activePage.id;
+    const imagePath = activePage.imagePath;
     const sourceText = r.text;
     if (sourceText.slice(word.start, word.end) !== word.text) return;
+    currentMatch = null;
     await selectRegion(r.id);
     // The selection is valid only for the text version that supplied its
     // offsets. Navigation or an edit during the render must not target another
     // page, a changed word, or original OCR offsets in corrected text.
     if (
-      activePage?.id !== pageId ||
+      project.id !== projectId || activePage?.id !== pageId ||
+      activePage.imagePath !== imagePath || selectedRegionId !== r.id ||
       activePage.regions.find((item) => item.id === r.id)?.text !== sourceText
     ) return;
     const editor = editorPane?.querySelector<HTMLTextAreaElement>(
-      `[data-region-id="${r.id}"] textarea`,
+      `[data-region-id="${r.id}"] textarea[data-region-text]`,
     );
     editor?.focus();
     editor?.setSelectionRange(word.start, word.end);
+    inspectWord(r, word, "current");
+  }
+  function inspectWord(r: OcrRegion, word: WordEvidence | null, source: "current" | "original") {
+    if (!word) {
+      wordInspection = null;
+      return;
+    }
+    const page = activePage;
+    const current = page?.regions.find((item) => item.id === r.id);
+    if (!page || !current || selectedRegionId !== r.id) return;
+    const text = source === "original" ? current.originalText : current.text;
+    if (
+      current.text !== r.text || current.originalText !== r.originalText ||
+      word.start < 0 || word.end <= word.start || word.end > text.length ||
+      text.slice(word.start, word.end) !== word.text
+    ) return;
+    const box = word.bounds;
+    const validBounds = box && [box.x, box.y, box.w, box.h].every(Number.isFinite) &&
+      box.x >= 0 && box.y >= 0 && box.w > 0 && box.h > 0 &&
+      box.x + box.w <= page.width && box.y + box.h <= page.height;
+    showOriginal = false;
+    drawMode = "select";
+    wordInspection = {
+      projectId: project.id, pageId: page.id, imagePath: page.imagePath,
+      pageWidth: page.width, pageHeight: page.height, regionId: current.id,
+      currentText: current.text, originalText: current.originalText,
+      regionGeometry: `${current.x},${current.y},${current.w},${current.h}`,
+      source, word: { ...word, bounds: validBounds ? { ...box } : undefined },
+    };
   }
   async function editPassage(r: OcrRegion) {
     if (!activePage || locked || r.excluded || r.kind === "picture") return;
     const pageId = activePage.id;
     currentMatch = null;
+    wordInspection = null;
+    proofreadingOpen = false;
     selectedRegionId = r.id;
     inspector = "review";
     textView = "text";
@@ -875,13 +1185,133 @@
     await tick();
     if (activePage?.id !== pageId || selectedRegionId !== r.id) return;
     const editor = editorPane?.querySelector<HTMLTextAreaElement>(
-      `[data-passage-id="${r.id}"] textarea`,
+      `[data-passage-id="${r.id}"] textarea[data-passage-text]`,
     );
     editor?.focus();
     editor?.scrollIntoView({ block: "nearest" });
   }
+  function readRegionCaret(id: string) {
+    const article = Array.from(editorPane?.querySelectorAll<HTMLElement>("[data-region-id]") ?? [])
+      .find((item) => item.dataset.regionId === id);
+    const editor = article?.querySelector<HTMLTextAreaElement>("textarea[data-region-text]");
+    return editor ? { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value } : null;
+  }
+  function openPassageAction(
+    mode: "split" | "merge" | "repair",
+    target: OcrRegion,
+    caret: { start: number; end: number; text: string } | null = null,
+  ) {
+    const page = activePage;
+    if (!page || locked || confirm || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
+    const current = page.regions.find((item) => item.id === target.id);
+    if (!current) return;
+    try {
+      const eligibility = passageEligibility(page, current.id);
+      let splitOffset: number | null = null;
+      if (mode === "split") {
+        if (!eligibility.splitAllowed) throw new Error(eligibility.reasons.join(" "));
+        splitOffset = caret ? sourceOffsetForTextarea(current.text, caret.text, caret.start) : null;
+        if (!caret || caret.start !== caret.end || splitOffset === null ||
+          !isPassageBoundary(current.text, splitOffset) ||
+          !current.text.slice(0, splitOffset).trim() || !current.text.slice(splitOffset).trim())
+          throw new Error("Place the caret inside this passage, with no text selected and complete text on both sides, then choose Split passage.");
+      } else if (mode === "merge" && !eligibility.nextMergeId) {
+        throw new Error("Merge needs the immediately following included passage of the same kind, with no intervening region.");
+      } else if (mode === "repair" && (page.excluded || current.excluded || !current.text.trim() || !["text", "title", "header", "footer"].includes(current.kind))) {
+        throw new Error("Choose an included, nonempty text passage to repair.");
+      }
+      // Keep the selected source frozen while preview options change. Applying
+      // compares this exact page snapshot with the current project again.
+      const capturedPage = JSON.parse(JSON.stringify(page)) as OcrPage;
+      passageAction = {
+        project: { ...project, pages: project.pages.map((item) => item.id === page.id ? capturedPage : item) },
+        pageId: page.id, regionId: current.id, mode,
+        ...(mode === "split" && splitOffset !== null ? { offset: splitOffset } : {}),
+      };
+      currentMatch = null;
+      wordInspection = null;
+      editGroup = null;
+      error = "";
+    } catch (failure) { fail(failure); }
+  }
+  function finishPassageChange(pageId: string, regionId: string, text: string) {
+    selectedPageId = pageId;
+    selectedRegionId = regionId;
+    currentMatch = null;
+    wordInspection = null;
+    drawMode = "select";
+    showOriginal = false;
+    inspector = "review";
+    proofreadingOpen = false;
+    passageAction = null;
+    error = "";
+    notice = text;
+  }
+  function applyStructuralPassage(preview: PassagePreview): string | null {
+    if (locked) return "Wait for the current operation to finish, then apply the passage edit.";
+    try {
+      change(applyPassagePreview(project, preview));
+      finishPassageChange(preview.page.id, preview.regions[0].id, preview.request.kind === "split" ? "Passage split. Original sources are available in Source components." : "Passages merged. Original sources are available in Source components.");
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function applyTextRepair(preview: RepairPreview, selectedIds: string[]): string | null {
+    if (locked) return "Wait for the current operation to finish, then apply the text repair.";
+    try {
+      change(applyPassageRepair(project, preview, selectedIds));
+      finishPassageChange(preview.page.id, preview.regionIds[0], `${selectedIds.length} text repair${selectedIds.length === 1 ? "" : "s"} applied. Undo restores the previous text.`);
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function openPageTextDraft() {
+    if (!activePage || locked || confirm || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
+    try {
+      change(createPageTextDraft(project, activePage.id), false);
+      resumePageTextDraft();
+    } catch (failure) { fail(failure); }
+  }
+  function resumePageTextDraft() {
+    if (!project.pageTextDraft || locked || confirm || passageAction || tableRepair || tableJoin) return;
+    currentMatch = null;
+    wordInspection = null;
+    editGroup = null;
+    error = "";
+    pageTextDraftOpen = true;
+  }
+  function updateOpenPageTextDraft(text: string): string | null {
+    if (locked) return "Wait for the current document operation to finish before updating the draft.";
+    try { change(updatePageTextDraft(project, text), false); return null; }
+    catch (failure) { return message(failure); }
+  }
+  function discardOpenPageTextDraft(): string | null {
+    if (locked) return "Wait for the current document operation to finish before discarding the draft.";
+    try {
+      change(discardPageTextDraft(project), false);
+      pageTextDraftOpen = false;
+      pageTextDraftLocalUnsaved = false;
+      notice = "Unapplied page text draft discarded.";
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function applyOpenPageTextDraft(preview: PageTextEditPreview, acceptCombinedCoverage: boolean): string | null {
+    if (locked) return "Wait for the current document operation to finish before applying the draft.";
+    try {
+      change(applyPageTextEdit(project, preview, acceptCombinedCoverage));
+      selectedPageId = preview.page.id;
+      selectedRegionId = preview.replacementIds[0] ?? null;
+      currentMatch = null;
+      wordInspection = null;
+      editGroup = null;
+      textView = "text";
+      inspector = "review";
+      pageTextDraftOpen = false;
+      pageTextDraftLocalUnsaved = false;
+      notice = "Page text draft applied. Review the changed passage before approving; Undo restores the previous page and draft.";
+      return null;
+    } catch (failure) { return message(failure); }
+  }
   function drawRecognitionArea() {
-    if (!activePage || locked || !capabilities.ocr) return;
+    if (!activePage || locked || !recognitionAvailable) return;
     drawMode = "recognize";
     showOriginal = false;
     notice = "Draw an area on the page. You can compare the new OCR text before using it.";
@@ -958,16 +1388,34 @@
   }
   function reviewNext() {
     if (!reviewIssues.length) {
+      lastReviewIssueKey = null;
       notice = "No outstanding review issues";
       return;
     }
-    const current = reviewIssues.findIndex(
-      (i) => i.pageId === activePage?.id && i.regionId === selectedRegionId,
+    const keyFor = (issue: (typeof reviewIssues)[number]) =>
+      JSON.stringify([issue.pageId, issue.regionId, issue.reason, issue.message]);
+    const cursor = reviewIssues.findIndex((issue) => keyFor(issue) === lastReviewIssueKey &&
+      issue.pageId === activePage?.id && issue.regionId === selectedRegionId);
+    const current = cursor >= 0 ? cursor : reviewIssues.findIndex(
+      (issue) => issue.pageId === activePage?.id && issue.regionId === selectedRegionId,
     );
     const issue = reviewIssues[(current + 1) % reviewIssues.length];
     selectPage(issue.pageId);
     if (issue.regionId) void selectRegion(issue.regionId);
-    else openInspector("review");
+    else {
+      const extractionIssue = issue.reason === "changed" && issue.message === "Extracted content needs page approval.";
+      openInspector(extractionIssue ? "extract" : "review");
+      const page = project.pages.find((item) => item.id === issue.pageId);
+      if (extractionIssue && page) {
+        const candidates = getExtractionObjects(page).collection.objects.filter((object) => !object.excluded && extractionObjectFreshness(project, object).current);
+        const selected = candidates.find((object) => object.id === extractionSelection[page.id + ":" + extractionKind]) ?? candidates[0];
+        if (selected) {
+          extractionKind = selected.kind;
+          extractionSelection = { ...extractionSelection, [page.id + ":" + selected.kind]: selected.id };
+        }
+      } else if (issue.reason === "changed" && page?.structure) textView = "structure";
+    }
+    lastReviewIssueKey = keyFor(issue);
   }
   function approveRegion() {
     if (activePage && region) {
@@ -1053,7 +1501,7 @@
     confirmed = false,
     confirmedIds?: string[],
   ) {
-    if (locked || !capabilities.ocr) return;
+    if (locked || !recognitionAvailable) return;
     const pages = project.pages.filter(
       (p) =>
         !p.excluded &&
@@ -1077,7 +1525,7 @@
       !confirmed &&
       pages.some(
         (p) =>
-          p.approved ||
+          p.approved || p.structure ||
           p.regions.some(
             (r) => r.text !== r.originalText || r.review === "approved",
           ),
@@ -1085,7 +1533,7 @@
     ) {
       confirmation(
         "Replace reviewed recognition?",
-        `${pages.length} pages will be recognized with the current profile. Existing corrections can be recovered with Undo.`,
+        `${pages.length} pages will be recognized with the current profile. Existing corrections can be recovered with Undo.${pages.some((page) => page.structure) ? " New recognition replaces the current block formatting and links. Previous document structure remains inspectable in saved history." : ""}`,
         "Recognize again",
         () =>
           recognize(
@@ -1181,47 +1629,108 @@
     } catch (failure) { change(updateBatchPhase(project, "paused"), false); fail(failure); }
     finally { busy = ""; queuePromise = null; }
   }
-  function persistExtraction() {
-    if (!activePage || locked || extractionPageId !== activePage.id) return;
-    const saved = readExtraction(activePage);
-    change(
-      updatePage(project, activePage.id, {
-        provenance: {
-          ...activePage.provenance,
-          extraction: {
-            ...saved,
-            fields,
-            tableRows,
-            formula,
-            labels,
-            sourceImagePath: activePage.imagePath,
-            updatedAt: new Date().toISOString(),
-          },
-        },
-      }),
-    );
+  function changeExtraction(next: OcrProject, groupKey?: string) {
+    if (locked || next === project) return;
+    const record = !groupKey || editGroup !== groupKey;
+    change(next, record);
+    editGroup = groupKey ?? null;
   }
-  let lastExtractionSnapshot = "";
+  function selectExtraction(id: string) {
+    if (!activePage) return;
+    editGroup = null;
+    extractionSelection = { ...extractionSelection, [activePage.id + ":" + extractionKind]: id };
+  }
+  function openTableRepair(object: ExtractionObject, cellId: string | null) {
+    if (!activePage || locked || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
+    const current = currentExtraction(object);
+    if (!current || current.kind !== "table") {
+      error = "Select a saved table on the current page.";
+      return;
+    }
+    currentMatch = null;
+    wordInspection = null;
+    editGroup = null;
+    error = "";
+    tableRepair = {
+      projectId: project.id, pageId: activePage.id, object: current,
+      cellId: current.currentData.cells.some((cell) => cell.id === cellId) ? cellId : null,
+    };
+  }
+  function applyTableRepair(preview: TableOperationPreview): string | null {
+    if (locked) return "Wait for the current document operation to finish before applying table changes.";
+    if (!tableRepair || tableRepair.projectId !== project.id || tableRepair.pageId !== preview.pageId || tableRepair.object.id !== preview.objectId) {
+      return "The source table changed. Your repair choices have been kept; review them again before applying.";
+    }
+    try {
+      change(applyTableOperation(project, preview));
+      selectedPageId = preview.pageId;
+      extractionKind = "table";
+      extractionSelection = { ...extractionSelection, [preview.pageId + ":table"]: preview.objectId };
+      inspector = "extract";
+      notice = "Table structure updated. Review the changed table before page approval; Undo restores the previous table in one step.";
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  function openTableJoin(object: ExtractionObject) {
+    if (!activePage || locked || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
+    const current = currentExtraction(object);
+    if (!current || current.kind !== "table" || !current.currentData.rows || !current.currentData.columns) {
+      error = "Select a nonempty saved table to begin a continuation join.";
+      return;
+    }
+    currentMatch = null;
+    wordInspection = null;
+    editGroup = null;
+    error = "";
+    tableJoin = { projectId: project.id, pageId: activePage.id, object: current };
+  }
+  function applyTableJoin(preview: ContinuationJoinPreview): string | null {
+    if (locked) return "Wait for the current document operation to finish before creating the joined table.";
+    if (!tableJoin || tableJoin.projectId !== project.id || preview.projectId !== project.id) {
+      return "The source project changed. Your join choices have been kept; review them again before creating the table.";
+    }
+    try {
+      const destinationPageId = preview.request.inputs[0].pageId;
+      change(applyContinuationJoin(project, preview));
+      selectedPageId = destinationPageId;
+      selectedRegionId = null;
+      wordInspection = null;
+      currentMatch = null;
+      lastReviewIssueKey = null;
+      extractionKind = "table";
+      extractionSelection = { ...extractionSelection, [destinationPageId + ":table"]: preview.result.id };
+      inspector = "extract";
+      notice = "Joined table created. Source tables remain separate. Review the result before page approval; Undo restores the project before this join.";
+      return null;
+    } catch (failure) { return message(failure); }
+  }
+  let lastExtractionPageKey = "";
   $effect(() => {
     const page = activePage;
-    const data = page ? readExtraction(page) : undefined;
-    const key = JSON.stringify([project.id, page?.id, page?.imagePath, data]);
-    if (key === lastExtractionSnapshot) return;
-    lastExtractionSnapshot = key;
-    fields = data?.fields ?? [];
-    tableRows = data?.tableRows ?? [];
-    formula = data?.formula ?? "";
-    if (data?.labels) labels = data.labels;
-    extractionPageId = data ? (page?.id ?? null) : null;
+    const key = project.id + ":" + (page?.id ?? "");
+    if (key === lastExtractionPageKey) return;
+    lastExtractionPageKey = key;
+    const fields = page ? getExtractionObjects(page).collection.objects.slice().reverse().find((object) => object.kind === "fields") : undefined;
+    if (fields?.kind === "fields" && fields.currentData.labels.length) labels = fields.currentData.labels.join(", ");
   });
   async function transform(
     operation: TransformOptions["operation"],
     options: Partial<TransformOptions> = {},
     pageId = activePage?.id,
+    confirmed = false,
   ) {
     if (!pageId || locked) return;
     const page = project.pages.find((p) => p.id === pageId);
     if (!page) return;
+    if (!confirmed && page.structure?.blocks.length) {
+      confirmation(
+        "Change the source page image?",
+        `${page.name} has document structure. This image operation clears current recognition, formatting, and links until the new image is recognized and reviewed. Previous document structure remains inspectable in saved history; Undo restores this edit.`,
+        "Apply image operation",
+        () => transform(operation, options, page.id, true),
+      );
+      return;
+    }
     busy = "Preparing page";
     error = "";
     try {
@@ -1253,9 +1762,19 @@
       busy = "";
     }
   }
-  async function prepareImage(override?: Record<string, unknown>) {
-    if (!activePage || locked) return;
-    const page = activePage;
+  async function prepareImage(override?: Record<string, unknown>, confirmed = false, pageId = activePage?.id) {
+    if (!pageId || locked || !capabilities.crispembed) return;
+    const page = project.pages.find((candidate) => candidate.id === pageId);
+    if (!page) return;
+    if (!confirmed && page.structure?.blocks.length) {
+      confirmation(
+        "Prepare this structured page?",
+        `${page.name} has document structure. If preparation changes the image, its current recognition, formatting, and links need to be rebuilt and reviewed. Previous document structure remains inspectable in saved history; Undo restores the prior page.`,
+        "Prepare page",
+        () => prepareImage(override, true, page.id),
+      );
+      return;
+    }
     busy = "Repairing scan";
     error = "";
     try {
@@ -1311,7 +1830,7 @@
     }
   }
   async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
-    if (!pageId || locked || !capabilities.ocr) return;
+    if (!pageId || locked || !recognitionAvailable) return;
     error = "";
     try {
       const request = captureZoneReview(project, pageId, rect);
@@ -1394,9 +1913,10 @@
     onlyIssues = false;
     inspector = "review";
     textView = "regions";
+    proofreadingOpen = false;
     await tick();
     const field = editorPane?.querySelector<HTMLTextAreaElement>(
-      `[data-region-id="${match.regionId}"] textarea`,
+      `[data-region-id="${match.regionId}"] textarea[data-region-text]`,
     );
     field?.focus();
     field?.setSelectionRange(match.start, match.end);
@@ -1440,6 +1960,7 @@
   ) {
     if (locked) return;
     error = "";
+    exportResultNotes = null;
     let exportMode = { format: exportFormat, pdfa: false };
     if (!snapshot) {
       try { exportMode = resolveExportFormat(exportFormat, capabilities); }
@@ -1476,6 +1997,8 @@
                 }))
               : preflight.pages,
           sourceUris: project.documents.map((d) => d.sourceUri),
+          ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions: preflight.officeOptions ?? emptyOfficeExportOptions() } : {}),
+          ...(exportFormat === "xlsx" && capabilities.structured_xlsx ? { workbookOptions: preflight.workbookOptions ?? emptyWorkbookOptions() } : {}),
         }),
       ) as Omit<ExportRequest, "outputPath" | "overwrite">);
     const ext =
@@ -1516,7 +2039,16 @@
           busy = exportStopping ? "Stopping export after the current step…" : exportProgressLabel(progress);
         },
       });
-      notice = result.cancelled ? "Export cancelled" : `Exported ${result.pages} pages · ${result.saved_path}`;
+      if (result.cancelled) notice = "Export cancelled";
+      else {
+        const warnings = [...new Set((result.warnings ?? []).filter((item): item is string => typeof item === "string" && !!item))];
+        exportResultNotes = { path: result.saved_path, format: result.format, warnings };
+        const sheetCount = result.sheets ?? request.workbookOptions?.sheets.length ?? 0;
+        const exportedCount = result.format === "xlsx"
+          ? `${sheetCount} ${sheetCount === 1 ? "worksheet" : "worksheets"}`
+          : `${result.pages} pages`;
+        notice = `Exported ${exportedCount} · ${result.saved_path}${warnings.length ? ` · ${warnings.length} export notes` : ""}`;
+      }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         notice = "Export cancelled";
@@ -1528,7 +2060,7 @@
         const chosen = target;
         confirmation(
           "Replace the existing export?",
-          `The file ${chosen} already exists. Replace it with the ${request.pages.length} pages selected for this export?`,
+          `The file ${chosen} already exists. Replace it with the ${request.format === "xlsx" ? `${request.workbookOptions?.sheets.length ?? 0} worksheets` : `${request.pages.length} pages`} selected for this export?`,
           "Replace export",
           () => exportProject(true, chosen, request),
         );
@@ -1546,18 +2078,6 @@
     busy = "Stopping export after the current step…";
     exportController.abort();
   }
-  function tableFromHtml(html: string): string[][] {
-    // Parse into an inert template; only cell text reaches the live document.
-    const template = document.createElement("template");
-    template.innerHTML = html;
-    return Array.from(template.content.querySelectorAll("tr"))
-      .map((row) =>
-        Array.from(row.querySelectorAll("td,th")).map(
-          (cell) => cell.textContent ?? "",
-        ),
-      )
-      .filter((row) => row.length);
-  }
   async function extractionPath(source: ExtractionSource) {
     if (source.bounds) {
       const result = await client.transform({
@@ -1573,87 +2093,55 @@
   }
   async function extract(kind: "fields" | "table" | "formula") {
     if (!activePage || locked) return;
-    const pageId = activePage.id,
-      projectId = project.id;
+    const pageId = activePage.id;
+    const regionId = region?.id ?? null;
     const layout = useLayoutFields;
-    const threshold = fieldThreshold,
-      labelSnapshot = labels;
-    const source = captureExtractionSource(
-      activePage,
-      region,
-      kind === "fields" && !layout ? "text" : "pixels",
-    );
-    busy = `Extracting ${kind}`;
+    const threshold = fieldThreshold;
+    const labelSnapshot = labels;
+    busy = "Extracting " + kind;
     error = "";
     extractionKind = kind;
     try {
-      let resultFields: ExtractionField[] = [],
-        resultRows: string[][] = [],
-        resultFormula = "";
+      const request = captureExtractionRequest(project, pageId, regionId, kind === "fields" && !layout ? "text" : "pixels");
+      const source = request.capture;
+      let output: unknown;
+      let labelList: string[] = [];
       if (kind === "fields") {
-        const list = labelSnapshot
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        if (!list.length) throw new Error("Enter at least one field label.");
-        if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)
-          throw new Error("Field score must be between zero and one.");
-        resultFields = layout
-          ? await client.layoutFields(
-              await extractionPath(source),
-              list,
-              threshold,
-            )
-          : await client.extractFields(source.text ?? "", list, threshold);
-        resultFields = resultFields.map((field) => ({
-          ...field,
-          original_value: field.value,
-          review: "unreviewed",
-        }));
-        notice = `${resultFields.length} fields extracted${layout ? " from page layout" : " from reviewed text"}`;
+        labelList = labelSnapshot.split(",").map((value) => value.trim()).filter(Boolean);
+        if (!labelList.length) throw new Error("Enter at least one field label.");
+        if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("Field score must be between zero and one.");
+        const result = layout
+          ? await client.layoutFields(await extractionPath(source), labelList, threshold)
+          : await client.extractFields(source.text ?? "", labelList, threshold);
+        output = result;
+        notice = result.length + " fields extracted" + (layout ? " from page layout" : " from reviewed text");
       } else if (kind === "table") {
         const result = await client.table(await extractionPath(source));
-        resultRows = tableFromHtml(result.html);
-        notice = `${result.rows} rows × ${result.cols} columns extracted`;
+        output = result;
+        notice = result.rows + " rows × " + result.cols + " columns extracted";
       } else {
-        resultFormula = (await client.math(await extractionPath(source))) ?? "";
-        notice = resultFormula
-          ? "Formula recognized"
-          : "No formula was recognized";
+        const result = await client.math(await extractionPath(source));
+        if (result === null || result === "") {
+          notice = "No formula was recognized. Existing saved formulas are unchanged.";
+          return;
+        }
+        output = result;
+        notice = "Formula recognized";
       }
-      const page = project.pages.find((p) => p.id === pageId);
-      if (
-        project.id !== projectId ||
-        !page ||
-        !extractionSourceIsCurrent(page, source)
-      )
-        throw new Error(
-          "The source changed during extraction. Run extraction again for the current page.",
-        );
-      const saved = readExtraction(page);
-      change(
-        updatePage(project, pageId, {
-          provenance: {
-            ...page.provenance,
-            extraction: {
-              ...saved,
-              ...(kind === "fields"
-                ? { fields: resultFields, labels: labelSnapshot }
-                : kind === "table"
-                  ? { tableRows: resultRows }
-                  : { formula: resultFormula }),
-              sources: { ...saved.sources, [kind]: source },
-              sourceImagePath: source.imagePath,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-        }),
-      );
-      // The restoration effect updates editors only for the selected page.
-      // Results from an in-flight page remain attached to that page after navigation.
-      if (selectedPageId !== pageId) notice += ` · saved to ${page.name}`;
-    } catch (e) {
-      fail(e);
+      // The request captures its project/page/region before recognition. A
+      // delayed result stays with that source, even after selection changes.
+      const next = appendExtractionObject(project, request, kind, output, kind === "fields" ? { labels: labelList } : undefined);
+      const page = next.pages.find((item) => item.id === pageId);
+      if (!page) throw new Error("The source page no longer exists.");
+      const object = getExtractionObjects(page).collection.objects.find((item) => item.id === request.objectId);
+      const freshness = object ? extractionObjectFreshness(next, object) : null;
+      change(next);
+      if (activePage?.id === pageId) {
+        extractionSelection = { ...extractionSelection, [pageId + ":" + kind]: request.objectId };
+      } else notice += " · saved to " + page.name;
+      if (freshness && !freshness.current) notice += " · Historical source: " + freshness.reasons.join(" ");
+    } catch (failure) {
+      fail(failure);
     } finally {
       busy = "";
     }
@@ -1667,30 +2155,26 @@
         "Clipboard access was unavailable. Select and copy the text manually.";
     }
   }
-  async function saveExtraction() {
-    if (locked || !activePage || extractionPageId !== activePage.id) return;
-    const data = readExtraction(activePage),
-      kind = extractionKind;
-    const sources = project.documents.map((d) => d.sourceUri);
-    const ext =
-      extractionKind === "fields"
-        ? "json"
-        : extractionKind === "table"
-          ? "csv"
-          : "tex";
-    const text =
-      extractionKind === "fields"
-        ? JSON.stringify(data.fields, null, 2)
-        : extractionKind === "table"
-          ? tableToCsv(data.tableRows)
-          : data.formula;
-    if (!data.sources[kind] || !text) return;
-    busy = "Saving extracted data";
+  function currentExtraction(object: ExtractionObject): ExtractionObject | undefined {
+    return activePage ? getExtractionObjects(activePage).collection.objects.find((item) => item.id === object.id) : undefined;
+  }
+  async function copyExtraction(object: ExtractionObject) {
+    if (locked) return;
     try {
-      const outputPath = await client.pickExport(
-        `${project.name}-${extractionKind}`,
-        ext,
-      );
+      const current = currentExtraction(object);
+      if (!current) throw new Error("Select a saved extraction on the current page.");
+      await copy(prepareExtractionExport(current).text);
+    } catch (failure) { fail(failure); }
+  }
+  async function saveExtraction(object: ExtractionObject) {
+    if (locked) return;
+    try {
+      const current = currentExtraction(object);
+      if (!current) throw new Error("Select a saved extraction on the current page.");
+      const sources = project.documents.map((document) => document.sourceUri);
+      const { extension, text } = prepareExtractionExport(current);
+      busy = "Saving extracted data";
+      const outputPath = await client.pickExport(project.name + "-" + current.name, extension);
       if (!outputPath) return;
       const result = await client.writeText(outputPath, text, sources);
       notice = result.cancelled ? "Export cancelled" : `Saved ${result.saved_path}`;
@@ -1727,11 +2211,23 @@
     }
   }
   function keydown(event: KeyboardEvent) {
-    if (!active || confirm || helpOpen) return;
+    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
     const target = event.target as HTMLElement;
     const editing = target?.matches(
       'input,textarea,select,[contenteditable="true"]',
     );
+    // Structured text and extraction edits restore their metadata and text
+    // together from project history. Full-page drafts keep native textarea undo.
+    const projectEditor = target?.matches('[data-extraction-editor]') ||
+      (activePage?.structure && target?.matches('textarea[data-region-text],textarea[data-passage-text],textarea[data-structure-text]'));
+    if (!event.isComposing && projectEditor &&
+      (event.metaKey || event.ctrlKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase())) {
+      event.preventDefault();
+      const selectedId = selectedRegionId;
+      event.key.toLowerCase() === "y" || event.shiftKey ? redo() : undo();
+      if (selectedId && activePage?.regions.some((item) => item.id === selectedId)) selectedRegionId = selectedId;
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       void flush();
@@ -1739,6 +2235,7 @@
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
+      proofreadingOpen = false;
       searchOpen = true;
       openInspector("review");
       return;
@@ -1787,7 +2284,7 @@
     }
   }
   function beforeUnload(event: BeforeUnloadEvent) {
-    if (queueActive || queuePromise || busy || autosave?.hasUnsavedChanges()) {
+    if (queueActive || queuePromise || busy || pageTextDraftLocalUnsaved || autosave?.hasUnsavedChanges() || userProofreadingWriter.hasUnsavedChanges()) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1797,6 +2294,7 @@
     let unlisten: (() => void) | undefined;
     let unlistenClose: (() => void) | undefined;
     bindSave();
+    void loadUserProofreading();
     void (async () => {
       const results = await Promise.allSettled([
         client.capabilities(),
@@ -1822,7 +2320,7 @@
     // Native drag/drop supplies real filesystem paths; web File names are not paths.
     if (client === workspaceClient)
       void listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
-        if (active && !locked) void importFiles(event.payload.paths);
+        if (active && !locked && !passageAction && !pageTextDraftOpen && !tableRepair && !tableJoin) void importFiles(event.payload.paths);
       })
         .then((fn) => {
           if (mounted) unlisten = fn;
@@ -1834,6 +2332,14 @@
         .onCloseRequested(async (event) => {
           if (closing) {
             event.preventDefault();
+            return;
+          }
+          if (pageTextDraftLocalUnsaved) {
+            event.preventDefault();
+            await nativeMessage(
+              "The open page draft contains input that could not be stored. Reduce the unsupported input or copy it before explicitly discarding the draft, then close the window again.",
+              { title: "Page draft has unsaved input", kind: "error" },
+            );
             return;
           }
           if (busy || queuePromise || (queueActive && queueState.phase !== "paused")) {
@@ -1852,13 +2358,14 @@
           try {
             // Tauri waits for this handler before honoring the user's close.
             await autosave?.flush();
+            if (!await userProofreadingWriter.flush()) throw new Error(userProofreadingStatus.error ?? "All-project vocabulary could not be saved.");
           } catch (e) {
             event.preventDefault();
             closing = false;
             fail(e);
             await nativeMessage(
-              `The project could not be saved. The window remains open so corrections can be recovered.\n\n${message(e)}`,
-              { title: "Project save failed", kind: "error" },
+              `The project or vocabulary could not be saved. The window remains open so changes can be recovered.\n\n${message(e)}`,
+              { title: "Workspace save failed", kind: "error" },
             );
           }
         })
@@ -1876,7 +2383,7 @@
       queue.cancel();
       void queue
         .whenSettled()
-        .then(() => autosave?.close())
+        .then(() => Promise.allSettled([autosave?.close(), userProofreadingWriter.close()]))
         .catch(() => {});
     };
   });
@@ -1923,28 +2430,29 @@
     </div>
     <div
       class="save-state"
-      class:save-error={saveStatus.state === "error"}
-      title={saveStatus.error ??
-        "Project and corrections are saved on this device"}
+      data-save-state={visibleSaveStatus.state}
+      class:save-error={visibleSaveStatus.state === "error"}
+      title={visibleSaveStatus.error ??
+        "Project, corrections, and vocabulary are saved on this device"}
     >
-      {#if saveStatus.state === "saving"}<LoaderCircle
+      {#if visibleSaveStatus.state === "saving"}<LoaderCircle
           size={13}
           class="spin"
-        />{:else if saveStatus.state === "error"}<AlertTriangle
+        />{:else if visibleSaveStatus.state === "error"}<AlertTriangle
           size={13}
-        />{:else if saveStatus.state === "pending"}<Clock3
+        />{:else if visibleSaveStatus.state === "pending"}<Clock3
           size={13}
         />{:else}<ShieldCheck size={13} />{/if}
-      <span
-        >{saveStatus.state === "saved"
+      <span id={"ocr-save-status-" + project.id}
+        >{visibleSaveStatus.state === "saved"
           ? "All changes saved"
-          : saveStatus.state === "pending"
+          : visibleSaveStatus.state === "pending"
             ? "Unsaved changes"
-            : saveStatus.state === "saving"
+            : visibleSaveStatus.state === "saving"
               ? "Saving…"
               : "Save failed"}</span
       >
-      {#if saveStatus.state === "error"}<button onclick={flush}>Retry</button
+      {#if visibleSaveStatus.state === "error"}<button onclick={flush}>Retry</button
         >{/if}
     </div>
     <div class="header-actions">
@@ -1957,7 +2465,8 @@
         ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
       ><button class="button subtle" onclick={newProject} disabled={locked}
         ><Plus size={15} /> New</button
-      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save"
+      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save" title="Save project"
+        aria-describedby={"ocr-save-status-" + project.id}
         ><Save size={15} /><span class="optional-label">Save</span></button
       >
     </div>
@@ -1977,7 +2486,7 @@
       onclick={() => recognize("current")}
       disabled={locked ||
         !activePage ||
-        !capabilities.ocr ||
+        !recognitionAvailable ||
         activePage.excluded}
       title="Recognize the current page using the selected profile"
       ><ScanLine size={16} /> Recognize page</button
@@ -1985,7 +2494,7 @@
     <button
       class="button"
       onclick={() => recognize(checkedPages.length ? "selected" : "pending")}
-      disabled={locked || !project.pages.length || !capabilities.ocr}
+      disabled={locked || !project.pages.length || !recognitionAvailable}
       ><Play size={14} />
       {checkedPages.length
         ? `Process ${checkedPages.length} selected`
@@ -2023,6 +2532,11 @@
       ><Download size={15} /> Export <ChevronRight size={14} /></button
     >
   </div>
+
+  {#if project.pageTextDraft}<div class="page-text-draft-banner" data-page-text-draft-banner>
+      <FileText size={17} /><div><strong>Unapplied page text draft</strong><span>{project.pageTextDraft.page.name} · {saveStatus.state === "saved" ? "Draft saved" : saveStatus.state === "saving" ? "Saving draft…" : saveStatus.state === "pending" ? "Draft waiting to save" : "Draft save failed"}</span></div>
+      <button class="button small" type="button" onclick={resumePageTextDraft} disabled={locked}>Resume page text draft</button>
+    </div>{/if}
 
   {#if recentOpen}
     <div class="project-menu" role="region" aria-label="Saved projects">
@@ -2421,7 +2935,7 @@
                 value="picture">Draw picture region</option
               ><option value="formula">Draw formula region</option><option
                 value="recognize"
-                disabled={!capabilities.ocr}>Recognize a zone</option
+                disabled={!recognitionAvailable}>Recognize a zone</option
               ><option value="crop">Crop page</option></select
             >
           </div>
@@ -2430,7 +2944,7 @@
               class="button small subtle"
               class:active={drawMode === "recognize"}
               onclick={drawRecognitionArea}
-              disabled={locked || !activePage || !capabilities.ocr}
+              disabled={locked || !activePage || !recognitionAvailable}
               title="Draw an area to recognize again, then compare before replacing text"
               ><ScanLine size={15} /> Re-OCR area</button
             >
@@ -2514,6 +3028,7 @@
             page={activePage}
             imageUrl={client.imageUrl}
             selectedId={selectedRegionId}
+            sourceWord={wordSource}
             threshold={project.confidenceThreshold}
             mode={drawMode}
             photoQuad={perspective ? photoQuad : null}
@@ -2630,6 +3145,21 @@
               >
             </div>
             <button
+              class="button small subtle"
+              onclick={openPageTextDraft}
+              disabled={locked || !activePage || activePage.excluded || !activePage.regions.some((item) => !item.excluded && ["text", "title", "header", "footer"].includes(item.kind)) || (!!project.pageTextDraft && project.pageTextDraft.page.id !== activePage.id)}
+              title={project.pageTextDraft && project.pageTextDraft.page.id !== activePage?.id ? "Resume or discard the existing draft before starting another page" : "Edit across the page's passages in a saved draft, then review before applying"}
+              ><FileText size={14} /> Edit page text</button
+            >
+            <button
+              class="icon-button"
+              class:active={proofreadingOpen}
+              onclick={toggleProofreading}
+              aria-label="Vocabulary and rules"
+              title="Vocabulary and correction rules"
+              ><BookOpen size={16} /></button
+            >
+            <button
               class="icon-button"
               class:active={searchOpen}
               onclick={() => (searchOpen = !searchOpen)}
@@ -2637,6 +3167,31 @@
               title="Find and replace (Ctrl/Cmd F)"><Search size={16} /></button
             >
           </div>
+          {#if proofreadingOpen}
+            <ProofreadingPanel
+              projectId={project.id}
+              projectData={projectProofreading}
+              userData={userProofreading}
+              language={projectProofreading.language}
+              userLoadState={userProofreadingLoad}
+              userLoadError={userProofreadingError}
+              userSaveStatus={userProofreadingStatus}
+              userWritable={userProofreadingWritable}
+              disabled={locked}
+              hasPage={!!activePage}
+              hasRegion={!!region && !region.excluded && !["picture", "formula", "table"].includes(region.kind)}
+              selectedPageCount={checkedPages.length}
+              draftRule={correctionDraft}
+              onproject={setProjectProofreading}
+              onuser={setUserProofreading}
+              onlanguage={setProofreadingLanguage}
+              onreload={loadUserProofreading}
+              onretry={async () => { await userProofreadingWriter.retry(); }}
+              onexport={exportProofreading}
+              onpreview={previewRule}
+              onclose={() => { proofreadingOpen = false; correctionDraft = null; }}
+            />
+          {:else}
           {#if searchOpen}<div class="find-panel">
               <div class="find-row">
                 <input
@@ -2690,8 +3245,8 @@
               >
             </div>{/if}
           <div class="review-options">
-            <label class="check-label" title="Filters the Regions view; Text editor shows all included passages"
-              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView === "text"} /> Needs attention</label
+            <label class="check-label" title="Filters the Regions view; Text editor and Structure follow the page's reading order"
+              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView !== "regions"} /> Needs attention</label
             >
             <div class="toolbar-spacer"></div>
             <button
@@ -2711,6 +3266,14 @@
                 currentMatch = null;
                 textView = "text";
               }}>Text editor</button
+            ><button
+              class:active={textView === "structure"}
+              onclick={() => {
+                currentMatch = null;
+                wordInspection = null;
+                editGroup = null;
+                textView = "structure";
+              }}>Structure</button
             ><span>{activePage?.width} × {activePage?.height} px</span>
           </div>
           {#if recognitionWarnings.length}
@@ -2727,17 +3290,15 @@
           {#if region && !showOriginal}<div class="source-loupe">
               <div class="loupe-label">
                 <ScanText size={12} /> SOURCE DETAIL
-                <span
-                  >Region {(activePage?.regions.findIndex(
+                <span title={wordSource?.text}
+                  >{#if wordSource}Word: {wordSource.text}{:else}Region {(activePage?.regions.findIndex(
                     (r) => r.id === region.id,
-                  ) ?? 0) + 1}</span
+                  ) ?? 0) + 1}{/if}</span
                 >
               </div>
               <svg
-                viewBox="{Math.max(0, region.x - 10)} {Math.max(
-                  0,
-                  region.y - 6,
-                )} {region.w + 20} {region.h + 12}"
+                viewBox={loupeViewBox}
+                data-word-source-loupe={wordSource ? "true" : undefined}
                 role="img"
                 aria-label="Magnified selected source text"
                 ><image
@@ -2748,6 +3309,12 @@
               >
             </div>{/if}
           <div class="region-list" bind:this={editorPane}>
+            {#if activePage?.provenance.structureHistory}<PreviousStructure value={activePage.provenance.structureHistory} imageUrl={client.imageUrl} />{/if}
+            {#if earlierSourceComponents.length}<details class="recognition-notes" data-earlier-source-components>
+                <summary>Earlier source components</summary>
+                <p class="muted">These records describe earlier page images and remain inspectable before recognizing the current image.</p>
+                <PassageSources components={earlierSourceComponents} imageUrl={client.imageUrl} />
+              </details>{/if}
             {#if activePage?.status === "failed"}<div
                 class="panel-message warning"
               >
@@ -2757,7 +3324,7 @@
                 <button
                   class="button"
                   onclick={() => recognize("current")}
-                  disabled={locked || !capabilities.ocr}
+                  disabled={locked || !recognitionAvailable}
                   ><RefreshCw size={14} /> Retry this page</button
                 >
               </div>
@@ -2773,23 +3340,51 @@
                 <button
                   class="button primary"
                   onclick={() => recognize("current")}
-                  disabled={locked || !capabilities.ocr}
+                  disabled={locked || !recognitionAvailable}
                   ><ScanLine size={15} /> Recognize page</button
                 >
               </div>
+            {:else if textView === "structure"}
+              <StructurePanel
+                {project}
+                pageId={activePage.id}
+                selectedId={selectedRegionId}
+                disabled={locked}
+                imageUrl={client.imageUrl}
+                onselect={(id) => {
+                  currentMatch = null;
+                  wordInspection = null;
+                  editGroup = null;
+                  selectedRegionId = id;
+                }}
+                onchange={(next, message) => {
+                  change(next);
+                  currentMatch = null;
+                  wordInspection = null;
+                  error = "";
+                  notice = message;
+                }}
+                onedit={editText}
+                onblur={() => (editGroup = null)}
+              />
             {:else if textView === "text"}<div class="reading-order">
                 <PageTextEditor
                   page={activePage}
                   selectedId={selectedRegionId}
                   disabled={locked}
-                  ocrAvailable={capabilities.ocr}
+                  ocrAvailable={recognitionAvailable}
                   onfocus={(id) => {
                     currentMatch = null;
+                    wordInspection = null;
                     selectedRegionId = id;
                   }}
                   onedit={editText}
                   onblur={() => (editGroup = null)}
                   onrecognize={(r) => recognizeZone(r, activePage.id)}
+                  onsplit={(r, caret) => openPassageAction("split", r, caret)}
+                  onmerge={(r) => openPassageAction("merge", r)}
+                  onrepair={(r) => openPassageAction("repair", r)}
+                  imageUrl={client.imageUrl}
                 />
                 <button
                   class="button small"
@@ -2849,6 +3444,11 @@
                       >{:else if r.review === "corrected"}<span
                         class="edited-badge">Edited</span
                       >{/if}
+                    {#if r.sharedSourceGroups?.length}<span
+                        class="shared-source-badge"
+                        data-shared-source-groups={r.sharedSourceGroups.join(" ")}
+                        title="Passages in this source family may share image coverage. Spatial exports require their source areas to stop overlapping, or the passages to be merged again."
+                      >Shared source area</span>{/if}
                   </div>
                   {#if hasAlignedCharacterConfidence(r)}<div
                       class="character-evidence"
@@ -2862,10 +3462,12 @@
                         >{/each}
                     </div>{/if}
                   <textarea
+                    data-region-text
                     aria-label={`Text for region ${regionIndex + 1}`}
                     value={r.text}
                     oninput={(e) => editText(r, e.currentTarget.value)}
                     onfocus={() => {
+                      wordInspection = null;
                       selectedRegionId = r.id;
                     }}
                     onblur={() => (editGroup = null)}
@@ -2893,9 +3495,30 @@
                       <button
                         class="text-button"
                         onclick={() => recognizeZone(r, activePage.id)}
-                        disabled={locked || r.excluded || !capabilities.ocr}
+                        disabled={locked || r.excluded || !recognitionAvailable}
                         title="Recognize this source region again and compare before replacing text"
                         ><ScanLine size={13} /> Re-OCR region</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => openPassageAction("split", r, readRegionCaret(r.id))}
+                        disabled={locked || !selectedPassageEligibility?.splitAllowed}
+                        title="Place the caret where the passage should split, then choose the source coverage"
+                        ><Scissors size={13} /> Split passage</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => openPassageAction("merge", r)}
+                        disabled={locked || !selectedPassageEligibility?.nextMergeId}
+                        title={selectedPassageEligibility?.nextMergeId ? "Preview a merge with the immediately following passage" : "Merge needs the immediately following included passage of the same kind"}
+                        ><Layers size={13} /> Merge next passage</button
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => openPassageAction("repair", r)}
+                        disabled={locked || activePage.excluded || r.excluded || !r.text.trim() || !["text", "title", "header", "footer"].includes(r.kind)}
+                        title="Review proposed whitespace, line-break, or hyphenation changes"
+                        ><WandSparkles size={13} /> Repair passage text</button
                       >
                     </div>
                     <WordReview
@@ -2903,7 +3526,26 @@
                       threshold={project.confidenceThreshold}
                       disabled={locked || r.excluded}
                       onselect={(word) => selectWord(r, word)}
+                      oninspect={(word, source) => inspectWord(r, word, source)}
                     />
+                    {#if proofreadingSelection && proofreadingSelection.regionId === r.id}
+                      <WordSuggestions
+                        selection={proofreadingSelection}
+                        language={projectProofreading.language}
+                        suggestions={proofreadingSuggestions.items}
+                        errorMessage={proofreadingSuggestions.error}
+                        ignored={proofreadingIgnored}
+                        disabled={locked}
+                        ready={proofreadingReady}
+                        userEditable={userProofreadingWritable}
+                        onlanguage={setProofreadingLanguage}
+                        onadd={addSelectedVocabulary}
+                        onignore={ignoreSelectedSuggestion}
+                        onpreview={previewSuggestion}
+                        onremember={rememberCorrection}
+                      />
+                    {/if}
+                    {#if r.sourceComponents?.length}<PassageSources components={r.sourceComponents} imageUrl={client.imageUrl} />{/if}
                   {/if}
                   {#if r.id === selectedRegionId}<div class="region-actions">
                       <button
@@ -3023,14 +3665,14 @@
                 >
               </div>
               {#if region.text !== region.originalText}<details>
-                  <summary>Original recognition</summary>
+                  <summary>{region.confidenceBasis === "manual" ? "Before later edits" : "Original recognition"}</summary>
                   <p class="original-text">
                     {region.originalText || "(Manually created region)"}
                   </p>
                   <button
                     class="text-button"
                     onclick={() => patchRegion({ text: region.originalText })}
-                    disabled={locked}>Restore original text</button
+                    disabled={locked}>{region.confidenceBasis === "manual" ? "Restore creation text" : "Restore original text"}</button
                   >
                 </details>{/if}
             </div>{/if}
@@ -3053,6 +3695,7 @@
               >Accept & next <ChevronRight size={14} /></button
             >
           </div>
+          {/if}
         {:else if inspector === "recognition"}
           <div class="panel-scroll settings-panel">
             <div class="panel-intro">
@@ -3066,6 +3709,9 @@
             {#if !capabilities.ocr}<div class="inline-warning">
                 <AlertTriangle size={16} />{capabilities.reason ??
                   "Recognition is unavailable in this build."}
+              </div>{:else if !recognitionAvailable}<div class="inline-warning">
+                <AlertTriangle size={16} />The selected engine is unavailable.
+                Choose an installed engine below to recognize this page.
               </div>{/if}
             <label class="field-label"
               >Processing profile<select
@@ -3082,10 +3728,13 @@
                   value={engine}
                   onchange={(e) => setSetting("engine", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto">Automatic pipeline</option
+                  ><option value="auto" disabled={!capabilities.crispembed}>Automatic pipeline</option
                   >{#each capabilities.engines.filter((e) => e !== "auto") as e}<option
                       value={e}>{engineNames[e] ?? e}</option
-                    >{/each}</select
+                    >{/each}
+                  {#if engine === "system_tesseract" && !capabilities.engines.includes(engine)}
+                    <option value="system_tesseract" disabled>System Tesseract · unavailable</option>
+                  {/if}</select
                 ></label
               ><label class="field-label"
                 >Document language<select
@@ -3093,29 +3742,39 @@
                   onchange={(e) =>
                     setSetting("language", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto">Model default</option><option
-                    value="eng">English</option
-                  ><option value="deu">German</option><option value="fra"
-                    >French</option
-                  ><option value="spa">Spanish</option><option value="ita"
-                    >Italian</option
-                  ><option value="por">Portuguese</option><option value="nld"
-                    >Dutch</option
-                  ><option value="pol">Polish</option><option value="rus"
-                    >Russian</option
-                  ><option value="ara">Arabic</option><option value="chi_sim"
-                    >Chinese, simplified</option
-                  ><option value="chi_tra">Chinese, traditional</option><option
-                    value="jpn">Japanese</option
-                  ><option value="kor">Korean</option></select
+                  >{#if engine === "system_tesseract"}
+                    <option value="auto">English (eng) default</option>
+                    {#if language !== "auto" && !systemLanguages.includes(language)}
+                      <option value={language}>{language} (configured)</option>
+                    {/if}
+                    {#each systemLanguages as code}<option value={code}>{languageNames[code] ?? code} ({code})</option>{/each}
+                  {:else}
+                    <option value="auto">Model default</option>
+                    {#each Object.entries(languageNames) as [code, name]}<option value={code}>{name}</option>{/each}
+                  {/if}</select
                 ></label
               >
             </div>
-            <p class="field-hint">
+            {#if engine === "system_tesseract"}<p class="field-hint" data-system-tesseract-info>
+              System Tesseract{capabilities.system_tesseract?.version ? ` ${capabilities.system_tesseract.version}` : ""}
+              uses the current working image and supplies word scores and source
+              locations. Apply scan preparation first if needed. Pipeline cleanup,
+              layout, and the Qwen2 VL CPU budget are not applied during this step.
+              Choose an installed language; the default is English, without
+              automatic language detection.
+            </p>
+              {#if language === "auto" && capabilities.system_tesseract?.available && !systemLanguages.includes("eng")}<p class="field-hint">
+                English is not installed. Select one of the installed languages above.
+              </p>{/if}
+            {:else}<p class="field-hint">
               Language selects the language model for Tesseract LSTM. Other
               engines support the languages learned by their selected model;
               supported vision engines also receive a language hint.
-            </p>
+            </p>{/if}
+            {#if capabilities.system_tesseract && !capabilities.system_tesseract.available}<p class="field-hint">
+              System Tesseract word evidence is unavailable:
+              {capabilities.system_tesseract.reason ?? "Install Tesseract and a recognition language pack to use this engine."}
+            </p>{/if}
             {@render mobileModelSetup()}
             {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
                 class="setting-toggle"
@@ -3146,7 +3805,7 @@
                     checked={!!config[option.key]}
                     onchange={(e) =>
                       setConfig(option.key, e.currentTarget.checked)}
-                    disabled={locked || !capabilities.ocr}
+                    disabled={locked || !capabilities.crispembed}
                   /></label
                 >{/each}
               <div class="field-grid two">
@@ -3155,7 +3814,7 @@
                     value={String(config.restore_engine ?? "restormer")}
                     onchange={(e) =>
                       setConfig("restore_engine", e.currentTarget.value)}
-                    disabled={locked || !config.restore}
+                    disabled={locked || !capabilities.crispembed || !config.restore}
                     ><option value="restormer">Restormer</option><option
                       value="scunet">SCUNet</option
                     ><option value="instructir">InstructIR</option></select
@@ -3165,7 +3824,7 @@
                     value={String(config.sr_engine ?? "pan")}
                     onchange={(e) =>
                       setConfig("sr_engine", e.currentTarget.value)}
-                    disabled={locked || !config.sr}
+                    disabled={locked || !capabilities.crispembed || !config.sr}
                     ><option value="pan">PAN · fast</option><option
                       value="esrgan">Real-ESRGAN · detail</option
                     ><option value="safmn">SAFMN · compact</option></select
@@ -3179,7 +3838,7 @@
                     value={String(config.restore_task ?? "denoise")}
                     onchange={(e) =>
                       setConfig("restore_task", e.currentTarget.value)}
-                    disabled={locked || !config.restore}
+                    disabled={locked || !capabilities.crispembed || !config.restore}
                   >
                     <option value="denoise">Remove noise</option>
                     <option value="deblur">Reduce blur</option>
@@ -3194,11 +3853,11 @@
               <button
                 class="button full"
                 onclick={() => prepareImage()}
-                disabled={locked || !activePage || !capabilities.ocr}
+                disabled={locked || !activePage || !capabilities.crispembed}
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
               <p class="field-hint">
-                Recognition also applies enabled preparation. The prepared image
+                {#if engine === "system_tesseract"}Prepare the page before running System Tesseract.{:else}Recognition also applies enabled preparation.{/if} The prepared image
                 becomes the review and export image. Undo restores the previous
                 result.
               </p>
@@ -3262,9 +3921,10 @@
                 /></label
               >
               <p class="field-hint">
-                Engine scores guide review; they are not a guarantee of
-                accuracy. Regions without recognition scores always need a
-                visual check.
+                Engine scores guide review; they are not a guarantee of accuracy.
+                Review uses word evidence when available and region scores as a
+                fallback. Missing usable recognition evidence and corrected text
+                need a visual check.
               </p>
             </div>
             <details class="advanced-settings">
@@ -3314,12 +3974,12 @@
                 <button
                   class="button"
                   onclick={() => recognize("all")}
-                  disabled={locked || !capabilities.ocr}
+                  disabled={locked || !recognitionAvailable}
                   ><Play size={14} /> Recognize all</button
                 ><button
                   class="button"
                   onclick={() => recognize("failed")}
-                  disabled={locked || !metrics.failed || !capabilities.ocr}
+                  disabled={locked || !metrics.failed || !recognitionAvailable}
                   ><RefreshCw size={14} /> Retry failed</button
                 >
               </div>
@@ -3344,209 +4004,32 @@
             <div class="panel-intro">
               <span class="eyebrow">STRUCTURED CONTENT</span>
               <h2>Put the page to work</h2>
-              <p>
-                {region
-                  ? `Working with selected ${region.kind} region.`
-                  : "Working with the current page. Select a region to isolate a table, formula, or form."}
-              </p>
+              <p>{region ? "Working with selected " + region.kind + " region." : "Working with the current page. Select a region to isolate a table, formula, or form."}</p>
             </div>
             <div class="segmented">
-              <button
-                class:active={extractionKind === "fields"}
-                onclick={() => (extractionKind = "fields")}
-                ><Braces size={14} /> Fields</button
-              ><button
-                class:active={extractionKind === "table"}
-                onclick={() => (extractionKind = "table")}
-                ><Table2 size={14} /> Table</button
-              ><button
-                class:active={extractionKind === "formula"}
-                onclick={() => (extractionKind = "formula")}
-                ><Sigma size={14} /> Formula</button
-              >
+              <button class:active={extractionKind === "fields"} onclick={() => { extractionKind = "fields"; editGroup = null; }}><Braces size={14} /> Fields</button>
+              <button class:active={extractionKind === "table"} onclick={() => { extractionKind = "table"; editGroup = null; }}><Table2 size={14} /> Table</button>
+              <button class:active={extractionKind === "formula"} onclick={() => { extractionKind = "formula"; editGroup = null; }}><Sigma size={14} /> Formula</button>
             </div>
-            {#if extractionKind === "fields"}<label class="field-label"
-                >Fields to extract<textarea
-                  bind:value={labels}
-                  rows="2"
-                  placeholder="vendor, date, total, invoice number"
-                  disabled={locked}
-                ></textarea><small
-                  >Separate field names with commas. Extracted values remain
-                  editable.</small
-                ></label
-              ><label class="setting-toggle"
-                ><span
-                  ><strong>Use page layout</strong><small
-                    >LiLT uses word positions; otherwise GLiNER reads your
-                    corrected text.</small
-                  ></span
-                ><input
-                  type="checkbox"
-                  bind:checked={useLayoutFields}
-                  disabled={locked || !capabilities.kie}
-                /></label
-              ><label class="field-label"
-                >Minimum field score<input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  bind:value={fieldThreshold}
-                  disabled={locked}
-                /></label
-              ><button
-                class="button primary full"
-                onclick={() => extract("fields")}
-                disabled={locked || !capabilities.kie || !labels.trim()}
-                ><Braces size={15} /> Extract fields</button
-              >{#if !capabilities.kie}<p class="field-hint">
-                  Field extraction is unavailable in this build.
-                </p>{/if}
-              {#if fields.length}<div class="extraction-result">
-                  <div class="section-heading">
-                    <strong>{fields.length} extracted fields</strong><button
-                      class="text-button"
-                      onclick={() => copy(JSON.stringify(fields, null, 2))}
-                      ><Copy size={13} /> JSON</button
-                    >
-                  </div>
-                  {#each fields as field, index}<div class="extracted-field">
-                      <label
-                        >{field.label}<input
-                          value={field.value}
-                          disabled={locked}
-                          onchange={(e) => {
-                            fields = fields.map((f, i) =>
-                              i === index
-                                ? {
-                                    ...f,
-                                    value: e.currentTarget.value,
-                                    original_value: f.original_value ?? f.value,
-                                    review:
-                                      e.currentTarget.value ===
-                                      (f.original_value ?? f.value)
-                                        ? "unreviewed"
-                                        : "corrected",
-                                  }
-                                : f,
-                            );
-                            persistExtraction();
-                          }}
-                        /></label
-                      ><span
-                        title="Original model extraction score; manual corrections do not produce a new model score"
-                        >{field.review === "corrected"
-                          ? "Edited · "
-                          : ""}{Math.round(field.score * 100)}%</span
-                      >
-                    </div>{/each}
-                  <p class="field-hint">
-                    Check values against the source before using them.
-                  </p>
-                </div>{/if}
-            {:else if extractionKind === "table"}<div class="tool-explanation">
-                <Table2 size={32} />
-                <h3>Recover a table as editable cells</h3>
-                <p>
-                  Draw or select a table region for focused extraction. Review
-                  the resulting cells and export CSV.
-                </p>
-              </div>
-              <button
-                class="button primary full"
-                onclick={() => extract("table")}
-                disabled={locked || !capabilities.table}
-                ><Table2 size={15} /> Extract table</button
-              >{#if !capabilities.table}<p class="field-hint">
-                  Table recognition is unavailable in this build.
-                </p>{/if}{#if tableRows.length}<div class="extraction-result">
-                  <div class="section-heading">
-                    <strong>{tableRows.length} rows</strong><button
-                      class="text-button"
-                      onclick={() => copy(tableToCsv(tableRows))}
-                      ><Copy size={13} /> CSV</button
-                    >
-                  </div>
-                  <div class="editable-table">
-                    <table>
-                      <tbody
-                        >{#each tableRows as row, rowIndex}<tr
-                            >{#each row as cell, columnIndex}<td
-                                ><input
-                                  value={cell}
-                                  disabled={locked}
-                                  aria-label={`Row ${rowIndex + 1}, column ${columnIndex + 1}`}
-                                  onchange={(e) => {
-                                    tableRows = tableRows.map((r, i) =>
-                                      i === rowIndex
-                                        ? r.map((c, j) =>
-                                            j === columnIndex
-                                              ? e.currentTarget.value
-                                              : c,
-                                          )
-                                        : r,
-                                    );
-                                    persistExtraction();
-                                  }}
-                                /></td
-                              >{/each}</tr
-                          >{/each}</tbody
-                      >
-                    </table>
-                  </div>
-                  <p class="field-hint">
-                    CSV contains editable cell text and treats formula-like
-                    entries as text. Check merged cells and headers against the
-                    page.
-                  </p>
-                </div>{/if}
-            {:else}<div class="tool-explanation">
-                <Sigma size={32} />
-                <h3>Turn formulas into LaTeX</h3>
-                <p>
-                  Select a formula region, recognize it, and refine the notation
-                  before saving.
-                </p>
-              </div>
-              <button
-                class="button primary full"
-                onclick={() => extract("formula")}
-                disabled={locked || !capabilities.math}
-                ><Sigma size={15} /> Recognize formula</button
-              >{#if !capabilities.math}<p class="field-hint">
-                  Formula recognition is unavailable in this build.
-                </p>{/if}{#if formula}<label class="field-label"
-                  >LaTeX<textarea
-                    class="latex-editor"
-                    value={formula}
-                    disabled={locked}
-                    oninput={(e) => {
-                      formula = e.currentTarget.value;
-                      persistExtraction();
-                    }}
-                    rows="8"
-                    spellcheck="false"
-                  ></textarea></label
-                ><button class="button small" onclick={() => copy(formula)}
-                  ><Copy size={13} /> Copy LaTeX</button
-                >{/if}{/if}
-            {#if (extractionKind === "fields" && fields.length) || (extractionKind === "table" && tableRows.length) || (extractionKind === "formula" && formula)}<button
-                class="button full save-extraction"
-                onclick={saveExtraction}
-                disabled={locked}
-                ><Download size={15} /> Save {extractionKind === "fields"
-                  ? "fields as JSON"
-                  : extractionKind === "table"
-                    ? "table as CSV"
-                    : "formula as LaTeX"}</button
-              >{/if}
-            {#if extractionPageId && extractionPageId !== activePage?.id}<p
-                class="inline-warning"
-              >
-                These results came from another page. Run extraction again for
-                the current page.
-              </p>{/if}
+            {#if extractionKind === "fields"}
+              <label class="field-label">Fields to extract<textarea bind:value={labels} rows="2" placeholder="vendor, date, total, invoice number" disabled={locked}></textarea><small>Separate field names with commas. Extracted values remain editable.</small></label>
+              <label class="setting-toggle"><span><strong>Use page layout</strong><small>LiLT uses word positions; otherwise GLiNER reads your corrected text.</small></span><input type="checkbox" bind:checked={useLayoutFields} disabled={locked || !capabilities.kie} /></label>
+              <label class="field-label">Minimum field score<input type="number" min="0" max="1" step="0.05" bind:value={fieldThreshold} disabled={locked} /></label>
+              <button class="button primary full" onclick={() => extract("fields")} disabled={locked || !activePage || !capabilities.kie || !labels.trim()}><Braces size={15} /> Extract fields</button>
+              {#if !capabilities.kie}<p class="field-hint">Field extraction is unavailable in this build.</p>{/if}
+            {:else if extractionKind === "table"}
+              <div class="tool-explanation"><Table2 size={32} /><h3>Recover a table as editable cells</h3><p>Draw or select a table region for focused extraction. Each result keeps its own cells, header markers, and merged spans.</p></div>
+              <button class="button primary full" onclick={() => extract("table")} disabled={locked || !activePage || !capabilities.table}><Table2 size={15} /> Extract table</button>
+              {#if !capabilities.table}<p class="field-hint">Table recognition is unavailable in this build.</p>{/if}
+            {:else}
+              <div class="tool-explanation"><Sigma size={32} /><h3>Turn formulas into LaTeX</h3><p>Select a formula region, recognize it, and compare the editable notation with its captured source.</p></div>
+              <button class="button primary full" onclick={() => extract("formula")} disabled={locked || !activePage || !capabilities.math}><Sigma size={15} /> Recognize formula</button>
+              {#if !capabilities.math}<p class="field-hint">Formula recognition is unavailable in this build.</p>{/if}
+            {/if}
+            {#if activePage}<ExtractionObjectsPanel {project} page={activePage} kind={extractionKind}
+              selectedId={extractionSelection[activePage.id + ":" + extractionKind]} disabled={locked} imageUrl={client.imageUrl}
+              onselect={selectExtraction} onchange={changeExtraction} onendedit={() => (editGroup = null)}
+              oncopy={copyExtraction} onsave={saveExtraction} onrepair={openTableRepair} onjoin={openTableJoin} />{/if}
           </div>
         {:else}
           <div class="panel-scroll export-panel">
@@ -3575,7 +4058,11 @@
                     : exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
                     : exportFormat === "docx"
-                      ? "Editable paragraphs in page order, with text direction and blank lines preserved. Line endings become paragraph breaks; Plain text keeps the original line-ending characters. Complex page layout becomes flowing text."
+                      ? capabilities.structured_docx
+                        ? "Editable Word structure: reviewed headings, styles, lists, reading columns and figures, with explicitly selected tables and formulas."
+                        : "Editable paragraphs in page order, with text direction and blank lines preserved. Line endings become paragraph breaks; Plain text keeps the original line-ending characters. Complex page layout becomes flowing text."
+                      : exportFormat === "xlsx"
+                        ? "One worksheet for each explicitly selected saved table, with literal cell text, merged spans and your chosen tab order."
                       : exportFormat === "alto" || exportFormat === "hocr"
                         ? "Machine-readable text and page coordinates for downstream processing."
                         : exportFormat === "json"
@@ -3632,7 +4119,7 @@
             <label class="setting-toggle"
               ><span
                 ><strong>Require page approval</strong><small
-                  >Block export until every included page is approved.</small
+                  >{exportFormat === "xlsx" ? "Block export until the source pages of all selected tables are approved." : "Block export until every included page is approved."}</small
                 ></span
               ><input
                 type="checkbox"
@@ -3640,12 +4127,20 @@
                 disabled={locked}
               /></label
             >
+            {#if exportFormat === "docx" && capabilities.structured_docx}
+              <OfficeExportPanel {project} pageIds={exportIds} value={officeOptions} disabled={locked}
+                onchange={(next) => (officeOptions = next)} />
+            {/if}
+            {#if exportFormat === "xlsx" && capabilities.structured_xlsx}
+              <WorkbookExportPanel {project} pageIds={exportIds} value={workbookOptions} disabled={locked}
+                onchange={(next) => (workbookOptions = next)} />
+            {/if}
             <div class="preflight-card" class:ready={!exportErrors.length}>
               <div class="section-heading">
                 {#if exportErrors.length}<AlertTriangle size={17} /><strong
                     >{exportErrors.length} checks need attention</strong
                   >{:else}<CircleCheck size={17} /><strong
-                    >Ready to export {preflight.pages.length} pages</strong
+                    >{exportFormat === "xlsx" ? `Ready to export ${preflight.workbookOptions?.sheets.length ?? 0} ${preflight.workbookOptions?.sheets.length === 1 ? "worksheet" : "worksheets"} from ${preflight.pages.length} ${preflight.pages.length === 1 ? "source page" : "source pages"}` : `Ready to export ${preflight.pages.length} pages`}</strong
                   >{/if}
               </div>
               {#if exportErrors.length}<ul>
@@ -3655,7 +4150,13 @@
                 </ul>
                 {#if exportErrors.length > 8}<p>
                     And {exportErrors.length - 8} more checks need attention.
-                  </p>{/if}{:else}<div class="preflight-check">
+                  </p>{/if}{:else if exportFormat === "xlsx"}<div class="preflight-check">
+                  <Check size={14} /> Every selected table is accounted for
+                </div>
+                <div class="preflight-check"><Check size={14} /> Literal cell values and spans included</div>
+                <div class="preflight-check"><Check size={14} /> Worksheet names and limits checked</div>
+                {#if requireReviewed}<div class="preflight-check"><Check size={14} /> Selected table source pages approved</div>{/if}
+                {:else}<div class="preflight-check">
                   <Check size={14} /> Every selected page is accounted for
                 </div>
                 <div class="preflight-check">
@@ -3698,6 +4199,13 @@
               Choose the output filename and location. Original documents and
               workspace images are protected from replacement.
             </p>
+            {#if exportResultNotes?.warnings.length}
+              <section class="export-result-notes" data-office-export-warnings aria-label="Export notes" aria-live="polite">
+                <h3>{formatNames[exportResultNotes.format] ?? exportResultNotes.format} export completed with notes</h3>
+                <p>{exportResultNotes.path}</p>
+                <ul>{#each exportResultNotes.warnings as warning}<li>{warning}</li>{/each}</ul>
+              </section>
+            {/if}
             <div class="settings-section">
               <h3>Use the corrected text</h3>
               <div class="button-grid">
@@ -3743,9 +4251,52 @@
   </footer>
 </section>
 
+{#if tableJoin}
+  <TableJoinDialog {project} projectId={tableJoin.projectId} initialPageId={tableJoin.pageId} initialObject={tableJoin.object}
+    disabled={locked} imageUrl={client.imageUrl} onapply={applyTableJoin} onclose={() => (tableJoin = null)} />
+{/if}
+
+{#if tableRepair}
+  <TableRepairDialog {project} projectId={tableRepair.projectId} pageId={tableRepair.pageId}
+    initialObject={tableRepair.object} initialCellId={tableRepair.cellId}
+    disabled={locked} imageUrl={client.imageUrl} onapply={applyTableRepair} onclose={() => (tableRepair = null)} />
+{/if}
+
+{#if pageTextDraftOpen && project.pageTextDraft}
+  {#key project.pageTextDraft.id}
+    <PageTextDraftDialog
+      draft={project.pageTextDraft}
+      {saveStatus}
+      disabled={locked}
+      imageUrl={client.imageUrl}
+      onupdate={updateOpenPageTextDraft}
+      onreview={() => preparePageTextEdit(project)}
+      onapply={applyOpenPageTextDraft}
+      ondiscard={discardOpenPageTextDraft}
+      onclose={() => { pageTextDraftOpen = false; pageTextDraftLocalUnsaved = false; }}
+      onsave={async () => { await autosave?.flush(); }}
+      onlocalunsaved={(unsaved) => (pageTextDraftLocalUnsaved = unsaved)}
+    />
+  {/key}
+{/if}
+
+{#if passageAction}
+  <PassageToolsDialog
+    project={passageAction.project}
+    pageId={passageAction.pageId}
+    regionId={passageAction.regionId}
+    mode={passageAction.mode}
+    offset={passageAction.offset}
+    imageUrl={client.imageUrl}
+    onapply={applyStructuralPassage}
+    onrepair={applyTextRepair}
+    onclose={() => (passageAction = null)}
+  />
+{/if}
+
 {#if confirm}<dialog
     class="workspace-dialog"
-    class:ocr-preview-dialog={!!confirm.ocrPreview}
+    class:ocr-preview-dialog={!!confirm.ocrPreview || !!confirm.correctionPreview}
     bind:this={actionDialog}
     onclose={() => {
       if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
@@ -3755,6 +4306,13 @@
   >
     <h2 id="ocr-confirm-title">{confirm.title}</h2>
     <p>{confirm.message}</p>
+    {#if confirm.correctionPreview}
+      <CorrectionPreviewPanel
+        preview={confirm.correctionPreview}
+        selectedIds={correctionSelectedIds}
+        onselect={(ids) => (correctionSelectedIds = ids)}
+      />
+    {/if}
     {#if confirm.ocrPreview}
       <div class="ocr-preview-comparison">
         <label>
@@ -3805,18 +4363,21 @@
         if (confirm?.ocrPreview) notice = "Current text kept. The partial OCR result was not applied.";
         confirm = null;
       }}>{confirm.ocrPreview ? "Keep current text" : "Cancel"}</button
-      ><button
+      >{#if !confirm.correctionPreview || confirm.correctionPreview.matches.length}<button
         class="button primary"
-        disabled={!!confirm.splitWidth &&
-          (!Number.isFinite(splitPosition) ||
-            splitPosition < 1 ||
-            splitPosition >= confirm.splitWidth)}
+        disabled={(!!confirm.correctionPreview && !correctionSelectedIds.length) ||
+          (!!confirm.splitWidth &&
+            (!Number.isFinite(splitPosition) ||
+              splitPosition < 1 ||
+              splitPosition >= confirm.splitWidth))}
         onclick={() => {
           const action = confirm?.action;
           confirm = null;
           void action?.();
-        }}>{confirm.label}</button
-      >
+        }}>{confirm.correctionPreview
+          ? `Apply ${correctionSelectedIds.length} correction${correctionSelectedIds.length === 1 ? "" : "s"}`
+          : confirm.label}</button
+      >{/if}
     </div>
   </dialog>{/if}
 {#if helpOpen}<dialog
@@ -4171,6 +4732,10 @@
     flex: none;
     font-size: 11px;
   }
+  .page-text-draft-banner { display: flex; flex-wrap: wrap; flex: none; align-items: center; gap: 10px; min-width: 0; padding: 10px 18px; border-bottom: 1px solid #49627f; background: #1b304a; color: #cce1fa; }
+  .page-text-draft-banner > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 150px; }
+  .page-text-draft-banner strong { font-size: 12px; }
+  .page-text-draft-banner span { color: #adc7e7; font-size: 11px; overflow-wrap: anywhere; }
   .feedback > span {
     flex: 1;
     white-space: pre-wrap;
@@ -4552,9 +5117,12 @@
   .review-heading {
     padding: 15px 16px 12px;
     display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
     align-items: center;
     justify-content: space-between;
   }
+  .review-heading > div { flex: 1; min-width: 120px; }
   .review-heading h2 {
     font-size: 14px;
     font-weight: 650;
@@ -4652,6 +5220,11 @@
   }
   .loupe-label > span {
     margin-left: auto;
+    min-width: 0;
+    max-width: 75%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     letter-spacing: 0;
     color: #a8bdd7;
   }
@@ -4736,6 +5309,7 @@
     color: #95bded;
     font-size: 9px;
   }
+  .shared-source-badge { color: #e3c48e; font-size: 9px; }
   .region-card textarea {
     border: 0 !important;
     border-top: 1px solid #2e3c5055 !important;
@@ -5033,8 +5607,7 @@
     margin-top: 6px;
   }
   .config-editor,
-  .provenance,
-  .latex-editor {
+  .provenance {
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
     font-size: 10px !important;
   }
@@ -5130,11 +5703,6 @@
     color: #8b9fbd;
     margin: 0 0 15px;
   }
-  .extraction-result {
-    margin-top: 22px;
-    padding-top: 14px;
-    border-top: 1px solid #2e4059;
-  }
   .section-heading {
     display: flex;
     align-items: center;
@@ -5145,52 +5713,6 @@
   .section-heading strong {
     font-size: 11px;
     color: #b6cbe8;
-  }
-  .extracted-field {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .extracted-field label {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    font-size: 10px;
-    color: #8a9fbb;
-  }
-  .extracted-field input {
-    width: 100%;
-    font-size: 11px !important;
-  }
-  .extracted-field > span {
-    font-size: 10px;
-    color: #c5a26a;
-    padding-top: 18px;
-  }
-  .editable-table {
-    overflow: auto;
-  }
-  .editable-table table {
-    border-collapse: collapse;
-    min-width: 100%;
-  }
-  .editable-table td {
-    border: 1px solid #3a4a60;
-    padding: 0;
-    min-width: 100px;
-  }
-  .editable-table input {
-    border: 0 !important;
-    background: #152236 !important;
-    min-width: 100px;
-    width: 100%;
-    border-radius: 0 !important;
-    font-size: 10px !important;
-  }
-  .save-extraction {
-    margin-top: 18px;
   }
   .format-card {
     display: flex;
@@ -5265,6 +5787,11 @@
     flex-basis: 130px;
     white-space: normal;
   }
+  .export-result-notes { margin: 16px 0; padding: 12px; border: 1px solid #80673f; border-radius: 6px; color: #dfc49a; background: #382e222e; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+  .export-result-notes h3 { margin: 0; color: #ecd2a6; font-size: 12px; }
+  .export-result-notes p { margin: 8px 0; }
+  .export-result-notes ul { padding-left: 18px; margin: 8px 0 0; }
+  .export-result-notes li + li { margin-top: 7px; }
   .muted {
     color: #8296b3;
     font-size: 10px;

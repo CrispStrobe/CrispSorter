@@ -689,8 +689,20 @@ pub async fn sync_list_conflicts(
 ) -> Result<Vec<super::PendingConflict>, String> {
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
-    SyncManager::open(&data_dir).map_err(|e| e.to_string())?
-        .pending_conflicts().map_err(|e| e.to_string())
+    let mut conflicts = SyncManager::open(&data_dir).map_err(|e| e.to_string())?
+        .pending_conflicts().map_err(|e| e.to_string())?;
+    for conflict in &mut conflicts {
+        if super::pull::RemoteDeletionConflict::decode(&conflict.remote_hash)
+            .map_err(|e| e.to_string())?.is_some() {
+            conflict.remote_operation = Some("delete".into());
+            conflict.remote_hash.clear();
+        } else if super::pull::RemoteMetadataConflict::decode(&conflict.remote_hash)
+            .map_err(|e| e.to_string())?.is_some() {
+            conflict.remote_operation = Some("metadata".into());
+            conflict.remote_hash.clear();
+        }
+    }
+    Ok(conflicts)
 }
 
 /// Acknowledge a manual-review item after the caller applies a resolution.
@@ -718,25 +730,84 @@ pub async fn sync_accept_remote_conflict(
     let conflict = mgr.pending_conflicts().map_err(|e| e.to_string())?
         .into_iter().find(|item| item.id == id)
         .ok_or_else(|| format!("conflict {id} not found"))?;
+    if let Some(review) = super::pull::RemoteDeletionConflict::decode(&conflict.remote_hash)
+        .map_err(|e| e.to_string())? {
+        let (local, fts, remote_url) = {
+            let index = state.index.lock().await;
+            (index.local.clone().ok_or("Local index not initialised")?,
+             index.fts.clone().ok_or("Local full-text index not initialised")?,
+             index.config.remote_url.clone().ok_or("Remote index is not configured")?)
+        };
+        if remote_url.trim_end_matches('/') != review.remote_url.trim_end_matches('/') {
+            return Err("This deletion belongs to a different remote index".into());
+        }
+        let (current, version) = {
+            let _guard = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
+            (local.fetch_document_summary(&review.deletion.doc_id).await.map_err(|e| e.to_string())?,
+             local.table_ref().version().await.map_err(|e| e.to_string())?)
+        };
+        if let Some(current) = current {
+            if current.owner_id != review.deletion.owner_id
+                || serde_json::to_string(&current).map_err(|e| e.to_string())? != review.expected_local_signature {
+                return Err("The local document changed after this deletion was queued; review the current document before applying it".into());
+            }
+            if !local.delete_document_if_version_with_fts(&current.doc_id, version, &fts).await
+                .map_err(|e| format!("applying reviewed deletion: {e:#}"))? {
+                return Err("The local index changed while applying the deletion; retry review".into());
+            }
+        }
+        mgr.remove_conflict(id).map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({"id":id,"accepted":true,"deleted":true}));
+    }
+    if let Some(review) = super::pull::RemoteMetadataConflict::decode(&conflict.remote_hash)
+        .map_err(|e| e.to_string())? {
+        let (local, fts, remote_url) = {
+            let index = state.index.lock().await;
+            (index.local.clone().ok_or("Local index not initialised")?,
+             index.fts.clone().ok_or("Local full-text index not initialised")?,
+             index.config.remote_url.clone().ok_or("Remote index is not configured")?)
+        };
+        if remote_url.trim_end_matches('/') != review.remote_url.trim_end_matches('/') {
+            return Err("This metadata change belongs to a different remote index".into());
+        }
+        let version = {
+            let _guard = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
+            let current = local.fetch_document_summary(&review.remote.doc_id).await
+                .map_err(|e| e.to_string())?.ok_or("The local document no longer exists")?;
+            if serde_json::to_string(&current).map_err(|e| e.to_string())? != review.expected_local_signature {
+                return Err("The local document changed after this metadata update was queued; review it again".into());
+            }
+            local.table_ref().version().await.map_err(|e| e.to_string())?
+        };
+        if !apply_remote_hit_metadata(&local, &fts, &review.remote, &remote_url, version).await? {
+            return Err("The local index changed while applying metadata; retry review".into());
+        }
+        mgr.remove_conflict(id).map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({"id":id,"accepted":true,"metadata_updated":true}));
+    }
     let cli = make_cb_client(&state).await?;
     let resolved = cli.manifest_resolve(&conflict.path, &conflict.remote_hash, true)
         .await.map_err(|e| e.to_string())?;
     let remote = resolved.rows.into_iter().next()
         .ok_or_else(|| "remote conflict candidate is no longer available".to_string())?;
-    if remote.path != conflict.path || remote.sha256 != conflict.remote_hash {
+    if remote.path != conflict.path || remote.sha256 != conflict.remote_hash
+        || remote.sha256.trim().is_empty() {
         return Err("remote conflict candidate failed identity validation".into());
     }
-    let local = state.index.lock().await.local.clone()
-        .ok_or("Local index not initialised")?;
-    for row in local.conflict_rows_for_location(&conflict.path).await
-        .map_err(|e| e.to_string())? {
-        local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
-    }
+    let (local, fts) = {
+        let index = state.index.lock().await;
+        (index.local.clone().ok_or("Local index not initialised")?,
+         index.fts.clone().ok_or("Local full-text index not initialised")?)
+    };
+    let replace_doc_ids: Vec<String> = local.conflict_rows_for_location(&conflict.path).await
+        .map_err(|e| e.to_string())?.into_iter().map(|row| row.doc_id).collect();
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default().as_millis() as i64;
     let doc_id = remote.sha256.clone();
+    let has_body = remote.full_text.as_deref().is_some_and(|text| !text.trim().is_empty());
+    let chunk_index = if has_body { 0 } else { -1 };
     let chunk = crate::index::schema::DocumentChunk {
-        id: crate::index::ingest::chunk_row_id(&doc_id, -1),
+        id: crate::index::ingest::chunk_row_id(&doc_id, chunk_index),
         doc_id,
         location_uri: remote.path.clone(), owner_id: remote.owner_id.clone(),
         filename: Some(remote.filename.clone()), title: remote.title.clone(),
@@ -744,9 +815,12 @@ pub async fn sync_accept_remote_conflict(
         language: remote.language.clone(), page_count: None, headings_text: None,
         full_text: remote.full_text.clone(), full_text_md: remote.full_text.clone(),
         embedding: None, embedding_sparse: None, embedding_model: None,
-        chunk_index: -1, chunk_total: 0, chunk_start_char: None, chunk_end_char: None,
+        chunk_index, chunk_total: if has_body { 1 } else { 0 }, chunk_start_char: None, chunk_end_char: None,
         indexed_at: now_ms, source_hash: remote.sha256.clone(), tags: remote.tags.clone(),
-        metadata_json: Some(format!(r#"{{"level":1,"source":"cb_conflict_accept","cb_indexed_at":{}}}"#, remote.indexed_at)),
+        metadata_json: Some(serde_json::json!({
+            "level": if has_body { 3 } else { 1 }, "source": "cb_conflict_accept",
+            "cb_indexed_at": remote.indexed_at,
+        }).to_string()),
         parent_dir: if remote.parent_dir.is_empty() { None } else { Some(remote.parent_dir.clone()) },
         volume_id: None, text_translated: None, text_translated_lang: None,
         audio_duration_seconds: None, audio_codec: None, audio_sample_rate_hz: None,
@@ -756,7 +830,8 @@ pub async fn sync_accept_remote_conflict(
         url: remote.url.clone(), embedding_omni: None, embedding_vit: None,
         summary: None, doc_status: None,
     };
-    local.ingest_batch(&[chunk]).await.map_err(|e| e.to_string())?;
+    local.ingest_batch_with_fts(&[chunk], &replace_doc_ids, &fts).await
+        .map_err(|e| format!("applying remote conflict: {e:#}"))?;
     mgr.remove_conflict(id).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"id": id, "path": conflict.path, "sha256": conflict.remote_hash, "accepted": true}))
 }
@@ -1057,43 +1132,198 @@ pub async fn sync_enqueue(
     mgr.enqueue(&op, &payload).map_err(|e| e.to_string())
 }
 
+async fn apply_remote_hit_metadata(
+    local: &crate::index::local_index::LocalIndex,
+    fts: &crate::index::fts_index::FtsIndex,
+    hit: &crisp_index_protocol::SearchHit,
+    remote_url: &str,
+    expected_version: u64,
+) -> Result<bool, String> {
+    crate::index::ingest::apply_remote_metadata_if_version(local, fts,
+        crate::index::ingest::RemoteMetadata {
+            doc_id: &hit.doc_id, source_hash: &hit.source_hash, owner_id: &hit.owner_id,
+            location_uri: &hit.location_uri, title: hit.title.as_deref(), author: hit.author.as_deref(),
+            year: hit.year, language: hit.language.as_deref(), indexed_at: hit.indexed_at, origin: remote_url,
+        }, expected_version).await.map_err(|error| format!("applying remote metadata: {error:#}"))
+}
+
+/// Existing source bodies and review evidence remain in their current rows;
+/// accepted remote metadata is a narrow paired update with a version check.
+async fn apply_sync_existing_metadata(
+    local: &crate::index::local_index::LocalIndex,
+    fts: &crate::index::fts_index::FtsIndex,
+    manager: &SyncManager,
+    remote_url: &str,
+    policy: super::conflict::ConflictPolicy,
+    rows: &[crisp_index_protocol::SearchHit],
+) -> Result<(std::collections::HashSet<(String, String)>, usize, usize, usize), String> {
+    let mut handled_ids = std::collections::HashSet::new();
+    let (mut updated, mut retained, mut queued) = (0, 0, 0);
+    for hit in rows {
+        let mut handled = false;
+        for _ in 0..3 {
+            let (current, version) = {
+                let _guard = local.read_guard(fts).await.map_err(|e| e.to_string())?;
+                (local.fetch_document_summary(&hit.doc_id).await.map_err(|e| e.to_string())?,
+                 local.table_ref().version().await.map_err(|e| e.to_string())?)
+            };
+            let Some(current) = current else { handled = true; break; };
+            if current.owner_id != hit.owner_id {
+                return Err("A legacy local document ID belongs to another owner; resolve its identity before applying metadata".into());
+            }
+            let resolution = super::conflict::resolve_conflict(
+                &super::conflict::ConflictSide { doc_id: current.doc_id.clone(), source_hash: current.source_hash.clone(),
+                    updated_at: Some(current.indexed_at), title: current.title.clone() },
+                &super::conflict::ConflictSide { doc_id: hit.doc_id.clone(), source_hash: hit.source_hash.clone(),
+                    updated_at: Some(hit.indexed_at), title: hit.title.clone() }, policy);
+            match resolution {
+                super::conflict::Resolution::UseLocal | super::conflict::Resolution::KeepBoth { .. } => { retained += 1; }
+                super::conflict::Resolution::NeedsManualReview => {
+                    let review = super::pull::RemoteMetadataConflict { remote_url: remote_url.trim_end_matches('/').into(),
+                        remote: hit.clone(), expected_local_signature: serde_json::to_string(&current).map_err(|e| e.to_string())? }
+                        .encode().map_err(|e| e.to_string())?;
+                    manager.enqueue_conflict(&current.location_uri, &current.doc_id, &current.source_hash,
+                        &review, current.title.as_deref(), hit.title.as_deref(), hit.indexed_at).map_err(|e| e.to_string())?;
+                    queued += 1;
+                }
+                super::conflict::Resolution::UseRemote => {
+                    if !apply_remote_hit_metadata(local, fts, hit, remote_url, version).await? { continue; }
+                    updated += 1;
+                }
+            }
+            handled_ids.insert((hit.owner_id.clone(), hit.doc_id.clone()));
+            handled = true;
+            break;
+        }
+        if !handled { return Err("The local index is changing; retry synchronization before applying this metadata page".into()); }
+    }
+    Ok((handled_ids, updated, retained, queued))
+}
+
+/// Apply owner-scoped remote deletions after inspecting a stable local revision.
+async fn apply_sync_deletions(
+    local: &crate::index::local_index::LocalIndex,
+    fts: &crate::index::fts_index::FtsIndex,
+    manager: &SyncManager,
+    remote_url: &str,
+    policy: super::conflict::ConflictPolicy,
+    deletions: &[crisp_index_protocol::SyncDeletion],
+) -> Result<(usize, usize, usize), String> {
+    let (mut deleted, mut retained, mut queued) = (0, 0, 0);
+    for deletion in deletions {
+        let mut handled = false;
+        for _ in 0..3 {
+            let (current, version) = {
+                let _guard = local.read_guard(fts).await.map_err(|e| e.to_string())?;
+                (local.fetch_document_summary(&deletion.doc_id).await.map_err(|e| e.to_string())?,
+                 local.table_ref().version().await.map_err(|e| e.to_string())?)
+            };
+            let Some(current) = current else { handled = true; break; };
+            let metadata = current.metadata_json.as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+            if metadata.as_ref().and_then(|value| value.get("sync_remote_url"))
+                .and_then(|value| value.as_str()).is_some_and(|origin| origin != remote_url.trim_end_matches('/')) {
+                retained += 1;
+                handled = true;
+                break;
+            }
+            match super::pull::deletion_resolution(&current.doc_id, &current.owner_id,
+                current.indexed_at, deletion, policy) {
+                super::conflict::Resolution::UseLocal | super::conflict::Resolution::KeepBoth { .. } => {
+                    retained += 1;
+                    handled = true;
+                    break;
+                }
+                super::conflict::Resolution::NeedsManualReview => {
+                    let review = super::pull::RemoteDeletionConflict {
+                        remote_url: remote_url.trim_end_matches('/').to_owned(),
+                        deletion: deletion.clone(),
+                        expected_local_signature: serde_json::to_string(&current).map_err(|e| e.to_string())?,
+                    }.encode().map_err(|e| e.to_string())?;
+                    manager.enqueue_conflict(&current.location_uri, &current.doc_id,
+                        &current.source_hash, &review, current.title.as_deref(),
+                        Some("Remote index deletion"), deletion.indexed_at).map_err(|e| e.to_string())?;
+                    queued += 1;
+                    handled = true;
+                    break;
+                }
+                super::conflict::Resolution::UseRemote => {
+                    if local.delete_document_if_version_with_fts(&current.doc_id, version, fts).await
+                        .map_err(|e| format!("applying remote deletion: {e:#}"))? {
+                        deleted += 1;
+                        handled = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !handled { return Err("The local index is changing; retry synchronization before advancing this deletion page".into()); }
+    }
+    Ok((deleted, retained, queued))
+}
+
 /// Pull rows from the remote server that have changed since `last_pull_ts`,
 /// then apply them to the local LanceDB as L1 metadata-only rows
 /// (no full text, no embedding — those are fetched on demand via "Promote
 /// to L3", same UX as cb-archive rows).
 ///
 /// At-least-once semantics: `last_pull_ts` only advances after the
-/// LanceDB writes succeed. A mid-apply crash will re-fetch the same rows
-/// on the next pull (LanceDB add-with-existing-id is idempotent because
-/// our `id = doc_id + ":" + chunk_index` row PK is stable).
+/// paired local writes succeed. A mid-apply crash will re-fetch the same rows
+/// on the next pull; the import writer replaces stable identities instead of
+/// appending duplicate rows.
 #[tauri::command]
 pub async fn sync_pull(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (data_dir, remote_url, api_key, local) = {
+    let (data_dir, remote_url, api_key, local, fts, conflict_policy) = {
         let dd  = state.data_dir.lock().await.clone();
         let idx = state.index.lock().await;
         let url = idx.config.remote_url.clone()
             .ok_or_else(|| "remote_url not configured".to_string())?;
         let key = idx.config.remote_api_key.clone().unwrap_or_default();
         let local = idx.local.clone();
-        (dd, url, key, local)
+        (dd, url, key, local, idx.fts.clone(), idx.config.conflict_policy)
     };
     let data_dir = data_dir.ok_or("data_dir not initialised")?;
     let local = local.ok_or("Local index not initialised — Hybrid mode requires a local cache")?;
+    let fts = fts.ok_or("Local full-text index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
 
-    let (rows, max_ts) = mgr.pull_pending(&remote_url, &api_key, 200)
+    let mut total_pulled = 0usize;
+    let mut total_applied = 0usize;
+    let mut total_deleted = 0usize;
+    let mut total_retained = 0usize;
+    let mut total_queued = 0usize;
+    loop {
+    let pending = mgr.pull_pending(&remote_url, &api_key, 200)
         .await
         .map_err(|e| e.to_string())?;
+    let rows = &pending.page.rows;
+    let max_ts = pending.page.max_indexed_at;
+    let (deleted, retained, queued) = apply_sync_deletions(&local, &fts, &mgr,
+        &remote_url, conflict_policy, &pending.page.deletions).await?;
+    total_deleted += deleted;
+    total_retained += retained;
+    total_queued += queued;
 
     if rows.is_empty() {
-        return Ok(serde_json::json!({ "pulled": 0, "applied": 0, "max_indexed_at": max_ts }));
+        mgr.acknowledge_pull(&pending).map_err(|e| e.to_string())?;
+        if pending.page.has_more { continue; }
+        return Ok(serde_json::json!({ "pulled": total_pulled, "applied": total_applied,
+            "deleted":total_deleted,"retained_local":total_retained,"queued_manual":total_queued,
+            "max_indexed_at": max_ts, "has_more": false }));
     }
+
+    let (handled_metadata, updated, retained, queued) = apply_sync_existing_metadata(
+        &local, &fts, &mgr, &remote_url, conflict_policy, rows).await?;
+    total_applied += updated;
+    total_retained += retained;
+    total_queued += queued;
 
     // Convert each SearchHit → L1 DocumentChunk (chunk_index = -1 sentinel,
     // matching how the L1 ingest path / L2 fallback path build their rows).
     let chunks: Vec<crate::index::schema::DocumentChunk> = rows.iter()
+        .filter(|hit| !handled_metadata.contains(&(hit.owner_id.clone(), hit.doc_id.clone())))
         .map(|hit| {
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1122,10 +1352,12 @@ pub async fn sync_pull(
                 chunk_total:        0,
                 chunk_start_char:   None,
                 chunk_end_char:     None,
-                indexed_at:         now_ms,
-                source_hash:        hit.doc_id.clone(),
+                indexed_at:         if hit.indexed_at > 0 { hit.indexed_at } else { now_ms },
+                source_hash:        hit.source_hash.clone(),
                 tags:               vec![],
-                metadata_json:      Some(r#"{"level":1,"source":"sync_pull"}"#.to_owned()),
+                metadata_json:      Some(serde_json::json!({"level":1,"source":"sync_pull",
+                    "sync_remote_url":remote_url.trim_end_matches('/'),
+                    "sync_remote_indexed_at":hit.indexed_at}).to_string()),
                 parent_dir:         None,
                 volume_id:          None,
                 // Sync-pull L1 metadata rows don't carry translations.
@@ -1155,12 +1387,36 @@ pub async fn sync_pull(
         .collect();
 
     let applied = chunks.len();
-    local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+    let mut committed = false;
+    for _ in 0..3 {
+        let version = {
+            let _guard = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
+            for hit in rows {
+                if local.fetch_document_summary(&hit.doc_id).await.map_err(|e| e.to_string())?
+                    .is_some_and(|existing| existing.owner_id != hit.owner_id) {
+                    return Err("A legacy local document ID belongs to another owner; resolve the identity conflict before pulling this page".into());
+                }
+            }
+            local.table_ref().version().await.map_err(|e| e.to_string())?
+        };
+        if crate::index::ingest::apply_new_sync_metadata_if_version(&local, &fts, &chunks, version)
+            .await.map_err(|e| format!("indexing pulled metadata: {e:#}"))? {
+            committed = true;
+            break;
+        }
+    }
+    if !committed { return Err("The local index is changing; retry synchronization before advancing this page".into()); }
 
-    // Only after a successful apply do we advance the watermark.
-    mgr.set_state("last_pull_ts", &max_ts.to_string()).map_err(|e| e.to_string())?;
-
-    Ok(serde_json::json!({ "pulled": rows.len(), "applied": applied, "max_indexed_at": max_ts }))
+    // Each bounded page becomes resumable only after the paired write.
+    mgr.acknowledge_pull(&pending).map_err(|e| e.to_string())?;
+    total_pulled += rows.len();
+    total_applied += applied;
+    if !pending.page.has_more {
+        return Ok(serde_json::json!({ "pulled": total_pulled, "applied": total_applied,
+            "deleted":total_deleted,"retained_local":total_retained,"queued_manual":total_queued,
+            "max_indexed_at": max_ts, "has_more": false }));
+    }
+    }
 }
 
 /// Clear all permanently-failed outbox entries (retries ≥ 10).
@@ -1490,10 +1746,9 @@ pub async fn sync_cb_manifest_push(
 }
 
 /// Pull rows newer than the local `cb_last_manifest_pull_ts`
-/// watermark and write them as L1 metadata-only rows
-/// (chunk_index = -1 sentinel) into the local LanceDB.  At-least-once
-/// semantics: watermark advances only after the local writes succeed,
-/// so a crash mid-apply re-fetches the same rows next time.
+/// watermark and cache metadata plus any requested full text. At-least-once
+/// semantics: the watermark advances only after the paired local writes
+/// succeed, so a crash mid-apply re-fetches the same rows next time.
 #[tauri::command]
 pub async fn sync_cb_manifest_pull(
     state: State<'_, AppState>,
@@ -1509,6 +1764,7 @@ pub async fn sync_cb_manifest_pull(
             idx.config.conflict_policy)
     };
     let local = local.ok_or("Local index not initialised")?;
+    let fts = fts.ok_or("Local full-text index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
 
     let last_ts: i64 = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
@@ -1538,16 +1794,16 @@ pub async fn sync_cb_manifest_pull(
     // Translate each PullRow → DocumentChunk, resolving same-path changes
     // before they reach LanceDB.
     let mut chunks = Vec::with_capacity(pulled.rows.len());
+    let mut replace_doc_ids = Vec::new();
     let mut skipped_local = 0usize;
     let mut queued_manual = 0usize;
     let mut replaced_remote = 0usize;
     let mut kept_both = 0usize;
     for r in &pulled.rows {
-        // Build a stable doc_id from the hash so re-pulls of the same
-        // file are idempotent (LanceDB upsert by row id).
-        let base_doc_id = if r.sha256.is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else { r.sha256.clone() };
+        if r.sha256.trim().is_empty() {
+            return Err(format!("Remote manifest row is missing a document identity: {}", r.path));
+        }
+        let base_doc_id = r.sha256.clone();
         let local_rows = local.conflict_rows_for_location(&r.path)
             .await.map_err(|e| e.to_string())?;
         let matching = local_rows.iter().any(|row| row.source_hash == r.sha256);
@@ -1569,9 +1825,7 @@ pub async fn sync_cb_manifest_pull(
                         continue;
                     }
                     crate::sync::conflict::Resolution::UseRemote => {
-                        for row in &local_rows {
-                            local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
-                        }
+                        replace_doc_ids.extend(local_rows.iter().map(|row| row.doc_id.clone()));
                         replaced_remote += 1;
                     }
                     crate::sync::conflict::Resolution::KeepBoth { remote_doc_id } => {
@@ -1588,7 +1842,7 @@ pub async fn sync_cb_manifest_pull(
                 }
             }
         }
-        let has_body = r.full_text.as_deref().is_some_and(|s| !s.is_empty());
+        let has_body = r.full_text.as_deref().is_some_and(|text| !text.trim().is_empty());
         let chunk_index = if has_body { 0 } else { -1 };
         let row_id = crate::index::ingest::chunk_row_id(&doc_id, chunk_index);
         chunks.push(crate::index::schema::DocumentChunk {
@@ -1623,10 +1877,10 @@ pub async fn sync_cb_manifest_pull(
             indexed_at: now_ms,
             source_hash: r.sha256.clone(),
             tags: r.tags.clone(),
-            metadata_json: Some(format!(
-                r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
-                r.indexed_at
-            )),
+            metadata_json: Some(serde_json::json!({
+                "level": if has_body { 3 } else { 1 }, "source": "cb_sync_pull",
+                "cb_indexed_at": r.indexed_at,
+            }).to_string()),
             parent_dir: if r.parent_dir.is_empty() { None } else { Some(r.parent_dir.clone()) },
             volume_id: None,
             text_translated: None,
@@ -1652,12 +1906,8 @@ pub async fn sync_cb_manifest_pull(
     }
 
     let applied = chunks.len();
-    local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
-    if chunks.iter().any(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())) {
-        let fts = fts.ok_or("Local full-text index not initialised")?;
-        crate::index::fts_index::index_synced_documents(&fts, &chunks)
-            .map_err(|e| format!("indexing pulled text: {e:#}"))?;
-    }
+    local.ingest_batch_with_fts(&chunks, &replace_doc_ids, &fts).await
+        .map_err(|e| format!("indexing pulled documents: {e:#}"))?;
 
     let new_watermark = pulled.max_indexed_at;
     mgr.set_state("cb_last_manifest_pull_ts", &new_watermark.to_string())

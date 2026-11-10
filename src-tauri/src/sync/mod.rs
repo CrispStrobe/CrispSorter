@@ -31,6 +31,7 @@ pub mod pairs;
 pub mod partition;
 pub mod proxy;
 pub mod proxy_secret;
+pub mod pull;
 pub mod secret;
 pub mod tauri_commands;
 pub mod transfer_queue;
@@ -71,6 +72,8 @@ pub struct PendingConflict {
     pub local_doc_id: String,
     pub local_hash: String,
     pub remote_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_operation: Option<String>,
     pub local_title: Option<String>,
     pub remote_title: Option<String>,
     pub remote_indexed_at: i64,
@@ -121,7 +124,7 @@ impl SyncManager {
             .with_context(|| format!("opening sync outbox at {}", db_path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
@@ -251,7 +254,7 @@ impl SyncManager {
         )?;
         let rows = stmt.query_map([], |r| Ok(PendingConflict {
             id: r.get(0)?, path: r.get(1)?, local_doc_id: r.get(2)?,
-            local_hash: r.get(3)?, remote_hash: r.get(4)?,
+            local_hash: r.get(3)?, remote_hash: r.get(4)?, remote_operation: None,
             local_title: r.get(5)?, remote_title: r.get(6)?,
             remote_indexed_at: r.get(7)?, created_at: r.get(8)?,
         }))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -296,98 +299,84 @@ impl SyncManager {
         let batch = self.claim_batch(64)?;
         if batch.is_empty() { return Ok((0, 0)); }
 
-        let client = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
+        let remote = crate::index::remote_client::RemoteClient::new_with_proxy(remote_url, api_key, proxy)?;
         let mut pushed = 0;
         let mut failed = 0;
-
         for entry in &batch {
-            let endpoint = match entry.op.as_str() {
-                "ingest" => format!("{}/v1/ingest/batch", remote_url.trim_end_matches('/')),
-                "delete" => format!("{}/v1/docs", remote_url.trim_end_matches('/')),
-                "move"   => format!("{}/v1/docs/location", remote_url.trim_end_matches('/')),
-                _        => { self.mark_error(entry.id, "unknown op").ok(); failed += 1; continue; }
-            };
-
-            let payload: serde_json::Value = match serde_json::from_str(&entry.payload) {
-                Ok(v) => v,
-                Err(e) => { self.mark_error(entry.id, &e.to_string()).ok(); failed += 1; continue; }
-            };
-
-            let mut req = client.post(&endpoint).json(&payload);
-            if !api_key.is_empty() { req = req.bearer_auth(api_key); }
-
-            match req.send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    self.mark_done(entry.id).ok();
+            let result: Result<()> = async {
+                let payload: serde_json::Value = serde_json::from_str(&entry.payload)?;
+                let owner = payload.get("owner_id").map(|value|
+                    value.as_str().map(str::to_owned).context("Queued owner_id must be a string"))
+                    .transpose()?;
+                match entry.op.as_str() {
+                    "ingest" => {
+                        let batch = serde_json::from_value::<crisp_index_protocol::IngestBatch>(payload)?;
+                        remote.ingest_batch(&batch).await?;
+                    }
+                    "delete" => {
+                        let doc_id = payload.get("doc_id").and_then(|value| value.as_str())
+                            .filter(|id| !id.is_empty()).context("Queued deletion is missing doc_id")?;
+                        remote.delete_doc_scoped(doc_id, owner.as_deref()).await?;
+                    }
+                    "move" => {
+                        let doc_id = payload.get("doc_id").and_then(|value| value.as_str())
+                            .filter(|id| !id.is_empty()).context("Queued move is missing doc_id")?;
+                        let new_uri = payload.get("new_uri").and_then(|value| value.as_str())
+                            .context("Queued move is missing new_uri")?;
+                        remote.update_location_scoped(doc_id, new_uri, owner.as_deref()).await?;
+                    }
+                    _ => anyhow::bail!("Unknown queued operation"),
+                }
+                Ok(())
+            }.await;
+            match result {
+                Ok(()) => {
+                    self.mark_done(entry.id)?;
                     pushed += 1;
                 }
-                Ok(resp) => {
-                    let msg = format!("HTTP {}", resp.status());
-                    self.mark_error(entry.id, &msg).ok();
-                    failed += 1;
-                }
-                Err(e) => {
-                    self.mark_error(entry.id, &e.to_string()).ok();
+                Err(error) => {
+                    self.mark_error(entry.id, &format!("{error:#}"))?;
                     failed += 1;
                 }
             }
         }
-
-        if pushed > 0 {
-            self.set_state("last_push_ts", &now_ms().to_string()).ok();
-        }
+        if pushed > 0 { self.set_state("last_push_ts", &now_ms().to_string())?; }
         Ok((pushed, failed))
     }
 
-    /// Pull rows from the remote server's `/v1/sync/since` endpoint that have
-    /// `indexed_at >= last_pull_ts`. Returns the parsed `SearchHit` rows AND
-    /// the new `max_indexed_at` (so the caller can advance state after a
-    /// successful apply).
-    ///
-    /// This method does NOT advance `last_pull_ts` itself — the caller does
-    /// so via [`Self::set_state("last_pull_ts", …)`] *after* successfully
-    /// applying the rows to local storage.  This gives at-least-once
-    /// semantics: a crash mid-apply re-fetches the same rows on next pull.
+    /// Fetch one bounded remote metadata page without advancing local state.
+    /// Call `acknowledge_pull` only after the paired local apply succeeds.
     pub async fn pull_pending(
         &self,
         remote_url: &str,
         api_key: &str,
         limit: usize,
-    ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
+    ) -> Result<pull::PendingPullPage> {
         self.pull_pending_with_proxy(remote_url, api_key, limit, &ProxyConfig::default()).await
     }
 
-    /// Pull pending rows using an explicit HTTP/SOCKS5 proxy policy.
     pub async fn pull_pending_with_proxy(
         &self,
         remote_url: &str,
         api_key: &str,
         limit: usize,
         proxy: &ProxyConfig,
-    ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
-        let last_pull_ts: i64 = self.get_state("last_pull_ts")?
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+    ) -> Result<pull::PendingPullPage> {
+        let saved = self.get_state(pull::CHECKPOINT_KEY)?;
+        let legacy_timestamp = self.get_state("last_pull_ts")?
+            .map(|value| value.parse::<i64>().context("Reading prior sync timestamp"))
+            .transpose()?.unwrap_or(0);
+        let checkpoint = pull::PullCheckpoint::for_remote(saved.as_deref(), legacy_timestamp, remote_url)?;
+        let client = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
+        let (page, checkpoint_after_apply) = pull::fetch_page(&client, &checkpoint, api_key, limit).await?;
+        Ok(pull::PendingPullPage { page, checkpoint_after_apply, expected_checkpoint: saved })
+    }
 
-        let url = format!(
-            "{}/v1/sync/since?ts={}&limit={}",
-            remote_url.trim_end_matches('/'),
-            last_pull_ts,
-            limit
-        );
-        let mut req = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?
-            .get(&url);
-        if !api_key.is_empty() { req = req.bearer_auth(api_key); }
-
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("server returned {}", resp.status());
-        }
-        let body: serde_json::Value = resp.json().await?;
-        let max_ts = body["max_indexed_at"].as_i64().unwrap_or(last_pull_ts);
-        let rows: Vec<crisp_index_protocol::SearchHit> =
-            serde_json::from_value(body["rows"].clone()).unwrap_or_default();
-        Ok((rows, max_ts))
+    /// Atomically advance the cursor after a successful local write. A crash
+    /// before this transaction replays the same page through the paired writer.
+    pub fn acknowledge_pull(&self, pending: &pull::PendingPullPage) -> Result<()> {
+        let mut connection = self.conn.lock().map_err(|_| anyhow::anyhow!("Sync database lock poisoned"))?;
+        pull::acknowledge_page(&mut connection, pending)
     }
 
     /// P13.7 Stage F — drain `cb_manifest_push` outbox entries
@@ -536,6 +525,25 @@ mod tests {
         drop(m1);
         let m2 = SyncManager::open(tmp.path()).unwrap();
         assert_eq!(m2.pending_count().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn outbox_delete_and_move_use_scoped_document_routes_before_acknowledging() {
+        let mut server = mockito::Server::new_async().await;
+        let (_dir, manager) = fresh();
+        manager.enqueue("delete", r#"{"doc_id":"removed","owner_id":"owner"}"#).unwrap();
+        manager.enqueue("move", r#"{"doc_id":"moved","owner_id":"owner","new_uri":"test://new"}"#).unwrap();
+        let deletion = server.mock("DELETE", "/v1/docs/removed")
+            .match_query(mockito::Matcher::UrlEncoded("owner_id".into(), "owner".into()))
+            .with_status(200).with_body(r#"{"deleted":true}"#).create_async().await;
+        let moved = server.mock("POST", "/v1/docs/moved/location")
+            .match_query(mockito::Matcher::UrlEncoded("owner_id".into(), "owner".into()))
+            .match_body(mockito::Matcher::Json(serde_json::json!({"new_uri":"test://new"})))
+            .with_status(200).with_body(r#"{"updated":true}"#).create_async().await;
+        assert_eq!(manager.push_pending(&server.url(), "key").await.unwrap(), (2, 0));
+        assert_eq!(manager.pending_count().unwrap(), 0);
+        deletion.assert_async().await;
+        moved.assert_async().await;
     }
 
     #[test]

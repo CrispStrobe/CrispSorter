@@ -1,0 +1,921 @@
+{
+  "fixtures": [
+    {
+      "expected": {
+        "forbidden_text": [
+          "ORIGINAL_WORKBOOK_CELL_MUST_NOT_EXPORT",
+          "UNSELECTED_WORKBOOK_CELL_MUST_NOT_EXPORT",
+          "RAW_WORKBOOK_OUTPUT_MUST_NOT_EXPORT"
+        ],
+        "sheets": [
+          {
+            "name": "測定 values",
+            "objectId": "literal-object",
+            "pageId": "literal-page",
+            "table": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "cell-0-0",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Code"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "cell-0-1",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Literal formulas"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "cell-0-2",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Notes"
+                },
+                {
+                  "column": 3,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "cell-0-3",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Blank"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-1-0",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "0012"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-1-1",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "cell-1-2",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "😀\tline\nnext"
+                },
+                {
+                  "column": 3,
+                  "columnSpan": 1,
+                  "id": "cell-1-3",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": ""
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-2-0",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03-04"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-2-1",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "+SUM(A1:A2)"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "cell-2-2",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "  A & <B>  "
+                },
+                {
+                  "column": 3,
+                  "columnSpan": 1,
+                  "id": "cell-2-3",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "@value"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-3-0",
+                  "row": 3,
+                  "rowSpan": 1,
+                  "text": "-12.5"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-3-1",
+                  "row": 3,
+                  "rowSpan": 1,
+                  "text": "1,250.00"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "cell-3-2",
+                  "row": 3,
+                  "rowSpan": 1,
+                  "text": "TRUE"
+                },
+                {
+                  "column": 3,
+                  "columnSpan": 1,
+                  "id": "cell-3-3",
+                  "row": 3,
+                  "rowSpan": 1,
+                  "text": "3.14e5"
+                }
+              ],
+              "columns": 4,
+              "rows": 4,
+              "version": 1
+            }
+          },
+          {
+            "name": "Parts & QA",
+            "objectId": "merged-object",
+            "pageId": "merged-page",
+            "table": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 2,
+                  "header": true,
+                  "id": "merged",
+                  "row": 0,
+                  "rowSpan": 2,
+                  "text": "Valve\n0012"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "header": true,
+                  "id": "quantity",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Qty"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "formula-text",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "=2+2"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "code",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "03"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "identifier",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "LOT-003"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "empty",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": ""
+                }
+              ],
+              "columns": 3,
+              "rows": 3,
+              "version": 1
+            }
+          },
+          {
+            "name": "Wide identifiers",
+            "objectId": "wide-object",
+            "pageId": "wide-page",
+            "table": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "wide-0",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0001"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "wide-1",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0002"
+                },
+                {
+                  "column": 2,
+                  "columnSpan": 1,
+                  "id": "wide-2",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0003"
+                },
+                {
+                  "column": 3,
+                  "columnSpan": 1,
+                  "id": "wide-3",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0004"
+                },
+                {
+                  "column": 4,
+                  "columnSpan": 1,
+                  "id": "wide-4",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0005"
+                },
+                {
+                  "column": 5,
+                  "columnSpan": 1,
+                  "id": "wide-5",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0006"
+                },
+                {
+                  "column": 6,
+                  "columnSpan": 1,
+                  "id": "wide-6",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0007"
+                },
+                {
+                  "column": 7,
+                  "columnSpan": 1,
+                  "id": "wide-7",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0008"
+                },
+                {
+                  "column": 8,
+                  "columnSpan": 1,
+                  "id": "wide-8",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0009"
+                },
+                {
+                  "column": 9,
+                  "columnSpan": 1,
+                  "id": "wide-9",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0010"
+                },
+                {
+                  "column": 10,
+                  "columnSpan": 1,
+                  "id": "wide-10",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0011"
+                },
+                {
+                  "column": 11,
+                  "columnSpan": 1,
+                  "id": "wide-11",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0012"
+                },
+                {
+                  "column": 12,
+                  "columnSpan": 1,
+                  "id": "wide-12",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0013"
+                },
+                {
+                  "column": 13,
+                  "columnSpan": 1,
+                  "id": "wide-13",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0014"
+                },
+                {
+                  "column": 14,
+                  "columnSpan": 1,
+                  "id": "wide-14",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0015"
+                },
+                {
+                  "column": 15,
+                  "columnSpan": 1,
+                  "id": "wide-15",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0016"
+                },
+                {
+                  "column": 16,
+                  "columnSpan": 1,
+                  "id": "wide-16",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0017"
+                },
+                {
+                  "column": 17,
+                  "columnSpan": 1,
+                  "id": "wide-17",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0018"
+                },
+                {
+                  "column": 18,
+                  "columnSpan": 1,
+                  "id": "wide-18",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0019"
+                },
+                {
+                  "column": 19,
+                  "columnSpan": 1,
+                  "id": "wide-19",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0020"
+                },
+                {
+                  "column": 20,
+                  "columnSpan": 1,
+                  "id": "wide-20",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0021"
+                },
+                {
+                  "column": 21,
+                  "columnSpan": 1,
+                  "id": "wide-21",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0022"
+                },
+                {
+                  "column": 22,
+                  "columnSpan": 1,
+                  "id": "wide-22",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0023"
+                },
+                {
+                  "column": 23,
+                  "columnSpan": 1,
+                  "id": "wide-23",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0024"
+                },
+                {
+                  "column": 24,
+                  "columnSpan": 1,
+                  "id": "wide-24",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0025"
+                },
+                {
+                  "column": 25,
+                  "columnSpan": 1,
+                  "id": "wide-25",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0026"
+                },
+                {
+                  "column": 26,
+                  "columnSpan": 1,
+                  "id": "wide-26",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0027"
+                },
+                {
+                  "column": 27,
+                  "columnSpan": 1,
+                  "id": "wide-27",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0028"
+                },
+                {
+                  "column": 28,
+                  "columnSpan": 1,
+                  "id": "wide-28",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0029"
+                },
+                {
+                  "column": 29,
+                  "columnSpan": 1,
+                  "id": "wide-29",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0030"
+                },
+                {
+                  "column": 30,
+                  "columnSpan": 1,
+                  "id": "wide-30",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0031"
+                },
+                {
+                  "column": 31,
+                  "columnSpan": 1,
+                  "id": "wide-31",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0032"
+                },
+                {
+                  "column": 32,
+                  "columnSpan": 1,
+                  "id": "wide-32",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0033"
+                },
+                {
+                  "column": 33,
+                  "columnSpan": 1,
+                  "id": "wide-33",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0034"
+                },
+                {
+                  "column": 34,
+                  "columnSpan": 1,
+                  "id": "wide-34",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0035"
+                },
+                {
+                  "column": 35,
+                  "columnSpan": 1,
+                  "id": "wide-35",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0036"
+                },
+                {
+                  "column": 36,
+                  "columnSpan": 1,
+                  "id": "wide-36",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0037"
+                },
+                {
+                  "column": 37,
+                  "columnSpan": 1,
+                  "id": "wide-37",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0038"
+                },
+                {
+                  "column": 38,
+                  "columnSpan": 1,
+                  "id": "wide-38",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0039"
+                },
+                {
+                  "column": 39,
+                  "columnSpan": 1,
+                  "id": "wide-39",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0040"
+                },
+                {
+                  "column": 40,
+                  "columnSpan": 1,
+                  "id": "wide-40",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0041"
+                },
+                {
+                  "column": 41,
+                  "columnSpan": 1,
+                  "id": "wide-41",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0042"
+                },
+                {
+                  "column": 42,
+                  "columnSpan": 1,
+                  "id": "wide-42",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0043"
+                },
+                {
+                  "column": 43,
+                  "columnSpan": 1,
+                  "id": "wide-43",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0044"
+                },
+                {
+                  "column": 44,
+                  "columnSpan": 1,
+                  "id": "wide-44",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0045"
+                },
+                {
+                  "column": 45,
+                  "columnSpan": 1,
+                  "id": "wide-45",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0046"
+                },
+                {
+                  "column": 46,
+                  "columnSpan": 1,
+                  "id": "wide-46",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0047"
+                },
+                {
+                  "column": 47,
+                  "columnSpan": 1,
+                  "id": "wide-47",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0048"
+                },
+                {
+                  "column": 48,
+                  "columnSpan": 1,
+                  "id": "wide-48",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0049"
+                },
+                {
+                  "column": 49,
+                  "columnSpan": 1,
+                  "id": "wide-49",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0050"
+                },
+                {
+                  "column": 50,
+                  "columnSpan": 1,
+                  "id": "wide-50",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0051"
+                },
+                {
+                  "column": 51,
+                  "columnSpan": 1,
+                  "id": "wide-51",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0052"
+                },
+                {
+                  "column": 52,
+                  "columnSpan": 1,
+                  "id": "wide-52",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0053"
+                },
+                {
+                  "column": 53,
+                  "columnSpan": 1,
+                  "id": "wide-53",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0054"
+                },
+                {
+                  "column": 54,
+                  "columnSpan": 1,
+                  "id": "wide-54",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0055"
+                },
+                {
+                  "column": 55,
+                  "columnSpan": 1,
+                  "id": "wide-55",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0056"
+                },
+                {
+                  "column": 56,
+                  "columnSpan": 1,
+                  "id": "wide-56",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0057"
+                },
+                {
+                  "column": 57,
+                  "columnSpan": 1,
+                  "id": "wide-57",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0058"
+                },
+                {
+                  "column": 58,
+                  "columnSpan": 1,
+                  "id": "wide-58",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0059"
+                },
+                {
+                  "column": 59,
+                  "columnSpan": 1,
+                  "id": "wide-59",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0060"
+                },
+                {
+                  "column": 60,
+                  "columnSpan": 1,
+                  "id": "wide-60",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0061"
+                },
+                {
+                  "column": 61,
+                  "columnSpan": 1,
+                  "id": "wide-61",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0062"
+                },
+                {
+                  "column": 62,
+                  "columnSpan": 1,
+                  "id": "wide-62",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0063"
+                },
+                {
+                  "column": 63,
+                  "columnSpan": 1,
+                  "id": "wide-63",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "ID0064"
+                }
+              ],
+              "columns": 64,
+              "rows": 1,
+              "version": 1
+            }
+          }
+        ],
+        "warning_substrings": []
+      },
+      "file": "reviewed-workbook.xlsx",
+      "name": "reviewed-workbook",
+      "warnings": []
+    },
+    {
+      "expected": {
+        "forbidden_text": [
+          "ORIGINAL_WORKBOOK_CELL_MUST_NOT_EXPORT",
+          "UNSELECTED_WORKBOOK_CELL_MUST_NOT_EXPORT",
+          "RAW_WORKBOOK_OUTPUT_MUST_NOT_EXPORT"
+        ],
+        "sheets": [
+          {
+            "name": "Literal _x000D_",
+            "objectId": "escape-object",
+            "pageId": "escape-page",
+            "table": {
+              "cells": [
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-0-0",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "Actual CR"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-0-1",
+                  "row": 0,
+                  "rowSpan": 1,
+                  "text": "left\rright"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-1-0",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "Actual CRLF"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-1-1",
+                  "row": 1,
+                  "rowSpan": 1,
+                  "text": "a\r\nb"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-2-0",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "Literal escape"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-2-1",
+                  "row": 2,
+                  "rowSpan": 1,
+                  "text": "_x000D_"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-3-0",
+                  "row": 3,
+                  "rowSpan": 1,
+                  "text": "Literal underscore escape"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-3-1",
+                  "row": 3,
+                  "rowSpan": 1,
+                  "text": "_x005F_"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-4-0",
+                  "row": 4,
+                  "rowSpan": 1,
+                  "text": "Adjacent literals"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-4-1",
+                  "row": 4,
+                  "rowSpan": 1,
+                  "text": "_x000D__x005F_"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-5-0",
+                  "row": 5,
+                  "rowSpan": 1,
+                  "text": "Mixed"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-5-1",
+                  "row": 5,
+                  "rowSpan": 1,
+                  "text": "real\r literal _x000D_ and 😀"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-6-0",
+                  "row": 6,
+                  "rowSpan": 1,
+                  "text": "LF and tab"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-6-1",
+                  "row": 6,
+                  "rowSpan": 1,
+                  "text": "\n\t"
+                },
+                {
+                  "column": 0,
+                  "columnSpan": 1,
+                  "id": "cell-7-0",
+                  "row": 7,
+                  "rowSpan": 1,
+                  "text": "Empty string"
+                },
+                {
+                  "column": 1,
+                  "columnSpan": 1,
+                  "id": "cell-7-1",
+                  "row": 7,
+                  "rowSpan": 1,
+                  "text": ""
+                }
+              ],
+              "columns": 2,
+              "rows": 8,
+              "version": 1
+            }
+          },
+          {
+            "name": "Blank table",
+            "objectId": "empty-object",
+            "pageId": "empty-page",
+            "table": {
+              "cells": [],
+              "columns": 0,
+              "rows": 0,
+              "version": 1
+            }
+          }
+        ],
+        "warning_substrings": [
+          "empty"
+        ]
+      },
+      "file": "escaped-and-blank-workbook.xlsx",
+      "name": "escaped-and-blank-workbook",
+      "warnings": [
+        "Worksheet \"Blank table\" contains an explicitly selected 0 × 0 table and is exported empty.",
+        "Carriage returns and literal _xHHHH_ sequences use standard OOXML string escapes. Readers without that decoding may display escape text; verify those values and names before re-saving in another application."
+      ]
+    }
+  ],
+  "version": 1
+}

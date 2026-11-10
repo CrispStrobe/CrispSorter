@@ -22,6 +22,7 @@
     page,
     imageUrl,
     selectedId = null,
+    sourceWord = null,
     threshold = 0.85,
     mode = "select",
     overlays = true,
@@ -38,6 +39,7 @@
     page: OcrPage;
     imageUrl: (path: string) => string;
     selectedId?: string | null;
+    sourceWord?: { text: string; start: number; end: number; bounds: Rectangle } | null;
     threshold?: number;
     mode?: DrawMode;
     overlays?: boolean;
@@ -386,6 +388,20 @@
               />
             {/if}
           {/if}
+          {#if sourceWord && mode === "select" && !gesture}
+            <rect
+              class="word-source"
+              data-word-source
+              data-word-source-start={sourceWord.start}
+              data-word-source-end={sourceWord.end}
+              x={sourceWord.bounds.x}
+              y={sourceWord.bounds.y}
+              width={sourceWord.bounds.w}
+              height={sourceWord.bounds.h}
+              role="img"
+              aria-label={`Source word: ${sourceWord.text}`}
+            />
+          {/if}
           {#if gesture?.kind === "draw"}
             <rect
               class="draft"
@@ -526,6 +542,13 @@
     stroke: #338cff;
     stroke-width: 2;
     stroke-dasharray: 6 4;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+  .word-source {
+    fill: #ffd56a33;
+    stroke: #ffcd52;
+    stroke-width: 2;
     vector-effect: non-scaling-stroke;
     pointer-events: none;
   }

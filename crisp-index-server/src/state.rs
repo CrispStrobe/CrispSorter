@@ -6,8 +6,8 @@ use crate::index::SearchIndex;
 use crate::queue::TaskQueue;
 
 pub struct SharedState {
-    pub index:  Arc<SearchIndex>,
-    pub queue:  TaskQueue,
+    pub index: Arc<SearchIndex>,
+    pub queue: TaskQueue,
     pub embedder: Option<ServerEmbedder>,
     pub config: ServerConfig,
 }

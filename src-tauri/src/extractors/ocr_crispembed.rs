@@ -974,6 +974,8 @@ pub struct OcrReviewRegion {
     pub char_conf: Vec<f32>,
     pub char_conf_unit: String,
     pub char_conf_aligned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub word_evidence: Option<crate::ocr_word_evidence::WordEvidenceEnvelope>,
     pub kind: String,
 }
 
@@ -1066,6 +1068,7 @@ pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Re
             confidence, confidence_basis: basis.into(),
             char_conf: region.char_conf.into_iter().filter(|v| v.is_finite() && (0.0..=1.0).contains(v)).collect(),
             char_conf_unit: if token_scores { "token" } else { "unknown" }.into(), char_conf_aligned: false, kind: "text".into(),
+            word_evidence: None,
         }
     }).collect();
     Ok(OcrReviewResult {

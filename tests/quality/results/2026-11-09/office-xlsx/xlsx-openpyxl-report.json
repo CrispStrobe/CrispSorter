@@ -1,0 +1,69 @@
+{
+  "fixtures": [
+    {
+      "status": "passed",
+      "file": "reviewed-workbook.xlsx",
+      "reader": "openpyxl 3.1.5",
+      "exact_literal_cells": 86,
+      "known_xstring_exceptions": [],
+      "meaning": "Original generated file read only; exceptions are not claimed as exact reader roundtrips."
+    },
+    {
+      "status": "passed_with_known_limitations",
+      "file": "escaped-and-blank-workbook.xlsx",
+      "reader": "openpyxl 3.1.5",
+      "exact_literal_cells": 10,
+      "known_xstring_exceptions": [
+        {
+          "sheet": "Literal _x000D_",
+          "kind": "xstring_sheet_name",
+          "expected": "Literal _x000D_",
+          "observed": "Literal _x005F_x000D_"
+        },
+        {
+          "sheet": "Literal _x000D_",
+          "cell": "B1",
+          "kind": "xstring_cell",
+          "expected": "left\rright",
+          "observed": "left_x000D_right"
+        },
+        {
+          "sheet": "Literal _x000D_",
+          "cell": "B2",
+          "kind": "xstring_cell",
+          "expected": "a\r\nb",
+          "observed": "a_x000D_\nb"
+        },
+        {
+          "sheet": "Literal _x000D_",
+          "cell": "B3",
+          "kind": "xstring_cell",
+          "expected": "_x000D_",
+          "observed": "_x005F_x000D_"
+        },
+        {
+          "sheet": "Literal _x000D_",
+          "cell": "B4",
+          "kind": "xstring_cell",
+          "expected": "_x005F_",
+          "observed": "_x005F_x005F_"
+        },
+        {
+          "sheet": "Literal _x000D_",
+          "cell": "B5",
+          "kind": "xstring_cell",
+          "expected": "_x000D__x005F_",
+          "observed": "_x005F_x000D__x005F_x005F_"
+        },
+        {
+          "sheet": "Literal _x000D_",
+          "cell": "B6",
+          "kind": "xstring_cell",
+          "expected": "real\r literal _x000D_ and 😀",
+          "observed": "real_x000D_ literal _x005F_x000D_ and 😀"
+        }
+      ],
+      "meaning": "Original generated file read only; exceptions are not claimed as exact reader roundtrips."
+    }
+  ]
+}

@@ -847,7 +847,8 @@ mod tests {
         let make_chunk = |ci: i32| DocumentChunk {
             id: chunk_row_id(&doc_id, ci),
             doc_id: doc_id.clone(),
-            location_uri: format!("/tmp/test-{}.txt", ci),
+            // Chunks of one document share its location (ingest enforces this).
+            location_uri: "/tmp/test.txt".to_owned(),
             owner_id: String::new(),
             filename: None,
             title: None,

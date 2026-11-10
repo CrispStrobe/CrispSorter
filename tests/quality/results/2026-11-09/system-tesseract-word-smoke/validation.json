@@ -1,0 +1,62 @@
+{
+  "checker": "Independent Python exact substring and bounds check; not the production Rust parser",
+  "input_sha256": "25f0e5ee8d518403fc97a94435f88d525526649adbc08c2b937c3469ff4fb4ef",
+  "text_sha256": "f214a917570bd16fbda6d0112cb33959681acc24fe9e48b7c192ad1df444c234",
+  "tsv_sha256": "ecbe94897855381f943d4ecf4fc918ba242798324fbcfa0a846d5f1e5d50479a",
+  "expected_text_matches": true,
+  "same_run_text_alignment": true,
+  "word_boxes_in_bounds": true,
+  "word_count": 5,
+  "words": [
+    {
+      "text": "Cobalt",
+      "start_utf16": 0,
+      "end_utf16": 6,
+      "x": 48,
+      "y": 75,
+      "w": 170,
+      "h": 42,
+      "raw_confidence": 96.03495
+    },
+    {
+      "text": "warranty",
+      "start_utf16": 7,
+      "end_utf16": 15,
+      "x": 238,
+      "y": 78,
+      "w": 238,
+      "h": 49,
+      "raw_confidence": 96.03495
+    },
+    {
+      "text": "expires",
+      "start_utf16": 16,
+      "end_utf16": 23,
+      "x": 498,
+      "y": 75,
+      "w": 190,
+      "h": 52,
+      "raw_confidence": 96.815422
+    },
+    {
+      "text": "November",
+      "start_utf16": 24,
+      "end_utf16": 32,
+      "x": 713,
+      "y": 75,
+      "w": 276,
+      "h": 42,
+      "raw_confidence": 96.07235
+    },
+    {
+      "text": "2031.",
+      "start_utf16": 33,
+      "end_utf16": 38,
+      "x": 1010,
+      "y": 76,
+      "w": 144,
+      "h": 41,
+      "raw_confidence": 96.341667
+    }
+  ]
+}

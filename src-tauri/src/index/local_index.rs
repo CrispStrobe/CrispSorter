@@ -38,6 +38,71 @@ use super::IndexBackend;
 
 const TABLE_NAME: &str = "documents";
 
+#[path = "occurrence.rs"]
+mod occurrence;
+pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
+
+#[path = "source_move.rs"]
+mod source_move;
+
+fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
+    anyhow::ensure!(!chunks.is_empty(), "A document replacement cannot be empty");
+    let mut row_ids = std::collections::BTreeSet::new();
+    let mut predicates = std::collections::BTreeSet::new();
+    let mut totals = std::collections::BTreeMap::<&str, (i32, usize)>::new();
+    for chunk in chunks {
+        anyhow::ensure!(!chunk.doc_id.trim().is_empty(), "Document identity is required");
+        anyhow::ensure!(row_ids.insert(&chunk.id), "Duplicate chunk identity in document replacement");
+        anyhow::ensure!(chunk.chunk_index >= 0 && chunk.chunk_index < chunk.chunk_total,
+            "Only complete extracted documents can be replaced");
+        let count = totals.entry(&chunk.doc_id).or_insert((chunk.chunk_total, 0));
+        anyhow::ensure!(count.0 == chunk.chunk_total, "Inconsistent document chunk count");
+        count.1 += 1;
+        predicates.insert(SourceOccurrence::from_chunk(chunk).filter());
+    }
+    anyhow::ensure!(totals.values().all(|(total, actual)| *total as usize == *actual),
+        "Document replacement is missing chunks");
+    Ok(format!("({})", predicates.into_iter().collect::<Vec<_>>().join(" OR ")))
+}
+
+fn sql_values(values: &[String]) -> String {
+    values.iter().map(|s| format!("'{}'", s.replace('\'', "''"))).collect::<Vec<_>>().join(",")
+}
+
+fn import_replacement_ids(chunks: &[DocumentChunk], explicit: &[String]) -> std::collections::BTreeSet<String> {
+    let mut replaced: std::collections::BTreeSet<String> = explicit.iter().cloned().collect();
+    let mut grouped = std::collections::BTreeMap::<&str, Vec<&DocumentChunk>>::new();
+    for chunk in chunks { grouped.entry(&chunk.doc_id).or_default().push(chunk); }
+    for (id, group) in grouped {
+        if !group.iter().any(|c| c.full_text.as_deref().is_some_and(|s| !s.trim().is_empty())) { continue; }
+        let total = group[0].chunk_total;
+        let complete = total > 0 && group.len() == total as usize
+            && group.iter().all(|c| c.chunk_total == total)
+            && group.iter().map(|c| c.chunk_index).collect::<std::collections::BTreeSet<_>>()
+                == (0..total).collect();
+        let whole_body = group.len() == 1 && group[0].chunk_index <= 0 && total <= 1;
+        if complete || whole_body { replaced.insert(id.to_owned()); }
+    }
+    replaced
+}
+
+#[derive(Clone)]
+struct FtsPiece {
+    id: String, doc_id: String, owner: String, language: String,
+    title: String, headings: String, body: String, translated: Option<String>,
+    chunk_index: i32, start: Option<i32>, end: Option<i32>,
+}
+
+impl From<&DocumentChunk> for FtsPiece {
+    fn from(c: &DocumentChunk) -> Self {
+        Self { id: c.id.clone(), doc_id: c.doc_id.clone(), owner: c.owner_id.clone(),
+            language: c.language.clone().unwrap_or_default(), title: c.title.clone().unwrap_or_default(),
+            headings: c.headings_text.clone().unwrap_or_default(), body: c.full_text.clone().unwrap_or_default(),
+            translated: c.text_translated.clone(), chunk_index: c.chunk_index,
+            start: c.chunk_start_char, end: c.chunk_end_char }
+    }
+}
+
 /// One row returned by `list_failed_extractions`.
 pub struct FailedExtractionRow {
     pub doc_id:       String,
@@ -91,6 +156,8 @@ pub struct LocalIndex {
     /// Cached Arrow schema — built once at construction, reused by every
     /// `ingest_batch` call instead of re-allocating ~25 Field objects.
     schema: Arc<Schema>,
+    /// Durable handoff between the vector transaction and full-text commit.
+    ingest_journal_path: std::path::PathBuf,
 }
 
 // ── Constructor ────────────────────────────────────────────────────────────
@@ -99,13 +166,16 @@ pub struct LocalIndex {
 ///
 /// Both fields live in `metadata_json` (see `ingest::build_metadata_json`), so
 /// no schema migration is involved and older rows simply lack the fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedState {
     /// Source-file mtime recorded at ingest time, epoch seconds.
     pub mtime_unix: Option<i64>,
     /// Row was written while image indexing was enabled, so missing vectors
     /// (if any) are not a reason to re-ingest.
     pub images_indexed: bool,
+    pub source_hash: Option<String>,
+    pub extraction_failed: bool,
+    pub extraction_skip: bool,
 }
 
 impl LocalIndex {
@@ -128,6 +198,7 @@ impl LocalIndex {
     }
 
     pub async fn update_field_evidence(&self, doc_id: &str, previous: &serde_json::Value, updated: &serde_json::Value) -> Result<()> {
+        let _guard = self.write_guard().await?;
         // A whole-document metadata edit must not replace newer ingest output.
         // Metadata is serialized in a canonical key order by serde_json.
         let current = self.document_metadata(doc_id).await?;
@@ -245,6 +316,7 @@ impl LocalIndex {
             table,
             dims,
             schema,
+            ingest_journal_path: data_dir.join("index-write-journal.sqlite"),
         })
     }
 
@@ -260,7 +332,14 @@ impl LocalIndex {
         if chunks.is_empty() {
             return Ok(());
         }
+        let fts = super::fts_index::FtsIndex::open_or_create(
+            &self.ingest_journal_path.parent().ok_or_else(|| anyhow!("Missing index directory"))?.join("fts"))?;
+        self.ingest_batch_with_fts(chunks, &[], &fts).await
+    }
 
+    #[cfg(test)]
+    pub(crate) async fn append_legacy_rows_for_test(&self, chunks: &[DocumentChunk]) -> Result<()> {
+        let _guard = self.write_guard().await?;
         let batch = chunks_to_record_batch(chunks, self.dims, &self.schema)?;
 
         let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], Arc::clone(&self.schema));
@@ -272,6 +351,308 @@ impl LocalIndex {
         // P23 — invalidate the search result cache after ingest.
         super::result_cache::invalidate();
         Ok(())
+    }
+
+    pub(crate) fn ingest_journal_path(&self) -> &Path {
+        &self.ingest_journal_path
+    }
+
+    /// Readers and every application mutation share the same lease. Recovery
+    /// finishes before a caller can observe mixed vector/full-text generations.
+    pub async fn read_guard(&self, fts: &super::fts_index::FtsIndex) -> Result<super::ingest::IndexWriteGuard> {
+        if self.dims == 0 { return Ok(super::ingest::IndexWriteGuard::immutable_snapshot()); }
+        let guard = super::ingest::acquire_index_guard(&self.ingest_journal_path).await?;
+        self.table.checkout_latest().await?;
+        super::ingest::repair_fts_writes(fts, self).await?;
+        Ok(guard)
+    }
+
+    async fn write_guard(&self) -> Result<super::ingest::IndexWriteGuard> {
+        anyhow::ensure!(self.dims > 0, "An index snapshot is read-only");
+        let fts = super::fts_index::FtsIndex::open_or_create(
+            &self.ingest_journal_path.parent().ok_or_else(|| anyhow!("Missing index directory"))?.join("fts"))?;
+        self.read_guard(&fts).await
+    }
+
+    pub async fn ingest_batch_with_fts(&self, chunks: &[DocumentChunk], replace_doc_ids: &[String], fts: &super::fts_index::FtsIndex) -> Result<()> {
+        super::ingest::apply_imported_chunks(self, fts, chunks, replace_doc_ids).await
+    }
+
+    pub async fn delete_document_with_fts(&self, doc_id: &str, fts: &super::fts_index::FtsIndex) -> Result<()> {
+        super::ingest::apply_imported_chunks(self, fts, &[], &[doc_id.to_owned()]).await
+    }
+
+    /// Apply a remotely requested deletion only if policy inspected this exact
+    /// durable local revision. A concurrent local edit leaves the document intact.
+    pub async fn delete_document_if_version_with_fts(
+        &self, doc_id: &str, expected_version: u64, fts: &super::fts_index::FtsIndex,
+    ) -> Result<bool> {
+        super::ingest::apply_imported_chunks_if_version(
+            self, fts, &[], &[doc_id.to_owned()], Some(expected_version)).await
+    }
+
+    pub(crate) async fn documents_absent(&self, doc_ids: &[String]) -> Result<bool> {
+        self.table.checkout_latest().await?;
+        if doc_ids.is_empty() { return Ok(true); }
+        Ok(self.table.count_rows(Some(format!("doc_id IN ({})", sql_values(doc_ids)))).await? == 0)
+    }
+
+    /// Normal metadata refreshes preserve an extracted body. An explicit
+    /// accepted-remote replacement is allowed to replace its prior identity.
+    pub(crate) async fn prepare_imported_chunks(&self, chunks: &[DocumentChunk], replace_doc_ids: &[String]) -> Result<Vec<DocumentChunk>> {
+        let mut identities = std::collections::BTreeSet::new();
+        let mut prepared = Vec::new();
+        for chunk in chunks {
+            anyhow::ensure!(!chunk.doc_id.is_empty() && !chunk.id.is_empty(), "Imported chunk identity is required");
+            anyhow::ensure!(identities.insert(&chunk.id), "Duplicate imported chunk identity");
+            if !replace_doc_ids.contains(&chunk.doc_id) && chunk.chunk_index < 0
+                && chunk.full_text.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                let count = self.table.count_rows(Some(format!(
+                    "doc_id = '{}' AND chunk_index >= 0", chunk.doc_id.replace('\'', "''")))).await?;
+                if count > 0 { continue; }
+            }
+            prepared.push(chunk.clone());
+        }
+        // Validate the entire batch before recording an intent or deleting old
+        // rows, including auxiliary vector dimensions and finite values.
+        if !prepared.is_empty() { chunks_to_record_batch(&prepared, self.dims, &self.schema)?; }
+        Ok(prepared)
+    }
+
+    pub(crate) async fn replace_imported_rows(&self, chunks: &mut [DocumentChunk], replace_doc_ids: &[String], generation: &str) -> Result<()> {
+        let replaced = import_replacement_ids(chunks, replace_doc_ids).into_iter().collect::<Vec<_>>();
+        let mut predicates = Vec::new();
+        if !replaced.is_empty() { predicates.push(format!("doc_id IN ({})", sql_values(&replaced))); }
+        if !chunks.is_empty() { predicates.push(format!("id IN ({})", sql_values(&chunks.iter().map(|c| c.id.clone()).collect::<Vec<_>>()))); }
+        if predicates.is_empty() { return Ok(()); }
+        let filter = predicates.join(" OR ");
+        if chunks.is_empty() {
+            self.table.delete(&filter).await?;
+        } else {
+            for chunk in chunks.iter_mut() {
+                let mut metadata: serde_json::Value = chunk.metadata_json.as_deref()
+                    .map(serde_json::from_str).transpose()?.unwrap_or_else(|| serde_json::json!({}));
+                anyhow::ensure!(metadata.is_object(), "Document metadata must be an object");
+                metadata["index_write_generation"] = generation.into();
+                chunk.metadata_json = Some(metadata.to_string());
+            }
+            let batch = chunks_to_record_batch(chunks, self.dims, &self.schema)?;
+            let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], self.schema.clone());
+            let mut merge = self.table.merge_insert(&["id", "metadata_json"]);
+            merge.when_not_matched_insert_all().when_not_matched_by_source_delete(Some(filter));
+            merge.execute(Box::new(reader)).await?;
+        }
+        super::result_cache::invalidate();
+        Ok(())
+    }
+
+    /// Build the full-text view of the post-import rows before committing them.
+    /// Partial chunk imports retain untouched siblings; complete document
+    /// imports remove old tails. Byte offsets remove overlapping chunk text.
+    pub(crate) async fn fts_inputs_after_import(&self, chunks: &[DocumentChunk], replace_doc_ids: &[String]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
+        let ids = chunks.iter().map(|c| c.doc_id.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+        self.fts_inputs_for_doc_changes(&ids, chunks, replace_doc_ids).await
+    }
+
+    pub(crate) async fn fts_inputs_for_docs(&self, doc_ids: &[String]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
+        self.fts_inputs_for_doc_changes(doc_ids, &[], &[]).await
+    }
+
+    async fn fts_inputs_for_doc_changes(&self, doc_ids: &[String], chunks: &[DocumentChunk], replace_doc_ids: &[String]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
+        if doc_ids.is_empty() { return Ok(Vec::new()); }
+        let replaced = import_replacement_ids(chunks, replace_doc_ids);
+        let existing: Vec<RecordBatch> = self.table.query().only_if(format!("doc_id IN ({})", sql_values(doc_ids)))
+            .select(lancedb::query::Select::Columns(["id", "doc_id", "owner_id", "language", "title", "headings_text", "full_text", "text_translated", "chunk_index", "chunk_start_char", "chunk_end_char"].iter().map(|s| s.to_string()).collect()))
+            .execute().await?.try_collect().await?;
+        let mut rows = std::collections::BTreeMap::<String, FtsPiece>::new();
+        for batch in existing {
+            for row in 0..batch.num_rows() {
+                let string = |name: &str| str_col_opt(&batch, name).filter(|c| !c.is_null(row)).map(|c| c.value(row).to_owned());
+                let number = |name: &str| batch.column_by_name(name).and_then(|c| c.as_any().downcast_ref::<Int32Array>()).filter(|c| !c.is_null(row)).map(|c| c.value(row));
+                let doc_id = string("doc_id").unwrap_or_default();
+                if replaced.contains(&doc_id) { continue; }
+                let id = string("id").unwrap_or_default();
+                rows.insert(id.clone(), FtsPiece { id, doc_id, owner: string("owner_id").unwrap_or_default(),
+                    language: string("language").unwrap_or_default(), title: string("title").unwrap_or_default(),
+                    headings: string("headings_text").unwrap_or_default(), body: string("full_text").unwrap_or_default(),
+                    translated: string("text_translated"), chunk_index: number("chunk_index").unwrap_or(-1),
+                    start: number("chunk_start_char"), end: number("chunk_end_char") });
+            }
+        }
+        for chunk in chunks { rows.insert(chunk.id.clone(), FtsPiece::from(chunk)); }
+        let mut grouped = std::collections::BTreeMap::<String, Vec<FtsPiece>>::new();
+        for (_, piece) in rows { grouped.entry(piece.doc_id.clone()).or_default().push(piece); }
+        let mut inputs = Vec::new();
+        for (doc_id, mut group) in grouped {
+            group.sort_by_key(|c| c.chunk_index);
+            let Some(first) = group.first() else { continue; };
+            let has_extracted_row = group.iter().any(|piece| piece.chunk_index >= 0);
+            let mut input = super::ingest::TantivyInputOwned { doc_id, owner_id: first.owner.clone(), language: first.language.clone(),
+                title: first.title.clone(), headings: first.headings.clone(), body: String::new(), body_translated: None };
+            let mut previous_end: Option<i32> = None;
+            for piece in group {
+                if input.body_translated.is_none() { input.body_translated = piece.translated; }
+                let overlap = previous_end.zip(piece.start).and_then(|(end, start)| end.checked_sub(start))
+                    .and_then(|n| usize::try_from(n).ok()).filter(|n| *n <= piece.body.len() && piece.body.is_char_boundary(*n));
+                if let Some(overlap) = overlap {
+                    input.body.push_str(&piece.body[overlap..]);
+                } else {
+                    if !input.body.is_empty() && !piece.body.is_empty() { input.body.push('\n'); }
+                    input.body.push_str(&piece.body);
+                }
+                previous_end = piece.end;
+            }
+            // Visual/audio documents can have no textual body while their
+            // title and other indexed fields remain searchable.
+            if has_extracted_row || !input.body.trim().is_empty() { inputs.push(input); }
+        }
+        Ok(inputs)
+    }
+
+    pub(crate) async fn row_generation_committed(&self, row_ids: &[String], generation: &str) -> Result<bool> {
+        if row_ids.is_empty() { return Ok(false); }
+        self.table.checkout_latest().await?;
+        let batches: Vec<RecordBatch> = self.table.query().only_if(format!("id IN ({})", sql_values(row_ids)))
+            .select(lancedb::query::Select::Columns(vec!["id".into(), "metadata_json".into()]))
+            .execute().await?.try_collect().await?;
+        let mut found = std::collections::BTreeSet::new();
+        for batch in batches {
+            let (Some(ids), Some(metadata)) = (str_col_opt(&batch, "id"), str_col_opt(&batch, "metadata_json")) else { continue; };
+            for row in 0..batch.num_rows() {
+                if metadata.is_null(row) || ids.is_null(row) { continue; }
+                let value: serde_json::Value = serde_json::from_str(metadata.value(row))?;
+                if value.get("index_write_generation").and_then(|v| v.as_str()) == Some(generation) { found.insert(ids.value(row).to_owned()); }
+            }
+        }
+        anyhow::ensure!(found.is_empty() || found.len() == row_ids.len(), "Incomplete index generation; full-text repair retained");
+        Ok(found.len() == row_ids.len())
+    }
+
+    /// Find the old document identities superseded by complete replacements.
+    /// A changed file has a new content hash, but still occupies the same source
+    /// location. Matching the owner as well prevents cross-owner replacement.
+    pub(crate) async fn replacement_doc_ids(&self, chunks: &[DocumentChunk]) -> Result<Vec<String>> {
+        self.table.checkout_latest().await?;
+        let filter = replacement_filter(chunks)?;
+        let batches: Vec<RecordBatch> = self.table.query().only_if(filter)
+            .select(lancedb::query::Select::Columns(vec!["doc_id".into()]))
+            .execute().await?.try_collect().await?;
+        let mut ids = std::collections::BTreeSet::new();
+        ids.extend(chunks.iter().map(|c| c.doc_id.clone()));
+        for batch in batches {
+            if let Some(column) = str_col_opt(&batch, "doc_id") {
+                ids.extend(column.iter().flatten().map(str::to_owned));
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Atomically replace complete documents after extraction and embedding
+    /// have succeeded. A fresh generation in metadata makes the merge key
+    /// distinct from every old row, including duplicate rows from older app
+    /// versions. The delete and insert are one Lance transaction; unrelated
+    /// documents remain untouched. Do not call with a partial chunk batch.
+    pub(crate) async fn replace_documents(&self, chunks: &mut [DocumentChunk], generation: &str) -> Result<()> {
+        if chunks.is_empty() { return Ok(()); }
+        let filter = replacement_filter(chunks)?;
+        for chunk in chunks.iter_mut() {
+            let mut metadata: serde_json::Value = chunk.metadata_json.as_deref()
+                .map(serde_json::from_str).transpose()?
+                .unwrap_or_else(|| serde_json::json!({}));
+            anyhow::ensure!(metadata.is_object(), "Document metadata must be an object");
+            metadata["index_write_generation"] = generation.into();
+            chunk.metadata_json = Some(metadata.to_string());
+        }
+        // Build and validate every Arrow row before any mutation. A model
+        // dimension or conversion failure must retain the last good version.
+        let batch = chunks_to_record_batch(chunks, self.dims, &self.schema)?;
+        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], self.schema.clone());
+        let mut merge = self.table.merge_insert(&["id", "metadata_json"]);
+        merge.when_not_matched_insert_all()
+            .when_not_matched_by_source_delete(Some(filter));
+        merge.execute(Box::new(reader)).await.context("replacing complete document rows")?;
+        super::result_cache::invalidate();
+        Ok(())
+    }
+
+    /// Idempotent metadata ingestion; re-scanning a catalog does not append a
+    /// second copy of its representative row. This deliberately does not delete
+    /// extracted chunks: a metadata-only scan cannot downgrade a document.
+    pub(crate) async fn upsert_metadata_rows(&self, chunks: &[DocumentChunk]) -> Result<()> {
+        if chunks.is_empty() { return Ok(()); }
+        self.table.checkout_latest().await?;
+        let mut pending = Vec::new();
+        let mut scopes = std::collections::BTreeSet::new();
+        let mut identities = std::collections::BTreeSet::new();
+        for chunk in chunks {
+            let chunk = self.metadata_occurrence(chunk).await?;
+            anyhow::ensure!(identities.insert(chunk.id.clone()), "Duplicate metadata identity in one batch");
+            let scope = SourceOccurrence::from_chunk(&chunk).filter();
+            let existing: Vec<RecordBatch> = self.table.query()
+                .only_if(format!("{scope} AND chunk_index = 0"))
+                .select(lancedb::query::Select::Columns(vec!["doc_id".into(), "metadata_json".into()]))
+                .limit(1).execute().await?.try_collect().await?;
+            if existing.iter().any(|b| b.num_rows() > 0) {
+                // A failed refresh keeps the previously searchable body and
+                // vectors, but records the failed attempt for the UI. A plain
+                // catalog scan leaves extracted content and metadata intact.
+                let attempted: serde_json::Value = chunk.metadata_json.as_deref()
+                    .map(serde_json::from_str).transpose()?.unwrap_or(serde_json::Value::Null);
+                if let Some(failure) = attempted.get("extraction_failure") {
+                    self.annotate_occurrence_failure(&SourceOccurrence::from_chunk(&chunk), failure, &chunk.source_hash).await?;
+                }
+                continue;
+            }
+            scopes.insert(format!("({scope} AND chunk_index < 0)"));
+            pending.push(chunk.clone());
+        }
+        if pending.is_empty() {
+            super::result_cache::invalidate();
+            return Ok(());
+        }
+        let generation = uuid::Uuid::new_v4().to_string();
+        for chunk in &mut pending {
+            let mut metadata: serde_json::Value = chunk.metadata_json.as_deref()
+                .map(serde_json::from_str).transpose()?.unwrap_or_else(|| serde_json::json!({}));
+            metadata["index_write_generation"] = generation.clone().into();
+            chunk.metadata_json = Some(metadata.to_string());
+        }
+        let batch = chunks_to_record_batch(&pending, self.dims, &self.schema)?;
+        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], self.schema.clone());
+        let mut merge = self.table.merge_insert(&["id", "metadata_json"]);
+        merge.when_not_matched_insert_all()
+            .when_not_matched_by_source_delete(Some(scopes.into_iter().collect::<Vec<_>>().join(" OR ")));
+        merge.execute(Box::new(reader)).await.context("upserting metadata rows")?;
+        super::result_cache::invalidate();
+        Ok(())
+    }
+
+    /// A journal entry is replayable only if its entire vector transaction
+    /// committed. Intent records written before a failed transaction are safe
+    /// to discard; they must never overwrite the previous full-text index.
+    pub(crate) async fn generation_committed(&self, doc_ids: &[String], generation: &str) -> Result<bool> {
+        if doc_ids.is_empty() { return Ok(false); }
+        self.table.checkout_latest().await?;
+        let quoted = doc_ids.iter().map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect::<Vec<_>>().join(",");
+        let predicate = format!("doc_id IN ({quoted}) AND chunk_index = 0");
+        let batches: Vec<RecordBatch> = self.table.query().only_if(predicate)
+            .select(lancedb::query::Select::Columns(vec!["doc_id".into(), "metadata_json".into()]))
+            .execute().await?.try_collect().await?;
+        let mut committed = std::collections::BTreeSet::new();
+        for batch in batches {
+            let (Some(ids), Some(metadata)) = (str_col_opt(&batch, "doc_id"), str_col_opt(&batch, "metadata_json")) else { continue; };
+            for row in 0..batch.num_rows() {
+                if ids.is_null(row) || metadata.is_null(row) { continue; }
+                let value: serde_json::Value = serde_json::from_str(metadata.value(row))?;
+                if value.get("index_write_generation").and_then(|v| v.as_str()) == Some(generation) {
+                    committed.insert(ids.value(row).to_owned());
+                }
+            }
+        }
+        anyhow::ensure!(committed.is_empty() || committed.len() == doc_ids.len(),
+            "Incomplete index generation; full-text repair is retained for retry");
+        Ok(committed.len() == doc_ids.len())
     }
 
     // ── Search ─────────────────────────────────────────────────────────────
@@ -870,36 +1251,24 @@ impl LocalIndex {
 
     /// Delete all rows for a document (all chunks).
     pub async fn delete_doc(&self, doc_id: &str) -> Result<()> {
-        let expr = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
-        self.table.delete(&expr).await.context("LanceDB delete")?;
-        Ok(())
+        let fts = super::fts_index::FtsIndex::open_or_create(
+            &self.ingest_journal_path.parent().ok_or_else(|| anyhow!("Missing index directory"))?.join("fts"))?;
+        self.delete_document_with_fts(doc_id, &fts).await
     }
 
     /// Update the `location_uri` column for all rows of a document.
     pub async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
+        let _guard = self.write_guard().await?;
         let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
-        let new_val = format!("'{}'", new_uri.replace('\'', "''"));
-        self.table
-            .update()
-            .only_if(filter)
-            .column("location_uri", new_val)
-            .execute()
-            .await
-            .context("LanceDB update_location")?;
+        self.update_location_filter_locked(&filter, new_uri).await?;
         Ok(())
     }
 
     /// Update `location_uri` by matching the old URI (no doc_id required).
     pub async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        let _guard = self.write_guard().await?;
         let filter = format!("location_uri = '{}'", old_uri.replace('\'', "''"));
-        let new_val = format!("'{}'", new_uri.replace('\'', "''"));
-        self.table
-            .update()
-            .only_if(filter)
-            .column("location_uri", new_val)
-            .execute()
-            .await
-            .context("LanceDB update_location_by_uri")?;
+        self.update_location_filter_locked(&filter, new_uri).await?;
         Ok(())
     }
 
@@ -907,6 +1276,7 @@ impl LocalIndex {
     /// Pass `None` to reset to NULL.  Used by the `index_set_doc_status` Tauri
     /// command so the UI can tag documents as e.g. "reviewed" / "rejected".
     pub async fn set_doc_status(&self, doc_id: &str, status: Option<&str>) -> Result<()> {
+        let _guard = self.write_guard().await?;
         let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
         let value = match status {
             Some(s) => format!("'{}'", s.replace('\'', "''")),
@@ -919,14 +1289,17 @@ impl LocalIndex {
             .execute()
             .await
             .context("updating doc_status")?;
+        super::result_cache::invalidate();
         Ok(())
     }
 
     /// Remove `extraction_failure` from `metadata_json` so the next background
     /// ingest run re-attempts extraction. Only meaningful for retryable reasons
     /// (Timeout / Other); the caller should check `is_retryable()` first.
-    /// Also sets `level` back to 1 so the row doesn't look like a completed L2.
+    /// Preserve a last good text version and invalidate the unchanged guard so
+    /// an explicit retry also runs when the source bytes have not changed.
     pub async fn clear_extraction_failure(&self, doc_id: &str) -> Result<()> {
+        let _guard = self.write_guard().await?;
         // Read the current metadata_json.
         let pred = format!(
             "doc_id = '{}' AND chunk_index <= 0",
@@ -951,10 +1324,18 @@ impl LocalIndex {
                 let raw = arr.value(0);
                 serde_json::from_str(raw).ok()
             });
+        let retained_text = batches.iter().any(|b| {
+            b.column_by_name("chunk_index")
+                .and_then(|c| c.as_any().downcast_ref::<Int32Array>())
+                .is_some_and(|c| !c.is_empty() && c.value(0) >= 0)
+        });
         let new_meta = if let Some(mut m) = current_meta {
             m.as_object_mut().map(|o| {
                 o.remove("extraction_failure");
-                o.insert("level".to_owned(), serde_json::Value::from(1i64));
+                o.remove("failed_source_hash");
+                o.remove("extraction_skip");
+                o.remove("mtime_unix");
+                o.insert("level".to_owned(), serde_json::Value::from(if retained_text { 3i64 } else { 1i64 }));
             });
             m.to_string()
         } else {
@@ -962,18 +1343,18 @@ impl LocalIndex {
         };
         self.table
             .update()
-            .only_if(pred)
+            .only_if(format!("doc_id = '{}'", doc_id.replace('\'', "''")))
             .column("metadata_json", format!("'{}'", new_meta.replace('\'', "''")))
             .execute()
             .await
             .context("clear_extraction_failure update")?;
+        super::result_cache::invalidate();
         Ok(())
     }
 
-    /// Patch L2 metadata fields on an existing row. Pass `None` to leave a
-    /// column untouched. `metadata_json_merge` is JSON that gets shallow-merged
-    /// into the existing `metadata_json` (the caller is responsible for
-    /// computing the final blob — see `index_promote_l2`).
+    /// Patch metadata without dropping searchable text or vector rows. Supplied
+    /// JSON is shallow-merged into each row's existing metadata. Title and
+    /// language changes use the same durable paired write as body ingestion.
     pub async fn update_l2_fields(
         &self,
         doc_id: &str,
@@ -984,29 +1365,87 @@ impl LocalIndex {
         page_count: Option<i32>,
         metadata_json: Option<&str>,
     ) -> Result<()> {
+        let fts = super::fts_index::FtsIndex::open_or_create(
+            &self.ingest_journal_path.parent().ok_or_else(|| anyhow!("Missing index directory"))?.join("fts"))?;
+        super::ingest::apply_metadata_update(self, &fts, doc_id, title, author, year,
+            language, page_count, metadata_json).await
+    }
+
+    /// Prepare all affected Arrow rows before recording a durable intent.
+    /// Untouched columns keep their original arrays, preserving vectors and
+    /// chunk-specific evidence during the atomic replacement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn prepare_metadata_update(
+        &self, doc_id: &str, title: Option<&str>, author: Option<&str>,
+        year: Option<i32>, language: Option<&str>, page_count: Option<i32>,
+        metadata_json: Option<&str>, generation: &str,
+    ) -> Result<(Vec<String>, Vec<RecordBatch>)> {
+        let patch = metadata_json.map(serde_json::from_str::<serde_json::Value>)
+            .transpose()?.unwrap_or_else(|| serde_json::json!({}));
+        let patch = patch.as_object().ok_or_else(|| anyhow!("Metadata update must be a JSON object"))?;
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(format!("doc_id = '{}'", doc_id.replace('\'', "''")))
+            .execute().await?.try_collect().await?;
+        let previous_time = batches.iter().filter_map(|batch| batch.column_by_name("indexed_at")
+            .and_then(|column| column.as_any().downcast_ref::<TimestampMillisecondArray>()))
+            .flat_map(|column| column.values().iter().copied()).max().unwrap_or(0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as i64;
+        let updated_at = now.max(previous_time.checked_add(1).ok_or_else(|| anyhow!("Metadata timestamp overflow"))?);
+        let mut row_ids = std::collections::BTreeSet::new();
+        let mut prepared = Vec::with_capacity(batches.len());
+        for batch in batches {
+            if batch.num_rows() == 0 { continue; }
+            let ids = str_col_opt(&batch, "id").ok_or_else(|| anyhow!("Missing chunk identity"))?;
+            let metadata = str_col_opt(&batch, "metadata_json");
+            let chunk_indices = batch.column_by_name("chunk_index")
+                .and_then(|column| column.as_any().downcast_ref::<Int32Array>());
+            let mut updated_metadata = Vec::with_capacity(batch.num_rows());
+            for row in 0..batch.num_rows() {
+                anyhow::ensure!(!ids.is_null(row) && !ids.value(row).is_empty(), "Missing chunk identity");
+                row_ids.insert(ids.value(row).to_owned());
+                let previous = metadata.filter(|c| !c.is_null(row)).map(|c| c.value(row));
+                let mut value = previous.map(serde_json::from_str::<serde_json::Value>)
+                    .transpose()?.unwrap_or_else(|| serde_json::json!({}));
+                let object = value.as_object_mut().ok_or_else(|| anyhow!("Existing document metadata must be a JSON object"))?;
+                let row_level = if chunk_indices.is_some_and(|indices| !indices.is_null(row) && indices.value(row) >= 0) { 3 } else { 1 };
+                let current_level = object.get("level").and_then(serde_json::Value::as_i64).unwrap_or(row_level).max(row_level);
+                let incoming_level = patch.get("level").and_then(serde_json::Value::as_i64).unwrap_or(current_level);
+                object.extend(patch.clone());
+                object.insert("level".into(), current_level.max(incoming_level).into());
+                object.insert("index_write_generation".into(), generation.into());
+                updated_metadata.push(value.to_string());
+            }
+            let schema = batch.schema();
+            let mut columns = batch.columns().to_vec();
+            columns[schema.index_of("indexed_at")?] = Arc::new(TimestampMillisecondArray::from(vec![updated_at; batch.num_rows()]));
+            columns[schema.index_of("metadata_json")?] = Arc::new(StringArray::from(updated_metadata));
+            for (name, value) in [("title", title), ("author", author), ("language", language)] {
+                if let Some(value) = value {
+                    columns[schema.index_of(name)?] = Arc::new(StringArray::from(vec![Some(value); batch.num_rows()]));
+                }
+            }
+            for (name, value) in [("year", year), ("page_count", page_count)] {
+                if let Some(value) = value {
+                    columns[schema.index_of(name)?] = Arc::new(Int32Array::from(vec![Some(value); batch.num_rows()]));
+                }
+            }
+            prepared.push(RecordBatch::try_new(schema, columns)?);
+        }
+        Ok((row_ids.into_iter().collect(), prepared))
+    }
+
+    /// Called only with the paired writer lease and a durable intent in place.
+    pub(crate) async fn apply_metadata_columns(
+        &self, doc_id: &str, batches: Vec<RecordBatch>,
+    ) -> Result<()> {
+        if batches.is_empty() { return Ok(()); }
         let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
-        let mut update = self.table.update().only_if(filter);
-
-        if let Some(t) = title {
-            update = update.column("title", format!("'{}'", t.replace('\'', "''")));
-        }
-        if let Some(a) = author {
-            update = update.column("author", format!("'{}'", a.replace('\'', "''")));
-        }
-        if let Some(y) = year {
-            update = update.column("year", y.to_string());
-        }
-        if let Some(lang) = language {
-            update = update.column("language", format!("'{}'", lang.replace('\'', "''")));
-        }
-        if let Some(pc) = page_count {
-            update = update.column("page_count", pc.to_string());
-        }
-        if let Some(meta) = metadata_json {
-            update = update.column("metadata_json", format!("'{}'", meta.replace('\'', "''")));
-        }
-
-        update.execute().await.context("LanceDB update_l2_fields")?;
+        let schema = batches[0].schema();
+        let reader = arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
+        let mut merge = self.table.merge_insert(&["id", "metadata_json"]);
+        merge.when_not_matched_insert_all().when_not_matched_by_source_delete(Some(filter));
+        merge.execute(Box::new(reader)).await.context("committing document metadata")?;
+        super::result_cache::invalidate();
         Ok(())
     }
 
@@ -1027,6 +1466,7 @@ impl LocalIndex {
         num_partitions: Option<u32>,
         sample_rate: Option<u32>,
     ) -> Result<()> {
+        let _guard = self.write_guard().await?;
         let row_count = self.count().await?.max(1);
         let partitions = num_partitions.unwrap_or_else(|| {
             let auto = (row_count as f64).sqrt() as u32;
@@ -1055,6 +1495,7 @@ impl LocalIndex {
     /// will replace old indexes. Typically called once after the first
     /// bulk L1 ingest or whenever the table grows significantly.
     pub async fn build_scalar_index(&self) -> Result<()> {
+        let _guard = self.write_guard().await?;
         self.table
             .create_index(&["parent_dir"], Index::BTree(BTreeIndexBuilder::default()))
             .execute()
@@ -1413,6 +1854,7 @@ impl LocalIndex {
         lance_dir: &std::path::Path,
         max_bytes: u64,
     ) -> Result<(usize, usize, u64)> {
+        let _guard = self.write_guard().await?;
         let initial = dir_size_bytes(lance_dir);
         if initial <= max_bytes {
             return Ok((0, 0, 0));
@@ -1621,6 +2063,26 @@ impl LocalIndex {
             .try_collect()
             .await?;
         record_batches_to_search_results(&batches)
+    }
+
+    /// Fetch one representative row without scanning the catalog or loading
+    /// vector columns. Callers can hold `read_guard` across related reads.
+    pub async fn fetch_document_summary(&self, doc_id: &str) -> Result<Option<SearchResult>> {
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(format!("doc_id = '{}' AND chunk_index <= 0", doc_id.replace('\'', "''")))
+            .select(search_result_columns())
+            .limit(1).execute().await?.try_collect().await?;
+        Ok(record_batches_to_search_results(&batches)?.into_iter().next())
+    }
+
+    /// Resolve a metadata scan to an existing complete document at its source.
+    pub async fn fetch_document_summary_for_uri(&self, location_uri: &str, owner_id: &str) -> Result<Option<SearchResult>> {
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(format!("location_uri = '{}' AND owner_id = '{}' AND chunk_index <= 0",
+                location_uri.replace('\'', "''"), owner_id.replace('\'', "''")))
+            .select(search_result_columns())
+            .limit(1).execute().await?.try_collect().await?;
+        Ok(record_batches_to_search_results(&batches)?.into_iter().next())
     }
 
     /// P13.7 Stage A — list documents in a shape suitable for
@@ -2184,7 +2646,7 @@ impl LocalIndex {
         location_uri: &str,
     ) -> Result<Option<String>> {
         let pred = format!(
-            "location_uri = '{}' AND chunk_index = 0",
+            "location_uri = '{}' AND chunk_index <= 0",
             location_uri.replace('\'', "''")
         );
         let batches: Vec<RecordBatch> = self
@@ -2226,29 +2688,17 @@ impl LocalIndex {
         Ok(None)
     }
 
-    /// Parse the two fields we keep in `metadata_json` without pulling in a
-    /// JSON parser: `mtime_unix` is an integer with a fixed key, and
-    /// `images_indexed` is written as the literal `"images_indexed":true`.
+    /// Parse recorded source state using JSON semantics, including whitespace
+    /// and negative timestamps from imported records.
     fn parse_indexed_state(json: &str) -> IndexedState {
-        let mtime_unix = json
-            .find("\"mtime_unix\"")
-            .and_then(|start| {
-                let after = &json[start + "\"mtime_unix\"".len()..];
-                // Skip optional whitespace + colon + whitespace.
-                let rest = after.trim_start();
-                let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
-                // Read the integer up to the next non-digit.
-                let end = rest
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(rest.len());
-                if end == 0 {
-                    return None;
-                }
-                rest[..end].parse::<i64>().ok()
-            });
+        let value: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
         IndexedState {
-            mtime_unix,
-            images_indexed: json.contains("\"images_indexed\":true"),
+            mtime_unix: value.get("mtime_unix").and_then(|v| v.as_i64()),
+            images_indexed: value.get("images_indexed").and_then(|v| v.as_bool()).unwrap_or(false),
+            source_hash: value.get("failed_source_hash").and_then(|v| v.as_str()).map(str::to_owned),
+            extraction_failed: value.get("extraction_failure").is_some(),
+            extraction_skip: value.get("extraction_skip").and_then(|v| v.as_bool()).unwrap_or(false)
+                || matches!(value.get("extraction_failure").and_then(|v| v.get("msg")).and_then(|v| v.as_str()), Some("skipped via GUI" | "manually skipped via CLI")),
         }
     }
 
@@ -2256,10 +2706,19 @@ impl LocalIndex {
         &self,
         location_uri: &str,
     ) -> Result<Option<IndexedState>> {
-        let pred = format!(
-            "location_uri = '{}' AND chunk_index = 0",
+        self.indexed_state_for_scope(location_uri, None).await
+    }
+
+    pub async fn indexed_state_for_owner_uri(&self, location_uri: &str, owner_id: &str) -> Result<Option<IndexedState>> {
+        self.indexed_state_for_scope(location_uri, Some(owner_id)).await
+    }
+
+    async fn indexed_state_for_scope(&self, location_uri: &str, owner_id: Option<&str>) -> Result<Option<IndexedState>> {
+        let mut pred = format!(
+            "location_uri = '{}' AND chunk_index <= 0",
             location_uri.replace('\'', "''")
         );
+        if let Some(owner) = owner_id { pred.push_str(&format!(" AND owner_id = '{}'", owner.replace('\'', "''"))); }
         let batches: Vec<RecordBatch> = self
             .table
             .query()
@@ -2280,7 +2739,12 @@ impl LocalIndex {
                     if arr.is_null(i) {
                         continue;
                     }
-                    return Ok(Some(Self::parse_indexed_state(arr.value(i))));
+                    let mut state = Self::parse_indexed_state(arr.value(i));
+                    if !state.extraction_skip || state.source_hash.is_none() {
+                        state.source_hash = str_col_opt(batch, "source_hash")
+                            .filter(|hashes| !hashes.is_null(i)).map(|hashes| hashes.value(i).to_owned());
+                    }
+                    return Ok(Some(state));
                 }
             }
         }
@@ -2323,6 +2787,7 @@ impl LocalIndex {
                 let Ok(v): std::result::Result<serde_json::Value, _> =
                     serde_json::from_str(meta_arr.value(i))
                 else { continue; };
+                if v.get("extraction_skip").and_then(|v| v.as_bool()) == Some(true) { continue; }
                 let Some(reason) = v
                     .get("extraction_failure")
                     .and_then(|f| f.get("reason"))
@@ -2333,6 +2798,7 @@ impl LocalIndex {
                 use crate::index::task_failure::TaskFailureReason;
                 let tfr = match reason.as_str() {
                     "timeout" => TaskFailureReason::Timeout,
+                    "empty_text" => TaskFailureReason::EmptyText,
                     "other"   => TaskFailureReason::Other,
                     _         => {
                         if retryable_only { continue; }
@@ -2367,6 +2833,27 @@ impl LocalIndex {
             self.clear_extraction_failure(&row.doc_id).await?;
         }
         Ok(rows.len())
+    }
+
+    /// Explicitly skip failed sources without replacing their metadata, tags,
+    /// review evidence or write receipt. A changed content hash is eligible for
+    /// extraction again; an explicit per-document retry clears this marker.
+    pub async fn skip_failed_extractions(&self) -> Result<usize> {
+        let _guard = self.write_guard().await?;
+        let rows = self.list_failed_extractions(false).await?;
+        let ids = rows.into_iter().map(|r| r.doc_id).collect::<std::collections::BTreeSet<_>>();
+        let mut count = 0;
+        for id in ids {
+            let mut metadata = self.document_metadata(&id).await?;
+            if metadata.get("extraction_failure").is_none() { continue; }
+            metadata["extraction_skip"] = true.into();
+            self.table.update().only_if(format!("doc_id = '{}'", id.replace('\'', "''")))
+                .column("metadata_json", format!("'{}'", metadata.to_string().replace('\'', "''")))
+                .execute().await?;
+            count += 1;
+        }
+        super::result_cache::invalidate();
+        Ok(count)
     }
 
     // ── P7.7 — .cidx export / import ──────────────────────────────────────
@@ -2547,7 +3034,8 @@ impl LocalIndex {
         // dims=0: .cidx is read-only; the dim value only matters for new
         // table creation (not applicable here) and embedding operations
         // (not performed on snapshots).
-        Ok(Self { _db: db, table, dims: 0, schema: build_schema(0) })
+        Ok(Self { _db: db, table, dims: 0, schema: build_schema(0),
+            ingest_journal_path: cidx_path.join("index-write-journal.sqlite") })
     }
 }
 
@@ -2704,6 +3192,28 @@ fn chunks_to_record_batch(
     schema: &Arc<Schema>,
 ) -> Result<RecordBatch> {
     let n = chunks.len();
+
+    for chunk in chunks {
+        for (name, vector, width) in [
+            ("embedding", chunk.embedding.as_ref(), dims),
+            ("embedding_omni", chunk.embedding_omni.as_ref(), 2048usize),
+            ("embedding_vit", chunk.embedding_vit.as_ref(), 768usize),
+        ] {
+            if let Some(vector) = vector {
+                anyhow::ensure!(vector.len() == width && vector.iter().all(|n| n.is_finite()),
+                    "Invalid {name} for {}: expected {width} finite values, received {}", chunk.id, vector.len());
+            }
+        }
+        match (&chunk.multivec_packed, chunk.multivec_n_tokens) {
+            (None, None) => {},
+            (Some(bytes), Some(tokens)) if tokens > 0 && !bytes.is_empty()
+                && bytes.len() % (tokens as usize * 4) == 0 => {
+                anyhow::ensure!(bytes.chunks_exact(4).all(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).is_finite()),
+                    "Non-finite multi-vector values for {}", chunk.id);
+            },
+            _ => anyhow::bail!("Invalid multi-vector shape for {}", chunk.id),
+        }
+    }
 
     // A vector whose length is not the table's width would reach arrow's
     // FixedSizeListBuilder and *panic* ("Length of the child array (384) must

@@ -1,0 +1,1 @@
+fn main() { let path = std::env::args_os().nth(1).expect("artifact output directory"); if let Err(error) = crispsorter_office_quality::ocr_office_fixture::generate(std::path::Path::new(&path)) { eprintln!("{error}"); std::process::exit(1); } }

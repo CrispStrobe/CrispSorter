@@ -5,7 +5,7 @@
     import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { save } from '@tauri-apps/plugin-dialog';
     import { writeFile } from '@tauri-apps/plugin-fs';
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
     import { i18n } from '$lib/i18n.svelte';
     import { searchLabels } from '$lib/search/labels';
@@ -15,10 +15,15 @@
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
+    import SearchQueryTools from './SearchQueryTools.svelte';
+    import SearchPassage from './SearchPassage.svelte';
+    import { buildSearchReport, groupResults, highlightedSnippet, searchReportCsv, searchReportHtml,
+        sortGroups, type ResultSort } from '$lib/search/inspection';
     import FieldEvidencePanel from './FieldEvidencePanel.svelte';
     import DocumentDecisionPanel from './DocumentDecisionPanel.svelte';
     import { experimentalCrispEmbed, loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
     import { batchManager } from '$lib/batch/store.svelte';
+    import { batchSourceKey } from '$lib/mobileProvider';
     import { stat } from '@tauri-apps/plugin-fs';
     import { availableDocumentTools, documentToolRequest } from '$lib/workflow';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
@@ -53,8 +58,10 @@
         ext?:            string;
         language?:       string;
         location_uri:    string;
+        owner_id?:       string;
         snippet:         string;   // backend sends "snippet", not "full_text"
         source_hash?:    string;
+        indexed_at?:     number;
         // PLAN P6 4c / P7.1: when set, this hit came from the catalog
         // table (a substring filename match across active .caf-derived
         // catalogs) rather than the documents table. The path here is
@@ -101,8 +108,60 @@
     let loading     = $state(false);
     let error       = $state('');
     let searchNotice = $state('');
+    interface ResultActionFeedback {
+        kind: 'success' | 'error';
+        message: string;
+        retry?: () => Promise<void>;
+    }
+    let resultActionFeedback = $state<ResultActionFeedback | null>(null);
+    let resultActionsBusy = $state<Set<string>>(new Set());
+    let resultActionRequest = 0;
+
+    function dismissResultActionFeedback(): void {
+        resultActionRequest += 1;
+        resultActionFeedback = null;
+    }
+
+    /** Result actions must not replace the search view with a retrieval error. */
+    async function runResultAction(
+        key: string,
+        operation: () => Promise<string | null>,
+        failure: string,
+        retryable: boolean | (() => boolean) = true,
+    ): Promise<void> {
+        if (resultActionsBusy.has(key)) return;
+        const request = ++resultActionRequest;
+        resultActionFeedback = null;
+        resultActionsBusy = new Set([...resultActionsBusy, key]);
+        try {
+            const message = await operation();
+            if (request === resultActionRequest && message) {
+                resultActionFeedback = { kind: 'success', message };
+            }
+        } catch (cause) {
+            if (request === resultActionRequest) {
+                const detail = cause instanceof Error ? cause.message : String(cause);
+                resultActionFeedback = {
+                    kind: 'error', message: `${failure}: ${detail}`,
+                    retry: (typeof retryable === 'function' ? retryable() : retryable)
+                        ? () => runResultAction(key, operation, failure, retryable) : undefined,
+                };
+            }
+        } finally {
+            const next = new Set(resultActionsBusy);
+            next.delete(key);
+            resultActionsBusy = next;
+        }
+    }
     let searchRequest = 0;
     let displayedRecipeKey = $state<string | null>(null);
+    let executedRecipe = $state<SearchRecipe | null>(null);
+    let executedQuery = $state('');
+    let searchedAt = $state('');
+    let elapsedMs = $state(0);
+    let resultSort = $state<ResultSort>('relevance');
+    let reportFormat = $state<'json' | 'csv' | 'html'>('html');
+    let compactResults = $state(false);
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
@@ -174,6 +233,8 @@
     let remoteLoading  = $state(false);
     let remoteError    = $state('');
     let remoteSearched = $state(false);
+    let remoteQuery = $state('');
+    let remoteRequest = 0;
     let remoteUsedText   = $state(false);
     let remoteUsedVector = $state(false);
     let remoteShards     = $state(0);
@@ -225,6 +286,7 @@
     let fedBackendsActive = $derived(fedBackends.filter((b) => fedBackendsAvailable.includes(b)));
     let fedResults      = $state<FederatedHit[]>([]);
     let fedLoading      = $state(false);
+    let fedRequest = 0;
     let fedSearched     = $state(false);
     let fedErrors       = $state<Record<string, string>>({});
     let fedQuery = $state('');
@@ -289,7 +351,10 @@
 
     async function runFederatedSearch() {
         const q = query.trim();
-        if (!q || !validateFilters()) return;
+        if (!q) return;
+        revealResultsOnNarrowScreen();
+        if (!validateFilters()) return;
+        const request = ++fedRequest;
         // The current remote federation wire paths do not carry these
         // options. Never silently broaden an explicitly filtered search.
         if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length
@@ -327,12 +392,14 @@
                     omniSearch: filterOmniSearch || null,
                 },
             );
+            if (request !== fedRequest) return;
             fedResults = r.hits ?? [];
             fedErrors  = r.errors ?? {};
         } catch (e: any) {
+            if (request !== fedRequest) return;
             fedErrors = { global: String(e?.message ?? e) };
         } finally {
-            fedLoading = false;
+            if (request === fedRequest) fedLoading = false;
         }
     }
 
@@ -429,6 +496,7 @@
         try {
             const stats = await invoke<{ chunk_count: number }>('index_audio_promote_l3', {
                 locationUri: r.location_uri,
+                ownerId: r.owner_id ?? null,
             });
             const after = new Map(transcribes);
             after.set(key, { loading: false, done: true, chunks: stats.chunk_count });
@@ -453,6 +521,7 @@
         try {
             const stats = await invoke<{ chunk_count: number }>('index_image_promote_l3', {
                 locationUri: r.location_uri,
+                ownerId: r.owner_id ?? null,
             });
             const after = new Map(transcribes);
             after.set(key, { loading: false, done: true, chunks: stats.chunk_count });
@@ -605,29 +674,54 @@
         if (wallabagBodies.has(r.doc_id)) {
             const next = new Map(wallabagBodies); next.delete(r.doc_id); wallabagBodies = next; return;
         }
-        wallabagReading = r.doc_id;
-        try {
-            const body = await invoke<string>('wallabag_read', { docId: r.doc_id });
-            const next = new Map(wallabagBodies); next.set(r.doc_id, body); wallabagBodies = next;
-        } catch (e) { error = `Could not read article: ${String(e)}`; }
-        finally { wallabagReading = null; }
+        await runResultAction(`article:${r.doc_id}`, async () => {
+            wallabagReading = r.doc_id;
+            try {
+                const body = await invoke<string>('wallabag_read', { docId: r.doc_id });
+                const next = new Map(wallabagBodies); next.set(r.doc_id, body); wallabagBodies = next;
+                return null;
+            } finally { wallabagReading = null; }
+        }, labels.readArticleFailed);
     }
 
     // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
     // Right-side slide-in pane using the universal DocumentViewer component.
     // Format detection + rendering is handled entirely by the viewer.
     let previewing = $state<SearchResult | null>(null);
+    let previewTab = $state<'original' | 'indexed'>('original');
+    let previewCloseButton = $state<HTMLButtonElement>();
+    let previewTrigger: HTMLButtonElement | null = null;
 
-    function openPreview(r: SearchResult) {
-        if (previewing && previewing.doc_id === r.doc_id) { closePreview(); return; }
+    async function openPreview(r: SearchResult, trigger: HTMLButtonElement) {
+        if (previewing && previewing.doc_id === r.doc_id) { await closePreview(); return; }
+        previewTrigger = trigger;
         previewing = r;
+        previewTab = 'original';
+        await tick();
+        // Narrow screens show the preview in place of the result list. Move
+        // focus to its close control instead of leaving it on a hidden trigger.
+        if (previewing?.doc_id === r.doc_id && window.matchMedia('(max-width: 800px)').matches) {
+            previewCloseButton?.focus({ preventScroll: true });
+        }
     }
 
-    function closePreview() {
+    async function closePreview() {
+        const trigger = previewTrigger;
         previewing = null;
+        previewTrigger = null;
+        await tick();
+        if (trigger?.isConnected) trigger.focus();
+    }
+
+    function revealResultsOnNarrowScreen() {
+        if (window.matchMedia('(max-width: 800px)').matches) {
+            previewing = null;
+            previewTrigger = null;
+        }
     }
 
     async function findByField(tag: string, value: string) {
+        revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         resetFilters(); searchNotice = ''; displayedRecipeKey = null; imageSearchLoading = false;
         loading = true; error = ''; searched = true;
@@ -656,7 +750,7 @@
         let item = batchManager.items.find(item => item.originalPath === path);
         if (!item) {
             const info = await stat(path);
-            batchManager.addItem(path, filename, info.size);
+            await batchManager.addItem(path, filename, info.size);
             item = batchManager.items.find(item => item.originalPath === path);
         }
         if (item) {
@@ -825,20 +919,7 @@
     }
 
     // Group results by doc_id
-    const grouped = $derived.by(() => {
-        const map = new Map<string, SearchResult[]>();
-        for (const r of results) {
-            if (!map.has(r.doc_id)) map.set(r.doc_id, []);
-            map.get(r.doc_id)!.push(r);
-        }
-        return Array.from(map.entries())
-            .map(([doc_id, chunks]) => ({
-                doc_id,
-                best:   chunks.sort((a, b) => b.score - a.score)[0],
-                chunks: chunks.sort((a, b) => a.chunk_index - b.chunk_index),
-            }))
-            .sort((a, b) => b.best.score - a.best.score);
-    });
+    const grouped = $derived(sortGroups(groupResults(results), 'relevance'));
 
     // ── Tier 2 tag cloud on the local results pane ──────────────────────────────
     // Opt-in (default-hidden) and computed entirely client-side from the hits
@@ -864,14 +945,59 @@
     // Groups narrowed by the AND tag selection — a document survives only if
     // its hits collectively carry every selected tag.
     const displayedGroups = $derived.by(() => {
-        if (searchTags.size === 0) return grouped;
-        return grouped.filter((g) => {
+        const filtered = searchTags.size === 0 ? grouped : grouped.filter((g) => {
             const docTags = new Set<string>();
             for (const c of g.chunks) for (const t of (c.tags ?? [])) docTags.add(t);
             for (const sel of searchTags) if (!docTags.has(sel)) return false;
             return true;
         });
+        return sortGroups(filtered, resultSort);
     });
+    const selectedDisplayedCount = $derived(displayedGroups.filter(group => batchSelection.has(group.doc_id)).length);
+
+    async function exportSearchReport(selectedOnly: boolean) {
+        if (!executedRecipe) return;
+        const groups = displayedGroups.filter(group => !selectedOnly || batchSelection.has(group.doc_id));
+        if (!groups.length) return;
+        // Freeze the executed recipe and current window before opening a dialog.
+        // Editing the query or changing selection during export cannot relabel it.
+        const report = buildSearchReport({ recipe: executedRecipe, executedQuery, searchedAt,
+            exportedAt: new Date().toISOString(), elapsedMs, sort: resultSort, displayTags: [...searchTags],
+            scope: selectedOnly ? 'selected' : 'displayed', returnedDocuments: grouped.length,
+            returnedPassages: results.length, groups });
+        const format = reportFormat;
+        const content = format === 'json' ? JSON.stringify(report, null, 2)
+            : format === 'csv' ? searchReportCsv(report) : searchReportHtml(report);
+        await runResultAction('report', async () => {
+            const path = await save({ defaultPath: `CrispSorter-search-${report.exportedAt.slice(0, 10)}.${format}`,
+                filters: [{ name: `Search report (${format.toUpperCase()})`, extensions: [format] }] });
+            if (!path) return null;
+            await writeFile(path, new TextEncoder().encode(content));
+            return `${i18n.lang === 'de' ? 'Suchbericht gespeichert' : 'Search report saved'}: ${path}`;
+        }, i18n.lang === 'de' ? 'Suchbericht konnte nicht gespeichert werden' : 'Could not save search report');
+    }
+
+    async function inspectPassage(result: SearchResult, trigger: HTMLButtonElement) {
+        if (previewing?.doc_id !== result.doc_id) await openPreview(result, trigger);
+        else previewing = result;
+        previewTab = 'indexed';
+    }
+
+    function movePreview(delta: number) {
+        if (!previewing || !displayedGroups.length) return;
+        const index = displayedGroups.findIndex(group => group.doc_id === previewing?.doc_id);
+        const next = displayedGroups[(index + delta + displayedGroups.length) % displayedGroups.length];
+        previewing = next.best;
+        if (next.best.chunk_index < 0) previewTab = 'original';
+    }
+
+    async function loadMoreResults() {
+        if (!executedRecipe || searchOptionsChanged) return;
+        const nextLimit = [50, 100, 200, 500].find(value => value > executedRecipe!.limit);
+        if (!nextLimit) return;
+        applyRecipe({ ...executedRecipe, limit: nextLimit });
+        await runSearch();
+    }
 
     function toggleSearchTag(tag: string) {
         const next = new Set(searchTags);
@@ -882,11 +1008,15 @@
     // ── Search ─────────────────────────────────────────────────────────────────
 
     async function runSearch() {
-        if (!query.trim() || !validateFilters()) return;
+        if (!query.trim()) return;
+        revealResultsOnNarrowScreen();
+        if (!validateFilters()) return;
         const request = ++searchRequest;
         const recipe = currentRecipe();
+        const started = performance.now();
         imageSearchLoading = false;
         loading = true; error = ''; searchNotice = ''; searched = true;
+        resultActionFeedback = null;
         similarHeader = ''; compareResults = []; batchSelection = new Set();
         clearTranslations(); searchTags = new Set();
         try {
@@ -936,6 +1066,10 @@
                 }
             }
             results = found;
+            executedRecipe = normalizeSearchRecipe(recipe);
+            executedQuery = searchQuery;
+            searchedAt = new Date().toISOString();
+            elapsedMs = Math.round(performance.now() - started);
             displayedRecipeKey = searchRecipeKey(recipe);
             // Keep the scope visible until explicitly cleared; repeated searches
             // and bookmarks must not silently broaden the user's selection.
@@ -957,8 +1091,10 @@
     let similarHeader = $state('');
 
     async function findSimilar(r: SearchResult) {
+        revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         displayedRecipeKey = null; imageSearchLoading = false;
+        executedRecipe = null; executedQuery = '';
         loading = true;
         error = '';
         searched = true;
@@ -984,16 +1120,17 @@
 
     // P27.10 — Export a search result to HTML/DOCX
     async function exportDoc(r: SearchResult, fmt: string) {
-        try {
+        await runResultAction(`export:${r.doc_id}:${r.chunk_index}`, async () => {
             const savePath = await save({ filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }], defaultPath: `${r.title || r.doc_id}.${fmt}` });
-            if (!savePath) return;
+            if (!savePath) return null;
             await invoke(`export_to_${fmt}`, { title: r.title || r.filename || '', body: r.snippet || '', outPath: savePath });
-        } catch (e: any) { console.warn('Export failed:', e); }
+            return `${labels.excerptExported}: ${savePath}`;
+        }, labels.exportFailed);
     }
 
     // P25.9 — Add passage to reading list
     async function highlightPassage(r: SearchResult) {
-        try {
+        await runResultAction(`reading:${r.doc_id}:${r.chunk_index}`, async () => {
             await invoke('highlight_add', {
                 docId: r.doc_id,
                 chunkIndex: r.chunk_index >= 0 ? r.chunk_index : 0,
@@ -1003,7 +1140,8 @@
                 note: '',
                 color: '#60a5fa',
             });
-        } catch (e: any) { console.warn('Highlight failed:', e); }
+            return `${labels.readingListAdded}: ${r.title || r.filename || r.doc_id}`;
+        }, labels.readingListFailed);
     }
 
     // P25.2 — Log search to audit trail
@@ -1041,8 +1179,10 @@
         const imagePath = typeof selected === 'string' ? selected : (selected as any).path;
         if (!imagePath) return;
 
+        revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         displayedRecipeKey = null;
+        executedRecipe = null; executedQuery = '';
         loading = true; imageSearchLoading = true;
         error    = '';
         searched = true;
@@ -1071,7 +1211,10 @@
     // alongside FTS — true hybrid retrieval.
     async function runRemoteSearch() {
         const q = query.trim();
-        if (!q || !validateFilters()) return;
+        if (!q) return;
+        revealResultsOnNarrowScreen();
+        if (!validateFilters()) return;
+        const request = ++remoteRequest;
         const recipe = currentRecipe();
         const f = recipe.filters;
         if (f.audioMin != null || f.audioMax != null || f.cameraMake || f.cameraModel || f.fuzzy
@@ -1080,6 +1223,7 @@
             return;
         }
         remoteLoading  = true;
+        remoteQuery = q;
         remoteError    = '';
         remoteSearched = true;
         remoteResults  = [];
@@ -1096,14 +1240,16 @@
                         url_domain: f.urlDomain || null, tag: f.tag || null },
                 },
             });
+            if (request !== remoteRequest) return;
             remoteResults    = (r.rows ?? []) as RemoteHit[];
             remoteUsedText   = !!r.used_text;
             remoteUsedVector = !!r.used_vector;
             remoteShards     = Number(r.shards_queried ?? 0);
         } catch (e: any) {
+            if (request !== remoteRequest) return;
             remoteError = String(e);
         } finally {
-            remoteLoading = false;
+            if (request === remoteRequest) remoteLoading = false;
         }
     }
 
@@ -1188,9 +1334,15 @@
     }
 
     function clearSearch() {
+        revealResultsOnNarrowScreen();
         searchRequest += 1;
+        remoteRequest += 1; fedRequest += 1;
+        remoteResults = []; remoteLoading = false; remoteSearched = false; remoteError = ''; remoteQuery = '';
+        fedResults = []; fedLoading = false; fedSearched = false; fedErrors = {}; fedBody = new Map();
+        dismissResultActionFeedback();
         loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
         displayedRecipeKey = null; similarHeader = '';
+        executedRecipe = null; executedQuery = ''; searchedAt = ''; elapsedMs = 0;
         void runSkeletonSearch('');
         clearTranslations(); searchTags = new Set();
         query    = '';
@@ -1231,27 +1383,23 @@
             const slashIdx = afterScheme.indexOf('/');
             path = slashIdx >= 0 ? afterScheme.slice(slashIdx) : afterScheme;
         }
-        try {
+        await runResultAction(`open:${uri}`, async () => {
             await openPath(path);
-        } catch (e) {
-            console.error('[IndexSearch] openPath failed:', e, 'uri:', uri, 'path:', path);
-            error = `Konnte Datei nicht öffnen: ${path}`;
-        }
+            return null;
+        }, `${labels.openFileFailed} (${path})`);
     }
 
     async function openOriginal(url: string) {
         // Opens the source URL (wallabag/pocket provenance, browser-saved
         // PDFs, …) in the default browser via the opener plugin.
-        try {
+        await runResultAction(`source:${url}`, async () => {
             const parsed = new URL(url);
             if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
                 throw new Error('Only HTTP and HTTPS source links can be opened.');
             }
             await openUrl(url);
-        } catch (e) {
-            console.error('[IndexSearch] openUrl failed:', e, 'url:', url);
-            error = `Konnte Quelle nicht öffnen: ${url}`;
-        }
+            return null;
+        }, `${labels.openSourceFailed} (${url})`);
     }
 
     function driveUriParts(uri: string): { driveId: string; remotePath: string } | null {
@@ -1272,48 +1420,46 @@
     async function shareDriveFile(uri: string) {
         const parts = driveUriParts(uri);
         if (!parts) return;
-        shareBusy = uri;
-        try {
-            let supported = shareCapabilities[parts.driveId];
-            if (supported === undefined) {
-                const capabilities = await invoke<{ share_links?: boolean }>('drive_capabilities', {
-                    driveId: parts.driveId
-                });
-                supported = capabilities.share_links === true;
-                shareCapabilities = { ...shareCapabilities, [parts.driveId]: supported };
-            }
-            if (!supported) {
-                throw new Error('This provider does not advertise public share links.');
-            }
-            const link = await invoke<string>('drive_share_link', parts);
-            await navigator.clipboard.writeText(link);
-            error = 'Share link copied to clipboard.';
-        } catch (e: any) {
-            error = `Share link unavailable: ${String(e?.message ?? e)}`;
-        } finally {
-            shareBusy = null;
-        }
+        // A clipboard retry can reuse the link already created by the provider.
+        let link: string | null = null;
+        await runResultAction(`share:${uri}`, async () => {
+            shareBusy = uri;
+            try {
+                let supported = shareCapabilities[parts.driveId];
+                if (supported === undefined) {
+                    const capabilities = await invoke<{ share_links?: boolean }>('drive_capabilities', {
+                        driveId: parts.driveId,
+                    });
+                    supported = capabilities.share_links === true;
+                    shareCapabilities = { ...shareCapabilities, [parts.driveId]: supported };
+                }
+                if (!supported) {
+                    throw new Error('This provider does not advertise public share links.');
+                }
+                link ??= await invoke<string>('drive_share_link', parts);
+                await navigator.clipboard.writeText(link);
+                return labels.shareCopied;
+            } finally { shareBusy = null; }
+        }, labels.shareFailed, () => shareCapabilities[parts.driveId] !== false);
     }
 
     /** Save a registered-drive search result locally through the shared queue. */
     async function downloadDriveFile(uri: string, filename?: string): Promise<void> {
         const parts = driveUriParts(uri);
         if (!parts) return;
-        const destination = await save({
-            defaultPath: filename || pathBaseName(parts.remotePath) || 'download',
-            title: 'Save cloud file for offline use',
-        });
-        if (!destination) return;
-        downloadBusy = uri;
-        try {
-            const bytes = await invoke<number[]>('drive_read_file', parts);
-            await writeFile(destination, new Uint8Array(bytes));
-            error = `Downloaded ${filename || pathBaseName(parts.remotePath) || 'file'} for offline use.`;
-        } catch (e: any) {
-            error = `Could not download cloud file: ${String(e?.message ?? e)}`;
-        } finally {
-            downloadBusy = null;
-        }
+        await runResultAction(`download:${uri}`, async () => {
+            const destination = await save({
+                defaultPath: filename || pathBaseName(parts.remotePath) || 'download',
+                title: 'Save cloud file for offline use',
+            });
+            if (!destination) return null;
+            downloadBusy = uri;
+            try {
+                const bytes = await invoke<number[]>('drive_read_file', parts);
+                await writeFile(destination, new Uint8Array(bytes));
+                return `${labels.downloaded}: ${destination}`;
+            } finally { downloadBusy = null; }
+        }, labels.downloadFailed);
     }
 
     async function copyResultPath(uri: string): Promise<void> {
@@ -1321,12 +1467,10 @@
         const local = localPathFromSearchUri(uri);
         const value = drive ? `${drive.driveId}:${drive.remotePath}` : local;
         if (!value) return;
-        try {
+        await runResultAction(`copy:${uri}`, async () => {
             await navigator.clipboard.writeText(value);
-            error = 'Path copied to clipboard.';
-        } catch (e: any) {
-            error = `Could not copy path: ${String(e?.message ?? e)}`;
-        }
+            return `${labels.pathCopied}: ${value}`;
+        }, labels.copyPathFailed);
     }
 
     /**
@@ -1340,40 +1484,37 @@
         const parts = driveUriParts(uri);
         if (!parts) return;
         const name = pathBaseName(parts.remotePath) || parts.remotePath;
-        try {
-            const capabilities = await invoke<{ delete: boolean; rename: boolean; move_path: boolean }>(
-                'drive_capabilities', { driveId: parts.driveId });
-            if (operation === 'delete' && !capabilities.delete) {
-                throw new Error('This provider does not support delete/trash.');
-            }
-            if (operation === 'rename' && !capabilities.rename) {
-                throw new Error('This provider does not support rename.');
-            }
-            if (operation === 'move' && !capabilities.move_path) {
-                throw new Error('This provider does not support move.');
-            }
-            if (operation === 'delete') {
-                if (!window.confirm(`Move “${name}” to provider trash?`)) return;
-                mutationBusy = uri;
-                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.remotePath });
-            } else {
-                const label = operation === 'rename' ? 'new remote path/name' : 'destination remote path';
-                const destination = window.prompt(`Enter ${label} for “${name}”:`, parts.remotePath);
-                if (!destination?.trim() || destination.trim() === parts.remotePath) return;
-                mutationBusy = uri;
-                await invoke('drive_move_path', {
-                    driveId: parts.driveId,
-                    source: parts.remotePath,
-                    destination: destination.trim(),
-                });
-            }
-            error = `${operation === 'delete' ? 'Moved to trash' : operation === 'rename' ? 'Renamed' : 'Moved'}: ${name}`;
-            await runSearch();
-        } catch (e: any) {
-            error = `Could not ${operation} cloud result: ${String(e?.message ?? e)}`;
-        } finally {
-            mutationBusy = null;
-        }
+        await runResultAction(`mutate:${uri}`, async () => {
+            mutationBusy = uri;
+            try {
+                const capabilities = await invoke<{ delete: boolean; rename: boolean; move_path: boolean }>(
+                    'drive_capabilities', { driveId: parts.driveId });
+                if (operation === 'delete' && !capabilities.delete) {
+                    throw new Error('This provider does not support delete/trash.');
+                }
+                if (operation === 'rename' && !capabilities.rename) {
+                    throw new Error('This provider does not support rename.');
+                }
+                if (operation === 'move' && !capabilities.move_path) {
+                    throw new Error('This provider does not support move.');
+                }
+                if (operation === 'delete') {
+                    if (!window.confirm(`Move “${name}” to provider trash?`)) return null;
+                    await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.remotePath });
+                } else {
+                    const label = operation === 'rename' ? 'new remote path/name' : 'destination remote path';
+                    const destination = window.prompt(`Enter ${label} for “${name}”:`, parts.remotePath);
+                    if (!destination?.trim() || destination.trim() === parts.remotePath) return null;
+                    await invoke('drive_move_path', {
+                        driveId: parts.driveId,
+                        source: parts.remotePath,
+                        destination: destination.trim(),
+                    });
+                }
+                await runSearch();
+                return `${operation === 'delete' ? 'Moved to trash' : operation === 'rename' ? 'Renamed' : 'Moved'}: ${name}`;
+            } finally { mutationBusy = null; }
+        }, `Could not ${operation} cloud result`, false);
     }
 
     /** Promote a remote registered-drive L1 row through the normal ingest
@@ -1382,27 +1523,25 @@
     async function promoteDriveResult(result: SearchResult): Promise<void> {
         const parts = driveUriParts(result.location_uri);
         if (!parts) return;
-        promoteBusy = result.location_uri;
-        try {
-            const capabilities = await invoke<{ read?: boolean }>('drive_capabilities', {
-                driveId: parts.driveId,
-            });
-            if (capabilities.read !== true) {
-                throw new Error('This provider does not support remote promotion.');
-            }
-            await invoke('index_promote_drive_archive', {
-                docId: result.doc_id,
-                driveId: parts.driveId,
-                remotePath: parts.remotePath,
-                ownerId: null,
-            });
-            error = `Promoted ${result.filename || parts.remotePath} to full local indexing.`;
-            await runSearch();
-        } catch (e: any) {
-            error = `Could not promote remote result: ${String(e?.message ?? e)}`;
-        } finally {
-            promoteBusy = null;
-        }
+        await runResultAction(`promote:${result.doc_id}`, async () => {
+            promoteBusy = result.location_uri;
+            try {
+                const capabilities = await invoke<{ read?: boolean }>('drive_capabilities', {
+                    driveId: parts.driveId,
+                });
+                if (capabilities.read !== true) {
+                    throw new Error('This provider does not support remote promotion.');
+                }
+                await invoke('index_promote_drive_archive', {
+                    docId: result.doc_id,
+                    driveId: parts.driveId,
+                    remotePath: parts.remotePath,
+                    ownerId: result.owner_id ?? null,
+                });
+                await runSearch();
+                return `Promoted ${result.filename || parts.remotePath} to full local indexing.`;
+            } finally { promoteBusy = null; }
+        }, 'Could not promote remote result', false);
     }
 
     function cbArchiveOriginalPath(uri: string): string | null {
@@ -1420,35 +1559,32 @@
     async function promoteCbArchive(result: SearchResult): Promise<void> {
         const originalPath = cbArchiveOriginalPath(result.location_uri);
         if (!originalPath || promoteBusy === result.doc_id) return;
-        let retrievePyPath = await getSetting('cbRetrievePyPath', null) as string | null;
-        if (!retrievePyPath) {
-            const { open } = await import('@tauri-apps/plugin-dialog');
-            const selected = await open({
-                multiple: false,
-                filters: [{ name: 'Python script', extensions: ['py'] }],
-                title: 'Select cloud-backup retrieve.py',
-            });
-            if (typeof selected !== 'string') return;
-            retrievePyPath = selected;
-            await saveSetting('cbRetrievePyPath', retrievePyPath);
-        }
-        promoteBusy = result.doc_id;
-        error = '';
-        try {
-            await invoke('index_promote_cb_archive', {
-                docId: result.doc_id,
-                originalPath,
-                retrievePyPath,
-                outputDir: null,
-                ownerId: null,
-            });
-            error = `Promoted ${result.filename || originalPath} to local full-text index.`;
-            await runSearch();
-        } catch (e: any) {
-            error = `Could not promote archive result: ${String(e?.message ?? e)}`;
-        } finally {
-            promoteBusy = null;
-        }
+        await runResultAction(`promote:${result.doc_id}`, async () => {
+            promoteBusy = result.doc_id;
+            try {
+                let retrievePyPath = await getSetting('cbRetrievePyPath', null) as string | null;
+                if (!retrievePyPath) {
+                    const { open } = await import('@tauri-apps/plugin-dialog');
+                    const selected = await open({
+                        multiple: false,
+                        filters: [{ name: 'Python script', extensions: ['py'] }],
+                        title: 'Select cloud-backup retrieve.py',
+                    });
+                    if (typeof selected !== 'string') return null;
+                    retrievePyPath = selected;
+                    await saveSetting('cbRetrievePyPath', retrievePyPath);
+                }
+                await invoke('index_promote_cb_archive', {
+                    docId: result.doc_id,
+                    originalPath,
+                    retrievePyPath,
+                    outputDir: null,
+                    ownerId: result.owner_id ?? null,
+                });
+                await runSearch();
+                return `Promoted ${result.filename || originalPath} to local full-text index.`;
+            } finally { promoteBusy = null; }
+        }, 'Could not promote archive result', false);
     }
 
     function openDriveInContext(uri: string): void {
@@ -1467,16 +1603,13 @@
 
     async function addResultToBatch(result: SearchResult): Promise<void> {
         const path = localPathFromSearchUri(result.location_uri);
-        if (!path) {
-            error = 'Only local search results can be added directly to the batch.';
-            return;
-        }
-        try {
-            const { batchManager } = await import('$lib/batch/store.svelte');
-            batchManager.addItem(path, result.filename || pathBaseName(path), 0);
-        } catch (e: any) {
-            error = `Could not add search result to batch: ${String(e?.message ?? e)}`;
-        }
+        await runResultAction(`batch:${result.doc_id}`, async () => {
+            if (!path) throw new Error(labels.onlyLocalBatch);
+            const name = result.filename || pathBaseName(path);
+            const existing = batchManager.items.some(item => batchSourceKey(item.originalPath) === batchSourceKey(path));
+            const added = existing ? false : await batchManager.addItem(path, name, (await stat(path)).size);
+            return `${added ? labels.addedToBatch : labels.alreadyInBatch}: ${name}`;
+        }, labels.addBatchFailed, Boolean(path));
     }
 
     function toggleBatchSelection(result: SearchResult): void {
@@ -1487,38 +1620,33 @@
     }
 
     async function addSelectedToBatch(): Promise<void> {
-        const selected = results.filter((result) => batchSelection.has(result.doc_id));
-        const local = selected
-            .map((result) => ({ result, path: localPathFromSearchUri(result.location_uri) }))
-            .filter((item): item is { result: SearchResult; path: string } => Boolean(item.path));
-        if (local.length === 0) {
-            error = 'Select at least one local search result for the batch sorter.';
-            return;
+        // Snapshot documents, not matching chunks. Retry keeps the same targets
+        // even if the user changes the current selection while storage is busy.
+        const selected = displayedGroups.filter(group => batchSelection.has(group.doc_id)).map(group => group.best);
+        const local = new Map<string, { result: SearchResult; path: string }>();
+        let skipped = 0;
+        for (const result of selected) {
+            const path = localPathFromSearchUri(result.location_uri);
+            if (path) local.set(batchSourceKey(path), { result, path });
+            else skipped += 1;
         }
-        try {
-            const { batchManager } = await import('$lib/batch/store.svelte');
-            for (const { result, path } of local) {
-                batchManager.addItem(path, result.filename || pathBaseName(path), 0);
-            }
-            const skipped = selected.length - local.length;
-            error = skipped > 0
-                ? `Added ${local.length} local result${local.length === 1 ? '' : 's'}; skipped ${skipped} cloud result${skipped === 1 ? '' : 's'}.`
-                : `Added ${local.length} result${local.length === 1 ? '' : 's'} to the batch sorter.`;
-            batchSelection = new Set();
-        } catch (e: any) {
-            error = `Could not add selected results to batch: ${String(e?.message ?? e)}`;
-        }
+        await runResultAction('batch:selection', async () => {
+            if (local.size === 0) throw new Error(labels.onlyLocalBatch);
+            const existing = new Set(batchManager.items.map(item => batchSourceKey(item.originalPath)));
+            const entries = await Promise.all([...local.values()]
+                .filter(({ path }) => !existing.has(batchSourceKey(path)))
+                .map(async ({ result, path }) => ({ path, name: result.filename || pathBaseName(path), size: (await stat(path)).size })));
+            const added = await batchManager.addItemsBulk(entries);
+            return [
+                `${labels.addedToBatch}: ${added}`,
+                `${labels.alreadyInBatch}: ${local.size - added}`,
+                ...(skipped ? [`${labels.skippedCloud}: ${skipped}`] : []),
+            ].join(' · ');
+        }, labels.addBatchFailed, local.size > 0);
     }
 
-    function highlightSnippet(text: string, q: string): string {
-        if (!text) return '';
-        const words = q.trim()
-            .split(/\s+/)
-            .filter(w => w.length > 2)
-            .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        if (!words.length) return escHtml(text);
-        const re = new RegExp(`(${words.join('|')})`, 'gi');
-        return escHtml(text).replace(re, '<mark>$1</mark>');
+    function highlightSnippet(text: string, q: string, marked = false): string {
+        return highlightedSnippet(text, q, marked);
     }
 
     function escHtml(s: string): string {
@@ -1701,6 +1829,7 @@
     </div>
 
     <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
+    <SearchQueryTools bind:query onapply={() => void runSkeletonSearch(query)} />
     <div class="mode-row">
         {#each (['hybrid', 'text', 'vector'] as const) as m}
             <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
@@ -1744,7 +1873,7 @@
             <label class="filter-field">
                 <span>{labels.max}</span>
                 <select bind:value={limit} aria-label={labels.max}>
-                    {#each [10, 20, 50, 100] as n}<option value={n}>{n}</option>{/each}
+                    {#each [10, 20, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>
             <label class="filter-field" title="Include hits from drives that aren't currently mounted">
@@ -1838,9 +1967,22 @@
         </section>
     {/if}
 
+    {#if resultActionFeedback}
+        <div class="result-action-feedback" class:action-error={resultActionFeedback.kind === 'error'}
+            role={resultActionFeedback.kind === 'error' ? 'alert' : 'status'}>
+            <span>{resultActionFeedback.message}</span>
+            {#if resultActionFeedback.retry}
+                <button class="reset-filters" onclick={() => void resultActionFeedback?.retry?.()}>{labels.retryAction}</button>
+            {/if}
+            <button class="action-dismiss" onclick={dismissResultActionFeedback} aria-label={labels.dismissAction} title={labels.dismissAction}>
+                <X size={14} />
+            </button>
+        </div>
+    {/if}
+
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
     <div class="results-and-preview">
-    <div class="results-area" class:with-preview={previewing !== null}>
+    <div class="results-area" class:with-preview={previewing !== null} class:compact-results={compactResults}>
         {#if loading}
             <div class="state-msg" role="status"><Loader2 size={22} class="spin" /> {labels.loading}</div>
 
@@ -1912,9 +2054,9 @@
                     <FolderOpen size={11} /> Context
                 </button>
                 {/if}
-                {#if batchSelection.size > 0}
-                    <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} title="Add selected local results to batch sorter">
-                        <ListPlus size={11} /> Batch ({batchSelection.size})
+                {#if selectedDisplayedCount > 0}
+                    <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} disabled={resultActionsBusy.has('batch:selection')} title="Add selected local results to batch sorter">
+                        <ListPlus size={11} /> Batch ({selectedDisplayedCount})
                     </button>
                 {/if}
                 {#if refinementScope.length > 0}
@@ -1926,6 +2068,32 @@
                     </span>
                 {/if}
             </div>
+
+            <section class="inspection-toolbar" aria-label={i18n.lang === 'de' ? 'Ergebnisse prüfen und exportieren' : 'Inspect and export results'}>
+                <label>{i18n.lang === 'de' ? 'Sortieren' : 'Sort results'}<select bind:value={resultSort}>
+                    <option value="relevance">{i18n.lang === 'de' ? 'Relevanz' : 'Relevance'}</option>
+                    <option value="title">{i18n.lang === 'de' ? 'Titel' : 'Title'}</option>
+                    <option value="filename">{i18n.lang === 'de' ? 'Dateiname' : 'Filename'}</option>
+                    <option value="year-desc">{i18n.lang === 'de' ? 'Jahr: neueste zuerst' : 'Year: newest first'}</option>
+                    <option value="year-asc">{i18n.lang === 'de' ? 'Jahr: älteste zuerst' : 'Year: oldest first'}</option>
+                    <option value="location">{i18n.lang === 'de' ? 'Speicherort' : 'Location'}</option>
+                </select></label>
+                <label class="compact-toggle"><input type="checkbox" bind:checked={compactResults} />{i18n.lang === 'de' ? 'Kompakt' : 'Compact results'}</label>
+                <button onclick={() => batchSelection = new Set([...batchSelection, ...displayedGroups.map(group => group.doc_id)])}>{i18n.lang === 'de' ? 'Angezeigte auswählen' : 'Select displayed'}</button>
+                {#if batchSelection.size}<button onclick={() => batchSelection = new Set()}>{i18n.lang === 'de' ? 'Auswahl aufheben' : 'Clear selection'} ({batchSelection.size})</button>{/if}
+                <label>{i18n.lang === 'de' ? 'Berichtsformat' : 'Report format'}<select bind:value={reportFormat}><option value="html">HTML</option><option value="csv">CSV</option><option value="json">JSON</option></select></label>
+                <button onclick={() => exportSearchReport(false)} disabled={!executedRecipe || resultActionsBusy.has('report') || !displayedGroups.length}>{i18n.lang === 'de' ? 'Angezeigte exportieren' : 'Export displayed'}</button>
+                <button onclick={() => exportSearchReport(true)} disabled={!executedRecipe || resultActionsBusy.has('report') || !selectedDisplayedCount}>{i18n.lang === 'de' ? 'Auswahl exportieren' : 'Export selected'} ({selectedDisplayedCount})</button>
+                {#if batchSelection.size > selectedDisplayedCount}<span>{batchSelection.size - selectedDisplayedCount} {i18n.lang === 'de' ? 'ausgeblendet; nicht im Export' : 'hidden; excluded from export'}</span>{/if}
+            </section>
+            <p class="search-window-note">{i18n.lang === 'de'
+                ? 'Sortierung, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
+                : 'Sorting, passage counts, and exports apply to this returned window, not every match in the corpus.'}
+                {#if executedRecipe} · {elapsedMs} ms · {i18n.lang === 'de' ? 'Angefordertes Limit' : 'Requested limit'} {executedRecipe.limit}{/if}
+                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < 500}
+                    <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
+                {/if}
+            </p>
 
             {#if showSearchTagCloud && searchTagFacets.length > 0}
                 <div class="search-tagcloud-wrap">
@@ -1969,18 +2137,17 @@
 
             {#each displayedGroups as group (group.doc_id)}
                 {@const r = group.best}
-                <div class="result-card">
+                {@const resultName = r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
+                {@const chunksId = `library-result-chunks-${encodeURIComponent(group.doc_id)}`}
+                <div class="result-card" data-document-id={group.doc_id}>
                     <!-- Doc header -->
-                    <div class="result-header"
-                        role="button" tabindex="0"
-                        onclick={() => toggleExpand(group.doc_id)}
-                        onkeydown={e => e.key === 'Enter' && toggleExpand(group.doc_id)}>
+                    <div class="result-header">
 
                         <div class="ext-badge ext-{(r.ext ?? '').toLowerCase()}">{(r.ext ?? '?').toUpperCase()}</div>
 
                         <div class="result-meta">
                             <span class="result-title">
-                                {r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
+                                {resultName}
                             </span>
                             {#if r.author || r.year}
                                 <span class="result-byline">{r.author ?? ''}{r.author && r.year ? ' · ' : ''}{r.year ?? ''}</span>
@@ -1994,39 +2161,55 @@
                             <span class="result-path" title={r.location_uri}>{r.filename ?? r.location_uri}</span>
                         </div>
 
-                        <div class="result-right">
+                        <div class="result-right" role="group" aria-label={i18n.lang === 'de' ? `Aktionen für ${resultName}` : `Actions for ${resultName}`}>
                             <div class="score-wrap" title="Score {r.score.toFixed(4)}">
                                 <div class="score-bar"><div class="score-fill" style="width:{scoreBarPct(r.score)}%"></div></div>
                                 <span class="score-label">{r.score.toFixed(3)}</span>
                             </div>
                             {#if group.chunks.length > 1}
-                                <span class="chunk-count">{group.chunks.length} Chunks</span>
+                                <button type="button" class="expand-result"
+                                    aria-expanded={expanded.has(group.doc_id)} aria-controls={chunksId}
+                                    aria-label={i18n.lang === 'de'
+                                        ? `${group.chunks.length} passende Textstellen für ${resultName}`
+                                        : `${group.chunks.length} matching passages for ${resultName}`}
+                                    onclick={() => toggleExpand(group.doc_id)}>
+                                    {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
+                                    {group.chunks.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
+                                </button>
                             {/if}
                             <button class="open-btn"
                                 class:active={previewing && previewing.doc_id === group.doc_id}
-                                onclick={(e) => { e.stopPropagation(); openPreview(r); }}
+                                aria-pressed={previewing?.doc_id === group.doc_id}
+                                onclick={(e) => { e.stopPropagation(); void openPreview(r, e.currentTarget); }}
                                 title="Vorschau (Preview)">
                                 <Eye size={13} />
                             </button>
+                            {#if r.chunk_index >= 0 && !r.catalog_source}
+                                <button class="open-btn inspect-text" onclick={event => inspectPassage(r, event.currentTarget)} title={i18n.lang === 'de' ? 'Indizierte Textstelle prüfen' : 'Inspect indexed passage'}><FileText size={13} /><span>{i18n.lang === 'de' ? 'Text' : 'Text'}</span></button>
+                            {/if}
                             <button class="open-btn"
                                 class:active={compareResults.some((item) => item.doc_id === r.doc_id)}
+                                aria-pressed={compareResults.some((item) => item.doc_id === r.doc_id)}
                                 onclick={(e) => { e.stopPropagation(); toggleCompare(r); }}
                                 title="Compare with another result">
                                 ⇄
                             </button>
                             <button class="open-btn"
                                 class:active={batchSelection.has(r.doc_id)}
+                                aria-pressed={batchSelection.has(r.doc_id)}
                                 onclick={(e) => { e.stopPropagation(); toggleBatchSelection(r); }}
                                 title={batchSelection.has(r.doc_id) ? 'Remove from batch selection' : 'Select for batch sorter'}>
                                 <ListPlus size={13} />
                             </button>
                             <button class="open-btn"
+                                disabled={resultActionsBusy.has(`open:${r.location_uri}`)}
                                 onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
                             </button>
                             {#if driveUriParts(r.location_uri) || localPathFromSearchUri(r.location_uri)}
                                 <button class="open-btn"
+                                    disabled={resultActionsBusy.has(`copy:${r.location_uri}`)}
                                     onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri); }}
                                     title="Copy path">
                                     <Copy size={13} />
@@ -2085,6 +2268,7 @@
                                     <FolderOpen size={13} />
                                 </button>
                                 <button class="open-btn"
+                                    disabled={resultActionsBusy.has(`batch:${r.doc_id}`)}
                                     onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
                                     title="Add to batch sorter">
                                     <ListPlus size={13} />
@@ -2115,19 +2299,20 @@
                                 title="Find similar documents">
                                 ≈
                             </button>
+                            {#if $caps.desktop}
                             <button class="open-btn"
+                                disabled={!r.snippet || resultActionsBusy.has(`export:${r.doc_id}:${r.chunk_index}`)}
                                 onclick={(e) => { e.stopPropagation(); exportDoc(r, 'html'); }}
-                                title="Export as HTML">
+                                title={labels.exportExcerpt}>
                                 ⤓
                             </button>
+                            {/if}
                             <button class="open-btn"
+                                disabled={!r.snippet || resultActionsBusy.has(`reading:${r.doc_id}:${r.chunk_index}`)}
                                 onclick={(e) => { e.stopPropagation(); highlightPassage(r); }}
                                 title="Add to reading list">
                                 ★
                             </button>
-                            {#if group.chunks.length > 1}
-                                {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
-                            {/if}
                         </div>
                     </div>
 
@@ -2142,7 +2327,7 @@
                     {#if r.snippet}
                         <div class="chunk-preview">
                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                            {@html highlightSnippet(r.snippet, query)}{#if r.snippet.length >= 400}…{/if}
+                            {@html highlightSnippet(r.snippet, executedQuery || query)}{#if r.snippet.length >= 400}…{/if}
                         </div>
                     {:else}
                         <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
@@ -2357,20 +2542,21 @@
                     {/if}
 
                     <!-- Expanded: all chunks -->
-                    {#if expanded.has(group.doc_id) && group.chunks.length > 1}
-                        <div class="chunk-list">
+                    {#if group.chunks.length > 1}
+                        <div class="chunk-list" id={chunksId} hidden={!expanded.has(group.doc_id)}>
                             {#each group.chunks as chunk (chunk.chunk_index)}
                                 <div class="chunk-item">
                                     <span class="chunk-idx">#{chunk.chunk_index + 1}</span>
                                     <div class="chunk-text">
                                         {#if chunk.snippet}
                                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), query)}{#if chunk.snippet.length > 280}…{/if}
+                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), executedQuery || query)}{#if chunk.snippet.length > 280}…{/if}
                                         {:else}
                                             <span style="color:#52525b">(leer)</span>
                                         {/if}
                                     </div>
                                     <span class="chunk-score">{chunk.score.toFixed(3)}</span>
+                                    <button class="chunk-compare" onclick={event => inspectPassage(chunk, event.currentTarget)} title={i18n.lang === 'de' ? 'Diese Textstelle prüfen' : 'Inspect this passage'}><FileText size={12} /></button>
                                     <button class="chunk-compare"
                                         class:active={compareResults.some((item) => item.doc_id === chunk.doc_id && item.chunk_index === chunk.chunk_index)}
                                         onclick={(e) => { e.stopPropagation(); toggleCompare(chunk); }}
@@ -2387,15 +2573,23 @@
     </div>
 
     {#if previewing}
-        <aside class="preview-pane">
+        <aside class="preview-pane" aria-label={i18n.lang === 'de' ? 'Dokumentvorschau' : 'Document preview'}>
             <header class="preview-header">
                 <span class="preview-title" title={previewing.location_uri}>
                     {previewing.title || previewing.filename || (previewing.doc_id.slice(0, 24) + '…')}
                 </span>
-                <button class="preview-close" onclick={closePreview} title="Vorschau schließen">
+                <button class="preview-close" bind:this={previewCloseButton} onclick={closePreview}
+                    title="Vorschau schließen" aria-label={i18n.lang === 'de' ? 'Vorschau schließen' : 'Close preview'}>
                     <X size={14} />
+                    <span class="preview-close-label">{i18n.lang === 'de' ? 'Schließen' : 'Close preview'}</span>
                 </button>
             </header>
+            <div class="preview-navigation" role="group" aria-label={i18n.lang === 'de' ? 'Dokumentnavigation' : 'Document navigation'}>
+                <button onclick={() => movePreview(-1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Vorheriges Dokument' : 'Previous document'}</button>
+                <button onclick={() => movePreview(1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Nächstes Dokument' : 'Next document'}</button>
+                <button aria-pressed={previewTab === 'original'} onclick={() => previewTab = 'original'}>{i18n.lang === 'de' ? 'Originaldatei' : 'Original file'}</button>
+                {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => previewTab = 'indexed'}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
+            </div>
             {#if localPathFromSearchUri(previewing.location_uri)}
                 <div class="document-actions">
                     {#each availableDocumentTools(previewing.filename || previewing.location_uri, $caps) as tool}
@@ -2404,6 +2598,9 @@
                 </div>
             {/if}
             <div class="preview-body">
+                {#if previewTab === 'indexed' && previewing.chunk_index >= 0}
+                    <SearchPassage docId={previewing.doc_id} chunkIndex={previewing.chunk_index} query={executedQuery || query} sourceHash={previewing.source_hash || ''} />
+                {:else}
                 <DocumentDecisionPanel document={previewing} onUse={useReviewedFields} />
                 <FieldEvidencePanel docId={previewing.doc_id}
                     onFilter={findByField}
@@ -2412,6 +2609,7 @@
                     locationUri={previewing.location_uri}
                     filename={previewing.title || previewing.filename || ''}
                 />
+                {/if}
             </div>
         </aside>
     {/if}
@@ -2613,7 +2811,7 @@
                                          <mark> tags; strip them and re-highlight
                                          client-side via the XSS-safe path
                                          (highlightSnippet HTML-escapes first). -->
-                                    <div class="remote-snippet">{@html highlightSnippet(hit.snippet.replace(/<\/?mark>/g, ''), query)}</div>
+                                    <div class="remote-snippet">{@html highlightSnippet(hit.snippet, fedQuery, true)}</div>
                                 {/if}
                             </div>
                         </li>
@@ -2625,6 +2823,22 @@
 </div>
 
 <style>
+    .inspection-toolbar { display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;padding:10px 16px;background:#111116;border-block:1px solid #27272a;font-size:.73rem; }
+    .inspection-toolbar label { display:flex;flex-direction:column;gap:4px;color:#a1a1aa; }
+    .inspection-toolbar .compact-toggle { flex-direction:row;align-items:center;align-self:center; }
+    .inspection-toolbar select,.inspection-toolbar button,.preview-navigation button { border:1px solid #52525b;border-radius:5px;background:#27272a;color:#e4e4e7;padding:7px 9px;font-size:.73rem; }
+    .inspection-toolbar button,.preview-navigation button { cursor:pointer; }
+    .inspection-toolbar button:disabled,.preview-navigation button:disabled { opacity:.45;cursor:default; }
+    .inspection-toolbar button:focus-visible,.inspection-toolbar select:focus-visible,.preview-navigation button:focus-visible { outline:2px solid #93c5fd;outline-offset:2px; }
+    .inspection-toolbar span { color:#fbbf24;font-size:.7rem; }
+    .search-window-note { font-size:.7rem;color:#a1a1aa;margin:8px 16px 12px;line-height:1.6; }
+    .preview-navigation { display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #27272a;flex-shrink:0; }
+    .preview-navigation button[aria-pressed=true] { background:#1e3a8a;border-color:#60a5fa; }
+    .inspect-text { display:inline-flex;gap:4px;align-items:center; }
+    .compact-results .result-card { margin-bottom:4px; }
+    .compact-results .result-header { padding-block:8px; }
+    .compact-results .chunk-preview { max-height:3.2em;overflow:hidden;margin-block:4px; }
+    @media(max-width:800px){.inspection-toolbar{padding-inline:12px}.inspection-toolbar button,.inspection-toolbar select,.preview-navigation button{min-height:40px}.inspection-toolbar label{flex:1;min-width:100px}.inspection-toolbar .compact-toggle{min-width:auto}.preview-navigation{gap:8px}}
     .document-actions { display: flex; gap: 6px; padding: 8px; flex-wrap: wrap; }
     .document-actions button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 4px; padding: 5px; }
 
@@ -2650,7 +2864,7 @@
     .search-root {
         display: flex; flex-direction: column; height: 100%;
         background: #09090b; color: #fafafa; padding: 20px;
-        box-sizing: border-box; gap: 12px; overflow: hidden;
+        box-sizing: border-box; gap: 12px; overflow: hidden; min-width: 0; min-height: 0;
     }
 
     .search-help { margin: 0; font-size: .78rem; color: #a1a1aa; }
@@ -2660,6 +2874,11 @@
     .filter-chip:hover, .reset-filters:hover { background: #27272a; border-color: #818cf8; }
     .reset-filters { color: #c7d2fe; }
     .search-notice { padding: 9px 12px; background: #182235; color: #bfdbfe; border: 1px solid #334155; border-radius: 6px; font-size: .8rem; flex-shrink: 0; overflow-wrap: anywhere; }
+    .result-action-feedback { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #102a22; color: #bbf7d0; border: 1px solid #285c45; border-radius: 6px; font-size: .8rem; flex-shrink: 0; flex-wrap: wrap; }
+    .result-action-feedback > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .result-action-feedback.action-error { background: #321c22; color: #fecdd3; border-color: #74323f; }
+    .action-dismiss { display: inline-flex; padding: 5px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+    .action-dismiss:hover { background: #ffffff16; }
     .saved-help { color: #a1a1aa; margin: 7px 9px; font-size: .75rem; }
     /* PLAN P7.5 — saved-searches bookmark dropdown */
     .saved-wrap { position: relative; display: inline-flex; }
@@ -2741,13 +2960,13 @@
         flex: 1;
         gap: 12px;
         overflow: hidden;
-        min-height: 0;
+        min-height: 0; min-width: 0;
     }
     .results-area.with-preview { flex: 1; min-width: 0; }
     .preview-pane {
-        flex: 1;
+        flex: 1 1 360px;
         max-width: 50%;
-        min-width: 360px;
+        min-width: 0; min-height: 0;
         display: flex;
         flex-direction: column;
         background: #18181b;
@@ -2757,13 +2976,14 @@
     }
     .preview-header {
         display: flex; align-items: center; justify-content: space-between;
+        flex-shrink: 0; min-width: 0;
         padding: 8px 12px;
         background: #27272a;
         border-bottom: 1px solid #3f3f46;
         font-size: 0.85rem;
     }
     .preview-title {
-        flex: 1;
+        flex: 1; min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -2773,14 +2993,18 @@
     }
     .preview-close {
         background: none; border: none; cursor: pointer;
-        color: #a1a1aa; padding: 2px;
+        color: #a1a1aa; padding: 4px; display: inline-flex; align-items: center;
+        justify-content: center; gap: 5px; flex-shrink: 0; min-width: 32px; min-height: 32px;
     }
+    .preview-close-label { display: none; font-size: .75rem; }
     .preview-close:hover { color: #fafafa; }
     .preview-body {
-        flex: 1;
+        flex: 1; min-width: 0; min-height: 0;
         overflow: auto;
+        overflow-wrap: anywhere;
         background: #0a0a0c;
     }
+    .preview-body :global(.document-viewer) { min-height: 240px; }
     .preview-body object { display: block; width: 100%; height: 100%; border: 0; }
     .preview-image {
         max-width: 100%;
@@ -2816,16 +3040,16 @@
         font-weight: 500;
     }
 
-    .query-bar { display: flex; gap: 8px; align-items: center; }
+    .query-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0; min-width: 0; }
     .query-input-wrap {
-        flex: 1; display: flex; align-items: center; gap: 8px;
+        flex: 1 1 240px; display: flex; align-items: center; gap: 8px; min-width: 0;
         background: #18181b; border: 1px solid #3f3f46; border-radius: 8px; padding: 0 10px;
         transition: border-color 0.2s;
     }
     .query-input-wrap:focus-within { border-color: #3b82f6; }
     :global(.query-icon) { color: #71717a; flex-shrink: 0; }
     .query-input {
-        flex: 1; background: transparent; border: none; outline: none;
+        flex: 1; min-width: 0; background: transparent; border: none; outline: none;
         color: #fafafa; font-size: 0.9375rem; padding: 10px 0;
     }
     .query-input::placeholder { color: #52525b; }
@@ -2865,7 +3089,7 @@
         color: white; padding: 5px 8px; font-size: 0.8125rem;
     }
 
-    .results-area { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .results-area { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 
     .state-msg { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #71717a; text-align: center; }
     .state-msg.error { color: #f87171; }
@@ -2894,15 +3118,14 @@
     @media (max-width: 700px) { .compare-columns { grid-template-columns: 1fr; } }
 
     .result-card {
-        background: #18181b; border: 1px solid #27272a; border-radius: 8px; overflow: hidden;
+        background: #18181b; border: 1px solid #27272a; border-radius: 8px; overflow: hidden; flex-shrink: 0; min-width: 0; overflow-wrap: anywhere;
     }
     .result-card:hover { border-color: #3f3f46; }
 
     .result-header {
-        display: flex; align-items: flex-start; gap: 10px;
-        padding: 12px 14px; cursor: pointer; user-select: none;
+        display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+        padding: 12px 14px;
     }
-    .result-header:hover { background: #1c1c1f; }
 
     .ext-badge {
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;
@@ -2915,26 +3138,30 @@
     .ext-txt  { background: #44403c33; color: #d6d3d1; }
     .ext-epub { background: #4c1d9533; color: #c4b5fd; }
 
-    .result-meta { flex: 1; min-width: 0; }
-    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; }
-    .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; }
+    .result-meta { flex: 1 1 160px; min-width: 0; }
+    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere; }
+    .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; overflow-wrap: anywhere; }
     .result-path { display: block; font-size: 0.72rem; color: #52525b; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    .result-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .result-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 0 1 auto; min-width: 0; max-width: 100%; }
     .score-wrap { display: flex; align-items: center; gap: 5px; }
     .score-bar { width: 40px; height: 4px; background: #27272a; border-radius: 2px; }
     .score-fill { height: 100%; background: #3b82f6; border-radius: 2px; }
     .score-label { font-size: 0.7rem; color: #71717a; font-variant-numeric: tabular-nums; }
-    .chunk-count { font-size: 0.7rem; color: #52525b; white-space: nowrap; }
+    .expand-result { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 7px;
+        border: 1px solid #3f3f46; border-radius: 5px; background: transparent; color: #a1a1aa; font-size: .75rem; cursor: pointer; }
+    .expand-result:hover { color: #93c5fd; border-color: #3b82f6; }
 
-    .open-btn { background: none; border: none; color: #52525b; cursor: pointer; padding: 4px; border-radius: 4px; }
+    .open-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px;
+        background: none; border: none; color: #a1a1aa; cursor: pointer; padding: 4px; border-radius: 4px; }
     .open-btn:hover { color: #3b82f6; background: #3b82f622; }
     .open-btn.danger-btn:hover { color: #ef4444; background: #ef444422; }
+    .open-btn:focus-visible, .expand-result:focus-visible, .preview-close:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
 
     .chunk-preview {
         padding: 8px 14px 12px 52px;
         font-size: 0.8rem; color: #a1a1aa; line-height: 1.55;
-        border-top: 1px solid #1c1c1f;
+        border-top: 1px solid #1c1c1f; overflow-wrap: anywhere;
     }
     .chunk-preview.no-snippet { color: #52525b; font-style: italic; }
 
@@ -3007,10 +3234,22 @@
     }
     .chunk-item:last-child { border-bottom: none; }
     .chunk-idx { font-size: 0.7rem; color: #52525b; flex-shrink: 0; width: 24px; padding-top: 2px; }
-    .chunk-text { flex: 1; font-size: 0.78rem; color: #a1a1aa; line-height: 1.45; }
+    .chunk-text { flex: 1; min-width: 0; font-size: 0.78rem; color: #a1a1aa; line-height: 1.45; overflow-wrap: anywhere; }
     .chunk-score { font-size: 0.7rem; color: #52525b; flex-shrink: 0; }
     .chunk-compare { border: 1px solid #3f3f46; border-radius: 4px; padding: 2px 5px; color: #a1a1aa; background: transparent; cursor: pointer; flex-shrink: 0; }
     .chunk-compare.active { color: #93c5fd; border-color: #2563eb; background: #1e3a8a33; }
+
+    @media (max-width: 800px) {
+        .search-root { padding: 12px; gap: 10px; }
+        .query-input-wrap { flex-basis: 100%; }
+        .query-input { font-size: 1rem; }
+        .result-right { flex-basis: 100%; }
+        .open-btn, .expand-result, .preview-close { min-width: 44px; min-height: 44px; }
+        .chunk-preview, .translate-surface { padding-left: 14px; }
+        .results-area.with-preview { display: none; }
+        .preview-pane { flex: 1; width: 100%; max-width: 100%; }
+        .preview-close-label { display: inline; }
+    }
 
     :global(mark) { background: #854d0e55; color: #fbbf24; border-radius: 2px; padding: 0 1px; }
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }

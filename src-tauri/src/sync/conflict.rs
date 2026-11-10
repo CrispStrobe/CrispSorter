@@ -57,16 +57,30 @@ pub enum Resolution {
 
 /// Resolve a conflict between a local and remote document.
 ///
-/// If the content hashes are identical, there is no conflict regardless
-/// of the policy — both sides have the same data.
+/// Equal content can still carry a newer title or location. Metadata updates
+/// follow the same timestamp policy while KeepBoth preserves the local copy.
 pub fn resolve_conflict(
     local: &ConflictSide,
     remote: &ConflictSide,
     policy: ConflictPolicy,
 ) -> Resolution {
-    // Short-circuit: identical content → no conflict.
     if local.source_hash == remote.source_hash {
-        return Resolution::UseLocal;
+        return match policy {
+            ConflictPolicy::LocalWins | ConflictPolicy::KeepBoth => Resolution::UseLocal,
+            ConflictPolicy::RemoteWins => Resolution::UseRemote,
+            ConflictPolicy::NewestWins => {
+                if remote.updated_at.zip(local.updated_at).is_some_and(|(remote, local)| remote > local)
+                    || (remote.updated_at.is_some() && local.updated_at.is_none()) {
+                    Resolution::UseRemote
+                } else { Resolution::UseLocal }
+            }
+            ConflictPolicy::Manual => {
+                if local.title != remote.title
+                    || remote.updated_at.zip(local.updated_at).is_some_and(|(remote, local)| remote > local) {
+                    Resolution::NeedsManualReview
+                } else { Resolution::UseLocal }
+            }
+        };
     }
 
     match policy {
@@ -120,13 +134,13 @@ mod tests {
     }
 
     #[test]
-    fn identical_hashes_always_use_local() {
-        for policy in [
-            ConflictPolicy::NewestWins,
-            ConflictPolicy::LocalWins,
-            ConflictPolicy::RemoteWins,
-            ConflictPolicy::KeepBoth,
-            ConflictPolicy::Manual,
+    fn identical_content_metadata_obeys_policy() {
+        for (policy, expected) in [
+            (ConflictPolicy::NewestWins, Resolution::UseRemote),
+            (ConflictPolicy::LocalWins, Resolution::UseLocal),
+            (ConflictPolicy::RemoteWins, Resolution::UseRemote),
+            (ConflictPolicy::KeepBoth, Resolution::UseLocal),
+            (ConflictPolicy::Manual, Resolution::NeedsManualReview),
         ] {
             let r = resolve_conflict(
                 &local_side("abc123", Some(100)),
@@ -135,8 +149,8 @@ mod tests {
             );
             assert_eq!(
                 r,
-                Resolution::UseLocal,
-                "policy {policy:?} should short-circuit on identical hashes"
+                expected,
+                "policy {policy:?} applies to same-content metadata"
             );
         }
     }

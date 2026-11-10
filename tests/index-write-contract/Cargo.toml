@@ -1,0 +1,41 @@
+[workspace]
+
+[package]
+name = "index-write-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+crisp-search-query = { path = "../../crates/crisp-search-query" }
+anyhow = "1"
+arrow = { version = "57", default-features = false }
+arrow-array = { version = "57", default-features = false }
+arrow-schema = { version = "57", default-features = false }
+futures = "0.3"
+lancedb = { version = "=0.26.2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tantivy = "0.22"
+deunicode = "1.6"
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "sync", "time"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+sha2 = "0.10"
+hex = "0.4"
+tempfile = "3"
+zip = "7"
+
+[build-dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+protoc-bin-vendored = "3"
+
+[patch.crates-io]
+lance-linalg = { path = "../../patches/lance-linalg" }
+
+[profile.dev]
+debug = 0

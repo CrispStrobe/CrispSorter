@@ -4,7 +4,11 @@
     let { workflow = 'inbox' }: { workflow?: WorkflowStage } = $props();
     let processingPreset = $state<ProcessingPreset>('balanced');
     $effect(() => {
-        if (batchManager.filterStatus !== 'all' && !inWorkflow({ status: batchManager.filterStatus as BatchStatus }, workflow)) {
+        const status = batchManager.filterStatus;
+        const inStage = status === 'done'
+            ? workflow === 'inbox' && batchManager.items.some(hasSortWarning)
+            : inWorkflow({ status: status as BatchStatus }, workflow);
+        if (status !== 'all' && !inStage) {
             batchManager.filterStatus = 'all';
         }
     });
@@ -12,8 +16,11 @@
     const stageItems = $derived(batchManager.items.filter(item => inWorkflow(item, workflow)));
     const activeFilters = $derived(Number(!!batchManager.searchQuery.trim()) + Number(batchManager.filterExtension !== 'all') + Number(batchManager.filterStatus !== 'all') + Number(batchManager.filterMinSize > 0));
     const availableExtensions = $derived([...new Set([...stageItems.map(item => item.extension.toLowerCase()), ...(batchManager.filterExtension === 'all' ? [] : [batchManager.filterExtension])])].filter(Boolean).sort());
-    const availableStatuses = $derived((['queued', 'unfinished', 'extracting', 'analyzing', 'review', 'ready', 'moving', 'error'] as BatchStatus[]).filter(status => inWorkflow({ status }, workflow)));
-    const batchBusy = $derived(batchManager.isProcessing || batchManager.isExecuting || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
+    const availableStatuses = $derived((['queued', 'unfinished', 'extracting', 'analyzing', 'review', 'ready', 'moving', 'error', 'done'] as BatchStatus[]).filter(status =>
+        status === 'done' ? workflow === 'inbox' && stageItems.some(hasSortWarning) : inWorkflow({ status }, workflow)));
+    const resumableItems = $derived(batchManager.items.filter(canProcessBatchItem));
+    const batchBusy = $derived(!batchManager.sessionReady || batchManager.isProcessing || batchManager.isExecuting || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
+    const additionsBusy = $derived(!batchManager.sessionReady || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
     import {
         probeFolder,
         requestFolderAccess,
@@ -25,8 +32,9 @@
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { createSortPlan, textSidecarPath, type SortMode, type SortPlan } from '../batch/sortPlan';
     import { deleteVerifiedCopies, type VerifiedDuplicateGroup, type DuplicateIssue } from '../batch/duplicates';
+    import { canProcessBatchItem, hasSortWarning, isCopyFallback, isIndexUpdateWarning } from '../batch/recovery';
     import { isProviderUri, pickProviderDocuments } from '../mobileProvider';
-    import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
+    import { upsertItem, upsertItemsBulk } from '../batchStore';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
     import { AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '../extractors';
@@ -67,6 +75,11 @@
         removeConfirm: 'Ausgewählte sichtbare Einträge aus dem Stapel entfernen? Deine Dateien bleiben erhalten.',
         detailsHint: 'Dateinamen antippen, um Details und Metadaten zu prüfen.',
         reanalyzeAllHint: 'Bereits verarbeitete Dateien zurücksetzen und neu analysieren',
+        stopping: 'Wird angehalten…', stoppingHint: 'Laufende Vorgänge werden beendet und gespeichert. Fertige Ergebnisse bleiben erhalten.',
+        resume: 'Fortsetzen', recover: 'Unterbrochene Dateien zurücksetzen',
+        processingFailed: 'Verarbeitung fehlgeschlagen:', addFailed: 'Dateien konnten nicht hinzugefügt werden:',
+        cleanupFailed: 'Der Stapel konnte nicht bereinigt werden. Einträge bleiben erhalten. Bitte erneut versuchen.',
+        cleanupBusy: 'Stapel wird gespeichert…', copyFallback: 'Kopiert; Original behalten',
         indexSelected: 'Zum Index', indexing: 'Indexiere…', indexSelectedHint: 'Ausgewählte Dateien zum Suchindex hinzufügen',
         indexResult: 'Index: {ok} erfolgreich, {fail} fehlgeschlagen',
     } : {
@@ -87,6 +100,11 @@
         removeConfirm: 'Remove the selected visible entries from this batch? Your files will stay on disk.',
         detailsHint: 'Tap a filename to review details and metadata.',
         reanalyzeAllHint: 'Reset processed files and analyze them again',
+        stopping: 'Stopping…', stoppingHint: 'Waiting for active operations to finish and save. Completed work will be kept.',
+        resume: 'Resume', recover: 'Recover interrupted files',
+        processingFailed: 'Processing failed:', addFailed: 'Could not add files:',
+        cleanupFailed: 'The batch could not be cleaned up. Entries are kept. Please try again.',
+        cleanupBusy: 'Saving batch changes…', copyFallback: 'Copied; original kept',
         indexSelected: 'Add to index', indexing: 'Indexing…', indexSelectedHint: 'Add selected files to the search index',
         indexResult: 'Index: {ok} added, {fail} failed',
     });
@@ -256,6 +274,8 @@
     let lastExecutionStats = $state<any>(null);
     let lastGeneratedScriptPath = $state<string | null>(null);
     let showReportModal = $state(false);
+    let reportBusy = $state(false);
+    let reportError = $state('');
 
     // Sort options (P15)
     let skipDuplicatesOnSort = $state(false);
@@ -403,7 +423,7 @@
 
                 if (e.key === 'Escape') {
                     if (selectedIds.length > 0) selectedIds = [];
-                    showReportModal = false;
+                    if (!reportBusy) showReportModal = false;
                     if (!confirmingSort) sortPlan = null;
                     showInfoModal = false;
                     return;
@@ -418,19 +438,20 @@
             };
             window.addEventListener('keydown', handleKeyDown);
 
-            const unlisten = await listen('tauri://drag-drop', (event: any) => {
+            const unlisten = await listen('tauri://drag-drop', async (event: any) => {
                 const paths = event.payload.paths as string[];
-                paths.forEach(path => {
-                    invoke<{ path: string; size: number }[]>('scan_folder', {
+                for (const path of paths) {
+                    try {
+                        const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
                         folderPath: path,
                         // Multimodal: scan_folder picks up audio/video too,
                         // and extractText routes them through the Rust audio
                         // dispatch when the batch item is processed.
                         extensions: [...MULTIMODAL_EXTENSIONS]
-                    }).then(entries => {
-                        batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
-                    }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
-                });
+                        });
+                        await batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
+                    } catch (error) { showToast(`${reviewLabels.addFailed} ${String(error)}`); }
+                }
             });
 
             // Load providers for re-analyze dropdown
@@ -463,42 +484,44 @@
     });
 
     async function handleAddFiles() {
+        if (additionsBusy) return;
         if ($caps.mobile) {
             await addProviderDocuments(false);
             return;
         }
-        const selected = await open({
-            multiple: true,
-            // Same multimodal whitelist as the drag-drop path so picker
-            // and drop accept the same files (documents + images +
-            // audio/video).
-            filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
-        });
-        if (Array.isArray(selected)) {
-            for (const path of selected) {
+        try {
+            const selected = await open({
+                multiple: true,
+                // Picker and drag/drop accept the same document and media types.
+                filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
+            });
+            const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+            for (const path of paths) {
                 const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
                     folderPath: path,
                     extensions: [...MULTIMODAL_EXTENSIONS]
-                }).catch(() => []);
-                batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
+                });
+                await batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
             }
-        }
+        } catch (error) { showToast(`${reviewLabels.addFailed} ${String(error)}`); }
     }
 
     async function handleAddFolder() {
+        if (additionsBusy) return;
         if ($caps.mobile) {
             await addProviderDocuments(true);
             return;
         }
-        const selected = await open({ directory: true, multiple: false });
-        if (typeof selected === 'string') {
-            const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
-                folderPath: selected,
-                // Multimodal: pick up audio/video alongside docs+images.
-                extensions: [...MULTIMODAL_EXTENSIONS]
-            });
-            batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
-        }
+        try {
+            const selected = await open({ directory: true, multiple: false });
+            if (typeof selected === 'string') {
+                const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
+                    folderPath: selected,
+                    extensions: [...MULTIMODAL_EXTENSIONS]
+                });
+                await batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
+            }
+        } catch (error) { showToast(`${reviewLabels.addFailed} ${String(error)}`); }
     }
 
     async function addProviderDocuments(folder: boolean) {
@@ -643,7 +666,7 @@
 
     async function handleRedoSelected() {
         if (selection.visibleIds.length === 0 || batchBusy) return;
-        await batchManager.reprocessItems(selection.visibleIds);
+        await runProcessing(() => batchManager.reprocessItems(selection.visibleIds));
     }
 
     async function handleRedoWithOptions() {
@@ -655,7 +678,7 @@
             maxChars: reanalMaxChars || undefined,
             authorSort: reanalAuthorSort
         };
-        await batchManager.reprocessItems(selection.visibleIds, overrides);
+        await runProcessing(() => batchManager.reprocessItems(selection.visibleIds, overrides));
     }
 
     async function onReanalProviderChange() {
@@ -679,7 +702,7 @@
 
     async function handleBatchReextract() {
         if (selection.visibleIds.length === 0 || batchBusy) return;
-        await batchManager.reextractItems(selection.visibleIds);
+        await runProcessing(() => batchManager.reextractItems(selection.visibleIds));
     }
 
     async function handleBatchRemove() {
@@ -701,7 +724,7 @@
 
     async function handleBatchEnforceOcr() {
         if (selection.visibleIds.length === 0 || batchBusy) return;
-        await batchManager.reprocessItems(selection.visibleIds, { enforceOcr: true });
+        await runProcessing(() => batchManager.reprocessItems(selection.visibleIds, { enforceOcr: true }));
     }
 
     async function handleBatchAccept(val: boolean) {
@@ -768,8 +791,13 @@
         showToast(reviewLabels.indexResult.replace('{ok}', String(ok)).replace('{fail}', String(fail)));
     }
 
+    async function runProcessing(operation: () => Promise<unknown>) {
+        try { await operation(); }
+        catch (error) { showToast(`${reviewLabels.processingFailed} ${String(error)}`); }
+    }
+
     async function startProcessing() {
-        await batchManager.processAll(processingOverrides(processingPreset));
+        await runProcessing(() => batchManager.processAll(processingOverrides(processingPreset)));
     }
 
     function toggleSelectionAccepted(val: boolean) {
@@ -948,6 +976,7 @@
             const stats = await batchManager.executeBatch(plan);
             sortPlan = null;
             lastExecutionStats = stats;
+            reportError = '';
             const firstTarget = plan.items[0]?.targetPath;
             const separator = firstTarget ? Math.max(firstTarget.lastIndexOf('/'), firstTarget.lastIndexOf('\\')) : -1;
             lastGeneratedScriptPath = plan.mode.startsWith('script_') && firstTarget && separator >= 0
@@ -1023,21 +1052,33 @@
     }
 
     async function handleReportChoice(choice: 'keep_problematic' | 'remove_done' | 'empty' | 'keep_all') {
-        showReportModal = false;
-        if (choice === 'empty') {
-            batchManager.items = [];
-            await clearBatch();
-        } else if (choice === 'keep_problematic') {
-            const removedIds = batchManager.items.filter(i => i.status === 'done').map(i => i.id);
-            batchManager.items = batchManager.items.filter(i => i.status !== 'done');
-            if (removedIds.length > 0) await deleteItems(removedIds);
-        } else if (choice === 'remove_done') {
-            // Remove successfully completed items; keep pending, errors, and copy-fallback that need attention
-            const removedIds = batchManager.items.filter(i => i.status === 'done' && i.errorMessage !== 'COPY_FALLBACK').map(i => i.id);
-            batchManager.items = batchManager.items.filter(i => !(i.status === 'done' && i.errorMessage !== 'COPY_FALLBACK'));
-            if (removedIds.length > 0) await deleteItems(removedIds);
-        }
-        // 'keep_all': statuses already persisted by executeBatch
+        if (reportBusy) return;
+        if (choice === 'keep_all') { showReportModal = false; return; }
+        if (batchBusy) { reportError = reviewLabels.cleanupFailed; return; }
+        reportBusy = true;
+        reportError = '';
+        try {
+            if (choice === 'empty') await batchManager.clear();
+            else {
+                // A copy fallback has a destination, but its original remains.
+                // Keep that unresolved warning with other problematic entries.
+                const removedIds = batchManager.items.filter(item => item.status === 'done' && !hasSortWarning(item)).map(item => item.id);
+                await batchManager.removeItems(removedIds);
+            }
+            selectedIds = selectedIds.filter(id => batchManager.items.some(item => item.id === id));
+            if (selectedItemId && !batchManager.items.some(item => item.id === selectedItemId)) selectedItemId = null;
+            showReportModal = false;
+        } catch (error) {
+            reportError = `${reviewLabels.cleanupFailed} ${String(error)}`;
+        } finally { reportBusy = false; }
+    }
+
+    async function retrySelectedIndexLocation() {
+        const item = selectedItem;
+        if (!item || batchBusy) return;
+        detailSaveError = '';
+        try { await batchManager.retryIndexLocation(item.id); }
+        catch (error) { detailSaveError = String(error); }
     }
 
     /// PLAN P6 4d — dump the current batch (items the user has loaded
@@ -1246,7 +1287,7 @@
     <div class="workflow-actions">
         <strong>{workflow === 'inbox' ? 'Inbox' : 'Review'}</strong>
         <span class="view-count" aria-live="polite">{sortedItems.length} / {stageItems.length} {reviewLabels.shown}</span>
-        <label for="batch-processing-preset">Processing</label> <select id="batch-processing-preset" aria-label="Processing preset" bind:value={processingPreset} disabled={batchManager.isProcessing}>
+        <label for="batch-processing-preset">Processing</label> <select id="batch-processing-preset" aria-label="Processing preset" bind:value={processingPreset} disabled={batchBusy}>
             <option value="fast">Fast</option><option value="balanced">Balanced</option>
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
         </select>
@@ -1262,10 +1303,10 @@
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
-                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown' || batchManager.isCleaningDuplicates} title={reviewLabels.addFiles} aria-label={reviewLabels.addFiles}>
+                <button class="icon-btn-main primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown' || additionsBusy} title={reviewLabels.addFiles} aria-label={reviewLabels.addFiles}>
                     <Plus size={18} />
                 </button>
-                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'unknown' || batchManager.isCleaningDuplicates} title={reviewLabels.addFolder} aria-label={reviewLabels.addFolder}>
+                <button class="icon-btn-main primary" onclick={handleAddFolder} disabled={$caps.platform === 'unknown' || additionsBusy} title={reviewLabels.addFolder} aria-label={reviewLabels.addFolder}>
                     <FolderOpen size={18} />
                 </button>
                 <button class="icon-btn-main danger" onclick={handleClearBatch} disabled={batchBusy || !batchManager.items.length} title={i18n.t.batch.clear_all} aria-label={i18n.t.batch.clear_all}>
@@ -1290,7 +1331,7 @@
             </button>
 
             <div class="dropdown-container">
-                <button class="mode-select-btn" onclick={() => showModeMenu = !showModeMenu} aria-label="Extraction Mode">
+                <button class="mode-select-btn" disabled={batchBusy} onclick={() => showModeMenu = !showModeMenu} aria-label="Extraction Mode">
                     {#if batchManager.isMetadataExtractionEnabled}<Brain size={16} />{:else}<Type size={16} />{/if}
                     <ChevronDown size={14} />
                 </button>
@@ -1342,62 +1383,44 @@
             </button>
 
             {#if batchManager.isProcessing}
-                <button class="action-btn danger small" onclick={() => batchManager.stopAll()}>
-                    <Square size={16} /> {i18n.t.batch.stop}
+                <button class="action-btn danger small" onclick={() => batchManager.stopAll()} disabled={batchManager.isStopping}>
+                    <Square size={16} /> {batchManager.isStopping ? reviewLabels.stopping : i18n.t.batch.stop}
                 </button>
             {:else}
                 <button class="action-btn success small" onclick={startProcessing}
-                        disabled={batchBusy || detailSaving || batchManager.items.filter(i => i.status === 'queued' || i.status === 'error').length === 0}>
-                    <Play size={16} /> {i18n.t.batch.start_batch}
+                        disabled={batchBusy || detailSaving || resumableItems.length === 0}>
+                    <Play size={16} /> {resumableItems.some(item => item.status === 'unfinished') ? reviewLabels.resume : i18n.t.batch.start_batch}
                 </button>
             {/if}
 
-            {#if batchManager.isProcessing || batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing' || i.status === 'unfinished')}
-                <button class="action-btn small danger"
-                        onclick={() => batchManager.forceReset()}
-                        title={i18n.t.batch.force_reset ?? 'Nuclear reset: abandon in-flight workers, lift stuck items back to queued'}>
-                    <RefreshCw size={14} /> {i18n.t.batch.force_reset ?? 'Force reset'}
+            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing')}
+                <button class="action-btn small" disabled={batchBusy}
+                        onclick={() => runProcessing(() => batchManager.forceReset())}>
+                    <RefreshCw size={14} /> {reviewLabels.recover}
                 </button>
             {/if}
             {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'review' || i.status === 'ready')}
                 <button class="action-btn small" title={reviewLabels.reanalyzeAllHint} disabled={batchBusy}
-                        onclick={async () => { await batchManager.resetToQueued(); await batchManager.processAll(); }}>
+                        onclick={() => runProcessing(async () => { await batchManager.resetToQueued(); await batchManager.processAll(); })}>
                     <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
                 </button>
             {/if}
 
             <div class="btn-group">
-                <button class="action-btn small" onclick={() => toggleSelectionAccepted(true)}>
+                <button class="action-btn small" disabled={batchBusy} onclick={() => toggleSelectionAccepted(true)}>
                     <CheckSquare size={14} /> {i18n.t.batch.accept_all}
                 </button>
-                <button class="action-btn small" onclick={() => toggleSelectionAccepted(false)}>
+                <button class="action-btn small" disabled={batchBusy} onclick={() => toggleSelectionAccepted(false)}>
                     <Square size={14} /> {i18n.t.batch.uncheck_all}
                 </button>
             </div>
             
             <div class="dropdown-container">
                 <div class="split-btn-group">
-                    <!-- Sortieren button stays clickable even when zero
-                         items are accepted — `executeSorting` itself
-                         logs "Sortieren clicked …", computes the per-
-                         status histogram and surfaces a diagnostic
-                         toast ("Keine Elemente bereit (X ohne Zielpfad,
-                         Y mit ungeeignetem Status)") so the user
-                         sees WHY nothing got picked up.  Pre-fix the
-                         button was simply disabled with no hint at all
-                         when LLM auto-accept didn't fire (e.g. every
-                         response came back "Unknown Author").  Only
-                         the in-flight sort lock (`isExecuting`) still
-                         disables it. -->
-                    <!-- Button is NEVER disabled at the HTML level — that
-                         was the cause of "Sortieren does nothing, no
-                         log entries" reports: a disabled button swallows
-                         the click before any handler runs, so neither
-                         the diagnostic log nor a toast ever fires.  All
-                         gates (0 accepted, sort already in flight) are
-                         handled inside `executeSorting`, which always
-                         logs the click and shows an actionable toast. -->
+                    <!-- After startup, keep Sort available so executeSorting
+                         can explain why no files currently qualify. -->
                     <button class="action-btn rocket-btn small"
+                            disabled={!batchManager.sessionReady}
                             onclick={() => executeSorting('move')}
                             title={(() => {
                                 const accepted = batchManager.items.filter(i => i.isAccepted).length;
@@ -1412,6 +1435,7 @@
                         {/if}
                     </button>
                     <button class="action-btn rocket-btn small split-caret"
+                            disabled={!batchManager.sessionReady}
                             onclick={() => showSortOptions = !showSortOptions}
                             aria-label="Sort Options">
                         <ChevronDown size={11} />
@@ -1445,6 +1469,9 @@
             </div>
         </div>
     </div>
+    {#if batchManager.isStopping}
+        <p class="processing-notice" role="status">{reviewLabels.stoppingHint}</p>
+    {/if}
     {#if $caps.mobile}
         <p class="provider-import-note">{i18n.lang === 'de'
             ? 'Dateien aus Anbietern werden nur gelesen (PDF, DOCX, EPUB, TXT, Markdown, HTML; maximal 16 MiB). Verschieben und Kopieren werden noch nicht unterstützt.'
@@ -1560,7 +1587,7 @@
         <div class="active-batch-filters" aria-label={i18n.lang === 'de' ? 'Aktive Stapelfilter' : 'Active batch filters'}>
             {#if batchManager.searchQuery.trim()}<span>“{batchManager.searchQuery.trim()}”</span>{/if}
             {#if batchManager.filterExtension !== 'all'}<span>{batchManager.filterExtension.toUpperCase()}</span>{/if}
-            {#if batchManager.filterStatus !== 'all'}<span>{statusLabel(batchManager.filterStatus as BatchStatus)}</span>{/if}
+            {#if batchManager.filterStatus !== 'all'}<span>{batchManager.filterStatus === 'done' ? reviewLabels.copyFallback : statusLabel(batchManager.filterStatus as BatchStatus)}</span>{/if}
             {#if batchManager.filterMinSize > 0}<span>≥ {batchManager.filterMinSize} KB</span>{/if}
             <button class="action-btn small" onclick={() => batchManager.resetFilters()}>{reviewLabels.clearFilters}</button>
         </div>
@@ -1582,7 +1609,7 @@
                 <label for="status-filter">{i18n.t.batch.filter_status}</label>
                 <select id="status-filter" bind:value={batchManager.filterStatus}>
                     <option value="all">{reviewLabels.all}</option>
-                    {#each availableStatuses as status}<option value={status}>{statusLabel(status)}</option>{/each}
+                    {#each availableStatuses as status}<option value={status}>{status === 'done' ? reviewLabels.copyFallback : statusLabel(status)}</option>{/each}
                 </select>
             </div>
             <div class="filter-group">
@@ -1693,7 +1720,7 @@
                                 }
                             }}
                             class:status-error={item.status === 'error'}
-                            class:status-done={item.status === 'done'}
+                            class:status-done={item.status === 'done' && !hasSortWarning(item)}
                             class:is-dupe-nonprimary={item.isDuplicatePrimary === false}
                             class:is-chapter-member={!!item.chapterGroupId && !item.isChapterRepresentative}
                             class:is-chapter-rep={!!item.chapterGroupId && item.isChapterRepresentative}
@@ -1719,9 +1746,9 @@
                                             </span>
                                             <span class="status-badge"
                                                 class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}
-                                                class:status-unfinished={item.status === 'unfinished'}
+                                                class:status-unfinished={item.status === 'unfinished' || hasSortWarning(item)}
                                                 class:status-error={item.status === 'error'}>
-                                                {statusLabel(item.status, item.extension)}
+                                                {isCopyFallback(item) ? reviewLabels.copyFallback : isIndexUpdateWarning(item) ? (i18n.lang === 'de' ? 'Index-Aktualisierung offen' : 'Index update pending') : statusLabel(item.status, item.extension)}
                                             </span>
                                             {#if item.statusDetail}
                                                 {#if /^\d+\/\d+/.test(item.statusDetail)}
@@ -1783,11 +1810,11 @@
                                                 </span>
                                             {/if}
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy || item.status === 'done'} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy || item.status === 'done'} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy || item.status === 'done'} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}
@@ -1826,7 +1853,7 @@
                                     {:else}
                                         <strong>{batchManager.items.length ? reviewLabels.inboxClear : reviewLabels.emptyInbox}</strong>
                                         <p>{batchManager.items.length ? reviewLabels.inboxClearHint : reviewLabels.emptyInboxHint}</p>
-                                        <button class="action-btn primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown'}><Plus size={16} />{reviewLabels.addFiles}</button>
+                                        <button class="action-btn primary" onclick={handleAddFiles} disabled={$caps.platform === 'unknown' || additionsBusy}><Plus size={16} />{reviewLabels.addFiles}</button>
                                     {/if}
                                 </div>
                             </td>
@@ -1859,7 +1886,12 @@
                 <p class="detail-filename" title={selectedItem.originalPath}>{selectedItem.originalName}</p>
                 <div class="detail-content">
                     {#if selectedItem.errorMessage}
-                        <div class="error-box">{formatErrorCode(selectedItem.errorMessage)}</div>
+                        <div class="error-box">{isIndexUpdateWarning(selectedItem) ? selectedItem.errorMessage.replace(/^INDEX_UPDATE_FAILED: /, '') : formatErrorCode(selectedItem.errorMessage)}</div>
+                        {#if isIndexUpdateWarning(selectedItem)}
+                            <button class="action-btn small" disabled={batchBusy} onclick={retrySelectedIndexLocation}>
+                                {i18n.lang === 'de' ? 'Suchindex erneut aktualisieren' : 'Retry search index update'}
+                            </button>
+                        {/if}
                     {/if}
                     <div class="detail-section">
                         <h4>{i18n.t.batch.target_path}</h4>
@@ -1950,9 +1982,10 @@
                     {#if analyzing > 0}<span class="stat-sub">· {i18n.t.batch.status_analyzing} {analyzing}</span>{/if}
                 </span>
             {:else}
-                {@const done = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
+                {@const done = batchManager.items.filter(i => i.status === 'review' || (i.status === 'done' && !isCopyFallback(i))).length}
                 {@const unfinished = batchManager.items.filter(i => i.status === 'unfinished').length}
                 {@const errors = batchManager.items.filter(i => i.status === 'error').length}
+                {@const copyWarnings = batchManager.items.filter(isCopyFallback).length}
                 {#if done > 0}
                     <span class="stat-divider">·</span>
                     <span class="stat-item stat-ready">{done} {i18n.t.batch.status_review}</span>
@@ -1964,6 +1997,10 @@
                 {#if errors > 0}
                     <span class="stat-divider">·</span>
                     <span class="stat-item stat-err">{errors} {i18n.t.batch.status_error}</span>
+                {/if}
+                {#if copyWarnings > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-unfinished">{copyWarnings} {reviewLabels.copyFallback}</span>
                 {/if}
             {/if}
         </div>
@@ -2022,12 +2059,14 @@
 
 {#if showReportModal && lastExecutionStats}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="modal-overlay" onclick={() => showReportModal = false} role="button" tabindex="0" onkeydown={e => e.key === 'Escape' && (showReportModal = false)}>
+    <div class="modal-overlay" onclick={() => { if (!reportBusy) showReportModal = false; }} role="button" tabindex="0" onkeydown={e => { if (e.key === 'Escape' && !reportBusy) showReportModal = false; }}>
         <div class="modal-content report-modal" onclick={e => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="modal-header">
                 <h2><Rocket size={18} /> {i18n.t.batch.report_title}</h2>
             </div>
             <div class="modal-body">
+                {#if reportError}<p class="error-box" role="alert">{reportError}</p>{/if}
+                {#if reportBusy}<p role="status">{reviewLabels.cleanupBusy}</p>{/if}
                 {#if lastExecutionStats.mode.startsWith('script_')}
                     <div class="report-stats">
                         <div class="stat-line success"><Check size={16} /> {i18n.lang === 'de'
@@ -2049,7 +2088,7 @@
                         {/if}
                     </div>
                     <div class="report-choices">
-                        <button class="choice-btn secondary" onclick={() => handleReportChoice('keep_all')}>
+                        <button class="choice-btn secondary" disabled={reportBusy} onclick={() => handleReportChoice('keep_all')}>
                             {i18n.t.batch.report_choice_keep_all}
                         </button>
                     </div>
@@ -2065,6 +2104,12 @@
 
                     {#if (lastExecutionStats.copiedFallback ?? 0) > 0}
                         <div class="stat-line warning"><AlertCircle size={16} /> {i18n.t.batch.report_copy_fallback.replace('{count}', lastExecutionStats.copiedFallback)}</div>
+                    {/if}
+
+                    {#if (lastExecutionStats.indexUpdateWarnings ?? 0) > 0}
+                        <div class="stat-line warning" role="alert"><AlertCircle size={16} /> {i18n.lang === 'de'
+                            ? `${lastExecutionStats.indexUpdateWarnings} Datei(en) wurden verschoben; die Suchindex-Aktualisierung ist noch offen. Im Posteingang am Eintrag erneut versuchen.`
+                            : `${lastExecutionStats.indexUpdateWarnings} file(s) moved; their search index updates are still pending. Retry from each entry in Inbox.`}</div>
                     {/if}
 
                     {#if (lastExecutionStats.locked ?? 0) > 0}
@@ -2095,26 +2140,27 @@
                                            + (lastExecutionStats.notPermitted ?? 0)
                                            + (lastExecutionStats.locked ?? 0)
                                            + (lastExecutionStats.copiedFallback ?? 0)
+                                           + (lastExecutionStats.indexUpdateWarnings ?? 0)
                                            + (lastExecutionStats.error ?? 0)}
                     {@const allSucceeded = problemCount === 0 && lastExecutionStats.success > 0}
                     <div class="report-choices">
                         {#if lastExecutionStats.success > 0}
-                            <button class="choice-btn success" onclick={() => handleReportChoice('remove_done')}>
+                            <button class="choice-btn success" disabled={reportBusy} onclick={() => handleReportChoice('remove_done')}>
                                 {i18n.t.batch.report_choice_remove_done}
                             </button>
                         {/if}
                         {#if problemCount > 0}
-                            <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
+                            <button class="choice-btn" disabled={reportBusy} onclick={() => handleReportChoice('keep_problematic')}>
                                 {i18n.t.batch.report_choice_keep_problematic}
                             </button>
                         {/if}
-                        <button class="choice-btn danger" onclick={() => handleReportChoice('empty')}>
+                        <button class="choice-btn danger" disabled={reportBusy} onclick={() => handleReportChoice('empty')}>
                             {i18n.t.batch.report_choice_empty}
                         </button>
                         <!-- Hide "keep entire batch" when every file
                              succeeded: there's nothing left to act on. -->
                         {#if !allSucceeded}
-                            <button class="choice-btn secondary" onclick={() => handleReportChoice('keep_all')}>
+                            <button class="choice-btn secondary" disabled={reportBusy} onclick={() => handleReportChoice('keep_all')}>
                                 {i18n.t.batch.report_choice_keep_all}
                             </button>
                         {/if}
@@ -2182,6 +2228,7 @@
     .draft-status, .draft-hint { font-size: 0.75rem; line-height: 1.5; color: #a1a1aa; margin: 8px 0; }
     .draft-conflict, .draft-storage-error { color: #fbbf24; font-size: 0.8rem; line-height: 1.5; }
     .draft-storage-error { padding: 8px 16px; border-bottom: 1px solid #713f12; }
+    .processing-notice { margin: 0; padding: 8px 16px; font-size: 0.8125rem; color: #fbbf24; background: #42200644; }
     .draft-badge { color: #fbbf24; background: #422006; }
     .provider-import-note { margin: 0.5rem 0; color: #a1a1aa; font-size: 0.8rem; }
     .workflow-actions { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #3f3f46; }

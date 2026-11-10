@@ -1,0 +1,202 @@
+{
+  "schema": "crispsorter.office-independent-reader.v1",
+  "recorded_at": "2026-11-09T22:17:44.542069+00:00",
+  "scope": "Read original production-generated DOCX files with an independent LibreOffice reader, then inspect every rendered page. Synthetic fixtures only.",
+  "producer_receipt": "receipt.json",
+  "reader": {
+    "name": "LibreOfficeDev",
+    "version_output": "LibreOfficeDev 26.8.0.0.alpha0 2c87e51eeaa2b413ff4ae097b2705eea1995d8e5",
+    "environment": "Linux-6.18.57-x86_64-with-glibc2.41"
+  },
+  "renderer": {
+    "script": "/home/agent/.codex/skills/builtins/documents/render_docx.py",
+    "script_sha256": "876d5993324e2faaaa96a68a4f7504642e9a07e6df265b385b2baa03b231369e",
+    "wrapper": "render_review.py",
+    "purpose": "Keep HOME unchanged, set an allowed temporary directory, and use isolated LibreOffice profiles."
+  },
+  "result": "passed_for_declared_fixtures",
+  "documents": [
+    {
+      "file": "semantic-text.docx",
+      "rendered_pdf": "rendered/semantic-text/semantic-text.pdf",
+      "page_count": 2,
+      "all_pages_visually_inspected": true,
+      "observations": [
+        "Heading level 2, Unicode inline marks and two-column order are visible.",
+        "Generated number 7 and nested bullet are correct; source literal 7. remains intentionally.",
+        "Header/note text stays in the body and explicit footer break produces page2."
+      ],
+      "pdf_text": [
+        "Maintenance checklist\n 😀 Equipment & safety\nKeep 0012 intact. See [1].\n7.7. Retain literal marker\n• Nested item\nRight column paragraph\nSource header 0012\n[1] Keep the original note.",
+        "Source footer"
+      ]
+    },
+    {
+      "file": "selected-table-figure-formula.docx",
+      "rendered_pdf": "rendered/selected-table-figure-formula/selected-table-figure-formula.pdf",
+      "page_count": 1,
+      "all_pages_visually_inspected": true,
+      "observations": [
+        "Merged 2 by 2 cell is intact; each literal table value appears once.",
+        "Corrected table replaces only the selected OCR passage.",
+        "The actual red/blue PNG, caption and literal LaTeX are visible without clipping."
+      ],
+      "pdf_text": [
+        "Reviewed selected objects\nValve\n0012\nQty\n=2+2\n03 LOT-003  & < >  \nFigure 1. Captured color test\n\\frac{0012}{03} + x_{LOT-003}"
+      ]
+    },
+    {
+      "file": "whitespace-blank-pages.docx",
+      "rendered_pdf": "rendered/whitespace-blank-pages/whitespace-blank-pages.pdf",
+      "page_count": 3,
+      "all_pages_visually_inspected": true,
+      "observations": [
+        "Coalesced source passages, emoji, tab and line break appear in order.",
+        "Page 2 is blank; final text starts on page 3.",
+        "Exact spaces and newline projection are checked independently in OOXML, not inferred from PDF extraction."
+      ],
+      "pdf_text": [
+        "  A  B😀 C\nD ",
+        "",
+        "After blank source page"
+      ]
+    }
+  ],
+  "limitations": [
+    "Not Microsoft Word qualification, OOXML schema validation, or a general layout fidelity claim.",
+    "The reader is a LibreOffice development build, identified by its exact version.",
+    "No installed CrispSorter application, full Tauri export route, live OCR corpus, device, PDF/A or PDF/UA qualification is implied.",
+    "The producing checkout was dirty; receipt.json records exact module/harness/lock hashes against its base commit.",
+    "Word intentionally adds a marker while retaining an existing literal source marker; the app warns about duplicate visible markers."
+  ],
+  "artifacts": {
+    "README.md": {
+      "sha256": "5a49fdee52b2799f52e1b9f0748f64636c2f775614b96cd58a3dc288c3a1000d",
+      "bytes": 3586
+    },
+    "dependency-lock-check.json": {
+      "sha256": "8291d5ba99460a3b11ac56ea4d3637455f300db6538df42599a78181af06f595",
+      "bytes": 25216
+    },
+    "fixture-source.png": {
+      "sha256": "366062f4cc1ce289b48ad67d828922881a25fda6b706ae127813c15da450150b",
+      "bytes": 138
+    },
+    "fixtures.json": {
+      "sha256": "7a6e02cd4c282e203ac548516c5c1a2f820b9b46929d8c2aad1423df0da2aeb5",
+      "bytes": 6850
+    },
+    "generation.log": {
+      "sha256": "b68039547c133416ad44e48e84a9da0a5171079a2ff479c61bdff1b565d25290",
+      "bytes": 352
+    },
+    "harness-Cargo.lock": {
+      "sha256": "3bb4f27b1f5d1d3f2ed21e8b7018838c8bfc0fc0579b40bc2f3ff433f1f773cc",
+      "bytes": 25467
+    },
+    "harness-Cargo.toml": {
+      "sha256": "989280e0acf9b9e27ed9e5750faa3a26c22802b735d767d50d6e3598d8c74c4e",
+      "bytes": 423
+    },
+    "harness-lib.rs": {
+      "sha256": "72265fece37de40c0d8dfc80df4c5c1f8e19af29e531af3f06c7d84776de822d",
+      "bytes": 432
+    },
+    "harness-main.rs": {
+      "sha256": "662bae542a50d29dc79253b49c0297cd2cc1b5857748c9e81372d741300a8376",
+      "bytes": 244
+    },
+    "initial-numbering-failure/observation.json": {
+      "sha256": "7f6af7f25f7c92108146a7c79c786d856887485f4598901b53b707b214b1cfc6",
+      "bytes": 650
+    },
+    "initial-numbering-failure/page-1.png": {
+      "sha256": "13fa439dfd585c6b0400a435c4311addcdf6010e423c8648f6621ec832b1416f",
+      "bytes": 52201
+    },
+    "initial-numbering-failure/semantic-text.docx": {
+      "sha256": "aa3687a803022d389521edd1e2abead0babd9e42165ad65c5b8899eaaed93889",
+      "bytes": 25491
+    },
+    "initial-numbering-failure/semantic-text.pdf": {
+      "sha256": "ae8a96aaf97e995f7284d9e708015ec73327b22bdd5d188f1371dc304eb38568",
+      "bytes": 48903
+    },
+    "inputs.json": {
+      "sha256": "e19fac5384a03bb29829ee515136936e5a09263c1e9020848fdef1f70201b7f7",
+      "bytes": 27162
+    },
+    "native-tests.log": {
+      "sha256": "946922f78118dbf39e48c1f065e8e1f46ff6f57e0f136c7c3c6123e61d406ce6",
+      "bytes": 5951
+    },
+    "office-check.log": {
+      "sha256": "122330d28141d236526bb740e85cfda54ba72b9c7f7d7dc93b8462f85d03d55d",
+      "bytes": 24680
+    },
+    "office-units.log": {
+      "sha256": "3c489dc56a44ee39d1c31cec11f8cf19ada8c465f3f926b2943fc0869091020f",
+      "bytes": 4247
+    },
+    "package-xml-report.json": {
+      "sha256": "5d67280a4a2a33957fd2ca132ee7baae68ee063c01bbfa1adf4ff849cac18358",
+      "bytes": 4414
+    },
+    "receipt.json": {
+      "sha256": "5fb45c95b9f14c740c40055565251b673f3831629e27f75940bfb589d234101c",
+      "bytes": 6199
+    },
+    "render_review.py": {
+      "sha256": "424a6cb22e359fecad4318bfec21b8310366e2c0854ac019b75a4ce7d3070508",
+      "bytes": 1045
+    },
+    "rendered/selected-table-figure-formula/page-1.png": {
+      "sha256": "8efee533f9604b254fe38824cd5a9901a5fcfe74f448a36d84e7330474491010",
+      "bytes": 40689
+    },
+    "rendered/selected-table-figure-formula/selected-table-figure-formula.pdf": {
+      "sha256": "4f9a37c1d77ec3580c94170ff4341cc427023b874d7fea81a40be180134b1ab8",
+      "bytes": 32037
+    },
+    "rendered/semantic-text/page-1.png": {
+      "sha256": "3f2559f3e9fc4e68d2a968ce7f5fe6cd17dcdac278a6544dd899423a71bfc4ea",
+      "bytes": 51918
+    },
+    "rendered/semantic-text/page-2.png": {
+      "sha256": "7cde02737b2c9e6576ea85e07021754b3effdbdd6300d1f1cb7daade12fa38c3",
+      "bytes": 16470
+    },
+    "rendered/semantic-text/semantic-text.pdf": {
+      "sha256": "7afeba0759a651b7b22f34d219e4c65579136ced1eab4a17c8a73b33426f7374",
+      "bytes": 48882
+    },
+    "rendered/whitespace-blank-pages/page-1.png": {
+      "sha256": "c5bb89ea6f735b9d13aaa7e890161a8f6215ef447dc3a759d4df3dc08ebc3bb2",
+      "bytes": 17804
+    },
+    "rendered/whitespace-blank-pages/page-2.png": {
+      "sha256": "00746d84fe8e919521394d01d9c5b4928f521784fd6c8831f79049edf90e3753",
+      "bytes": 13521
+    },
+    "rendered/whitespace-blank-pages/page-3.png": {
+      "sha256": "5bddc9a7c5311126babf858bf870b9d644c8c1e440e477a5162082e92e56b54c",
+      "bytes": 19296
+    },
+    "rendered/whitespace-blank-pages/whitespace-blank-pages.pdf": {
+      "sha256": "18510912c706c5c32757d9cf721961be7de78985f43d5b02145acf6155525842",
+      "bytes": 22426
+    },
+    "selected-table-figure-formula.docx": {
+      "sha256": "b38fe57d5bc3cc9dd185437463b9c79dd24b3f6d1cdba5a0fe88d0fc015f7ef2",
+      "bytes": 24838
+    },
+    "semantic-text.docx": {
+      "sha256": "5e05e80de876495a693f6adf94c7b14b03dc77ffa3c98c0b35a9141d0714f1ed",
+      "bytes": 25491
+    },
+    "whitespace-blank-pages.docx": {
+      "sha256": "86fd9b10a5e8e58cf68f6633e743be09ff88cb1d439f7726c8dc0d198765d178",
+      "bytes": 21455
+    }
+  }
+}

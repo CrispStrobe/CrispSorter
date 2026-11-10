@@ -3695,16 +3695,21 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
+            let fts_dir = data_dir.join("fts");
+            let fts = if fts_dir.exists() {
+                Some(crate::index::FtsIndex::open_or_create(&fts_dir)
+                    .map_err(|e| e.to_string())?)
+            } else {
+                None
+            };
+            let _guard = match fts.as_ref() {
+                Some(fts) => Some(local.read_guard(fts).await
+                    .map_err(|e| format!("preparing consistent index statistics: {e:#}"))?),
+                None => None,
+            };
             let chunks = local.count().await.map_err(|e| e.to_string())?;
             let docs = local.count_docs().await.map_err(|e| e.to_string())?;
-            let fts_dir = data_dir.join("fts");
-            let fts_docs: u64 = if fts_dir.exists() {
-                crate::index::FtsIndex::open_or_create(&fts_dir)
-                    .map(|fts| fts.doc_count())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+            let fts_docs = fts.as_ref().map_or(0, |fts| fts.doc_count());
             match out {
                 OutFormat::Json => {
                     println!(
@@ -3969,15 +3974,19 @@ async fn cmd_index_async(
                 };
                 res.map_err(|e| e.to_string())?
             } else {
-                let hits = fts
-                    .search(q_trimmed, &filters, limit.saturating_mul(4))
-                    .map_err(|e| e.to_string())?;
                 // Resolve doc metadata from LanceDB.  The Lance side
                 // applies the SearchFilters scalar-SQL clauses; the
                 // post-hoc filters (size + date) run in Rust against
                 // each row's `metadata_json` blob.
                 let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                     .await
+                    .map_err(|e| e.to_string())?;
+                // Repair any interrupted paired write and keep the same
+                // generation throughout lexical search and row hydration.
+                let _guard = local.read_guard(&fts).await
+                    .map_err(|e| format!("preparing consistent search: {e:#}"))?;
+                let hits = fts
+                    .search(q_trimmed, &filters, limit.saturating_mul(4))
                     .map_err(|e| e.to_string())?;
 
                 // Fetch metadata for each hit + apply the SearchFilters
@@ -3992,12 +4001,15 @@ async fn cmd_index_async(
                     local
                         .fetch_search_results_by_ids_filtered(&doc_ids, extra_sql.as_deref())
                         .await
-                        .unwrap_or_default()
+                        .map_err(|e| format!("loading indexed search results: {e:#}"))?
                         .into_iter()
                         .map(|r| (r.doc_id.clone(), r))
                         .collect();
                 hits.iter()
-                    .filter_map(|h| meta_map.get(&h.doc_id).cloned())
+                    .filter_map(|h| meta_map.get(&h.doc_id).cloned().map(|mut row| {
+                        row.score = h.score;
+                        row
+                    }))
                     .collect()
             };
 
@@ -4290,7 +4302,7 @@ async fn cmd_index_async(
                     embedding_omni: None,
                     embedding_vit: None,
                 };
-                match pipeline.ingest_document(raw).await {
+                match pipeline.ingest_verified_document(raw, p.clone()).await {
                     Ok(stats) => {
                         // Zero chunks means nothing searchable was written:
                         // the row lands in the FTS index but never in
@@ -4448,33 +4460,14 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
-            // List retryable failures (timeout / other).
-            let rows = local.list_failed_extractions(true).await.map_err(|e| e.to_string())?;
+            let rows = local.list_failed_extractions(false).await.map_err(|e| e.to_string())?;
             if dry_run {
                 for r in &rows {
                     println!("would mark permanent: {} ({})", r.filename.as_deref().unwrap_or(&r.doc_id), r.reason);
                 }
                 eprintln!("{} row(s) would be permanently skipped (dry-run)", rows.len());
             } else {
-                // Mark each row's extraction_failure.reason as "unsupported"
-                // so the worker treats it as non-retryable on future runs.
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
-                let new_meta = format!(
-                    r#"{{"level":2,"extraction_failure":{{"reason":"unsupported","msg":"manually skipped via CLI","at":{}}}}}"#,
-                    now_ms
-                );
-                let mut n = 0usize;
-                for row in &rows {
-                    let _ = local.update_l2_fields(
-                        &row.doc_id,
-                        None, None, None, None, None,
-                        Some(&new_meta),
-                    ).await;
-                    n += 1;
-                }
+                let n = local.skip_failed_extractions().await.map_err(|e| e.to_string())?;
                 match out {
                     OutFormat::Json => println!("{}", serde_json::json!({ "marked_permanent": n })),
                     OutFormat::Text => println!("marked {n} row(s) as permanently skipped"),
@@ -4486,6 +4479,10 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| e.to_string())?;
+            let _guard = local.read_guard(&fts).await
+                .map_err(|e| format!("preparing consistent index export: {e:#}"))?;
             let rows = local
                 .export_cidx(&dest, volume_id.as_deref(), include_embeddings, include_fts)
                 .await
@@ -4559,7 +4556,9 @@ async fn cmd_index_async(
                         volume_id: None,
                     }
                 }).collect();
-                if let Ok(stats) = pipe.ingest_l1(&entries).await { ingested += stats.chunk_count; }
+                let stats = pipe.ingest_l1(&entries).await
+                    .map_err(|e| format!("indexing manifest batch: {e:#}"))?;
+                ingested += stats.chunk_count;
             }
             match out {
                 OutFormat::Json => println!("{}", serde_json::json!({ "ingested": ingested, "total": rows.len() })),
@@ -4593,17 +4592,10 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
-            local.delete_doc(&doc_id).await.map_err(|e| e.to_string())?;
-            let fts_dir = data_dir.join("fts");
-            if fts_dir.exists() {
-                if let Ok(fts) = crate::index::FtsIndex::open_or_create(&fts_dir) {
-                    if let Ok(mut writer) = fts.writer() {
-                        fts.delete_document(&mut writer, &doc_id)
-                            .map_err(|e| e.to_string())?;
-                        writer.commit().map_err(|e| e.to_string())?;
-                    }
-                }
-            }
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| e.to_string())?;
+            local.delete_document_with_fts(&doc_id, &fts).await
+                .map_err(|e| format!("deleting indexed document: {e:#}"))?;
             match out {
                 OutFormat::Json => {
                     println!("{}", serde_json::json!({ "deleted": doc_id }));
@@ -7069,14 +7061,16 @@ async fn cmd_sync_cloud_backup(
                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
                 .as_millis() as i64;
             let mut selected: Vec<(&crate::sync::cloud_backup::PullRow, String)> = Vec::with_capacity(resp.rows.len());
+            let mut replace_doc_ids = Vec::new();
             let mut skipped_local = 0usize;
             let mut queued_manual = 0usize;
             let mut replaced_remote = 0usize;
             let mut kept_both = 0usize;
             for r in &resp.rows {
-                let base_doc_id = if r.sha256.is_empty() {
-                    uuid::Uuid::new_v4().to_string()
-                } else { r.sha256.clone() };
+                if r.sha256.trim().is_empty() {
+                    return Err(format!("Remote manifest row is missing a document identity: {}", r.path));
+                }
+                let base_doc_id = r.sha256.clone();
                 let local_rows = local.conflict_rows_for_location(&r.path)
                     .await.map_err(|e| e.to_string())?;
                 let matching = local_rows.iter().any(|row| row.source_hash == r.sha256);
@@ -7098,9 +7092,7 @@ async fn cmd_sync_cloud_backup(
                                 continue;
                             }
                             crate::sync::conflict::Resolution::UseRemote => {
-                                for row in &local_rows {
-                                    local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
-                                }
+                                replace_doc_ids.extend(local_rows.iter().map(|row| row.doc_id.clone()));
                                 replaced_remote += 1;
                             }
                             crate::sync::conflict::Resolution::KeepBoth { remote_doc_id } => {
@@ -7120,8 +7112,10 @@ async fn cmd_sync_cloud_backup(
                 selected.push((r, doc_id));
             }
             let chunks: Vec<crate::index::schema::DocumentChunk> = selected.iter().map(|(r, doc_id)| {
+                let has_body = r.full_text.as_deref().is_some_and(|text| !text.trim().is_empty());
+                let chunk_index = if has_body { 0 } else { -1 };
                 crate::index::schema::DocumentChunk {
-                    id: crate::index::ingest::chunk_row_id(doc_id, 0),
+                    id: crate::index::ingest::chunk_row_id(doc_id, chunk_index),
                     doc_id: doc_id.clone(),
                     location_uri: r.path.clone(),
                     owner_id: r.owner_id.clone(),
@@ -7141,15 +7135,10 @@ async fn cmd_sync_cloud_backup(
                     embedding: None,
                     embedding_sparse: None,
                     embedding_model: None,
-                    // chunk_index = 0 so the row is treated as a
-                    // representative chunk by the local search
-                    // helpers (`fetch_by_doc_ids` filters on
-                    // chunk_index = 0).  Using -1 marked the row as
-                    // L1-manifest-only and made it invisible to
-                    // local search, defeating the offline-search
-                    // story we want for pulled wallabag rows.
-                    chunk_index: 0,
-                    chunk_total: 1,
+                    // Hydrated bodies are representative text rows. A
+                    // metadata-only response remains a catalog row.
+                    chunk_index,
+                    chunk_total: if has_body { 1 } else { 0 },
                     chunk_start_char: None,
                     chunk_end_char: None,
                     indexed_at: now_ms,
@@ -7158,10 +7147,10 @@ async fn cmd_sync_cloud_backup(
                     // local DocumentChunk.tags column (already a
                     // List<Utf8> in the LanceDB schema).
                     tags: r.tags.clone(),
-                    metadata_json: Some(format!(
-                        r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
-                        r.indexed_at
-                    )),
+                    metadata_json: Some(serde_json::json!({
+                        "level": if has_body { 3 } else { 1 }, "source": "cb_sync_pull",
+                        "cb_indexed_at": r.indexed_at,
+                    }).to_string()),
                     parent_dir: if r.parent_dir.is_empty() { None } else { Some(r.parent_dir.clone()) },
                     volume_id: None,
                     text_translated: None,
@@ -7189,14 +7178,10 @@ async fn cmd_sync_cloud_backup(
                 }
             }).collect();
             let applied = chunks.len();
-            local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
-
-            if chunks.iter().any(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())) {
-                let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
-                    .map_err(|e| format!("opening local full-text index: {e:#}"))?;
-                crate::index::fts_index::index_synced_documents(&fts, &chunks)
-                    .map_err(|e| format!("indexing pulled text: {e:#}"))?;
-            }
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| format!("opening local full-text index: {e:#}"))?;
+            local.ingest_batch_with_fts(&chunks, &replace_doc_ids, &fts).await
+                .map_err(|e| format!("indexing pulled documents: {e:#}"))?;
 
             mgr.set_state("cb_last_manifest_pull_ts", &resp.max_indexed_at.to_string())
                 .map_err(|e| e.to_string())?;
@@ -8224,18 +8209,20 @@ async fn cmd_search_async(
             let leg: Result<Vec<FederatedHit>, String> = async {
                 let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
                     .map_err(|e| e.to_string())?;
-                let hits = fts
-                    .search(&q, &filters, limit.saturating_mul(4))
-                    .map_err(|e| e.to_string())?;
                 let li = crate::index::LocalIndex::open_or_create(data_dir, 1024)
                     .await
+                    .map_err(|e| e.to_string())?;
+                let _guard = li.read_guard(&fts).await
+                    .map_err(|e| format!("preparing consistent search: {e:#}"))?;
+                let hits = fts
+                    .search(&q, &filters, limit.saturating_mul(4))
                     .map_err(|e| e.to_string())?;
                 let ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
                 let extra_sql = filters.to_lance_sql();
                 let meta: std::collections::HashMap<String, crate::index::SearchResult> = li
                     .fetch_search_results_by_ids_filtered(&ids, extra_sql.as_deref())
                     .await
-                    .unwrap_or_default()
+                    .map_err(|e| format!("loading indexed search results: {e:#}"))?
                     .into_iter()
                     .map(|r| (r.doc_id.clone(), r))
                     .collect();
@@ -8243,7 +8230,10 @@ async fn cmd_search_async(
                 // scalar filters removed.
                 let rows: Vec<crate::index::SearchResult> = hits
                     .iter()
-                    .filter_map(|h| meta.get(&h.doc_id).cloned())
+                    .filter_map(|h| meta.get(&h.doc_id).cloned().map(|mut row| {
+                        row.score = h.score;
+                        row
+                    }))
                     .take(limit)
                     .collect();
                 Ok(rows
@@ -8404,57 +8394,55 @@ async fn cmd_cloud_backup_federated(
             match crate::index::FtsIndex::open_or_create(&fts_dir) {
                 Err(e) => { errors.insert("local", e.to_string()); }
                 Ok(fts) => {
-                    match fts.search(&q, &Default::default(), limit * 4) {
-                        Err(e) => { errors.insert("local", e.to_string()); }
-                        Ok(hits) => {
-                            let local_res: Result<Vec<_>, String> = async {
-                                let li = crate::index::LocalIndex::open_or_create(
-                                    data_dir, 1024,
-                                ).await.map_err(|e| e.to_string())?;
-                                let ids: Vec<String> = hits.iter()
-                                    .map(|h| h.doc_id.clone()).collect();
-                                let meta: std::collections::HashMap<String, _> = li
-                                    .fetch_search_results_by_ids_filtered(&ids, None)
-                                    .await
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|r| (r.doc_id.clone(), r))
-                                    .collect();
-                                Ok(hits.iter()
-                                   .filter_map(|h| meta.get(&h.doc_id).cloned())
-                                   .collect())
-                            }.await;
-                            match local_res {
-                                Err(e) => { errors.insert("local", e); }
-                                Ok(rows) => {
-                                    let fed: Vec<FederatedHit> = rows.into_iter()
-                                        .enumerate()
-                                        .map(|(i, r)| FederatedHit {
-                                            id: format!("local:{}", r.doc_id),
-                                            source: "local".into(),
-                                            score: r.score,
-                                            rrf_rank: i + 1,
-                                            filename: r.filename,
-                                            path: Some(r.location_uri.clone()),
-                                            ext: r.ext,
-                                            title: r.title,
-                                            author: r.author,
-                                            year: r.year,
-                                            language: r.language,
-                                            sha256: if r.source_hash.is_empty() { None }
-                                                    else { Some(r.source_hash) },
-                                            size_bytes: None,
-                                            snippet: if r.snippet.is_empty() { None }
-                                                     else { Some(r.snippet) },
-                                            location_uri: Some(r.location_uri),
-                                            url: r.url.clone(),
-                                            tags: if r.tags.is_empty() { None }
-                                                  else { Some(r.tags.clone()) },
-                                        })
-                                        .collect();
-                                    lists.push(fed);
-                                }
-                            }
+                    let local_res: Result<Vec<_>, String> = async {
+                        let li = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                            .await.map_err(|e| e.to_string())?;
+                        let _guard = li.read_guard(&fts).await
+                            .map_err(|e| format!("preparing consistent search: {e:#}"))?;
+                        let hits = fts.search(&q, &Default::default(), limit.saturating_mul(4))
+                            .map_err(|e| e.to_string())?;
+                        let ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+                        let meta: std::collections::HashMap<String, _> = li
+                            .fetch_search_results_by_ids_filtered(&ids, None)
+                            .await
+                            .map_err(|e| format!("loading indexed search results: {e:#}"))?
+                            .into_iter()
+                            .map(|r| (r.doc_id.clone(), r))
+                            .collect();
+                        Ok(hits.iter().filter_map(|h| meta.get(&h.doc_id).cloned().map(|mut row| {
+                            row.score = h.score;
+                            row
+                        })).collect())
+                    }.await;
+                    match local_res {
+                        Err(e) => { errors.insert("local", e); }
+                        Ok(rows) => {
+                            let fed: Vec<FederatedHit> = rows.into_iter()
+                                .enumerate()
+                                .map(|(i, r)| FederatedHit {
+                                    id: format!("local:{}", r.doc_id),
+                                    source: "local".into(),
+                                    score: r.score,
+                                    rrf_rank: i + 1,
+                                    filename: r.filename,
+                                    path: Some(r.location_uri.clone()),
+                                    ext: r.ext,
+                                    title: r.title,
+                                    author: r.author,
+                                    year: r.year,
+                                    language: r.language,
+                                    sha256: if r.source_hash.is_empty() { None }
+                                            else { Some(r.source_hash) },
+                                    size_bytes: None,
+                                    snippet: if r.snippet.is_empty() { None }
+                                             else { Some(r.snippet) },
+                                    location_uri: Some(r.location_uri),
+                                    url: r.url.clone(),
+                                    tags: if r.tags.is_empty() { None }
+                                          else { Some(r.tags.clone()) },
+                                })
+                                .collect();
+                            lists.push(fed);
                         }
                     }
                 }

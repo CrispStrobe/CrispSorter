@@ -243,14 +243,14 @@ mod tests {
         let raw = make_document(&base, "alice", &entry).unwrap();
         pipeline.ingest_document(raw.clone()).await.unwrap();
         assert_eq!(fts.search("rareword", &SearchFilters::default(), 10).unwrap().len(), 1);
-        assert!(local.fetch_article_text(&raw.source_hash).await.unwrap().contains("Rareword first body"));
+        assert!(local.fetch_article_text(&crate::index::ingest::doc_id_for(&raw)).await.unwrap().contains("Rareword first body"));
         entry.content = Some("<p>Replacementterm updated body</p>".into());
         let updated = make_document(&base, "alice", &entry).unwrap();
         assert_eq!(raw.source_hash, updated.source_hash);
         pipeline.reingest_document(updated).await.unwrap();
         assert_eq!(fts.search("rareword", &SearchFilters::default(), 10).unwrap().len(), 0);
         assert_eq!(fts.search("replacementterm", &SearchFilters::default(), 10).unwrap().len(), 1);
-        assert!(local.fetch_article_text(&raw.source_hash).await.unwrap().contains("Replacementterm"));
+        assert!(local.fetch_article_text(&crate::index::ingest::doc_id_for(&raw)).await.unwrap().contains("Replacementterm"));
     }
 
     #[test]

@@ -322,7 +322,7 @@ test('switching previews during sorting keeps the approved document identity', a
     await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
     await page.locator('.query-input').fill('warranty');
     await page.locator('.search-btn').click();
-    await page.getByTitle('Vorschau (Preview)', { exact: true }).first().click();
+    await page.locator('.result-card[data-document-id="warranty"]').getByTitle('Vorschau (Preview)', { exact: true }).click();
     await page.locator('.fields-panel summary').click();
     const fields = page.locator('.fields-panel');
     await fields.getByRole('button', { name: 'Approve value', exact: true }).click();
@@ -330,7 +330,7 @@ test('switching previews during sorting keeps the approved document identity', a
     await page.evaluate(() => { (window as any).__fixtureSortGate = true; });
     await fields.getByRole('button', { name: 'Use approved fields for sorting', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'verify_sort_field_source').length)).toBe(1);
-    await page.getByTitle('Vorschau (Preview)', { exact: true }).nth(1).click();
+    await page.locator('.result-card[data-document-id="other"]').getByTitle('Vorschau (Preview)', { exact: true }).click();
     await expect(page.locator('.preview-title')).toContainText('Other.txt');
     await page.evaluate(() => (window as any).__fixtureSortResolve());
     await expect.poll(() => page.evaluate(() =>

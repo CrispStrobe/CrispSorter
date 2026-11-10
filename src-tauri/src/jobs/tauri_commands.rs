@@ -201,6 +201,19 @@ pub async fn jobs_reclaim(
         .map_err(|e| e.to_string())
 }
 
+/// Make errored rows claimable again after the current worker has drained.
+#[tauri::command]
+pub async fn jobs_retry_errors(
+    state: State<'_, AppState>,
+    job_id: String,
+) -> Result<usize, String> {
+    let queue = get_queue(&state)?;
+    tokio::task::spawn_blocking(move || queue.retry_errors(&job_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// Number of files still pending or in_progress for a job.
 #[tauri::command]
 pub async fn jobs_pending_count(

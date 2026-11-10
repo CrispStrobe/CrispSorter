@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { ChevronRight } from "lucide-svelte";
   import type { OcrRegion } from "$lib/ocr/model";
   import {
@@ -14,16 +15,19 @@
     threshold,
     disabled = false,
     onselect,
+    oninspect,
   }: {
     region: OcrRegion;
     threshold: number;
     disabled?: boolean;
     onselect: (word: WordEvidence) => void | Promise<void>;
+    oninspect?: (word: WordEvidence | null, source: "current" | "original") => void;
   } = $props();
 
   let original = $state(false);
   let showScores = $state(false);
   let selectedStart = $state<number | null>(null);
+  const manual = $derived(region.confidenceBasis === "manual");
   const edited = $derived(region.text !== region.originalText);
   const source = $derived(original && edited ? "original" : "current");
   const evidenceText = $derived(source === "original" ? region.originalText : region.text);
@@ -31,6 +35,8 @@
   const selectedWord = $derived(words.find((word) => word.start === selectedStart));
   const flagged = $derived(words.filter((word) => wordNeedsReview(word, threshold)));
   const scored = $derived(words.some((word) => word.confidence !== null));
+  const nativeWords = $derived(words.some((word) => word.basis === "word"));
+  const characterScores = $derived(words.some((word) => word.basis === "characters"));
   const canSelect = $derived(!disabled && source === "current");
   const lowThreshold = $derived(Math.min(LOW_WORD_CONFIDENCE, threshold));
 
@@ -39,8 +45,10 @@
   $effect(() => {
     void region.id;
     void region.text;
-    void source;
+    void region.originalText;
+    const evidenceSource = source;
     selectedStart = null;
+    untrack(() => oninspect?.(null, evidenceSource));
   });
 
   function percent(score: number): string {
@@ -54,20 +62,33 @@
         : "Unscored";
   }
   function description(word: WordEvidence): string {
+    const band = getWordConfidenceBand(word, threshold);
+    const rating = band === "high" ? "High confidence" : band === "low" ? "Low confidence" : "Needs review";
     const evidence =
-      word.confidence !== null && word.minConfidence !== null
-        ? `${getWordConfidenceBand(word, threshold) === "high" ? "High confidence" : getWordConfidenceBand(word, threshold) === "low" ? "Low confidence" : "Needs review"}. Mean original character score: ${percent(word.confidence)}. Lowest character score: ${percent(word.minConfidence)}. Color follows the lowest score. A review signal, not a probability of accuracy.`
+      word.basis === "word"
+        ? word.confidence !== null
+          ? `${rating}. Original word recognition score: ${percent(word.confidence)}. Color follows this word score. A review signal, not a probability of accuracy.`
+          : "Word confidence is unavailable: the engine did not report a recognition score for this word."
+        : word.confidence !== null && word.minConfidence !== null
+        ? `${rating}. Mean original character score: ${percent(word.confidence)}. Lowest character score: ${percent(word.minConfidence)}. Color follows the lowest score. A review signal, not a probability of accuracy.`
         : word.basis === "edited"
           ? "The text was edited. Original OCR scores do not measure the corrected text."
-          : "Word confidence is unavailable: this result has no aligned character recognition scores.";
+          : "Word confidence is unavailable: this result has no verified word score or aligned character recognition scores.";
+    const sourceDetail = word.bounds
+      ? " Source detail shows the original word image."
+      : " Source detail shows the containing region; no verified word location is available.";
     return source === "current"
-      ? `${evidence} Select this word in the text editor to correct it.`
-      : `${evidence} Original OCR evidence is read-only.`;
+      ? `${evidence}${sourceDetail} Select this word in the text editor to correct it.`
+      : `${evidence}${sourceDetail} ${manual ? "The text before later edits" : "Original OCR evidence"} is read-only.`;
   }
   function selectWord(word: WordEvidence) {
     if (!canSelect) return;
     selectedStart = word.start;
     void onselect(word);
+  }
+  function inspectOriginal(word: WordEvidence) {
+    selectedStart = word.start;
+    oninspect?.(word, "original");
   }
   function nextWord() {
     if (!canSelect || !flagged.length) return;
@@ -100,20 +121,31 @@
   {#if edited}
     <div class="evidence-source" aria-label="Word evidence source">
       <button type="button" aria-pressed={source === "current"} onclick={() => (original = false)}>Current text</button>
-      <button type="button" aria-pressed={source === "original"} onclick={() => (original = true)}>Original OCR</button>
+      <button type="button" aria-pressed={source === "original"} onclick={() => (original = true)}>{manual ? "Before later edits" : "Original OCR"}</button>
     </div>
   {/if}
   <p class="word-help">
-    {#if edited && source === "current"}
+    {#if manual}
+      This passage was created manually. Its words have no recognition score.
+      {#if region.sourceComponents?.length}Source passages retain the original OCR
+        text and evidence separately.{/if}
+      {#if edited}Before later edits shows the manual passage's starting text.{/if}
+    {:else if edited && source === "current"}
       This text was edited. Original OCR scores do not apply to corrections.
       Select Original OCR to inspect the saved evidence.
+    {:else if nativeWords}
+      Native word colors and percentages use the original word recognition score.
+      {#if characterScores}Other scored words use character evidence: color follows
+        the lowest score and the percentage is the average.{/if}
+      Unscored words have no verified recognition score. Scores guide review;
+      they are not probabilities of accuracy.
     {:else if scored}
       Word colors follow the lowest character score; optional percentages show
       the word average. Hover or select a word for both scores. Scores guide
       review; they are not probabilities of accuracy.
     {:else}
-      This OCR result has no aligned character scores, so word confidence is
-      unavailable. Inspect the source before accepting the text.
+      This OCR result has no verified word scores or aligned character scores,
+      so word confidence is unavailable. Inspect the source before accepting the text.
     {/if}
   </p>
   {#if words.length}
@@ -125,6 +157,8 @@
             data-word-confidence-band={getWordConfidenceBand(word, threshold)}
             data-word-start={word.start}
             data-word-end={word.end}
+            data-word-source-start={word.sourceStart}
+            data-word-source-end={word.sourceEnd}
             data-word-basis={word.basis}
             data-word-confidence={word.confidence ?? undefined}
             data-word-flagged={wordNeedsReview(word, threshold)}
@@ -141,13 +175,15 @@
             data-word-confidence-band={getWordConfidenceBand(word, threshold)}
             data-word-start={word.start}
             data-word-end={word.end}
+            data-word-source-start={word.sourceStart}
+            data-word-source-end={word.sourceEnd}
             data-word-basis={word.basis}
             data-word-confidence={word.confidence ?? undefined}
             data-word-flagged={wordNeedsReview(word, threshold)}
-            aria-label={`Inspect original word ${index + 1}: ${word.text}`}
+            aria-label={`Inspect ${manual ? "baseline" : "original"} word ${index + 1}: ${word.text}`}
             aria-describedby={`ocr-word-${region.id}-${source}-${word.start}`}
             title={description(word)}
-            onclick={() => (selectedStart = word.start)}
+            onclick={() => inspectOriginal(word)}
           ><span class="word-text">{word.text}</span>{#if showScores}<span class="word-score">{scoreLabel(word)}</span>{/if}</button>{/if}{/each}<span class="word-separator">{evidenceText.slice(words[words.length - 1].end)}</span></div>
     <div hidden>{#each words as word (word.start)}<span id={`ocr-word-${region.id}-${source}-${word.start}`}>{description(word)}</span>{/each}</div>
     {#if selectedWord}<p class="word-detail" role="status">{description(selectedWord)}</p>{/if}

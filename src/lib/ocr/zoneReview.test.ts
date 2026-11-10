@@ -82,7 +82,7 @@ describe('reviewable partial OCR', () => {
         expect(prepareExport(restored).pages[0].regions[1].text).toBe(preview.replacementText);
     });
 
-    it('invalidates extraction only after accepting a valid replacement and retains warnings', () => {
+    it('retains raw historical extraction after accepting a replacement and preserves warnings', () => {
         let project = fixture();
         const pageId = project.pages[0].id;
         project = updatePage(project, pageId, { provenance: { warnings: ['Old warning'], extraction: { formula: 'x' } } });
@@ -90,7 +90,7 @@ describe('reviewable partial OCR', () => {
         const preview = prepareZoneReview(project, request, result(request, { warnings: ['New warning', 'Old warning'] }));
         expect(project.pages[0].provenance.extraction).toEqual({ formula: 'x' });
         const updated = applyZoneReview(project, preview);
-        expect(updated.pages[0].provenance.extraction).toBeUndefined();
+        expect(updated.pages[0].provenance.extraction).toEqual({ formula: 'x' });
         expect(updated.pages[0].provenance.warnings).toEqual(['Old warning', 'New warning']);
         expect(updated.pages[0].provenance.lastZoneRecognition).toEqual(preview.provenance);
     });

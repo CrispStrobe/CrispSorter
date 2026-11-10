@@ -1,10 +1,11 @@
 import { writable } from 'svelte/store';
 import type { BatchItem } from './types';
+import { hasSortWarning } from './batch/recovery';
 export type WorkflowStage = 'inbox' | 'review';
 export type ProcessingPreset = 'fast' | 'balanced' | 'quality' | 'advanced';
-export function inWorkflow(item: Pick<BatchItem, 'status'>, stage: WorkflowStage): boolean {
+export function inWorkflow(item: Pick<BatchItem, 'status' | 'errorMessage'>, stage: WorkflowStage): boolean {
     return stage === 'review' ? ['review', 'ready', 'moving'].includes(item.status)
-        : ['queued', 'unfinished', 'extracting', 'analyzing', 'error'].includes(item.status);
+        : ['queued', 'unfinished', 'extracting', 'analyzing', 'error'].includes(item.status) || hasSortWarning(item);
 }
 export function processingOverrides(preset: ProcessingPreset) {
     if (preset === 'advanced') return undefined;

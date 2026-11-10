@@ -2246,6 +2246,7 @@ dependencies = [
 name = "crisp-index-server"
 version = "0.1.0"
 dependencies = [
+ "crisp-search-query",
  "anyhow",
  "arrow",
  "arrow-array",
@@ -2258,12 +2259,15 @@ dependencies = [
  "fastembed",
  "futures",
  "futures-util",
+ "lance",
  "lancedb",
  "protoc-bin-vendored",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tantivy 0.22.1",
+ "tempfile",
  "tokio",
  "tower-http",
  "tracing",
@@ -2295,6 +2299,14 @@ dependencies = [
  "sha1 0.10.6",
  "sha2 0.10.9",
  "unicode-normalization",
+]
+
+[[package]]
+name = "crisp-search-query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tantivy 0.22.1",
 ]
 
 [[package]]
@@ -2384,6 +2396,7 @@ dependencies = [
  "crisp-filen",
  "crisp-index-protocol",
  "crisp-internxt",
+ "crisp-search-query",
  "crispasr",
  "crispasr-sys",
  "crispcat",
@@ -2392,6 +2405,7 @@ dependencies = [
  "crisplens-protocol",
  "deunicode",
  "docx-rs",
+ "encoding_rs",
  "fastembed",
  "feed-rs",
  "fuser",
@@ -2412,6 +2426,7 @@ dependencies = [
  "libc",
  "log",
  "lopdf 0.38.0",
+ "mail-parser",
  "md-5 0.10.6",
  "mistralrs",
  "mockito",
@@ -2431,6 +2446,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rten",
  "rusqlite",
+ "scraper",
  "security-framework 3.7.0",
  "serde",
  "serde_json",
@@ -2456,6 +2472,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-bidi",
+ "unicode-segmentation",
  "usls",
  "uuid 1.23.3",
  "walkdir",
@@ -4042,6 +4059,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
+name = "encodify"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e95d6e27686e1d6991a3077f4dbec9d33d18903466d234165ad86cd08c3ebc79"
+dependencies = [
+ "memchr",
+ "simdutf8",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5572,6 +5599,17 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+
+[[package]]
+name = "hashify"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04a037b1848eada162d6534c206770180e6bfc0eaa97292250c3e7179d8b1f73"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
 
 [[package]]
 name = "hashlink"
@@ -7689,6 +7727,19 @@ name = "macro_rules_attribute-proc_macro"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
+
+[[package]]
+name = "mail-parser"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d4ea9311ef3ca6189aa85c5f984bd47b2f12079bcabae28917d900ab26c9ecc"
+dependencies = [
+ "encodify",
+ "encoding_rs",
+ "hashify",
+ "memchr",
+ "simdutf8",
+]
 
 [[package]]
 name = "malloc_buf"
@@ -12493,6 +12544,17 @@ name = "syn"
 version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "syn"
+version = "3.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79"
 dependencies = [
  "proc-macro2",
  "quote",

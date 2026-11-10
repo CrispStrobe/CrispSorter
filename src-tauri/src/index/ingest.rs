@@ -189,23 +189,340 @@ pub struct IngestStats {
     pub chunk_count: usize,
     pub embed_time_ms: u64,
     pub write_time_ms: u64,
+    /// Actual committed occurrence identities, in the caller's input order.
+    /// Repeated source inputs resolve to the same final committed identity.
+    #[serde(default)]
+    pub doc_ids: Vec<String>,
 }
 
 // ── Writer task types ────────────────────────────────────────────────────────
 
 /// Owned Tantivy inputs that can be sent across the channel boundary.
-struct TantivyInputOwned {
-    doc_id: String,
-    owner_id: String,
-    language: String,
-    title: String,
-    headings: String,
-    body: String,
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TantivyInputOwned {
+    pub(crate) doc_id: String,
+    pub(crate) owner_id: String,
+    pub(crate) language: String,
+    pub(crate) title: String,
+    pub(crate) headings: String,
+    pub(crate) body: String,
     /// MT-pass output replicated for the FTS write — `None` when the
     /// extractor didn't translate (no `--translate-to`, source lang
     /// unknown, or MT failed).  Wired into the `body_translated`
     /// Tantivy field when the on-disk schema has it.
-    body_translated: Option<String>,
+    pub(crate) body_translated: Option<String>,
+}
+
+/// The intent is durable before Lance commits. A generation marker on the
+/// committed rows distinguishes an applied transaction from an interrupted
+/// preparation, without guessing from timestamps or file contents.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PendingFtsWrite {
+    generation: String,
+    doc_ids: Vec<String>,
+    replace_ids: Vec<String>,
+    inputs: Vec<TantivyInputOwned>,
+    #[serde(default)]
+    receipt_rows: Vec<String>,
+    #[serde(default)]
+    delete_only: bool,
+    #[serde(default)]
+    absent_occurrences: Vec<super::local_index::SourceOccurrence>,
+}
+
+fn open_write_journal(path: &std::path::Path) -> Result<rusqlite::Connection> {
+    let connection = rusqlite::Connection::open(path)?;
+    connection.busy_timeout(std::time::Duration::from_secs(10))?;
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+        CREATE TABLE IF NOT EXISTS pending_fts_writes (
+            generation TEXT PRIMARY KEY NOT NULL,
+            payload TEXT NOT NULL
+        );")?;
+    Ok(connection)
+}
+
+fn record_fts_intent(path: &std::path::Path, pending: &PendingFtsWrite) -> Result<()> {
+    open_write_journal(path)?.execute(
+        "INSERT INTO pending_fts_writes (generation, payload) VALUES (?1, ?2)",
+        rusqlite::params![pending.generation, serde_json::to_string(pending)?],
+    )?;
+    Ok(())
+}
+
+fn pending_fts_writes(path: &std::path::Path) -> Result<Vec<PendingFtsWrite>> {
+    let connection = open_write_journal(path)?;
+    let mut statement = connection.prepare("SELECT payload FROM pending_fts_writes ORDER BY rowid")?;
+    let payloads = statement.query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    payloads.into_iter().map(|s| serde_json::from_str(&s).map_err(Into::into)).collect()
+}
+
+fn finish_fts_intent(path: &std::path::Path, generation: &str) -> Result<()> {
+    open_write_journal(path)?.execute("DELETE FROM pending_fts_writes WHERE generation = ?1", [generation])?;
+    Ok(())
+}
+
+/// Re-initialising settings may briefly leave two pipeline tasks alive. Share
+/// their write lock by journal path so a new writer cannot discard an intent
+/// while the previous writer is still preparing its vector transaction.
+fn write_lock_for(path: &std::path::Path) -> Arc<Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<
+        std::path::PathBuf, std::sync::Weak<Mutex<()>>>>> = std::sync::OnceLock::new();
+    let mut locks = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let key = path.parent().and_then(|p| p.canonicalize().ok())
+        .map(|p| p.join("index-write-journal.sqlite")).unwrap_or_else(|| path.to_owned());
+    if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) { return lock; }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+/// SQLite's process lock is released by the OS after a crash. A separate
+/// connection keeps the lease across both stores without blocking journal
+/// transactions, including when the CLI and desktop run at the same time.
+async fn acquire_process_write_guard(journal_path: &std::path::Path) -> Result<rusqlite::Connection> {
+    let path = journal_path.with_file_name("index-write-lock.sqlite");
+    tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open(path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(30))?;
+        connection.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(connection)
+    }).await.context("opening index writer lease")?
+}
+
+/// Hold across a complete index read or mutation. Dropping releases both the
+/// in-process lock and cross-process lease, including on cancellation.
+pub struct IndexWriteGuard {
+    _local: Option<tokio::sync::OwnedMutexGuard<()>>,
+    _lease: Option<rusqlite::Connection>,
+}
+
+impl IndexWriteGuard {
+    pub(crate) fn immutable_snapshot() -> Self { Self { _local: None, _lease: None } }
+}
+
+pub(crate) async fn acquire_index_guard(path: &std::path::Path) -> Result<IndexWriteGuard> {
+    let local = write_lock_for(path).lock_owned().await;
+    let lease = acquire_process_write_guard(path).await?;
+    Ok(IndexWriteGuard { _local: Some(local), _lease: Some(lease) })
+}
+
+fn apply_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
+    let mut writer = fts.writer().context("opening full-text writer for repair")?;
+    for doc_id in &pending.replace_ids {
+        fts.delete_document(&mut writer, doc_id)?;
+    }
+    for input in &pending.inputs {
+        fts.add_document(&mut writer, TantivyInput {
+            doc_id: &input.doc_id, owner_id: &input.owner_id,
+            language: &input.language, title: &input.title,
+            headings: &input.headings, body: &input.body,
+            body_translated: input.body_translated.as_deref(),
+        })?;
+    }
+    writer.commit().context("committing full-text repair")?;
+    super::result_cache::invalidate();
+    Ok(())
+}
+
+pub(crate) async fn repair_fts_writes(fts: &FtsIndex, vector: &LocalIndex) -> Result<()> {
+    for pending in pending_fts_writes(vector.ingest_journal_path())? {
+        let committed = if pending.delete_only && !pending.absent_occurrences.is_empty() {
+            vector.occurrences_absent(&pending.absent_occurrences).await?
+        } else if pending.delete_only {
+            vector.documents_absent(&pending.replace_ids).await?
+        } else if !pending.receipt_rows.is_empty() {
+            vector.row_generation_committed(&pending.receipt_rows, &pending.generation).await?
+        } else {
+            vector.generation_committed(&pending.doc_ids, &pending.generation).await?
+        };
+        if committed {
+            anyhow::ensure!(vector.occurrences_absent(&pending.absent_occurrences).await?,
+                "Incomplete source occurrence replacement; full-text repair retained");
+            apply_fts_write(fts, &pending)?;
+        }
+        // A noncommitted intent never changes the last good full-text entry.
+        finish_fts_intent(vector.ingest_journal_path(), &pending.generation)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn apply_imported_chunks(
+    local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], replace_doc_ids: &[String],
+) -> Result<()> {
+    apply_imported_chunks_if_version(local, fts, chunks, replace_doc_ids, None).await.map(|_| ())
+}
+
+pub(crate) async fn apply_imported_chunks_if_version(
+    local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], replace_doc_ids: &[String],
+    expected_version: Option<u64>,
+) -> Result<bool> {
+    apply_imported_chunks_guarded(local, fts, chunks, replace_doc_ids, expected_version, false).await
+}
+
+/// A pull page classifies absent documents before preparing its L1 rows. If
+/// another writer creates one meanwhile, rerun conflict policy before ACK.
+pub(crate) async fn apply_new_sync_metadata_if_version(
+    local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], expected_version: u64,
+) -> Result<bool> {
+    anyhow::ensure!(chunks.iter().all(|chunk| chunk.chunk_index < 0),
+        "New sync rows must contain metadata only");
+    apply_imported_chunks_guarded(local, fts, chunks, &[], Some(expected_version), true).await
+}
+
+async fn apply_imported_chunks_guarded(
+    local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], replace_doc_ids: &[String],
+    expected_version: Option<u64>, require_absent: bool,
+) -> Result<bool> {
+    anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
+    let _guard = local.read_guard(fts).await?;
+    if let Some(expected) = expected_version {
+        if local.table_ref().version().await? != expected { return Ok(false); }
+    }
+    let affected_ids = replace_doc_ids.iter().map(String::as_str)
+        .chain(chunks.iter().map(|chunk| chunk.doc_id.as_str())).collect::<std::collections::BTreeSet<_>>();
+    for doc_id in affected_ids {
+        let occurrences = local.document_occurrences(doc_id).await?;
+        if require_absent && !occurrences.is_empty() { return Ok(false); }
+        anyhow::ensure!(occurrences.len() <= 1,
+            "This legacy document ID refers to multiple owners or locations; review the selected occurrence before replacement");
+        let incoming_scopes = chunks.iter().filter(|chunk| chunk.doc_id == doc_id)
+            .map(|chunk| (&chunk.owner_id, &chunk.location_uri)).collect::<std::collections::BTreeSet<_>>();
+        anyhow::ensure!(incoming_scopes.len() <= 1, "Imported document identity spans different owners or locations");
+        if let (Some((stored_owner, _)), Some((incoming_owner, _))) = (occurrences.first(), incoming_scopes.first()) {
+            anyhow::ensure!(stored_owner == *incoming_owner, "Imported document identity belongs to another owner");
+        }
+    }
+    let mut prepared = local.prepare_imported_chunks(chunks, replace_doc_ids).await?;
+    let mut replace_ids: std::collections::BTreeSet<String> = replace_doc_ids.iter().cloned().collect();
+    replace_ids.extend(prepared.iter().map(|c| c.doc_id.clone()));
+    if replace_ids.is_empty() { return Ok(true); }
+    let inputs = local.fts_inputs_after_import(&prepared, replace_doc_ids).await?;
+    let pending = PendingFtsWrite {
+        generation: uuid::Uuid::new_v4().to_string(),
+        doc_ids: prepared.iter().map(|c| c.doc_id.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
+        replace_ids: replace_ids.into_iter().collect(),
+        receipt_rows: prepared.iter().map(|c| c.id.clone()).collect(),
+        delete_only: prepared.is_empty(), inputs, absent_occurrences: Vec::new(),
+    };
+    record_fts_intent(local.ingest_journal_path(), &pending)?;
+    local.replace_imported_rows(&mut prepared, replace_doc_ids, &pending.generation).await?;
+    apply_fts_write(fts, &pending).context("Vector rows saved; full-text repair is pending")?;
+    finish_fts_intent(local.ingest_journal_path(), &pending.generation)?;
+    Ok(true)
+}
+
+/// Metadata fields and their lexical representation advance together. The
+/// receipt identifies every affected row, including metadata-only sources,
+/// so a failed full-text commit can be replayed after reopening the index.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_metadata_update(
+    local: &LocalIndex, fts: &FtsIndex, doc_id: &str, title: Option<&str>,
+    author: Option<&str>, year: Option<i32>, language: Option<&str>,
+    page_count: Option<i32>, metadata_json: Option<&str>,
+) -> Result<()> {
+    anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
+    let _guard = local.read_guard(fts).await?;
+    anyhow::ensure!(local.document_occurrences(doc_id).await?.len() <= 1,
+        "This legacy document ID refers to multiple owners or locations; select the source occurrence before updating metadata");
+    let generation = uuid::Uuid::new_v4().to_string();
+    let (receipt_rows, prepared_rows) = local.prepare_metadata_update(
+        doc_id, title, author, year, language, page_count, metadata_json, &generation).await?;
+    if receipt_rows.is_empty() { return Ok(()); }
+    let mut inputs = local.fts_inputs_for_docs(&[doc_id.to_owned()]).await?;
+    for input in &mut inputs {
+        if let Some(title) = title { input.title = title.to_owned(); }
+        if let Some(language) = language { input.language = language.to_owned(); }
+    }
+    let pending = PendingFtsWrite {
+        generation, doc_ids: vec![doc_id.to_owned()], replace_ids: vec![doc_id.to_owned()],
+        inputs, receipt_rows, delete_only: false, absent_occurrences: Vec::new(),
+    };
+    record_fts_intent(local.ingest_journal_path(), &pending)?;
+    local.apply_metadata_columns(doc_id, prepared_rows).await?;
+    apply_fts_write(fts, &pending).context("Metadata saved; full-text repair is pending")?;
+    finish_fts_intent(local.ingest_journal_path(), &pending.generation)?;
+    Ok(())
+}
+
+/// Remote document fields may advance without replacing reviewed body rows.
+pub(crate) struct RemoteMetadata<'a> {
+    pub doc_id: &'a str,
+    pub source_hash: &'a str,
+    pub owner_id: &'a str,
+    pub location_uri: &'a str,
+    pub title: Option<&'a str>,
+    pub author: Option<&'a str>,
+    pub year: Option<i32>,
+    pub language: Option<&'a str>,
+    pub indexed_at: i64,
+    pub origin: &'a str,
+}
+
+pub(crate) async fn apply_remote_metadata_if_version(
+    local: &LocalIndex, fts: &FtsIndex, update: RemoteMetadata<'_>, expected_version: u64,
+) -> Result<bool> {
+    anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
+    let _guard = local.read_guard(fts).await?;
+    if local.table_ref().version().await? != expected_version { return Ok(false); }
+    let Some(current) = local.fetch_document_summary(update.doc_id).await? else { return Ok(false); };
+    anyhow::ensure!(current.owner_id == update.owner_id, "Remote metadata belongs to a different owner");
+    anyhow::ensure!(local.document_occurrences(update.doc_id).await?.len() <= 1,
+        "This legacy document ID has multiple locations; select the occurrence before updating metadata");
+    anyhow::ensure!(update.indexed_at >= 0, "Remote metadata timestamp is invalid");
+    anyhow::ensure!(current.chunk_index < 0 || current.source_hash == update.source_hash,
+        "The remote document content changed; refresh its source before applying metadata to reviewed text");
+    let generation = uuid::Uuid::new_v4().to_string();
+    let patch = serde_json::json!({"sync_remote_url":update.origin.trim_end_matches('/'),
+        "sync_remote_indexed_at":update.indexed_at,"sync_base_generation":generation}).to_string();
+    let (receipt_rows, prepared) = local.prepare_metadata_update(update.doc_id,
+        update.title, update.author, update.year, update.language, None, Some(&patch), &generation).await?;
+    let mut rows = Vec::with_capacity(prepared.len());
+    for batch in prepared {
+        let schema = batch.schema();
+        let mut columns = batch.columns().to_vec();
+        if !update.location_uri.is_empty() {
+            columns[schema.index_of("location_uri")?] = Arc::new(arrow_array::StringArray::from(vec![update.location_uri; batch.num_rows()]));
+        }
+        columns[schema.index_of("indexed_at")?] = Arc::new(arrow_array::TimestampMillisecondArray::from(vec![update.indexed_at; batch.num_rows()]));
+        if current.chunk_index < 0 && !update.source_hash.is_empty() {
+            columns[schema.index_of("source_hash")?] = Arc::new(arrow_array::StringArray::from(vec![update.source_hash; batch.num_rows()]));
+        }
+        rows.push(arrow_array::RecordBatch::try_new(schema, columns)?);
+    }
+    let mut inputs = local.fts_inputs_for_docs(&[update.doc_id.to_owned()]).await?;
+    for input in &mut inputs {
+        if let Some(title) = update.title { input.title = title.to_owned(); }
+        if let Some(language) = update.language { input.language = language.to_owned(); }
+    }
+    let pending = PendingFtsWrite { generation, doc_ids: vec![update.doc_id.to_owned()],
+        replace_ids: vec![update.doc_id.to_owned()], inputs, receipt_rows, delete_only: false, absent_occurrences: Vec::new() };
+    record_fts_intent(local.ingest_journal_path(), &pending)?;
+    local.apply_metadata_columns(update.doc_id, rows).await?;
+    apply_fts_write(fts, &pending).context("Remote metadata saved; full-text repair is pending")?;
+    finish_fts_intent(local.ingest_journal_path(), &pending.generation)?;
+    Ok(true)
+}
+
+pub(crate) async fn apply_occurrence_deletion(
+    local: &LocalIndex, fts: &FtsIndex, occurrence: super::local_index::SourceOccurrence,
+) -> Result<()> {
+    anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
+    let _guard = local.read_guard(fts).await?;
+    if local.occurrences_absent(std::slice::from_ref(&occurrence)).await? { return Ok(()); }
+    let generation = uuid::Uuid::new_v4().to_string();
+    let plan = local.prepare_occurrence_delete(occurrence, &generation).await?;
+    let pending = PendingFtsWrite {
+        generation, doc_ids: plan.preserved_inputs.iter().map(|i| i.doc_id.clone()).collect(),
+        replace_ids: plan.replace_ids.clone(), inputs: plan.preserved_inputs.clone(),
+        receipt_rows: plan.receipt_rows.clone(), delete_only: plan.receipt_rows.is_empty(),
+        absent_occurrences: plan.absent_occurrences.clone(),
+    };
+    record_fts_intent(local.ingest_journal_path(), &pending)?;
+    local.commit_occurrence_plan(&[], plan).await?;
+    apply_fts_write(fts, &pending).context("Source removed; full-text repair is pending")?;
+    finish_fts_intent(local.ingest_journal_path(), &pending.generation)?;
+    Ok(())
 }
 
 /// One unit of work for the background writer task.
@@ -215,7 +532,42 @@ struct WriterJob {
     tantivy_inputs: Vec<TantivyInputOwned>,
     total_chunk_count: usize,
     embed_time_ms: u64,
+    verified_sources: Vec<SourceReceipt>,
+    expected_occurrences: Vec<(String, String)>,
     reply: tokio::sync::oneshot::Sender<Result<IngestStats>>,
+}
+
+#[derive(Clone)]
+struct SourceReceipt {
+    path: std::path::PathBuf,
+    expected_sha256: String,
+}
+
+pub(crate) fn hash_local_source(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut source = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 { break; }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+async fn verify_source_receipts(receipts: Vec<SourceReceipt>) -> Result<()> {
+    if receipts.is_empty() { return Ok(()); }
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        for receipt in receipts {
+            let actual = hash_local_source(&receipt.path)
+                .with_context(|| format!("Verifying source before commit: {}", receipt.path.display()))?;
+            anyhow::ensure!(actual == receipt.expected_sha256,
+                "Source changed before index commit: {}. The previous index is retained; retry the file.", receipt.path.display());
+        }
+        Ok(())
+    }).await.context("Source verification task failed")?
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -256,45 +608,63 @@ impl IngestPipeline {
         let fts_w = fts.clone();
         let vector_w = vector.clone();
         let pending_w = pending.clone();
-        // LanceDB writes are most efficient at 512-2048 rows per RecordBatch.
-        // The embed batch_size (default 32) is constrained by model VRAM; the
-        // write batch size is constrained by Arrow allocation cost — decouple.
-        let lance_batch_size = config.batch_size.saturating_mul(16).max(256);
-
+        let write_lock = write_lock_for(vector.ingest_journal_path());
         tokio::spawn(async move {
-            while let Some(job) = writer_rx.recv().await {
+            // Recover a crash between the vector and full-text commits before
+            // accepting another generation. Failure keeps the durable intent;
+            // the next submitted job retries rather than reporting success.
+            {
+                let _guard = write_lock.lock().await;
+                let recovery = async {
+                    let _lease = acquire_process_write_guard(vector_w.ingest_journal_path()).await?;
+                    repair_fts_writes(&fts_w, &vector_w).await
+                }.await;
+                if let Err(error) = recovery {
+                    eprintln!("[index] pending full-text repair: {error:#}");
+                }
+            }
+            while let Some(mut job) = writer_rx.recv().await {
                 let result: Result<IngestStats> = (async {
+                    let _guard = write_lock.lock().await;
+                    let _lease = acquire_process_write_guard(vector_w.ingest_journal_path()).await?;
                     let write_start = Instant::now();
-
-                    // LanceDB: batch inserts.
-                    for batch in job.all_chunks.chunks(lance_batch_size) {
-                        vector_w
-                            .ingest_batch(batch)
-                            .await
-                            .context("LanceDB write")?;
-                    }
-
-                    // Tantivy: one commit for all docs in this job.
-                    // Skipped for L1 jobs where tantivy_inputs is empty.
-                    if !job.tantivy_inputs.is_empty() {
-                        let mut writer =
-                            fts_w.writer().context("opening Tantivy writer")?;
-                        for input in &job.tantivy_inputs {
-                            fts_w.delete_document(&mut writer, &input.doc_id)?;
-                            fts_w.add_document(
-                                &mut writer,
-                                TantivyInput {
-                                    doc_id: &input.doc_id,
-                                    owner_id: &input.owner_id,
-                                    language: &input.language,
-                                    title: &input.title,
-                                    headings: &input.headings,
-                                    body: &input.body,
-                                    body_translated: input.body_translated.as_deref(),
-                                },
-                            )?;
+                    repair_fts_writes(&fts_w, &vector_w).await
+                        .context("repairing a previous full-text write")?;
+                    // A slow embedding job can outlive a newer extraction of
+                    // the same source. Verify after taking the writer lease,
+                    // before creating an intent or replacing any good rows.
+                    verify_source_receipts(job.verified_sources).await?;
+                    let mut doc_ids = Vec::new();
+                    if job.tantivy_inputs.is_empty() {
+                        vector_w.upsert_metadata_rows(&job.all_chunks).await?;
+                    } else {
+                        let generation = uuid::Uuid::new_v4().to_string();
+                        let provisional_ids = job.tantivy_inputs.iter().map(|input| input.doc_id.clone()).collect::<Vec<_>>();
+                        let plan = vector_w.prepare_occurrence_write(&mut job.all_chunks, &mut job.tantivy_inputs, &generation).await?;
+                        for (provisional, expected) in &job.expected_occurrences {
+                            let resolved = provisional_ids.iter().position(|id| id == provisional).and_then(|index| plan.doc_ids.get(index));
+                            anyhow::ensure!(resolved == Some(expected),
+                                "The selected source identity changed while extraction was running; reload the source before promoting it");
                         }
-                        writer.commit().context("Tantivy commit")?;
+                        doc_ids = plan.doc_ids.clone();
+                        job.tantivy_inputs.extend(plan.preserved_inputs.clone());
+                        let pending = PendingFtsWrite {
+                            generation,
+                            doc_ids: job.tantivy_inputs.iter().map(|i| i.doc_id.clone()).collect(),
+                            replace_ids: plan.replace_ids.clone(),
+                            inputs: job.tantivy_inputs,
+                            receipt_rows: plan.receipt_rows.clone(), delete_only: false,
+                            absent_occurrences: plan.absent_occurrences.clone(),
+                        };
+                        record_fts_intent(vector_w.ingest_journal_path(), &pending)
+                            .context("persisting index write intent")?;
+                        vector_w.commit_occurrence_plan(&job.all_chunks, plan).await?;
+                        // Failure from this point leaves a durable repair. A
+                        // retry or reopening the pipeline completes the exact
+                        // full-text update; completed vector rows are not lost.
+                        apply_fts_write(&fts_w, &pending)
+                            .context("Vector rows saved; full-text repair is pending")?;
+                        finish_fts_intent(vector_w.ingest_journal_path(), &pending.generation)?;
                     }
 
                     let write_time_ms = write_start.elapsed().as_millis() as u64;
@@ -302,6 +672,7 @@ impl IngestPipeline {
                         chunk_count: job.total_chunk_count,
                         embed_time_ms: job.embed_time_ms,
                         write_time_ms,
+                        doc_ids,
                     })
                 })
                 .await;
@@ -338,6 +709,13 @@ impl IngestPipeline {
         self.pending.load(Ordering::Relaxed)
     }
 
+    /// Await recovery before publishing the index as ready. Queries use the
+    /// same read guard, so a later failed full-text commit is surfaced too.
+    pub async fn ensure_ready(&self) -> Result<()> {
+        let _guard = self.vector.read_guard(&self.fts).await?;
+        Ok(())
+    }
+
     /// Enqueue a write job and block until the writer task completes it.
     async fn submit_and_await(
         &self,
@@ -345,28 +723,17 @@ impl IngestPipeline {
         tantivy_inputs: Vec<TantivyInputOwned>,
         total_chunk_count: usize,
         embed_time_ms: u64,
+        verified_sources: Vec<SourceReceipt>,
+        expected_occurrences: Vec<(String, String)>,
     ) -> Result<IngestStats> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        // Reserving can be cancelled while the queue is full. Count the job
+        // only after capacity exists, then enqueue without another await.
+        let permit = self.writer_tx.reserve().await.map_err(|_| anyhow::anyhow!(
+            "Writer task has stopped — index may need re-init"))?;
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if let Err(_e) = self
-            .writer_tx
-            .send(WriterJob {
-                all_chunks,
-                tantivy_inputs,
-                total_chunk_count,
-                embed_time_ms,
-                reply: reply_tx,
-            })
-            .await
-        {
-            // Roll back the optimistic queue-depth increment when the writer
-            // task is already gone; otherwise the UI can get stuck showing a
-            // phantom pending write until the next re-init.
-            self.pending.fetch_sub(1, Ordering::Relaxed);
-            return Err(anyhow::anyhow!(
-                "Writer task has stopped — index may need re-init"
-            ));
-        }
+        permit.send(WriterJob { all_chunks, tantivy_inputs, total_chunk_count,
+            embed_time_ms, verified_sources, expected_occurrences, reply: reply_tx });
         reply_rx
             .await
             .map_err(|_| anyhow::anyhow!("Writer task dropped reply channel"))?
@@ -380,16 +747,60 @@ impl IngestPipeline {
         self.ingest_documents_batch(vec![raw]).await
     }
 
+    /// File extraction opt-in: `source_hash` must be the SHA-256 of the source
+    /// bytes. Remote/import identities never trigger a local filesystem read.
+    pub async fn ingest_verified_document(&self, raw: RawDocument, source_path: std::path::PathBuf) -> Result<IngestStats> {
+        let receipt = SourceReceipt { path: source_path, expected_sha256: raw.source_hash.clone() };
+        self.ingest_documents_with_receipts(vec![raw], vec![receipt]).await
+    }
+
+    /// A selected-source promotion must still resolve to that exact stored
+    /// occurrence when it reaches the writer, after all extraction work.
+    pub async fn ingest_verified_document_for_occurrence(&self, raw: RawDocument, source_path: std::path::PathBuf, expected_doc_id: String) -> Result<IngestStats> {
+        let receipt = SourceReceipt { path: source_path, expected_sha256: raw.source_hash.clone() };
+        let expected = (doc_id_for(&raw), expected_doc_id);
+        self.ingest_documents_with_context(vec![raw], vec![receipt], vec![expected]).await
+    }
+
+    /// Explicit file-byte receipts for callers whose document identities are
+    /// derived from extracted text. A receipt is never inferred from a URI.
+    pub async fn ingest_documents_batch_verified(&self, raws: Vec<RawDocument>, sources: Vec<(std::path::PathBuf, String)>) -> Result<IngestStats> {
+        let receipts = sources.into_iter().map(|(path, expected_sha256)| SourceReceipt { path, expected_sha256 }).collect();
+        self.ingest_documents_with_receipts(raws, receipts).await
+    }
+
     /// Bulk ingest of N documents with coalesced LanceDB writes + one Tantivy commit.
     ///
     /// Embedding runs inline on the caller's task (GPU/CPU-bound).
     /// The resulting chunks are submitted to the background writer task, which
     /// serialises all LanceDB + Tantivy mutations so concurrent callers never
     /// race on the indexes. Callers await the result via a oneshot channel.
-    pub async fn ingest_documents_batch(&self, mut raws: Vec<RawDocument>) -> Result<IngestStats> {
+    pub async fn ingest_documents_batch(&self, raws: Vec<RawDocument>) -> Result<IngestStats> {
+        self.ingest_documents_with_receipts(raws, Vec::new()).await
+    }
+
+    async fn ingest_documents_with_receipts(&self, raws: Vec<RawDocument>, verified_sources: Vec<SourceReceipt>) -> Result<IngestStats> {
+        self.ingest_documents_with_context(raws, verified_sources, Vec::new()).await
+    }
+
+    async fn ingest_documents_with_context(&self, mut raws: Vec<RawDocument>, verified_sources: Vec<SourceReceipt>, expected_occurrences: Vec<(String, String)>) -> Result<IngestStats> {
         if raws.is_empty() {
-            return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
+            return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0, doc_ids: Vec::new() });
         }
+        anyhow::ensure!(self.config.batch_size > 0, "Embedding batch size must be greater than zero");
+        let input_order = raws.iter().map(doc_id_for).collect::<Vec<_>>();
+        let mut latest = std::collections::HashMap::new();
+        for (index, id) in input_order.iter().enumerate() { latest.insert(id.clone(), index); }
+        raws = raws.into_iter().enumerate().filter_map(|(index, raw)|
+            (latest.get(&doc_id_for(&raw)) == Some(&index)).then_some(raw)).collect();
+        let unique_order = raws.iter().map(doc_id_for).collect::<Vec<_>>();
+        for raw in &raws {
+            anyhow::ensure!(!raw.source_hash.trim().is_empty(), "Document identity is required");
+            anyhow::ensure!(!raw.full_text.trim().is_empty()
+                || raw.embedding_vit.is_some() || raw.embedding_omni.is_some(),
+                "No searchable text was extracted from {}; use metadata indexing or retry extraction with OCR", raw.filename);
+        }
+        let active_embedder = if self.config.text_only { None } else { self.embedder.as_ref() };
 
         // ── P19 NER phase ───────────────────────────────────────────────
         // Run GLiNER once per document on the (truncated) full_text and merge
@@ -407,11 +818,9 @@ impl IngestPipeline {
                 let entity_tags = super::ner::build_entity_tags(entities, 0.0, ner.entity_limit());
                 merge_tags(&mut raw.tags, entity_tags);
                 let doc_id = doc_id_for(raw);
-                let mut fields = super::fields::from_extraction(&doc_id, &raw.full_text, ner.model().display_name(), extracted);
-                // Preserve reviewed values when the same source is reindexed.
-                let previous = self.vector.document_metadata(&doc_id).await?;
-                let reviewed = super::fields::read(&previous);
-                super::fields::preserve_reviews(&mut fields, &reviewed);
+                // Stored identity and current reviews are resolved under the
+                // writer gate after embedding, including moved legacy rows.
+                let fields = super::fields::from_extraction(&doc_id, &raw.full_text, ner.model().display_name(), extracted);
                 field_evidence.insert(doc_id, fields);
             }
         }
@@ -424,7 +833,8 @@ impl IngestPipeline {
             }
         }
 
-        if self.embedder.is_none() && !self.config.text_only {
+        if active_embedder.is_none() && !self.config.text_only
+            && raws.iter().any(|r| !r.full_text.trim().is_empty()) {
             anyhow::bail!("Embedding is enabled but the model is not loaded; initialise it or select text-only indexing");
         }
 
@@ -437,20 +847,21 @@ impl IngestPipeline {
         for raw in &raws {
             // Text-only indexes retain the complete body as one representative
             // row and never load or call an embedding model.
-            let chunks = if let Some(embedder) = &self.embedder {
+            let has_text = !raw.full_text.trim().is_empty();
+            let chunks = if has_text && active_embedder.is_some() {
+                let embedder = active_embedder.expect("checked above");
                 embedder.lock().await.chunk_for_embedding(&raw.full_text)?
-            } else if raw.full_text.trim().is_empty() {
-                Vec::new()
             } else {
                 vec![super::embedder::TextChunk {
                     text: raw.full_text.clone(), start_char: 0,
                     end_char: raw.full_text.len(), chunk_index: 0,
                 }]
             };
+            anyhow::ensure!(!chunks.is_empty(), "No searchable chunks were produced for {}", raw.filename);
             let chunk_total = chunks.len() as i32;
             total_chunk_count += chunks.len();
 
-            if let Some(embedder) = &self.embedder {
+            if let Some(embedder) = active_embedder.filter(|_| has_text) {
             for batch in chunks.chunks(self.config.batch_size) {
                 let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
                 let (dense, sparse, multivecs, model_id) = {
@@ -473,6 +884,10 @@ impl IngestPipeline {
                     let mid = format!("{:?}", emb.model());
                     (dense, sparse, multivecs, mid)
                 };
+                anyhow::ensure!(dense.vectors.len() == batch.len(),
+                    "Embedding model returned {} vectors for {} passages", dense.vectors.len(), batch.len());
+                anyhow::ensure!(dense.vectors.iter().all(|v| v.len() == self.vector.dims && v.iter().all(|n| n.is_finite())),
+                    "Embedding model returned invalid dimensions or non-finite values");
                 for (i, text_chunk) in batch.iter().enumerate() {
                     let embedding = dense.vectors.get(i).cloned();
                     let sparse_json = sparse
@@ -507,7 +922,7 @@ impl IngestPipeline {
                 body_translated: raw.translated_text.clone(),
             });
         }
-        let embed_time_ms = if self.embedder.is_some() { embed_start.elapsed().as_millis() as u64 } else { 0 };
+        let embed_time_ms = if active_embedder.is_some() { embed_start.elapsed().as_millis() as u64 } else { 0 };
 
         for chunk in &mut all_chunks {
             if let Some(fields) = field_evidence.get(&chunk.doc_id) {
@@ -516,22 +931,15 @@ impl IngestPipeline {
             }
         }
         // ── Write phase: submit to background writer task ───────────────
-        self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms)
-            .await
+        let mut result = self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms, verified_sources, expected_occurrences).await?;
+        let resolved: std::collections::HashMap<_, _> = unique_order.into_iter().zip(result.doc_ids).collect();
+        result.doc_ids = input_order.into_iter().map(|id| resolved.get(&id).cloned().context("Missing committed source identity")).collect::<Result<_>>()?;
+        Ok(result)
     }
 
-    /// Re-ingest: delete all existing chunks for a document, then ingest fresh.
+    /// Prepare a complete replacement before changing either index. Ordinary
+    /// ingest is idempotent too; this entry point preserves its public API.
     pub async fn reingest_document(&self, raw: RawDocument) -> Result<IngestStats> {
-        let doc_id = doc_id_for(&raw);
-
-        // Remove old data.
-        self.vector.delete_doc(&doc_id).await?;
-        {
-            let mut writer = self.fts.writer()?;
-            self.fts.delete_document(&mut writer, &doc_id)?;
-            writer.commit()?;
-        }
-
         self.ingest_document(raw).await
     }
 
@@ -615,7 +1023,7 @@ impl IngestPipeline {
 
         let total = chunks.len();
         // L1 has no Tantivy entries (no full-text body yet).
-        self.submit_and_await(chunks, vec![], total, 0).await
+        self.submit_and_await(chunks, vec![], total, 0, Vec::new(), Vec::new()).await
     }
 
     /// Level-2 fallback: write one metadata-only row for a file whose L3
@@ -738,7 +1146,7 @@ impl IngestPipeline {
             doc_status: None,
         };
 
-        self.submit_and_await(vec![chunk], vec![], 1, 0).await
+        self.submit_and_await(vec![chunk], vec![], 1, 0, Vec::new(), Vec::new()).await
     }
 }
 
@@ -772,10 +1180,10 @@ pub struct L1FileEntry {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Derive a stable doc_id from the source_hash.
-/// (The source_hash is SHA-256 of the original file bytes, supplied by the caller.)
+/// Derive the preferred identity of an owner and source occurrence. Existing
+/// stored identities can be reused by the writer; see `IngestStats::doc_ids`.
 pub fn doc_id_for(raw: &RawDocument) -> String {
-    raw.source_hash.clone()
+    super::source_identity::occurrence_id(&raw.owner_id, &raw.location_uri, &raw.source_hash)
 }
 
 /// P19 — merge NER entity tags into a document's existing tags, deduping
@@ -1055,9 +1463,9 @@ mod tests {
         let stats = pipeline.ingest_document(raw.clone()).await.unwrap();
         assert_eq!(stats.chunk_count, 1);
         assert_eq!(stats.embed_time_ms, 0);
-        assert_eq!(local.fetch_full_text(&raw.source_hash).await.unwrap(), raw.full_text);
+        assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), raw.full_text);
         assert!(local.list_chunks_with_embeddings(0, 100).await.unwrap().is_empty());
-        let batches = local.fetch_by_doc_ids(&[raw.source_hash.clone()]).await.unwrap();
+        let batches = local.fetch_by_doc_ids(&[doc_id_for(&raw)]).await.unwrap();
         assert!(batches[0].column_by_name("embedding").unwrap().is_null(0));
         assert_eq!(fts.search("fox", &crate::index::schema::SearchFilters::default(), 10).unwrap().len(), 1);
         let engine = crate::index::search::SearchEngine::new(fts.clone(), local.clone(), None);
@@ -1066,12 +1474,449 @@ mod tests {
         assert_eq!(hits[0].url.as_deref(), Some("https://example.invalid/article"));
         pipeline.ingest_document(raw).await.unwrap();
         assert_eq!(fts.search("fox", &crate::index::schema::SearchFilters::default(), 10).unwrap().len(), 1);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+    }
+
+    async fn test_indexes() -> (tempfile::TempDir, Arc<FtsIndex>, Arc<LocalIndex>, IngestPipeline) {
+        let dir = tempfile::tempdir().unwrap();
+        let fts = Arc::new(FtsIndex::open_or_create(&dir.path().join("fts")).unwrap());
+        let local = Arc::new(LocalIndex::open_or_create(dir.path(), 4).await.unwrap());
+        let pipeline = IngestPipeline::new(fts.clone(), local.clone(), None,
+            IngestConfig { text_only: true, ..Default::default() });
+        (dir, fts, local, pipeline)
+    }
+
+    fn pending_for(raw: &RawDocument, replace_ids: Vec<String>) -> PendingFtsWrite {
+        PendingFtsWrite {
+            generation: uuid::Uuid::new_v4().to_string(),
+            doc_ids: vec![doc_id_for(&raw)], replace_ids,
+            inputs: vec![TantivyInputOwned {
+                doc_id: doc_id_for(raw), owner_id: raw.owner_id.clone(),
+                language: raw.language.clone(), title: raw.title.clone().unwrap_or_default(),
+                headings: raw.headings.join(" "), body: raw.full_text.clone(),
+                body_translated: raw.translated_text.clone(),
+            }],
+            receipt_rows: Vec::new(), delete_only: false, absent_occurrences: Vec::new(),
+        }
+    }
+
+    fn one_chunk(raw: &RawDocument) -> DocumentChunk {
+        build_doc_chunk(&super::super::embedder::TextChunk {
+            text: raw.full_text.clone(), start_char: 0, end_char: raw.full_text.len(), chunk_index: 0,
+        }, raw, 1, None, None, String::new(), None)
+    }
+
+    #[tokio::test]
+    async fn reingest_replaces_legacy_duplicates_and_stale_chunks() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        pipeline.ingest_document(raw.clone()).await.unwrap();
+        // Model an older append-only index containing both duplicate rows and
+        // a tail chunk left over from a longer previous extraction.
+        let mut tail = one_chunk(&raw);
+        tail.id = chunk_row_id(&doc_id_for(&raw), 1);
+        tail.chunk_index = 1;
+        tail.chunk_total = 2;
+        tail.full_text = Some("obsolete tail".into());
+        local.append_legacy_rows_for_test(&[one_chunk(&raw), tail]).await.unwrap();
+        let mut replacement = raw.clone();
+        replacement.full_text = "Replacement".into();
+        pipeline.reingest_document(replacement.clone()).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), "Replacement");
+        assert!(fts.search("fox", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(fts.search("replacement", &Default::default(), 10).unwrap().len(), 1);
+        pipeline.ingest_document(replacement).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_preparation_retains_last_good_document() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let original = sample_raw();
+        pipeline.ingest_document(original.clone()).await.unwrap();
+        let mut empty = original.clone();
+        empty.full_text = " \n\t ".into();
+        assert!(pipeline.reingest_document(empty).await.is_err());
+        let missing_model = IngestPipeline::new(fts.clone(), local.clone(), None, IngestConfig::default());
+        assert!(missing_model.reingest_document(original.clone()).await.is_err());
+        assert_eq!(local.fetch_full_text(&doc_id_for(&original)).await.unwrap(), original.full_text);
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_change_replaces_old_identity_without_touching_other_sources() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let original = sample_raw();
+        let mut other = sample_raw();
+        other.source_hash = "other-source".into();
+        other.location_uri = "crisp+local://user@machine/other.pdf".into();
+        other.full_text = "Unrelated document".into();
+        pipeline.ingest_documents_batch(vec![original.clone(), other.clone()]).await.unwrap();
+        let mut changed = original.clone();
+        changed.source_hash = "new-content-hash".into();
+        changed.full_text = "Changed document".into();
+        pipeline.ingest_document(changed.clone()).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 2);
+        assert_eq!(local.fetch_full_text(&doc_id_for(&original)).await.unwrap(), changed.full_text);
+        assert_eq!(local.fetch_full_text(&doc_id_for(&other)).await.unwrap(), other.full_text);
+        assert!(fts.search("fox", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(fts.search("changed", &Default::default(), 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn uncommitted_journal_intent_never_changes_searchable_text() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let original = sample_raw();
+        pipeline.ingest_document(original.clone()).await.unwrap();
+        let mut failed = original.clone();
+        failed.full_text = "Uncommitted replacement".into();
+        let pending = pending_for(&failed, vec![doc_id_for(&original)]);
+        record_fts_intent(local.ingest_journal_path(), &pending).unwrap();
+        repair_fts_writes(&fts, &local).await.unwrap();
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert!(fts.search("uncommitted", &Default::default(), 10).unwrap().is_empty());
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn committed_vector_generation_replays_exact_full_text_once() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let original = sample_raw();
+        pipeline.ingest_document(original.clone()).await.unwrap();
+        let mut changed = original.clone();
+        changed.source_hash = "replacement-hash".into();
+        changed.full_text = "First passage with Unicode 日本語. Exact complete body contains endmarker.".into();
+        let pending = pending_for(&changed, vec![doc_id_for(&original)]);
+        record_fts_intent(local.ingest_journal_path(), &pending).unwrap();
+        local.replace_documents(&mut [one_chunk(&changed)], &pending.generation).await.unwrap();
+        // Simulate process death after Lance commit but before full-text commit.
+        let reopened = LocalIndex::open_or_create(_dir.path(), 4).await.unwrap();
+        repair_fts_writes(&fts, &reopened).await.unwrap();
+        repair_fts_writes(&fts, &reopened).await.unwrap();
+        assert_eq!(fts.search("endmarker", &Default::default(), 10).unwrap().len(), 1);
+        assert!(fts.search("fox", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(fts.doc_count(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_fts_commit_is_durable_and_repaired_before_next_write() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let original = sample_raw();
+        let held_writer = fts.writer().unwrap();
+        let error = pipeline.ingest_document(original.clone()).await.unwrap_err();
+        assert!(format!("{error:#}").contains("repair is pending"));
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert_eq!(pending_fts_writes(local.ingest_journal_path()).unwrap().len(), 1);
+        drop(held_writer);
+        pipeline.ingest_document(original).await.unwrap();
+        assert_eq!(fts.doc_count(), 1);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_keeps_text_and_exposes_retryable_failure() {
+        let (_dir, _fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        pipeline.ingest_document(raw.clone()).await.unwrap();
+        pipeline.ingest_l2_row(raw.source_hash.clone(), raw.location_uri.clone(),
+            raw.owner_id.clone(), raw.filename.clone(), raw.ext.clone(), raw.source_hash.clone(),
+            Some(123), Some(100), None, None, None, None, None, None, None,
+            &super::super::task_failure::TaskFailureReason::EmptyText, "No text").await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), raw.full_text);
+        assert_eq!(local.document_metadata(&doc_id_for(&raw)).await.unwrap()["extraction_failure"]["reason"], "empty_text");
+        local.clear_extraction_failure(&doc_id_for(&raw)).await.unwrap();
+        let metadata = local.document_metadata(&doc_id_for(&raw)).await.unwrap();
+        assert!(metadata.get("extraction_failure").is_none());
+        assert!(metadata.get("mtime_unix").is_none());
+        assert_eq!(metadata["level"], 3);
+    }
+
+    #[tokio::test]
+    async fn metadata_ingestion_is_idempotent_and_cannot_downgrade_text() {
+        let (_dir, _fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let entry = L1FileEntry { doc_id: raw.source_hash.clone(), source_hash: raw.source_hash.clone(),
+            location_uri: raw.location_uri.clone(), owner_id: raw.owner_id.clone(),
+            filename: raw.filename.clone(), ext: raw.ext.clone(), parent_dir: "/".into(),
+            size: 123, mtime_ms: 1, ctime_ms: 1, volume_id: None };
+        pipeline.ingest_l1(&[entry.clone()]).await.unwrap();
+        pipeline.ingest_l1(&[entry.clone()]).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        pipeline.ingest_document(raw.clone()).await.unwrap();
+        pipeline.ingest_l1(&[entry]).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert_eq!(local.fetch_full_text(&raw.source_hash).await.unwrap(), raw.full_text);
+    }
+
+    #[tokio::test]
+    async fn reopened_pipeline_reports_and_repairs_pending_full_text_before_ready() {
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let held_writer = fts.writer().unwrap();
+        assert!(pipeline.ingest_document(sample_raw()).await.is_err());
+        let reopened_local = Arc::new(LocalIndex::open_or_create(dir.path(), 4).await.unwrap());
+        let reopened = IngestPipeline::new(fts.clone(), reopened_local, None,
+            IngestConfig { text_only: true, ..Default::default() });
+        assert!(reopened.ensure_ready().await.is_err());
+        drop(held_writer);
+        reopened.ensure_ready().await.unwrap();
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_pipeline_instances_do_not_duplicate_or_drop_generations() {
+        let (_dir, fts, local, first) = test_indexes().await;
+        let second = IngestPipeline::new(fts.clone(), local.clone(), None,
+            IngestConfig { text_only: true, ..Default::default() });
+        let mut left = sample_raw();
+        left.full_text = "First revision".into();
+        let mut right = left.clone();
+        right.full_text = "Second revision".into();
+        let (a, b) = tokio::join!(first.ingest_document(left), second.ingest_document(right));
+        a.unwrap(); b.unwrap();
+        first.ensure_ready().await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert_eq!(fts.doc_count(), 1);
+        assert_eq!(fts.search("revision", &Default::default(), 10).unwrap().len(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_auxiliary_vector_retains_the_previous_index_and_writer() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        pipeline.ingest_document(raw.clone()).await.unwrap();
+        for vector in [vec![], vec![f32::NAN; 768], vec![0.0; 767]] {
+            let mut invalid = raw.clone();
+            invalid.embedding_vit = Some(vector);
+            assert!(pipeline.reingest_document(invalid).await.is_err());
+            assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), raw.full_text);
+        }
+        pipeline.ingest_document(raw).await.unwrap();
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert_eq!(pipeline.queue_depth(), 0);
+    }
+
+    #[tokio::test]
+    async fn imported_keep_both_preserves_local_until_explicit_replacement() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let local_raw = sample_raw();
+        pipeline.ingest_document(local_raw.clone()).await.unwrap();
+        let mut remote = local_raw.clone();
+        remote.source_hash = "remote-copy".into();
+        remote.full_text = "Remote edition".into();
+        let mut remote_chunk = one_chunk(&remote);
+        remote_chunk.doc_id = "explicit-import-copy".into();
+        remote_chunk.id = chunk_row_id(&remote_chunk.doc_id, 0);
+        local.ingest_batch_with_fts(&[remote_chunk.clone()], &[], &fts).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 2);
+        assert_eq!(fts.doc_count(), 2);
+        pipeline.ingest_document(local_raw.clone()).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 2);
+        assert_eq!(local.fetch_full_text(&remote_chunk.doc_id).await.unwrap(), remote.full_text);
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        local.ingest_batch_with_fts(&[remote_chunk.clone()], &[doc_id_for(&local_raw)], &fts).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert!(fts.search("fox", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(fts.search("edition", &Default::default(), 10).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn durable_delete_cannot_be_resurrected_by_a_pending_write() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let held_writer = fts.writer().unwrap();
+        assert!(pipeline.ingest_document(raw.clone()).await.is_err());
+        drop(held_writer);
+        local.delete_document_with_fts(&doc_id_for(&raw), &fts).await.unwrap();
+        pipeline.ensure_ready().await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 0);
+        assert_eq!(fts.doc_count(), 0);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn partial_generation_receipts_are_retained_and_block_readiness() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let guard = local.read_guard(&fts).await.unwrap();
+        let raw = sample_raw();
+        let mut pending = pending_for(&raw, vec![doc_id_for(&raw)]);
+        pending.doc_ids.push("missing-document".into());
+        record_fts_intent(local.ingest_journal_path(), &pending).unwrap();
+        local.replace_documents(&mut [one_chunk(&raw)], &pending.generation).await.unwrap();
+        drop(guard);
+        assert!(pipeline.ensure_ready().await.is_err());
+        assert_eq!(pending_fts_writes(local.ingest_journal_path()).unwrap().len(), 1);
+        assert_eq!(fts.doc_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn conditional_remote_delete_retains_newer_local_edits_and_independent_copies() {
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let mut raw = sample_raw();
+        raw.full_text = "originalmarker".into();
+        let mut original = one_chunk(&raw);
+        let original_id = original.doc_id.clone();
+        let mut copy_raw = raw.clone();
+        copy_raw.source_hash = "kept-independent-copy".into();
+        copy_raw.full_text = "retainedmarker".into();
+        let mut copy = one_chunk(&copy_raw);
+        copy.doc_id = format!("{original_id}_remote");
+        copy.id = chunk_row_id(&copy.doc_id, 0);
+        local.ingest_batch_with_fts(&[original.clone(), copy.clone()], &[], &fts).await.unwrap();
+        let observed_version = local.table_ref().version().await.unwrap();
+        original.title = Some("Updated local title".into());
+        local.ingest_batch_with_fts(&[original], &[], &fts).await.unwrap();
+        assert!(!local.delete_document_if_version_with_fts(&original_id, observed_version, &fts).await.unwrap());
+        assert_eq!(fts.search("originalmarker", &Default::default(), 10).unwrap().len(), 1);
+        let current_version = local.table_ref().version().await.unwrap();
+        assert!(local.delete_document_if_version_with_fts(&original_id, current_version, &fts).await.unwrap());
+        assert!(fts.search("originalmarker", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(local.fetch_full_text(&copy.doc_id).await.unwrap(), "retainedmarker");
+        assert_eq!(fts.search("retainedmarker", &Default::default(), 10).unwrap().len(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn imported_replacements_reject_ambiguous_or_foreign_owner_identities() {
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let original = one_chunk(&raw);
+        local.ingest_batch_with_fts(&[original.clone()], &[], &fts).await.unwrap();
+        let before = local.table_ref().version().await.unwrap();
+        let mut foreign = original.clone();
+        foreign.owner_id = "different-owner".into();
+        assert!(local.ingest_batch_with_fts(&[foreign], &[], &fts).await.is_err());
+        assert_eq!(local.table_ref().version().await.unwrap(), before);
+
+        let mut moved = original.clone();
+        moved.location_uri = "/same-owner/new-location.txt".into();
+        local.ingest_batch_with_fts(&[moved.clone()], &[], &fts).await.unwrap();
+        assert_eq!(local.fetch_document_summary(&original.doc_id).await.unwrap().unwrap().location_uri, moved.location_uri);
+
+        seed_shared_legacy(&local, &fts, &collision_sources()).await;
+        let before = local.table_ref().version().await.unwrap();
+        let rows_before = local.table_ref().count_rows(None).await.unwrap();
+        let mut collision = original.clone();
+        collision.doc_id = "shared-legacy".into();
+        collision.id = chunk_row_id(&collision.doc_id, 0);
+        assert!(local.ingest_batch_with_fts(&[collision], &[], &fts).await.is_err());
+        assert!(local.ingest_batch_with_fts(&[moved], &["shared-legacy".into()], &fts).await.is_err());
+        assert!(local.delete_document_with_fts("shared-legacy", &fts).await.is_err());
+        assert!(local.update_l2_fields("shared-legacy", Some("Must not alter other occurrences"),
+            None, None, None, None, None).await.is_err());
+        assert_eq!(local.table_ref().version().await.unwrap(), before);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), rows_before);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn newly_appeared_source_requires_sync_policy_retry_without_losing_local_data() {
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let original = one_chunk(&raw);
+        let absent_version = local.table_ref().version().await.unwrap();
+        assert!(local.fetch_document_summary(&original.doc_id).await.unwrap().is_none());
+        let mut remote = original.clone();
+        remote.id = chunk_row_id(&remote.doc_id, -1);
+        remote.chunk_index = -1;
+        remote.chunk_total = 0;
+        remote.full_text = None;
+        remote.title = Some("Unreviewed remote title".into());
+        local.ingest_batch_with_fts(&[original.clone()], &[], &fts).await.unwrap();
+        assert!(!apply_new_sync_metadata_if_version(&local, &fts, &[remote.clone()], absent_version).await.unwrap());
+        let current_version = local.table_ref().version().await.unwrap();
+        // Merely rereading the table version is insufficient: the absent
+        // decision itself must still hold under the paired writer lease.
+        assert!(!apply_new_sync_metadata_if_version(&local, &fts, &[remote.clone()], current_version).await.unwrap());
+        assert_eq!(local.table_ref().version().await.unwrap(), current_version);
+        assert_eq!(local.fetch_document_summary(&original.doc_id).await.unwrap().unwrap().title, original.title);
+        assert_eq!(local.fetch_full_text(&original.doc_id).await.unwrap(), raw.full_text);
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+
+        remote.doc_id = "still-absent-source".into();
+        remote.id = chunk_row_id(&remote.doc_id, -1);
+        remote.location_uri = "/independent/metadata.txt".into();
+        assert!(apply_new_sync_metadata_if_version(&local, &fts, &[remote.clone()], current_version).await.unwrap());
+        assert_eq!(local.fetch_document_summary(&remote.doc_id).await.unwrap().unwrap().title, remote.title);
+    }
+
+    #[tokio::test]
+    async fn same_content_remote_metadata_obeys_policy_without_replacing_reviewed_rows() {
+        use crate::sync::conflict::{resolve_conflict, ConflictPolicy, ConflictSide, Resolution};
+        use arrow_array::{FixedSizeListArray, Float32Array, StringArray};
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase};
+
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let mut original = one_chunk(&raw);
+        original.title = Some("Originaltitle".into());
+        original.indexed_at = 10;
+        original.embedding = Some(vec![0.25; 4]);
+        original.metadata_json = Some(r#"{"level":3,"reviewed":true,"evidence":{"page":7},"user_note":"keep"}"#.into());
+        local.ingest_batch_with_fts(&[original.clone()], &[], &fts).await.unwrap();
+        let local_side = ConflictSide { doc_id: original.doc_id.clone(), source_hash: original.source_hash.clone(),
+            updated_at: Some(10), title: original.title.clone() };
+        let remote_side = ConflictSide { doc_id: original.doc_id.clone(), source_hash: original.source_hash.clone(),
+            updated_at: Some(20), title: Some("Remotetitle".into()) };
+        for policy in [ConflictPolicy::LocalWins, ConflictPolicy::KeepBoth] {
+            assert_eq!(resolve_conflict(&local_side, &remote_side, policy), Resolution::UseLocal);
+            let current = local.fetch_document_summary(&original.doc_id).await.unwrap().unwrap();
+            assert_eq!(current.location_uri, original.location_uri);
+            assert_eq!(current.title, original.title);
+        }
+        assert_eq!(resolve_conflict(&local_side, &remote_side, ConflictPolicy::NewestWins), Resolution::UseRemote);
+        let before = local.table_ref().version().await.unwrap();
+        let update = || RemoteMetadata { doc_id: &original.doc_id, source_hash: &original.source_hash,
+            owner_id: &original.owner_id, location_uri: "/remote/moved.txt", title: Some("Remotetitle"),
+            author: None, year: None, language: Some("de"), indexed_at: 20, origin: "https://sync.example/" };
+        assert!(apply_remote_metadata_if_version(&local, &fts, update(), before).await.unwrap());
+        let current = local.fetch_document_summary(&original.doc_id).await.unwrap().unwrap();
+        assert_eq!(current.location_uri, "/remote/moved.txt");
+        assert_eq!(current.title.as_deref(), Some("Remotetitle"));
+        assert_eq!(current.indexed_at, 20);
+        assert_eq!(current.source_hash, original.source_hash);
+        assert_eq!(local.fetch_full_text(&original.doc_id).await.unwrap(), raw.full_text);
+        assert!(fts.search("title:Originaltitle", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(fts.search("title:Remotetitle", &Default::default(), 10).unwrap().len(), 1);
+        let batches: Vec<arrow_array::RecordBatch> = local.table_ref().query().execute().await.unwrap().try_collect().await.unwrap();
+        for batch in batches {
+            let metadata = batch.column_by_name("metadata_json").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let vectors = batch.column_by_name("embedding").unwrap().as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            for row in 0..batch.num_rows() {
+                let value: serde_json::Value = serde_json::from_str(metadata.value(row)).unwrap();
+                assert_eq!(value["level"], 3);
+                assert_eq!(value["reviewed"], true);
+                assert_eq!(value["evidence"]["page"], 7);
+                assert_eq!(value["user_note"], "keep");
+                assert_eq!(value["sync_remote_url"], "https://sync.example");
+                let vector = vectors.value(row);
+                assert_eq!(vector.as_any().downcast_ref::<Float32Array>().unwrap().values().as_ref(), &[0.25; 4]);
+            }
+        }
+        assert!(!apply_remote_metadata_if_version(&local, &fts, update(), before).await.unwrap());
+        local.update_l2_fields(&original.doc_id, Some("Localreviewtitle"), None, None, None, None, None).await.unwrap();
+        let edited = local.fetch_document_summary(&original.doc_id).await.unwrap().unwrap();
+        assert!(edited.indexed_at > current.indexed_at);
+        let edited_side = ConflictSide { doc_id: edited.doc_id, source_hash: edited.source_hash,
+            updated_at: Some(edited.indexed_at), title: edited.title };
+        assert_eq!(resolve_conflict(&edited_side, &remote_side, ConflictPolicy::NewestWins), Resolution::UseLocal);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
     }
 
     #[test]
-    fn doc_id_is_source_hash() {
+    fn doc_id_scopes_the_source_fingerprint() {
         let raw = sample_raw();
-        assert_eq!(doc_id_for(&raw), "abc123def456");
+        assert_ne!(doc_id_for(&raw), raw.source_hash);
+        assert_eq!(doc_id_for(&raw), super::super::source_identity::occurrence_id(&raw.owner_id, &raw.location_uri, &raw.source_hash));
     }
 
     #[test]
@@ -1124,7 +1969,8 @@ mod tests {
             chunk_index: 0,
         };
         let dc = build_doc_chunk(&tc, &raw, 2, Some(vec![0.1; 4]), None, "bge-m3".to_owned(), None);
-        assert_eq!(dc.doc_id, "abc123def456");
+        assert_eq!(dc.doc_id, doc_id_for(&raw));
+        assert_eq!(dc.source_hash, raw.source_hash);
         assert_eq!(dc.chunk_index, 0);
         assert_eq!(dc.chunk_total, 2);
         assert_eq!(dc.language, Some("en".to_owned()));
@@ -1133,23 +1979,16 @@ mod tests {
     }
 
     #[test]
-    fn doc_id_distinguishes_two_raws_by_source_hash() {
-        // P11 step 1 sanity: when ingest_documents_batch dispatches N
-        // RawDocuments through the embed loop, each must produce a
-        // distinct doc_id even when filename / location / owner are
-        // identical -- that's the only thing keeping a re-ingest of
-        // the same path under different content from collapsing into
-        // one row in LanceDB.
-        let mut raw_a = sample_raw();
-        let mut raw_b = sample_raw();
-        raw_a.source_hash = "aaaaaaaa".into();
-        raw_b.source_hash = "bbbbbbbb".into();
-        assert_ne!(doc_id_for(&raw_a), doc_id_for(&raw_b));
-        // Same source_hash on two RawDocuments -> same doc_id (the
-        // dedup contract every ingest path relies on).
-        let raw_c = sample_raw();
-        let raw_d = sample_raw();
-        assert_eq!(doc_id_for(&raw_c), doc_id_for(&raw_d));
+    fn doc_id_tracks_owner_and_location_independently_of_changed_content() {
+        let raw = sample_raw();
+        let mut changed = raw.clone();
+        changed.source_hash = "new bytes".into();
+        assert_eq!(doc_id_for(&raw), doc_id_for(&changed));
+        changed.location_uri = "file:///second-copy.pdf".into();
+        assert_ne!(doc_id_for(&raw), doc_id_for(&changed));
+        changed = raw.clone();
+        changed.owner_id = "another owner".into();
+        assert_ne!(doc_id_for(&raw), doc_id_for(&changed));
     }
 
     #[test]
@@ -1234,4 +2073,507 @@ mod tests {
         // mtime stays first so the digit-scan parser keeps terminating there.
         assert!(on.starts_with(r#"{"mtime_unix":42"#));
     }
+
+    #[tokio::test]
+    async fn metadata_refresh_updates_lexical_fields_and_preserves_each_chunk() {
+        use arrow_array::{Array, FixedSizeListArray, Float32Array, Int32Array, StringArray};
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase};
+
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let mut raw = sample_raw();
+        raw.title = Some("Oldtitle".into());
+        let doc_id = doc_id_for(&raw);
+        raw.full_text = "first overlap last".into();
+        let mut first = build_doc_chunk(&TextChunk {
+            text: "first overlap".into(), start_char: 0, end_char: "first overlap".len(), chunk_index: 0,
+        }, &raw, 2, Some(vec![0.25; 4]), None, "test".into(), None);
+        let mut second = build_doc_chunk(&TextChunk {
+            text: "overlap last".into(), start_char: "first ".len(), end_char: raw.full_text.len(), chunk_index: 1,
+        }, &raw, 2, Some(vec![0.5; 4]), None, "test".into(), None);
+        first.metadata_json = Some(r#"{"chunk_note":"first","mtime_unix":42,"level":3}"#.into());
+        second.metadata_json = Some(r#"{"chunk_note":"second","mtime_unix":42}"#.into());
+        local.ingest_batch_with_fts(&[first, second], &[], &fts).await.unwrap();
+        local.update_l2_fields(&doc_id, Some("Updatedtitle"), Some("O'Reilly"),
+            Some(2026), Some("de"), Some(4), Some(r#"{"reviewed":true,"level":2}"#)).await.unwrap();
+
+        assert!(fts.search("title:Oldtitle", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(fts.search("title:Updatedtitle", &Default::default(), 10).unwrap().len(), 1);
+        assert_eq!(fts.search(r#""first overlap last""#, &Default::default(), 10).unwrap().len(), 1);
+        // Language filtering is applied by result hydration. Verify that the
+        // lexical store's exact language field also advances with the update.
+        let reader = fts.index.reader().unwrap();
+        let searcher = reader.searcher();
+        let language_count = |language: &str| searcher.search(
+            &tantivy::query::TermQuery::new(
+                tantivy::Term::from_field_text(fts.fields.language, language),
+                tantivy::schema::IndexRecordOption::Basic,
+            ), &tantivy::collector::Count).unwrap();
+        assert_eq!(language_count("de"), 1);
+        assert_eq!(language_count("en"), 0);
+
+        let batches: Vec<arrow_array::RecordBatch> = local.table_ref().query()
+            .only_if(format!("doc_id = '{}'", doc_id)).execute().await.unwrap()
+            .try_collect().await.unwrap();
+        assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 2);
+        for batch in batches {
+            let indices = batch.column_by_name("chunk_index").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
+            let metadata = batch.column_by_name("metadata_json").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let body = batch.column_by_name("full_text").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            let vectors = batch.column_by_name("embedding").unwrap().as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            for row in 0..batch.num_rows() {
+                let first = indices.value(row) == 0;
+                let value: serde_json::Value = serde_json::from_str(metadata.value(row)).unwrap();
+                assert_eq!(value["chunk_note"], if first { "first" } else { "second" });
+                assert_eq!(value["mtime_unix"], 42);
+                assert_eq!(value["reviewed"], true);
+                assert_eq!(value["level"], 3, "a stale L2 update cannot downgrade extracted chunks");
+                assert_eq!(body.value(row), if first { "first overlap" } else { "overlap last" });
+                let vector = vectors.value(row);
+                let vector = vector.as_any().downcast_ref::<Float32Array>().unwrap();
+                assert!(vector.values().iter().all(|value| *value == if first { 0.25 } else { 0.5 }));
+            }
+        }
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_metadata_fts_write_recovers_before_reopened_search() {
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let mut raw = sample_raw();
+        raw.title = Some("Oldtitle".into());
+        let doc_id = doc_id_for(&raw);
+        pipeline.ingest_document(raw.clone()).await.unwrap();
+        let held_writer = fts.writer().unwrap();
+        let error = local.update_l2_fields(&doc_id, Some("Repairedtitle"), None,
+            None, Some("de"), None, Some(r#"{"reviewed":true}"#)).await.unwrap_err();
+        assert!(format!("{error:#}").contains("full-text repair is pending"));
+        assert_eq!(pending_fts_writes(local.ingest_journal_path()).unwrap().len(), 1);
+        drop(held_writer);
+
+        let reopened = LocalIndex::open_or_create(dir.path(), 4).await.unwrap();
+        let reopened_fts = FtsIndex::open_or_create(&dir.path().join("fts")).unwrap();
+        let _guard = reopened.read_guard(&reopened_fts).await.unwrap();
+        assert!(reopened_fts.search("title:Oldtitle", &Default::default(), 10).unwrap().is_empty());
+        assert_eq!(reopened_fts.search("title:Repairedtitle", &Default::default(), 10).unwrap().len(), 1);
+        assert_eq!(reopened_fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert_eq!(reopened.fetch_full_text(&doc_id).await.unwrap(), raw.full_text);
+        assert_eq!(reopened.document_metadata(&doc_id).await.unwrap()["reviewed"], true);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn metadata_only_refresh_receipt_recovers_and_invalid_patch_keeps_previous_state() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        pipeline.ingest_l1(&[L1FileEntry {
+            doc_id: raw.source_hash.clone(), source_hash: raw.source_hash.clone(),
+            location_uri: raw.location_uri.clone(), owner_id: raw.owner_id.clone(),
+            filename: raw.filename, ext: raw.ext, parent_dir: "/".into(), size: 12,
+            mtime_ms: 1000, ctime_ms: 1000, volume_id: None,
+        }]).await.unwrap();
+        let before = local.document_metadata(&raw.source_hash).await.unwrap();
+        assert!(local.update_l2_fields(&raw.source_hash, Some("Invalid"), None,
+            None, None, None, Some("[]")).await.is_err());
+        assert_eq!(local.document_metadata(&raw.source_hash).await.unwrap(), before);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+
+        let held_writer = fts.writer().unwrap();
+        assert!(local.update_l2_fields(&raw.source_hash, Some("Metadata title"), None,
+            None, None, None, Some(r#"{"reviewed":true}"#)).await.is_err());
+        assert_eq!(pending_fts_writes(local.ingest_journal_path()).unwrap().len(), 1);
+        drop(held_writer);
+        pipeline.ensure_ready().await.unwrap();
+        let metadata = local.document_metadata(&raw.source_hash).await.unwrap();
+        assert_eq!(metadata["reviewed"], true);
+        assert_eq!(metadata["fs_size"], 12);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn available_sources_are_filtered_before_limit_on_real_rows() {
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase};
+        let (_dir, _fts, local, pipeline) = test_indexes().await;
+        for (hash, volume) in [("offline", Some("missing")), ("mounted", Some("drive'one")), ("unbound", None)] {
+            let mut raw = sample_raw();
+            raw.source_hash = hash.into();
+            raw.location_uri = format!("/source/{hash}.txt");
+            raw.volume_id = volume.map(str::to_owned);
+            pipeline.ingest_document(raw).await.unwrap();
+        }
+        let filters = super::super::schema::SearchFilters {
+            mounted_volume_ids: Some(vec!["drive'one".into()]), ..Default::default()
+        };
+        let predicate = filters.to_lance_sql().unwrap();
+        assert_eq!(local.table_ref().count_rows(Some(predicate.clone())).await.unwrap(), 2);
+        let batches: Vec<arrow_array::RecordBatch> = local.table_ref().query()
+            .only_if(predicate).limit(1).execute().await.unwrap().try_collect().await.unwrap();
+        let ids = batches[0].column_by_name("source_hash").unwrap().as_any().downcast_ref::<arrow_array::StringArray>().unwrap();
+        assert_ne!(ids.value(0), "offline");
+        let offline = super::super::schema::SearchFilters { mounted_volume_ids: Some(vec![]), ..Default::default() };
+        assert_eq!(local.table_ref().count_rows(offline.to_lance_sql()).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn representative_lookup_includes_metadata_rows_and_keeps_owner_scope() {
+        let (_dir, _fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        pipeline.ingest_l1(&[L1FileEntry {
+            doc_id: raw.source_hash.clone(), source_hash: raw.source_hash.clone(),
+            location_uri: raw.location_uri.clone(), owner_id: raw.owner_id.clone(),
+            filename: raw.filename.clone(), ext: raw.ext.clone(), parent_dir: "/".into(), size: 12,
+            mtime_ms: 1000, ctime_ms: 1000, volume_id: None,
+        }]).await.unwrap();
+        let metadata = local.fetch_document_summary(&raw.source_hash).await.unwrap().unwrap();
+        assert_eq!(metadata.chunk_index, -1);
+        assert_eq!(metadata.location_uri, raw.location_uri);
+        assert!(local.fetch_document_summary_for_uri(&raw.location_uri, "another owner").await.unwrap().is_none());
+        pipeline.ingest_document(raw.clone()).await.unwrap();
+        let full = local.fetch_document_summary_for_uri(&raw.location_uri, &raw.owner_id).await.unwrap().unwrap();
+        assert_eq!(full.chunk_index, 0);
+        assert_eq!(full.doc_id, raw.source_hash);
+    }
+
+    #[tokio::test]
+    async fn legacy_user_skip_decisions_remain_explicitly_skipped() {
+        let (_dir, _fts, local, _pipeline) = test_indexes().await;
+        for (i, message) in ["skipped via GUI", "manually skipped via CLI"].iter().enumerate() {
+            let mut raw = sample_raw();
+            raw.source_hash = format!("legacy-{i}");
+            raw.location_uri = format!("/legacy/{i}");
+            let mut chunk = one_chunk(&raw);
+            chunk.metadata_json = Some(serde_json::json!({"extraction_failure":{"reason":"unsupported","msg":message}}).to_string());
+            local.ingest_batch(&[chunk]).await.unwrap();
+            assert!(local.indexed_state_for_uri(&raw.location_uri).await.unwrap().unwrap().extraction_skip);
+        }
+    }
+
+
+    #[tokio::test]
+    async fn queued_file_version_is_reverified_under_the_writer_lease() {
+        let (directory, fts, local, pipeline) = test_indexes().await;
+        let path = directory.path().join("source.txt");
+        std::fs::write(&path, b"first version").unwrap();
+        let mut first = sample_raw();
+        first.source_hash = hash_local_source(&path).unwrap();
+        first.location_uri = path.to_string_lossy().into_owned();
+        first.full_text = "Original verified passage".into();
+        pipeline.ingest_verified_document(first.clone(), path.clone()).await.unwrap();
+
+        let guard = local.read_guard(&fts).await.unwrap();
+        let pipeline = Arc::new(pipeline);
+        let queued = tokio::spawn({
+            let pipeline = pipeline.clone(); let raw = first.clone(); let path = path.clone();
+            async move { pipeline.ingest_verified_document(raw, path).await }
+        });
+        for _ in 0..100 {
+            if pipeline.queue_depth() > 0 { break; }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pipeline.queue_depth(), 1);
+        // Same byte count, changed after preparation and while the writer waits.
+        std::fs::write(&path, b"other version").unwrap();
+        drop(guard);
+        assert!(queued.await.unwrap().is_err());
+        assert_eq!(local.fetch_full_text(&doc_id_for(&first)).await.unwrap(), first.full_text);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+
+        let mut latest = first.clone();
+        latest.source_hash = hash_local_source(&path).unwrap();
+        latest.full_text = "Current verified passage".into();
+        pipeline.ingest_verified_document(latest.clone(), path.clone()).await.unwrap();
+        assert!(pipeline.ingest_verified_document(first, path.clone()).await.is_err());
+        assert_eq!(local.fetch_full_text(&doc_id_for(&latest)).await.unwrap(), latest.full_text);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert!(fts.search("original", &Default::default(), 10).unwrap().is_empty());
+        std::fs::remove_file(path.clone()).unwrap();
+        assert!(pipeline.ingest_verified_document(latest.clone(), path).await.is_err());
+        assert_eq!(local.fetch_full_text(&doc_id_for(&latest)).await.unwrap(), latest.full_text);
+    }
+
+    #[tokio::test]
+    async fn explicit_byte_receipt_supports_text_derived_document_identities() {
+        let (directory, _fts, local, pipeline) = test_indexes().await;
+        let path = directory.path().join("manual.txt");
+        std::fs::write(&path, b"source bytes").unwrap();
+        let raw = sample_raw();
+        let fingerprint = hash_local_source(&path).unwrap();
+        assert_ne!(raw.source_hash, fingerprint);
+        pipeline.ingest_documents_batch_verified(vec![raw.clone()], vec![(path.clone(), fingerprint.clone())]).await.unwrap();
+        assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), raw.full_text);
+        std::fs::write(&path, b"changed file").unwrap();
+        let mut changed = raw.clone(); changed.full_text = "Must not replace the last verified body".into();
+        assert!(pipeline.ingest_documents_batch_verified(vec![changed], vec![(path, fingerprint)]).await.is_err());
+        assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), raw.full_text);
+    }
+
+    #[tokio::test]
+    async fn identical_content_keeps_each_owner_and_location_and_batch_result_order() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let mut first = sample_raw(); first.owner_id = "alice".into(); first.location_uri = "/same/source.txt".into();
+        first.mtime_unix = Some(12);
+        let mut second = first.clone(); second.location_uri = "/copy/source.txt".into();
+        let mut other_owner = first.clone(); other_owner.owner_id = "bob".into();
+        assert!(local.indexed_state_for_owner_uri(&first.location_uri, "bob").await.unwrap().is_none());
+        let mut latest_first = first.clone(); latest_first.full_text = "Newest revision marker".into();
+        let stats = pipeline.ingest_documents_batch(vec![first.clone(), second.clone(), other_owner.clone(), latest_first.clone()]).await.unwrap();
+        assert_eq!(stats.doc_ids.len(), 4);
+        assert_eq!(stats.doc_ids[0], stats.doc_ids[3]);
+        assert_ne!(stats.doc_ids[0], stats.doc_ids[1]);
+        assert_ne!(stats.doc_ids[0], stats.doc_ids[2]);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 3);
+        assert_eq!(local.fetch_full_text(&stats.doc_ids[0]).await.unwrap(), latest_first.full_text);
+        for raw in [&first, &second, &other_owner] {
+            let summary = local.fetch_document_summary_for_uri(&raw.location_uri, &raw.owner_id).await.unwrap().unwrap();
+            assert_eq!(summary.source_hash, raw.source_hash);
+        }
+        assert!(local.indexed_state_for_owner_uri(&first.location_uri, "charlie").await.unwrap().is_none());
+        assert_eq!(local.indexed_state_for_owner_uri(&first.location_uri, "bob").await.unwrap().unwrap().source_hash.as_deref(), Some(first.source_hash.as_str()));
+        let bob = super::super::schema::SearchFilters { owner_id: Some("bob".into()), ..Default::default() };
+        assert!(fts.search("newest", &bob, 10).unwrap().is_empty());
+        assert_eq!(fts.search("fox", &bob, 10).unwrap().len(), 1);
+    }
+
+    async fn seed_shared_legacy(local: &LocalIndex, fts: &FtsIndex, raws: &[RawDocument]) {
+        let rows = raws.iter().enumerate().map(|(index, raw)| {
+            let mut row = one_chunk(raw); row.doc_id = "shared-legacy".into(); row.id = chunk_row_id(&row.doc_id, 0);
+            row.embedding = Some(vec![index as f32 + 1.0; 4]);
+            row.metadata_json = Some(serde_json::json!({"user_note":format!("retained-{index}")}).to_string());
+            row
+        }).collect::<Vec<_>>();
+        local.append_legacy_rows_for_test(&rows).await.unwrap();
+        let mut writer = fts.writer().unwrap();
+        for raw in raws {
+            fts.add_document(&mut writer, TantivyInput { doc_id: "shared-legacy", owner_id: &raw.owner_id,
+                language: &raw.language, title: raw.title.as_deref().unwrap_or(""), headings: "", body: &raw.full_text, body_translated: None }).unwrap();
+        }
+        writer.commit().unwrap();
+    }
+
+    fn collision_sources() -> Vec<RawDocument> {
+        let mut first = sample_raw(); first.owner_id = "alice".into(); first.location_uri = "/shared/location.txt".into(); first.full_text = "selectedmarker".into();
+        let mut other_owner = first.clone(); other_owner.owner_id = "bob".into(); other_owner.full_text = "bobsecretmarker".into();
+        let mut other_path = first.clone(); other_path.location_uri = "/independent/location.txt".into(); other_path.full_text = "copysecretmarker".into();
+        vec![first, other_owner, other_path]
+    }
+
+    #[tokio::test]
+    async fn shared_legacy_refresh_recovers_each_untouched_occurrence_without_text_leakage() {
+        use arrow_array::{Array, FixedSizeListArray, Float32Array};
+        use futures::TryStreamExt;
+        use lancedb::query::{ExecutableQuery, QueryBase};
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let raws = collision_sources();
+        seed_shared_legacy(&local, &fts, &raws).await;
+        let mut refresh = raws[0].clone(); refresh.full_text = "refreshedmarker".into();
+        let held_writer = fts.writer().unwrap();
+        assert!(pipeline.ingest_document(refresh.clone()).await.is_err());
+        assert_eq!(pending_fts_writes(local.ingest_journal_path()).unwrap().len(), 1);
+        drop(held_writer);
+        let reopened_local = Arc::new(LocalIndex::open_or_create(dir.path(), 4).await.unwrap());
+        let reopened = IngestPipeline::new(fts.clone(), reopened_local.clone(), None, IngestConfig { text_only: true, ..Default::default() });
+        reopened.ensure_ready().await.unwrap();
+        assert_eq!(reopened_local.table_ref().count_rows(None).await.unwrap(), 3);
+        let summaries = futures::future::try_join_all(raws.iter().map(|raw| reopened_local.fetch_document_summary_for_uri(&raw.location_uri, &raw.owner_id))).await.unwrap();
+        let ids = summaries.iter().map(|s| s.as_ref().unwrap().doc_id.clone()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(fts.doc_count(), 3);
+        let alice = super::super::schema::SearchFilters { owner_id: Some("alice".into()), ..Default::default() };
+        let bob = super::super::schema::SearchFilters { owner_id: Some("bob".into()), ..Default::default() };
+        assert!(fts.search("bobsecretmarker", &alice, 10).unwrap().is_empty());
+        assert!(fts.search("refreshedmarker", &bob, 10).unwrap().is_empty());
+        assert!(fts.search("refreshedmarker PRE/5 copysecretmarker", &alice, 10).unwrap().is_empty());
+        assert_eq!(fts.search("copysecretmarker", &alice, 10).unwrap().len(), 1);
+        for index in [1, 2] {
+            let id = &summaries[index].as_ref().unwrap().doc_id;
+            assert_eq!(reopened_local.fetch_full_text(id).await.unwrap(), raws[index].full_text);
+            assert_eq!(reopened_local.document_metadata(id).await.unwrap()["user_note"], format!("retained-{index}"));
+            let batches: Vec<arrow_array::RecordBatch> = reopened_local.table_ref().query().only_if(format!("doc_id = '{id}'"))
+                .execute().await.unwrap().try_collect().await.unwrap();
+            let vectors = batches[0].column_by_name("embedding").unwrap().as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            let vector = vectors.value(0); let vector = vector.as_any().downcast_ref::<Float32Array>().unwrap();
+            assert_eq!(vector.values().as_ref(), &[index as f32 + 1.0; 4]);
+        }
+        let refreshed = reopened.ingest_document(refresh).await.unwrap();
+        assert_eq!(refreshed.doc_ids[0], summaries[0].as_ref().unwrap().doc_id);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_delete_repairs_lexical_state_and_preserves_all_other_legacy_sources() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raws = collision_sources(); seed_shared_legacy(&local, &fts, &raws).await;
+        assert!(local.delete_document_with_fts("shared-legacy", &fts).await.is_err());
+        assert!(local.update_location("shared-legacy", "/wrong.txt").await.is_err());
+        let held_writer = fts.writer().unwrap();
+        assert!(local.delete_occurrence_with_fts("shared-legacy", &raws[0].owner_id, &raws[0].location_uri, &fts).await.is_err());
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 2);
+        drop(held_writer);
+        pipeline.ensure_ready().await.unwrap();
+        assert!(local.fetch_document_summary_for_uri(&raws[0].location_uri, &raws[0].owner_id).await.unwrap().is_none());
+        assert!(fts.search("selectedmarker", &Default::default(), 10).unwrap().is_empty());
+        for raw in &raws[1..] {
+            let summary = local.fetch_document_summary_for_uri(&raw.location_uri, &raw.owner_id).await.unwrap().unwrap();
+            assert_eq!(local.fetch_full_text(&summary.doc_id).await.unwrap(), raw.full_text);
+            assert_eq!(local.document_occurrences(&summary.doc_id).await.unwrap().len(), 1);
+        }
+        assert_eq!(fts.doc_count(), 2);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn move_refresh_retains_identity_reviews_and_frees_the_original_location() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let mut raw = sample_raw(); raw.full_text = "Vendor: Acme".into();
+        let mut old = one_chunk(&raw); old.doc_id = "stable-legacy".into(); old.id = chunk_row_id(&old.doc_id, 0); old.doc_status = Some("reviewed".into());
+        let mut fields = super::super::fields::from_extraction(&old.doc_id, &raw.full_text, "test-model", vec![("vendor".into(), "Acme".into(), 0.9)]);
+        fields[0].review_status = "corrected".into(); fields[0].normalized_value = "Acme Limited".into(); fields[0].revision = 4;
+        super::super::fields::attach(&mut old.metadata_json, &fields);
+        local.ingest_batch_with_fts(&[old], &[], &fts).await.unwrap();
+        let result = pipeline.ingest_document(raw.clone()).await.unwrap();
+        assert_eq!(result.doc_ids, vec!["stable-legacy"]);
+        let moved_uri = "/moved/reviewed.txt";
+        local.update_location("stable-legacy", moved_uri).await.unwrap();
+        let mut moved = raw.clone(); moved.location_uri = moved_uri.into();
+        assert_eq!(pipeline.ingest_document(moved.clone()).await.unwrap().doc_ids, vec!["stable-legacy"]);
+        let reviewed = super::super::fields::read(&local.document_metadata("stable-legacy").await.unwrap());
+        assert_eq!(reviewed, fields);
+        assert_eq!(local.fetch_document_summary("stable-legacy").await.unwrap().unwrap().doc_status.as_deref(), Some("reviewed"));
+        let original = pipeline.ingest_document(raw.clone()).await.unwrap().doc_ids[0].clone();
+        assert_ne!(original, "stable-legacy");
+        // Move a canonical identity, then create a new occurrence at its old
+        // location. The occupied canonical ID must never overwrite the move.
+        local.update_location(&original, "/another/moved.txt").await.unwrap();
+        let replacement = pipeline.ingest_document(raw.clone()).await.unwrap().doc_ids[0].clone();
+        assert_ne!(replacement, original);
+        assert_eq!(pipeline.ingest_document(raw).await.unwrap().doc_ids[0], replacement);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 3);
+        assert_eq!(local.document_occurrences(&original).await.unwrap()[0].1, "/another/moved.txt");
+    }
+
+    #[tokio::test]
+    async fn batch_refresh_splits_every_selected_legacy_occurrence_once() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let mut raws = collision_sources(); seed_shared_legacy(&local, &fts, &raws).await;
+        for (index, raw) in raws.iter_mut().enumerate() { raw.full_text = format!("batchrevision{index}"); }
+        let result = pipeline.ingest_documents_batch(raws.clone()).await.unwrap();
+        assert_eq!(result.doc_ids.iter().collect::<std::collections::BTreeSet<_>>().len(), 3);
+        for (index, id) in result.doc_ids.iter().enumerate() { assert_eq!(local.fetch_full_text(id).await.unwrap(), raws[index].full_text); }
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 3);
+        assert_eq!(fts.doc_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_same_source_import_identities_fail_before_mutation() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let mut left = one_chunk(&raw); left.doc_id = "explicit-one".into(); left.id = chunk_row_id(&left.doc_id, 0);
+        let mut right = left.clone(); right.doc_id = "explicit-two".into(); right.id = chunk_row_id(&right.doc_id, 0);
+        local.ingest_batch_with_fts(&[left, right], &[], &fts).await.unwrap();
+        assert_eq!(local.document_ids_for_source(&raw.owner_id, &raw.location_uri).await.unwrap(), vec!["explicit-one", "explicit-two"]);
+        assert!(pipeline.ingest_document(raw).await.unwrap_err().to_string().contains("Multiple stored identities"));
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 2);
+        assert_eq!(fts.doc_count(), 2);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_metadata_does_not_cross_legacy_owner_or_location() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let raws = collision_sources(); seed_shared_legacy(&local, &fts, &raws).await;
+        let raw = &raws[0];
+        pipeline.ingest_l2_row(doc_id_for(raw), raw.location_uri.clone(), raw.owner_id.clone(),
+            raw.filename.clone(), raw.ext.clone(), "failed-new-bytes".into(), Some(123), Some(100), None, None,
+            None, None, None, None, None, &super::super::task_failure::TaskFailureReason::EmptyText, "No text").await.unwrap();
+        assert!(local.indexed_state_for_owner_uri(&raw.location_uri, &raw.owner_id).await.unwrap().unwrap().extraction_failed);
+        for other in &raws[1..] {
+            assert!(!local.indexed_state_for_owner_uri(&other.location_uri, &other.owner_id).await.unwrap().unwrap().extraction_failed);
+        }
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn selected_source_receipt_rejects_a_new_canonical_sibling_at_the_writer_gate() {
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let path = dir.path().join("selected.txt"); std::fs::write(&path, b"unchanged source bytes").unwrap();
+        let mut raw = sample_raw(); raw.source_hash = hash_local_source(&path).unwrap(); raw.location_uri = path.to_string_lossy().into_owned();
+        let mut legacy = one_chunk(&raw); legacy.doc_id = "selected-legacy".into(); legacy.id = chunk_row_id(&legacy.doc_id, 0);
+        local.ingest_batch_with_fts(&[legacy], &[], &fts).await.unwrap();
+        assert_eq!(pipeline.ingest_verified_document_for_occurrence(raw.clone(), path.clone(), "selected-legacy".into()).await.unwrap().doc_ids, vec!["selected-legacy"]);
+        let pipeline = Arc::new(pipeline);
+        let guard = local.read_guard(&fts).await.unwrap();
+        let queued = tokio::spawn({ let pipeline = pipeline.clone(); let raw = raw.clone(); let path = path.clone();
+            async move { pipeline.ingest_verified_document_for_occurrence(raw, path, "selected-legacy".into()).await } });
+        for _ in 0..100 { if pipeline.queue_depth() > 0 { break; } tokio::task::yield_now().await; }
+        assert_eq!(pipeline.queue_depth(), 1);
+        // A separate import completes while this extraction waits for the
+        // lease. Exercise the same atomic import primitive under our lease.
+        let mut canonical = one_chunk(&raw); canonical.full_text = Some("independent imported marker".into());
+        local.replace_imported_rows(&mut [canonical.clone()], &[], "imported-while-queued").await.unwrap();
+        let pending = PendingFtsWrite { generation: "fixture".into(), doc_ids: vec![canonical.doc_id.clone()], replace_ids: vec![canonical.doc_id.clone()],
+            inputs: vec![TantivyInputOwned { doc_id: canonical.doc_id.clone(), owner_id: raw.owner_id.clone(), language: raw.language.clone(),
+                title: String::new(), headings: String::new(), body: canonical.full_text.clone().unwrap(), body_translated: None }],
+            receipt_rows: Vec::new(), delete_only: false, absent_occurrences: Vec::new() };
+        apply_fts_write(&fts, &pending).unwrap();
+        drop(guard);
+        let error = queued.await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("selected source identity changed"), "{error}");
+        assert_eq!(local.fetch_full_text("selected-legacy").await.unwrap(), raw.full_text);
+        assert_eq!(local.fetch_full_text(&canonical.doc_id).await.unwrap(), canonical.full_text.unwrap());
+        assert_eq!(fts.doc_count(), 2);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn same_byte_ocr_refresh_keeps_reviews_and_reanchors_current_unicode_evidence() {
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let path = dir.path().join("scanned-source.bin"); std::fs::write(&path, b"unchanged scanned source").unwrap();
+        let mut raw = sample_raw(); raw.full_text = "Vendor: Acme".into();
+        raw.source_hash = hash_local_source(&path).unwrap(); raw.location_uri = path.to_string_lossy().into_owned();
+        let mut prior = one_chunk(&raw);
+        let mut fields = super::super::fields::from_extraction(&prior.doc_id, &raw.full_text, "original-model", vec![("vendor".into(), "Acme".into(), 0.91)]);
+        fields[0].review_status = "corrected".into(); fields[0].normalized_value = "Acme Limited".into(); fields[0].revision = 5;
+        super::super::fields::attach(&mut prior.metadata_json, &fields);
+        local.ingest_batch_with_fts(&[prior], &[], &fts).await.unwrap();
+
+        // An explicitly completed extraction with no fields must stay empty;
+        // fallback retention is only for an extraction that did not run NER.
+        {
+            let _guard = local.read_guard(&fts).await.unwrap();
+            let mut empty_fields = one_chunk(&raw); empty_fields.metadata_json = Some("{\"field_evidence\":[]}".into());
+            let mut chunks = [empty_fields]; let mut inputs = pending_for(&raw, Vec::new()).inputs;
+            local.prepare_occurrence_write(&mut chunks, &mut inputs, "uncommitted-check").await.unwrap();
+            let metadata: serde_json::Value = serde_json::from_str(chunks[0].metadata_json.as_deref().unwrap()).unwrap();
+            assert!(super::super::fields::read(&metadata).is_empty());
+        }
+
+        raw.full_text = "Ö intro\u{c}Vendor: Acme".into();
+        let id = pipeline.ingest_verified_document(raw.clone(), path.clone()).await.unwrap().doc_ids[0].clone();
+        let current = super::super::fields::read(&local.document_metadata(&id).await.unwrap());
+        assert_eq!(current[0].id, fields[0].id);
+        assert_eq!(current[0].normalized_value, "Acme Limited");
+        assert_eq!(current[0].review_status, "corrected");
+        assert_eq!(current[0].revision, 5);
+        assert_eq!(current[0].confidence, Some(0.91));
+        assert_eq!(current[0].model, "original-model");
+        assert_eq!(current[0].start_char, Some("Ö intro\u{c}Vendor: ".chars().count()));
+        assert_ne!(current[0].start_char, fields[0].start_char);
+        assert_eq!(current[0].end_char, current[0].start_char.map(|start| start + 4));
+        assert_eq!(current[0].page, Some(2));
+        assert_eq!(current[0].anchor_method, "first_exact_match");
+
+        raw.full_text = "The vendor is unreadable in this extraction".into();
+        pipeline.ingest_verified_document(raw.clone(), path.clone()).await.unwrap();
+        let missing = super::super::fields::read(&local.document_metadata(&id).await.unwrap());
+        assert_eq!(missing[0].normalized_value, "Acme Limited");
+        assert_eq!(missing[0].start_char, None); assert_eq!(missing[0].end_char, None);
+        assert_eq!(missing[0].page, None); assert_eq!(missing[0].anchor_method, "unavailable");
+
+        std::fs::write(&path, b"different scanned source").unwrap(); raw.source_hash = hash_local_source(&path).unwrap();
+        pipeline.ingest_verified_document(raw, path).await.unwrap();
+        assert!(super::super::fields::read(&local.document_metadata(&id).await.unwrap()).is_empty());
+    }
+
 }

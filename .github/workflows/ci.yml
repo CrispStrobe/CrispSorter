@@ -16,21 +16,8 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  # Branches and PRs: superseding a stale run is the right trade — nobody needs a
-  # verdict on a commit that has already been replaced.
-  #
-  # `main` is the opposite: every commit there is something we want verified, and
-  # a *cancelled* run is not a green one. It reads as "not red" at a glance, which
-  # is exactly how a library that had stopped compiling for everyone survived on
-  # main unnoticed — the last completed run had been cancelled, not failed. With
-  # several agents pushing to main minutes apart, `cancel-in-progress` meant most
-  # runs never reached a conclusion at all.
-  #
-  # So on main the group is unique per commit (nothing to collide with, nothing
-  # cancelled) and cancellation is off; elsewhere the old behaviour stands.
-  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+# Platform jobs keep their own latest pending revision. A slow platform must
+# not block a newer revision from reaching another platform's compiler.
 
 env:
   # Sibling repos referenced by src-tauri/Cargo.toml as path deps:
@@ -85,6 +72,9 @@ jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
   # Tauri builds live in release.yml and only fire on version tags.
   frontend:
+    concurrency:
+      group: ci-frontend-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: Frontend check + licenses
     runs-on: ubuntu-latest
@@ -203,6 +193,9 @@ jobs:
   # on one developer's machine, against a target directory on a disk that
   # periodically fills up.
   rust:
+    concurrency:
+      group: ci-rust-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     name: Rust tests + CLI verification
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -425,6 +418,9 @@ jobs:
   # feature-gated native paths are already covered on Linux; what is *not*
   # covered anywhere else is "does this run on Windows at all".
   windows:
+    concurrency:
+      group: ci-windows-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: Windows lib tests + CLI smoke
     runs-on: windows-2025
@@ -609,6 +605,9 @@ jobs:
           Write-Host "  ok: ingest of a missing path fails loudly (exit $($p.ExitCode))"
 
   macos:
+    concurrency:
+      group: ci-macos-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'native-linux'
     name: macOS lib tests + secret-store smoke
     runs-on: macos-15
@@ -801,6 +800,9 @@ jobs:
             "$EXE" --format json secrets --data-dir "$DATA" status | grep -q '"session"'
 
   cloud-backends:
+    concurrency:
+      group: ci-cloud-backends-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: Native cloud crates
     runs-on: ubuntu-24.04
@@ -869,6 +871,9 @@ jobs:
           cargo package -p crisp-filen --allow-dirty
 
   cloud-facade:
+    concurrency:
+      group: ci-cloud-facade-${{ matrix.os }}-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
     name: crisp-cloud-rs (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -910,6 +915,9 @@ jobs:
         run: cargo package -p crisp-cloud-rs --allow-dirty
 
   cloud-live:
+    concurrency:
+      group: ci-cloud-live-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
     name: Gated cloud live matrix
     if: github.event_name == 'workflow_dispatch' && inputs.cloud_live
     runs-on: ubuntu-24.04
