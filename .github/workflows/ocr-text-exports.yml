@@ -87,7 +87,7 @@ jobs:
           retention-days: 30
   ios-portable-exporter:
     needs: portable-documents
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
