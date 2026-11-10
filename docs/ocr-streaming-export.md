@@ -3,8 +3,8 @@
 This implementation is integrated into `feat/ocr-document-studio` at
 `b876fb43eb19cc7de44760400e50735aa27c2c78`. It was qualified against the
 pre-release CrispEmbed commit `9c44a69cad0d949e26a200e2bda1ccd58e3f9b8a`; the
-native runtime and bindings now both pin the CrispEmbed v0.17.17 release
-(`2cbf0b9e2f4b55ee01877b60c0825d990f2636cd`), which contains that stack. The native component writer/archive checks have
+native runtime and bindings now both pin the CrispEmbed v0.17.18 release
+(`e14136d3a99572367e68619045943fe77a299caa`), which contains that stack. The native component writer/archive checks have
 passed independently. A capability check cannot compensate for a missing native
 symbol at link time, so source and bindings must move together.
 

@@ -102,7 +102,7 @@ try:
         paths.extend(['src-tauri/src/extractors/ocr_worker.rs', 'src-tauri/src/main.rs'])
     run('source-equivalence', ['git', 'diff', '--exit-code', BINARY_SOURCE, APP_SOURCE, '--', *paths], cwd=app, env=env)
     archive = root / 'crispembed-linux-x86_64.tar.gz'
-    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.17/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
+    with urllib.request.urlopen('https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.18/' + archive.name, timeout=120) as response, archive.open('wb') as stream:
         shutil.copyfileobj(response, stream)
     run('verify-runtime', ['python', 'scripts/verify_crispembed_bundle.py', str(archive), '--asset', archive.name, '--source', str(root / 'CrispEmbed')], cwd=app, env=env)
     libs = root / 'CrispEmbed/build'
