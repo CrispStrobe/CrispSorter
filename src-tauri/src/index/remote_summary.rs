@@ -140,6 +140,7 @@ fn wire_sort(sort: ReportSort) -> CompleteSort {
 
 fn report_document(value: CompleteDocument) -> ReportDocument {
     ReportDocument { doc_id: value.doc_id, owner_id: value.owner_id, chunk_index: value.representative_chunk_index,
+        container_member: value.container_member,
         title: value.title, filename: value.filename, author: value.author, location_uri: value.location_uri,
         url: value.url, source_hash: Some(value.source_hash), indexed_at: Some(value.indexed_at),
         extension: value.extension, language: value.language, year: value.year, tags: value.tags }
@@ -180,6 +181,9 @@ impl RemoteOutput {
             check_cancelled(&Some(self.cancellation.clone()))?;
             let document = report_document(document);
             report_output::reject_source_destination(&destination, &document.location_uri)?;
+            if let Some(member) = &document.container_member {
+                report_output::reject_source_destination(&destination,&member.root_location_uri)?;
+            }
             ensure!(self.previous.as_ref().is_none_or(|previous| self.sort.compare(previous, &document).is_lt()),
                 "The server returned duplicated or out-of-order complete results. The previous report was preserved.");
             transaction.execute("INSERT INTO seen(owner,doc_id) VALUES (?1,?2)", params![document.owner_id, document.doc_id])

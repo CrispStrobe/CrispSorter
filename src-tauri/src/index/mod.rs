@@ -7,6 +7,8 @@ pub mod fts_query;
 pub mod synonyms;
 pub mod hf_prefetch;
 pub mod ingest;
+pub mod container_ingest;
+pub mod container_extract;
 #[path = "../../../shared/source_identity.rs"]
 pub mod source_identity;
 pub mod license_consent;
@@ -44,6 +46,7 @@ pub mod search_summary;
 pub mod summary_commands;
 pub mod report_output;
 pub mod ingest_metadata;
+pub mod container_open;
 pub mod search_report;
 pub mod remote_summary;
 pub mod snippet;

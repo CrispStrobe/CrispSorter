@@ -4,6 +4,7 @@ pub mod complete;
 pub mod docs;
 pub mod health;
 pub mod ingest;
+pub mod members;
 pub mod passages;
 pub mod search;
 pub mod stats;

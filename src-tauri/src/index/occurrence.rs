@@ -30,8 +30,10 @@ pub(crate) struct OccurrencePlan {
     pub(crate) absent_occurrences: Vec<SourceOccurrence>,
     pub(crate) preserved_inputs: Vec<TantivyInputOwned>,
     pub(crate) doc_ids: Vec<String>,
-    filter: String,
-    preserved: Vec<RecordBatch>,
+    pub(super) filter: String,
+    pub(super) preserved: Vec<RecordBatch>,
+    pub(super) identity_map: Vec<(SourceOccurrence, SourceOccurrence)>,
+    pub(super) member_roots: BTreeSet<SourceOccurrence>,
 }
 
 type Scope = (String, String);
@@ -91,7 +93,8 @@ fn retain_reviews(chunk: &mut DocumentChunk, previous: &RecordBatch, row: usize,
     // Carry user metadata across a refresh. Source observations and failure
     // state belong to the new extraction and must never be copied forward.
     for key in ["field_evidence", "index_write_generation", "extraction_failure", "extraction_skip", "failed_source_hash",
-        "mtime_unix", "fs_size", "fs_mtime", "fs_ctime", "images_indexed", "volume_id", "parent_dir"] {
+        "mtime_unix", "fs_size", "fs_mtime", "fs_ctime", "images_indexed", "volume_id", "parent_dir",
+        "container_member", "container_source", "container_coverage", "container_group_version"] {
         prior.as_object_mut().expect("checked above").remove(key);
     }
     for (key, value) in current.as_object().expect("checked above") { prior[key] = value.clone(); }
@@ -110,7 +113,7 @@ fn retain_reviews(chunk: &mut DocumentChunk, previous: &RecordBatch, row: usize,
     Ok(())
 }
 
-fn copied_row(batch: &RecordBatch, row: usize, doc_id: &str, generation: &str) -> Result<RecordBatch> {
+pub(super) fn copied_row(batch: &RecordBatch, row: usize, doc_id: &str, generation: &str) -> Result<RecordBatch> {
     let mut result = batch.slice(row, 1);
     let mut columns = result.columns().to_vec();
     let mut metadata = metadata_at(batch, row)?;
@@ -126,7 +129,7 @@ fn copied_row(batch: &RecordBatch, row: usize, doc_id: &str, generation: &str) -
     Ok(result)
 }
 
-fn fts_from_rows(batches: &[RecordBatch]) -> Result<Vec<TantivyInputOwned>> {
+pub(super) fn fts_from_rows(batches: &[RecordBatch]) -> Result<Vec<TantivyInputOwned>> {
     let mut groups = BTreeMap::<String, Vec<FtsPiece>>::new();
     for batch in batches {
         for row in 0..batch.num_rows() {
@@ -235,15 +238,7 @@ impl LocalIndex {
 
     /// Resolve ordinary per-source writes. Explicit/imported IDs use the
     /// separate import API and are never silently reinterpreted here.
-    pub(crate) async fn prepare_occurrence_write(&self, chunks: &mut [DocumentChunk], inputs: &mut [TantivyInputOwned], generation: &str) -> Result<OccurrencePlan> {
-        self.prepare_occurrence_change(chunks, inputs, generation, None).await
-    }
-
-    pub(crate) async fn prepare_occurrence_delete(&self, occurrence: SourceOccurrence, generation: &str) -> Result<OccurrencePlan> {
-        self.prepare_occurrence_change(&mut [], &mut [], generation, Some(occurrence)).await
-    }
-
-    async fn prepare_occurrence_change(&self, chunks: &mut [DocumentChunk], inputs: &mut [TantivyInputOwned], generation: &str, deletion: Option<SourceOccurrence>) -> Result<OccurrencePlan> {
+    pub(super) async fn prepare_occurrence_change(&self, chunks: &mut [DocumentChunk], inputs: &mut [TantivyInputOwned], generation: &str, deletions: &[SourceOccurrence]) -> Result<OccurrencePlan> {
         self.table.checkout_latest().await?;
         let representatives: BTreeMap<String, &DocumentChunk> = chunks.iter().filter(|c| c.chunk_index == 0)
             .map(|c| (c.doc_id.clone(), c)).collect();
@@ -273,11 +268,13 @@ impl LocalIndex {
                 resolved.insert(canonical.clone(), self.available_occurrence_id(canonical, &mut reserved).await?);
             }
         }
-        if let Some(occurrence) = &deletion { affected.insert(occurrence.doc_id.clone()); }
+        for occurrence in deletions { affected.insert(occurrence.doc_id.clone()); }
         let mut preserved = Vec::new();
         let mut prior_rows = BTreeMap::<String, RecordBatch>::new();
         let mut absent_occurrences = Vec::new();
         let mut replace_ids = affected.clone();
+        let mut identity_map = Vec::new();
+        let mut member_roots = BTreeSet::new();
         for old_id in &affected {
             let batches: Vec<RecordBatch> = self.table.query().only_if(format!("doc_id = '{}'", old_id.replace('\'', "''")))
                 .execute().await?.try_collect().await?;
@@ -289,7 +286,7 @@ impl LocalIndex {
                 let slot = groups.entry(scope).or_default().entry(number_at(batch, "chunk_index", row)).or_insert((batch_index, row, indexed));
                 if indexed >= slot.2 { *slot = (batch_index, row, indexed); }
             } }
-            let is_deleted = |scope: &Scope| deletion.as_ref().is_some_and(|d| d.doc_id == *old_id && d.owner_id == scope.0 && d.location_uri == scope.1);
+            let is_deleted = |scope: &Scope| deletions.iter().any(|d| d.doc_id == *old_id && d.owner_id == scope.0 && d.location_uri == scope.1);
             let surviving: Vec<Scope> = groups.keys().filter(|scope| !is_deleted(scope)).cloned().collect();
             // Keep one surviving stored identity stable. Other colliding
             // scopes receive independent IDs in this same atomic transaction.
@@ -298,6 +295,10 @@ impl LocalIndex {
                 .or_else(|| surviving.first()).cloned();
             for (scope, rows) in groups {
                 let old_occurrence = SourceOccurrence { doc_id: old_id.clone(), owner_id: scope.0.clone(), location_uri: scope.1.clone() };
+                if rows.values().any(|(batch,row,_)| metadata_at(&batches[*batch],*row).ok().is_some_and(|metadata|
+                    metadata.get("container_source").is_some()||metadata.get("container_group_version").is_some())) {
+                    member_roots.insert(old_occurrence.clone());
+                }
                 if is_deleted(&scope) { absent_occurrences.push(old_occurrence); continue; }
                 let id = if keeper.as_ref() == Some(&scope) {
                     reserved.insert(old_id.clone()); old_id.clone()
@@ -307,6 +308,8 @@ impl LocalIndex {
                     self.available_occurrence_id(&candidate, &mut reserved).await?
                 };
                 replace_ids.insert(id.clone());
+                identity_map.push((old_occurrence.clone(), SourceOccurrence {
+                    doc_id: id.clone(), owner_id: scope.0.clone(), location_uri: scope.1.clone() }));
                 if id != *old_id { absent_occurrences.push(old_occurrence); }
                 if let Some(canonical) = selected.get(&(old_id.clone(), scope)) {
                     resolved.insert(canonical.clone(), id);
@@ -342,6 +345,8 @@ impl LocalIndex {
             doc_ids: input_order.iter().map(|id| resolved.get(id).cloned().context("Missing source result identity")).collect::<Result<_>>()?,
             replace_ids: replace_ids.into_iter().collect(), receipt_rows: receipts.into_iter().collect(), absent_occurrences,
             preserved_inputs: fts_from_rows(&preserved)?, preserved,
+            identity_map,
+            member_roots,
             filter: if filters.is_empty() { "false".into() } else { format!("({})", filters.join(" OR ")) },
         })
     }

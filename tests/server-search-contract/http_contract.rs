@@ -16,6 +16,7 @@ fn capabilities() -> SearchCapabilities {
         api_version: 1,
         metadata_filter_version: 1, metadata_filter_max_version: crisp_index_protocol::METADATA_FILTER_VERSION,
         stored_passage_version: crisp_index_protocol::STORED_PASSAGE_VERSION,
+        container_members_version: crisp_index_protocol::CONTAINER_MEMBERS_VERSION,
         complete_search_version: 1, metadata_schema_version: 2, metadata_fields: Vec::new(), embedding_query_version: 1,
         query_language_version: QUERY_LANGUAGE_VERSION,
         fts_schema_version: 2, active_fts_schema_version: FTS_SCHEMA_VERSION,
@@ -216,7 +217,7 @@ async fn scoped_http_mutations_encode_ids_and_preserve_other_owners() {
         "owner_id":owner,"source_hash":"identical content"
     })).unwrap()).collect();
     index
-        .ingest_batch(&crisp_index_protocol::IngestBatch { chunks })
+        .ingest_batch(&crisp_index_protocol::IngestBatch { chunks, container_group_version: None })
         .await
         .unwrap();
     let state = Arc::new(crate::state::SharedState {
@@ -322,6 +323,7 @@ async fn exact_uri_http_move_preserves_copies_and_rejects_ambiguous_sources_and_
     };
     index
         .ingest_batch(&crisp_index_protocol::IngestBatch {
+            container_group_version: None,
             chunks: vec![
                 wire("a", "shared", old, 0, 2),
                 wire("a", "shared", old, 1, 2),
@@ -480,7 +482,7 @@ async fn real_search_route_filters_negotiated_requests_and_rejects_unversioned_f
         "language": "en", "location_uri": format!("test://a/{id}"), "owner_id": "a",
         "source_hash": "abcdef", "tags": ["reviewed"]
     })).unwrap();
-    index.ingest_batch(&crisp_index_protocol::IngestBatch { chunks: vec![chunk("yes", "pdf"), chunk("no", "txt")] }).await.unwrap();
+    index.ingest_batch(&crisp_index_protocol::IngestBatch { chunks: vec![chunk("yes", "pdf"), chunk("no", "txt")], container_group_version: None }).await.unwrap();
     let state = Arc::new(crate::state::SharedState {
         index, queue: crate::queue::TaskQueue::open_or_create(dir.path(), Default::default()).unwrap(), embedder: None,
         config: crate::state::ServerConfig { api_key: "".into(), port: 0, data_dir: dir.path().to_owned(), embed_dims: 2,

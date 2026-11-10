@@ -2,27 +2,36 @@ import { invoke } from '@tauri-apps/api/core';
 // Extractors are dynamically imported on first use so mammoth, pdfjs,
 // epub-parser, and tesseract.js don't bloat the initial bundle.
 import { logInfo, logWarn, logDebug } from '../log';
+import type { ContainerCoverage, ContainerEntry, ContainerSourceReceipt } from '../containers';
 
 export interface ExtractionResult {
     text: string;
+    /** Root/body text indexed separately from the aggregate preview of its members. */
+    ownText?: string;
+    ext?: string;
     /** Markdown-formatted version of the document, with headings as `#`/`##` etc. */
     markdownText?: string;
     /** Ordered list of section heading strings extracted from the document. */
     headings?: string[];
     metadata?: Record<string, any>;
+    containerSource?: ContainerSourceReceipt;
+    containerCoverage?: ContainerCoverage;
+    /** Flattened leaves; member documents never contain another expansion. */
+    members?: { entries: ContainerEntry[]; document: ExtractionResult }[];
 }
 
 /** File extensions whose extraction is supported end-to-end. */
 export const SUPPORTED_EXTENSIONS = [
     'pdf', 'docx', 'epub', 'txt', 'md',
     'html', 'htm',
-    'zip', 'eml', 'mbox', 'pptx',
+    'zip', 'tar', 'gz', 'gzip', 'tgz', '7z', 'eml', 'mbox', 'pptx',
     'webp', 'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff',
     'doc',
 ] as const;
 
 /** Formats whose bytes stay in a bounded native document reader. */
-const NATIVE_PATH_EXTENSIONS = new Set(['zip', 'eml', 'mbox', 'pptx']);
+export const ARCHIVE_EXTENSIONS = ['zip', 'tar', 'gz', 'gzip', 'tgz', '7z'] as const;
+const NATIVE_PATH_EXTENSIONS = new Set<string>([...ARCHIVE_EXTENSIONS, 'eml', 'mbox', 'pptx']);
 
 export function usesNativePathExtraction(filename: string): boolean {
     return NATIVE_PATH_EXTENSIONS.has(filename.split('.').pop()?.toLowerCase() ?? '');
@@ -44,7 +53,7 @@ export const AUDIO_EXTENSIONS = [
 
 /** Superset that drag-drop + file-picker zones use:
  *  documents + images (handled JS-side via `extractText`) plus
- *  audio/video, mail, presentations, and ZIP archives (native, path-based
+ *  audio/video, mail, presentations, and bounded archives (native, path-based
  *  extraction commands). Use this for any drop filter that should
  *  surface the full P13.5 multimodal capability — passing the
  *  document-only `SUPPORTED_EXTENSIONS` would silently drop
@@ -93,7 +102,7 @@ export async function extractText(
 
     // Archive members stay in the bounded native extractor. Do not duplicate
     // an entire archive in the webview merely to pass its host path back.
-    if (extension === 'zip') {
+    if (extension && (ARCHIVE_EXTENSIONS as readonly string[]).includes(extension)) {
         const { extractArchive } = await import('./archiveExtractor');
         return extractArchive(name, path, options);
     }

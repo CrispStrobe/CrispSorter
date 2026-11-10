@@ -83,7 +83,7 @@ impl VectorStore {
             ColumnOrdering::asc_nulls_last("doc_id".into()),
         ]))?;
         scanner.limit(Some((limit + 1) as i64), None)?;
-        scanner.project(&[
+        let mut projection=vec![
             "doc_id",
             "location_uri",
             "owner_id",
@@ -96,7 +96,13 @@ impl VectorStore {
             "chunk_index",
             "indexed_at",
             "source_hash",
-        ])?;
+        ];
+        let snapshot_schema=table.schema().await?;
+        for optional in ["tags","parent_dir","volume_id","url","text_translated","text_translated_lang","doc_status",
+            "audio_duration_seconds","image_camera_make","image_camera_model","container_member","container_source","container_coverage"] {
+            if snapshot_schema.field_with_name(optional).is_ok() { projection.push(optional); }
+        }
+        scanner.project(&projection)?;
         let batches = scanner
             .try_into_stream()
             .await?

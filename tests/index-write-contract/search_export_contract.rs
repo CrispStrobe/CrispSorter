@@ -139,3 +139,26 @@ async fn complete_export_rejects_nonmatching_sources_and_index_storage_as_destin
     assert!(error.to_string().contains("outside application and index storage"));
     assert!(!protected.exists());
 }
+
+#[tokio::test]
+async fn complete_export_preserves_member_provenance_without_duplicate_parent_text() {
+    use crisp_index_protocol::{ContainerEntry,ContainerEntryKind,ContainerMemberLocator};
+    let root=tempfile::tempdir().unwrap();let (local,fts)=indexes(&root).await;
+    let mut parent=chunk("container-root","Archive coverage summary");parent.source_hash="a".repeat(64);
+    parent.location_uri=root.path().join("mail.zip").to_string_lossy().into_owned();
+    let locator=ContainerMemberLocator {version:1,root_owner_id:parent.owner_id.clone(),root_doc_id:parent.doc_id.clone(),
+        root_location_uri:parent.location_uri.clone(),root_sha256:parent.source_hash.clone(),entries:vec![
+            ContainerEntry {kind:ContainerEntryKind::Zip,index:2,occurrence:0,name:"notes/receipt.txt".into(),sha256:"b".repeat(64),size:20}]};
+    let id=locator.member_id().unwrap();let mut child=chunk(&id,"needle member body");
+    child.location_uri=locator.member_uri().unwrap();child.source_hash="b".repeat(64);
+    child.metadata_json=Some(serde_json::json!({"container_member":locator}).to_string());
+    local.ingest_batch(&[parent,child]).await.unwrap();
+    let path=root.path().join("members.json");
+    let receipt=search_summary::prepare_export(local,fts,"needle".into(),SearchFilters::default(),
+        options(path.clone(),ReportFormat::Json,ReportSort::Filename),None).await.unwrap().publish().await.unwrap();
+    assert_eq!(receipt.documents,1);
+    let value:serde_json::Value=serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(value["documents"][0]["containerMember"]["rootLocationUri"],locator.root_location_uri);
+    assert_eq!(value["documents"][0]["containerMember"]["entries"][0]["name"],"notes/receipt.txt");
+    assert_eq!(value["documents"][0]["sourceHash"],"b".repeat(64));
+}

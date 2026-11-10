@@ -119,7 +119,7 @@ async fn scan_documents(
     options.max_batch_length = BATCH_ROWS;
     let mut rows = local.table_ref().query().only_if(predicate)
         .select(Select::Columns(["doc_id", "owner_id", "chunk_index", "ext", "language", "year", "tags",
-            "title", "filename", "author", "location_uri", "url", "source_hash", "indexed_at"]
+            "title", "filename", "author", "location_uri", "url", "source_hash", "indexed_at", "metadata_json"]
             .into_iter().map(str::to_owned).collect()))
         .execute_with_options(options).await.context("Scanning matching document metadata")?;
     let scan_cancellation = cancellation.clone();
@@ -280,6 +280,7 @@ fn metadata_rows(batch: &RecordBatch) -> Result<Vec<MetadataRow>> {
     let languages = strings("language")?;
     let titles = strings("title")?; let filenames = strings("filename")?; let authors = strings("author")?;
     let locations = strings("location_uri")?; let urls = strings("url")?; let hashes = strings("source_hash")?;
+    let metadata = batch.column_by_name("metadata_json").and_then(|column| column.as_any().downcast_ref::<StringArray>());
     let indexed_at = batch.column_by_name("indexed_at").and_then(|column| column.as_any().downcast_ref::<TimestampMillisecondArray>())
         .context("The indexed timestamp column is invalid")?;
     let years = batch.column_by_name("year").and_then(|column| column.as_any().downcast_ref::<Int32Array>())
@@ -298,12 +299,21 @@ fn metadata_rows(batch: &RecordBatch) -> Result<Vec<MetadataRow>> {
             let values = values.as_any().downcast_ref::<StringArray>().context("The indexed tag values are invalid")?;
             for tag in values.iter().flatten().filter(|value| !value.is_empty()) { tags.insert(tag.to_owned()); }
         }
+        #[derive(serde::Deserialize)]
+        struct MemberMetadata { #[serde(default)] container_member: Option<crisp_index_protocol::ContainerMemberLocator> }
+        let container_member = metadata.filter(|column| !column.is_null(row) && !column.value(row).is_empty())
+            .map(|column| serde_json::from_str::<MemberMetadata>(column.value(row))).transpose()?.and_then(|metadata| metadata.container_member);
+        if let Some(member) = &container_member {
+            member.validate_identity(owners.value(row),ids.value(row),locations.value(row)).map_err(anyhow::Error::msg)?;
+            ensure!(!hashes.is_null(row) && member.entries.last().is_some_and(|entry| entry.sha256.eq_ignore_ascii_case(hashes.value(row))),
+                "An indexed member fingerprint differs from its source locator");
+        } else { ensure!(locations.is_null(row) || !locations.value(row).starts_with("crisp+member:"), "An indexed member is missing its typed source locator"); }
         rows.push(MetadataRow { doc_id: ids.value(row).to_owned(), owner_id: owners.value(row).to_owned(), chunk_index: indices.value(row),
             title: value(titles, row), filename: value(filenames, row), author: value(authors, row),
             location_uri: value(locations, row).unwrap_or_default(), url: value(urls, row), source_hash: value(hashes, row),
             indexed_at: (!indexed_at.is_null(row)).then(|| indexed_at.value(row)),
             extension: value(extensions, row), language: value(languages, row),
-            year: (!years.is_null(row)).then(|| years.value(row)), tags: tags.into_iter().collect() });
+            year: (!years.is_null(row)).then(|| years.value(row)), tags: tags.into_iter().collect(), container_member });
     }
     Ok(rows)
 }
@@ -325,12 +335,15 @@ impl Accumulator {
         database.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;
             PRAGMA cache_size=-2048; PRAGMA mmap_size=0;
             CREATE TABLE documents (owner TEXT NOT NULL, doc_id TEXT NOT NULL, representative_key TEXT NOT NULL,
-                metadata TEXT NOT NULL, sort_title TEXT NOT NULL, sort_filename TEXT NOT NULL,
+                metadata TEXT NOT NULL, member_receipt TEXT NOT NULL, sort_title TEXT NOT NULL, sort_filename TEXT NOT NULL,
                 sort_year INTEGER, sort_location TEXT NOT NULL,
                 PRIMARY KEY(owner,doc_id)) WITHOUT ROWID;
             CREATE TABLE facets (kind TEXT NOT NULL, value TEXT NOT NULL, owner TEXT NOT NULL, doc_id TEXT NOT NULL,
                 PRIMARY KEY(kind,value,owner,doc_id)) WITHOUT ROWID;
             CREATE INDEX facet_documents ON facets(kind,owner,doc_id);")?;
+        database.execute_batch("CREATE TRIGGER consistent_member_receipt BEFORE INSERT ON documents
+            WHEN EXISTS(SELECT 1 FROM documents WHERE owner=NEW.owner AND doc_id=NEW.doc_id AND member_receipt!=NEW.member_receipt)
+            BEGIN SELECT RAISE(ABORT, 'Stored member chunks disagree about their source locator'); END;")?;
         Ok(Self { database, _file: file, scanned_rows: 0 })
     }
 
@@ -350,8 +363,8 @@ impl Accumulator {
         }
         let transaction = self.database.transaction()?;
         {
-            let mut document = transaction.prepare_cached("INSERT INTO documents(owner,doc_id,representative_key,metadata,sort_title,sort_filename,sort_year,sort_location)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            let mut document = transaction.prepare_cached("INSERT INTO documents(owner,doc_id,representative_key,metadata,sort_title,sort_filename,sort_year,sort_location,member_receipt)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
                 ON CONFLICT(owner,doc_id) DO UPDATE SET representative_key=excluded.representative_key,metadata=excluded.metadata,
                     sort_title=excluded.sort_title,sort_filename=excluded.sort_filename,sort_year=excluded.sort_year,sort_location=excluded.sort_location
                 WHERE excluded.representative_key < documents.representative_key")?;
@@ -367,7 +380,7 @@ impl Accumulator {
                 let representative = format!("{:010}:{metadata}", row.chunk_index);
                 if document.execute(params![row.owner_id, row.doc_id, representative, metadata,
                     row.title.as_deref().or(row.filename.as_deref()).unwrap_or_default(), row.filename.as_deref().unwrap_or_default(),
-                    row.year, row.location_uri])? > 0 {
+                    row.year, row.location_uri, serde_json::to_string(&row.container_member)?])? > 0 {
                     replace.execute(params![row.owner_id, row.doc_id])?;
                     for (kind, value) in [("extension", row.extension.clone()), ("language", row.language.clone()),
                         ("year", row.year.map(|year| year.to_string()))] {

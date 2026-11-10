@@ -585,6 +585,7 @@ impl FtsStore {
             complete_search_version: crisp_index_protocol::COMPLETE_SEARCH_VERSION,
             metadata_schema_version: crisp_index_protocol::METADATA_SCHEMA_VERSION,
             embedding_query_version: 1,
+            container_members_version: crisp_index_protocol::CONTAINER_MEMBERS_VERSION,
             metadata_fields: ["owner_id","language","year_min","year_max","ext","tag","tags","source_hash_prefix","doc_id_scope",
                 "parent_dir_prefix","url_domain","audio_duration_min_seconds","audio_duration_max_seconds","image_camera_make","image_camera_model",
                 "prefer_translated_lang","doc_status","mounted_volume_ids"].into_iter().map(str::to_owned).collect(),

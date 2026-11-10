@@ -73,6 +73,12 @@ pub struct PendingIngest {
     pub author: Option<String>,
     pub year: Option<i32>,
     pub language: Option<String>,
+    /// A repair retains the exact stored source URI, including legacy aliases.
+    #[serde(default)]
+    pub location_uri: Option<String>,
+    /// Refuse a stale repair if the selected occurrence disappeared or moved.
+    #[serde(default)]
+    pub expected_doc_id: Option<String>,
 }
 
 /// What the worker is doing right now. The frontend uses this to drive
@@ -404,7 +410,9 @@ fn source_key(item: &PendingIngest) -> anyhow::Result<String> {
     // JSON separates the owner and path unambiguously; SHA-256 keeps large
     // source paths out of the primary-key index. No source file must exist.
     use sha2::{Digest, Sha256};
-    let identity = serde_json::to_vec(&(item.owner_id.as_deref().unwrap_or("local"), &item.path))?;
+    let identity = if let Some(uri)=&item.location_uri {
+        serde_json::to_vec(&(item.owner_id.as_deref().unwrap_or("local"),&item.path,uri,&item.expected_doc_id))?
+    } else {serde_json::to_vec(&(item.owner_id.as_deref().unwrap_or("local"), &item.path))?};
     Ok(hex::encode(Sha256::digest(identity)))
 }
 
@@ -726,13 +734,19 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .owner_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::nil().to_string());
-        let probe_uri = crate::index::location::FileLocation::Local {
+        let probe_uri = item.location_uri.clone().unwrap_or_else(||crate::index::location::FileLocation::Local {
             user_id: uuid::Uuid::parse_str(&owner_probe)
                 .unwrap_or_else(|_| uuid::Uuid::nil()),
             machine_id: uuid::Uuid::nil(),
             path: p.clone(),
         }
-        .to_uri();
+        .to_uri());
+        if let Some(expected)=&item.expected_doc_id {
+            let identities=local.document_ids_for_source(&owner_probe,&probe_uri).await.map_err(|error|error.to_string())?;
+            if identities.len()!=1||identities.first()!=Some(expected) {
+                return Err("The selected container source changed before repair; refresh the repair list".into());
+            }
+        }
         // Up-to-date skip: the file is untouched *and* nothing in the settings
         // changed since the row was written. Image indexing is the only such
         // switch today — turning it on must backfill documents ingested while
@@ -742,7 +756,9 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .await
             .ok()
             .flatten();
-        if skip_unchanged(file_mtime, &source_hash, indexed_state, image_indexing_enabled) {
+        let container_refresh=crate::index::container_ingest::requires_member_refresh(
+            p.extension().and_then(|extension|extension.to_str()).unwrap_or_default(),indexed_state.as_ref());
+        if !container_refresh && skip_unchanged(file_mtime, &source_hash, indexed_state, image_indexing_enabled) {
             return Ok(());
         }
         // Do not permanently blacklist a location after one failed parse:
@@ -759,7 +775,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         machine_id: uuid::Uuid::nil(),
         path: p.clone(),
     };
-    let location_uri = loc.to_uri();
+    let location_uri = item.location_uri.clone().unwrap_or_else(||loc.to_uri());
     let filename = p
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -805,6 +821,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     if cb_thin_client_mode {
         let l2 = crate::index::l2_metadata::read(&p);
         let raw_l1 = crate::index::ingest::RawDocument {
+                container: None,
             full_text: String::new(),
             full_text_md: String::new(),
             headings: Vec::new(),
@@ -953,7 +970,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         // ── Success ─────────────────────────────────────────────────────
         Ok(Ok(Ok(extracted))) => {
             let mut raw = crate::index::ingest::RawDocument {
-                full_text: extracted.full_text,
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+                full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
                 full_text_md: String::new(),
                 headings: extracted.headings,
                 title: item.title.clone(),
@@ -1113,7 +1131,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 return Err(format!("{} changed during extraction; the previous index is retained. Retry the file.", p.display()));
             }
             if raw.full_text.trim().is_empty()
-                && raw.embedding_vit.is_none() && raw.embedding_omni.is_none() {
+                && raw.embedding_vit.is_none() && raw.embedding_omni.is_none() && raw.container.is_none() {
                 let message = "No searchable text was extracted. Metadata is retained; enable OCR or adjust extraction settings and retry.";
                 pipeline.ingest_l2_row(
                     doc_id, raw.location_uri, raw.owner_id, raw.filename,
@@ -1165,10 +1183,10 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 }
                 Some(row)
             } else { None };
-            let result = pipeline
-                .ingest_verified_document(raw, p.clone())
-                .await
-                .map_err(|e| e.to_string());
+            let result = match &item.expected_doc_id {
+                Some(expected)=>pipeline.ingest_verified_document_for_occurrence(raw,p.clone(),expected.clone()).await,
+                None=>pipeline.ingest_verified_document(raw,p.clone()).await,
+            }.map_err(|e|e.to_string());
             if result.is_ok() {
                 if let Some(row) = cb_row {
                     if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
@@ -1312,7 +1330,7 @@ mod tests {
     }
 
     fn source(path: &str) -> PendingIngest {
-        PendingIngest { path: path.into(), owner_id: None, title: None, author: None, year: None, language: None }
+        PendingIngest { location_uri:None,expected_doc_id:None, path: path.into(), owner_id: None, title: None, author: None, year: None, language: None }
     }
 
     #[test]
@@ -1320,7 +1338,7 @@ mod tests {
         let (mut s, _dir) = stored_scheduler();
         let items = vec![
             PendingIngest {
-                path: PathBuf::from("/a"),
+                location_uri:None,expected_doc_id:None, path: PathBuf::from("/a"),
                 owner_id: None,
                 title: None,
                 author: None,
@@ -1328,7 +1346,7 @@ mod tests {
                 language: None,
             },
             PendingIngest {
-                path: PathBuf::from("/b"),
+                location_uri:None,expected_doc_id:None, path: PathBuf::from("/b"),
                 owner_id: None,
                 title: None,
                 author: None,
@@ -1375,7 +1393,7 @@ mod tests {
         s.errored = 2;
         s.last_error = Some("boom".into());
         s.queue.push_back(PendingIngest {
-            path: PathBuf::from("/x"),
+            location_uri:None,expected_doc_id:None, path: PathBuf::from("/x"),
             owner_id: None,
             title: None,
             author: None,
@@ -1424,7 +1442,7 @@ mod tests {
         s.current = Some("/path/to/active.pdf".to_owned());
         s.last_error = Some("oh no".to_owned());
         s.queue.push_back(PendingIngest {
-            path: PathBuf::from("/q"),
+            location_uri:None,expected_doc_id:None, path: PathBuf::from("/q"),
             owner_id: None, title: None, author: None, year: None, language: None,
         });
         let snap = s.snapshot();
@@ -1438,7 +1456,7 @@ mod tests {
     #[test]
     fn pending_ingest_serde_round_trip() {
         let item = PendingIngest {
-            path: PathBuf::from("/data/foo bar.pdf"),
+            location_uri:None,expected_doc_id:None, path: PathBuf::from("/data/foo bar.pdf"),
             owner_id: Some("u1".to_owned()),
             title: Some("Title".to_owned()),
             author: Some("Doe, John".to_owned()),
@@ -1535,7 +1553,7 @@ mod tests {
     use crate::index::local_index::IndexedState;
 
     fn state(mtime: Option<i64>, images: bool) -> Option<IndexedState> {
-        Some(IndexedState { mtime_unix: mtime, images_indexed: images, source_hash: Some("hash".into()), extraction_failed: false, extraction_skip: false })
+        Some(IndexedState { mtime_unix: mtime, images_indexed: images, source_hash: Some("hash".into()), extraction_failed: false, extraction_skip: false,container_group_version:0 })
     }
 
     #[test]

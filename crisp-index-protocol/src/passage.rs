@@ -72,6 +72,15 @@ pub struct StoredPassage {
     pub source_hash: Option<String>,
     /// Actual timestamp of the selected stored row, in Unix milliseconds.
     pub indexed_at: Option<i64>,
+    /// Typed provenance of an independently indexed member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_member: Option<super::ContainerMemberLocator>,
+    /// Captured root container bytes, when this is a root document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_source: Option<super::ContainerSourceReceipt>,
+    /// Actual stored extraction coverage and omissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_coverage: Option<super::ContainerCoverage>,
 }
 
 impl StoredPassage {
@@ -106,6 +115,14 @@ impl StoredPassage {
         if self.source_hash.as_ref().is_some_and(|hash| hash.len() > 4096) {
             return Err("The stored source fingerprint exceeds the response limit".into());
         }
+        if let Some(locator)=&self.container_member {
+            locator.validate_identity(&self.owner_id,&self.doc_id,&locator.member_uri()?)?;
+            if locator.entries.last().map(|entry|entry.sha256.to_ascii_lowercase()) != self.source_hash.as_ref().map(|hash|hash.to_ascii_lowercase()) {
+                return Err("Stored passage fingerprint differs from its member receipt".into());
+            }
+        }
+        if let Some(source)=&self.container_source { source.validate()?; }
+        if let Some(coverage)=&self.container_coverage { coverage.validate()?; }
         Ok(())
     }
 }

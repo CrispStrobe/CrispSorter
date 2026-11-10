@@ -25,6 +25,7 @@ use super::fts_index::{FtsIndex, TantivyInput};
 use super::local_index::LocalIndex;
 use super::ner::NerHandle;
 use super::schema::DocumentChunk;
+pub use super::container_ingest as container;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ impl Default for IngestConfig {
 /// Both `full_text` (plain) and `full_text_md` (Markdown) are optional:
 /// `full_text` is used for chunking and embedding; `full_text_md` is stored
 /// verbatim for display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RawDocument {
     // Text content
     pub full_text: String,
@@ -180,6 +181,9 @@ pub struct RawDocument {
     /// Populated by bg_ingest for image files when the
     /// `crispembed` feature is compiled in.  `None` otherwise.
     pub embedding_vit: Option<Vec<f32>>,
+    /// Typed container provenance and flattened child documents. The writer
+    /// resolves the root occurrence before assigning final child identities.
+    pub container: Option<container::ContainerDocument>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -518,6 +522,27 @@ pub(crate) async fn apply_occurrence_deletion(
 ) -> Result<()> {
     anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
     let _guard = local.read_guard(fts).await?;
+    apply_occurrence_deletion_locked(local,fts,occurrence).await
+}
+
+pub(crate) async fn apply_document_deletion_if_version(
+    local: &LocalIndex, fts: &FtsIndex, doc_id: &str, expected_version: Option<u64>,
+) -> Result<bool> {
+    anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
+    let _guard = local.read_guard(fts).await?;
+    if let Some(version) = expected_version { if local.table_ref().version().await? != version { return Ok(false); } }
+    let occurrences = local.document_occurrences(doc_id).await?;
+    anyhow::ensure!(occurrences.len() <= 1,
+        "This legacy document ID refers to multiple owners or locations; select the source occurrence before deleting it");
+    if let Some((owner_id,location_uri)) = occurrences.into_iter().next() {
+        apply_occurrence_deletion_locked(local,fts,super::local_index::SourceOccurrence {doc_id:doc_id.to_owned(),owner_id,location_uri}).await?;
+    }
+    Ok(true)
+}
+
+async fn apply_occurrence_deletion_locked(
+    local: &LocalIndex, fts: &FtsIndex, occurrence: super::local_index::SourceOccurrence,
+) -> Result<()> {
     if local.occurrences_absent(std::slice::from_ref(&occurrence)).await? { return Ok(()); }
     let generation = uuid::Uuid::new_v4().to_string();
     let plan = local.prepare_occurrence_delete(occurrence, &generation).await?;
@@ -803,10 +828,11 @@ impl IngestPipeline {
         raws = raws.into_iter().enumerate().filter_map(|(index, raw)|
             (latest.get(&doc_id_for(&raw)) == Some(&index)).then_some(raw)).collect();
         let unique_order = raws.iter().map(doc_id_for).collect::<Vec<_>>();
+        container::expand_roots(&mut raws)?;
         for raw in &raws {
             anyhow::ensure!(!raw.source_hash.trim().is_empty(), "Document identity is required");
             anyhow::ensure!(!raw.full_text.trim().is_empty()
-                || raw.embedding_vit.is_some() || raw.embedding_omni.is_some(),
+                || raw.embedding_vit.is_some() || raw.embedding_omni.is_some() || raw.container.is_some(),
                 "No searchable text was extracted from {}; use metadata indexing or retry extraction with OCR", raw.filename);
         }
         let active_embedder = if self.config.text_only { None } else { self.embedder.as_ref() };
@@ -1193,6 +1219,9 @@ pub struct L1FileEntry {
 /// Derive the preferred identity of an owner and source occurrence. Existing
 /// stored identities can be reused by the writer; see `IngestStats::doc_ids`.
 pub fn doc_id_for(raw: &RawDocument) -> String {
+    if let Some(container::ContainerDocument::Member { locator, .. }) = &raw.container {
+        if let Ok(id) = locator.member_id() { return id; }
+    }
     super::source_identity::occurrence_id(&raw.owner_id, &raw.location_uri, &raw.source_hash)
 }
 
@@ -1308,12 +1337,12 @@ fn build_doc_chunk(
         // working — it only finds the `mtime_unix` key and reads digits
         // up to the next non-digit (which is `,` when volume_id is
         // present, `}` when it isn't).
-        metadata_json: build_metadata_json(
+        metadata_json: container::attach_metadata(raw, build_metadata_json(
             raw.mtime_unix,
             raw.file_size,
             raw.volume_id.as_deref(),
             raw.images_indexed,
-        ),
+        )),
         parent_dir: raw.parent_dir.clone(),
         volume_id: raw.volume_id.clone(),
         // Stage AA: store translation only on chunk_index=0 (the
@@ -1423,6 +1452,7 @@ mod tests {
 
     fn sample_raw() -> RawDocument {
         RawDocument {
+            container: None,
             full_text: "The quick brown fox jumps over the lazy dog.".to_owned(),
             full_text_md: "**The quick brown fox** jumps over the lazy dog.".to_owned(),
             headings: vec!["Introduction".to_owned()],
@@ -1514,6 +1544,139 @@ mod tests {
         build_doc_chunk(&super::super::embedder::TextChunk {
             text: raw.full_text.clone(), start_char: 0, end_char: raw.full_text.len(), chunk_index: 0,
         }, raw, 1, None, None, String::new(), None)
+    }
+
+    fn container_raw(owner: &str, members: &[(&str,&str,u32)]) -> RawDocument {
+        use crisp_index_protocol::container::{ContainerCoverage,ContainerEntry,ContainerEntryKind,ContainerKind,ContainerSourceReceipt};
+        let mut raw=sample_raw(); raw.owner_id=owner.into(); raw.location_uri="/records/group.zip".into();
+        raw.filename="group.zip".into();raw.ext="zip".into();raw.source_hash="ab".repeat(32);raw.full_text="envelopeonly".into();
+        raw.container=Some(container::ContainerDocument::Root {
+            source:ContainerSourceReceipt {kind:ContainerKind::Zip,sha256:raw.source_hash.clone(),size:200},
+            coverage:ContainerCoverage {discovered:members.len() as u32,extracted:members.len() as u32,..Default::default()},
+            members:members.iter().enumerate().map(|(index,(name,text,occurrence))|container::RawContainerMember {
+                entries:vec![ContainerEntry {kind:ContainerEntryKind::Zip,index:index as u32,occurrence:*occurrence,name:(*name).into(),sha256:format!("{index:064x}"),size:20}],
+                document:RawDocument {full_text:(*text).into(),filename:(*name).into(),language:"en".into(),..Default::default()},coverage:None,
+            }).collect(),
+        }); raw
+    }
+
+    #[tokio::test]
+    async fn container_members_are_independent_owner_bound_and_root_receipts_keep_input_order() {
+        let (_dir,fts,local,pipeline)=test_indexes().await;
+        let first=container_raw("owner-a",&[("receipt.txt","red",0),("receipt.txt","fox",1)]);
+        let other=container_raw("owner-b",&[("receipt.txt","privateword",0)]);
+        let result=pipeline.ingest_documents_batch(vec![first.clone(),other.clone(),first.clone()]).await.unwrap();
+        assert_eq!(result.doc_ids,vec![doc_id_for(&first),doc_id_for(&other),doc_id_for(&first)]);
+        assert_eq!(result.chunk_count,5); assert_eq!(local.table_ref().count_rows(None).await.unwrap(),5);
+        assert!(fts.search("red AND fox",&Default::default(),20).unwrap().is_empty());
+        let red=fts.search("red",&Default::default(),20).unwrap();let fox=fts.search("fox",&Default::default(),20).unwrap();
+        assert_eq!((red.len(),fox.len()),(1,1));assert_ne!(red[0].doc_id,fox[0].doc_id);
+        let _guard=local.read_guard(&fts).await.unwrap();
+        let locator=local.container_member_locator("owner-a",&red[0].doc_id).await.unwrap().unwrap();
+        assert_eq!(locator.root_doc_id,result.doc_ids[0]);assert_eq!(locator.entries[0].occurrence,0);
+        assert!(local.container_member_locator("owner-b",&red[0].doc_id).await.is_err());
+        assert_eq!(local.fetch_full_text(&result.doc_ids[0]).await.unwrap(),"envelopeonly");
+    }
+
+    #[tokio::test]
+    async fn container_refresh_keeps_named_identity_and_deletes_obsolete_children_with_the_root() {
+        let (_dir,fts,local,pipeline)=test_indexes().await;
+        let original=container_raw("owner-a",&[("keep.txt","oldmember",0),("gone.txt","stalemember",0)]);
+        let other=container_raw("owner-b",&[("keep.txt","otherowner",0)]);
+        let roots=pipeline.ingest_documents_batch(vec![original.clone(),other.clone()]).await.unwrap().doc_ids;
+        let old_id=fts.search("oldmember",&Default::default(),10).unwrap()[0].doc_id.clone();
+        let mut changed=container_raw("owner-a",&[("keep.txt","newmember",0)]);
+        if let Some(container::ContainerDocument::Root {source,members,..})=&mut changed.container {
+            source.sha256="cd".repeat(32);members[0].entries[0].sha256="ef".repeat(32);members[0].entries[0].index=17;
+        }
+        changed.source_hash="cd".repeat(32);
+        assert_eq!(pipeline.ingest_document(changed).await.unwrap().doc_ids,vec![roots[0].clone()]);
+        assert_eq!(fts.search("newmember",&Default::default(),10).unwrap()[0].doc_id,old_id);
+        assert!(fts.search("oldmember OR stalemember",&Default::default(),10).unwrap().is_empty());
+        local.delete_document_with_fts(&roots[0],&fts).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(),2);
+        assert!(fts.search("newmember",&Default::default(),10).unwrap().is_empty());
+        assert_eq!(fts.search("otherowner",&Default::default(),10).unwrap().len(),1);
+    }
+
+    #[tokio::test]
+    async fn container_group_replays_complete_member_replacement_after_full_text_commit_failure() {
+        let (dir,fts,local,pipeline)=test_indexes().await;
+        let original=container_raw("owner",&[("keep.txt","oldgroupword",0),("gone.txt","obsoletegroupword",0)]);
+        pipeline.ingest_document(original).await.unwrap();
+        let held_writer=fts.writer().unwrap();
+        let changed=container_raw("owner",&[("keep.txt","newgroupword",0)]);
+        let error=pipeline.ingest_document(changed).await.unwrap_err();
+        assert!(format!("{error:#}").contains("full-text repair is pending"));
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(),2);
+        assert_eq!(pending_fts_writes(local.ingest_journal_path()).unwrap().len(),1);
+        drop(held_writer);drop(pipeline);drop(local);drop(fts);
+        let local=LocalIndex::open_or_create(dir.path(),4).await.unwrap();
+        let fts=FtsIndex::open_or_create(&dir.path().join("fts")).unwrap();
+        let _guard=local.read_guard(&fts).await.unwrap();
+        assert_eq!(fts.search("newgroupword",&Default::default(),10).unwrap().len(),1);
+        assert!(fts.search("oldgroupword OR obsoletegroupword",&Default::default(),10).unwrap().is_empty());
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_container_refresh_preserves_all_previous_rows_and_member_evidence() {
+        let (_dir,fts,local,pipeline)=test_indexes().await;
+        let original=container_raw("owner",&[("keep.txt","stablemember",0)]);
+        pipeline.ingest_document(original.clone()).await.unwrap();
+        let version=local.table_ref().version().await.unwrap();
+        let mut invalid=original;
+        if let Some(container::ContainerDocument::Root {members,..})=&mut invalid.container { members[0].entries[0].name="../escape.txt".into(); }
+        assert!(pipeline.ingest_document(invalid).await.is_err());
+        assert_eq!(local.table_ref().version().await.unwrap(),version);
+        assert_eq!(fts.search("stablemember",&Default::default(),10).unwrap().len(),1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn container_move_updates_all_locators_then_refresh_preserves_resolved_root_and_member_ids() {
+        let (_dir,fts,local,pipeline)=test_indexes().await;
+        let mut raw=container_raw("owner",&[("keep.txt","movablemember",0)]);
+        let root=pipeline.ingest_document(raw.clone()).await.unwrap().doc_ids.remove(0);
+        let member=fts.search("movablemember",&Default::default(),10).unwrap()[0].doc_id.clone();
+        let before=local.table_ref().version().await.unwrap();
+        local.update_location_by_local_path_with_volume("/records/group.zip","/moved/group.zip",Some("new-volume")).await.unwrap();
+        assert_eq!(local.table_ref().version().await.unwrap(),before+1);
+        {
+            let _guard=local.read_guard(&fts).await.unwrap();
+            let locator=local.container_member_locator("owner",&member).await.unwrap().unwrap();
+            assert_eq!(locator.root_location_uri,"/moved/group.zip");assert_eq!(locator.root_doc_id,root);
+        }
+        raw.location_uri="/moved/group.zip".into();raw.parent_dir=Some("/moved".into());raw.volume_id=Some("new-volume".into());
+        assert_eq!(pipeline.ingest_document(raw).await.unwrap().doc_ids,vec![root.clone()]);
+        assert_eq!(fts.search("movablemember",&Default::default(),10).unwrap()[0].doc_id,member);
+        local.delete_occurrence_with_fts(&root,"owner","/moved/group.zip",&fts).await.unwrap();
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(),0);
+    }
+
+    #[tokio::test]
+    async fn container_children_follow_a_preserved_legacy_root_when_colliding_owners_are_split() {
+        let (_dir,fts,local,pipeline)=test_indexes().await;
+        let selected=container_raw("owner-a",&[("new.txt","selectedchild",0)]);
+        let selected_id=doc_id_for(&selected);
+        let other=container_raw("owner-b",&[("old.txt","preservedchild",0)]);
+        // Seed a historical root ID that happens to be another owner's modern
+        // canonical ID, then create its valid member group through the writer.
+        let mut seed=one_chunk(&other);seed.doc_id=selected_id.clone();seed.id=chunk_row_id(&selected_id,0);
+        local.append_legacy_rows_for_test(&[seed]).await.unwrap();
+        assert_eq!(pipeline.ingest_document(other.clone()).await.unwrap().doc_ids,vec![selected_id.clone()]);
+        let old_child=fts.search("preservedchild",&Default::default(),10).unwrap()[0].doc_id.clone();
+        let mut selected_seed=one_chunk(&selected);selected_seed.doc_id=selected_id.clone();selected_seed.id=chunk_row_id(&selected_id,0);
+        local.append_legacy_rows_for_test(&[selected_seed]).await.unwrap();
+        let result=pipeline.ingest_document(selected).await.unwrap();assert_eq!(result.doc_ids,vec![selected_id]);
+        let preserved=fts.search("preservedchild",&Default::default(),10).unwrap();assert_eq!(preserved.len(),1);
+        assert_ne!(preserved[0].doc_id,old_child);
+        let _guard=local.read_guard(&fts).await.unwrap();
+        let locator=local.container_member_locator("owner-b",&preserved[0].doc_id).await.unwrap().unwrap();
+        assert_eq!(locator.root_doc_id,doc_id_for(&other));
+        assert_eq!(local.document_occurrences(&locator.root_doc_id).await.unwrap(),vec![("owner-b".into(),other.location_uri.clone())]);
+        assert!(local.container_member_locator("owner-b",&old_child).await.is_err());
+        assert_eq!(fts.search("selectedchild",&Default::default(),10).unwrap().len(),1);
     }
 
     fn imported_piece(raw: &RawDocument, index: i32, total: i32, text: &str, start: Option<i32>) -> DocumentChunk {

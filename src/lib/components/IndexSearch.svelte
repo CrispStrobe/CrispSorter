@@ -29,6 +29,8 @@
     import { stat } from '@tauri-apps/plugin-fs';
     import { availableDocumentTools, documentToolRequest } from '$lib/workflow';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
+    import { containerBreadcrumb, isContainerMemberUri, readOpenedContainerMember, resultContainerMember, resultContainerCoverage,
+        type OpenedContainerMember } from '$lib/containers';
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
@@ -83,6 +85,8 @@
         tags?:                 string[];
         // P22.3 — extractive summary generated at ingest time.
         summary?:              string;
+        metadata_json?:        string;
+        container_member?:     unknown;
     }
 
     // P13.5 on-demand translation surface — per-result state tracking
@@ -616,6 +620,7 @@
      *  a long-snippet audio hit (already transcribed) hides the
      *  button so we don't re-transcribe perfectly-good rows. */
     function looksUntranscribed(r: SearchResult): boolean {
+        if (isContainerMemberUri(r.location_uri)) return false;
         const ext = (r.ext ?? '').toLowerCase();
         if (!AUDIO_EXTS_SET_SEARCH.has(ext)) return false;
         const snip = (r.snippet ?? '').trim();
@@ -625,6 +630,7 @@
      *  button when an image row has no recognisable OCR text.
      *  Same caveats as looksUntranscribed. */
     function looksUnOcred(r: SearchResult): boolean {
+        if (isContainerMemberUri(r.location_uri)) return false;
         const ext = (r.ext ?? '').toLowerCase();
         if (!IMAGE_EXTS_SET_SEARCH.has(ext)) return false;
         const snip = (r.snippet ?? '').trim();
@@ -678,7 +684,7 @@
     /** Should this row offer the per-file document tools? Image/PDF rows only,
      *  and only when CrispEmbed is linked in (the tools need it). */
     function looksDocToolable(r: SearchResult): boolean {
-        if (!crispembedAvailable) return false;
+        if (!crispembedAvailable || isContainerMemberUri(r.location_uri)) return false;
         const ext = (r.ext ?? '').toLowerCase();
         return IMAGE_EXTS_SET_SEARCH.has(ext) || ext === 'pdf';
     }
@@ -834,6 +840,29 @@
     let previewPreference = $state<'original' | 'indexed'>('original');
     let previewCloseButton = $state<HTMLButtonElement>();
     let previewTrigger: HTMLButtonElement | null = null;
+    let memberPreview = $state<OpenedContainerMember | null>(null);
+    let memberPreviewBusy = $state(false);
+    let memberPreviewError = $state('');
+    let memberPreviewAttempt = $state(0);
+
+    $effect(() => {
+        const result = previewing;
+        const tab = previewTab;
+        void memberPreviewAttempt;
+        let current = true;
+        memberPreview = null; memberPreviewError = ''; memberPreviewBusy = false;
+        if (result && tab === 'original' && isContainerMemberUri(result.location_uri)) {
+            memberPreviewBusy = true;
+            void invoke<unknown>('index_open_container_member', { ownerId: result.owner_id, docId: result.doc_id })
+                .then(value => readOpenedContainerMember(value, result))
+                .then(value => { if (current) memberPreview = value; })
+                .catch(cause => { if (current) memberPreviewError = cause instanceof Error ? cause.message : String(cause); })
+                .finally(() => { if (current) memberPreviewBusy = false; });
+        }
+        // Native verification continues, but a late result can never replace
+        // another selected document or reopen a closed preview.
+        return () => { current = false; };
+    });
 
     async function openPreview(r: SearchResult, trigger: HTMLButtonElement) {
         if (previewing && resultIdentity(previewing) === resultIdentity(r)) { await closePreview(); return; }
@@ -1180,7 +1209,10 @@
             scope: selectedOnly ? 'selected' : 'displayed', returnedDocuments: grouped.length,
             returnedPassages: results.length, groups });
         const format = reportFormat;
-        const protectedSourceUris = [...new Set(groups.flatMap(group => group.chunks.map(hit => hit.location_uri)))];
+        const protectedSourceUris = [...new Set(groups.flatMap(group => group.chunks.flatMap(hit => {
+            const member = resultContainerMember(hit);
+            return member ? [hit.location_uri, member.rootLocationUri] : [hit.location_uri];
+        })))];
         const content = format === 'json' ? JSON.stringify(report, null, 2)
             : format === 'csv' ? searchReportCsv(report) : searchReportHtml(report);
         await runResultAction('report', async () => {
@@ -1592,24 +1624,27 @@
         return localPathFromSearchUri(uri) ?? uri;
     }
 
-    async function openFile(uri: string) {
+    function resultSourceLabel(result: SearchResult): string {
+        const member = resultContainerMember(result);
+        return member ? containerBreadcrumb({ ...member, rootLocationUri: compareLabel(member.rootLocationUri) })
+            : compareLabel(result.location_uri);
+    }
+
+    async function openFile(result: SearchResult) {
+        const uri = result.location_uri;
         if (uri.startsWith('https://') || uri.startsWith('http://')) {
             await openOriginal(uri);
             return;
         }
-        // uri may be: absolute path, crisp+local://... URI, or similar
-        let path = uri;
-        // Strip crisp+local:// scheme — everything after the scheme+authority is the path
-        if (uri.startsWith('crisp+local://')) {
-            // crisp+local://<authority><path>  — authority ends at second "/"
-            const afterScheme = uri.slice('crisp+local://'.length);
-            const slashIdx = afterScheme.indexOf('/');
-            path = slashIdx >= 0 ? afterScheme.slice(slashIdx) : afterScheme;
-        }
         await runResultAction(`open:${uri}`, async () => {
+            const path = isContainerMemberUri(uri)
+                ? readOpenedContainerMember(await invoke<unknown>('index_open_container_member', {
+                    ownerId: result.owner_id, docId: result.doc_id,
+                }), result).path : localPathFromSearchUri(uri);
+            if (!path) throw new Error('This source is not available as a local file.');
             await openPath(path);
             return null;
-        }, `${labels.openFileFailed} (${path})`);
+        }, `${labels.openFileFailed} (${resultSourceLabel(result)})`);
     }
 
     async function openOriginal(url: string) {
@@ -1674,10 +1709,11 @@
         }, labels.downloadFailed);
     }
 
-    async function copyResultPath(uri: string): Promise<void> {
+    async function copyResultPath(uri: string, result?: SearchResult): Promise<void> {
         const drive = driveUriParts(uri);
         const local = localPathFromSearchUri(uri);
-        const value = drive ? `${drive.driveId}:${drive.remotePath}` : local || uri;
+        const member = result && resultContainerMember(result);
+        const value = member ? containerBreadcrumb(member) : drive ? `${drive.driveId}:${drive.remotePath}` : local || uri;
         if (!value) return;
         await runResultAction(`copy:${uri}`, async () => {
             await navigator.clipboard.writeText(value);
@@ -1686,10 +1722,12 @@
     }
 
     async function copyResultCitation(result: SearchResult): Promise<void> {
+        const member = resultContainerMember(result);
         const content = [
             result.title || result.filename || result.doc_id,
             [result.author, result.year].filter(value => value != null && value !== '').join(' · '),
             `Source: ${result.location_uri}`,
+            ...(member ? [`Container source: ${containerBreadcrumb(member)}`, `Container SHA-256: ${member.rootSha256}`] : []),
             ...(result.url && result.url !== result.location_uri ? [`Original URL: ${result.url}`] : []),
             `Document: ${result.doc_id}`,
             ...(result.owner_id != null ? [`Owner: ${result.owner_id || "Unspecified"}`] : []),
@@ -1856,10 +1894,11 @@
         // even if the user changes the current selection while storage is busy.
         const selected = displayedGroups.filter(group => batchSelection.has(group.key)).map(group => group.best);
         const local = new Map<string, { result: SearchResult; path: string }>();
-        let skipped = 0;
+        let skipped = 0, skippedMembers = 0;
         for (const result of selected) {
             const path = localPathFromSearchUri(result.location_uri);
             if (path) local.set(batchSourceKey(path), { result, path });
+            else if (isContainerMemberUri(result.location_uri)) skippedMembers += 1;
             else skipped += 1;
         }
         await runResultAction('batch:selection', async () => {
@@ -1873,6 +1912,7 @@
                 `${labels.addedToBatch}: ${added}`,
                 `${labels.alreadyInBatch}: ${local.size - added}`,
                 ...(skipped ? [`${labels.skippedCloud}: ${skipped}`] : []),
+                ...(skippedMembers ? [`${i18n.lang === 'de' ? 'Container-Einträge unverändert' : 'Container members left in their source'}: ${skippedMembers}`] : []),
             ].join(' · ');
         }, labels.addBatchFailed, local.size > 0);
     }
@@ -2504,6 +2544,8 @@
 
             {#each displayedGroups as group (group.key)}
                 {@const r = group.best}
+                {@const coverage = resultContainerCoverage(r)}
+                {@const member = resultContainerMember(r)}
                 {@const resultName = r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
                 {@const chunksId = `library-result-chunks-${encodeURIComponent(group.key)}`}
                 <div class="result-card" data-document-id={group.doc_id} data-owner-id={group.owner_id} data-result-key={group.key}>
@@ -2528,7 +2570,20 @@
                                     catalog: {catalogName(r.catalog_source)}
                                 </span>
                             {/if}
-                            <span class="result-path" title={r.location_uri}>{compareLabel(r.location_uri)}</span>
+                            <span class="result-path" title={resultSourceLabel(r)}>{resultSourceLabel(r)}</span>
+                            {#if isContainerMemberUri(r.location_uri)}
+                                <span class="result-origin">{i18n.lang === 'de' ? 'Eigenständiges Dokument im Container' : 'Document inside a container'}</span>
+                            {/if}
+                            {#if coverage}
+                                <span class="result-origin" aria-label="Container extraction coverage">{coverage.extracted} {i18n.lang === 'de' ? 'indizierte Einträge' : 'indexed members'} · {coverage.skipped} {i18n.lang === 'de' ? 'ausgelassen' : 'omitted'}</span>
+                                {#if coverage.skipped > 0}
+                                    <details class="container-coverage">
+                                        <summary>{i18n.lang === 'de' ? 'Extraktionsabdeckung prüfen' : 'Review extraction coverage'}</summary>
+                                        <ul>{#each coverage.omissions as omission}<li>{omission.path}: {omission.reason}</li>{/each}</ul>
+                                        {#if coverage.omittedDetails}<p>{coverage.omittedDetails} {i18n.lang === 'de' ? 'weitere ausgelassene Einträge' : 'additional omitted entries'}</p>{/if}
+                                    </details>
+                                {/if}
+                            {/if}
                             <span class="result-origin">{r.catalog_source
                                 ? (i18n.lang === 'de' ? 'Dateinamen-Treffer im Katalog' : 'Catalog filename match')
                                 : r.chunk_index >= 0
@@ -2573,18 +2628,18 @@
                                 class:active={batchSelection.has(group.key)}
                                 aria-pressed={batchSelection.has(group.key)}
                                 onclick={(e) => { e.stopPropagation(); toggleBatchSelection(r); }}
-                                title={batchSelection.has(group.key) ? 'Remove from batch selection' : 'Select for batch sorter'}>
+                                title={batchSelection.has(group.key) ? (member ? 'Remove from report selection' : 'Remove from batch selection') : member ? 'Select contained document for report' : 'Select for batch sorter'}>
                                 <ListPlus size={13} />
                             </button>
                             <button class="open-btn"
                                 disabled={resultActionsBusy.has(`open:${r.location_uri}`)}
-                                onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
-                                title="Datei öffnen">
+                                onclick={(e) => { e.stopPropagation(); void openFile(r); }}
+                                title={isContainerMemberUri(r.location_uri) ? (i18n.lang === 'de' ? 'Geprüfte Kopie des Eintrags öffnen' : 'Open verified member copy') : 'Datei öffnen'}>
                                 <ExternalLink size={13} />
                             </button>
                                 <button class="open-btn"
                                     disabled={resultActionsBusy.has(`copy:${r.location_uri}`)}
-                                    onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri); }}
+                                    onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri, r); }}
                                     title="Copy path">
                                     <Copy size={13} />
                                 </button>
@@ -2650,6 +2705,12 @@
                                     onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
                                     title="Add to batch sorter">
                                     <ListPlus size={13} />
+                                </button>
+                            {/if}
+                            {#if member && localPathFromSearchUri(member.rootLocationUri)}
+                                <button class="open-btn" onclick={() => openLocalInContext(member.rootLocationUri)}
+                                    title={i18n.lang === 'de' ? 'Container im Dateikontext anzeigen' : 'Show source container in file context'}>
+                                    <FolderOpen size={13} />
                                 </button>
                             {/if}
                             {#if cbArchiveOriginalPath(r.location_uri)}
@@ -2969,8 +3030,10 @@
                 {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => { previewTab = 'indexed'; previewPreference = 'indexed'; }}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
             </div>
             <div class="preview-source-context">
-                <code>{compareLabel(previewing.location_uri)}</code>
-                <span>{i18n.lang === 'de' ? 'Die Originaldatei kann seit der Indizierung geändert worden sein.' : 'The original file may have changed since indexing.'}</span>
+                <code>{resultSourceLabel(previewing)}</code>
+                <span>{isContainerMemberUri(previewing.location_uri)
+                    ? (i18n.lang === 'de' ? 'Der Eintrag wird vor dem Öffnen gegen den indizierten Container geprüft.' : 'Opening verifies this member against the indexed source container.')
+                    : (i18n.lang === 'de' ? 'Die Originaldatei kann seit der Indizierung geändert worden sein.' : 'The original file may have changed since indexing.')}</span>
                 <button class="reset-filters" onclick={() => previewing && copyResultCitation(previewing)}>{i18n.lang === 'de' ? 'Quellenangabe kopieren' : 'Copy citation'}</button>
             </div>
             {#if localPathFromSearchUri(previewing.location_uri)}
@@ -2983,6 +3046,16 @@
             <div class="preview-body">
                 {#if previewTab === 'indexed' && previewing.chunk_index >= 0}
                     <SearchPassage docId={previewing.doc_id} ownerId={previewing.owner_id} chunkIndex={previewing.chunk_index} query={executedQuery || query} sourceHash={previewing.source_hash || ''} />
+                {:else if isContainerMemberUri(previewing.location_uri)}
+                    {#if memberPreviewBusy}
+                        <p class="hint" role="status"><Loader2 size={14} class="spin" /> {i18n.lang === 'de' ? 'Quelle prüfen und Eintrag vorbereiten…' : 'Verifying the source and preparing its member…'}</p>
+                    {:else if memberPreviewError}
+                        <p class="error" role="alert">{memberPreviewError}</p>
+                        <button class="reset-filters" onclick={() => memberPreviewAttempt += 1}>{i18n.lang === 'de' ? 'Erneut prüfen' : 'Verify again'}</button>
+                    {:else if memberPreview}
+                        <p class="hint">{i18n.lang === 'de' ? 'Geprüfte, schreibgeschützte Kopie des Container-Eintrags.' : 'Verified, read-only copy of the container member.'}</p>
+                        <DocumentViewer locationUri={memberPreview.path} filename={memberPreview.filename} readOnly />
+                    {/if}
                 {:else}
                 <DocumentDecisionPanel document={previewing} onUse={useReviewedFields} />
                 <FieldEvidencePanel docId={previewing.doc_id}

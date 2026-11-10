@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { getSetting, getStore } from '../store';
-import { extractText, extractionTags, MULTIMODAL_EXTENSIONS } from './index';
+import { extractText, extractionTags, MULTIMODAL_EXTENSIONS, usesNativePathExtraction } from './index';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../store', () => ({ getSetting: vi.fn(), getStore: vi.fn() }));
@@ -17,6 +17,13 @@ beforeEach(() => {
 });
 
 describe('ZIP extraction bridge', () => {
+    it.each(['tar', 'gz', 'gzip', 'tgz', '7z'])('routes %s through the same bounded native pipeline', async extension => {
+        expect(MULTIMODAL_EXTENSIONS).toContain(extension);
+        expect(usesNativePathExtraction(`source.${extension}`)).toBe(true);
+        await extractText({ name: `source.${extension}`, path: `/records/source.${extension}`, arrayBuffer: new ArrayBuffer(0) });
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('archive_extract_text', { path: `/records/source.${extension}`,
+            options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto' } });
+    });
     it('accepts ZIP and uses a bounded native path request while preserving provenance and coverage tags', async () => {
         expect(MULTIMODAL_EXTENSIONS).toContain('zip');
         const result = await extractText(archive);

@@ -765,6 +765,7 @@ name = "crisp-index-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "sha2",
 ]
 
 [[package]]

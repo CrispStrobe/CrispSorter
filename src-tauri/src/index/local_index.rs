@@ -45,6 +45,9 @@ pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
 #[path = "source_move.rs"]
 mod source_move;
 
+#[path = "container_index.rs"]
+mod container_index;
+
 fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
     anyhow::ensure!(!chunks.is_empty(), "A document replacement cannot be empty");
     let mut row_ids = std::collections::BTreeSet::new();
@@ -256,6 +259,8 @@ pub struct IndexedState {
     pub source_hash: Option<String>,
     pub extraction_failed: bool,
     pub extraction_skip: bool,
+    /// Version of independent member publication recorded on container roots.
+    pub container_group_version: u32,
 }
 
 impl LocalIndex {
@@ -467,7 +472,7 @@ impl LocalIndex {
     }
 
     pub async fn delete_document_with_fts(&self, doc_id: &str, fts: &super::fts_index::FtsIndex) -> Result<()> {
-        super::ingest::apply_imported_chunks(self, fts, &[], &[doc_id.to_owned()]).await
+        super::ingest::apply_document_deletion_if_version(self,fts,doc_id,None).await.map(|_|())
     }
 
     /// Apply a remotely requested deletion only if policy inspected this exact
@@ -475,8 +480,7 @@ impl LocalIndex {
     pub async fn delete_document_if_version_with_fts(
         &self, doc_id: &str, expected_version: u64, fts: &super::fts_index::FtsIndex,
     ) -> Result<bool> {
-        super::ingest::apply_imported_chunks_if_version(
-            self, fts, &[], &[doc_id.to_owned()], Some(expected_version)).await
+        super::ingest::apply_document_deletion_if_version(self,fts,doc_id,Some(expected_version)).await
     }
 
     pub(crate) async fn documents_absent(&self, doc_ids: &[String]) -> Result<bool> {
@@ -2820,6 +2824,7 @@ impl LocalIndex {
             extraction_failed: value.get("extraction_failure").is_some(),
             extraction_skip: value.get("extraction_skip").and_then(|v| v.as_bool()).unwrap_or(false)
                 || matches!(value.get("extraction_failure").and_then(|v| v.get("msg")).and_then(|v| v.as_str()), Some("skipped via GUI" | "manually skipped via CLI")),
+            container_group_version: value.get("container_group_version").and_then(|value|value.as_u64()).and_then(|value|u32::try_from(value).ok()).unwrap_or(0),
         }
     }
 

@@ -40,9 +40,11 @@ use crisp_index_protocol::{
     CompletePageRequest, CompletePage, CompleteCancelResponse, CompleteDestinationRequest,
     CompleteDestinationResponse, COMPLETE_SEARCH_VERSION, COMPLETE_SEARCH_VERSION_HEADER,
     MAX_COMPLETE_RESPONSE_BYTES, METADATA_SCHEMA_VERSION,
+    ContainerMemberLocator, ContainerSourceReceipt, ContainerCoverage, ContainerMemberRequest, ContainerMemberResponse,
+    CONTAINER_MEMBERS_VERSION, CONTAINER_MEMBERS_VERSION_HEADER, MAX_CONTAINER_MEMBER_RESPONSE_BYTES,
 };
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{sync::OnceLock, time::Duration};
 
 use super::schema::{SearchFilters, SearchResult};
@@ -77,6 +79,58 @@ async fn bounded_response_json<T: serde::de::DeserializeOwned>(mut response: req
         return Err(anyhow!("remote index {status}: {}", String::from_utf8_lossy(&bytes)));
     }
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[derive(Default, Deserialize)]
+struct ContainerFields {
+    #[serde(default)] container_member: Option<ContainerMemberLocator>,
+    #[serde(default)] container_source: Option<ContainerSourceReceipt>,
+    #[serde(default)] container_coverage: Option<ContainerCoverage>,
+}
+impl ContainerFields {
+    fn any(&self) -> bool { self.container_member.is_some() || self.container_source.is_some() || self.container_coverage.is_some() }
+    fn validate(&self, owner: &str, doc: &str, uri: &str, source_hash: &str) -> Result<()> {
+        if let Some(locator) = &self.container_member {
+            locator.validate_identity(owner,doc,uri).map_err(anyhow::Error::msg)?;
+            ensure!(locator.entries.last().is_some_and(|entry| entry.sha256.eq_ignore_ascii_case(source_hash)),
+                "The remote member fingerprint differs from its locator receipt");
+        } else { ensure!(!uri.starts_with("crisp+member:"), "The remote member is missing its typed source locator"); }
+        if let Some(source) = &self.container_source {
+            source.validate().map_err(anyhow::Error::msg)?;
+            ensure!(source.sha256.eq_ignore_ascii_case(source_hash), "The remote container fingerprint differs from its source receipt");
+        }
+        if let Some(coverage) = &self.container_coverage { coverage.validate().map_err(anyhow::Error::msg)?; }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct RemoteSearchResult {
+    #[serde(flatten)] result: SearchResult,
+    #[serde(flatten)] container: ContainerFields,
+}
+
+async fn read_search_results(response: reqwest::Response) -> Result<Vec<SearchResult>> {
+    response.json::<Vec<RemoteSearchResult>>().await?.into_iter().map(|hit| {
+        let mut result = hit.result;
+        hit.container.validate(&result.owner_id,&result.doc_id,&result.location_uri,&result.source_hash)?;
+        if hit.container.any() {
+            let mut metadata = result.metadata_json.as_deref().map(serde_json::from_str::<serde_json::Value>).transpose()?
+                .unwrap_or_else(|| serde_json::json!({}));
+            let metadata = metadata.as_object_mut().ok_or_else(|| anyhow!("The remote result metadata is not an object"))?;
+            for (name,value) in [("container_member",serde_json::to_value(hit.container.container_member)?),
+                ("container_source",serde_json::to_value(hit.container.container_source)?),
+                ("container_coverage",serde_json::to_value(hit.container.container_coverage)?)] {
+                if value.is_null() { continue; }
+                if let Some(previous) = metadata.get(name) {
+                    ensure!(*previous == value, "The remote result has conflicting container metadata");
+                }
+                metadata.insert(name.into(),value);
+            }
+            result.metadata_json = Some(serde_json::to_string(metadata)?);
+        }
+        Ok(result)
+    }).collect()
 }
 
 impl RemoteClient {
@@ -351,6 +405,29 @@ impl RemoteClient {
         Ok(passage)
     }
 
+    async fn require_container_members(&self) -> Result<()> {
+        let response = self.client.get(self.url("/v1/capabilities")).bearer_auth(&self.api_key).send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!("This server does not advertise independently indexed container members. Upgrade the server first."));
+        }
+        let capabilities: SearchCapabilities = bounded_response_json(response,64*1024).await?;
+        ensure!(capabilities.api_version == 1 && capabilities.fts_ready && capabilities.container_members_version == CONTAINER_MEMBERS_VERSION,
+            "The remote index is not ready or does not support versioned container members. Finish its rebuild or upgrade the server.");
+        Ok(())
+    }
+
+    /// Owner-scoped persisted metadata, never a locator supplied by the webview.
+    pub async fn read_container_member(&self, doc_id: &str, owner_id: &str) -> Result<Option<ContainerMemberLocator>> {
+        let request = ContainerMemberRequest { version:CONTAINER_MEMBERS_VERSION,owner_id:owner_id.into(),doc_id:doc_id.into() };
+        request.validate().map_err(anyhow::Error::msg)?;
+        self.require_container_members().await?;
+        let response = self.client.post(self.url("/v1/members/read")).bearer_auth(&self.api_key).json(&request).send().await?;
+        if response.status().is_success() { confirm_version(&response,CONTAINER_MEMBERS_VERSION_HEADER,CONTAINER_MEMBERS_VERSION,"container member metadata")?; }
+        let receipt: ContainerMemberResponse = bounded_response_json(response,MAX_CONTAINER_MEMBER_RESPONSE_BYTES).await?;
+        receipt.validate_for(&request).map_err(anyhow::Error::msg)?;
+        Ok(receipt.locator)
+    }
+
     fn document_url(
         &self,
         doc_id: &str,
@@ -418,6 +495,20 @@ impl RemoteClient {
     }
 
     pub async fn ingest_batch(&self, batch: &IngestBatch) -> Result<BatchIngestResponse> {
+        let grouped = batch.container_group_version.is_some() || batch.chunks.iter().any(|chunk|
+            chunk.container_member.is_some() || chunk.container_source.is_some() || chunk.container_coverage.is_some());
+        if grouped {
+            ensure!(batch.container_group_version.is_none_or(|version| version == CONTAINER_MEMBERS_VERSION),
+                "Unsupported container group publication version");
+            self.require_container_members().await?;
+            let mut batch = batch.clone(); batch.container_group_version = Some(CONTAINER_MEMBERS_VERSION);
+            let response = self.client.post(self.url("/v1/ingest/containers")).bearer_auth(&self.api_key).json(&batch).send().await?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Err(anyhow!("This server cannot publish root and member documents atomically. Upgrade the server before indexing containers."));
+            }
+            if response.status().is_success() { confirm_version(&response,CONTAINER_MEMBERS_VERSION_HEADER,CONTAINER_MEMBERS_VERSION,"container group publication")?; }
+            return bounded_response_json(response,64*1024).await;
+        }
         let resp = self.post_json("/v1/ingest/batch", batch).await?;
         Ok(resp.json::<BatchIngestResponse>().await?)
     }
@@ -455,7 +546,7 @@ impl RemoteClient {
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), None, "vector", filters, limit)?;
         let resp = self.post_search(payload).await?;
-        Ok(resp.json::<Vec<SearchResult>>().await?)
+        read_search_results(resp).await
     }
 
     pub async fn search_hybrid_server(
@@ -466,7 +557,7 @@ impl RemoteClient {
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), None, "hybrid", filters, limit)?;
         let resp = self.post_search(payload).await?;
-        Ok(resp.json::<Vec<SearchResult>>().await?)
+        read_search_results(resp).await
     }
 }
 
@@ -487,6 +578,9 @@ impl IndexBackend for RemoteClient {
         // away by the protocol's `skip_serializing_if = Option::is_none`
         // attributes, so the wire bytes are byte-identical to the
         // previous lifetime-borrowed `IngestPayload`.
+        let container: ContainerFields = doc.metadata_json.as_deref().map(serde_json::from_str).transpose()?.unwrap_or_default();
+        container.validate(&doc.owner_id,&doc.doc_id,&doc.location_uri,&doc.source_hash)?;
+        ensure!(!container.any(), "Container documents must be published atomically with their root source through batch ingestion");
         let payload = IngestChunk {
             doc_id: doc.doc_id.clone(),
             chunk_index: doc.chunk_index,
@@ -515,6 +609,8 @@ impl IndexBackend for RemoteClient {
             text_translated: doc.text_translated.clone(), text_translated_lang: doc.text_translated_lang.clone(),
             doc_status: doc.doc_status.clone(), audio_duration_seconds: doc.audio_duration_seconds,
             image_camera_make: doc.image_camera_make.clone(), image_camera_model: doc.image_camera_model.clone(),
+            container_member: container.container_member, container_source: container.container_source,
+            container_coverage: container.container_coverage,
         };
         self.post_json("/v1/ingest", &payload).await?;
         Ok(())
@@ -528,7 +624,7 @@ impl IndexBackend for RemoteClient {
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), None, "text", filters, limit)?;
         let resp = self.post_search(payload).await?;
-        Ok(resp.json::<Vec<SearchResult>>().await?)
+        read_search_results(resp).await
     }
 
     async fn search_vector(
@@ -539,7 +635,7 @@ impl IndexBackend for RemoteClient {
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(None, Some(embedding), "vector", filters, limit)?;
         let resp = self.post_search(payload).await?;
-        Ok(resp.json::<Vec<SearchResult>>().await?)
+        read_search_results(resp).await
     }
 
     async fn search_hybrid(
@@ -551,7 +647,7 @@ impl IndexBackend for RemoteClient {
     ) -> Result<Vec<SearchResult>> {
         let payload = build_search_request(Some(query), Some(embedding), "hybrid", filters, limit)?;
         let resp = self.post_search(payload).await?;
-        Ok(resp.json::<Vec<SearchResult>>().await?)
+        read_search_results(resp).await
     }
 
     async fn delete_doc(&self, doc_id: &str) -> Result<()> {

@@ -145,7 +145,7 @@ async fn native_judged_retrieval_benchmark() -> Result<()> {
             ext: "txt".into(), language: "en".into(), location_uri: format!("benchmark://{OWNER}/{}", document.id),
             embedding: document_vectors[batch_index * 256 + offset].clone(), ..Default::default()
         }).collect();
-        index.ingest_batch(&IngestBatch { chunks }).await?;
+        index.ingest_batch(&IngestBatch { chunks, container_group_version: None }).await?;
         eprintln!("Indexed {} / {} public documents", ((batch_index + 1) * 256).min(documents.len()), documents.len());
     }
     let ingestion_ms = started.elapsed().as_secs_f64() * 1000.0;

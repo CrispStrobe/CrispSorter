@@ -47,7 +47,7 @@ async fn complete_http_counts_all_633_documents_with_facets_and_enumerates_every
         if n==632 {row.chunk_index=9;} row
     }).collect();
     chunks.push(chunk("other","0000","needle private"));chunks.push(chunk(owner,"excluded","needle excluded"));
-    fixture.index.ingest_batch(&IngestBatch {chunks}).await.unwrap();
+    fixture.index.ingest_batch(&IngestBatch {container_group_version: None, chunks}).await.unwrap();
     let request=request(scope(owner));
     assert_eq!(fixture.http.post(format!("{}/v1/search/complete",fixture.url)).json(&request).send().await.unwrap().status(),401);
     let response=call(&fixture,"/v1/search/complete",&request).await;
@@ -86,7 +86,7 @@ async fn extended_metadata_filters_apply_before_limits_and_keep_legacy_capabilit
     decoy.url=Some("https://source.test/aZZ/doc".into());decoy.image_camera_make=Some("CameraZZ".into());decoy.image_camera_model=Some("ModelA1Z".into());
     decoy.text_translated_lang=Some("de".into());decoy.doc_status=Some("reviewed".into());decoy.volume_id=Some("cold".into());
     let mut foreign=good.clone();foreign.owner_id="foreign".into();
-    fixture.index.ingest_batch(&IngestBatch {chunks:vec![good,decoy,foreign]}).await.unwrap();
+    fixture.index.ingest_batch(&IngestBatch {container_group_version: None, chunks:vec![good,decoy,foreign]}).await.unwrap();
     let caps:SearchCapabilities=fixture.http.get(format!("{}/v1/capabilities",fixture.url)).bearer_auth("complete-secret").send().await.unwrap().json().await.unwrap();
     assert_eq!(caps.metadata_filter_version,1);assert_eq!(caps.metadata_filter_max_version,2);
     assert_eq!(caps.fts_schema_version,2);assert_eq!(caps.active_fts_schema_version,3);assert_eq!(caps.complete_search_version,1);
@@ -114,20 +114,20 @@ async fn extended_metadata_filters_apply_before_limits_and_keep_legacy_capabilit
 
 #[tokio::test]
 async fn generation_receipts_reject_mutation_scope_reuse_and_stale_export_pages() {
-    let fixture=fixture().await;fixture.index.ingest_batch(&IngestBatch {chunks:vec![chunk("owner","one","needle")]}).await.unwrap();
+    let fixture=fixture().await;fixture.index.ingest_batch(&IngestBatch {container_group_version: None, chunks:vec![chunk("owner","one","needle")]}).await.unwrap();
     let request=request(scope("owner"));let result=fixture.index.complete_summary(request.clone()).await.unwrap();
     let mut changed_scope=request.scope.clone();changed_scope.filters.owner_id=Some("other".into());
     assert_ne!(fixture.index.complete_generation(&changed_scope).await.unwrap().generation,result.generation);
     let mut stale=request.clone();stale.request_id=uuid::Uuid::new_v4().to_string();stale.expected_generation=Some(result.generation.clone());stale.scope=changed_scope;
     assert_eq!(call(&fixture,"/v1/search/complete",&stale).await.status(),409);
-    fixture.index.ingest_batch(&IngestBatch {chunks:vec![chunk("owner","two","needle")]}).await.unwrap();
+    fixture.index.ingest_batch(&IngestBatch {container_group_version: None, chunks:vec![chunk("owner","two","needle")]}).await.unwrap();
     let page=CompletePageRequest {version:1,session_id:result.session_id,generation:result.generation,offset:0,limit:200,sort:CompleteSort::Filename};
     assert_eq!(call(&fixture,"/v1/search/complete/page",&page).await.status(),409);
 }
 
 #[tokio::test]
 async fn cancellation_interrupts_waiting_scans_and_session_bound_destination_checks() {
-    let fixture=fixture().await;fixture.index.ingest_batch(&IngestBatch {chunks:vec![chunk("owner","one","needle")]}).await.unwrap();
+    let fixture=fixture().await;fixture.index.ingest_batch(&IngestBatch {container_group_version: None, chunks:vec![chunk("owner","one","needle")]}).await.unwrap();
     let initial=request(scope("owner"));let result=fixture.index.complete_summary(initial.clone()).await.unwrap();
     let lease=fixture.index.read_guard().await.unwrap();
     let destination=CompleteDestinationRequest {version:1,request_id:initial.request_id.clone(),generation:result.generation,scope:initial.scope,destination_paths:vec!["/reports/new.csv".into()]};
@@ -147,7 +147,7 @@ async fn cancellation_interrupts_waiting_scans_and_session_bound_destination_che
 async fn destination_guard_checks_nonmatching_other_owner_sources_and_windows_paths_on_linux() {
     let fixture=fixture().await;
     let mut protected=chunk("other","protected","unrelated");protected.location_uri="crisp+local://machine/C:/Docs/Source%20File.pdf".into();
-    fixture.index.ingest_batch(&IngestBatch {chunks:vec![chunk("owner","one","needle"),protected]}).await.unwrap();
+    fixture.index.ingest_batch(&IngestBatch {container_group_version: None, chunks:vec![chunk("owner","one","needle"),protected]}).await.unwrap();
     let request=request(scope("owner"));let summary=fixture.index.complete_summary(request.clone()).await.unwrap();
     let body=CompleteDestinationRequest {version:1,request_id:request.request_id,generation:summary.generation,scope:request.scope,destination_paths:vec![r"c:\docs\source file.pdf".into()]};
     let response=call(&fixture,"/v1/search/complete/destination",&body).await;assert_eq!(response.status(),200);

@@ -301,7 +301,7 @@ async fn actual_sync_route_supports_safe_legacy_pages_and_cursor_clients() {
         })
         .collect();
     index
-        .ingest_batch(&crisp_index_protocol::IngestBatch { chunks })
+        .ingest_batch(&crisp_index_protocol::IngestBatch { container_group_version: None, chunks })
         .await
         .unwrap();
     let state = Arc::new(crate::state::SharedState {

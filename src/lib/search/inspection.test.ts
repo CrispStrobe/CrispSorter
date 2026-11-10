@@ -132,4 +132,23 @@ describe('reproducible result reports', () => {
         expect(searchReportHtml(value)).toContain('Owner: <code>&lt;alice&gt;</code>');
         expect(searchReportHtml(value)).not.toContain('<alice>');
     });
+
+    it('retains nested container provenance and byte receipts in each report format', () => {
+        const id = 'a'.repeat(64);
+        const member = { version: 1, rootOwnerId: 'local', rootDocId: 'root', rootLocationUri: '/mail/source.zip',
+            rootSha256: 'b'.repeat(64), entries: [{ kind: 'zip', index: 4, occurrence: 1,
+                name: 'mail/<receipt>.txt', sha256: 'c'.repeat(64), size: 20 }] };
+        const value = buildSearchReport({ recipe: normalizeSearchRecipe({ query: 'source' }),
+            groups: groupResults([hit(id, { owner_id: 'local', location_uri: `crisp+member://v1/${'d'.repeat(64)}/${id}`,
+                source_hash: 'c'.repeat(64), metadata_json: JSON.stringify({ container_member: member }) })]),
+            executedQuery: 'source', searchedAt: '', exportedAt: '', elapsedMs: 1,
+            sort: 'relevance', displayTags: [], scope: 'selected', returnedDocuments: 1, returnedPassages: 1 });
+        expect(value.documents[0].containerMember).toEqual(member);
+        expect(value.documents[0].sourceBreadcrumb).toBe('/mail/source.zip › mail/<receipt>.txt (occurrence 2)');
+        expect(searchReportCsv(value)).toContain('container_member_json');
+        expect(searchReportCsv(value)).toContain('/mail/source.zip');
+        expect(searchReportHtml(value)).toContain('mail/&lt;receipt&gt;.txt (occurrence 2)');
+        expect(searchReportHtml(value)).toContain('Container SHA-256');
+        expect(searchReportHtml(value)).not.toContain('<receipt>');
+    });
 });

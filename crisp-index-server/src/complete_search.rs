@@ -154,7 +154,7 @@ impl SearchIndex {
             .unwrap_or_else(||"chunk_index >= 0".into());
         let mut options = QueryExecutionOptions::default(); options.max_batch_length = 128;
         let mut rows = table.query().only_if(filter).select(Select::columns(&[
-            "owner_id","doc_id","chunk_index","title","filename","author","location_uri","url","source_hash","indexed_at","ext","language","year","tags",
+            "owner_id","doc_id","chunk_index","title","filename","author","location_uri","url","source_hash","indexed_at","ext","language","year","tags","container_member",
         ])).execute_with_options(options).await?;
         let cancel = cancellation.clone();
         let mut accumulator = tokio::task::spawn_blocking(move || Accumulator::new(cancel)).await??;
@@ -251,7 +251,10 @@ impl Accumulator {
         let database=Connection::open(&file)?;
         database.execute_batch("PRAGMA page_size=4096; PRAGMA max_page_count=131072; PRAGMA cache_size=-2048; PRAGMA temp_store=FILE;
             CREATE TABLE documents(owner TEXT NOT NULL,doc_id TEXT NOT NULL,representative TEXT NOT NULL,metadata TEXT NOT NULL,
-                sort_title TEXT NOT NULL,sort_filename TEXT NOT NULL,sort_year INTEGER,sort_location TEXT NOT NULL,PRIMARY KEY(owner,doc_id)) WITHOUT ROWID;
+                sort_title TEXT NOT NULL,sort_filename TEXT NOT NULL,sort_year INTEGER,sort_location TEXT NOT NULL,member_receipt TEXT NOT NULL,PRIMARY KEY(owner,doc_id)) WITHOUT ROWID;
+            CREATE TRIGGER consistent_member_receipt BEFORE INSERT ON documents
+                WHEN EXISTS(SELECT 1 FROM documents WHERE owner=NEW.owner AND doc_id=NEW.doc_id AND member_receipt!=NEW.member_receipt)
+                BEGIN SELECT RAISE(ABORT,'Stored member chunks have inconsistent provenance; refresh the root source'); END;
             CREATE TABLE facets(kind TEXT NOT NULL,value TEXT NOT NULL,owner TEXT NOT NULL,doc_id TEXT NOT NULL,PRIMARY KEY(kind,value,owner,doc_id)) WITHOUT ROWID;")?;
         let check=cancellation.clone(); database.progress_handler(1000,Some(move ||check.cancelled.load(Ordering::Acquire)))?;
         Ok(Self {file,database,cancellation,scanned:0})
@@ -266,7 +269,7 @@ impl Accumulator {
         self.cancellation.check()?;
         let transaction=self.database.transaction()?;
         {
-            let mut doc=transaction.prepare_cached("INSERT INTO documents VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
+            let mut doc=transaction.prepare_cached("INSERT INTO documents VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
                 ON CONFLICT(owner,doc_id) DO UPDATE SET representative=excluded.representative,metadata=excluded.metadata,sort_title=excluded.sort_title,
                 sort_filename=excluded.sort_filename,sort_year=excluded.sort_year,sort_location=excluded.sort_location WHERE excluded.representative<documents.representative")?;
             let mut facet=transaction.prepare_cached("INSERT OR IGNORE INTO facets VALUES(?1,?2,?3,?4)")?;
@@ -274,10 +277,11 @@ impl Accumulator {
             for row in rows {
                 self.cancellation.check()?;
                 if !allowed.contains(&DocumentKey {owner_id:row.owner_id.clone(),doc_id:row.doc_id.clone()}) {continue;}
+                row.validate_container_provenance().map_err(anyhow::Error::msg)?;
                 let metadata=serde_json::to_string(&row)?;
                 ensure!(metadata.len()<=128*1024,"One complete result record exceeds 128 KiB; reduce oversized source metadata");
                 let representative=format!("{:010}:{metadata}",row.representative_chunk_index);
-                if doc.execute(params![row.owner_id,row.doc_id,representative,metadata,row.title.as_deref().or(row.filename.as_deref()).unwrap_or_default(),row.filename.as_deref().unwrap_or_default(),row.year,row.location_uri])?>0 {
+                if doc.execute(params![row.owner_id,row.doc_id,representative,metadata,row.title.as_deref().or(row.filename.as_deref()).unwrap_or_default(),row.filename.as_deref().unwrap_or_default(),row.year,row.location_uri,serde_json::to_string(&row.container_member)?])?>0 {
                     clear.execute(params![row.owner_id,row.doc_id])?;
                     for (kind,value) in [("extension",row.extension.clone()),("language",row.language.clone()),("year",row.year.map(|year|year.to_string()))] {
                         if let Some(value)=value {if !value.is_empty(){facet.execute(params![kind,value,row.owner_id,row.doc_id])?;}}
@@ -365,5 +369,6 @@ fn document_from_row(batch:&RecordBatch,row:usize)->Result<CompleteDocument> {
         representative_chunk_index:number("chunk_index").context("Missing stored chunk index")?,title:string("title"),filename:string("filename"),author:string("author"),
         location_uri:string("location_uri").context("Missing source URI")?,url:string("url"),source_hash:string("source_hash").unwrap_or_default(),
         indexed_at:batch.column_by_name("indexed_at").and_then(|c|c.as_any().downcast_ref::<TimestampMillisecondArray>()).filter(|c|!c.is_null(row)).map(|c|c.value(row)).unwrap_or(0),
-        extension:string("ext").filter(|v|!v.is_empty()),language:string("language").filter(|v|!v.is_empty()),year:number("year"),tags})
+        extension:string("ext").filter(|v|!v.is_empty()),language:string("language").filter(|v|!v.is_empty()),year:number("year"),tags,
+        container_member:string("container_member").as_deref().map(serde_json::from_str).transpose()?})
 }

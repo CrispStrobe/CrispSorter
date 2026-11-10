@@ -747,6 +747,8 @@ async fn bg_ingest_start(
         .map(|p| bg_ingest::PendingIngest {
             path: std::path::PathBuf::from(p),
             owner_id: owner_id.clone(),
+            location_uri: None,
+            expected_doc_id: None,
             title: None,
             author: None,
             year: None,
@@ -1919,19 +1921,9 @@ struct ArchiveExtractOptions {
     ocr_pipeline: Option<extractors::OcrPipelineConfig>,
 }
 
-#[derive(serde::Serialize)]
-struct ArchiveExtractResult {
-    text: String,
-    headings: Vec<String>,
-    tags: Vec<String>,
-}
-
-/// Path-based ZIP extraction keeps compressed bytes and native document/OCR
-/// processing out of the webview. The archive module enforces shared limits.
-#[tauri::command]
-async fn archive_extract_text(path: String, options: Option<ArchiveExtractOptions>) -> Result<ArchiveExtractResult, String> {
+fn native_extract_options(options: Option<ArchiveExtractOptions>) -> Result<extractors::ExtractOptions, String> {
     let options = options.unwrap_or_default();
-    let opts = extractors::ExtractOptions {
+    Ok(extractors::ExtractOptions {
         try_ocr: options.try_ocr,
         ocr_pdf_min_chars: options.ocr_pdf_min_chars.unwrap_or(32),
         ocr_tier: match options.ocr_tier.as_deref().unwrap_or("auto") {
@@ -1950,25 +1942,40 @@ async fn archive_extract_text(path: String, options: Option<ArchiveExtractOption
         },
         ocr_pipeline: options.ocr_pipeline.unwrap_or_default(),
         ..Default::default()
-    };
+    })
+}
+
+/// Compressed bytes and document/OCR processing remain in the bounded native
+/// container pipeline. The response keeps root content and members separate.
+#[tauri::command]
+async fn archive_extract_text(path: String, options: Option<ArchiveExtractOptions>) -> Result<extractors::native_text::NativeExtractionResult, String> {
+    let opts = native_extract_options(options)?;
     tauri::async_runtime::spawn_blocking(move || {
         let path = std::path::Path::new(&path);
-        if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
-            return Err("Archive extraction supports ZIP files only".to_string());
+        if !path.is_absolute() { return Err("Archive extraction requires a local absolute file-system path".to_string()); }
+        if !path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ["zip","tar","gz","gzip","tgz","7z"].contains(&ext.to_ascii_lowercase().as_str())) {
+            return Err("Archive extraction supports ZIP, TAR, GZIP, and 7z containers".to_string());
         }
-        let doc = extractors::extract_text_from_path_with_opts(path, opts).map_err(|error| format!("{error:#}"))?;
-        Ok(ArchiveExtractResult { text: doc.full_text, headings: doc.headings, tags: doc.tags })
+        let doc = extractors::extract_container_from_path(path, opts).map_err(|error| format!("{error:#}"))?;
+        extractors::native_text::NativeExtractionResult::from_document(doc).map_err(|error| format!("{error:#}"))
     }).await.map_err(|error| format!("Archive extraction worker failed: {error}"))?
 }
 
 /// Read existing email and presentation text through the bounded native
 /// snapshot pipeline. Compressed/binary source bytes stay out of the webview.
 #[tauri::command]
-async fn native_extract_text(path: String) -> Result<ArchiveExtractResult, String> {
+async fn native_extract_text(path: String, options: Option<ArchiveExtractOptions>) -> Result<extractors::native_text::NativeExtractionResult, String> {
+    let opts = native_extract_options(options)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let doc = extractors::native_text::extract(std::path::Path::new(&path))
-            .map_err(|error| format!("{error:#}"))?;
-        Ok(ArchiveExtractResult { text: doc.full_text, headings: doc.headings, tags: doc.tags })
+        let path = std::path::Path::new(&path);
+        if !path.is_absolute() { return Err("Native text extraction requires a local absolute file-system path".to_string()); }
+        let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_ascii_lowercase();
+        let doc = match ext.as_str() {
+            "eml" | "mbox" => extractors::extract_container_from_path(path, opts),
+            "pptx" => extractors::native_text::extract(path),
+            _ => return Err("Native text extraction supports EML, MBOX, and PPTX files only".to_string()),
+        }.map_err(|error| format!("{error:#}"))?;
+        extractors::native_text::NativeExtractionResult::from_document(doc).map_err(|error| format!("{error:#}"))
     }).await.map_err(|error| format!("Native extraction worker failed: {error}"))?
 }
 
@@ -3367,6 +3374,7 @@ pub fn run() {
             index::tauri_commands::index_search,
             index::tauri_commands::index_vocabulary,
             index::evidence::index_read_passage,
+            index::container_open::index_open_container_member,
             index::summary_commands::index_search_summary,
             index::summary_commands::index_search_summary_generation,
             index::summary_commands::index_cancel_search_summary,
@@ -3836,6 +3844,7 @@ pub fn run() {
             index::tauri_commands::index_search,
             index::tauri_commands::index_vocabulary,
             index::evidence::index_read_passage,
+            index::container_open::index_open_container_member,
             index::summary_commands::index_search_summary,
             index::summary_commands::index_search_summary_generation,
             index::summary_commands::index_cancel_search_summary,

@@ -106,6 +106,21 @@ pub struct CompleteDocument {
     pub title: Option<String>, pub filename: Option<String>, pub author: Option<String>,
     pub location_uri: String, pub url: Option<String>, pub source_hash: String, pub indexed_at: i64,
     pub extension: Option<String>, pub language: Option<String>, pub year: Option<i32>, pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub container_member: Option<super::ContainerMemberLocator>,
+}
+impl CompleteDocument {
+    pub fn validate_container_provenance(&self)->Result<(),String> {
+        if let Some(locator)=&self.container_member {
+            locator.validate_identity(&self.owner_id,&self.doc_id,&self.location_uri)?;
+            if !locator.entries.last().is_some_and(|entry|entry.sha256.eq_ignore_ascii_case(&self.source_hash)) {
+                return Err("Complete result fingerprint differs from its member receipt".into());
+            }
+        } else if self.location_uri.starts_with("crisp+member:") {
+            return Err("Complete member result is missing its typed provenance".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +155,7 @@ impl CompletePage {
                 || !seen.insert((&d.owner_id,&d.doc_id))) {
             return Err("The server returned an incomplete, out-of-scope or noncontiguous result page".into());
         }
+        for document in &self.documents { document.validate_container_provenance()?; }
         Ok(())
     }
 }

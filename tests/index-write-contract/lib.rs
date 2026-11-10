@@ -20,6 +20,8 @@ pub mod cli_federated_contract { include!(concat!(env!("OUT_DIR"), "/cli_federat
 #[path = "../../src-tauri/src/index/search_report.rs"] pub mod search_report_production;
 #[path = "../../src-tauri/src/index/report_output.rs"] pub mod report_output_production;
 #[path = "../../src-tauri/src/index/ingest_metadata.rs"] pub mod ingest_metadata_production;
+#[path = "../../src-tauri/src/index/container_ingest.rs"] pub mod container_ingest_production;
+#[path = "../../src-tauri/src/index/container_extract.rs"] pub mod container_extract_production;
 
 pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
@@ -27,7 +29,11 @@ pub use fts_query_production as fts_query;
 pub mod jobs { include!(concat!(env!("OUT_DIR"), "/jobs.rs")); }
 #[path = "../../src-tauri/src/migrations/mod.rs"] pub mod migrations;
 #[path = "../../src-tauri/src/bg_ingest/queue.rs"] pub mod bg_queue_production;
-pub mod extractors { include!(concat!(env!("OUT_DIR"), "/extractor_options.rs")); }
+pub mod extractors {
+    include!(concat!(env!("OUT_DIR"), "/extractor_options.rs"));
+    pub mod container { include!(concat!(env!("OUT_DIR"), "/extracted_member.rs")); }
+}
+pub mod audio {pub mod probe {include!(concat!(env!("OUT_DIR"),"/audio_metadata.rs"));}}
 pub mod bg_ingest { pub use crate::bg_queue_production as queue; include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
 
 pub mod index {
@@ -38,11 +44,16 @@ pub mod index {
     pub use crate::search_summary_production as search_summary;
     pub use crate::search_report_production as search_report;
     pub use crate::report_output_production as report_output;
+    pub use crate::ingest_metadata_production as ingest_metadata;
+    pub use crate::container_ingest_production as container_ingest;
+    pub use crate::container_extract_production as container_extract;
+    pub mod foreground_container {include!(concat!(env!("OUT_DIR"),"/foreground_container.rs"));}
     pub mod local_index {
         include!(concat!(env!("OUT_DIR"), "/local_index.rs"));
         mod occurrence { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/occurrence.rs")); }
         pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
         mod source_move { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/source_move.rs")); }
+        mod container_index { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/container_index.rs")); }
     }
     pub mod ingest { include!(concat!(env!("OUT_DIR"), "/ingest.rs")); }
     pub use fts_index::FtsIndex;
@@ -126,6 +137,6 @@ mod search_export_contract;
 #[cfg(test)]
 mod migration_contract;
 
-pub mod images { pub mod vit_embed {
+pub mod images {pub mod exif {include!(concat!(env!("OUT_DIR"),"/image_metadata.rs"));} pub mod vit_embed {
     pub fn embed_image(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Image models are unavailable") }
 } }

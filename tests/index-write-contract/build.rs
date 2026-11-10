@@ -42,6 +42,7 @@ const TABLE_NAME: &str = "documents";
     fs::write(out.join("local_index.rs"), generated).unwrap();
     println!("cargo:rerun-if-changed={}", root.join("occurrence.rs").display());
     println!("cargo:rerun-if-changed={}", root.join("source_move.rs").display());
+    println!("cargo:rerun-if-changed={}", root.join("container_index.rs").display());
 
     // Compile all production retrieval methods with only model/network calls
     // adapted below. This qualifies owner-scoped joins and fusion end to end.
@@ -192,7 +193,7 @@ const TABLE_NAME: &str = "documents";
     let file = root.join("../extractors/mod.rs");
     println!("cargo:rerun-if-changed={}", file.display());
     let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
-    let config_types = ["OcrPipelineConfig", "OcrStageSpec", "OcrCleanupSpec"];
+    let config_types = ["OcrPipelineConfig", "OcrStageSpec", "OcrCleanupSpec", "ExtractedDocument"];
     let mut generated = String::new();
     for item in parsed.items {
         match item {
@@ -203,6 +204,31 @@ const TABLE_NAME: &str = "documents";
         }
     }
     fs::write(out.join("extractor_options.rs"), generated).unwrap();
+
+    for (source,type_name,output,preamble) in [
+        ("../extractors/container.rs","ExtractedMember","extracted_member.rs","use super::ExtractedDocument; use crisp_index_protocol::ContainerEntry;"),
+        ("../audio/probe.rs","AudioMetadata","audio_metadata.rs",""),
+        ("../images/exif.rs","ExifSummary","image_metadata.rs","use serde::{Serialize,Deserialize};"),
+    ] {
+        let file=root.join(source);println!("cargo:rerun-if-changed={}",file.display());
+        let parsed=syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+        let mut generated=String::from(preamble);let mut found=false;
+        for item in parsed.items {if let syn::Item::Struct(value)=item {if value.ident==type_name {
+            found=true;generated.push_str(&value.into_token_stream().to_string());
+        }}}
+        assert!(found,"Missing native extractor DTO {type_name}");fs::write(out.join(output),generated).unwrap();
+    }
+    let file=root.join("tauri_commands.rs");println!("cargo:rerun-if-changed={}",file.display());
+    let parsed=syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+    let mut generated=String::from("use super::ingest::RawDocument;");
+    for item in parsed.items {match item {
+        syn::Item::Struct(value) if value.ident=="DocumentIngestInput"=>generated.push_str(&value.into_token_stream().to_string()),
+        syn::Item::Fn(mut value) if value.sig.ident=="raw_from_input"=>{
+            value.vis=syn::parse_quote!(pub);generated.push_str(&value.into_token_stream().to_string());
+        }
+        _=>{}
+    }}
+    fs::write(out.join("foreground_container.rs"),generated).unwrap();
 
     let file = root.join("../bg_ingest/mod.rs");
     println!("cargo:rerun-if-changed={}", file.display());

@@ -45,7 +45,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod complete;
 pub use complete::*;
-
+pub mod member;
+pub use member::*;
 pub mod container;
 pub use container::*;
 
@@ -151,6 +152,16 @@ pub struct IngestChunk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_camera_model: Option<String>,
 
+    /// Typed provenance for an independently indexed member document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_member: Option<ContainerMemberLocator>,
+    /// Captured source bytes for the root of one complete member group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_source: Option<ContainerSourceReceipt>,
+    /// Explicit extraction coverage retained with roots and nested containers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_coverage: Option<ContainerCoverage>,
+
 }
 
 /// Response for `POST /v1/ingest`.
@@ -223,6 +234,10 @@ pub struct TaskStatusResponse {
 /// Server response is `IngestResponse` with `chunk_count = chunks.len()`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestBatch {
+    /// Versioned complete root/member publication. Requires the dedicated
+    /// container endpoint; older servers cannot silently accept this payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_group_version: Option<u32>,
     /// Pre-embedded chunks. Every element is validated against the
     /// server's `EMBED_DIMS` exactly the way the singular endpoint
     /// does; one mismatch rejects the whole batch with HTTP 422 to
@@ -289,6 +304,9 @@ pub struct SearchCapabilities {
     /// Supports a separate original query for semantic embedding.
     #[serde(default)]
     pub embedding_query_version: u32,
+    /// Complete container group publication and stored member metadata lookup.
+    #[serde(default)]
+    pub container_members_version: u32,
 
 }
 
@@ -675,6 +693,15 @@ pub struct SearchHit {
     /// Exact stored tags.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Independently indexed container member provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_member: Option<ContainerMemberLocator>,
+    /// Captured root container bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_source: Option<ContainerSourceReceipt>,
+    /// Bounded extraction coverage and omissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_coverage: Option<ContainerCoverage>,
 
 }
 
@@ -817,6 +844,7 @@ mod tests {
             ..Default::default()
         };
         let b = IngestBatch {
+            container_group_version: None,
             chunks: (0..3).map(chunk).collect(),
         };
         let json = serde_json::to_string(&b).unwrap();

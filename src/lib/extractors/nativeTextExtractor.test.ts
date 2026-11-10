@@ -1,29 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { getSetting, getStore } from '../store';
 import { extractText, extractionTags, MULTIMODAL_EXTENSIONS, usesNativePathExtraction } from './index';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('../log', () => ({ logInfo: vi.fn(), logWarn: vi.fn(), logDebug: vi.fn() }));
+vi.mock('../store', () => ({ getSetting: vi.fn(), getStore: vi.fn() }));
 
 const extracted = { text: 'Extracted source text.', headings: ['Source'], tags: ['extraction:native-eml', 'extraction:attachment-name-only'] };
 const input = (extension: string, path = `/documents/source.${extension}`) => ({
     name: `source.${extension}`, path, arrayBuffer: new ArrayBuffer(0),
 });
 
-beforeEach(() => { vi.mocked(invoke).mockReset().mockResolvedValue(extracted); });
+beforeEach(() => {
+    vi.mocked(invoke).mockReset().mockResolvedValue(extracted);
+    vi.mocked(getSetting).mockReset().mockImplementation(async (_key, fallback) => fallback);
+    vi.mocked(getStore).mockReset();
+});
 
 describe('direct native mail and presentation extraction', () => {
     it.each(['eml', 'mbox', 'PPTX'])('accepts %s and dispatches only its host path', async extension => {
         expect(MULTIMODAL_EXTENSIONS).toContain(extension.toLowerCase());
         expect(usesNativePathExtraction(`source.${extension}`)).toBe(true);
         const result = await extractText(input(extension));
-        expect(invoke).toHaveBeenCalledExactlyOnceWith('native_extract_text', { path: `/documents/source.${extension}` });
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('native_extract_text', { path: `/documents/source.${extension}`,
+            ...(extension.toLowerCase() === 'pptx' ? {} : { options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto' } }) });
         expect(result).toEqual({ text: extracted.text, headings: extracted.headings, metadata: { tags: extracted.tags } });
         expect(extractionTags(result)).toContain('extraction:attachment-name-only');
     });
 
     it('does not advertise additional mail, presentation, or archive families', () => {
-        for (const extension of ['ppt', 'msg', 'pst', 'ost', 'odp', '7z', 'rar']) {
+        for (const extension of ['ppt', 'msg', 'pst', 'ost', 'odp', 'rar']) {
             expect(MULTIMODAL_EXTENSIONS).not.toContain(extension);
             expect(usesNativePathExtraction(`source.${extension}`)).toBe(false);
         }
@@ -46,6 +53,13 @@ describe('direct native mail and presentation extraction', () => {
     it('does not send an unsupported OCR option to text-only readers', async () => {
         await extractText(input('pptx'), { forceOCR: true });
         expect(invoke).toHaveBeenCalledExactlyOnceWith('native_extract_text', { path: '/documents/source.pptx' });
+    });
+
+    it('honors OCR choices for document attachments without changing the source message body', async () => {
+        vi.mocked(getSetting).mockImplementation(async (key, fallback) => key === 'ocrTier' ? 'tier3' : fallback);
+        await extractText(input('eml'), { forceOCR: true });
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('native_extract_text', { path: '/documents/source.eml',
+            options: { tryOcr: true, ocrTier: 'tier3', ocrRecLang: 'auto' } });
     });
 
     it('never starts an already cancelled extraction and discards late native results', async () => {

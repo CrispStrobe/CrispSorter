@@ -34,8 +34,8 @@
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
         Columns2, Eye, RotateCcw, CloudDownload, Images, Tag, AlertTriangle
     } from 'lucide-svelte';
-    import { extractText, extractionTags, usesNativePathExtraction, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
-    import { extractionIndexMetadata } from '$lib/extractors/indexMetadata';
+    import { extractText, usesNativePathExtraction, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractionIngestContent, type ContainerIngestContent } from '$lib/extractors/container';
     import IndexSearch from './IndexSearch.svelte';
     import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
@@ -1591,7 +1591,7 @@
 
         type PendingWrite = {
             rowId: number;
-            input: {
+            input: Omit<ContainerIngestContent, 'title' | 'author' | 'year'> & {
                 fullText: string; fullTextMd: string; headings: string[];
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
@@ -1650,7 +1650,7 @@
                         }, { signal });
                         logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
 
-                        if (!result.text?.trim()) {
+                        if (!result.text?.trim() && !result.members?.length) {
                             const message = 'Kein durchsuchbarer Text erkannt. OCR aktivieren oder die Extraktionseinstellungen prüfen und erneut versuchen.';
                             logWarn(`${filename}: ${message}`);
                             errored.push({ rowId: qf.rowId, error: message });
@@ -1663,18 +1663,18 @@
                             throw new Error('Die Quelldatei wurde während der Extraktion verändert. Die vorherige Indexversion bleibt erhalten; bitte erneut versuchen.');
                         }
                         updateEntry(String(qf.rowId), { status: 'embedding' });
-                        const language   = detectLanguage(result.text);
+                        const extractedContent = extractionIngestContent(result, sourceFingerprint, detectLanguage);
+                        const language = extractedContent.language ?? detectLanguage(extractedContent.fullText);
                         const sourceHash = sourceFingerprint;
 
                         pendingWrites.push({
                             rowId: qf.rowId,
                             input: {
-                                fullText:    result.text,
-                                fullTextMd:  result.markdownText ?? '',
-                                headings:    result.headings ?? [],
-                                title:       result.metadata?.title  ?? null,
-                                author:      result.metadata?.author ?? null,
-                                year:        result.metadata?.year   ? Number(result.metadata.year) : null,
+                                ...extractedContent,
+                                fullTextMd:  extractedContent.fullTextMd ?? '',
+                                title:       extractedContent.title ?? null,
+                                author:      extractedContent.author ?? null,
+                                year:        extractedContent.year ?? null,
                                 filename,
                                 ext,
                                 language,
@@ -1682,8 +1682,6 @@
                                 ownerId:     'local',
                                 sourceHash,
                                 sourceFingerprint,
-                                tags:        extractionTags(result),
-                                ...extractionIndexMetadata(result),
                             },
                         });
 
@@ -2780,7 +2778,7 @@
             if (!(await ensureIndexReady(true))) return;
 
             const BATCH_SIZE = 16;
-            type L3Input = {
+            type L3Input = Omit<ContainerIngestContent, 'title' | 'author' | 'year'> & {
                 fullText: string; fullTextMd: string; headings: string[];
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
@@ -2823,16 +2821,16 @@
                         arrayBuffer: ab,
                         path,
                     });
-                    if (!result.text?.trim()) throw new Error('Kein durchsuchbarer Text erkannt. OCR oder Extraktionseinstellungen prüfen.');
+                    if (!result.text?.trim() && !result.members?.length) throw new Error('Kein durchsuchbarer Text erkannt. OCR oder Extraktionseinstellungen prüfen.');
                     if (await invoke<string>('file_sha256', { path }) !== sourceFingerprint) {
                         throw new Error('Die Quelldatei wurde während der Extraktion verändert. Bitte erneut versuchen.');
                     }
-                    const language = detectLanguage(result.text);
+                    const extractedContent = extractionIngestContent(result, sourceFingerprint, detectLanguage);
+                    const language = extractedContent.language ?? detectLanguage(extractedContent.fullText);
                     const sourceHash = sourceFingerprint;
                     l3Buffer.push({
-                        fullText:    result.text,
-                        fullTextMd:  result.markdownText ?? '',
-                        headings:    result.headings ?? [],
+                        ...extractedContent,
+                        fullTextMd:  extractedContent.fullTextMd ?? '',
                         title:       row.title  ?? null,
                         author:      row.author ?? null,
                         year:        row.year   ?? null,
@@ -2843,8 +2841,6 @@
                         ownerId:     row.owner_id ?? 'local',
                         sourceHash,
                         sourceFingerprint,
-                        tags:        extractionTags(result),
-                        ...extractionIndexMetadata(result),
                     });
                     if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {
@@ -2928,6 +2924,11 @@
             md:   'text/markdown',
             epub: 'application/epub+zip',
             zip:  'application/zip',
+            tar:  'application/x-tar',
+            gz:   'application/gzip',
+            gzip: 'application/gzip',
+            tgz:  'application/gzip',
+            '7z': 'application/x-7z-compressed',
             eml:  'message/rfc822',
             mbox: 'application/mbox',
             pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

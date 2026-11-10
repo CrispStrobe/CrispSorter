@@ -36,9 +36,13 @@ mod http_contract;
 #[cfg(test)]
 mod remote_client_complete_contract;
 #[cfg(test)]
+mod remote_client_member_contract;
+#[cfg(test)]
 mod retrieval_benchmark;
 #[cfg(test)]
 mod complete_contract;
+#[cfg(test)]
+mod container_contract;
 #[cfg(test)]
 mod passage_contract;
 #[path = "../../crisp-index-server/src/queue.rs"]

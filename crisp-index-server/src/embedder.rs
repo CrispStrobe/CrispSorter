@@ -30,7 +30,7 @@ impl ServerEmbedder {
             .chunks
             .iter()
             .enumerate()
-            .filter_map(|(i, chunk)| chunk.embedding.is_empty().then_some(i))
+            .filter_map(|(i, chunk)| (chunk.embedding.is_empty() && !crate::index::metadata_only_container(chunk)).then_some(i))
             .collect();
         if missing.is_empty() {
             return Ok(0);

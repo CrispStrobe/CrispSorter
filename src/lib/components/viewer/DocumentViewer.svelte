@@ -26,10 +26,12 @@
         locationUri = '',
         filename = '',
         initialPage = undefined,
+        readOnly = false,
     }: {
         locationUri: string;
         filename?: string;
         initialPage?: number;
+        readOnly?: boolean;
     } = $props();
 
     let path = $derived(uriToPath(locationUri));
@@ -58,7 +60,7 @@
     {:else if kind === 'csv'}
         <CsvViewer {path} />
     {:else if kind === 'text'}
-        <TextViewer {path} />
+        <TextViewer {path} {readOnly} />
     {:else}
         <FallbackViewer {path} {filename} />
     {/if}

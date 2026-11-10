@@ -155,7 +155,7 @@ impl TaskQueue {
         // Strip embeddings from the JSON payload — they are in the blob.
         let compact_batch = if embed_dims > 0 {
             IngestBatch {
-                chunks: batch
+                container_group_version: batch.container_group_version, chunks: batch
                     .chunks
                     .iter()
                     .map(|c| IngestChunk {
@@ -878,7 +878,7 @@ mod tests {
     }
 
     fn sample_batch() -> IngestBatch {
-        IngestBatch { chunks: Vec::new() }
+        IngestBatch { container_group_version: None, chunks: Vec::new() }
     }
 
     fn embedded_chunk(index: i32, embedding: Vec<f32>) -> IngestChunk {
@@ -899,7 +899,7 @@ mod tests {
             let tmp = TestDir::new();
             let queue = TaskQueue::open_or_create(tmp.path(), QueueConfig::default()).unwrap();
             let batch = IngestBatch {
-                chunks: vectors
+                container_group_version: None, chunks: vectors
                     .iter()
                     .enumerate()
                     .map(|(index, embedding)| embedded_chunk(index as i32, embedding.clone()))
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn corrupt_embedding_blob_is_rejected_instead_of_truncated() {
         let mut batch = IngestBatch {
-            chunks: vec![embedded_chunk(0, vec![]), embedded_chunk(1, vec![])],
+            container_group_version: None, chunks: vec![embedded_chunk(0, vec![]), embedded_chunk(1, vec![])],
         };
         assert!(unpack_embeddings(&mut batch, &[0; 12], 2).is_err());
         assert!(unpack_embeddings(&mut batch, &[], 0).is_err());

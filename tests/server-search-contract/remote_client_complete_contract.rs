@@ -8,6 +8,7 @@ use crate::desktop::{IndexBackend, remote_client::{RemoteClient, complete_search
 const GENERATION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn capabilities() -> SearchCapabilities {
     SearchCapabilities { api_version:1, metadata_filter_version:1, metadata_filter_max_version:METADATA_FILTER_VERSION, stored_passage_version:STORED_PASSAGE_VERSION,
+        container_members_version:CONTAINER_MEMBERS_VERSION,
         query_language_version:QUERY_LANGUAGE_VERSION, fts_schema_version:2, active_fts_schema_version:FTS_SCHEMA_VERSION, fts_ready:true,
         strict_hybrid_constraints:true, searchable_fields:vec!["body".into(),"translated".into()], chunk_boundary_policy:"verified offsets".into(),
         complete_search_version:COMPLETE_SEARCH_VERSION, metadata_schema_version:METADATA_SCHEMA_VERSION, embedding_query_version:1,
@@ -33,7 +34,7 @@ fn document(index: usize) -> CompleteDocument {
     CompleteDocument {doc_id:format!("doc-{index:04}"),owner_id:"reader".into(),representative_chunk_index:2,
         title:Some(format!("Title {index:04}")),filename:Some(format!("file-{index:04}.pdf")),author:Some("Author".into()),
         location_uri:format!("test://source/{index}"),url:Some("https://example.test/source".into()),source_hash:"source-hash".into(),
-        indexed_at:1000,extension:Some("pdf".into()),language:Some("en".into()),year:Some(2026),tags:vec!["reviewed".into()]}
+        indexed_at:1000,extension:Some("pdf".into()),language:Some("en".into()),year:Some(2026),tags:vec!["reviewed".into()],container_member:None}
 }
 async fn serve(router: Router) -> (String,tokio::task::JoinHandle<()>) {
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let address=listener.local_addr().unwrap();

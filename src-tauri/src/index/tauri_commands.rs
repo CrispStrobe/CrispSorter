@@ -532,6 +532,38 @@ pub struct DocumentIngestInput {
     pub tags: Vec<String>,
     #[serde(default, flatten)]
     pub metadata: super::ingest_metadata::IngestMetadata,
+    #[serde(default)]
+    pub own_text: Option<String>,
+    #[serde(default)]
+    pub container_source: Option<crisp_index_protocol::ContainerSourceReceipt>,
+    #[serde(default)]
+    pub container_coverage: Option<crisp_index_protocol::ContainerCoverage>,
+    #[serde(default)]
+    pub members: Vec<super::container_ingest::MemberInput>,
+}
+
+fn raw_from_input(input: DocumentIngestInput) -> Result<RawDocument,String> {
+    let container = match (input.container_source,input.container_coverage) {
+        (Some(source),Some(coverage)) => {
+            if input.own_text.is_none() { return Err("Container indexing requires the root's own text separately from its aggregate preview".into()); }
+            Some(super::container_ingest::ContainerDocument::Root {
+                source,coverage,members:input.members.into_iter().map(super::container_ingest::MemberInput::into_raw)
+                    .collect::<anyhow::Result<Vec<_>>>().map_err(|error|error.to_string())?,
+            })
+        }
+        (None,None) if input.members.is_empty() => None,
+        _ => return Err("Container members require both a source fingerprint receipt and extraction coverage".into()),
+    };
+    Ok(RawDocument {
+        full_text:input.own_text.unwrap_or(input.full_text),full_text_md:input.full_text_md,headings:input.headings,
+        title:input.title,author:input.author,year:input.year,filename:input.filename,ext:input.ext,language:input.language,
+        source_hash:input.source_hash,location_uri:input.location_uri,owner_id:input.owner_id,tags:input.tags,
+        volume_id:input.metadata.volume_id,parent_dir:input.metadata.parent_dir,
+        translated_text:input.metadata.text_translated,translated_to_lang:input.metadata.text_translated_lang,
+        audio_duration_seconds:input.metadata.audio_duration_seconds,image_camera_make:input.metadata.image_camera_make,
+        image_camera_model:input.metadata.image_camera_model,url:input.metadata.url,container,
+        ..Default::default()
+    })
 }
 
 fn source_receipt(input: &DocumentIngestInput) -> Result<Option<(std::path::PathBuf, String)>, String> {
@@ -647,7 +679,8 @@ pub async fn index_ingest_path(
     // Stat once for mtime (P7.4.3 skip-check) and file size (P9 UX: Übersicht size column).
     let p_meta = std::fs::metadata(&p).ok();
     let raw = RawDocument {
-        full_text: extracted.full_text,
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: String::new(),
         headings: extracted.headings,
         title,
@@ -744,7 +777,7 @@ pub async fn index_ingest_batch(
     if inputs.is_empty() {
         return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0, doc_ids: Vec::new() });
     }
-    if inputs.iter().any(|input| input.full_text.trim().is_empty()) {
+    if inputs.iter().any(|input| input.own_text.as_deref().unwrap_or(&input.full_text).trim().is_empty() && input.container_source.is_none()) {
         return Err("No searchable text was extracted. Retry extraction or use metadata indexing.".into());
     }
     let sources: Vec<_> = inputs.iter().map(source_receipt)
@@ -788,6 +821,8 @@ pub async fn index_ingest_batch(
     }
     let progress_filename = if inputs.len() == 1 { inputs[0].filename.clone() }
         else { format!("(batch of {})", inputs.len()) };
+    let total = inputs.len();
+    let mut raws = inputs.into_iter().map(raw_from_input).collect::<Result<Vec<_>,_>>()?;
 
     let lock = state.index.lock().await;
 
@@ -800,7 +835,6 @@ pub async fn index_ingest_batch(
 
     if let Some(pipeline) = pipeline {
         use tauri::Emitter;
-        let total = inputs.len();
 
         macro_rules! emit_batch {
             ($step:expr, $msg:expr) => {
@@ -818,51 +852,6 @@ pub async fn index_ingest_batch(
         }
 
         emit_batch!("embedding", "Embedding & writing batch …");
-
-        let raws: Vec<RawDocument> = inputs
-            .into_iter()
-            .map(|input| RawDocument {
-                full_text: input.full_text,
-                full_text_md: input.full_text_md,
-                headings: input.headings,
-                title: input.title,
-                author: input.author,
-                year: input.year,
-                filename: input.filename,
-                ext: input.ext,
-                language: input.language,
-                source_hash: input.source_hash,
-                location_uri: input.location_uri,
-                owner_id: input.owner_id,
-                tags: input.tags,
-                // Same rationale as index_ingest_document: frontend ingest
-                // is path-less / mtime-less; bg_ingest skip-on-mtime
-                // treats None as "re-ingest" which is the safe default.
-                mtime_unix: None,
-                images_indexed: false,
-                file_size: None,
-                volume_id: input.metadata.volume_id,
-                parent_dir: input.metadata.parent_dir,
-                // Preserve a supplied extractor translation and its language.
-                translated_text: input.metadata.text_translated,
-                translated_to_lang: input.metadata.text_translated_lang,
-                audio_duration_seconds: input.metadata.audio_duration_seconds,
-                audio_codec: None,
-                audio_sample_rate_hz: None,
-                audio_channels: None,
-                audio_bitrate_kbps: None,
-                image_camera_make: input.metadata.image_camera_make,
-                image_camera_model: input.metadata.image_camera_model,
-                image_lens_model: None,
-                image_taken_at_unix: None,
-                image_iso: None,
-                multivec_packed: None,
-                multivec_n_tokens: None,
-                url: input.metadata.url,
-                embedding_omni: None,
-                embedding_vit: None,
-            })
-            .collect();
 
         let result = pipeline
             .ingest_documents_batch_verified(raws, sources)
@@ -887,7 +876,6 @@ pub async fn index_ingest_batch(
     drop(lock);
 
     use tauri::Emitter;
-    let total = inputs.len();
     macro_rules! emit_batch_remote {
         ($step:expr, $msg:expr) => {
             let _ = app.emit(
@@ -915,54 +903,21 @@ pub async fn index_ingest_batch(
     let embed_start = std::time::Instant::now();
     let mut chunks: Vec<RemoteIngestChunk> = Vec::new();
 
-    for input in inputs {
-        let raw = RawDocument {
-            full_text: input.full_text,
-            full_text_md: input.full_text_md,
-            headings: input.headings,
-            title: input.title,
-            author: input.author,
-            year: input.year,
-            filename: input.filename,
-            ext: input.ext,
-            language: input.language,
-            source_hash: input.source_hash,
-            location_uri: input.location_uri,
-            owner_id: input.owner_id,
-            tags: input.tags,
-            mtime_unix: None,
-            images_indexed: false,
-            file_size: None,
-            volume_id: input.metadata.volume_id,
-            parent_dir: input.metadata.parent_dir,
-            // Preserve supplied translation and native source metadata.
-            translated_text: input.metadata.text_translated,
-            translated_to_lang: input.metadata.text_translated_lang,
-            audio_duration_seconds: input.metadata.audio_duration_seconds,
-            audio_codec: None,
-            audio_sample_rate_hz: None,
-            audio_channels: None,
-            audio_bitrate_kbps: None,
-            image_camera_make: input.metadata.image_camera_make,
-            image_camera_model: input.metadata.image_camera_model,
-            image_lens_model: None,
-            image_taken_at_unix: None,
-            image_iso: None,
-            multivec_packed: None,
-            multivec_n_tokens: None,
-            url: input.metadata.url,
-            embedding_omni: None,
-            embedding_vit: None,
-        };
+    let grouped_container_upload=raws.iter().any(|raw|raw.container.is_some());
+    super::container_ingest::expand_roots(&mut raws).map_err(|error|error.to_string())?;
+    for raw in raws {
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
-        let text_chunks = super::embedder::chunk_text(
+        let mut text_chunks = super::embedder::chunk_text(
             &raw.full_text,
             cfg.chunk_max_words,
             cfg.chunk_stride,
             &[],
         );
-        let dense = if let Some(ref embedder) = embedder {
+        if text_chunks.is_empty() && raw.container.is_some() {
+            text_chunks.push(super::embedder::TextChunk { text:String::new(),start_char:0,end_char:0,chunk_index:0 });
+        }
+        let dense = if let Some(ref embedder) = embedder.as_ref().filter(|_|!raw.full_text.trim().is_empty()) {
             let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
             Some({
                 use super::embedder::EmbedRole;
@@ -973,10 +928,15 @@ pub async fn index_ingest_batch(
         } else {
             None
         };
+        let (container_member,container_source,container_coverage)=match &raw.container {
+            Some(super::container_ingest::ContainerDocument::Root {source,coverage,..})=>(None,Some(source.clone()),Some(coverage.clone())),
+            Some(super::container_ingest::ContainerDocument::Member {locator,coverage})=>(Some(locator.clone()),None,coverage.clone()),
+            None=>(None,None,None),
+        };
         for (i, tc) in text_chunks.iter().enumerate() {
             chunks.push(RemoteIngestChunk {
                 doc_id: doc_id.clone(),
-                source_identity_version: Some(1),
+                source_identity_version: container_member.is_none().then_some(1),
                 chunk_index: tc.chunk_index,
                 chunk_total: Some(i32::try_from(text_chunks.len()).map_err(|_| "Too many document chunks")?),
                 chunk_start_char: Some(i32::try_from(tc.start_char).map_err(|_| "Document offset exceeds supported range")?),
@@ -1015,6 +975,7 @@ pub async fn index_ingest_batch(
                 image_camera_make: raw.image_camera_make.clone(),
                 image_camera_model: raw.image_camera_model.clone(),
                 doc_status: None,
+                container_member:container_member.clone(),container_source:container_source.clone(),container_coverage:container_coverage.clone(),
             });
         }
     }
@@ -1029,7 +990,7 @@ pub async fn index_ingest_batch(
         &proxy,
     )
     .map_err(|e| e.to_string())?;
-    let batch = RemoteIngestBatch { chunks };
+    let batch = RemoteIngestBatch { chunks,container_group_version:grouped_container_upload.then_some(crisp_index_protocol::CONTAINER_MEMBERS_VERSION) };
     verify_remote_sources(sources).await?;
     let accepted = remote.ingest_batch(&batch).await.map_err(|e| e.to_string())?;
     {
@@ -1722,7 +1683,8 @@ pub async fn index_audio_promote_l3(
     let p_meta = std::fs::metadata(&path).ok();
 
     let raw = RawDocument {
-        full_text: extracted.full_text.clone(),
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: extracted.full_text.clone(),
         headings: extracted.headings.clone(),
         title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -1858,7 +1820,8 @@ pub async fn index_image_promote_l3(
     let p_meta = std::fs::metadata(&path).ok();
 
     let raw = RawDocument {
-        full_text: extracted.full_text.clone(),
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: extracted.full_text.clone(),
         headings: extracted.headings.clone(),
         title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -3255,6 +3218,7 @@ pub async fn index_l1_only_scan(
         };
 
         let raw = crate::index::ingest::RawDocument {
+                container: None,
             full_text: String::new(),
             full_text_md: String::new(),
             headings: Vec::new(),
@@ -3486,7 +3450,8 @@ async fn promote_path(
 
     let bg_meta = restored_path.metadata().ok();
     let raw = crate::index::ingest::RawDocument {
-        full_text: extracted.full_text,
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: String::new(),
         headings: extracted.headings,
         title: original.as_ref().and_then(|row| row.title.clone()),
@@ -4804,6 +4769,7 @@ pub async fn ocr_workbench_reingest(
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let raw = RawDocument {
+                container: None,
         full_text: text.clone(),
         full_text_md: text,
         headings: Vec::new(),
@@ -5343,6 +5309,7 @@ mod source_receipt_boundary_tests {
             source_hash: "legacy-text-derived-id".into(),
             source_fingerprint: fingerprint.map(str::to_owned), tags: Vec::new(),
             metadata: Default::default(),
+            own_text: None, container_source: None, container_coverage: None, members: Vec::new(),
         }
     }
 

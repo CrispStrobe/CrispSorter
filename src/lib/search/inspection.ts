@@ -1,4 +1,5 @@
 import { normalizeSearchRecipe, type SearchRecipe } from './recipe';
+import { containerBreadcrumb, resultContainerMember } from '../containers';
 
 export interface InspectableHit {
     doc_id: string;
@@ -19,6 +20,8 @@ export interface InspectableHit {
     catalog_source?: string;
     url?: string;
     tags?: string[];
+    metadata_json?: string;
+    container_member?: unknown;
 }
 export interface ResultGroup<T extends InspectableHit = InspectableHit> { key: string; doc_id: string; owner_id: string; best: T; chunks: T[] }
 export type ResultSort = 'relevance' | 'title' | 'filename' | 'year-desc' | 'year-asc' | 'location';
@@ -162,7 +165,9 @@ export function buildSearchReport(input: SearchReportInput) {
             completeMatchSet: false,
             note: 'This report contains the returned search window. It does not establish a complete corpus match count. Sorting and display tags apply within that window.',
         },
-        documents: input.groups.map(group => ({
+        documents: input.groups.map(group => {
+            const member = resultContainerMember(group.best);
+            return {
             docId: group.doc_id, ownerId: group.owner_id, documentKey: group.key,
             title: group.best.title || '', filename: group.best.filename || '',
             author: group.best.author || '', year: group.best.year ?? null,
@@ -170,8 +175,9 @@ export function buildSearchReport(input: SearchReportInput) {
             sourceHash: group.best.source_hash || '', indexedAt: group.best.indexed_at ?? null,
             language: group.best.language || '', fileType: group.best.ext || '',
             catalogSource: group.best.catalog_source || '', tags: [...(group.best.tags || [])],
+            ...(member ? { containerMember: member, sourceBreadcrumb: containerBreadcrumb(member) } : {}),
             passages: group.chunks.map(hit => ({ chunkIndex: hit.chunk_index, score: finiteScore(hit.score), excerpt: plainSnippet(hit.snippet, hit.snippet_format === 'marked') })),
-        })),
+        }; }),
     };
 }
 export type SearchReport = ReturnType<typeof buildSearchReport>;
@@ -183,12 +189,13 @@ function csvCell(value: unknown): string {
     return '"' + text.replace(/"/g, '""') + '"';
 }
 export function searchReportCsv(report: SearchReport): string {
-    const headers = ['query', 'executed_query', 'mode', 'filters_json', 'searched_at', 'doc_id', 'owner_id', 'document_key', 'title', 'filename', 'author', 'year', 'location', 'source_url', 'source_hash', 'indexed_at', 'chunk_index', 'score', 'excerpt', 'coverage'];
+    const headers = ['query', 'executed_query', 'mode', 'filters_json', 'searched_at', 'doc_id', 'owner_id', 'document_key', 'title', 'filename', 'author', 'year', 'location', 'source_url', 'source_hash', 'indexed_at', 'chunk_index', 'score', 'excerpt', 'coverage', 'container_root_uri', 'container_path', 'container_member_json'];
     const rows: unknown[][] = [headers];
     for (const doc of report.documents) for (const passage of doc.passages) rows.push([
         report.recipe.query, report.executedQuery, report.recipe.mode, JSON.stringify(report.recipe.filters), report.searchedAt,
         doc.docId, doc.ownerId, doc.documentKey, doc.title, doc.filename, doc.author, doc.year, doc.location, doc.sourceUrl, doc.sourceHash,
         doc.indexedAt, passage.chunkIndex, passage.score, passage.excerpt, report.coverage.note,
+        doc.containerMember?.rootLocationUri || '', doc.sourceBreadcrumb || '', doc.containerMember ? JSON.stringify(doc.containerMember) : '',
     ]);
     return '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
@@ -202,6 +209,7 @@ export function searchReportHtml(report: SearchReport): string {
         + escapeHtml(JSON.stringify({ recipe: report.recipe, executedQuery: report.executedQuery, sort: report.sort, displayTags: report.displayTags, scope: report.scope }, null, 2)) + '</pre></details>'
         + report.documents.map(doc => '<article><h2>' + escapeHtml(doc.title || doc.filename || doc.docId) + '</h2><p><code>'
             + escapeHtml(doc.location) + '</code></p><p>' + escapeHtml([doc.author, doc.year, doc.language].filter(Boolean).join(' · '))
+            + (doc.containerMember ? '</p><p>Container source: <code>' + escapeHtml(doc.sourceBreadcrumb || '') + '</code></p><p>Container SHA-256: <code>' + escapeHtml(doc.containerMember.rootSha256) + '</code>' : '')
             + '</p><p>Document: <code>' + escapeHtml(doc.docId) + '</code> · Owner: <code>' + escapeHtml(doc.ownerId || 'Unspecified') + '</code> · Source hash: <code>' + escapeHtml(doc.sourceHash || 'Unavailable') + '</code></p>'
             + doc.passages.map(p => '<p>Chunk ' + p.chunkIndex + ' · Score ' + p.score + '</p><pre>' + escapeHtml(p.excerpt) + '</pre>').join('') + '</article>').join('') + '</html>';
 }

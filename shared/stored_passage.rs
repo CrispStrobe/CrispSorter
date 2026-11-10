@@ -70,11 +70,16 @@ pub async fn read_passage(table: &lancedb::Table, doc_id: &str, owner_id: Option
     }
     let (_, row_id) = latest.ok_or(PassageReadError::Unavailable)?;
     request.owner_id = identity.context("Missing stored owner identity")?.0;
+    let schema = table.schema().await?;
+    let mut selected_columns = vec!["full_text", "chunk_start_char", "chunk_end_char", "source_hash", "indexed_at"];
+    for optional in ["metadata_json","container_member","container_source","container_coverage"] {
+        if schema.field_with_name(optional).is_ok() { selected_columns.push(optional); }
+    }
     // Select the same canonical row used by navigation, including deterministic
     // ordering when append-only legacy writes share a timestamp.
     let mut selected = table.query()
         .only_if(format!("({scope}) AND chunk_index = {chunk_index} AND _rowid = {row_id}"))
-        .select(Select::columns(&["full_text", "chunk_start_char", "chunk_end_char", "source_hash", "indexed_at"]))
+        .select(Select::columns(&selected_columns))
         .with_row_id().limit(1).execute().await.context("Reading the stored passage")?;
     while let Some(batch) = selected.try_next().await? {
         if batch.num_rows() == 0 { continue; }
@@ -91,6 +96,11 @@ pub async fn read_passage(table: &lancedb::Table, doc_id: &str, owner_id: Option
         let indexed_at = batch.column_by_name("indexed_at")
             .and_then(|column| column.as_any().downcast_ref::<TimestampMillisecondArray>())
             .filter(|column| !column.is_null(0)).map(|column| column.value(0));
+        let metadata: serde_json::Value = string("metadata_json").map(serde_json::from_str).transpose()?.unwrap_or(serde_json::Value::Null);
+        let container_value = |name:&str| -> Result<Option<serde_json::Value>> {
+            if let Some(encoded)=string(name) { Ok(Some(serde_json::from_str(encoded)?)) }
+            else { Ok(metadata.get(name).filter(|value|!value.is_null()).cloned()) }
+        };
         let result = StoredPassage {
             passage_version: STORED_PASSAGE_VERSION, doc_id: doc_id.to_owned(), owner_id: request.owner_id.clone(),
             text: text[..end].to_owned(), start_char: offset("chunk_start_char"), end_char: offset("chunk_end_char"),
@@ -99,6 +109,9 @@ pub async fn read_passage(table: &lancedb::Table, doc_id: &str, owner_id: Option
             previous_chunk_index: indices.range(..chunk_index).next_back().copied(),
             next_chunk_index: indices.range((std::ops::Bound::Excluded(chunk_index), std::ops::Bound::Unbounded)).next().copied(),
             source_hash: string("source_hash").filter(|hash| !hash.is_empty()).map(str::to_owned), indexed_at,
+            container_member: container_value("container_member")?.map(serde_json::from_value).transpose()?,
+            container_source: container_value("container_source")?.map(serde_json::from_value).transpose()?,
+            container_coverage: container_value("container_coverage")?.map(serde_json::from_value).transpose()?,
         };
         result.validate_for(&request).map_err(|error| anyhow!(error))?;
         return Ok(result);

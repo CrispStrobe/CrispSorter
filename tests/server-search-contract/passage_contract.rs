@@ -37,7 +37,7 @@ async fn authenticated_passage_route_reads_exact_owner_and_real_stored_navigatio
     let id = "book' /?identifier";
     let owner = "reader'a";
     let unicode = "東".repeat(MAX_STORED_PASSAGE_BYTES / 3 + 10);
-    index.ingest_batch(&IngestBatch { chunks: vec![
+    index.ingest_batch(&IngestBatch { container_group_version: None, chunks: vec![
         chunk(owner, id, 2, "first passage"), chunk(owner, id, 5, "café middle"), chunk(owner, id, 9, "last passage"),
         chunk("other-owner", id, 5, "other owner's private text"), chunk(owner, "different", 5, "unrelated text"),
         chunk(owner, "unicode", 0, &unicode),
@@ -93,7 +93,7 @@ async fn authenticated_passage_route_reads_exact_owner_and_real_stored_navigatio
     }
     let mut changed = chunk(owner, id, 5, "updated current text");
     changed.source_hash = "new-current-fingerprint".into();
-    index.ingest_batch(&IngestBatch { chunks: vec![changed] }).await.unwrap();
+    index.ingest_batch(&IngestBatch { container_group_version: None, chunks: vec![changed] }).await.unwrap();
     let current = client.read_passage(id, owner, 5).await.unwrap();
     assert_eq!(current.text, "updated current text");
     assert_eq!(current.source_hash.as_deref(), Some("new-current-fingerprint"));
@@ -130,7 +130,7 @@ async fn legacy_and_incompatible_servers_never_receive_passage_requests() {
 }
 
 fn response_fixture() -> StoredPassage {
-    StoredPassage { passage_version: STORED_PASSAGE_VERSION, doc_id: "book".into(), owner_id: "reader".into(),
+    StoredPassage { container_member:None, container_source:None, container_coverage:None, passage_version: STORED_PASSAGE_VERSION, doc_id: "book".into(), owner_id: "reader".into(),
         text: "stored text".into(), start_char: None, end_char: None, offset_unit: "utf8_bytes".into(), truncated: false,
         chunk_index: 2, passage_number: 1, chunk_count: 1, previous_chunk_index: None, next_chunk_index: None,
         source_hash: Some("fingerprint".into()), indexed_at: Some(1234) }

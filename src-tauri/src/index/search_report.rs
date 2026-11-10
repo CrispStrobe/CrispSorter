@@ -112,6 +112,8 @@ pub struct ReportDocument {
     pub language: Option<String>,
     pub year: Option<i32>,
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_member: Option<crisp_index_protocol::ContainerMemberLocator>,
 }
 
 pub struct ReportMetadata {
@@ -150,10 +152,11 @@ impl ReportStream {
             let mut prefix = serde_json::to_vec(&header)?; prefix.pop();
             output.write_all(&prefix)?; output.write_all(b",\"documents\":[")?;
         } else {
-            output.write_all(b"record_type,owner_id,doc_id,title,filename,author,year,extension,language,location_uri,source_url,source_hash,indexed_at,representative_chunk_index,tags_json,query,effective_query,scope,generation,total_documents,sort,filters_json\r\n")?;
+            output.write_all(b"record_type,owner_id,doc_id,title,filename,author,year,extension,language,location_uri,source_url,source_hash,indexed_at,representative_chunk_index,tags_json,query,effective_query,scope,generation,total_documents,sort,filters_json,container_root_uri,container_path,container_member_json\r\n")?;
             let mut values = vec!["report".to_owned()]; values.extend(vec![String::new(); 14]);
             values.extend([metadata.query.clone(), metadata.effective_query.clone(), metadata.scope.into(), metadata.generation.clone(),
                 metadata.matching_documents.to_string(), sort_name.clone(), filters_json.clone()]);
+            values.extend([String::new(),String::new(),String::new()]);
             write_csv_row(output, &values)?;
         }
         Ok(Self { metadata, format, filters_json, sort_name, written: 0 })
@@ -161,6 +164,11 @@ impl ReportStream {
 
     pub fn push(&mut self, output: &mut impl Write, document: &ReportDocument) -> Result<()> {
         ensure!(self.written < self.metadata.matching_documents, "The complete report contains more documents than its snapshot total");
+        if let Some(member) = &document.container_member {
+            member.validate_identity(&document.owner_id,&document.doc_id,&document.location_uri).map_err(anyhow::Error::msg)?;
+            ensure!(member.entries.last().is_some_and(|entry| document.source_hash.as_ref().is_some_and(|hash| entry.sha256.eq_ignore_ascii_case(hash))),
+                "The report member fingerprint differs from its source locator");
+        } else { ensure!(!document.location_uri.starts_with("crisp+member:"), "The report member is missing its typed source locator"); }
         if self.format == ReportFormat::Json {
             if self.written > 0 { output.write_all(b",")?; }
             serde_json::to_writer(output, document)?;
@@ -171,7 +179,10 @@ impl ReportStream {
                 document.language.clone().unwrap_or_default(), document.location_uri.clone(), document.url.clone().unwrap_or_default(),
                 document.source_hash.clone().unwrap_or_default(), document.indexed_at.map(|value| value.to_string()).unwrap_or_default(),
                 document.chunk_index.to_string(), serde_json::to_string(&document.tags)?, self.metadata.query.clone(), self.metadata.effective_query.clone(),
-                self.metadata.scope.into(), self.metadata.generation.clone(), self.metadata.matching_documents.to_string(), self.sort_name.clone(), self.filters_json.clone()];
+                self.metadata.scope.into(), self.metadata.generation.clone(), self.metadata.matching_documents.to_string(), self.sort_name.clone(), self.filters_json.clone(),
+                document.container_member.as_ref().map(|member| member.root_location_uri.clone()).unwrap_or_default(),
+                document.container_member.as_ref().map(member_breadcrumb).unwrap_or_default(),
+                document.container_member.as_ref().map(serde_json::to_string).transpose()?.unwrap_or_default()];
             write_csv_row(output, &values)?;
         }
         self.written += 1;
@@ -186,6 +197,12 @@ impl ReportStream {
     }
 }
 
+fn member_breadcrumb(member: &crisp_index_protocol::ContainerMemberLocator) -> String {
+    std::iter::once(member.root_location_uri.clone()).chain(member.entries.iter().map(|entry| {
+        if entry.occurrence > 0 { format!("{} (occurrence {})",entry.name,entry.occurrence+1) } else { entry.name.clone() }
+    })).collect::<Vec<_>>().join(" › ")
+}
+
 fn write_csv_row(output: &mut impl Write, values: &[String]) -> Result<()> {
     output.write_all(values.iter().map(|value| csv_cell(value)).collect::<Vec<_>>().join(",").as_bytes())?;
     output.write_all(b"\r\n")?;
@@ -195,4 +212,49 @@ fn write_csv_row(output: &mut impl Write, values: &[String]) -> Result<()> {
 pub(crate) fn csv_cell(value: &str) -> String {
     let prefix = if value.trim_start().starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r', '\n']) { "'" } else { "" };
     format!("\"{prefix}{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod member_report_tests {
+    use super::*;
+    use crisp_index_protocol::{ContainerEntry, ContainerEntryKind, ContainerMemberLocator};
+
+    fn document() -> ReportDocument {
+        let locator = ContainerMemberLocator { version:1,root_owner_id:"reader".into(),root_doc_id:"root".into(),
+            root_location_uri:"/mail/source.zip".into(),root_sha256:"a".repeat(64),entries:vec![
+                ContainerEntry {kind:ContainerEntryKind::Zip,index:2,occurrence:1,name:"letters/receipt.txt".into(),sha256:"b".repeat(64),size:20}] };
+        serde_json::from_value(serde_json::json!({"docId":locator.member_id().unwrap(),"ownerId":"reader","representativeChunkIndex":2,
+            "locationUri":locator.member_uri().unwrap(),"sourceHash":"b".repeat(64),"tags":[],"containerMember":locator})).unwrap()
+    }
+    fn metadata() -> ReportMetadata {
+        ReportMetadata {scope:"local_indexed_documents",query:"receipt".into(),effective_query:"receipt".into(),
+            filters:serde_json::json!({}),generation:"snapshot".into(),matching_documents:1,sort:ReportSort::Filename}
+    }
+    #[test]
+    fn complete_reports_keep_readable_member_paths_and_structured_byte_receipts() {
+        let doc=document();
+        for format in [ReportFormat::Json,ReportFormat::Csv] {
+            let mut output=Vec::new();let mut writer=ReportStream::start(&mut output,metadata(),format).unwrap();
+            writer.push(&mut output,&doc).unwrap();writer.finish(&mut output).unwrap();
+            let text=String::from_utf8(output).unwrap();
+            if format==ReportFormat::Json {
+                let value:serde_json::Value=serde_json::from_str(&text).unwrap();
+                assert_eq!(value["documents"][0]["containerMember"]["entries"][0]["occurrence"],1);
+                assert_eq!(value["documents"][0]["containerMember"]["rootSha256"],"a".repeat(64));
+            } else {
+                assert!(text.contains("container_root_uri,container_path,container_member_json"));
+                assert!(text.contains("/mail/source.zip › letters/receipt.txt (occurrence 2)"));
+                assert!(text.contains("rootSha256"));
+            }
+        }
+    }
+    #[test]
+    fn complete_reports_refuse_substituted_or_missing_member_metadata() {
+        for invalid in 0..3 {
+            let mut doc=document();
+            match invalid {0=>doc.owner_id="other".into(),1=>doc.container_member=None,_=>doc.source_hash=Some("c".repeat(64))}
+            let mut output=Vec::new();let mut writer=ReportStream::start(&mut output,metadata(),ReportFormat::Json).unwrap();
+            assert!(writer.push(&mut output,&doc).is_err());
+        }
+    }
 }

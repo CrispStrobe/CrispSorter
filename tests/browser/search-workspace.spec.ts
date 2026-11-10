@@ -12,6 +12,38 @@ async function lastSearch(page: Page) {
     return page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search').at(-1)?.args);
 }
 
+async function containerFixture(page: Page) {
+    await page.evaluate(() => {
+        const root = window as any;
+        root.__memberMode = 'ready'; root.__pendingMembers = [];
+        const member = (digit: string, title: string) => {
+            const id = digit.repeat(64);
+            const locator = { version: 1, rootOwnerId: 'owner-a', rootDocId: 'root-mail', rootLocationUri: '/records/mail.zip',
+                rootSha256: 'a'.repeat(64), entries: [
+                    { kind: 'zip', index: 1, occurrence: 0, name: 'inbox.mbox', sha256: 'b'.repeat(64), size: 200 },
+                    { kind: 'mailbox-message', index: Number(digit), occurrence: 0, name: `${title}.eml`, sha256: digit.repeat(64), size: 80 },
+                ] };
+            return { doc_id: id, owner_id: 'owner-a', chunk_index: 0, score: .9, title, filename: `${title}.eml`, ext: 'eml',
+                location_uri: `crisp+member://v1/${'f'.repeat(64)}/${id}`, source_hash: digit.repeat(64), snippet: 'warranty in a container member',
+                metadata_json: JSON.stringify({ container_member: locator }) };
+        };
+        root.__fixtureResults = [member('1', 'First message'), member('2', 'Second message'), root.__fixtureResults[2]];
+        const original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_open_container_member') {
+                root.__fixtureCalls.push({ command, args });
+                if (root.__memberMode === 'stale') return Promise.reject(new Error('The source container changed. Reindex it before opening this member.'));
+                const hit = root.__fixtureResults.find((hit: any) => hit.doc_id === args.docId && hit.owner_id === args.ownerId);
+                const receipt = { path: `/app/container-cache/member-${args.docId[0]}.txt`, filename: hit.filename,
+                    rootLocationUri: '/records/mail.zip', rootSha256: 'a'.repeat(64), ownerId: args.ownerId, docId: args.docId, sourceHash: hit.source_hash };
+                return root.__memberMode === 'hold-first' && args.docId.startsWith('1')
+                    ? new Promise(resolve => root.__pendingMembers.push(() => resolve(receipt))) : Promise.resolve(receipt);
+            }
+            return original(command, args, options);
+        };
+    });
+}
+
 async function summaryFixture(page: Page, scope = 'local_indexed_documents') {
     await page.evaluate(scope => {
         const root = window as any;
@@ -60,6 +92,48 @@ test.beforeEach(async ({ page }) => {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();
     await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
     await expect(page.getByRole('textbox', { name: 'Search indexed documents' })).toBeVisible();
+});
+
+test('container members expose nested provenance and open only an owner-scoped verified copy', async ({ page }) => {
+    await containerFixture(page); await search(page);
+    const card = page.locator(`.result-card[data-document-id="${'1'.repeat(64)}"]`);
+    await expect(card.locator('.result-path')).toHaveText('/records/mail.zip › inbox.mbox › First message.eml');
+    await card.getByTitle('Open verified member copy', { exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_open_container_member').at(-1)?.args))
+        .toEqual({ ownerId: 'owner-a', docId: '1'.repeat(64) });
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'plugin:opener|open_path').at(-1)?.args.path))
+        .toBe('/app/container-cache/member-1.txt');
+    await card.getByTitle('Copy path', { exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__copiedText)).toBe('/records/mail.zip › inbox.mbox › First message.eml');
+    await card.getByTitle('Copy citation', { exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__copiedText)).toContain(`Container SHA-256: ${'a'.repeat(64)}`);
+});
+
+test('a late member extraction cannot replace another document preview', async ({ page }) => {
+    await containerFixture(page); await search(page);
+    await page.evaluate(() => { (window as any).__memberMode = 'hold-first'; });
+    await page.getByRole('button', { name: 'Preview First message', exact: true }).click();
+    await expect(page.locator('.preview-body').getByRole('status')).toContainText('Verifying the source');
+    await page.getByRole('button', { name: 'Next document', exact: true }).click();
+    await expect(page.locator('.preview-title')).toHaveText('Second message');
+    await expect(page.locator('.preview-body')).toContainText('Verified, read-only copy');
+    await expect(page.locator('.preview-body').getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    await page.evaluate(() => { (window as any).__pendingMembers.splice(0).forEach((resolve: () => void) => resolve()); });
+    await expect(page.locator('.preview-title')).toHaveText('Second message');
+    const paths = await page.evaluate(() => (window as any).__fixtureCalls
+        .filter((call: any) => call.command === 'plugin:fs|read_text_file').map((call: any) => call.args.path));
+    expect(paths).toContain('/app/container-cache/member-2.txt');
+    expect(paths).not.toContain('/app/container-cache/member-1.txt');
+});
+
+test('changed containers show an opening failure while the indexed passage remains inspectable', async ({ page }) => {
+    await containerFixture(page); await search(page);
+    await page.evaluate(() => { (window as any).__memberMode = 'stale'; });
+    await page.getByRole('button', { name: 'Preview First message', exact: true }).click();
+    await expect(page.locator('.preview-body').getByRole('alert')).toContainText('source container changed');
+    await page.getByRole('button', { name: 'Indexed text', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Indexed passage', exact: true })).toContainText('Stored warranty passage');
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.some((call: any) => call.command === 'plugin:opener|open_path'))).toBe(false);
 });
 
 test('bookmarks restore sort, compact layout, report format, display tags and preview preference', async ({ page }) => {

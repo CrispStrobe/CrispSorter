@@ -4200,11 +4200,9 @@ async fn cmd_index_async(
             let mut errs = 0usize;
             let mut empty_docs: Vec<std::path::PathBuf> = Vec::new();
             for p in &files {
-                let bytes = match std::fs::read(p) {
-                    Ok(b) => b, Err(e) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                let source_hash = match crate::index::ingest::hash_local_source(p) {
+                    Ok(hash) => hash, Err(e) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
                 };
-                let mut h = Sha256::new(); h.update(&bytes);
-                let source_hash = hex::encode(h.finalize());
                 let extract_fut = tokio::task::spawn_blocking({
                     let pp = p.clone();
                     move || {
@@ -4242,6 +4240,11 @@ async fn cmd_index_async(
                     Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
                     Err(e)     => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
                 };
+                let container = match crate::index::container_extract::from_extraction(&extracted) {
+                    Ok(container) => container,
+                    Err(error) => { eprintln!("skip {}: {error:#}", p.display()); errs += 1; continue; }
+                };
+                let indexed_text = crate::index::container_extract::indexed_text(&extracted).to_owned();
                 let loc = crate::index::location::FileLocation::Local {
                     user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
                     machine_id: uuid::Uuid::nil(),
@@ -4249,7 +4252,7 @@ async fn cmd_index_async(
                 };
                 let meta = p.metadata().ok();
                 let raw = RawDocument {
-                    full_text: extracted.full_text, full_text_md: String::new(),
+                    full_text: indexed_text, full_text_md: String::new(),
                     headings: extracted.headings, title: None, author: None, year: None,
                     filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     ext: extracted.ext, language: String::new(),
@@ -4280,6 +4283,7 @@ async fn cmd_index_async(
                     url: extracted.source_url,
                     embedding_omni: None,
                     embedding_vit: None,
+                    container,
                 };
                 match pipeline.ingest_verified_document(raw, p.clone()).await {
                     Ok(stats) => {
@@ -4607,6 +4611,10 @@ async fn cmd_index_async(
             let empty_scores = std::collections::HashMap::<String, f32>::new();
             let rows = crate::index::local_index::batches_to_search_results_with_scores(&batches, &empty_scores)
                 .map_err(|e| e.to_string())?;
+            let occurrences = rows.iter().map(|row| (&row.owner_id, &row.location_uri)).collect::<std::collections::HashSet<_>>();
+            if occurrences.len() > 1 {
+                return Err("This legacy document ID identifies multiple source occurrences; select an unambiguous source before promoting it.".into());
+            }
             let row = rows.into_iter().next()
                 .ok_or_else(|| format!("no row found for doc_id {doc_id}"))?;
 
@@ -4616,6 +4624,12 @@ async fn cmd_index_async(
             if !path.exists() {
                 return Err(format!("file not present on disk: {}", path.display()));
             }
+            let source_hash = {
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || crate::index::ingest::hash_local_source(&path))
+                    .await.map_err(|error| format!("Source fingerprint task: {error}"))?
+                    .map_err(|error| format!("Reading source fingerprint: {error}"))?
+            };
 
             // Always-L3 extraction — the L1/L2 gates live in bg_ingest,
             // not in extract_text_from_path, so a direct call re-runs
@@ -4627,6 +4641,18 @@ async fn cmd_index_async(
                     .map_err(|e| format!("extract join: {e}"))?
                     .map_err(|e| format!("extract: {e:#}"))?
             };
+            let container = crate::index::container_extract::from_extraction(&extracted)
+                .map_err(|error| format!("Container extraction: {error:#}"))?;
+            let indexed_text = crate::index::container_extract::indexed_text(&extracted).to_owned();
+            let extracted_hash = {
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || crate::index::ingest::hash_local_source(&path))
+                    .await.map_err(|error| format!("Source verification task: {error}"))?
+                    .map_err(|error| format!("Verifying source fingerprint: {error}"))?
+            };
+            if extracted_hash != source_hash {
+                return Err("The source changed during extraction; retry promotion with the current file.".into());
+            }
 
             // Construct a one-shot pipeline using the persisted
             // IndexConfig (so embedder + model_cache_dir match GUI).
@@ -4659,22 +4685,9 @@ async fn cmd_index_async(
             // index_audio_promote_l3's shape so audio_*/image_* L2
             // columns get repopulated.
             let p_meta = std::fs::metadata(&path).ok();
-            let source_hash = {
-                use sha2::{Digest, Sha256};
-                let p = path.clone();
-                tokio::task::spawn_blocking(move || -> Result<String, String> {
-                    let bytes = std::fs::read(&p)
-                        .map_err(|e| format!("read {}: {e}", p.display()))?;
-                    let mut h = Sha256::new();
-                    h.update(&bytes);
-                    Ok(hex::encode(h.finalize()))
-                })
-                .await
-                .map_err(|e| format!("sha join: {e}"))??
-            };
             let raw = RawDocument {
-                full_text:    extracted.full_text.clone(),
-                full_text_md: extracted.full_text.clone(),
+                full_text:    indexed_text.clone(),
+                full_text_md: indexed_text,
                 headings:     extracted.headings.clone(),
                 title:        path.file_stem().map(|s| s.to_string_lossy().into_owned()),
                 author:       None,
@@ -4710,8 +4723,9 @@ async fn cmd_index_async(
                 url: None,
                 embedding_omni: None,
                 embedding_vit: None,
+                container,
             };
-            let stats = pipeline.reingest_document(raw)
+            let stats = pipeline.ingest_verified_document_for_occurrence(raw, path.clone(), doc_id.clone())
                 .await.map_err(|e| format!("reingest: {e:#}"))?;
             match out {
                 OutFormat::Json => println!(
@@ -4898,6 +4912,7 @@ async fn cmd_index_async(
                     url: None,
                     embedding_omni: None,
                     embedding_vit: None,
+                    container: None,
                 };
 
                 if pipeline.ingest_document(raw.clone()).await.is_ok() {

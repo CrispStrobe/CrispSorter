@@ -30,6 +30,9 @@ use lancedb::{
 };
 
 const MAX_AFFECTED_CHUNKS: usize = 65_536;
+#[path="container_members.rs"]
+mod container_members;
+pub use container_members::validate_container_batch;
 #[path = "complete_search.rs"]
 mod complete_search;
 pub use complete_search::CompleteError;
@@ -118,6 +121,9 @@ pub fn build_lance_schema(dims: usize) -> Arc<Schema> {
         Field::new("image_camera_make", DataType::Utf8, true),
         Field::new("image_camera_model", DataType::Utf8, true),
         Field::new("audio_duration_seconds", DataType::Float64, true),
+        Field::new("container_member", DataType::Utf8, true),
+        Field::new("container_source", DataType::Utf8, true),
+        Field::new("container_coverage", DataType::Utf8, true),
     ]))
 }
 
@@ -141,7 +147,8 @@ async fn migrate_metadata_schema(table: &Table, dims: usize) -> Result<()> {
     let expected = build_lance_schema(dims);
     let existing = table.schema().await?;
     let additional = ["parent_dir", "volume_id", "url", "text_translated", "text_translated_lang",
-        "doc_status", "image_camera_make", "image_camera_model", "audio_duration_seconds"];
+        "doc_status", "image_camera_make", "image_camera_model", "audio_duration_seconds",
+        "container_member", "container_source", "container_coverage"];
     for field in existing.fields() {
         ensure!(expected.field_with_name(field.name()).is_ok_and(|target| target == field.as_ref()),
             "Stored vector schema contains an incompatible field {}; existing data was preserved", field.name());
@@ -788,19 +795,7 @@ impl VectorStore {
         new_uri: &str,
         indexed_at: i64,
     ) -> Result<()> {
-        self.table
-            .update()
-            .only_if(keys_sql(keys))
-            .column("location_uri", format!("'{}'", sql_escape(new_uri)))
-            .column("parent_dir", format!("'{}'",sql_escape(&parent_directory(new_uri))))
-            .column(
-                "indexed_at",
-                format!("timestamp '{}'", iso_from_ms(indexed_at)),
-            )
-            .execute()
-            .await
-            .context("Update scoped document location")?;
-        Ok(())
+        self.update_container_locations(keys,new_uri,indexed_at).await
     }
 
     /// Total row count.
@@ -911,7 +906,7 @@ impl SearchIndex {
         }
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
-        let (chunks, removals) = self.vector.resolve_source_identities(&batch.chunks).await?;
+        let (chunks, removals) = self.vector.resolve_container_group(batch).await?;
         let mut write = self
             .vector
             .prepare_upsert_scoped(&chunks, &removals)
@@ -978,6 +973,7 @@ impl SearchIndex {
         if keys.is_empty() {
             return Ok(());
         }
+        let keys=self.vector.expand_member_deletion_keys(&keys).await?;
         self.fts
             .mark_pending_delete(&keys, self.fts.next_write_timestamp()?)?;
         self.vector.delete_keys(&keys).await?;
@@ -1278,6 +1274,12 @@ fn rrf_merge(
     ranked.into_iter().collect()
 }
 
+fn container_metadata_strings(chunk:&IngestChunk)->Result<[Option<String>;3]> {
+    Ok([chunk.container_member.as_ref().map(serde_json::to_string).transpose()?,
+        chunk.container_source.as_ref().map(serde_json::to_string).transpose()?,
+        chunk.container_coverage.as_ref().map(serde_json::to_string).transpose()?])
+}
+
 fn same_document_metadata(left: &IngestChunk, right: &IngestChunk) -> bool {
     left.title == right.title
         && left.author == right.author
@@ -1294,6 +1296,9 @@ fn same_document_metadata(left: &IngestChunk, right: &IngestChunk) -> bool {
         && left.doc_status == right.doc_status
         && left.image_camera_make == right.image_camera_make
         && left.image_camera_model == right.image_camera_model
+        && left.container_member == right.container_member
+        && left.container_source == right.container_source
+        && left.container_coverage == right.container_coverage
         && left.audio_duration_seconds == right.audio_duration_seconds
 }
 
@@ -1365,6 +1370,16 @@ fn propagate_document_metadata(
             })
             .collect();
         columns[batch.schema().index_of(name)?] = Arc::new(StringArray::from(values));
+    }
+    for (position,name) in ["container_member","container_source","container_coverage"].into_iter().enumerate() {
+        let old=string_column(batch,name)?;
+        let values:Vec<Option<String>>=metadata.iter().enumerate().map(|(row,chunk)| -> Result<_> {
+            match chunk {
+                Some(chunk)=>Ok(container_metadata_strings(chunk)?[position].clone()),
+                None=>Ok((!old.is_null(row)).then(||old.value(row).to_owned())),
+            }
+        }).collect::<Result<_>>()?;
+        columns[batch.schema().index_of(name)?]=Arc::new(StringArray::from(values));
     }
     let year = batch
         .column_by_name("year")
@@ -1473,6 +1488,7 @@ pub fn validate_embedding(embedding: &[f32], dims: usize) -> Result<()> {
 }
 
 pub fn validate_chunk_shape(chunk: &IngestChunk) -> Result<()> {
+    container_members::validate_container_chunk(chunk)?;
     ensure!(chunk.tags.len() <= 1024 && chunk.tags.iter().all(|v|v.len() <= 1024), "Stored tags exceed supported limits");
     ensure!([Some(&chunk.location_uri),Some(&chunk.filename),Some(&chunk.ext),Some(&chunk.language),chunk.title.as_ref(),chunk.author.as_ref(),
         chunk.parent_dir.as_ref(),chunk.volume_id.as_ref(),chunk.url.as_ref(),chunk.text_translated_lang.as_ref(),chunk.doc_status.as_ref(),
@@ -1522,7 +1538,13 @@ pub fn validate_chunk_shape(chunk: &IngestChunk) -> Result<()> {
 
 pub fn validate_chunk(chunk: &IngestChunk, dims: usize) -> Result<()> {
     validate_chunk_shape(chunk)?;
+    if metadata_only_container(chunk) {ensure!(dims>0,"Embedding dimensions must be positive");return Ok(());}
     validate_embedding(&chunk.embedding, dims)
+}
+
+pub fn metadata_only_container(chunk:&IngestChunk)->bool {
+    chunk.embedding.is_empty()&&chunk.full_text.trim().is_empty()
+        &&(chunk.container_source.is_some()||chunk.container_member.is_some())
 }
 
 /// One canonical row per owner/document/chunk, including deterministic ordering
@@ -1690,6 +1712,7 @@ fn chunk_to_record_batch(
     dims: usize,
     schema: &Arc<Schema>,
 ) -> Result<RecordBatch> {
+    let container_metadata=container_metadata_strings(chunk)?;
     use arrow_array::builder::Float32Builder;
 
     let now_ms = std::time::SystemTime::now()
@@ -1700,7 +1723,8 @@ fn chunk_to_record_batch(
     // Build FixedSizeList for embedding.
     let mut flat = Float32Builder::new();
     let emb = &chunk.embedding;
-    if emb.len() != dims {
+    let metadata_only=metadata_only_container(chunk);
+    if emb.len() != dims && !metadata_only {
         return Err(anyhow!(
             "embedding length {} != expected dims {}",
             emb.len(),
@@ -1711,12 +1735,14 @@ fn chunk_to_record_batch(
         flat.append_value(v);
     }
     let values_arr = Arc::new(flat.finish());
-    let emb_arr = FixedSizeListArray::new(
+    let emb_arr:arrow_array::ArrayRef = if metadata_only {
+        arrow_array::new_null_array(schema.field_with_name(EMB_FIELD)?.data_type(),1)
+    } else {Arc::new(FixedSizeListArray::new(
         Arc::new(Field::new("item", DataType::Float32, true)),
         dims as i32,
         values_arr,
         None,
-    );
+    ))};
 
     // Tags list column. Protocol exposes `tags` as `Vec<String>` (always
     // present, possibly empty) — no Option unwrap needed.
@@ -1750,7 +1776,7 @@ fn chunk_to_record_batch(
                 .as_deref()])),
             Arc::new(StringArray::from(vec![Some(chunk.full_text.as_str())])),
             Arc::new(StringArray::from(vec![chunk.full_text_md.as_deref()])),
-            Arc::new(emb_arr),
+            emb_arr,
             Arc::new(StringArray::from(vec![None::<&str>])), // embedding_sparse
             Arc::new(StringArray::from(vec![Some("server-stored")])),
             Arc::new(Int32Array::from(vec![chunk.chunk_index])),
@@ -1770,6 +1796,9 @@ fn chunk_to_record_batch(
             Arc::new(StringArray::from(vec![chunk.image_camera_make.as_deref()])),
             Arc::new(StringArray::from(vec![chunk.image_camera_model.as_deref()])),
             Arc::new(arrow_array::Float64Array::from(vec![chunk.audio_duration_seconds])),
+            Arc::new(StringArray::from(vec![container_metadata[0].as_deref()])),
+            Arc::new(StringArray::from(vec![container_metadata[1].as_deref()])),
+            Arc::new(StringArray::from(vec![container_metadata[2].as_deref()])),
         ],
     )?;
 
@@ -1871,6 +1900,9 @@ fn batches_to_results(
                 .filter(|c| !c.is_null(i)).map(|c| c.value(i)).and_then(|a| a.as_any().downcast_ref::<StringArray>()
                     .map(|c|c.iter().flatten().map(str::to_owned).collect())).unwrap_or_default();
             results.push(SearchHit {
+                container_member: optional("container_member").as_deref().map(serde_json::from_str).transpose()?,
+                container_source: optional("container_source").as_deref().map(serde_json::from_str).transpose()?,
+                container_coverage: optional("container_coverage").as_deref().map(serde_json::from_str).transpose()?,
                 parent_dir: optional("parent_dir"),
                 volume_id: optional("volume_id"),
                 url: optional("url"),

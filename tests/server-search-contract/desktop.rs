@@ -5,8 +5,7 @@ use async_trait::async_trait;
 #[path = "../../src-tauri/src/index/schema.rs"]
 mod local_schema;
 pub mod schema {
-    pub use super::local_schema::SearchFilters;
-    pub use crisp_index_protocol::SearchHit as SearchResult;
+    pub use super::local_schema::{SearchFilters, SearchResult};
 }
 pub use local_schema::DocumentChunk;
 pub mod fts_query { pub use crisp_search_query::*; }
