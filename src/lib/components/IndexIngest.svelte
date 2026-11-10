@@ -1592,6 +1592,7 @@
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
                 locationUri: string; ownerId: string; sourceHash: string; tags: string[];
+                sourceFingerprint: string;
             };
         };
 
@@ -1675,6 +1676,7 @@
                                 locationUri: qf.filePath,
                                 ownerId:     'local',
                                 sourceHash,
+                                sourceFingerprint,
                                 tags:        [],
                             },
                         });

@@ -60,23 +60,37 @@ const TABLE_NAME: &str = "documents";
     parsed.items.retain(|item| !matches!(item, syn::Item::Mod(module) if module.ident == "tauri_commands"));
     fs::write(out.join("jobs.rs"), parsed.into_token_stream().to_string()).unwrap();
 
+
+    let file = root.join("../extractors/mod.rs");
+    println!("cargo:rerun-if-changed={}", file.display());
+    let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
+    let config_types = ["OcrPipelineConfig", "OcrStageSpec", "OcrCleanupSpec"];
+    let mut generated = String::new();
+    for item in parsed.items {
+        match item {
+            syn::Item::Struct(s) if config_types.contains(&s.ident.to_string().as_str()) => generated.push_str(&s.into_token_stream().to_string()),
+            syn::Item::Impl(imp) if config_types.contains(&imp.self_ty.to_token_stream().to_string().as_str()) => generated.push_str(&imp.into_token_stream().to_string()),
+            syn::Item::Fn(f) if f.sig.ident.to_string().starts_with("default_") => generated.push_str(&f.into_token_stream().to_string()),
+            _ => {}
+        }
+    }
+    fs::write(out.join("extractor_options.rs"), generated).unwrap();
+
     let file = root.join("../bg_ingest/mod.rs");
     println!("cargo:rerun-if-changed={}", file.display());
     let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
-    let mut generated = String::new();
-    let checks = ["state", "skip_requires_the_file_to_be_untouched", "skip_never_happens_without_an_index_record", "enabling_image_indexing_backfills_old_rows_once", "content_changes_and_failed_attempts_are_never_skipped", "streaming_hash_detects_same_length_replacements"];
+    let mut generated = String::from("use serde::{Serialize,Deserialize}; use std::{collections::{BTreeMap,HashMap,HashSet,VecDeque},path::PathBuf,sync::{Arc,atomic::{AtomicUsize,Ordering}}};");
+    let state_types = ["ForegroundGuard", "PendingIngest", "BgStatus", "BgStatusSnapshot", "BackgroundIngest", "BackgroundOptions", "WorkerLease"];
     for item in parsed.items {
         match item {
-            syn::Item::Fn(f) if ["skip_unchanged", "hash_source"].contains(&f.sig.ident.to_string().as_str()) => generated.push_str(&f.into_token_stream().to_string()),
-            syn::Item::Mod(mut module) if module.ident == "tests" => {
-                if let Some((_, items)) = &mut module.content {
-                    items.retain(|item| matches!(item, syn::Item::Use(_)) || matches!(item, syn::Item::Fn(f) if checks.contains(&f.sig.ident.to_string().as_str())));
-                }
-                generated.push_str(&module.into_token_stream().to_string());
-            }
+            syn::Item::Fn(f) if ["skip_unchanged", "hash_source", "source_key"].contains(&f.sig.ident.to_string().as_str()) => generated.push_str(&f.into_token_stream().to_string()),
+            syn::Item::Struct(s) if state_types.contains(&s.ident.to_string().as_str()) => generated.push_str(&s.into_token_stream().to_string()),
+            syn::Item::Enum(e) if state_types.contains(&e.ident.to_string().as_str()) => generated.push_str(&e.into_token_stream().to_string()),
+            syn::Item::Impl(imp) if state_types.contains(&imp.self_ty.to_token_stream().to_string().as_str()) => generated.push_str(&imp.into_token_stream().to_string()),
+            syn::Item::Const(c) if c.ident == "EXTRACTION_TIMEOUT_SECS" => generated.push_str(&c.into_token_stream().to_string()),
+            syn::Item::Mod(module) if module.ident == "tests" => generated.push_str(&module.into_token_stream().to_string()),
             _ => {}
         }
     }
     fs::write(out.join("bg_ingest.rs"), generated).unwrap();
-
 }

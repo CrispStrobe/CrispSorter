@@ -41,8 +41,13 @@ The suite checks:
   and mounted-source predicates applied before a result limit.
 - Queue recovery after reopening, error retry, idempotent and job-scoped
   acknowledgements, and transaction rollback on an injected SQLite failure.
+- Background source recovery, preserved OCR options, one live scheduler per
+  data directory, coalesced follow-up requests, dropped worker recovery, and
+  durable acknowledgements before progress advances.
+- File-byte receipts checked under the index writer lease after extraction and
+  embedding, including changes while a prepared document waits to commit.
 
 This suite does not qualify model inference, platform extractors, GPU backends,
-the desktop command registration, or the full search engine. Those remain the
+the desktop worker adapters or command registration, or the full search engine. Those remain the
 responsibility of the application and platform integration suites. The separate
 search contract package qualifies query parsing and lexical execution.

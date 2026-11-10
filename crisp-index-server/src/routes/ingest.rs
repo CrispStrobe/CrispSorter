@@ -18,6 +18,22 @@ pub async fn ingest(
     State(state): State<Arc<SharedState>>,
     Json(chunk): Json<IngestChunk>,
 ) -> (StatusCode, Json<Value>) {
+    if let Err(error) = crate::index::validate_chunk_shape(&chunk) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error":error.to_string()})),
+        );
+    }
+    if !chunk.embedding.is_empty() {
+        if let Err(error) =
+            crate::index::validate_embedding(&chunk.embedding, state.config.embed_dims)
+        {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error":error.to_string()})),
+            );
+        }
+    }
     // Validate embedding dimension. Empty = "server, please embed this"
     // when SERVER_EMBED is enabled.
     if !chunk.embedding.is_empty() && chunk.embedding.len() != state.config.embed_dims {
@@ -63,29 +79,19 @@ pub async fn ingest(
         }
     }
 
-    let owner_id  = chunk.owner_id.clone();
-    let language  = chunk.language.clone();
-    let doc_id    = chunk.doc_id.clone();
-    let headings  = chunk.headings.as_ref()
-        .map(|h| h.join(" "))
-        .unwrap_or_default();
-    let full_text = chunk.full_text.clone();
-    let chunk_idx = chunk.chunk_index;
-
     let start = Instant::now();
-
-    // Write to LanceDB.
-    if let Err(e) = state.index.vector.ingest(&chunk).await {
-        tracing::error!("LanceDB ingest error: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })));
-    }
-
-    // Write to Tantivy (only for the first chunk per document to avoid duplicates).
-    if chunk_idx == 0 {
-        if let Err(e) = state.index.fts.add_document(&doc_id, &owner_id, &language, &headings, &full_text) {
-            tracing::error!("Tantivy ingest error: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })));
-        }
+    if let Err(error) = state
+        .index
+        .ingest_batch(&IngestBatch {
+            chunks: vec![chunk],
+        })
+        .await
+    {
+        tracing::error!("Document publication failed: {error:#}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":error.to_string()})),
+        );
     }
 
     let resp = IngestResponse {
@@ -93,7 +99,10 @@ pub async fn ingest(
         write_time_ms: start.elapsed().as_millis() as u64,
     };
 
-    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap_or(json!({}))))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(resp).unwrap_or(json!({}))),
+    )
 }
 
 /// `POST /v1/ingest/batch` — persist a bulk-ingest task to the durable queue.
@@ -105,7 +114,29 @@ pub async fn ingest_batch(
     State(state): State<Arc<SharedState>>,
     Json(batch): Json<IngestBatch>,
 ) -> (StatusCode, Json<Value>) {
+    if batch.chunks.is_empty() || batch.chunks.len() > 4096 {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error":"A batch must contain between 1 and 4096 chunks"})),
+        );
+    }
     for chunk in &batch.chunks {
+        if let Err(error) = crate::index::validate_chunk_shape(chunk) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error":error.to_string()})),
+            );
+        }
+        if !chunk.embedding.is_empty() {
+            if let Err(error) =
+                crate::index::validate_embedding(&chunk.embedding, state.config.embed_dims)
+            {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({"error":error.to_string()})),
+                );
+            }
+        }
         if !chunk.embedding.is_empty() && chunk.embedding.len() != state.config.embed_dims {
             let err = ErrorResponse {
                 error: format!(
@@ -142,8 +173,15 @@ pub async fn ingest_batch(
             Json(json!({ "error": e.to_string() })),
         ),
         Ok(Ok((task_id, queue_depth))) => {
-            let resp = BatchIngestResponse { task_id, queue_depth, chunk_count };
-            (StatusCode::ACCEPTED, Json(serde_json::to_value(resp).unwrap_or(json!({}))))
+            let resp = BatchIngestResponse {
+                task_id,
+                queue_depth,
+                chunk_count,
+            };
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::to_value(resp).unwrap_or(json!({}))),
+            )
         }
     }
 }

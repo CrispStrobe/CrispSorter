@@ -1,0 +1,196 @@
+use crate::desktop::{remote_client::RemoteClient, IndexBackend};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
+use crisp_index_protocol::{
+    SearchCapabilities, SearchFilters, FTS_SCHEMA_VERSION, QUERY_LANGUAGE_VERSION,
+};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+fn capabilities() -> SearchCapabilities {
+    SearchCapabilities {
+        api_version: 1,
+        query_language_version: QUERY_LANGUAGE_VERSION,
+        fts_schema_version: FTS_SCHEMA_VERSION,
+        fts_ready: true,
+        strict_hybrid_constraints: true,
+        searchable_fields: vec!["title".into(), "body".into(), "headings".into()],
+        chunk_boundary_policy: "verified offsets".into(),
+    }
+}
+async fn serve(router: Router) -> (String, tokio::task::JoinHandle<()>) {
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(socket, router).await.unwrap();
+    });
+    (format!("http://{address}"), task)
+}
+
+#[tokio::test]
+async fn legacy_server_receives_plain_queries_but_never_explicit_syntax() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let router = Router::new().route(
+        "/v1/search",
+        post(
+            move |Json(request): Json<crisp_index_protocol::SearchRequest>| {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    assert!(request.query_language_version.is_none());
+                    Json(Vec::<crisp_index_protocol::SearchHit>::new())
+                }
+            },
+        ),
+    );
+    let (url, server) = serve(router).await;
+    let client = RemoteClient::new(url, "");
+    for query in [
+        "alpha AND beta",
+        "title:alpha",
+        "\"alpha beta\"",
+        "alpha pre/1 beta",
+        "alpha~1",
+        "alpha*",
+    ] {
+        assert!(client
+            .search_text(query, &SearchFilters::default(), 20)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("does not advertise"));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(client
+        .search_text("alpha beta", &Default::default(), 20)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn negotiated_results_require_the_server_version_header() {
+    let router = Router::new()
+        .route("/v1/capabilities", get(|| async { Json(capabilities()) }))
+        .route(
+            "/v1/search",
+            post(|| async { Json(Vec::<crisp_index_protocol::SearchHit>::new()) }),
+        );
+    let (url, server) = serve(router).await;
+    let client = RemoteClient::new(url, "");
+    assert!(client
+        .search_text("alpha AND beta", &Default::default(), 20)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("did not confirm"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn incompatible_capabilities_fail_before_sending_the_query() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let router = Router::new()
+        .route(
+            "/v1/capabilities",
+            get(|| async {
+                let mut value = capabilities();
+                value.strict_hybrid_constraints = false;
+                Json(value)
+            }),
+        )
+        .route(
+            "/v1/search",
+            post(move || {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Json(Vec::<crisp_index_protocol::SearchHit>::new())
+                }
+            }),
+        );
+    let (url, server) = serve(router).await;
+    let client = RemoteClient::new(url, "");
+    assert!(client
+        .search_hybrid("alpha AND beta", &[1.0, 0.0], &Default::default(), 20)
+        .await
+        .is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn actual_search_route_rejects_invalid_requests_before_embedding_and_confirms_grammar() {
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(
+        crate::index::VectorStore::open_or_create(dir.path(), 2)
+            .await
+            .unwrap(),
+    );
+    let fts = Arc::new(crate::fts::FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = Arc::new(crate::index::SearchIndex::new(vector, fts));
+    index.ensure_ready().await.unwrap();
+    let state = Arc::new(crate::state::SharedState {
+        index,
+        queue: crate::queue::TaskQueue::open_or_create(dir.path(), Default::default()).unwrap(),
+        embedder: Some(crate::embedder::ServerEmbedder),
+        config: crate::state::ServerConfig {
+            api_key: "".into(),
+            port: 0,
+            data_dir: dir.path().to_owned(),
+            embed_dims: 2,
+            server_embed_enabled: true,
+            queue_lease_secs: 30,
+            queue_retry_base_ms: 1000,
+            queue_max_attempts: 3,
+        },
+    });
+    let router = Router::new()
+        .route(
+            "/v1/capabilities",
+            get(crate::routes::capabilities::capabilities),
+        )
+        .route("/v1/search", post(crate::routes::search::search))
+        .with_state(state);
+    let (url, server) = serve(router).await;
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    for body in [
+        serde_json::json!({"mode":"hybrid","query":"alpha AND"}),
+        serde_json::json!({"mode":"text","query":"alpha","limit":0}),
+        serde_json::json!({"mode":"bogus","query":"alpha"}),
+        serde_json::json!({"mode":"hybrid","query":"title:"}),
+    ] {
+        assert_eq!(
+            http.post(format!("{url}/v1/search"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            422
+        );
+    }
+    assert_eq!(crate::embedder::CALLS.load(Ordering::SeqCst), 0);
+    let mismatch = http
+        .post(format!("{url}/v1/search"))
+        .json(&serde_json::json!({"mode":"text","query":"alpha","query_language_version":999}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status(), 409);
+    let client = RemoteClient::new(url, "");
+    assert!(client
+        .search_text("alpha AND beta", &Default::default(), 20)
+        .await
+        .unwrap()
+        .is_empty());
+    server.abort();
+}

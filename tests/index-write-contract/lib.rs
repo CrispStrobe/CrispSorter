@@ -13,7 +13,9 @@ pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
 
 pub mod jobs { include!(concat!(env!("OUT_DIR"), "/jobs.rs")); }
-pub mod bg_ingest { include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
+#[path = "../../src-tauri/src/bg_ingest/queue.rs"] pub mod bg_queue_production;
+pub mod extractors { include!(concat!(env!("OUT_DIR"), "/extractor_options.rs")); }
+pub mod bg_ingest { pub use crate::bg_queue_production as queue; include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
 
 pub mod index {
     pub mod schema { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/schema.rs")); }

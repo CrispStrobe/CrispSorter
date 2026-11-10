@@ -120,9 +120,6 @@ pub async fn index_search(
         }
         .map_err(|e| e.to_string())?
     } else {
-        if mode != "vector" && super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())? {
-            return Err("Advanced query operators currently require the local text index. Use a plain query for this remote index.".into());
-        }
         // The older remote-index protocol only carries owner/language/year.
         // Refuse unsupported filters instead of returning unfiltered matches.
         ensure_remote_search_filters_supported(&filters)?;
@@ -157,6 +154,14 @@ pub async fn index_search(
             }
             _ => {
                 if let Some(embedder) = embedder {
+                    // Negotiate strict lexical semantics before expensive
+                    // local query inference. The response is checked again
+                    // by the remote client before accepting search results.
+                    let remote = super::remote_client::RemoteClient::new_with_proxy(
+                        config.remote_url.clone().ok_or("remote_url must be set for Remote backend")?,
+                        config.remote_api_key.clone().unwrap_or_default(), &proxy,
+                    ).map_err(|e| e.to_string())?;
+                    remote.query_language_version(&query, true).await.map_err(|e| e.to_string())?;
                     let embedding = embed_query(Some(embedder), &query).await?;
                     backend
                         .search_hybrid(&query, &embedding, &filters, limit)
@@ -534,7 +539,43 @@ pub struct DocumentIngestInput {
     pub location_uri: String,
     pub owner_id: String,
     pub source_hash: String,
+    /// SHA-256 of the original local file bytes, captured before extraction.
+    /// Separate from source_hash, which some callers derive from reviewed text.
+    #[serde(default)]
+    pub source_fingerprint: Option<String>,
     pub tags: Vec<String>,
+}
+
+fn source_receipt(input: &DocumentIngestInput) -> Result<Option<(std::path::PathBuf, String)>, String> {
+    let Some(hash) = input.source_fingerprint.as_ref() else { return Ok(None); };
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Source fingerprint must be a SHA-256 hex digest".into());
+    }
+    let path = if input.location_uri.starts_with("crisp+local://") {
+        match super::location::FileLocation::from_uri(&input.location_uri).map_err(|e| e.to_string())? {
+            super::location::FileLocation::Local { path, .. } => path,
+            _ => return Err("Source verification requires a local file".into()),
+        }
+    } else if !input.location_uri.contains("://") {
+        std::path::PathBuf::from(&input.location_uri)
+    } else {
+        return Err("Source fingerprints are supported only for local files".into());
+    };
+    if !path.is_absolute() { return Err("Source verification requires an absolute local path".into()); }
+    Ok(Some((path, hash.to_ascii_lowercase())))
+}
+
+async fn verify_remote_sources(sources: Vec<(std::path::PathBuf, String)>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        for (path, expected) in sources {
+            let actual = super::ingest::hash_local_source(&path)
+                .map_err(|e| format!("Verifying source {} before upload: {e}", path.display()))?;
+            if actual != expected {
+                return Err(format!("Source changed before upload: {}. Retry this file.", path.display()));
+            }
+        }
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// PLAN P7.4.2 — single-shot path-based ingest. Takes a filesystem
@@ -556,23 +597,18 @@ pub async fn index_ingest_path(
     year: Option<i32>,
     language: Option<String>,
 ) -> Result<IngestStats, String> {
-    use sha2::{Digest, Sha256};
     let p = std::path::PathBuf::from(&path);
     let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
 
-    // Read bytes once: needed for both source_hash and (lossily) for
-    // the text extractor in some paths. We bind it locally so the
-    // tokio task below doesn't need to re-stat / re-read.
-    let bytes = tokio::task::spawn_blocking({
+    // Stream the fingerprint so a large source is not duplicated in memory.
+    // The writer verifies it again after extraction and model work.
+    let source_hash = tokio::task::spawn_blocking({
         let p = p.clone();
-        move || std::fs::read(&p)
+        move || super::ingest::hash_local_source(&p)
     })
     .await
     .map_err(|e| format!("read join: {e}"))?
     .map_err(|e| format!("reading {}: {e}", p.display()))?;
-    let mut h = Sha256::new();
-    h.update(&bytes);
-    let source_hash = hex::encode(h.finalize());
 
     // Run the dispatcher off the runtime — pdf_extract is sync and CPU-
     // heavy, the others are quick but still blocking I/O.
@@ -656,7 +692,7 @@ pub async fn index_ingest_path(
     drop(lock);
 
     pipeline
-        .ingest_document(raw)
+        .ingest_verified_document(raw, p)
         .await
         .map_err(|e| e.to_string())
 }
@@ -667,216 +703,9 @@ pub async fn index_ingest_document(
     state: State<'_, AppState>,
     input: DocumentIngestInput,
 ) -> Result<IngestStats, String> {
-    let lock = state.index.lock().await;
-
-    if !lock.config.enabled {
-        return Err("Index is disabled in settings".to_owned());
-    }
-
-    let raw = RawDocument {
-        full_text: input.full_text,
-        full_text_md: input.full_text_md,
-        headings: input.headings,
-        title: input.title,
-        author: input.author,
-        year: input.year,
-        filename: input.filename,
-        ext: input.ext,
-        language: input.language,
-        source_hash: input.source_hash,
-        location_uri: input.location_uri,
-        owner_id: input.owner_id,
-        tags: input.tags,
-        // Frontend-driven ingest doesn't carry source mtime — the file
-        // could be many months old at this point. The cheap-skip in
-        // bg_ingest will treat None as "no recorded mtime → re-ingest"
-        // which is the safe default.
-        mtime_unix: None,
-        images_indexed: false,
-        file_size: None,
-        // PLAN P7.6 — frontend ingest is path-less (input is the
-        // already-extracted text), so we don't have a volume to tag.
-        volume_id: None,
-        parent_dir: None,
-        // Frontend-driven ingest doesn't run the extractor's MT pass —
-        // the caller's already-extracted text is what we get.  Phase 8
-        // on-demand surface (index::translate_commands::translate_text)
-        // is the path for translating these post-ingest.
-        translated_text: None,
-        translated_to_lang: None,
-        audio_duration_seconds: None,
-        audio_codec: None,
-        audio_sample_rate_hz: None,
-        audio_channels: None,
-        audio_bitrate_kbps: None,
-        image_camera_make: None,
-        image_camera_model: None,
-        image_lens_model: None,
-        image_taken_at_unix: None,
-        image_iso: None,
-        multivec_packed: None,
-        multivec_n_tokens: None,
-        url: None,
-        embedding_omni: None,
-        embedding_vit: None,
-    };
-
-    use tauri::Emitter;
-    let fname = raw.filename.clone();
-
-    macro_rules! emit_ingest {
-        ($step:expr, $ci:expr, $ct:expr, $msg:expr) => {
-            let _ = app.emit(
-                "index://ingest-progress",
-                IngestProgress {
-                    filename: fname.clone(),
-                    step: $step,
-                    chunk_index: $ci,
-                    chunk_total: $ct,
-                    message: $msg.to_owned(),
-                },
-            );
-        };
-    }
-
-    if let Some(pipeline) = lock.pipeline.clone() {
-        // ── Local path: pipeline handles chunk + embed + write ────────────
-        drop(lock);
-        emit_ingest!("embedding", 0, 0, "Embedding & writing via pipeline …");
-        let result = pipeline
-            .ingest_document(raw)
-            .await
-            .map_err(|e| e.to_string())?;
-        emit_ingest!("done", result.chunk_count, result.chunk_count, "Done");
-        return Ok(result);
-    }
-
-    // ── Remote path: chunk, optionally embed locally, push to server ──────
-    let backend = lock
-        .backend
-        .as_ref()
-        .ok_or("Index not initialised — call index_init first")?
-        .clone();
-    let config = lock.config.clone();
-    let embedder_opt = lock.embedder.clone(); // None when embedder_location=Server
-    drop(lock);
-
-    use super::embedder::chunk_text;
-    use super::ingest::{chunk_row_id, doc_id_for};
-
-    let cfg = super::ingest::IngestConfig::default();
-    let doc_id = doc_id_for(&raw);
-    let max_tokens = cfg.chunk_max_words;
-    let stride = cfg.chunk_stride;
-    let text_chunks = chunk_text(&raw.full_text, max_tokens, stride, &[]);
-    let chunk_count_total = text_chunks.len();
-    let chunk_total = chunk_count_total as i32;
-
-    let now_ms: i64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-
-    let embed_ms;
-    let embeddings: Vec<Option<Vec<f32>>>;
-
-    if let Some(embedder) = embedder_opt {
-        // embedder_location = Client: embed locally before posting.
-        emit_ingest!("embedding", 0, chunk_count_total, "Embedding …");
-        let start_embed = std::time::Instant::now();
-        let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
-        let dense = {
-            use super::embedder::EmbedRole;
-            let mut emb = embedder.lock().await;
-            emb.embed_dense(texts, EmbedRole::Passage)
-                .map_err(|e| e.to_string())?
-        };
-        embed_ms = start_embed.elapsed().as_millis() as u64;
-        embeddings = dense.vectors.into_iter().map(Some).collect();
-    } else {
-        // embedder_location = Server: post raw text, server embeds on arrival.
-        emit_ingest!("embedding", 0, chunk_count_total, "Skipping local embedding (server-side)");
-        embed_ms = 0;
-        embeddings = vec![None; chunk_count_total];
-    }
-
-    emit_ingest!("writing", 0, chunk_count_total, "Writing to index …");
-    let start_write = std::time::Instant::now();
-
-    for (i, (tc, emb_vec)) in text_chunks.iter().zip(embeddings.into_iter()).enumerate() {
-        emit_ingest!(
-            "writing",
-            i,
-            chunk_count_total,
-            format!("Chunk {}/{}", i + 1, chunk_count_total)
-        );
-        let chunk = super::schema::DocumentChunk {
-            id: chunk_row_id(&doc_id, i as i32),
-            doc_id: doc_id.clone(),
-            location_uri: raw.location_uri.clone(),
-            owner_id: raw.owner_id.clone(),
-            filename: Some(raw.filename.clone()),
-            title: raw.title.clone(),
-            author: raw.author.clone(),
-            year: raw.year,
-            ext: Some(raw.ext.clone()),
-            language: Some(raw.language.clone()),
-            page_count: None,
-            headings_text: Some(raw.headings.join(" ")),
-            full_text: Some(tc.text.clone()),
-            full_text_md: if i == 0 {
-                Some(raw.full_text_md.clone())
-            } else {
-                None
-            },
-            embedding: emb_vec,
-            embedding_sparse: None,
-            embedding_model: Some(format!("{:?}", config.embedder_model)),
-            chunk_index: tc.chunk_index,
-            chunk_total,
-            chunk_start_char: Some(tc.start_char as i32),
-            chunk_end_char: Some(tc.end_char as i32),
-            indexed_at: now_ms,
-            source_hash: raw.source_hash.clone(),
-            tags: raw.tags.clone(),
-            metadata_json: None,
-            parent_dir: raw.parent_dir.clone(),
-            volume_id: raw.volume_id.clone(),
-            // Pass per-doc translation through to every chunk row —
-            // same replication pattern the main make_chunk path uses.
-            text_translated: raw.translated_text.clone(),
-            text_translated_lang: raw.translated_to_lang.clone(),
-            // P13.6 Step 7 — audio L2 carries through the same way.
-            audio_duration_seconds: raw.audio_duration_seconds,
-            audio_codec: raw.audio_codec.clone(),
-            audio_sample_rate_hz: raw.audio_sample_rate_hz,
-            audio_channels: raw.audio_channels,
-            audio_bitrate_kbps: raw.audio_bitrate_kbps,
-            // P13.6 Step 9 — image L2 carries through likewise.
-            image_camera_make: raw.image_camera_make.clone(),
-            image_camera_model: raw.image_camera_model.clone(),
-            image_lens_model: raw.image_lens_model.clone(),
-            image_taken_at_unix: raw.image_taken_at_unix,
-            image_iso: raw.image_iso,
-            multivec_packed: None,
-            multivec_n_tokens: None,
-            url: None,
-            embedding_omni: None,
-            embedding_vit: None,
-            summary: None,
-            doc_status: None,
-        };
-        backend.ingest(chunk).await.map_err(|e| e.to_string())?;
-    }
-    emit_ingest!("done", chunk_count_total, chunk_count_total, "Done");
-
-    let write_ms = start_write.elapsed().as_millis() as u64;
-
-    Ok(IngestStats {
-        chunk_count: chunk_count_total,
-        embed_time_ms: embed_ms,
-        write_time_ms: write_ms,
-    })
+    // One document uses the same atomic complete-document path as a batch.
+    // Remote writes must not expose successive partial chunk generations.
+    index_ingest_batch(app, state, vec![input]).await
 }
 
 // ── Batched L3 ingest (PLAN P11 step 1) ───────────────────────────────────
@@ -908,6 +737,13 @@ pub async fn index_ingest_batch(
     if inputs.is_empty() {
         return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
     }
+    if inputs.iter().any(|input| input.full_text.trim().is_empty()) {
+        return Err("No searchable text was extracted. Retry extraction or use metadata indexing.".into());
+    }
+    let sources: Vec<_> = inputs.iter().map(source_receipt)
+        .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect();
+    let progress_filename = if inputs.len() == 1 { inputs[0].filename.clone() }
+        else { format!("(batch of {})", inputs.len()) };
 
     let lock = state.index.lock().await;
 
@@ -927,7 +763,7 @@ pub async fn index_ingest_batch(
                 let _ = app.emit(
                     "index://ingest-progress",
                     IngestProgress {
-                        filename: format!("(batch of {})", total),
+                        filename: progress_filename.clone(),
                         step: $step,
                         chunk_index: 0,
                         chunk_total: 0,
@@ -986,7 +822,7 @@ pub async fn index_ingest_batch(
             .collect();
 
         let result = pipeline
-            .ingest_documents_batch(raws)
+            .ingest_documents_batch_verified(raws, sources)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -1014,7 +850,7 @@ pub async fn index_ingest_batch(
             let _ = app.emit(
                 "index://ingest-progress",
                 IngestProgress {
-                    filename: format!("(batch of {})", total),
+                    filename: progress_filename.clone(),
                     step: $step,
                     chunk_index: 0,
                     chunk_total: 0,
@@ -1141,6 +977,7 @@ pub async fn index_ingest_batch(
     )
     .map_err(|e| e.to_string())?;
     let batch = RemoteIngestBatch { chunks };
+    verify_remote_sources(sources).await?;
     let accepted = remote.ingest_batch(&batch).await.map_err(|e| e.to_string())?;
     {
         let mut lock = state.index.lock().await;
@@ -1190,7 +1027,7 @@ pub async fn index_ingest_batch(
             let _ = app.emit(
                 "index://ingest-progress",
                 IngestProgress {
-                    filename: format!("(batch of {})", total),
+                    filename: progress_filename.clone(),
                     step: if status.state == "done" {
                         "done"
                     } else if status.state == "failed" {

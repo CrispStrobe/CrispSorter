@@ -18,24 +18,24 @@
 //!   then releases for the long-running extract + embed + write.
 //!   Status / counters are read-mostly from the frontend so the
 //!   short-hold pattern keeps the UI responsive.
-//! * **No restart-resume yet.** The queue is purely in-memory; an app
-//!   restart loses pending paths. Persisting via tauri-plugin-store
-//!   is a follow-up that 7.4.3's diff-based incremental updates make
-//!   trivial (just re-walk the active catalogs on startup, the
-//!   mtime-skip there will idempotently re-enqueue what's actually
-//!   new).
+//! * **Durable source receipts.** Pending, active and failed paths are kept in
+//!   SQLite before progress is acknowledged. Restart recovers unfinished work
+//!   into a paused queue; explicit Resume retries failed paths as well. Duplicate
+//!   requests for a source coalesce, with one follow-up retained if it is active.
 //! * **Polite throttling.** A configurable `sleep_between_ms`
 //!   (default 50ms) between ingests yields back to the runtime so
 //!   foreground searches stay snappy. 7.4.4 will swap this for
 //!   real QoS (pause during user-driven embedder calls).
 
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
+
+mod queue;
 
 /// RAII guard for marking a foreground operation as in-flight (PLAN
 /// P7.4.4). Increment on construction, decrement on drop. Stored on
@@ -92,6 +92,7 @@ pub enum BgStatus {
 pub struct BgStatusSnapshot {
     pub status: BgStatus,
     pub pending: usize,
+    pub active: usize,
     pub current: Option<String>,
     pub done: usize,
     pub errored: usize,
@@ -108,6 +109,11 @@ const EXTRACTION_TIMEOUT_SECS: u64 = 300;
 /// lock briefly per iteration; tauri commands take it briefly per call.
 pub struct BackgroundIngest {
     queue: VecDeque<PendingIngest>,
+    failed: BTreeMap<String, PendingIngest>,
+    in_flight: HashSet<String>,
+    followup_keys: HashSet<String>,
+    storage: Option<queue::QueueStore>,
+    storage_dir: Option<PathBuf>,
     status: BgStatus,
     current: Option<String>,
     done: usize,
@@ -142,6 +148,11 @@ impl Default for BackgroundIngest {
     fn default() -> Self {
         Self {
             queue: VecDeque::new(),
+            failed: BTreeMap::new(),
+            in_flight: HashSet::new(),
+            followup_keys: HashSet::new(),
+            storage: None,
+            storage_dir: None,
             status: BgStatus::Idle,
             current: None,
             done: 0,
@@ -166,7 +177,8 @@ impl BackgroundIngest {
     pub fn snapshot(&self) -> BgStatusSnapshot {
         BgStatusSnapshot {
             status: self.status,
-            pending: self.queue.len(),
+            pending: self.queue.len() + self.followup_keys.len(),
+            active: self.active_workers.load(Ordering::Relaxed),
             current: self.current.clone(),
             done: self.done,
             errored: self.errored,
@@ -174,43 +186,243 @@ impl BackgroundIngest {
         }
     }
 
-    /// Append paths to the queue. Idempotent — duplicate paths land
-    /// twice (the worker will let the underlying ingest dedup by
-    /// source_hash). Caller should pre-dedup if duplicates would
-    /// embarrass the user.
-    pub fn enqueue(&mut self, items: Vec<PendingIngest>) {
-        self.queue.extend(items);
+    pub fn attach_storage(&mut self, data_dir: &std::path::Path) -> anyhow::Result<()> {
+        if self.storage.is_some() {
+            anyhow::ensure!(self.storage_dir.as_deref() == Some(data_dir), "Background queue is already attached to another data directory");
+            self.recover_stopped_claims()?;
+            return Ok(());
+        }
+        let mut store = queue::QueueStore::open(data_dir)?;
+        let recovery = store.recover()?;
+        // Validate the complete snapshot before publishing any recovered state.
+        self.apply_recovery(recovery)?;
+        self.storage = Some(store);
+        self.storage_dir = Some(data_dir.to_owned());
+        if let Err(error) = self.persist_settings() {
+            self.storage = None;
+            self.storage_dir = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
-    pub fn pause(&mut self) {
+    fn apply_recovery(&mut self, recovery: queue::RecoveredQueue) -> anyhow::Result<()> {
+        let mut pending = VecDeque::new();
+        let mut failed = BTreeMap::new();
+        for entry in recovery.entries {
+            let item: PendingIngest = serde_json::from_str(&entry.payload)
+                .map_err(|error| anyhow::anyhow!("Invalid saved background source {}: {error}", entry.key))?;
+            anyhow::ensure!(source_key(&item)? == entry.key, "Saved background source identity does not match its receipt");
+            match entry.status.as_str() {
+                "pending" => pending.push_back(item),
+                "error" => { failed.insert(entry.key, item); }
+                _ => anyhow::bail!("Unexpected saved background source state"),
+            }
+        }
+        let options = recovery.settings.as_deref().map(serde_json::from_str::<BackgroundOptions>).transpose()?;
+        self.queue = pending;
+        self.failed = failed;
+        self.in_flight.clear();
+        self.followup_keys.clear();
+        self.done = recovery.done;
+        self.errored = self.failed.len();
+        self.last_error = recovery.last_error;
+        self.current = None;
+        self.status = if self.queue.is_empty() && self.failed.is_empty() { BgStatus::Idle } else { BgStatus::Paused };
+        if let Some(options) = options {
+            self.ocr_enabled = options.ocr_enabled;
+            self.ocr_tier = options.ocr_tier;
+            self.ocr_rec_lang = options.ocr_rec_lang;
+            self.ocr_pipeline = options.ocr_pipeline;
+        }
+        Ok(())
+    }
+
+    fn store(&self) -> anyhow::Result<&queue::QueueStore> {
+        self.storage.as_ref().ok_or_else(|| anyhow::anyhow!("Background queue storage is not initialized"))
+    }
+
+    fn store_mut(&mut self) -> anyhow::Result<&mut queue::QueueStore> {
+        self.storage.as_mut().ok_or_else(|| anyhow::anyhow!("Background queue storage is not initialized"))
+    }
+
+    pub fn persist_settings(&self) -> anyhow::Result<()> {
+        let options = BackgroundOptions {
+            ocr_enabled: self.ocr_enabled, ocr_tier: self.ocr_tier.clone(),
+            ocr_rec_lang: self.ocr_rec_lang.clone(), ocr_pipeline: self.ocr_pipeline.clone(),
+        };
+        let payload = serde_json::to_string(&options)?;
+        // Reject settings which cannot be restored (for example non-finite
+        // confidence values) before replacing the saved options.
+        let _: BackgroundOptions = serde_json::from_str(&payload)?;
+        self.store()?.save_settings(&payload)
+    }
+
+    /// Durable coalescing by owner and source path. Requests arriving while a
+    /// source is active become one follow-up, never a concurrent extraction.
+    pub fn enqueue(&mut self, items: Vec<PendingIngest>) -> anyhow::Result<usize> {
+        self.recover_stopped_claims()?;
+        let mut positions = HashMap::new();
+        let mut unique = Vec::<(String, PendingIngest)>::new();
+        for item in items {
+            let key = source_key(&item)?;
+            if let Some(&position) = positions.get(&key) { unique[position] = (key, item); }
+            else { positions.insert(key.clone(), unique.len()); unique.push((key, item)); }
+        }
+        let payloads = unique.iter().map(|(key, item)| Ok((key.clone(), serde_json::to_string(item)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.store_mut()?.enqueue(&payloads)?;
+        let mut queued_positions = self.queue.iter().enumerate().map(|(index, item)| Ok((source_key(item)?, index)))
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
+        let mut added = 0;
+        for (key, item) in unique {
+            if self.in_flight.contains(&key) {
+                if self.followup_keys.insert(key) { added += 1; }
+            } else if let Some(&position) = queued_positions.get(&key) {
+                self.queue[position] = item;
+            } else {
+                self.failed.remove(&key);
+                queued_positions.insert(key, self.queue.len());
+                self.queue.push_back(item);
+                added += 1;
+            }
+        }
+        self.errored = self.failed.len();
+        Ok(added)
+    }
+
+    fn recover_stopped_claims(&mut self) -> anyhow::Result<()> {
+        if self.active_workers.load(Ordering::Relaxed) == 0 && !self.in_flight.is_empty() {
+            let recovery = self.store_mut()?.recover()?;
+            self.apply_recovery(recovery)?;
+        }
+        Ok(())
+    }
+
+    fn claim_next(&mut self) -> anyhow::Result<Option<PendingIngest>> {
+        let position = self.queue.iter().position(|item| source_key(item).is_ok_and(|key| !self.in_flight.contains(&key)));
+        let Some(position) = position else { return Ok(None); };
+        let item = self.queue[position].clone();
+        let key = source_key(&item)?;
+        self.store()?.claim(&key)?;
+        self.queue.remove(position);
+        self.in_flight.insert(key);
+        self.current = Some(item.path.to_string_lossy().into_owned());
+        Ok(Some(item))
+    }
+
+    fn finish_item(&mut self, item: &PendingIngest, error: Option<&str>) -> anyhow::Result<()> {
+        let key = source_key(item)?;
+        let error = error.map(|value| value.chars().take(1024).collect::<String>());
+        let followup = self.store_mut()?.complete(&key, error.as_deref())?;
+        let followup = followup.map(|payload| serde_json::from_str::<PendingIngest>(&payload)).transpose()?;
+        self.in_flight.remove(&key);
+        self.followup_keys.remove(&key);
+        if let Some(followup) = followup { self.queue.push_back(followup); }
+        else if error.is_some() { self.failed.insert(key, item.clone()); }
+        if let Some(error) = error { self.last_error = Some(error); }
+        else { self.done += 1; }
+        self.errored = self.failed.len();
+        self.current = None;
+        Ok(())
+    }
+
+    pub fn pause(&mut self) -> anyhow::Result<()> {
         if matches!(self.status, BgStatus::Running) {
+            self.store()?.save_status("paused")?;
             self.status = BgStatus::Paused;
         }
+        Ok(())
     }
 
-    pub fn resume(&mut self) {
-        if matches!(self.status, BgStatus::Paused) {
+    pub fn resume(&mut self) -> anyhow::Result<()> {
+        self.recover_stopped_claims()?;
+        if matches!(self.status, BgStatus::Paused | BgStatus::Idle)
+            && (!self.queue.is_empty() || !self.failed.is_empty() || self.status == BgStatus::Paused) {
+            self.store()?.retry_errors()?;
+            self.queue.extend(std::mem::take(&mut self.failed).into_values());
+            self.errored = 0;
+            self.store()?.save_status("running")?;
             self.status = BgStatus::Running;
         }
+        Ok(())
     }
 
-    /// Mark the worker for shutdown. The worker observes the flag at
-    /// the top of each iteration and exits; the queue is preserved.
-    pub fn cancel(&mut self) {
-        if !matches!(self.status, BgStatus::Idle) {
+    /// Stops claiming new work; pending paths and failed outcomes remain saved.
+    pub fn cancel(&mut self) -> anyhow::Result<()> {
+        if !matches!(self.status, BgStatus::Idle) || !self.queue.is_empty() {
+            self.store()?.save_status("paused")?;
             self.status = BgStatus::Stopping;
         }
+        Ok(())
     }
 
-    /// Drop every pending entry and reset counters. Doesn't touch the
-    /// worker — pair with `cancel` to fully stop.
-    pub fn clear(&mut self) {
+    /// Forget pending/failed requests only after every live worker has drained.
+    pub fn clear(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.active_workers.load(Ordering::Relaxed) == 0,
+            "Wait for background processing to stop before clearing the queue");
+        self.store_mut()?.clear()?;
         self.queue.clear();
+        self.failed.clear();
+        self.in_flight.clear();
+        self.followup_keys.clear();
         self.done = 0;
         self.errored = 0;
         self.current = None;
         self.last_error = None;
+        self.status = BgStatus::Idle;
+        Ok(())
     }
+
+    fn start_workers(&mut self) -> anyhow::Result<(usize, Arc<AtomicUsize>)> {
+        self.recover_stopped_claims()?;
+        let active = self.active_workers.load(Ordering::Relaxed);
+        if self.queue.is_empty() || self.status == BgStatus::Stopping
+            || (self.status == BgStatus::Paused && active > 0) {
+            return Ok((0, self.active_workers.clone()));
+        }
+        self.store()?.save_status("running")?;
+        self.status = BgStatus::Running;
+        let needed = self.concurrency.max(1).saturating_sub(active);
+        // Reserve every worker under the state lock, so simultaneous callers
+        // cannot both observe the same free worker slots.
+        self.active_workers.fetch_add(needed, Ordering::Relaxed);
+        Ok((needed, self.active_workers.clone()))
+    }
+
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BackgroundOptions {
+    ocr_enabled: bool,
+    ocr_tier: String,
+    ocr_rec_lang: String,
+    ocr_pipeline: crate::extractors::OcrPipelineConfig,
+}
+
+fn source_key(item: &PendingIngest) -> anyhow::Result<String> {
+    // JSON separates the owner and path unambiguously; SHA-256 keeps large
+    // source paths out of the primary-key index. No source file must exist.
+    use sha2::{Digest, Sha256};
+    let identity = serde_json::to_vec(&(item.owner_id.as_deref().unwrap_or("local"), &item.path))?;
+    Ok(hex::encode(Sha256::digest(identity)))
+}
+
+struct WorkerLease {
+    active: Arc<AtomicUsize>,
+    released: bool,
+}
+
+impl WorkerLease {
+    fn release(&mut self) -> usize {
+        if self.released { return 0; }
+        self.released = true;
+        self.active.fetch_sub(1, Ordering::Relaxed)
+    }
+}
+
+impl Drop for WorkerLease {
+    fn drop(&mut self) { self.release(); }
 }
 
 /// Should a re-scan skip this file entirely?
@@ -250,17 +462,7 @@ fn skip_unchanged(
 /// Hash with bounded memory. Holding a second full copy of a large PDF or
 /// recording for the entire extraction needlessly multiplies peak memory.
 fn hash_source(path: &std::path::Path) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 { break; }
-        hash.update(&buffer[..read]);
-    }
-    Ok(hex::encode(hash.finalize()))
+    crate::index::ingest::hash_local_source(path)
 }
 
 /// Spawn worker tasks up to the configured concurrency.  Safe to call
@@ -268,33 +470,29 @@ fn hash_source(path: &std::path::Path) -> std::io::Result<String> {
 /// so no extras are spawned.
 pub fn ensure_worker(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
     tokio::spawn(async move {
-        let (target, active, already_running) = {
-            let mut g = state.lock().await;
-            let running = g.active_workers.load(Ordering::Relaxed);
-            let target = g.concurrency.max(1);
-            let need = target.saturating_sub(running);
-            if need == 0 {
+        let plan = tokio::task::spawn_blocking({
+            let state = state.clone();
+            move || state.blocking_lock().start_workers()
+        }).await;
+        let (needed, active) = match plan {
+            Ok(Ok(plan)) => plan,
+            error => {
+                let error = match error { Ok(Err(error)) => format!("{error:#}"), Err(error) => error.to_string(), _ => unreachable!() };
+                let mut guard = state.lock().await;
+                guard.status = BgStatus::Paused;
+                guard.last_error = Some(format!("Could not start the saved background queue: {error}"));
+                let _ = app.emit("bg-ingest:status", guard.snapshot());
                 return;
             }
-            g.status = BgStatus::Running;
-            (target, g.active_workers.clone(), running > 0)
         };
-        let _ = (target, already_running); // suppress unused warnings
-        let to_spawn = {
-            let g = state.lock().await;
-            g.concurrency.max(1).saturating_sub(active.load(Ordering::Relaxed))
-        };
-        for _ in 0..to_spawn {
-            active.fetch_add(1, Ordering::Relaxed);
+        for _ in 0..needed {
             tokio::spawn(worker_loop(state.clone(), app.clone(), active.clone()));
         }
     });
 }
 
-/// Each worker task runs this loop. Multiple concurrent instances share the
-/// `state` mutex — pops are serialised by the lock, processing runs in
-/// parallel.  Each worker decrements `active_workers` on exit so
-/// `ensure_worker` can respawn exactly the right number.
+/// Extraction can run concurrently for different sources. Durable claims and
+/// acknowledgements run on the blocking pool while the scheduler lock is held.
 async fn worker_loop(
     state: Arc<Mutex<BackgroundIngest>>,
     app: AppHandle,
@@ -303,82 +501,74 @@ async fn worker_loop(
     use crate::AppState;
     use tauri::Manager;
     let foreground = app.state::<AppState>().foreground_active.clone();
+    let mut worker_lease = WorkerLease { active: active_workers, released: false };
 
     loop {
-        // ── QoS: yield to foreground (P7.4.4) ───────────────────────────
         while foreground.load(Ordering::Relaxed) > 0 {
-            if matches!(state.lock().await.status, BgStatus::Stopping) {
-                break;
-            }
+            if matches!(state.lock().await.status, BgStatus::Stopping | BgStatus::Paused) { break; }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-
-        // ── Take next item under the lock; release immediately. ─────────
-        let (next, sleep_ms) = {
-            let mut g = state.lock().await;
-            if matches!(g.status, BgStatus::Stopping) {
-                let remaining = active_workers.fetch_sub(1, Ordering::Relaxed);
-                if remaining == 1 {
-                    // Last worker: clean up shared state.
-                    g.status = BgStatus::Idle;
-                    g.current = None;
-                }
-                let _ = app.emit("bg-ingest:status", g.snapshot());
-                return;
+        let claim = tokio::task::spawn_blocking({
+            let state = state.clone();
+            move || -> anyhow::Result<Option<(PendingIngest, u64, BgStatusSnapshot)>> {
+                let mut guard = state.blocking_lock();
+                if matches!(guard.status, BgStatus::Stopping | BgStatus::Paused) { return Ok(None); }
+                Ok(guard.claim_next()?.map(|item| (item, guard.sleep_between_ms, guard.snapshot())))
             }
-            if matches!(g.status, BgStatus::Paused) {
-                drop(g);
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                continue;
-            }
-            match g.queue.pop_front() {
-                Some(item) => {
-                    g.current = Some(item.path.to_string_lossy().into_owned());
-                    let _ = app.emit("bg-ingest:status", g.snapshot());
-                    (item, g.sleep_between_ms)
-                }
-                None => {
-                    // Queue empty — this worker exits.
-                    let remaining = active_workers.fetch_sub(1, Ordering::Relaxed);
-                    if remaining == 1 {
-                        g.status = BgStatus::Idle;
-                        g.current = None;
-                    }
-                    let _ = app.emit("bg-ingest:status", g.snapshot());
-                    return;
-                }
+        }).await;
+        let (next, sleep_ms, snapshot) = match claim {
+            Ok(Ok(Some(claimed))) => claimed,
+            Ok(Ok(None)) => break,
+            error => {
+                let error = match error { Ok(Err(error)) => format!("{error:#}"), Err(error) => error.to_string(), _ => unreachable!() };
+                let mut guard = state.lock().await;
+                guard.last_error = Some(format!("Could not save background claim: {error}"));
+                guard.status = BgStatus::Stopping;
+                break;
             }
         };
-
-        // ── Do the actual ingest off-lock. ──────────────────────────────
+        let _ = app.emit("bg-ingest:status", snapshot);
         let result = ingest_one(&next, &app).await;
-
-        // ── Update counters under the lock. ─────────────────────────────
-        {
-            let mut g = state.lock().await;
-            match result {
-                Ok(()) => {
-                    g.done += 1;
-                    // Audit trail: log successful ingest
-                    let path_str = next.path.to_string_lossy();
-                    if let Ok(data_dir) = app.state::<crate::AppState>().data_dir.lock().await.as_ref().ok_or(()) {
-                        if let Ok(audit) = crate::audit::AuditLog::open_or_create(data_dir) {
-                            let _ = audit.log("ingest", None, &path_str, "bg_ingest");
-                        }
-                    }
-                }
-                Err(e) => {
-                    g.errored += 1;
-                    g.last_error = Some(e);
-                }
+        let acknowledgement = tokio::task::spawn_blocking({
+            let state = state.clone();
+            let item = next.clone();
+            let error = result.as_ref().err().cloned();
+            move || -> anyhow::Result<BgStatusSnapshot> {
+                let mut guard = state.blocking_lock();
+                guard.finish_item(&item, error.as_deref())?;
+                Ok(guard.snapshot())
             }
-            g.current = None;
-            let _ = app.emit("bg-ingest:status", g.snapshot());
+        }).await;
+        match acknowledgement {
+            Ok(Ok(snapshot)) => { let _ = app.emit("bg-ingest:status", snapshot); }
+            error => {
+                let error = match error { Ok(Err(error)) => format!("{error:#}"), Err(error) => error.to_string(), _ => unreachable!() };
+                let mut guard = state.lock().await;
+                guard.last_error = Some(format!("Background result could not be saved; the source remains recoverable: {error}"));
+                guard.status = BgStatus::Stopping;
+                break;
+            }
         }
-        if sleep_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+        if result.is_ok() {
+            let data_dir = app.state::<AppState>().data_dir.lock().await.clone();
+            if let Some(data_dir) = data_dir {
+                let path = next.path.to_string_lossy().into_owned();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Ok(audit) = crate::audit::AuditLog::open_or_create(&data_dir) {
+                        let _ = audit.log("ingest", None, &path, "bg_ingest");
+                    }
+                }).await;
+            }
         }
+        if sleep_ms > 0 { tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await; }
     }
+    let remaining = worker_lease.release();
+    let mut guard = state.lock().await;
+    if remaining == 1 {
+        guard.status = if guard.queue.is_empty() && guard.failed.is_empty() && guard.in_flight.is_empty() { BgStatus::Idle } else { BgStatus::Paused };
+        guard.current = None;
+    }
+    let _ = app.emit("bg-ingest:status", guard.snapshot());
 }
 
 /// Per-path ingest. Reads the file, runs the P7.4.1 extractor,
@@ -976,7 +1166,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 Some(row)
             } else { None };
             let result = pipeline
-                .ingest_document(raw)
+                .ingest_verified_document(raw, p.clone())
                 .await
                 .map_err(|e| e.to_string());
             if result.is_ok() {
@@ -1114,9 +1304,20 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
 mod tests {
     use super::*;
 
+    fn stored_scheduler() -> (BackgroundIngest, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scheduler = BackgroundIngest::new();
+        scheduler.attach_storage(dir.path()).unwrap();
+        (scheduler, dir)
+    }
+
+    fn source(path: &str) -> PendingIngest {
+        PendingIngest { path: path.into(), owner_id: None, title: None, author: None, year: None, language: None }
+    }
+
     #[test]
     fn enqueue_appends_in_order() {
-        let mut s = BackgroundIngest::new();
+        let (mut s, _dir) = stored_scheduler();
         let items = vec![
             PendingIngest {
                 path: PathBuf::from("/a"),
@@ -1135,19 +1336,19 @@ mod tests {
                 language: None,
             },
         ];
-        s.enqueue(items);
+        s.enqueue(items).unwrap();
         assert_eq!(s.snapshot().pending, 2);
         assert_eq!(s.snapshot().status, BgStatus::Idle);
     }
 
     #[test]
     fn pause_only_works_when_running() {
-        let mut s = BackgroundIngest::new();
-        s.pause();
+        let (mut s, _dir) = stored_scheduler();
+        s.pause().unwrap();
         // Idle → pause is a no-op; status stays Idle.
         assert_eq!(s.snapshot().status, BgStatus::Idle);
         s.status = BgStatus::Running;
-        s.pause();
+        s.pause().unwrap();
         assert_eq!(s.snapshot().status, BgStatus::Paused);
     }
 
@@ -1169,7 +1370,7 @@ mod tests {
 
     #[test]
     fn clear_resets_counters() {
-        let mut s = BackgroundIngest::new();
+        let (mut s, _dir) = stored_scheduler();
         s.done = 5;
         s.errored = 2;
         s.last_error = Some("boom".into());
@@ -1181,7 +1382,7 @@ mod tests {
             year: None,
             language: None,
         });
-        s.clear();
+        s.clear().unwrap();
         let snap = s.snapshot();
         assert_eq!(snap.done, 0);
         assert_eq!(snap.errored, 0);
@@ -1199,25 +1400,25 @@ mod tests {
 
     #[test]
     fn cancel_is_a_no_op_when_idle() {
-        let mut s = BackgroundIngest::new();
-        s.cancel();
+        let (mut s, _dir) = stored_scheduler();
+        s.cancel().unwrap();
         // Idle stays idle — cancel only takes effect on a running worker.
         assert_eq!(s.snapshot().status, BgStatus::Idle);
     }
 
     #[test]
     fn resume_only_works_when_paused() {
-        let mut s = BackgroundIngest::new();
-        s.resume();
+        let (mut s, _dir) = stored_scheduler();
+        s.resume().unwrap();
         assert_eq!(s.snapshot().status, BgStatus::Idle);
         s.status = BgStatus::Paused;
-        s.resume();
+        s.resume().unwrap();
         assert_eq!(s.snapshot().status, BgStatus::Running);
     }
 
     #[test]
     fn snapshot_is_consistent_with_internal_state() {
-        let mut s = BackgroundIngest::new();
+        let (mut s, _dir) = stored_scheduler();
         s.done = 7;
         s.errored = 3;
         s.current = Some("/path/to/active.pdf".to_owned());
@@ -1259,6 +1460,74 @@ mod tests {
         assert!(EXTRACTION_TIMEOUT_SECS >= 60,  "timeout too short");
         assert!(EXTRACTION_TIMEOUT_SECS <= 3600,"timeout too long");
         assert_eq!(EXTRACTION_TIMEOUT_SECS, 300);
+    }
+
+    #[test]
+    fn scheduler_reopens_pending_active_and_failed_sources_with_saved_options() {
+        let (mut scheduler, dir) = stored_scheduler();
+        scheduler.ocr_enabled = true;
+        scheduler.ocr_tier = "tier2".into();
+        scheduler.ocr_pipeline.layout = true;
+        scheduler.persist_settings().unwrap();
+        scheduler.enqueue(vec![source("/done"), source("/error"), source("/active"), source("/pending")]).unwrap();
+        let done = scheduler.claim_next().unwrap().unwrap();
+        scheduler.finish_item(&done, None).unwrap();
+        let failed = scheduler.claim_next().unwrap().unwrap();
+        scheduler.finish_item(&failed, Some("OCR model unavailable")).unwrap();
+        let active = scheduler.claim_next().unwrap().unwrap();
+        assert_eq!(active.path, PathBuf::from("/active"));
+        drop(scheduler);
+        let mut reopened = BackgroundIngest::new();
+        reopened.attach_storage(dir.path()).unwrap();
+        let state = reopened.snapshot();
+        assert_eq!(state.status, BgStatus::Paused);
+        assert_eq!((state.pending, state.done, state.errored), (2, 1, 1));
+        assert!(reopened.ocr_enabled);
+        assert_eq!(reopened.ocr_tier, "tier2");
+        assert!(reopened.ocr_pipeline.layout);
+        reopened.resume().unwrap();
+        assert_eq!(reopened.snapshot().pending, 3);
+        assert_eq!(reopened.snapshot().errored, 0);
+        assert!(!reopened.queue.iter().any(|item| item.path == PathBuf::from("/done")));
+    }
+
+    #[test]
+    fn scheduler_serializes_same_source_and_coalesces_followups() {
+        let (mut scheduler, _dir) = stored_scheduler();
+        let first = source("/same");
+        assert_eq!(scheduler.enqueue(vec![first.clone(), first.clone()]).unwrap(), 1);
+        let (workers, active) = scheduler.start_workers().unwrap();
+        assert_eq!(workers, 1);
+        assert_eq!(scheduler.start_workers().unwrap().0, 0);
+        let current = scheduler.claim_next().unwrap().unwrap();
+        let mut followup = first.clone(); followup.title = Some("updated title".into());
+        assert_eq!(scheduler.enqueue(vec![followup.clone(), followup]).unwrap(), 1);
+        assert!(scheduler.claim_next().unwrap().is_none());
+        assert!(scheduler.clear().is_err());
+        scheduler.finish_item(&current, None).unwrap();
+        let next = scheduler.claim_next().unwrap().unwrap();
+        assert_eq!(next.title.as_deref(), Some("updated title"));
+        scheduler.finish_item(&next, None).unwrap();
+        let lease = WorkerLease { active: active.clone(), released: false }; drop(lease);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+        assert_eq!(scheduler.snapshot().done, 2);
+    }
+
+    #[test]
+    fn scheduler_rejects_unattached_storage_and_recovers_dropped_worker() {
+        let mut scheduler = BackgroundIngest::new();
+        assert!(scheduler.enqueue(vec![source("/not-saved")]).is_err());
+        assert_eq!(scheduler.snapshot().pending, 0);
+        let dir = tempfile::tempdir().unwrap();
+        scheduler.attach_storage(dir.path()).unwrap();
+        scheduler.enqueue(vec![source("/interrupted")]).unwrap();
+        let (_, active) = scheduler.start_workers().unwrap();
+        scheduler.claim_next().unwrap().unwrap();
+        drop(WorkerLease { active, released: false });
+        scheduler.attach_storage(dir.path()).unwrap();
+        assert_eq!(scheduler.snapshot().status, BgStatus::Paused);
+        assert_eq!(scheduler.snapshot().pending, 1);
+        assert!(scheduler.in_flight.is_empty());
     }
 
     // ── Re-ingest guard (mtime + image-indexing backfill) ────────────────

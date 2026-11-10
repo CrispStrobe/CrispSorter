@@ -31,6 +31,7 @@ pub mod pairs;
 pub mod partition;
 pub mod proxy;
 pub mod proxy_secret;
+pub mod pull;
 pub mod secret;
 pub mod tauri_commands;
 pub mod transfer_queue;
@@ -121,7 +122,7 @@ impl SyncManager {
             .with_context(|| format!("opening sync outbox at {}", db_path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
@@ -339,55 +340,39 @@ impl SyncManager {
         Ok((pushed, failed))
     }
 
-    /// Pull rows from the remote server's `/v1/sync/since` endpoint that have
-    /// `indexed_at >= last_pull_ts`. Returns the parsed `SearchHit` rows AND
-    /// the new `max_indexed_at` (so the caller can advance state after a
-    /// successful apply).
-    ///
-    /// This method does NOT advance `last_pull_ts` itself — the caller does
-    /// so via [`Self::set_state("last_pull_ts", …)`] *after* successfully
-    /// applying the rows to local storage.  This gives at-least-once
-    /// semantics: a crash mid-apply re-fetches the same rows on next pull.
+    /// Fetch one bounded remote metadata page without advancing local state.
+    /// Call `acknowledge_pull` only after the paired local apply succeeds.
     pub async fn pull_pending(
         &self,
         remote_url: &str,
         api_key: &str,
         limit: usize,
-    ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
+    ) -> Result<pull::PendingPullPage> {
         self.pull_pending_with_proxy(remote_url, api_key, limit, &ProxyConfig::default()).await
     }
 
-    /// Pull pending rows using an explicit HTTP/SOCKS5 proxy policy.
     pub async fn pull_pending_with_proxy(
         &self,
         remote_url: &str,
         api_key: &str,
         limit: usize,
         proxy: &ProxyConfig,
-    ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
-        let last_pull_ts: i64 = self.get_state("last_pull_ts")?
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+    ) -> Result<pull::PendingPullPage> {
+        let saved = self.get_state(pull::CHECKPOINT_KEY)?;
+        let legacy_timestamp = self.get_state("last_pull_ts")?
+            .map(|value| value.parse::<i64>().context("Reading prior sync timestamp"))
+            .transpose()?.unwrap_or(0);
+        let checkpoint = pull::PullCheckpoint::for_remote(saved.as_deref(), legacy_timestamp, remote_url)?;
+        let client = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
+        let (page, checkpoint_after_apply) = pull::fetch_page(&client, &checkpoint, api_key, limit).await?;
+        Ok(pull::PendingPullPage { page, checkpoint_after_apply, expected_checkpoint: saved })
+    }
 
-        let url = format!(
-            "{}/v1/sync/since?ts={}&limit={}",
-            remote_url.trim_end_matches('/'),
-            last_pull_ts,
-            limit
-        );
-        let mut req = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?
-            .get(&url);
-        if !api_key.is_empty() { req = req.bearer_auth(api_key); }
-
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("server returned {}", resp.status());
-        }
-        let body: serde_json::Value = resp.json().await?;
-        let max_ts = body["max_indexed_at"].as_i64().unwrap_or(last_pull_ts);
-        let rows: Vec<crisp_index_protocol::SearchHit> =
-            serde_json::from_value(body["rows"].clone()).unwrap_or_default();
-        Ok((rows, max_ts))
+    /// Atomically advance the cursor after a successful local write. A crash
+    /// before this transaction replays the same page through the paired writer.
+    pub fn acknowledge_pull(&self, pending: &pull::PendingPullPage) -> Result<()> {
+        let mut connection = self.conn.lock().map_err(|_| anyhow::anyhow!("Sync database lock poisoned"))?;
+        pull::acknowledge_page(&mut connection, pending)
     }
 
     /// P13.7 Stage F — drain `cb_manifest_push` outbox entries

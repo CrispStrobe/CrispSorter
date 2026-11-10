@@ -1,122 +1,108 @@
-//! P11 Pillar 6 — pull-delta endpoint.
-//!
-//! `GET /v1/sync/since?ts=<unix_ms>&limit=<N>` returns up to `limit` rows
-//! from the documents table whose `indexed_at` is greater than or equal
-//! to `ts`, ordered ascending by `indexed_at`. The client uses this to
-//! reconcile its local cache after offline periods.
-//!
-//! Only `chunk_index = 0` rows are returned — one row per document.
-//! For full text re-fetch the client can issue follow-up `/v1/search`
-//! requests using each row's `doc_id`.
-
+//! Bounded metadata synchronization with snapshot and timestamp tie cursors.
 use axum::{
     extract::{Query, State},
-    Json,
     http::StatusCode,
+    Json,
 };
-use crisp_index_protocol::{IngestChunk, SearchHit};
-use serde::{Deserialize, Serialize};
+use crisp_index_protocol::{SyncCursor, SyncPage, SYNC_CURSOR_VERSION};
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::index::sync_cursor::SyncSnapshotUnavailable;
 use crate::state::SharedState;
 
 #[derive(Debug, Deserialize)]
 pub struct SinceQuery {
-    /// Unix milliseconds. Returns rows with `indexed_at >= ts`.
-    /// Default: 0 (full snapshot).
     #[serde(default)]
-    pub ts:    Option<i64>,
-    /// Maximum rows to return. Default: 200, capped at 1000.
+    pub ts: Option<i64>,
     #[serde(default)]
     pub limit: Option<usize>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SinceResponse {
-    /// Rows whose `indexed_at` ≥ the requested `ts`.
-    pub rows:           Vec<SearchHit>,
-    /// Largest `indexed_at` in the returned rows (or the request `ts` when
-    /// the response is empty). Clients persist this as their `last_pull_ts`.
-    pub max_indexed_at: i64,
-    /// True when `rows.len() == limit`, signalling more pages may exist.
-    /// The client should call again with `ts = max_indexed_at + 1`.
-    pub has_more:       bool,
+    /// New clients explicitly opt into continuation support on the first page.
+    #[serde(default)]
+    pub cursor_version: Option<u32>,
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 pub async fn since(
     State(state): State<Arc<SharedState>>,
-    Query(q):     Query<SinceQuery>,
-) -> Result<Json<SinceResponse>, (StatusCode, String)> {
-    let ts    = q.ts.unwrap_or(0);
-    let limit = q.limit.unwrap_or(200).min(1000);
-
-    let batches = state
+    Query(query): Query<SinceQuery>,
+) -> Result<Json<SyncPage>, (StatusCode, Json<Value>)> {
+    let limit = query.limit.unwrap_or(200);
+    if !(1..=1000).contains(&limit)
+        || query.ts.is_some_and(|timestamp| timestamp < 0)
+        || query
+            .cursor_version
+            .is_some_and(|version| version != SYNC_CURSOR_VERSION)
+    {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error":"Invalid sync timestamp, page limit, or cursor version"})),
+        ));
+    }
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(|encoded| {
+            if encoded.len() > 8192 {
+                return Err("Sync cursor is too large".to_owned());
+            }
+            let cursor: SyncCursor =
+                serde_json::from_str(encoded).map_err(|_| "Malformed sync cursor".to_owned())?;
+            if !cursor.is_valid()
+                || query
+                    .ts
+                    .is_some_and(|timestamp| timestamp != cursor.since_ms)
+            {
+                return Err("Invalid or mismatched sync cursor".to_owned());
+            }
+            Ok(cursor)
+        })
+        .transpose()
+        .map_err(|error| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error":error})),
+            )
+        })?;
+    let since_ms = cursor
+        .as_ref()
+        .map_or(query.ts.unwrap_or(0), |cursor| cursor.since_ms);
+    let _guard = state.index.read_guard().await.map_err(|error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":error.to_string()})),
+        )
+    })?;
+    let page = state
         .index
         .vector
-        .rows_since(ts, limit)
+        .rows_since(since_ms, cursor.as_ref(), limit)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Reuse the existing batches-to-SearchHit converter via a tiny helper;
-    // we don't have direct access to `batches_to_results` from the route
-    // module, so we inline the small projection we need.
-    let mut rows: Vec<SearchHit> = Vec::new();
-    let mut max_indexed_at = ts;
-    for batch in &batches {
-        use arrow_array::{Array, Int32Array, StringArray, TimestampMillisecondArray};
-        let n = batch.num_rows();
-        let doc_id_col = batch.column_by_name("doc_id")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let uri_col    = batch.column_by_name("location_uri")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let owner_col  = batch.column_by_name("owner_id")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let title_col  = batch.column_by_name("title")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let author_col = batch.column_by_name("author")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let year_col   = batch.column_by_name("year")
-            .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-        let fname_col  = batch.column_by_name("filename")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let ext_col    = batch.column_by_name("ext")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let indexed_col = batch.column_by_name("indexed_at")
-            .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>());
-
-        let (Some(doc_id_col), Some(uri_col), Some(owner_col)) = (doc_id_col, uri_col, owner_col)
-        else { continue };
-
-        for i in 0..n {
-            if doc_id_col.is_null(i) { continue; }
-            let mtime_ms = indexed_col.as_ref()
-                .filter(|c| !c.is_null(i))
-                .map(|c| c.value(i))
-                .unwrap_or(0);
-            if mtime_ms > max_indexed_at { max_indexed_at = mtime_ms; }
-
-            rows.push(SearchHit {
-                doc_id:       doc_id_col.value(i).to_owned(),
-                location_uri: uri_col.value(i).to_owned(),
-                owner_id:     owner_col.value(i).to_owned(),
-                score:        0.0,                     // sync isn't a search
-                title:        title_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i).to_owned()),
-                author:       author_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i).to_owned()),
-                year:         year_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)),
-                filename:     fname_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i).to_owned()),
-                ext:          ext_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i).to_owned()),
-                language:     None,
-                snippet:      String::new(),
-                chunk_index:  0,
-            });
-        }
+        .map_err(|error| {
+            if error.downcast_ref::<SyncSnapshotUnavailable>().is_some() {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({"error":error.to_string(),"code":"sync_snapshot_expired"})),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error":error.to_string()})),
+                )
+            }
+        })?;
+    if page.has_more && query.cursor_version != Some(SYNC_CURSOR_VERSION) {
+        // Older clients that can consume the entire delta still work. Refuse a
+        // truncated timestamp-only page, which could silently skip tied rows.
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error":"This sync requires cursor pagination; upgrade the client before continuing",
+                "code":"sync_cursor_required"
+            })),
+        ));
     }
-
-    let has_more = rows.len() >= limit;
-    Ok(Json(SinceResponse { rows, max_indexed_at, has_more }))
+    Ok(Json(page))
 }
-
-// Allow the unused import warning when the route module is included but
-// the IngestChunk type isn't used here.
-#[allow(dead_code)]
-fn _no_warn(_: IngestChunk) {}

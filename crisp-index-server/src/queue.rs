@@ -36,18 +36,18 @@ impl Default for QueueConfig {
 
 #[derive(Clone)]
 pub struct TaskQueue {
-    db_path:       PathBuf,
-    conn:          Arc<Mutex<Connection>>,
-    lease_ms:      i64,
+    db_path: PathBuf,
+    conn: Arc<Mutex<Connection>>,
+    lease_ms: i64,
     retry_base_ms: i64,
-    max_attempts:  u32,
+    max_attempts: u32,
 }
 
 #[derive(Debug)]
 struct QueuedTask {
-    id:            String,
-    payload:       IngestBatch,
-    total_chunks:  usize,
+    id: String,
+    payload: IngestBatch,
+    total_chunks: usize,
     attempt_count: u32,
 }
 
@@ -94,7 +94,7 @@ impl TaskQueue {
             .context("configuring sqlite busy timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enabling sqlite WAL mode")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")
+        conn.pragma_update(None, "synchronous", "FULL")
             .context("setting sqlite synchronous mode")?;
         conn.execute_batch(SCHEMA)
             .context("creating queue schema")?;
@@ -124,7 +124,19 @@ impl TaskQueue {
         // payload_json stays small (text + metadata only).  If the batch
         // uses server-side embedding (all embedding vectors are empty) the
         // blob stays null, saving both the packing work and the column space.
-        let embed_dims = batch.chunks.first().map_or(0, |c| c.embedding.len());
+        // Mixed client/server embedding batches keep vectors in JSON. Packing
+        // a partial set into a fixed-stride blob would misalign later chunks.
+        let first_dims = batch.chunks.first().map_or(0, |c| c.embedding.len());
+        let embed_dims = if first_dims > 0
+            && batch
+                .chunks
+                .iter()
+                .all(|chunk| chunk.embedding.len() == first_dims)
+        {
+            first_dims
+        } else {
+            0
+        };
         let (embeddings_blob, embed_dims_stored): (Option<Vec<u8>>, i64) = if embed_dims > 0 {
             let mut blob = Vec::with_capacity(batch.chunks.len() * embed_dims * 4);
             for chunk in &batch.chunks {
@@ -132,7 +144,10 @@ impl TaskQueue {
                     blob.extend_from_slice(&f.to_le_bytes());
                 }
             }
-            (Some(blob), i64::try_from(embed_dims).context("embed_dims exceeds i64")?)
+            (
+                Some(blob),
+                i64::try_from(embed_dims).context("embed_dims exceeds i64")?,
+            )
         } else {
             (None, 0)
         };
@@ -140,16 +155,20 @@ impl TaskQueue {
         // Strip embeddings from the JSON payload — they are in the blob.
         let compact_batch = if embed_dims > 0 {
             IngestBatch {
-                chunks: batch.chunks.iter().map(|c| IngestChunk {
-                    embedding: Vec::new(),
-                    ..c.clone()
-                }).collect(),
+                chunks: batch
+                    .chunks
+                    .iter()
+                    .map(|c| IngestChunk {
+                        embedding: Vec::new(),
+                        ..c.clone()
+                    })
+                    .collect(),
             }
         } else {
             batch.clone()
         };
-        let payload_json = serde_json::to_string(&compact_batch)
-            .context("serializing compact ingest batch")?;
+        let payload_json =
+            serde_json::to_string(&compact_batch).context("serializing compact ingest batch")?;
 
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().context("starting enqueue transaction")?;
@@ -194,7 +213,17 @@ impl TaskQueue {
                 "#,
             )
             .context("preparing task status query")?;
-        let status: Option<(String, String, i64, i64, i64, i64, Option<i64>, Option<i64>, Option<String>)> = stmt
+        let status: Option<(
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        )> = stmt
             .query_row(params![task_id], |row: &Row<'_>| {
                 Ok((
                     row.get(0)?,
@@ -211,32 +240,35 @@ impl TaskQueue {
             .optional()
             .context("reading task status")?;
         Ok(status
-            .map(|(
-                task_id,
-                state,
-                total_chunks,
-                completed_chunks,
-                attempt_count,
-                max_attempts,
-                last_heartbeat_at,
-                lease_expires_at,
-                error,
-            )| -> Result<TaskStatusResponse> {
-                let total_chunks = usize_from_i64(total_chunks, "total_chunks")?;
-                let completed_chunks = usize_from_i64(completed_chunks, "completed_chunks")?;
-                Ok(TaskStatusResponse {
+            .map(
+                |(
                     task_id,
                     state,
                     total_chunks,
                     completed_chunks,
-                    queue_depth,
-                    attempt_count: Some(u32_from_i64(attempt_count, "attempt_count")?),
-                    max_attempts: Some(u32_from_i64(max_attempts, "max_attempts")?),
+                    attempt_count,
+                    max_attempts,
                     last_heartbeat_at,
                     lease_expires_at,
                     error,
-                })
-            })
+                )|
+                 -> Result<TaskStatusResponse> {
+                    let total_chunks = usize_from_i64(total_chunks, "total_chunks")?;
+                    let completed_chunks = usize_from_i64(completed_chunks, "completed_chunks")?;
+                    Ok(TaskStatusResponse {
+                        task_id,
+                        state,
+                        total_chunks,
+                        completed_chunks,
+                        queue_depth,
+                        attempt_count: Some(u32_from_i64(attempt_count, "attempt_count")?),
+                        max_attempts: Some(u32_from_i64(max_attempts, "max_attempts")?),
+                        last_heartbeat_at,
+                        lease_expires_at,
+                        error,
+                    })
+                },
+            )
             .transpose()?)
     }
 
@@ -274,12 +306,29 @@ impl TaskQueue {
                 RETURNING id, payload_json, total_chunks, attempt_count, embeddings_blob, embed_dims
                 "#,
                 params![now, worker_id, now + self.lease_ms],
-                |row: &Row<'_>| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                |row: &Row<'_>| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .optional()
             .context("claiming next queued task")?;
 
-        let Some((task_id, payload_json, total_chunks_i64, attempt_count_i64, embeddings_blob, embed_dims_i64)) = claimed else {
+        let Some((
+            task_id,
+            payload_json,
+            total_chunks_i64,
+            attempt_count_i64,
+            embeddings_blob,
+            embed_dims_i64,
+        )) = claimed
+        else {
             tx.commit().context("committing empty claim transaction")?;
             return Ok(None);
         };
@@ -290,7 +339,7 @@ impl TaskQueue {
 
         if let Some(blob) = embeddings_blob.as_deref() {
             let dims = usize::try_from(embed_dims_i64).unwrap_or(0);
-            unpack_embeddings(&mut payload, blob, dims);
+            unpack_embeddings(&mut payload, blob, dims)?;
         }
 
         Ok(Some(QueuedTask {
@@ -362,7 +411,8 @@ impl TaskQueue {
             .with_context(|| format!("loading task {task_id} failure state"))?;
 
         let Some((attempt_count, max_attempts)) = record else {
-            tx.commit().context("committing empty failure transaction")?;
+            tx.commit()
+                .context("committing empty failure transaction")?;
             return Ok(());
         };
 
@@ -398,7 +448,11 @@ impl TaskQueue {
                     updated_at = ?2
                 WHERE id = ?3
                 "#,
-                params![now + retry_delay_ms(self.retry_base_ms, attempt_count as u32), now, task_id],
+                params![
+                    now + retry_delay_ms(self.retry_base_ms, attempt_count as u32),
+                    now,
+                    task_id
+                ],
             )
             .with_context(|| format!("requeueing task {task_id}"))?;
         }
@@ -424,7 +478,9 @@ impl TaskQueue {
 
         let mut conn = self.conn.lock().unwrap();
         let existing_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM ingest_tasks", [], |row: &Row<'_>| row.get(0))
+            .query_row("SELECT COUNT(*) FROM ingest_tasks", [], |row: &Row<'_>| {
+                row.get(0)
+            })
             .context("counting existing sqlite queue rows")?;
         if existing_count > 0 {
             return Ok(());
@@ -435,7 +491,9 @@ impl TaskQueue {
         let legacy: LegacyQueueFile =
             serde_json::from_str(&raw).context("parsing legacy queue JSON")?;
 
-        let tx = conn.transaction().context("starting legacy queue migration")?;
+        let tx = conn
+            .transaction()
+            .context("starting legacy queue migration")?;
         let now = now_ms();
         for task in legacy.tasks {
             let (state, worker_id, lease_expires_at, last_heartbeat_at, next_retry_at, error) =
@@ -480,10 +538,7 @@ impl TaskQueue {
                 migrated_path.display()
             )
         })?;
-        tracing::info!(
-            "migrated legacy JSON queue into {}",
-            self.db_path.display()
-        );
+        tracing::info!("migrated legacy JSON queue into {}", self.db_path.display());
         Ok(())
     }
 
@@ -526,8 +581,13 @@ impl TaskQueue {
 
                         match result {
                             Ok(()) => {
-                                if let Err(e) = queue.mark_done(&task.id, &worker_id, task.total_chunks) {
-                                    tracing::error!("queue mark_done failed for {}: {e:#}", task.id);
+                                if let Err(e) =
+                                    queue.mark_done(&task.id, &worker_id, task.total_chunks)
+                                {
+                                    tracing::error!(
+                                        "queue mark_done failed for {}: {e:#}",
+                                        task.id
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -668,7 +728,10 @@ fn reclaim_expired_tasks_tx(tx: &Transaction<'_>, lease_ms: i64, retry_base_ms: 
                 WHERE id = ?3
                 "#,
                 params![
-                    now + retry_delay_ms(retry_base_ms.max(lease_ms.min(1_000)), attempt_count as u32),
+                    now + retry_delay_ms(
+                        retry_base_ms.max(lease_ms.min(1_000)),
+                        attempt_count as u32
+                    ),
                     now,
                     task_id,
                 ],
@@ -704,16 +767,16 @@ fn queue_depth_tx(tx: &Transaction<'_>) -> Result<usize> {
 fn normalize_legacy_task(
     task: &LegacyTaskRecord,
     now: i64,
-) -> (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<String>) {
+) -> (
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+) {
     match task.state.as_str() {
-        "processing" => (
-            "queued".to_owned(),
-            None,
-            None,
-            None,
-            Some(now),
-            None,
-        ),
+        "processing" => ("queued".to_owned(), None, None, None, Some(now), None),
         "failed" => (
             "failed".to_owned(),
             None,
@@ -722,14 +785,7 @@ fn normalize_legacy_task(
             None,
             task.error.clone(),
         ),
-        "done" => (
-            "done".to_owned(),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
+        "done" => ("done".to_owned(), None, None, None, None, None),
         _ => (
             "queued".to_owned(),
             None,
@@ -759,22 +815,31 @@ fn retry_delay_ms(base_ms: i64, attempt_count: u32) -> i64 {
 
 /// Restore per-chunk embeddings from a packed little-endian f32 blob.
 /// Each chunk occupies exactly `dims * 4` bytes in `blob`.
-fn unpack_embeddings(batch: &mut IngestBatch, blob: &[u8], dims: usize) {
-    if dims == 0 || blob.is_empty() {
-        return;
-    }
-    let bytes_per_chunk = dims * 4;
-    for (i, chunk) in batch.chunks.iter_mut().enumerate() {
-        let start = i * bytes_per_chunk;
-        let end = start + bytes_per_chunk;
-        if end > blob.len() {
-            break;
-        }
-        chunk.embedding = blob[start..end]
+fn unpack_embeddings(batch: &mut IngestBatch, blob: &[u8], dims: usize) -> Result<()> {
+    let bytes_per_chunk = dims
+        .checked_mul(4)
+        .ok_or_else(|| anyhow!("Embedding dimension overflow"))?;
+    let expected = batch
+        .chunks
+        .len()
+        .checked_mul(bytes_per_chunk)
+        .ok_or_else(|| anyhow!("Embedding payload size overflow"))?;
+    anyhow::ensure!(
+        dims > 0 && blob.len() == expected,
+        "Queued embedding blob length {} differs from expected {expected}",
+        blob.len()
+    );
+    for (chunk, bytes) in batch
+        .chunks
+        .iter_mut()
+        .zip(blob.chunks_exact(bytes_per_chunk))
+    {
+        chunk.embedding = bytes
             .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
     }
+    Ok(())
 }
 
 fn usize_from_i64(value: i64, field: &str) -> Result<usize> {
@@ -795,7 +860,8 @@ mod tests {
 
     impl TestDir {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("crisp-queue-test-{}", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("crisp-queue-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).unwrap();
             Self { path }
         }
@@ -813,6 +879,54 @@ mod tests {
 
     fn sample_batch() -> IngestBatch {
         IngestBatch { chunks: Vec::new() }
+    }
+
+    fn embedded_chunk(index: i32, embedding: Vec<f32>) -> IngestChunk {
+        serde_json::from_value(serde_json::json!({
+            "doc_id":"mixed","chunk_index":index,"full_text":"body","embedding":embedding,
+            "filename":"mixed.txt","ext":"txt","language":"en","location_uri":"test://mixed",
+            "owner_id":"owner","source_hash":"mixed"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn mixed_embedding_batches_preserve_each_chunk_vector() {
+        for vectors in [
+            vec![vec![1.0, 2.0], vec![], vec![3.0, 4.0]],
+            vec![vec![], vec![1.0, 2.0]],
+        ] {
+            let tmp = TestDir::new();
+            let queue = TaskQueue::open_or_create(tmp.path(), QueueConfig::default()).unwrap();
+            let batch = IngestBatch {
+                chunks: vectors
+                    .iter()
+                    .enumerate()
+                    .map(|(index, embedding)| embedded_chunk(index as i32, embedding.clone()))
+                    .collect(),
+            };
+            queue.enqueue_batch(&batch).unwrap();
+            let claimed = queue.claim_next_task("worker-test").unwrap().unwrap();
+            assert_eq!(
+                claimed
+                    .payload
+                    .chunks
+                    .into_iter()
+                    .map(|chunk| chunk.embedding)
+                    .collect::<Vec<_>>(),
+                vectors
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_embedding_blob_is_rejected_instead_of_truncated() {
+        let mut batch = IngestBatch {
+            chunks: vec![embedded_chunk(0, vec![]), embedded_chunk(1, vec![])],
+        };
+        assert!(unpack_embeddings(&mut batch, &[0; 12], 2).is_err());
+        assert!(unpack_embeddings(&mut batch, &[], 0).is_err());
+        assert!(batch.chunks.iter().all(|chunk| chunk.embedding.is_empty()));
     }
 
     #[test]
@@ -878,7 +992,10 @@ mod tests {
         let status = queue.get_task_status(&task_id).unwrap().unwrap();
         assert_eq!(status.state, "processing");
         assert_eq!(status.attempt_count, Some(1));
-        assert_eq!(status.max_attempts, Some(QueueConfig::default().max_attempts));
+        assert_eq!(
+            status.max_attempts,
+            Some(QueueConfig::default().max_attempts)
+        );
         assert!(status.last_heartbeat_at.is_some());
         assert!(status.lease_expires_at.is_some());
     }

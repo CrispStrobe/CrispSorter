@@ -1092,12 +1092,18 @@ pub async fn sync_pull(
     let fts = fts.ok_or("Local full-text index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
 
-    let (rows, max_ts) = mgr.pull_pending(&remote_url, &api_key, 200)
+    let mut total_pulled = 0usize;
+    let mut total_applied = 0usize;
+    loop {
+    let pending = mgr.pull_pending(&remote_url, &api_key, 200)
         .await
         .map_err(|e| e.to_string())?;
+    let rows = &pending.page.rows;
+    let max_ts = pending.page.max_indexed_at;
 
     if rows.is_empty() {
-        return Ok(serde_json::json!({ "pulled": 0, "applied": 0, "max_indexed_at": max_ts }));
+        mgr.acknowledge_pull(&pending).map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({ "pulled": total_pulled, "applied": total_applied, "max_indexed_at": max_ts, "has_more": false }));
     }
 
     // Convert each SearchHit → L1 DocumentChunk (chunk_index = -1 sentinel,
@@ -1167,10 +1173,14 @@ pub async fn sync_pull(
     local.ingest_batch_with_fts(&chunks, &[], &fts).await
         .map_err(|e| format!("indexing pulled metadata: {e:#}"))?;
 
-    // Only after a successful apply do we advance the watermark.
-    mgr.set_state("last_pull_ts", &max_ts.to_string()).map_err(|e| e.to_string())?;
-
-    Ok(serde_json::json!({ "pulled": rows.len(), "applied": applied, "max_indexed_at": max_ts }))
+    // Each bounded page becomes resumable only after the paired write.
+    mgr.acknowledge_pull(&pending).map_err(|e| e.to_string())?;
+    total_pulled += rows.len();
+    total_applied += applied;
+    if !pending.page.has_more {
+        return Ok(serde_json::json!({ "pulled": total_pulled, "applied": total_applied, "max_indexed_at": max_ts, "has_more": false }));
+    }
+    }
 }
 
 /// Clear all permanently-failed outbox entries (retries ≥ 10).

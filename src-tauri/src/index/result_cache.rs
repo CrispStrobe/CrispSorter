@@ -205,9 +205,30 @@ pub fn hash_request(filters: &super::schema::SearchFilters, limit: usize) -> u64
     h.finish()
 }
 
+/// An external CLI or another app process can commit without touching this
+/// process's invalidation counter. Bind cached answers to the durable table
+/// version observed under the shared read lease as well as the request.
+pub fn hash_snapshot(filters: &super::schema::SearchFilters, limit: usize, version: u64) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    hash_request(filters, limit).hash(&mut h);
+    version.hash(&mut h);
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_commits_cannot_reuse_process_local_cached_answers() {
+        let mut cache = ResultCache::new_pinned(2);
+        let filters = super::super::schema::SearchFilters::default();
+        let original = hash_snapshot(&filters, 20, 10);
+        let external_commit = hash_snapshot(&filters, 20, 11);
+        cache.put("query", "hybrid", original, vec![]);
+        assert!(cache.get("query", "hybrid", original).is_some());
+        assert!(cache.get("query", "hybrid", external_commit).is_none());
+    }
 
     #[test]
     fn in_flight_result_is_not_relabelled_after_index_changes() {

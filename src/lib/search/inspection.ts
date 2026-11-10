@@ -50,8 +50,12 @@ export function sortGroups<T extends InspectableHit>(groups: readonly ResultGrou
             const ay = a.best.year, by = b.best.year;
             // Unknown years always follow known years in either direction.
             order = ay == null ? (by == null ? 0 : 1) : by == null ? -1 : (ay - by) * (sort === 'year-desc' ? -1 : 1);
-        } else order = Number(Boolean(a.best.catalog_source)) - Number(Boolean(b.best.catalog_source))
-            || finiteScore(b.best.score) - finiteScore(a.best.score);
+        } else {
+            // A stable sort retains the engine's order for equal relevance
+            // scores, including any tie-break information not in the score.
+            return Number(Boolean(a.best.catalog_source)) - Number(Boolean(b.best.catalog_source))
+                || finiteScore(b.best.score) - finiteScore(a.best.score);
+        }
         return order || compare(a.best.title || a.best.filename || '', b.best.title || b.best.filename || '')
             || compare(a.best.location_uri, b.best.location_uri) || a.doc_id.localeCompare(b.doc_id);
     });

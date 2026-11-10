@@ -22,6 +22,7 @@
 mod auth;
 mod embedder;
 mod index;
+mod fts;
 mod queue;
 mod routes;
 mod state;
@@ -89,9 +90,10 @@ async fn main() -> Result<()> {
     let vector = Arc::new(VectorStore::open_or_create(&data_dir, dims).await?);
 
     tracing::info!("Opening FtsStore");
-    let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts"))?);
+    let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts-v2"))?);
 
     let search_index = Arc::new(SearchIndex::new(vector, fts));
+    search_index.ensure_ready().await?;
     let embedder = if server_embed_enabled {
         tracing::info!("Loading server-side embedder (BGE-M3)");
         Some(embedder::ServerEmbedder::load_bge_m3(&data_dir.join("models"))?)
@@ -126,13 +128,14 @@ async fn main() -> Result<()> {
 
     // Authenticated /v1/* router.
     let v1 = Router::new()
+        .route("/capabilities",             get(routes::capabilities::capabilities))
         .route("/stats",                    get(routes::stats::stats))
         .route("/ingest",                   post(routes::ingest::ingest))
         .route("/ingest/batch",             post(routes::ingest::ingest_batch))
-        .route("/tasks/:task_id",           get(routes::tasks::task_status))
+        .route("/tasks/{task_id}",           get(routes::tasks::task_status))
         .route("/search",                   post(routes::search::search))
-        .route("/docs/:doc_id",             delete(routes::docs::delete_doc))
-        .route("/docs/:doc_id/location",    post(routes::docs::update_location))
+        .route("/docs/{doc_id}",             delete(routes::docs::delete_doc))
+        .route("/docs/{doc_id}/location",    post(routes::docs::update_location))
         .route("/admin/build-ivf-pq",       post(routes::admin::build_ivf_pq))
         .route("/sync/since",               get(routes::sync::since))
         .layer(middleware::from_fn_with_state(

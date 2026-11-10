@@ -4302,7 +4302,7 @@ async fn cmd_index_async(
                     embedding_omni: None,
                     embedding_vit: None,
                 };
-                match pipeline.ingest_document(raw).await {
+                match pipeline.ingest_verified_document(raw, p.clone()).await {
                     Ok(stats) => {
                         // Zero chunks means nothing searchable was written:
                         // the row lands in the FTS index but never in

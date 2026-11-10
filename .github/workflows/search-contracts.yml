@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'crates/crisp-search-query/**'
+      - 'crisp-index-protocol/**'
+      - 'crisp-index-server/**'
       - 'src-tauri/src/index/**'
       - 'src-tauri/src/bg_ingest/**'
       - 'src-tauri/src/jobs/**'
@@ -12,6 +14,10 @@ on:
       - 'tests/search-contract/**'
       - 'tests/index-write-contract/**'
       - 'tests/extraction-contract/**'
+      - 'tests/server-search-contract/**'
+      - 'src-tauri/src/sync/pull.rs'
+      - 'scripts/evaluate_search_reports.py'
+      - 'tests/test_search_evaluation.py'
       - 'Cargo.lock'
       - '.github/workflows/search-contracts.yml'
   workflow_dispatch:
@@ -24,6 +30,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  evaluation-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check retrieval metrics and evaluation input safeguards
+        run: python3 tests/test_search_evaluation.py -v
+
   query-contract:
     strategy:
       fail-fast: false
@@ -55,6 +69,22 @@ jobs:
           workspaces: tests/index-write-contract
       - name: Test durable replacement, recovery, metadata, and job acknowledgement
         run: cargo test --locked --manifest-path tests/index-write-contract/Cargo.toml -- --test-threads=2
+
+  server-search-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native index build requirements
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/server-search-contract
+      - name: Test server migrations, HTTP query contracts, and sync cursors
+        run: cargo test --locked --manifest-path tests/server-search-contract/Cargo.toml -- --test-threads=2
 
   extraction-contract:
     strategy:

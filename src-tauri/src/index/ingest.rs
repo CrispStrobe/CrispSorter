@@ -399,7 +399,41 @@ struct WriterJob {
     tantivy_inputs: Vec<TantivyInputOwned>,
     total_chunk_count: usize,
     embed_time_ms: u64,
+    verified_sources: Vec<SourceReceipt>,
     reply: tokio::sync::oneshot::Sender<Result<IngestStats>>,
+}
+
+#[derive(Clone)]
+struct SourceReceipt {
+    path: std::path::PathBuf,
+    expected_sha256: String,
+}
+
+pub(crate) fn hash_local_source(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut source = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 { break; }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+async fn verify_source_receipts(receipts: Vec<SourceReceipt>) -> Result<()> {
+    if receipts.is_empty() { return Ok(()); }
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        for receipt in receipts {
+            let actual = hash_local_source(&receipt.path)
+                .with_context(|| format!("Verifying source before commit: {}", receipt.path.display()))?;
+            anyhow::ensure!(actual == receipt.expected_sha256,
+                "Source changed before index commit: {}. The previous index is retained; retry the file.", receipt.path.display());
+        }
+        Ok(())
+    }).await.context("Source verification task failed")?
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -462,6 +496,10 @@ impl IngestPipeline {
                     let write_start = Instant::now();
                     repair_fts_writes(&fts_w, &vector_w).await
                         .context("repairing a previous full-text write")?;
+                    // A slow embedding job can outlive a newer extraction of
+                    // the same source. Verify after taking the writer lease,
+                    // before creating an intent or replacing any good rows.
+                    verify_source_receipts(job.verified_sources).await?;
                     if job.tantivy_inputs.is_empty() {
                         vector_w.upsert_metadata_rows(&job.all_chunks).await?;
                     } else {
@@ -538,6 +576,7 @@ impl IngestPipeline {
         tantivy_inputs: Vec<TantivyInputOwned>,
         total_chunk_count: usize,
         embed_time_ms: u64,
+        verified_sources: Vec<SourceReceipt>,
     ) -> Result<IngestStats> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         // Reserving can be cancelled while the queue is full. Count the job
@@ -546,7 +585,7 @@ impl IngestPipeline {
             "Writer task has stopped — index may need re-init"))?;
         self.pending.fetch_add(1, Ordering::Relaxed);
         permit.send(WriterJob { all_chunks, tantivy_inputs, total_chunk_count,
-            embed_time_ms, reply: reply_tx });
+            embed_time_ms, verified_sources, reply: reply_tx });
         reply_rx
             .await
             .map_err(|_| anyhow::anyhow!("Writer task dropped reply channel"))?
@@ -560,13 +599,31 @@ impl IngestPipeline {
         self.ingest_documents_batch(vec![raw]).await
     }
 
+    /// File extraction opt-in: `source_hash` must be the SHA-256 of the source
+    /// bytes. Remote/import identities never trigger a local filesystem read.
+    pub async fn ingest_verified_document(&self, raw: RawDocument, source_path: std::path::PathBuf) -> Result<IngestStats> {
+        let receipt = SourceReceipt { path: source_path, expected_sha256: raw.source_hash.clone() };
+        self.ingest_documents_with_receipts(vec![raw], vec![receipt]).await
+    }
+
+    /// Explicit file-byte receipts for callers whose document identities are
+    /// derived from extracted text. A receipt is never inferred from a URI.
+    pub async fn ingest_documents_batch_verified(&self, raws: Vec<RawDocument>, sources: Vec<(std::path::PathBuf, String)>) -> Result<IngestStats> {
+        let receipts = sources.into_iter().map(|(path, expected_sha256)| SourceReceipt { path, expected_sha256 }).collect();
+        self.ingest_documents_with_receipts(raws, receipts).await
+    }
+
     /// Bulk ingest of N documents with coalesced LanceDB writes + one Tantivy commit.
     ///
     /// Embedding runs inline on the caller's task (GPU/CPU-bound).
     /// The resulting chunks are submitted to the background writer task, which
     /// serialises all LanceDB + Tantivy mutations so concurrent callers never
     /// race on the indexes. Callers await the result via a oneshot channel.
-    pub async fn ingest_documents_batch(&self, mut raws: Vec<RawDocument>) -> Result<IngestStats> {
+    pub async fn ingest_documents_batch(&self, raws: Vec<RawDocument>) -> Result<IngestStats> {
+        self.ingest_documents_with_receipts(raws, Vec::new()).await
+    }
+
+    async fn ingest_documents_with_receipts(&self, mut raws: Vec<RawDocument>, verified_sources: Vec<SourceReceipt>) -> Result<IngestStats> {
         if raws.is_empty() {
             return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
         }
@@ -712,7 +769,7 @@ impl IngestPipeline {
             }
         }
         // ── Write phase: submit to background writer task ───────────────
-        self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms)
+        self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms, verified_sources)
             .await
     }
 
@@ -802,7 +859,7 @@ impl IngestPipeline {
 
         let total = chunks.len();
         // L1 has no Tantivy entries (no full-text body yet).
-        self.submit_and_await(chunks, vec![], total, 0).await
+        self.submit_and_await(chunks, vec![], total, 0, Vec::new()).await
     }
 
     /// Level-2 fallback: write one metadata-only row for a file whose L3
@@ -925,7 +982,7 @@ impl IngestPipeline {
             doc_status: None,
         };
 
-        self.submit_and_await(vec![chunk], vec![], 1, 0).await
+        self.submit_and_await(vec![chunk], vec![], 1, 0, Vec::new()).await
     }
 }
 
@@ -1868,6 +1925,65 @@ mod tests {
             local.ingest_batch(&[chunk]).await.unwrap();
             assert!(local.indexed_state_for_uri(&raw.location_uri).await.unwrap().unwrap().extraction_skip);
         }
+    }
+
+
+    #[tokio::test]
+    async fn queued_file_version_is_reverified_under_the_writer_lease() {
+        let (directory, fts, local, pipeline) = test_indexes().await;
+        let path = directory.path().join("source.txt");
+        std::fs::write(&path, b"first version").unwrap();
+        let mut first = sample_raw();
+        first.source_hash = hash_local_source(&path).unwrap();
+        first.location_uri = path.to_string_lossy().into_owned();
+        first.full_text = "Original verified passage".into();
+        pipeline.ingest_verified_document(first.clone(), path.clone()).await.unwrap();
+
+        let guard = local.read_guard(&fts).await.unwrap();
+        let pipeline = Arc::new(pipeline);
+        let queued = tokio::spawn({
+            let pipeline = pipeline.clone(); let raw = first.clone(); let path = path.clone();
+            async move { pipeline.ingest_verified_document(raw, path).await }
+        });
+        for _ in 0..100 {
+            if pipeline.queue_depth() > 0 { break; }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pipeline.queue_depth(), 1);
+        // Same byte count, changed after preparation and while the writer waits.
+        std::fs::write(&path, b"other version").unwrap();
+        drop(guard);
+        assert!(queued.await.unwrap().is_err());
+        assert_eq!(local.fetch_full_text(&first.source_hash).await.unwrap(), first.full_text);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+
+        let mut latest = first.clone();
+        latest.source_hash = hash_local_source(&path).unwrap();
+        latest.full_text = "Current verified passage".into();
+        pipeline.ingest_verified_document(latest.clone(), path.clone()).await.unwrap();
+        assert!(pipeline.ingest_verified_document(first, path.clone()).await.is_err());
+        assert_eq!(local.fetch_full_text(&latest.source_hash).await.unwrap(), latest.full_text);
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 1);
+        assert!(fts.search("original", &Default::default(), 10).unwrap().is_empty());
+        std::fs::remove_file(path.clone()).unwrap();
+        assert!(pipeline.ingest_verified_document(latest.clone(), path).await.is_err());
+        assert_eq!(local.fetch_full_text(&latest.source_hash).await.unwrap(), latest.full_text);
+    }
+
+    #[tokio::test]
+    async fn explicit_byte_receipt_supports_text_derived_document_identities() {
+        let (directory, _fts, local, pipeline) = test_indexes().await;
+        let path = directory.path().join("manual.txt");
+        std::fs::write(&path, b"source bytes").unwrap();
+        let raw = sample_raw();
+        let fingerprint = hash_local_source(&path).unwrap();
+        assert_ne!(raw.source_hash, fingerprint);
+        pipeline.ingest_documents_batch_verified(vec![raw.clone()], vec![(path.clone(), fingerprint.clone())]).await.unwrap();
+        assert_eq!(local.fetch_full_text(&raw.source_hash).await.unwrap(), raw.full_text);
+        std::fs::write(&path, b"changed file").unwrap();
+        let mut changed = raw.clone(); changed.full_text = "Must not replace the last verified body".into();
+        assert!(pipeline.ingest_documents_batch_verified(vec![changed], vec![(path, fingerprint)]).await.is_err());
+        assert_eq!(local.fetch_full_text(&raw.source_hash).await.unwrap(), raw.full_text);
     }
 
 }

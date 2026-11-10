@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
 };
@@ -9,22 +9,31 @@ use std::sync::Arc;
 
 use crate::state::SharedState;
 
+#[derive(serde::Deserialize)]
+pub struct DocumentScope {
+    pub owner_id: Option<String>,
+}
+
+fn mutation_error(error:anyhow::Error)->(StatusCode,Json<Value>) {
+    let status=if error.downcast_ref::<crate::index::AmbiguousDocument>().is_some() {StatusCode::CONFLICT} else {StatusCode::INTERNAL_SERVER_ERROR};
+    (status,Json(json!({"error":error.to_string()})))
+}
+
 /// DELETE /v1/docs/:doc_id
 /// Delete all LanceDB chunks + the Tantivy entry for this document.
 pub async fn delete_doc(
     State(state): State<Arc<SharedState>>,
     Path(doc_id): Path<String>,
+    Query(scope): Query<DocumentScope>,
 ) -> (StatusCode, Json<Value>) {
-    if let Err(e) = state.index.vector.delete_doc(&doc_id).await {
-        tracing::error!("delete_doc LanceDB error: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })));
-    }
-    if let Err(e) = state.index.fts.delete_document(&doc_id) {
-        tracing::error!("delete_doc Tantivy error: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })));
+    if let Err(e) = state.index.delete_scoped_doc(&doc_id,scope.owner_id.as_deref()).await {
+        return mutation_error(e);
     }
     let resp = DeleteResponse { deleted: true };
-    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap_or(json!({}))))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(resp).unwrap_or(json!({}))),
+    )
 }
 
 /// POST /v1/docs/:doc_id/location
@@ -32,12 +41,15 @@ pub async fn delete_doc(
 pub async fn update_location(
     State(state): State<Arc<SharedState>>,
     Path(doc_id): Path<String>,
+    Query(scope): Query<DocumentScope>,
     Json(body): Json<UpdateLocationBody>,
 ) -> (StatusCode, Json<Value>) {
-    if let Err(e) = state.index.vector.update_location(&doc_id, &body.new_uri).await {
-        tracing::error!("update_location error: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() })));
+    if let Err(e) = state.index.update_scoped_location(&doc_id, &body.new_uri,scope.owner_id.as_deref()).await {
+        return mutation_error(e);
     }
     let resp = UpdateLocationResponse { updated: true };
-    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap_or(json!({}))))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(resp).unwrap_or(json!({}))),
+    )
 }

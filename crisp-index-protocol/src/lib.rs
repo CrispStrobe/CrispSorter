@@ -42,6 +42,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod sync;
+pub use sync::{SyncCursor, SyncPage, SYNC_CURSOR_VERSION};
+
 // ── Ingest ──────────────────────────────────────────────────────────────────
 
 /// One indexed chunk on the wire. Sent by the client to `POST /v1/ingest`
@@ -81,7 +84,6 @@ pub struct IngestChunk {
 
     // ── Document-level metadata (mostly redundant across chunks of one doc;
     //    the server's denormalised storage trades a few KB for fewer joins).
-
     /// Display title (PDF /Info.Title, DOCX core.title, etc).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -189,6 +191,9 @@ pub struct IngestBatch {
 /// Lexical grammar version shared by the desktop and server query engine.
 pub const QUERY_LANGUAGE_VERSION: u32 = 1;
 
+/// Response header proving which parser handled a negotiated search request.
+pub const QUERY_VERSION_HEADER: &str = "x-crisp-query-version";
+
 /// Current server full-text schema. Older generations remain preserved on disk.
 pub const FTS_SCHEMA_VERSION: u32 = 2;
 
@@ -249,7 +254,6 @@ pub struct SearchRequest {
     pub query_language_version: Option<u32>,
 
     // ── Filters (flat for backwards compatibility; matches existing wire). ──
-
     /// Restrict to one owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,

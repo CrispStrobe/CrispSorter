@@ -717,6 +717,28 @@ async fn catalog_set_active(
 ///
 /// Idempotent: re-enqueueing the same path is harmless — the underlying
 /// ingest dedups by source_hash. Returns the post-enqueue status snapshot.
+async fn with_background_storage<T, F>(
+    app: tauri::AppHandle,
+    background: Arc<Mutex<bg_ingest::BackgroundIngest>>,
+    action: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut bg_ingest::BackgroundIngest) -> anyhow::Result<T> + Send + 'static,
+{
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    // Storage recovery and SQLite acknowledgements stay off the async runtime.
+    // Reattaching is idempotent and lets a command retry a failed startup open.
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut background = background.blocking_lock();
+        background.attach_storage(&data_dir)?;
+        action(&mut background)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn bg_ingest_start(
     app: tauri::AppHandle,
@@ -736,10 +758,7 @@ async fn bg_ingest_start(
         })
         .collect();
     let bg = state.bg_ingest.clone();
-    {
-        let mut g = bg.lock().await;
-        g.enqueue(items);
-    }
+    with_background_storage(app.clone(), bg.clone(), move |g| g.enqueue(items)).await?;
     bg_ingest::ensure_worker(bg.clone(), app);
     let snap = bg.lock().await.snapshot();
     Ok(snap)
@@ -747,51 +766,56 @@ async fn bg_ingest_start(
 
 #[tauri::command]
 async fn bg_ingest_status(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bg_ingest::BgStatusSnapshot, String> {
-    Ok(state.bg_ingest.lock().await.snapshot())
+    with_background_storage(app, state.bg_ingest.clone(), |g| Ok(g.snapshot())).await
 }
 
 #[tauri::command]
-async fn bg_ingest_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.bg_ingest.lock().await.pause();
+async fn bg_ingest_pause(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    with_background_storage(app, state.bg_ingest.clone(), |g| g.pause()).await
+}
+
+#[tauri::command]
+async fn bg_ingest_resume(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let bg = state.bg_ingest.clone();
+    with_background_storage(app.clone(), bg.clone(), |g| g.resume()).await?;
+    bg_ingest::ensure_worker(bg, app);
     Ok(())
 }
 
 #[tauri::command]
-async fn bg_ingest_resume(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.bg_ingest.lock().await.resume();
-    Ok(())
+async fn bg_ingest_cancel(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    with_background_storage(app, state.bg_ingest.clone(), |g| g.cancel()).await
 }
 
 #[tauri::command]
-async fn bg_ingest_cancel(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.bg_ingest.lock().await.cancel();
-    Ok(())
-}
-
-#[tauri::command]
-async fn bg_ingest_clear(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    state.bg_ingest.lock().await.clear();
-    Ok(())
+async fn bg_ingest_clear(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    with_background_storage(app, state.bg_ingest.clone(), |g| g.clear()).await
 }
 
 /// Update the OCR options used by the background ingest worker.
 /// Called from Settings.svelte when ocrEnabled or ocrTier changes.
 #[tauri::command]
 async fn bg_ingest_set_ocr(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     enabled: bool,
     tier: String,
     rec_lang: Option<String>,
 ) -> Result<(), String> {
-    let mut bg = state.bg_ingest.lock().await;
-    bg.ocr_enabled = enabled;
-    bg.ocr_tier = tier;
-    if let Some(lang) = rec_lang {
-        bg.ocr_rec_lang = lang;
-    }
-    Ok(())
+    with_background_storage(app, state.bg_ingest.clone(), move |bg| {
+        let previous = (bg.ocr_enabled, bg.ocr_tier.clone(), bg.ocr_rec_lang.clone());
+        bg.ocr_enabled = enabled;
+        bg.ocr_tier = tier;
+        if let Some(lang) = rec_lang { bg.ocr_rec_lang = lang; }
+        if let Err(error) = bg.persist_settings() {
+            (bg.ocr_enabled, bg.ocr_tier, bg.ocr_rec_lang) = previous;
+            return Err(error);
+        }
+        Ok(())
+    }).await
 }
 
 /// Set the smart OCR-pipeline config (C++ orchestrator: cleanup + NAFNet +
@@ -799,12 +823,19 @@ async fn bg_ingest_set_ocr(
 /// Pipeline panel. The `config` deserialises into `OcrPipelineConfig`.
 #[tauri::command]
 async fn bg_ingest_set_ocr_pipeline(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     config: crate::extractors::OcrPipelineConfig,
 ) -> Result<(), String> {
-    let mut bg = state.bg_ingest.lock().await;
-    bg.ocr_pipeline = config;
-    Ok(())
+    with_background_storage(app, state.bg_ingest.clone(), move |bg| {
+        let previous = bg.ocr_pipeline.clone();
+        bg.ocr_pipeline = config;
+        if let Err(error) = bg.persist_settings() {
+            bg.ocr_pipeline = previous;
+            return Err(error);
+        }
+        Ok(())
+    }).await
 }
 
 /// Export the LanceDB documents table to a .caf file (PLAN P6 4d).
@@ -2962,6 +2993,9 @@ pub fn run() {
                     Err(e) => {
                         app_log!("error", "Failed to open job queue: {e}");
                     }
+                }
+                if let Err(error) = state.bg_ingest.blocking_lock().attach_storage(&data_dir) {
+                    app_log!("error", "Failed to restore background indexing queue: {error}");
                 }
                 match batch_session::BatchSessionStore::open_or_create(&data_dir) {
                     Ok(s) => {
