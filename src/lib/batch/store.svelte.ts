@@ -6,7 +6,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
 import { getSetting } from '../store';
 import {
-    loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch,
+    loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch, replaceBatch,
     setExtractedText, getExtractedText, migrateFromJson,
     recordProcessed, lookupHistory,
 } from '../batchStore';
@@ -14,7 +14,6 @@ import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
-import type { BatchSession } from '../types';
 import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
@@ -22,6 +21,8 @@ import { sortPlanMatches, type SortPlan } from './sortPlan';
 import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
 import { reviewDrafts } from './reviewDrafts.svelte';
 import { findVerifiedDuplicates } from './duplicates';
+import { canProcessBatchItem } from './recovery';
+import { validateBatchItems, validateSessions, type ConfirmBatchReplacement } from './sessionTransfer';
 
 export interface ProcessOverrides {
     extractionWorkers?: number;
@@ -32,6 +33,15 @@ export interface ProcessOverrides {
     authorSort?: boolean;
     enforceOcr?: boolean;
     extractionOnly?: boolean;
+}
+
+/** A large import may commit several chunks before a later write fails. */
+export class BatchAdditionError extends Error {
+    constructor(public readonly addedCount: number, public readonly requestedCount: number, reason: unknown) {
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        super(addedCount > 0 ? `${addedCount} of ${requestedCount} files were saved. ${detail}` : detail);
+        this.name = 'BatchAdditionError';
+    }
 }
 
 /** Recognise the family of "no real value here" strings the LLM
@@ -68,9 +78,11 @@ export function getDefaultPrompt(format: 'xml' | 'json', lang: string = 'en') {
 export class BatchManager {
     items = $state<BatchItem[]>([]);
     isProcessing = $state(false);
+    isStopping = $state(false);
     isExecuting = $state(false);
     isCleaningDuplicates = $state(false);
     isUpdatingBatch = $state(false);
+    sessionReady = $state(false);
     searchQuery = $state('');
     filterExtension = $state('all');
     filterStatus = $state('all');
@@ -112,61 +124,61 @@ export class BatchManager {
         });
     });
 
-    addItem(path: string, name: string, size: number) {
-        const norm = batchSourceKey;
-        if (this.items.some(i => norm(i.originalPath) === norm(path))) return;
-        flog('info', 'Adding item: ' + name);
-        const id = crypto.randomUUID();
-        const extension = name.split('.').pop() || '';
-        const newItem: BatchItem = {
-            id,
-            originalPath: path,
-            originalName: name,
-            size,
-            status: 'queued',
-            extension,
-            modifiedAt: Date.now(),
-            isAccepted: false,
-            isIgnored: false
-        };
-        this.items.push(newItem);
-        upsertItem(newItem); // fire-and-forget
+    private additionQueue: Promise<void> = Promise.resolve();
+
+    async addItem(path: string, name: string, size: number): Promise<boolean> {
+        return (await this.addItemsBulk([{ path, name, size }])) > 0;
     }
 
-    async addItemsBulk(entries: { path: string, name: string, size: number }[]) {
-        const norm = batchSourceKey;
-        const existingPaths = new Set(this.items.map(i => norm(i.originalPath)));
-        const newItems: BatchItem[] = [];
-        
-        for (const e of entries) {
-            if (existingPaths.has(norm(e.path))) continue;
-            const id = crypto.randomUUID();
-            const extension = e.name.split('.').pop() || '';
-            const newItem: BatchItem = {
-                id,
-                originalPath: e.path,
-                originalName: e.name,
-                size: e.size,
-                status: 'queued',
-                extension,
-                modifiedAt: Date.now(),
-                isAccepted: false,
-                isIgnored: false
-            };
-            newItems.push(newItem);
-            existingPaths.add(norm(e.path));
-        }
-
-        if (newItems.length === 0) return;
-        
-        flog('info', 'Adding ' + newItems.length + ' item(s) to batch...');
-        this.items.push(...newItems);
-        try {
-            await upsertItemsBulk(newItems);
-            flog('info', 'Added ' + newItems.length + ' item(s) to SQLite.');
-        } catch (e: any) {
-            flog('error', 'Failed to add items to SQLite: ' + (e.message || e));
-        }
+    addItemsBulk(entries: { path: string, name: string, size: number }[]): Promise<number> {
+        // Snapshot caller data and serialize additions. Two simultaneous imports
+        // of the same path must not each create and persist a different row.
+        const requested = entries.map(entry => ({ ...entry }));
+        const operation = this.additionQueue.then(async () => {
+            // Watcher arrivals and Library additions can coincide with a short
+            // metadata write or cleanup. Queue them instead of dropping the
+            // request; acquiring the lock below is synchronous after this wait.
+            while (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) {
+                await new Promise<void>(resolve => setTimeout(resolve, 25));
+            }
+            if (!this.sessionReady) {
+                throw new Error('Restore the saved batch before adding files. Use Retry in the startup notice.');
+            }
+            this.isUpdatingBatch = true;
+            let added = 0;
+            let newItems: BatchItem[] = [];
+            try {
+                const existingPaths = new Set(this.items.map(item => batchSourceKey(item.originalPath)));
+                for (const entry of requested) {
+                    const source = batchSourceKey(entry.path);
+                    if (existingPaths.has(source)) continue;
+                    existingPaths.add(source);
+                    newItems.push({
+                        id: crypto.randomUUID(), originalPath: entry.path, originalName: entry.name,
+                        size: entry.size, extension: entry.name.split('.').pop() || '',
+                        status: 'queued', modifiedAt: Date.now(), isAccepted: false, isIgnored: false,
+                    });
+                }
+                // Each visible chunk has already committed. If a later chunk
+                // fails, retry deduplicates the earlier successful chunks.
+                for (let offset = 0; offset < newItems.length; offset += 500) {
+                    const chunk = newItems.slice(offset, offset + 500);
+                    await upsertItemsBulk(chunk);
+                    this.items.push(...chunk);
+                    added += chunk.length;
+                }
+                if (added) flog('info', `Added ${added} item(s) to SQLite and the batch.`);
+                return added;
+            } catch (error) {
+                flog('error', `Adding files stopped after ${added} saved item(s): ${String(error)}`);
+                throw new BatchAdditionError(added, newItems.length, error);
+            } finally {
+                this.isUpdatingBatch = false;
+            }
+        });
+        // A rejected import must not poison the next attempt.
+        this.additionQueue = operation.then(() => undefined, () => undefined);
+        return operation;
     }
 
     async removeItems(ids: string[]) {
@@ -204,37 +216,15 @@ export class BatchManager {
         }
     }
 
-    private lastStopAtMs = 0;
     stopAll() {
+        if (!this.isProcessing || this.stopRequested) return;
         this.stopRequested = true;
+        this.isStopping = true;
         this.extractionAbort?.abort();
         this.llmAbort?.abort();
-
-        // First click: signal stop and wait for workers to drain.
-        // For CPU-bound extractors (pdfjs-dist on a 50+ MB PDF) the
-        // abort signal is honored only at the next page boundary,
-        // so the worker can be busy for ~30–60 s before the finally
-        // runs and `isProcessing` flips false.  Users repeatedly
-        // clicking Stop think the button is broken.
-        //
-        // Second click within 5 s: force-finalize the UI state
-        // immediately.  The workers will still run to a clean exit
-        // in the background (they own the AbortControllers, no
-        // dangling subprocesses), but the toolbar unfreezes now —
-        // the user can start a fresh batch without waiting.
-        const now = Date.now();
-        if (this.isProcessing && now - this.lastStopAtMs < 5000) {
-            flog('warn', 'Stop forced — second click within 5 s. Workers still draining in the background.');
-            this.isProcessing = false;
-            this.stopRequested = false;
-            this.llmAbort = null;
-            this.extractionAbort = null;
-            this.extractionActive = 0;
-            this.llmActive = 0;
-        } else {
-            flog('info', 'Stop requested by user — aborting extraction and LLM. Click Stop again to force.');
-        }
-        this.lastStopAtMs = now;
+        // Keep ownership until every worker and the final persistence write
+        // settle. Repeated clicks must not let an older run affect a new one.
+        flog('info', 'Stop requested — waiting for active operations to finish. Completed work will be kept.');
     }
 
     /** Reset all items in 'review' (or any given statuses) back to 'queued'
@@ -242,7 +232,9 @@ export class BatchManager {
      *  Useful when the user wants to re-run with a different model / prompt
      *  or after manually editing metadata on some items. */
     async resetToQueued(ids?: string[]) {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
+        try {
         const targets = ids
             ? this.items.filter(i => ids.includes(i.id))
             : this.items;
@@ -256,10 +248,11 @@ export class BatchManager {
             }
         }
         if (changed.length > 0) await upsertItemsBulk(changed);
+        } finally { this.isUpdatingBatch = false; }
     }
 
     resetStuckItems() {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const changed: BatchItem[] = [];
         for (const item of this.items) {
             if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
@@ -271,57 +264,31 @@ export class BatchManager {
         if (changed.length > 0) upsertItemsBulk(changed); // fire-and-forget
     }
 
-    /** Nuclear escape hatch — when the graceful Stop path is wedged and
-     *  even the force-stop second-click within 5 s didn't help (i.e.
-     *  the user thinks the UI is taken down by a deeper hang),
-     *  this combines all the recovery primitives in one click:
-     *
-     *  1. Force-finalize the processAll/executeBatch state machine
-     *     (isProcessing / isExecuting flags, abort controllers, worker
-     *     counters) so the toolbar unfreezes.
-     *  2. Lift every `extracting` / `analyzing` / `unfinished` item
-     *     back to `queued` so they survive the next Start press.
-     *  3. Clear any leftover statusDetail / errorMessage stuck on items.
-     *
-     *  Workers that were genuinely mid-flight in the background will
-     *  hit `stopRequested` or their abort signal at the next yield and
-     *  exit; nothing here can leak a subprocess (the Rust side owns
-     *  its own scoped tasks). */
-    forceReset() {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        flog('warn', 'Force reset — abandoning in-flight workers, lifting stuck items back to queued.');
-        // 1. Force-finalize the state machine.  Abort controllers
-        // first so any awaiting worker wakes up before we null them.
-        this.extractionAbort?.abort();
-        this.llmAbort?.abort();
-        this.stopRequested = true;
-        this.isProcessing = false;
-        this.isExecuting = false;
-        this.llmAbort = null;
-        this.extractionAbort = null;
-        this.extractionActive = 0;
-        this.llmActive = 0;
-        this.lastStopAtMs = 0;
-        // 2. Lift stuck items.
-        const lifted: BatchItem[] = [];
-        for (const item of this.items) {
-            if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
-                item.status = 'queued';
-                item.statusDetail = undefined;
-                item.errorMessage = undefined;
-                lifted.push(item);
+    /** Recover inactive stranded rows; never release an active processing or sort lock. */
+    async forceReset() {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        flog('info', 'Recovering inactive interrupted items.');
+        const lifted = this.items.filter(item => ['extracting', 'analyzing', 'unfinished'].includes(item.status))
+            .map(item => ({ ...item, status: 'queued' as const, statusDetail: undefined, errorMessage: undefined }));
+        if (!lifted.length) return;
+        this.isUpdatingBatch = true;
+        try {
+            await upsertItemsBulk(lifted);
+            for (const recovered of lifted) {
+                const item = this.items.find(item => item.id === recovered.id);
+                if (item) { item.status = 'queued'; item.statusDetail = undefined; item.errorMessage = undefined; }
             }
-        }
-        // 3. Persist so a re-launch doesn't restore the wedged shape.
-        if (lifted.length > 0) upsertItemsBulk(lifted); // fire-and-forget
+        } finally { this.isUpdatingBatch = false; }
     }
 
     async reextractItems(ids: string[], enforceOcr: boolean = false) {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
+        try {
         const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
-            if (item) {
+            if (item && item.status !== 'done') {
                 item.extractedText = undefined;
                 item.status = 'queued';
                 item.errorMessage = undefined;
@@ -329,16 +296,19 @@ export class BatchManager {
                 targets.push(item);
             }
         });
-        if (targets.length > 0) upsertItemsBulk(targets); // fire-and-forget
+        if (targets.length > 0) await upsertItemsBulk(targets);
+        } finally { this.isUpdatingBatch = false; }
         await this.processAll({ enforceOcr, extractionOnly: true }, new Set(ids));
     }
 
     async reprocessItems(ids: string[], overrides?: ProcessOverrides) {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
+        try {
         const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
-            if (item) {
+            if (item && item.status !== 'done') {
                 item.status = 'queued';
                 item.errorMessage = undefined;
                 item.statusDetail = undefined;
@@ -346,7 +316,8 @@ export class BatchManager {
                 targets.push(item);
             }
         });
-        if (targets.length > 0) upsertItemsBulk(targets); // fire-and-forget
+        if (targets.length > 0) await upsertItemsBulk(targets);
+        } finally { this.isUpdatingBatch = false; }
         await this.processAll(overrides, new Set(ids));
     }
 
@@ -361,11 +332,14 @@ export class BatchManager {
 
     async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
         flog('info', `processAll started${onlyIds ? ` (${onlyIds.size} items)` : ''}`);
-        if (this.isProcessing || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         this.isProcessing = true;
+        this.isStopping = false;
         this.stopRequested = false;
-        this.llmAbort = new AbortController();
-        this.extractionAbort = new AbortController();
+        const runLlmAbort = new AbortController();
+        const runExtractionAbort = new AbortController();
+        this.llmAbort = runLlmAbort;
+        this.extractionAbort = runExtractionAbort;
         this.runStartTs = Date.now();
         this.extractionDone = 0;
         this.llmDone = 0;
@@ -414,6 +388,7 @@ export class BatchManager {
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = await getSetting('llamacppPort', 8080) as number;
         llmClient.mlxPort = await getSetting('mlxPort', 8000) as number;
+        if (this.stopRequested) return;
 
         // Auto-start local server if needed
         if (['ollama', 'llamacpp', 'mlx'].includes(activeProviderId)) {
@@ -423,6 +398,7 @@ export class BatchManager {
                 console.warn(`[BatchManager] Could not auto-start ${activeProviderId}:`, e);
             }
         }
+        if (this.stopRequested) return;
 
         const defaultPrompt = getDefaultPrompt(parsingFormat, language);
         const basePrompt = await getSetting('llmPrompt', defaultPrompt);
@@ -457,6 +433,7 @@ export class BatchManager {
             const dupeCount = await this.detectAndMarkDuplicates();
             if (dupeCount > 0) flog('info', `P15a dedup: ${dupeCount} non-primary duplicate(s) marked`);
         }
+        if (this.stopRequested) return;
         // P15b — chapter groups: detect ISBN/suffix patterns.
         if (!onlyIds) {
             const groupCount = this.detectChapterGroups();
@@ -503,7 +480,7 @@ export class BatchManager {
         }
 
         const needsProcessing = (item: BatchItem) =>
-            (item.status === 'queued' || item.status === 'error' || item.status === 'unfinished') &&
+            canProcessBatchItem(item) &&
             (!onlyIds || onlyIds.has(item.id));
 
         const PAGE_WATCHDOG_MS = 30_000; // abort if no page progress for 30 s
@@ -553,7 +530,7 @@ export class BatchManager {
         // construction; no lock needed.
         let nextIdx = 0;
 
-        try {
+        {
             // ── Worker: extraction ──────────────────────────────────────────
             // N workers run this body concurrently. Each pulls the next
             // item via the shared `nextIdx`, runs the existing
@@ -584,6 +561,7 @@ export class BatchManager {
                     }
                     if (item.sha256) {
                         const hist = await lookupHistory(item.sha256);
+                        if (this.stopRequested) break;
                         if (hist) {
                             item.historyMatch = {
                                 suggestedTitle:  hist.suggestedTitle,
@@ -603,6 +581,7 @@ export class BatchManager {
                         }
                     }
                 }
+                if (this.stopRequested) break;
 
                 // Item needs processing — try to restore the full extracted text
                 // from SQLite before committing to re-extraction.  On resume,
@@ -611,6 +590,7 @@ export class BatchManager {
                 // extraction phase and go straight to LLM with their full body.
                 if (!item.extractedText) {
                     const stored = await getExtractedText(item.id);
+                    if (this.stopRequested) break;
                     if (stored) {
                         item.extractedText = stored;
                         logDebug(`Restored ${stored.length} chars for ${item.originalName} from SQLite`);
@@ -660,8 +640,10 @@ export class BatchManager {
                         // that can fire independently without affecting
                         // sibling workers.
                         const itemAbort = new AbortController();
-                        const onSharedAbort = () => itemAbort.abort(this.extractionAbort?.signal.reason);
-                        this.extractionAbort?.signal.addEventListener('abort', onSharedAbort, { once: true });
+                        let acceptsProgress = true;
+                        const onSharedAbort = () => itemAbort.abort(runExtractionAbort.signal.reason);
+                        runExtractionAbort.signal.addEventListener('abort', onSharedAbort, { once: true });
+                        if (runExtractionAbort.signal.aborted) onSharedAbort();
 
                         // Per-page watchdog: abort if no page progress for PAGE_WATCHDOG_MS
                         let watchdogId: ReturnType<typeof setTimeout> | null = null;
@@ -692,7 +674,8 @@ export class BatchManager {
                                 ? await readProviderFile(item.originalPath)
                                 : await readFile(item.originalPath);
                             if (this.stopRequested) {
-                                item.status = 'queued';
+                                item.status = 'unfinished';
+                                item.statusDetail = 'interrupted';
                                 break;
                             }
                             const extractCall = extractText(
@@ -709,6 +692,10 @@ export class BatchManager {
                                     signal: itemAbort.signal,
                                     maxPages: extractionMaxPages || undefined,
                                     onProgress: (page, total) => {
+                                        // Timed-out extractors may still emit callbacks. They
+                                        // cannot alter a completed, stopped, or later run.
+                                        if (!acceptsProgress || !this.isProcessing || this.extractionAbort !== runExtractionAbort ||
+                                            this.stopRequested || itemAbort.signal.aborted) return;
                                         item.statusDetail = `${page}/${total} pages`;
                                         resetWatchdog();
                                     }
@@ -749,11 +736,11 @@ export class BatchManager {
                                 ])
                                 : await extractCall;
                         } finally {
+                            acceptsProgress = false;
                             if (watchdogId) clearTimeout(watchdogId);
                             if (fileTimeoutId) clearTimeout(fileTimeoutId);
-                            this.extractionAbort?.signal.removeEventListener('abort', onSharedAbort);
+                            runExtractionAbort.signal.removeEventListener('abort', onSharedAbort);
                         }
-                        if (this.stopRequested) { item.status = 'queued'; break; }
                         item.extractedText = extraction.text;
                         // P13.6 Step 2: surface the whisper-detected source
                         // language for audio/video items so the Stapel
@@ -764,6 +751,14 @@ export class BatchManager {
                         if (typeof detected === 'string' && detected.length > 0) {
                             item.detectedLanguage = detected.toLowerCase();
                         }
+                    }
+                    if (this.stopRequested) {
+                        // Keep text that finished while a non-cancellable native
+                        // operation drained, so Resume can reuse it.
+                        item.status = 'unfinished';
+                        item.statusDetail = 'interrupted';
+                        if (item.extractedText) await setExtractedText(item.id, item.extractedText);
+                        break;
                     }
                     item.statusDetail = (item.extractedText?.trim().length ?? 0) < 100 ? '⚠ poor extraction' : undefined;
 
@@ -884,8 +879,8 @@ export class BatchManager {
                     flog('info',
                         `Extracted: ${item.originalName} -- ${extractedBytes.toLocaleString()} chars in ${extractMs} ms via ${tool}`
                     );
-                    if (item.extractedText) setExtractedText(item.id, item.extractedText); // fire-and-forget full text
-                    upsertItem(item); // fire-and-forget
+                    if (item.extractedText) await setExtractedText(item.id, item.extractedText);
+                    await upsertItem(item);
                     // Hand the freshly-extracted item to the LLM consumer.
                     if (!overrides?.extractionOnly && item.extractedText) {
                         queuePush(item);
@@ -920,12 +915,13 @@ export class BatchManager {
             if (overrides?.extractionOnly || !this.isMetadataExtractionEnabled) return;
 
             while (true) {
-                if (this.stopRequested || this.llmAbort?.signal.aborted) {
+                if (this.stopRequested || runLlmAbort.signal.aborted) {
                     flog('info', `LLM worker ${workerId} halting (stop)`);
                     break;
                 }
                 const item = await queueTake();
                 if (item === null) break; // queue closed and empty
+                if (this.stopRequested || runLlmAbort.signal.aborted) break;
 
                 logDebug(`llm worker ${workerId} -> ${item.originalName} (remaining=${llmQueueItems.length})`);
 
@@ -963,6 +959,7 @@ export class BatchManager {
                         for (let sweep = 0; sweep < 2; sweep++) {
                             const cooling: number[] = [];
                             for (let off = 0; off < rrProviders.length; off++) {
+                                if (runLlmAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
                                 const i = (rrIdx + off) % rrProviders.length;
                                 const rr = rrProviders[i];
                                 if (rrBroken.has(rr.id)) continue; // hard failure this run
@@ -971,7 +968,7 @@ export class BatchManager {
                                     continue;
                                 }
                                 try {
-                                    const res = await llmClient.query(rr.id, rr.modelId, p, rr.apiKey, 0.3, this.llmAbort?.signal);
+                                    const res = await llmClient.query(rr.id, rr.modelId, p, rr.apiKey, 0.3, runLlmAbort.signal);
                                     rrIdx = i; // stick with this provider for subsequent items
                                     return res;
                                 } catch (e: any) {
@@ -999,12 +996,13 @@ export class BatchManager {
                             const availableCount = rrProviders.filter(r => !rrBroken.has(r.id)).length;
                             if (availableCount === 0) throw lastErr ?? new Error('All LLM providers hard-failed for this run');
                             if (cooling.length === rrProviders.length) {
+                                if (runLlmAbort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
                                 const soonest = Math.min(...cooling);
                                 const sleepMs = Math.max(200, soonest - Date.now() + 200);
                                 flog('warn', `All ${rrProviders.length} providers cooling down; sleeping ${sleepMs} ms for the soonest.`);
                                 await new Promise<void>((resolve, reject) => {
                                     const t = setTimeout(resolve, sleepMs);
-                                    this.llmAbort?.signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+                                    runLlmAbort.signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
                                 });
                                 continue;
                             }
@@ -1022,7 +1020,7 @@ export class BatchManager {
                     const llmStart = performance.now();
                     const response = await queryRR(prompt);
                     const llmMs = Math.round(performance.now() - llmStart);
-                    if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
+                    if (this.stopRequested || runLlmAbort.signal.aborted) { item.status = 'unfinished'; item.statusDetail = 'interrupted'; break; }
                     const metadata = this.parseLLMResponse(response, parsingFormat);
 
                     item.suggestedTitle = metadata.title || 'Unknown Title';
@@ -1036,7 +1034,7 @@ export class BatchManager {
                     if (authorSortEnabled && item.suggestedAuthor && !isUnknownSentinel(item.suggestedAuthor)) {
                         const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
                         const sortRes = await queryRR(sortPrompt);
-                        if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
+                        if (this.stopRequested || runLlmAbort.signal.aborted) { item.status = 'unfinished'; item.statusDetail = 'interrupted'; break; }
                         const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
                         if (match) item.suggestedAuthor = match[1].trim();
                     }
@@ -1057,8 +1055,8 @@ export class BatchManager {
                 } catch (e: any) {
                     const isAbort = this.stopRequested || e?.name === 'AbortError';
                     if (isAbort) {
-                        item.status = 'queued';
-                        item.statusDetail = undefined;
+                        item.status = 'unfinished';
+                        item.statusDetail = 'interrupted';
                         flog('info', `Analysis stopped: ${item.originalName}`);
                         break;
                     } else {
@@ -1075,7 +1073,7 @@ export class BatchManager {
             };
 
             // Spawn N extraction workers + M LLM workers. The extraction
-            // workers' `Promise.all` finishes when every item has been
+            // workers' `Promise.allSettled` finishes when every item has been
             // processed; we then `queueClose()` so any LLM workers still
             // waiting on `take()` see the queue end and exit.
             const extractWorkers = Array.from({ length: extractionN }, (_, i) => extractWorker(i));
@@ -1083,40 +1081,38 @@ export class BatchManager {
 
             // When all extractors finish, close the queue so consumers
             // can drain and exit.
-            const extractAllDone = Promise.all(extractWorkers).then(() => {
+            const extractAllDone = Promise.allSettled(extractWorkers).then(results => {
                 logDebug('all extraction workers finished -> closing llmQueue');
                 queueClose();
+                const failure = results.find(result => result.status === 'rejected');
+                if (failure?.status === 'rejected') throw failure.reason;
             });
 
-            await Promise.all([extractAllDone, ...llmWorkers]);
+            // A failing worker must not release ownership while its peers are
+            // still writing results or waiting for the producer to close.
+            const results = await Promise.allSettled([extractAllDone, ...llmWorkers]);
+            const failure = results.find(result => result.status === 'rejected');
+            if (failure?.status === 'rejected') throw failure.reason;
 
             // P15b — propagate chapter representative metadata to group members.
-            if (!onlyIds) await this.propagateChapterMetadata();
-        } finally {
-            this.isProcessing = false;
-            this.stopRequested = false;
-            this.llmAbort = null;
-            this.extractionAbort = null;
-            this.extractionActive = 0;
-            this.llmActive = 0;
-            flog('info', 'processAll finished');
-            await upsertItemsBulk(this.items);
+            if (!this.stopRequested && !onlyIds) await this.propagateChapterMetadata();
         }
         } catch (e) {
-            // Outer-scope catch: any throw from the ~45 lines of
-            // setup BEFORE the inner try (getSetting × 8, provider
-            // boot, dedup detection) used to leave `isProcessing`
-            // stuck `true` forever — toolbar froze on "Stop", clear()
-            // refused to fire (its own isProcessing guard), Start
-            // button could never reappear.  Now any setup-time error
-            // also resets the flag and logs.
-            flog('error', `processAll setup threw: ${(e as any)?.message ?? e}`);
-            this.isProcessing = false;
-            this.stopRequested = false;
-            this.llmAbort = null;
-            this.extractionAbort = null;
-            await upsertItemsBulk(this.items);
+            flog('error', `processAll failed: ${(e as any)?.message ?? e}`);
             throw e;
+        } finally {
+            try {
+                await upsertItemsBulk(this.items);
+            } finally {
+                this.isProcessing = false;
+                this.isStopping = false;
+                this.stopRequested = false;
+                this.llmAbort = null;
+                this.extractionAbort = null;
+                this.extractionActive = 0;
+                this.llmActive = 0;
+                flog('info', 'processAll finished');
+            }
         }
     }
 
@@ -1231,36 +1227,45 @@ export class BatchManager {
         item.targetPath = await join(baseDir, ...parts);
     }
 
-        async resumeLastSession() {
-        // One-shot migration from the legacy JSON blob into SQLite.
-        // Fast no-op on every launch after the first (sentinel check).
-        try {
-            flog('info', 'Checking for legacy JSON session migration...');
-            const migrated = await migrateFromJson();
-            if (migrated > 0) flog('info', 'Migrated ' + migrated + ' item(s) from lastSession JSON to SQLite.');
-        } catch (e: any) {
-            flog('warn', 'migrateFromJson failed: ' + (e?.message ?? e));
+    async resumeLastSession() {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) {
+            throw new Error('Wait for the current batch operation to finish before restoring saved work.');
         }
-
+        this.isUpdatingBatch = true;
         try {
+            // Migration is a fast no-op after the sentinel is stored. A legacy
+            // settings failure must not prevent loading the existing SQLite batch.
+            try {
+                flog('info', 'Checking for legacy JSON session migration...');
+                const migrated = await migrateFromJson();
+                if (migrated > 0) flog('info', 'Migrated ' + migrated + ' item(s) from lastSession JSON to SQLite.');
+            } catch (e: any) {
+                flog('warn', 'migrateFromJson failed: ' + (e?.message ?? e));
+            }
             flog('info', 'Loading batch from SQLite...');
             const rows = await loadBatch();
-            this.items = rows.map((item: BatchItem, index: number) => {
-                if (index > 0 && index % 1000 === 0) {
-                    flog('info', 'Loading progress: ' + index + ' items...');
-                }
-                if (item.status === 'extracting' || item.status === 'analyzing') {
-                    return { ...item, status: 'unfinished' as const, statusDetail: undefined };
-                }
-                // Repair: old auto-accept rule was too loose, may have
-                // marked sentinel-author items as accepted.
-                if (item.isAccepted && isUnknownSentinel(item.suggestedAuthor)) {
-                    return { ...item, isAccepted: false };
-                }
-                return item;
-            });
+            const currentIds = new Set(this.items.map(item => item.id));
+            const currentSources = new Set(this.items.map(item => batchSourceKey(item.originalPath)));
+            const restored = rows.filter(item => !currentIds.has(item.id) && !currentSources.has(batchSourceKey(item.originalPath)))
+                .map((item: BatchItem, index: number) => {
+                    if (index > 0 && index % 1000 === 0) {
+                        flog('info', 'Loading progress: ' + index + ' items...');
+                    }
+                    if (item.status === 'extracting' || item.status === 'analyzing') {
+                        return { ...item, status: 'unfinished' as const, statusDetail: undefined };
+                    }
+                    // Repair old auto-accept rules that accepted sentinel authors.
+                    if (item.isAccepted && isUnknownSentinel(item.suggestedAuthor)) {
+                        return { ...item, isAccepted: false };
+                    }
+                    return item;
+                });
+            // A retry can follow files added after a failed launch. Preserve
+            // those objects and edits while recovering the remaining saved rows.
+            this.items = [...restored, ...this.items];
             await reviewDrafts.load();
             reviewDrafts.retainItems(this.items);
+            this.sessionReady = true;
             if (this.items.length > 0) {
                 flog('info', 'Resumed ' + this.items.length + ' item(s) from SQLite.');
             } else {
@@ -1268,7 +1273,8 @@ export class BatchManager {
             }
         } catch (e: any) {
             flog('warn', 'resumeLastSession: SQLite load failed: ' + (e?.message ?? e));
-        }
+            throw e;
+        } finally { this.isUpdatingBatch = false; }
     }
 
     async executeBatch(plan: SortPlan) {
@@ -1377,41 +1383,82 @@ export class BatchManager {
         }
     }
 
-    async loadSession(id: string) {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        const saved = await getSetting('sessions', {}) as Record<string, BatchSession>;
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        const session = saved[id];
-        if (session?.items) {
-            this.items = session.items;
-            await clearBatch();
-            await upsertItemsBulk(this.items);
+    private async commitReplacement(items: BatchItem[], source: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        if (!confirmReplacement) throw new Error('Confirm the batch replacement from History.');
+        // A restored batch can still have unread metadata drafts after a settings
+        // failure. Read them before describing or discarding the current work.
+        if (!reviewDrafts.ready) await reviewDrafts.load();
+        if (!reviewDrafts.ready) throw new Error('Saved metadata drafts could not be loaded. Retry before replacing the current batch.');
+        if (!await confirmReplacement({ incomingCount: items.length, currentCount: this.items.length,
+            currentDraftCount: this.items.filter(item => reviewDrafts.get(item)).length, source })) return false;
+        await replaceBatch(items);
+        this.items = items;
+        // Failed validation/confirmation/SQLite writes must leave every draft intact.
+        try {
+            reviewDrafts.retainItems(this.items);
+            await reviewDrafts.flush();
+        } catch (error) {
+            // The database commit has succeeded. Report cleanup separately so a
+            // caller cannot mislabel this as a failed/rolled-back replacement.
+            reviewDrafts.error = String(error);
+            logDebug(`Replacement committed; metadata draft cleanup failed: ${error}`);
+        }
+        return true;
+    }
+
+    async loadSession(id: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return false;
+        if (!this.sessionReady) throw new Error('Retry restoring the current batch before replacing it.');
+        this.isUpdatingBatch = true;
+        try {
+            const sessions = validateSessions(await getSetting('sessions', {}));
+            const session = sessions.find(entry => entry.id === id);
+            if (!session) throw new Error('This saved session is no longer available. Refresh History and choose another session.');
+            return await this.commitReplacement(session.items, new Date(session.startTime).toLocaleString(), confirmReplacement);
+        } finally {
+            this.isUpdatingBatch = false;
         }
     }
 
-    async exportBatch() {
-        const { save } = await import('@tauri-apps/plugin-dialog');
-        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-        const path = await save({ defaultPath: 'batch.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
-        if (path) {
-            await writeTextFile(path, JSON.stringify($state.snapshot(this.items), null, 2));
-        }
-    }
-
-    async importBatch() {
-        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const { readTextFile } = await import('@tauri-apps/plugin-fs');
-        const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] });
-        if (typeof path === 'string') {
-            const text = await readTextFile(path);
-            if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
-            const items = JSON.parse(text) as BatchItem[];
-            if (Array.isArray(items)) {
-                this.items = items;
-                await clearBatch();
-                await upsertItemsBulk(this.items);
+    async exportBatch(): Promise<boolean> {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return false;
+        if (!this.sessionReady) throw new Error('Retry restoring the current batch before exporting it.');
+        this.isUpdatingBatch = true;
+        try {
+            const { save } = await import('@tauri-apps/plugin-dialog');
+            const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+            const path = await save({ defaultPath: 'batch.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+            if (!path) return false;
+            const items = $state.snapshot(this.items);
+            // Full text is normally lazy-loaded. Include it so an exported batch
+            // can be restored on another device without losing extraction work.
+            for (let index = 0; index < items.length; index += 50) {
+                await Promise.all(items.slice(index, index + 50).map(async item => {
+                    if (item.extractedText != null) return;
+                    const text = await getExtractedText(item.id);
+                    if (text != null) item.extractedText = text;
+                }));
             }
+            await writeTextFile(path, JSON.stringify(items, null, 2));
+            return true;
+        } finally {
+            this.isUpdatingBatch = false;
+        }
+    }
+
+    async importBatch(confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return false;
+        if (!this.sessionReady) throw new Error('Retry restoring the current batch before replacing it.');
+        this.isUpdatingBatch = true;
+        try {
+            const { open } = await import('@tauri-apps/plugin-dialog');
+            const { readTextFile } = await import('@tauri-apps/plugin-fs');
+            const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] });
+            if (typeof path !== 'string') return false;
+            const items = validateBatchItems(JSON.parse(await readTextFile(path)));
+            return await this.commitReplacement(items, path.split(/[\\/]/).pop() || path, confirmReplacement);
+        } finally {
+            this.isUpdatingBatch = false;
         }
     }
 

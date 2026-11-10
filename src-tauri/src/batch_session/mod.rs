@@ -13,6 +13,7 @@
 
 pub mod tauri_commands;
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -157,6 +158,16 @@ pub struct BatchItemRow {
     pub extracted_text_preview: Option<String>,
 }
 
+/// A replacement may supply full text, including an intentional empty string.
+/// Omitted text is retained only for the same source path, size and modification time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReplacementItem {
+    pub item: BatchItemRow,
+    #[serde(default)]
+    pub extracted_text: Option<String>,
+}
+
 /// One row in the `processed_history` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,6 +249,69 @@ impl BatchSessionStore {
             exec_upsert(&tx, item)?;
         }
         tx.commit().context("committing bulk upsert")?;
+        Ok(())
+    }
+
+    /// Replace the current batch atomically. A failed insert restores every old
+    /// row and its full text; callers must update their visible batch after commit.
+    pub fn replace(&self, items: &[BatchReplacementItem]) -> Result<()> {
+        validate_replacement(items)?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().context("starting batch replacement")?;
+        let existing: HashMap<(String, i64, i64), String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, original_path, size_bytes, modified_at FROM batch_items WHERE session_id = ?1",
+            )?;
+            let rows = stmt.query_map(params![SESSION_ID], |row| {
+                let path: String = row.get(1)?;
+                // Text must never cross case-distinct files on Linux or opaque provider IDs.
+                Ok(((path, row.get(2)?, row.get(3)?), row.get(0)?))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        // Stage text inside SQLite, rather than copying every document body into
+        // Rust memory. This temporary table and the delete share one transaction.
+        tx.execute_batch(
+            "CREATE TEMP TABLE batch_replacement_texts (
+                item_id TEXT PRIMARY KEY, text TEXT NOT NULL, extracted_at INTEGER NOT NULL
+            )",
+        ).context("staging batch replacement text")?;
+        let now = now_ms();
+        for replacement in items {
+            let item = &replacement.item;
+            if let Some(text) = &replacement.extracted_text {
+                tx.execute(
+                    "INSERT INTO batch_replacement_texts (item_id, text, extracted_at) VALUES (?1, ?2, ?3)",
+                    params![item.id, text, now],
+                )?;
+            } else if let Some(old_id) = existing.get(&(
+                item.original_path.clone(), item.size_bytes, item.modified_at,
+            )) {
+                tx.execute(
+                    "INSERT INTO batch_replacement_texts (item_id, text, extracted_at)
+                     SELECT ?1, text, extracted_at FROM extracted_texts WHERE item_id = ?2",
+                    params![item.id, old_id],
+                )?;
+            }
+        }
+        tx.execute("DELETE FROM batch_items WHERE session_id = ?1", params![SESSION_ID])
+            .context("replacing previous batch rows")?;
+        for replacement in items {
+            exec_upsert(&tx, &replacement.item)?;
+            tx.execute(
+                "UPDATE batch_items SET extracted_text_preview = (
+                    SELECT substr(text, 1, 500) FROM batch_replacement_texts WHERE item_id = ?1
+                 ) WHERE id = ?1",
+                params![replacement.item.id],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO extracted_texts (item_id, text, extracted_at)
+             SELECT item_id, text, extracted_at FROM batch_replacement_texts", [],
+        ).context("restoring replacement text")?;
+        tx.execute_batch("DROP TABLE batch_replacement_texts")?;
+        tx.execute("UPDATE batch_sessions SET updated_at = ?1 WHERE id = ?2", params![now, SESSION_ID])?;
+        tx.commit().context("committing batch replacement")?;
         Ok(())
     }
 
@@ -388,6 +462,45 @@ impl BatchSessionStore {
 }
 
 // ── SQL helpers ───────────────────────────────────────────────────────────────
+
+/// Keep provider document IDs opaque, matching the frontend's batchSourceKey.
+fn source_key(path: &str) -> String {
+    let lower = path.to_lowercase();
+    if lower.starts_with("content://") || lower.starts_with("file://") {
+        format!("uri:{path}")
+    } else {
+        format!("path:{}", lower.replace('\\', "/"))
+    }
+}
+
+fn validate_replacement(items: &[BatchReplacementItem]) -> Result<()> {
+    let mut ids = HashSet::new();
+    let mut sources = HashSet::new();
+    for (index, replacement) in items.iter().enumerate() {
+        let item = &replacement.item;
+        let valid_text = |value: &str| !value.trim().is_empty() && !value.contains('\0');
+        anyhow::ensure!(valid_text(&item.id) && valid_text(&item.original_path) && valid_text(&item.original_name),
+            "File {}: missing or invalid identity", index + 1);
+        anyhow::ensure!(!matches!(item.id.as_str(), "__proto__" | "constructor" | "prototype"),
+            "File {}: invalid id", index + 1);
+        anyhow::ensure!(item.size_bytes >= 0 && item.modified_at >= 0,
+            "File {}: invalid size or modification time", index + 1);
+        anyhow::ensure!(matches!(item.status.as_str(), "queued" | "unfinished" | "extracting" |
+            "analyzing" | "review" | "ready" | "moving" | "done" | "error"),
+            "File {}: invalid status", index + 1);
+        anyhow::ensure!(ids.insert(item.id.as_str()), "File {}: duplicate id", index + 1);
+        anyhow::ensure!(sources.insert(source_key(&item.original_path)),
+            "File {}: duplicate source path", index + 1);
+        anyhow::ensure!([item.audio_duration_seconds, item.audio_bitrate_kbps].into_iter()
+            .flatten().all(|value| value.is_finite() && value >= 0.0),
+            "File {}: invalid audio metadata", index + 1);
+        anyhow::ensure!([item.audio_channels, item.audio_sample_rate_hz, item.chapter_group_size]
+            .into_iter().flatten().all(|value| value >= 0), "File {}: invalid numeric metadata", index + 1);
+        anyhow::ensure!(item.metadata_read_status.as_deref().map_or(true, |status| matches!(status, "ok" | "failed" | "na")),
+            "File {}: invalid metadata status", index + 1);
+    }
+    Ok(())
+}
 
 const LOAD_SQL: &str = r#"
 SELECT
@@ -755,3 +868,6 @@ mod tests {
 
 #[cfg(test)]
 pub mod bulk_tests;
+
+#[cfg(test)]
+mod replacement_tests;

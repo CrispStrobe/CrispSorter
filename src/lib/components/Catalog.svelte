@@ -293,8 +293,7 @@
                 name: e.path.split(/[\\/]/).pop() || e.path,
                 size: e.size
             }));
-            await batchManager.addItemsBulk(entriesToImport);
-            importedCount = entriesToImport.length;
+            importedCount = await batchManager.addItemsBulk(entriesToImport);
             flog('info', `Imported ${importedCount} entries from catalog ${browsing}`);
         } catch (e: any) {
             error = `import_to_batch: ${e}`;
