@@ -19,6 +19,7 @@
     import DocumentDecisionPanel from './DocumentDecisionPanel.svelte';
     import { experimentalCrispEmbed, loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
     import { batchManager } from '$lib/batch/store.svelte';
+    import { batchSourceKey } from '$lib/mobileProvider';
     import { stat } from '@tauri-apps/plugin-fs';
     import { availableDocumentTools, documentToolRequest } from '$lib/workflow';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
@@ -101,6 +102,51 @@
     let loading     = $state(false);
     let error       = $state('');
     let searchNotice = $state('');
+    interface ResultActionFeedback {
+        kind: 'success' | 'error';
+        message: string;
+        retry?: () => Promise<void>;
+    }
+    let resultActionFeedback = $state<ResultActionFeedback | null>(null);
+    let resultActionsBusy = $state<Set<string>>(new Set());
+    let resultActionRequest = 0;
+
+    function dismissResultActionFeedback(): void {
+        resultActionRequest += 1;
+        resultActionFeedback = null;
+    }
+
+    /** Result actions must not replace the search view with a retrieval error. */
+    async function runResultAction(
+        key: string,
+        operation: () => Promise<string | null>,
+        failure: string,
+        retryable: boolean | (() => boolean) = true,
+    ): Promise<void> {
+        if (resultActionsBusy.has(key)) return;
+        const request = ++resultActionRequest;
+        resultActionFeedback = null;
+        resultActionsBusy = new Set([...resultActionsBusy, key]);
+        try {
+            const message = await operation();
+            if (request === resultActionRequest && message) {
+                resultActionFeedback = { kind: 'success', message };
+            }
+        } catch (cause) {
+            if (request === resultActionRequest) {
+                const detail = cause instanceof Error ? cause.message : String(cause);
+                resultActionFeedback = {
+                    kind: 'error', message: `${failure}: ${detail}`,
+                    retry: (typeof retryable === 'function' ? retryable() : retryable)
+                        ? () => runResultAction(key, operation, failure, retryable) : undefined,
+                };
+            }
+        } finally {
+            const next = new Set(resultActionsBusy);
+            next.delete(key);
+            resultActionsBusy = next;
+        }
+    }
     let searchRequest = 0;
     let displayedRecipeKey = $state<string | null>(null);
     let shareBusy    = $state<string | null>(null);
@@ -605,12 +651,14 @@
         if (wallabagBodies.has(r.doc_id)) {
             const next = new Map(wallabagBodies); next.delete(r.doc_id); wallabagBodies = next; return;
         }
-        wallabagReading = r.doc_id;
-        try {
-            const body = await invoke<string>('wallabag_read', { docId: r.doc_id });
-            const next = new Map(wallabagBodies); next.set(r.doc_id, body); wallabagBodies = next;
-        } catch (e) { error = `Could not read article: ${String(e)}`; }
-        finally { wallabagReading = null; }
+        await runResultAction(`article:${r.doc_id}`, async () => {
+            wallabagReading = r.doc_id;
+            try {
+                const body = await invoke<string>('wallabag_read', { docId: r.doc_id });
+                const next = new Map(wallabagBodies); next.set(r.doc_id, body); wallabagBodies = next;
+                return null;
+            } finally { wallabagReading = null; }
+        }, labels.readArticleFailed);
     }
 
     // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
@@ -656,7 +704,7 @@
         let item = batchManager.items.find(item => item.originalPath === path);
         if (!item) {
             const info = await stat(path);
-            batchManager.addItem(path, filename, info.size);
+            await batchManager.addItem(path, filename, info.size);
             item = batchManager.items.find(item => item.originalPath === path);
         }
         if (item) {
@@ -887,6 +935,7 @@
         const recipe = currentRecipe();
         imageSearchLoading = false;
         loading = true; error = ''; searchNotice = ''; searched = true;
+        resultActionFeedback = null;
         similarHeader = ''; compareResults = []; batchSelection = new Set();
         clearTranslations(); searchTags = new Set();
         try {
@@ -984,16 +1033,17 @@
 
     // P27.10 — Export a search result to HTML/DOCX
     async function exportDoc(r: SearchResult, fmt: string) {
-        try {
+        await runResultAction(`export:${r.doc_id}:${r.chunk_index}`, async () => {
             const savePath = await save({ filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }], defaultPath: `${r.title || r.doc_id}.${fmt}` });
-            if (!savePath) return;
+            if (!savePath) return null;
             await invoke(`export_to_${fmt}`, { title: r.title || r.filename || '', body: r.snippet || '', outPath: savePath });
-        } catch (e: any) { console.warn('Export failed:', e); }
+            return `${labels.excerptExported}: ${savePath}`;
+        }, labels.exportFailed);
     }
 
     // P25.9 — Add passage to reading list
     async function highlightPassage(r: SearchResult) {
-        try {
+        await runResultAction(`reading:${r.doc_id}:${r.chunk_index}`, async () => {
             await invoke('highlight_add', {
                 docId: r.doc_id,
                 chunkIndex: r.chunk_index >= 0 ? r.chunk_index : 0,
@@ -1003,7 +1053,8 @@
                 note: '',
                 color: '#60a5fa',
             });
-        } catch (e: any) { console.warn('Highlight failed:', e); }
+            return `${labels.readingListAdded}: ${r.title || r.filename || r.doc_id}`;
+        }, labels.readingListFailed);
     }
 
     // P25.2 — Log search to audit trail
@@ -1189,6 +1240,7 @@
 
     function clearSearch() {
         searchRequest += 1;
+        dismissResultActionFeedback();
         loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
         displayedRecipeKey = null; similarHeader = '';
         void runSkeletonSearch('');
@@ -1231,27 +1283,23 @@
             const slashIdx = afterScheme.indexOf('/');
             path = slashIdx >= 0 ? afterScheme.slice(slashIdx) : afterScheme;
         }
-        try {
+        await runResultAction(`open:${uri}`, async () => {
             await openPath(path);
-        } catch (e) {
-            console.error('[IndexSearch] openPath failed:', e, 'uri:', uri, 'path:', path);
-            error = `Konnte Datei nicht öffnen: ${path}`;
-        }
+            return null;
+        }, `${labels.openFileFailed} (${path})`);
     }
 
     async function openOriginal(url: string) {
         // Opens the source URL (wallabag/pocket provenance, browser-saved
         // PDFs, …) in the default browser via the opener plugin.
-        try {
+        await runResultAction(`source:${url}`, async () => {
             const parsed = new URL(url);
             if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
                 throw new Error('Only HTTP and HTTPS source links can be opened.');
             }
             await openUrl(url);
-        } catch (e) {
-            console.error('[IndexSearch] openUrl failed:', e, 'url:', url);
-            error = `Konnte Quelle nicht öffnen: ${url}`;
-        }
+            return null;
+        }, `${labels.openSourceFailed} (${url})`);
     }
 
     function driveUriParts(uri: string): { driveId: string; remotePath: string } | null {
@@ -1272,48 +1320,46 @@
     async function shareDriveFile(uri: string) {
         const parts = driveUriParts(uri);
         if (!parts) return;
-        shareBusy = uri;
-        try {
-            let supported = shareCapabilities[parts.driveId];
-            if (supported === undefined) {
-                const capabilities = await invoke<{ share_links?: boolean }>('drive_capabilities', {
-                    driveId: parts.driveId
-                });
-                supported = capabilities.share_links === true;
-                shareCapabilities = { ...shareCapabilities, [parts.driveId]: supported };
-            }
-            if (!supported) {
-                throw new Error('This provider does not advertise public share links.');
-            }
-            const link = await invoke<string>('drive_share_link', parts);
-            await navigator.clipboard.writeText(link);
-            error = 'Share link copied to clipboard.';
-        } catch (e: any) {
-            error = `Share link unavailable: ${String(e?.message ?? e)}`;
-        } finally {
-            shareBusy = null;
-        }
+        // A clipboard retry can reuse the link already created by the provider.
+        let link: string | null = null;
+        await runResultAction(`share:${uri}`, async () => {
+            shareBusy = uri;
+            try {
+                let supported = shareCapabilities[parts.driveId];
+                if (supported === undefined) {
+                    const capabilities = await invoke<{ share_links?: boolean }>('drive_capabilities', {
+                        driveId: parts.driveId,
+                    });
+                    supported = capabilities.share_links === true;
+                    shareCapabilities = { ...shareCapabilities, [parts.driveId]: supported };
+                }
+                if (!supported) {
+                    throw new Error('This provider does not advertise public share links.');
+                }
+                link ??= await invoke<string>('drive_share_link', parts);
+                await navigator.clipboard.writeText(link);
+                return labels.shareCopied;
+            } finally { shareBusy = null; }
+        }, labels.shareFailed, () => shareCapabilities[parts.driveId] !== false);
     }
 
     /** Save a registered-drive search result locally through the shared queue. */
     async function downloadDriveFile(uri: string, filename?: string): Promise<void> {
         const parts = driveUriParts(uri);
         if (!parts) return;
-        const destination = await save({
-            defaultPath: filename || pathBaseName(parts.remotePath) || 'download',
-            title: 'Save cloud file for offline use',
-        });
-        if (!destination) return;
-        downloadBusy = uri;
-        try {
-            const bytes = await invoke<number[]>('drive_read_file', parts);
-            await writeFile(destination, new Uint8Array(bytes));
-            error = `Downloaded ${filename || pathBaseName(parts.remotePath) || 'file'} for offline use.`;
-        } catch (e: any) {
-            error = `Could not download cloud file: ${String(e?.message ?? e)}`;
-        } finally {
-            downloadBusy = null;
-        }
+        await runResultAction(`download:${uri}`, async () => {
+            const destination = await save({
+                defaultPath: filename || pathBaseName(parts.remotePath) || 'download',
+                title: 'Save cloud file for offline use',
+            });
+            if (!destination) return null;
+            downloadBusy = uri;
+            try {
+                const bytes = await invoke<number[]>('drive_read_file', parts);
+                await writeFile(destination, new Uint8Array(bytes));
+                return `${labels.downloaded}: ${destination}`;
+            } finally { downloadBusy = null; }
+        }, labels.downloadFailed);
     }
 
     async function copyResultPath(uri: string): Promise<void> {
@@ -1321,12 +1367,10 @@
         const local = localPathFromSearchUri(uri);
         const value = drive ? `${drive.driveId}:${drive.remotePath}` : local;
         if (!value) return;
-        try {
+        await runResultAction(`copy:${uri}`, async () => {
             await navigator.clipboard.writeText(value);
-            error = 'Path copied to clipboard.';
-        } catch (e: any) {
-            error = `Could not copy path: ${String(e?.message ?? e)}`;
-        }
+            return `${labels.pathCopied}: ${value}`;
+        }, labels.copyPathFailed);
     }
 
     /**
@@ -1340,40 +1384,37 @@
         const parts = driveUriParts(uri);
         if (!parts) return;
         const name = pathBaseName(parts.remotePath) || parts.remotePath;
-        try {
-            const capabilities = await invoke<{ delete: boolean; rename: boolean; move_path: boolean }>(
-                'drive_capabilities', { driveId: parts.driveId });
-            if (operation === 'delete' && !capabilities.delete) {
-                throw new Error('This provider does not support delete/trash.');
-            }
-            if (operation === 'rename' && !capabilities.rename) {
-                throw new Error('This provider does not support rename.');
-            }
-            if (operation === 'move' && !capabilities.move_path) {
-                throw new Error('This provider does not support move.');
-            }
-            if (operation === 'delete') {
-                if (!window.confirm(`Move “${name}” to provider trash?`)) return;
-                mutationBusy = uri;
-                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.remotePath });
-            } else {
-                const label = operation === 'rename' ? 'new remote path/name' : 'destination remote path';
-                const destination = window.prompt(`Enter ${label} for “${name}”:`, parts.remotePath);
-                if (!destination?.trim() || destination.trim() === parts.remotePath) return;
-                mutationBusy = uri;
-                await invoke('drive_move_path', {
-                    driveId: parts.driveId,
-                    source: parts.remotePath,
-                    destination: destination.trim(),
-                });
-            }
-            error = `${operation === 'delete' ? 'Moved to trash' : operation === 'rename' ? 'Renamed' : 'Moved'}: ${name}`;
-            await runSearch();
-        } catch (e: any) {
-            error = `Could not ${operation} cloud result: ${String(e?.message ?? e)}`;
-        } finally {
-            mutationBusy = null;
-        }
+        await runResultAction(`mutate:${uri}`, async () => {
+            mutationBusy = uri;
+            try {
+                const capabilities = await invoke<{ delete: boolean; rename: boolean; move_path: boolean }>(
+                    'drive_capabilities', { driveId: parts.driveId });
+                if (operation === 'delete' && !capabilities.delete) {
+                    throw new Error('This provider does not support delete/trash.');
+                }
+                if (operation === 'rename' && !capabilities.rename) {
+                    throw new Error('This provider does not support rename.');
+                }
+                if (operation === 'move' && !capabilities.move_path) {
+                    throw new Error('This provider does not support move.');
+                }
+                if (operation === 'delete') {
+                    if (!window.confirm(`Move “${name}” to provider trash?`)) return null;
+                    await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.remotePath });
+                } else {
+                    const label = operation === 'rename' ? 'new remote path/name' : 'destination remote path';
+                    const destination = window.prompt(`Enter ${label} for “${name}”:`, parts.remotePath);
+                    if (!destination?.trim() || destination.trim() === parts.remotePath) return null;
+                    await invoke('drive_move_path', {
+                        driveId: parts.driveId,
+                        source: parts.remotePath,
+                        destination: destination.trim(),
+                    });
+                }
+                await runSearch();
+                return `${operation === 'delete' ? 'Moved to trash' : operation === 'rename' ? 'Renamed' : 'Moved'}: ${name}`;
+            } finally { mutationBusy = null; }
+        }, `Could not ${operation} cloud result`, false);
     }
 
     /** Promote a remote registered-drive L1 row through the normal ingest
@@ -1382,27 +1423,25 @@
     async function promoteDriveResult(result: SearchResult): Promise<void> {
         const parts = driveUriParts(result.location_uri);
         if (!parts) return;
-        promoteBusy = result.location_uri;
-        try {
-            const capabilities = await invoke<{ read?: boolean }>('drive_capabilities', {
-                driveId: parts.driveId,
-            });
-            if (capabilities.read !== true) {
-                throw new Error('This provider does not support remote promotion.');
-            }
-            await invoke('index_promote_drive_archive', {
-                docId: result.doc_id,
-                driveId: parts.driveId,
-                remotePath: parts.remotePath,
-                ownerId: null,
-            });
-            error = `Promoted ${result.filename || parts.remotePath} to full local indexing.`;
-            await runSearch();
-        } catch (e: any) {
-            error = `Could not promote remote result: ${String(e?.message ?? e)}`;
-        } finally {
-            promoteBusy = null;
-        }
+        await runResultAction(`promote:${result.doc_id}`, async () => {
+            promoteBusy = result.location_uri;
+            try {
+                const capabilities = await invoke<{ read?: boolean }>('drive_capabilities', {
+                    driveId: parts.driveId,
+                });
+                if (capabilities.read !== true) {
+                    throw new Error('This provider does not support remote promotion.');
+                }
+                await invoke('index_promote_drive_archive', {
+                    docId: result.doc_id,
+                    driveId: parts.driveId,
+                    remotePath: parts.remotePath,
+                    ownerId: null,
+                });
+                await runSearch();
+                return `Promoted ${result.filename || parts.remotePath} to full local indexing.`;
+            } finally { promoteBusy = null; }
+        }, 'Could not promote remote result', false);
     }
 
     function cbArchiveOriginalPath(uri: string): string | null {
@@ -1420,35 +1459,32 @@
     async function promoteCbArchive(result: SearchResult): Promise<void> {
         const originalPath = cbArchiveOriginalPath(result.location_uri);
         if (!originalPath || promoteBusy === result.doc_id) return;
-        let retrievePyPath = await getSetting('cbRetrievePyPath', null) as string | null;
-        if (!retrievePyPath) {
-            const { open } = await import('@tauri-apps/plugin-dialog');
-            const selected = await open({
-                multiple: false,
-                filters: [{ name: 'Python script', extensions: ['py'] }],
-                title: 'Select cloud-backup retrieve.py',
-            });
-            if (typeof selected !== 'string') return;
-            retrievePyPath = selected;
-            await saveSetting('cbRetrievePyPath', retrievePyPath);
-        }
-        promoteBusy = result.doc_id;
-        error = '';
-        try {
-            await invoke('index_promote_cb_archive', {
-                docId: result.doc_id,
-                originalPath,
-                retrievePyPath,
-                outputDir: null,
-                ownerId: null,
-            });
-            error = `Promoted ${result.filename || originalPath} to local full-text index.`;
-            await runSearch();
-        } catch (e: any) {
-            error = `Could not promote archive result: ${String(e?.message ?? e)}`;
-        } finally {
-            promoteBusy = null;
-        }
+        await runResultAction(`promote:${result.doc_id}`, async () => {
+            promoteBusy = result.doc_id;
+            try {
+                let retrievePyPath = await getSetting('cbRetrievePyPath', null) as string | null;
+                if (!retrievePyPath) {
+                    const { open } = await import('@tauri-apps/plugin-dialog');
+                    const selected = await open({
+                        multiple: false,
+                        filters: [{ name: 'Python script', extensions: ['py'] }],
+                        title: 'Select cloud-backup retrieve.py',
+                    });
+                    if (typeof selected !== 'string') return null;
+                    retrievePyPath = selected;
+                    await saveSetting('cbRetrievePyPath', retrievePyPath);
+                }
+                await invoke('index_promote_cb_archive', {
+                    docId: result.doc_id,
+                    originalPath,
+                    retrievePyPath,
+                    outputDir: null,
+                    ownerId: null,
+                });
+                await runSearch();
+                return `Promoted ${result.filename || originalPath} to local full-text index.`;
+            } finally { promoteBusy = null; }
+        }, 'Could not promote archive result', false);
     }
 
     function openDriveInContext(uri: string): void {
@@ -1467,16 +1503,13 @@
 
     async function addResultToBatch(result: SearchResult): Promise<void> {
         const path = localPathFromSearchUri(result.location_uri);
-        if (!path) {
-            error = 'Only local search results can be added directly to the batch.';
-            return;
-        }
-        try {
-            const { batchManager } = await import('$lib/batch/store.svelte');
-            batchManager.addItem(path, result.filename || pathBaseName(path), 0);
-        } catch (e: any) {
-            error = `Could not add search result to batch: ${String(e?.message ?? e)}`;
-        }
+        await runResultAction(`batch:${result.doc_id}`, async () => {
+            if (!path) throw new Error(labels.onlyLocalBatch);
+            const name = result.filename || pathBaseName(path);
+            const existing = batchManager.items.some(item => batchSourceKey(item.originalPath) === batchSourceKey(path));
+            const added = existing ? false : await batchManager.addItem(path, name, (await stat(path)).size);
+            return `${added ? labels.addedToBatch : labels.alreadyInBatch}: ${name}`;
+        }, labels.addBatchFailed, Boolean(path));
     }
 
     function toggleBatchSelection(result: SearchResult): void {
@@ -1487,27 +1520,29 @@
     }
 
     async function addSelectedToBatch(): Promise<void> {
-        const selected = results.filter((result) => batchSelection.has(result.doc_id));
-        const local = selected
-            .map((result) => ({ result, path: localPathFromSearchUri(result.location_uri) }))
-            .filter((item): item is { result: SearchResult; path: string } => Boolean(item.path));
-        if (local.length === 0) {
-            error = 'Select at least one local search result for the batch sorter.';
-            return;
+        // Snapshot documents, not matching chunks. Retry keeps the same targets
+        // even if the user changes the current selection while storage is busy.
+        const selected = grouped.filter(group => batchSelection.has(group.doc_id)).map(group => group.best);
+        const local = new Map<string, { result: SearchResult; path: string }>();
+        let skipped = 0;
+        for (const result of selected) {
+            const path = localPathFromSearchUri(result.location_uri);
+            if (path) local.set(batchSourceKey(path), { result, path });
+            else skipped += 1;
         }
-        try {
-            const { batchManager } = await import('$lib/batch/store.svelte');
-            for (const { result, path } of local) {
-                batchManager.addItem(path, result.filename || pathBaseName(path), 0);
-            }
-            const skipped = selected.length - local.length;
-            error = skipped > 0
-                ? `Added ${local.length} local result${local.length === 1 ? '' : 's'}; skipped ${skipped} cloud result${skipped === 1 ? '' : 's'}.`
-                : `Added ${local.length} result${local.length === 1 ? '' : 's'} to the batch sorter.`;
-            batchSelection = new Set();
-        } catch (e: any) {
-            error = `Could not add selected results to batch: ${String(e?.message ?? e)}`;
-        }
+        await runResultAction('batch:selection', async () => {
+            if (local.size === 0) throw new Error(labels.onlyLocalBatch);
+            const existing = new Set(batchManager.items.map(item => batchSourceKey(item.originalPath)));
+            const entries = await Promise.all([...local.values()]
+                .filter(({ path }) => !existing.has(batchSourceKey(path)))
+                .map(async ({ result, path }) => ({ path, name: result.filename || pathBaseName(path), size: (await stat(path)).size })));
+            const added = await batchManager.addItemsBulk(entries);
+            return [
+                `${labels.addedToBatch}: ${added}`,
+                `${labels.alreadyInBatch}: ${local.size - added}`,
+                ...(skipped ? [`${labels.skippedCloud}: ${skipped}`] : []),
+            ].join(' · ');
+        }, labels.addBatchFailed, local.size > 0);
     }
 
     function highlightSnippet(text: string, q: string): string {
@@ -1838,6 +1873,19 @@
         </section>
     {/if}
 
+    {#if resultActionFeedback}
+        <div class="result-action-feedback" class:action-error={resultActionFeedback.kind === 'error'}
+            role={resultActionFeedback.kind === 'error' ? 'alert' : 'status'}>
+            <span>{resultActionFeedback.message}</span>
+            {#if resultActionFeedback.retry}
+                <button class="reset-filters" onclick={() => void resultActionFeedback?.retry?.()}>{labels.retryAction}</button>
+            {/if}
+            <button class="action-dismiss" onclick={dismissResultActionFeedback} aria-label={labels.dismissAction} title={labels.dismissAction}>
+                <X size={14} />
+            </button>
+        </div>
+    {/if}
+
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
     <div class="results-and-preview">
     <div class="results-area" class:with-preview={previewing !== null}>
@@ -1913,7 +1961,7 @@
                 </button>
                 {/if}
                 {#if batchSelection.size > 0}
-                    <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} title="Add selected local results to batch sorter">
+                    <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} disabled={resultActionsBusy.has('batch:selection')} title="Add selected local results to batch sorter">
                         <ListPlus size={11} /> Batch ({batchSelection.size})
                     </button>
                 {/if}
@@ -2021,12 +2069,14 @@
                                 <ListPlus size={13} />
                             </button>
                             <button class="open-btn"
+                                disabled={resultActionsBusy.has(`open:${r.location_uri}`)}
                                 onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
                             </button>
                             {#if driveUriParts(r.location_uri) || localPathFromSearchUri(r.location_uri)}
                                 <button class="open-btn"
+                                    disabled={resultActionsBusy.has(`copy:${r.location_uri}`)}
                                     onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri); }}
                                     title="Copy path">
                                     <Copy size={13} />
@@ -2085,6 +2135,7 @@
                                     <FolderOpen size={13} />
                                 </button>
                                 <button class="open-btn"
+                                    disabled={resultActionsBusy.has(`batch:${r.doc_id}`)}
                                     onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
                                     title="Add to batch sorter">
                                     <ListPlus size={13} />
@@ -2115,12 +2166,16 @@
                                 title="Find similar documents">
                                 ≈
                             </button>
+                            {#if $caps.desktop}
                             <button class="open-btn"
+                                disabled={!r.snippet || resultActionsBusy.has(`export:${r.doc_id}:${r.chunk_index}`)}
                                 onclick={(e) => { e.stopPropagation(); exportDoc(r, 'html'); }}
-                                title="Export as HTML">
+                                title={labels.exportExcerpt}>
                                 ⤓
                             </button>
+                            {/if}
                             <button class="open-btn"
+                                disabled={!r.snippet || resultActionsBusy.has(`reading:${r.doc_id}:${r.chunk_index}`)}
                                 onclick={(e) => { e.stopPropagation(); highlightPassage(r); }}
                                 title="Add to reading list">
                                 ★
@@ -2660,6 +2715,11 @@
     .filter-chip:hover, .reset-filters:hover { background: #27272a; border-color: #818cf8; }
     .reset-filters { color: #c7d2fe; }
     .search-notice { padding: 9px 12px; background: #182235; color: #bfdbfe; border: 1px solid #334155; border-radius: 6px; font-size: .8rem; flex-shrink: 0; overflow-wrap: anywhere; }
+    .result-action-feedback { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #102a22; color: #bbf7d0; border: 1px solid #285c45; border-radius: 6px; font-size: .8rem; flex-shrink: 0; flex-wrap: wrap; }
+    .result-action-feedback > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .result-action-feedback.action-error { background: #321c22; color: #fecdd3; border-color: #74323f; }
+    .action-dismiss { display: inline-flex; padding: 5px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+    .action-dismiss:hover { background: #ffffff16; }
     .saved-help { color: #a1a1aa; margin: 7px 9px; font-size: .75rem; }
     /* PLAN P7.5 — saved-searches bookmark dropdown */
     .saved-wrap { position: relative; display: inline-flex; }
