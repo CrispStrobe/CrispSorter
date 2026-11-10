@@ -69,6 +69,18 @@ Copy a report's complete `recipe.filters` into a query's optional `filters`
 property to require an exact filter match. Every experiment must supply the
 entire query set; missing reports fail validation. Duplicate result IDs, edited
 queries, selected scopes, display filtering, and reordered results are rejected.
+Coverage counts must also agree with the exported document list and the recipe's
+requested limit. A manually shortened report cannot qualify as the complete
+returned window. An optional `docIdScope` on a judged query requires the exact
+document scope from its recipe. Additive view preferences in newer recipes do
+not change retrieval metrics.
+
+Reports retain `ownerId` and a collision-free `documentKey` for each result. When
+several owners can use the same document ID, set a judged query's `identity` to
+`"owner-and-document"` and use the report's exact `documentKey` strings as the
+keys in `relevance` and entries in `mustInclude` / `mustExclude`. The default
+`"document"` mode remains compatible with older single-owner reports and rejects
+duplicate IDs instead of silently merging their relevance judgments.
 
 ## Interpret the output
 

@@ -32,28 +32,58 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 
 def evaluate_report(case: dict, report: dict, k: int) -> dict:
+    require(isinstance(k, int) and not isinstance(k, bool) and 1 <= k <= 500, "k must be between 1 and 500")
     require(isinstance(report, dict), "A search report must be a JSON object")
     require(report.get("format") == "CrispSorter search report" and report.get("version") == 1, "Unsupported search report format")
     require(report.get("scope") == "displayed", "Selected-only reports cannot measure retrieval quality")
     require(report.get("sort") == "relevance", "Reports must preserve relevance order")
     require(report.get("displayTags") == [], "Clear display-tag filters before exporting evaluation reports")
     require(report.get("executedQuery") == case["query"], f"Executed query differs for {case['id']}")
-    require(report.get("coverage", {}).get("requestedLimit", 0) >= k, "Requested result window is smaller than k")
+    coverage = report.get("coverage")
+    require(isinstance(coverage, dict), "Report coverage metadata is required")
+    requested = coverage.get("requestedLimit")
+    require(isinstance(requested, int) and not isinstance(requested, bool) and k <= requested <= 500, "Requested result window is smaller than k or invalid")
     recipe = report.get("recipe", {})
+    require(isinstance(recipe, dict), "The search recipe must be an object")
+    require(recipe.get("mode") in ("text", "hybrid", "vector"), "The search recipe needs a supported retrieval mode")
+    require(recipe.get("limit") == requested and not isinstance(recipe.get("limit"), bool), "Recipe and coverage result limits differ")
     if "filters" in case:
         require(recipe.get("filters") == case["filters"], f"Search filters differ for {case['id']}")
+    if "docIdScope" in case:
+        require(recipe.get("docIdScope") == case["docIdScope"], f"Document scope differs for {case['id']}")
     grades = case.get("relevance", {})
     require(isinstance(grades, dict), "Relevance judgments must be an object keyed by document ID")
     require(all(isinstance(key, str) and key and isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3 for key, value in grades.items()), "Relevance grades must be integers from 0 to 3")
     documents = report.get("documents")
     require(isinstance(documents, list), "Report documents must be a list")
-    ids = [doc.get("docId") for doc in documents]
-    require(all(isinstance(doc_id, str) and doc_id for doc_id in ids), "Every result needs a document ID")
+    require(all(isinstance(doc, dict) for doc in documents), "Every result must be a document object")
+    for key in ("returnedDocuments", "exportedDocuments"):
+        count = coverage.get(key)
+        require(isinstance(count, int) and not isinstance(count, bool) and count == len(documents),
+                f"Incomplete result window: {key} differs from the exported documents")
+    doc_ids = [doc.get("docId") for doc in documents]
+    require(all(isinstance(doc_id, str) and doc_id for doc_id in doc_ids), "Every result needs a document ID")
+    identity = case.get("identity", "document")
+    require(identity in ("document", "owner-and-document"), "Unknown relevance identity mode")
+    if identity == "owner-and-document":
+        require(all(isinstance(doc.get("ownerId"), str) for doc in documents), "Owner-aware evaluation requires ownerId on every result")
+        ids = [json.dumps([doc["ownerId"], doc["docId"]], ensure_ascii=False, separators=(",", ":")) for doc in documents]
+        for key in grades:
+            try:
+                parts = json.loads(key)
+            except (ValueError, TypeError):
+                raise ValueError("Owner-aware judgments must use documentKey values from the report") from None
+            require(isinstance(parts, list) and len(parts) == 2 and all(isinstance(value, str) for value in parts) and parts[1]
+                    and json.dumps(parts, ensure_ascii=False, separators=(",", ":")) == key,
+                    "Owner-aware judgments must use documentKey values from the report")
+    else:
+        ids = doc_ids
     require(len(set(ids)) == len(ids), "Duplicate document IDs invalidate a ranked report")
     latency = finite_number(report.get("elapsedMs"), "elapsedMs")
     top = ids[:k]
     positives = {doc_id for doc_id, grade in grades.items() if grade > 0}
     require(not case.get("expectEmpty") or not positives, "An expected-empty query cannot have positive relevance judgments")
+    require(isinstance(case.get("expectEmpty", False), bool), "expectEmpty must be a boolean")
     for name in ("mustInclude", "mustExclude"):
         values = case.get(name, [])
         require(isinstance(values, list) and all(isinstance(value, str) and value for value in values), f"{name} must be a list of document IDs")
@@ -71,7 +101,7 @@ def evaluate_report(case: dict, report: dict, k: int) -> dict:
     if case.get("expectEmpty") and ids:
         failures.append({"expectedEmpty": True, "returned": len(ids)})
     return {
-        "queryId": case["id"], "query": case["query"], "k": k,
+        "queryId": case["id"], "query": case["query"], "k": k, "identity": identity,
         "returnedDocuments": len(ids), "topKDocuments": len(top),
         "judgedRelevantDocuments": len(positives),
         "precisionAtK": len(found) / k if positives else None,
@@ -135,6 +165,7 @@ def evaluate_manifest(manifest: dict, base: Path) -> dict:
         require(set(thresholds) <= set(gates), "Unknown quality threshold")
         for key, value in thresholds.items():
             wanted = finite_number(value, key)
+            require(key == "maxP95ElapsedMs" or wanted <= 1, f"{key} must be between 0 and 1")
             field, compare = gates[key]
             actual = summary[field]
             if actual is None or not compare(actual, wanted):
