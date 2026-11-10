@@ -1,150 +1,317 @@
-//! HTML extractor — basic tag-stripping. Lifts `<title>` + `<h1>..<h6>`
-//! into `headings`; everything else gets the tags removed.
-//!
-//! Deliberately *no* `scraper` / `html5ever` dep — that's a substantial
-//! tree we'd rather not pull in for what's mostly a fallback path. If
-//! HTML extraction quality becomes a real bottleneck, swap this whole
-//! module for a `scraper`-backed implementation; the public signature
-//! is the trait-shaped function we already use, so callers don't move.
-//!
-//! Limitations the regex approach inherits:
-//! * Scripts and styles aren't stripped — they leak into full_text.
-//!   Fine for indexing (the embedder + BM25 ignore them as noise) but
-//!   a real parser would do better.
-//! * Comments / CDATA aren't handled specially.
-//! * Entities aren't decoded — `&amp;` stays literal. Acceptable for
-//!   token-based search; would matter for a strict text dump.
+//! Bounded HTML extraction with an HTML5 parser, entity decoding, and explicit
+//! exclusion of scripts, styles, templates, and markup-hidden subtrees.
+//! External resources are never fetched and scripts are never executed.
 
-use anyhow::{Context, Result};
-use std::path::Path;
+use anyhow::{ensure, Context, Result};
+use scraper::{ElementRef, Html, Selector};
+use std::{io::Read, path::Path};
 
 use super::ExtractedDocument;
 
+const MAX_HTML_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HTML_NODES: usize = 500_000;
+
 pub fn extract(path: &Path) -> Result<ExtractedDocument> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let raw = String::from_utf8_lossy(&bytes);
-
-    let headings = lift_headings(&raw);
-    let full_text = strip_tags(&raw);
-
+    let bytes = read_bounded(path, MAX_HTML_BYTES)?;
+    let raw = decode_html(&bytes);
+    let document = parse_bounded(&raw)?;
+    let body = document
+        .select(&selector("body"))
+        .next()
+        .unwrap_or_else(|| document.root_element());
+    let full_text = visible_text(body);
+    ensure!(
+        full_text.len() <= MAX_HTML_BYTES,
+        "HTML extracted text exceeds the 16 MiB limit"
+    );
+    let headings = document
+        .select(&selector("title, h1, h2, h3, h4, h5, h6"))
+        .filter(|element| !element.ancestors().filter_map(ElementRef::wrap).any(hidden))
+        .map(visible_text)
+        .filter(|text| !text.is_empty())
+        .collect();
+    let source_url = document
+        .select(&selector("link[rel], meta[property]"))
+        .find_map(|element| {
+            let value = element.value();
+            let candidate = if value.name() == "link"
+                && value.attr("rel").is_some_and(|rel| {
+                    rel.split_whitespace()
+                        .any(|s| s.eq_ignore_ascii_case("canonical"))
+                }) {
+                value.attr("href")
+            } else if value
+                .attr("property")
+                .is_some_and(|p| p.eq_ignore_ascii_case("og:url"))
+            {
+                value.attr("content")
+            } else {
+                None
+            }?;
+            let candidate = candidate.trim();
+            (candidate.starts_with("https://") || candidate.starts_with("http://"))
+                .then(|| candidate.to_string())
+        });
     Ok(ExtractedDocument {
         full_text,
         headings,
-        ext: String::new(),
-        language: None,
-        translated_text: None,
-        translated_to_lang: None,
-        audio: None,
-        image_exif: None,
-        source_url: None,
-        tags: vec![],
-        audio_pcm: None,
+        ext: "html".into(),
+        source_url,
+        ..Default::default()
     })
 }
 
-/// Pull text content from `<title>`, `<h1>` through `<h6>`. Naïve but
-/// good enough for FTS boost — `<h1>foo</h1>` yields `["foo"]`.
-fn lift_headings(html: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for tag in ["title", "h1", "h2", "h3", "h4", "h5", "h6"] {
-        let open = format!("<{tag}");
-        let close = format!("</{tag}>");
-        let mut start = 0;
-        while let Some(open_pos) = html[start..].to_ascii_lowercase().find(&open) {
-            let abs_open = start + open_pos;
-            // Skip past the opening tag (find the `>` that ends it,
-            // accounting for attributes).
-            if let Some(gt) = html[abs_open..].find('>') {
-                let content_start = abs_open + gt + 1;
-                if let Some(rel_close) = html[content_start..].to_ascii_lowercase().find(&close) {
-                    let content = &html[content_start..content_start + rel_close];
-                    let stripped = strip_tags(content).trim().to_string();
-                    if !stripped.is_empty() {
-                        out.push(stripped);
-                    }
-                    start = content_start + rel_close + close.len();
-                    continue;
-                }
-            }
-            // Malformed — bail on this tag.
-            break;
-        }
-    }
-    out
+/// Shared by MIME HTML parts. This keeps visible text and phrase boundaries
+/// consistent whether a document arrived as an HTML file or an email.
+pub(super) fn visible_html(html: &str) -> Result<String> {
+    ensure!(
+        html.len() <= MAX_HTML_BYTES,
+        "HTML part exceeds the 16 MiB limit"
+    );
+    let document = parse_bounded(html)?;
+    let body = document
+        .select(&selector("body"))
+        .next()
+        .unwrap_or_else(|| document.root_element());
+    let text = visible_text(body);
+    ensure!(
+        text.len() <= MAX_HTML_BYTES,
+        "HTML extracted text exceeds the 16 MiB limit"
+    );
+    Ok(text)
 }
 
-/// Remove every `<...>` tag, leaving the inner text. Whitespace gets
-/// collapsed so `<p>foo</p><p>bar</p>` becomes `foo bar` rather than
-/// `foobar` or `foo\n\n\n\nbar`.
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
+pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    ensure!(
+        file.metadata()?.len() <= limit as u64,
+        "Source exceeds extraction limit ({limit} bytes)"
+    );
+    let mut bytes = Vec::new();
+    file.take((limit as u64) + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= limit,
+        "Source grew beyond extraction limit ({limit} bytes)"
+    );
+    Ok(bytes)
+}
+
+fn selector(value: &str) -> Selector {
+    Selector::parse(value).expect("static HTML selector")
+}
+
+fn parse_bounded(raw: &str) -> Result<Html> {
+    let document = Html::parse_document(raw);
+    ensure!(
+        document.tree.nodes().take(MAX_HTML_NODES + 1).count() <= MAX_HTML_NODES,
+        "HTML tree exceeds the node limit"
+    );
+    Ok(document)
+}
+
+fn decode_html(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    if let Some((encoding, skip)) = encoding_rs::Encoding::for_bom(bytes) {
+        return encoding.decode_without_bom_handling(&bytes[skip..]).0;
+    }
+    // HTML encoding declarations are ASCII-compatible and are inspected only
+    // in a bounded prefix. A declaration takes precedence over UTF-8 guessing.
+    let prefix = String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]);
+    let probe = Html::parse_document(&prefix);
+    let declared = probe.select(&selector("meta")).find_map(|meta| {
+        let element = meta.value();
+        if let Some(label) = element.attr("charset") {
+            return encoding_rs::Encoding::for_label(label.as_bytes());
+        }
+        if element
+            .attr("http-equiv")
+            .is_some_and(|v| v.eq_ignore_ascii_case("content-type"))
+        {
+            let content = element.attr("content")?;
+            for entry in content.split(';') {
+                if let Some((name, label)) = entry.split_once('=') {
+                    if name.trim().eq_ignore_ascii_case("charset") {
+                        return encoding_rs::Encoding::for_label(
+                            label.trim().trim_matches(['\'', '"']).as_bytes(),
+                        );
+                    }
+                }
+            }
+        }
+        None
+    });
+    if let Some(encoding) = declared {
+        return encoding.decode_without_bom_handling(bytes).0;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.into(),
+        Err(_) => {
+            encoding_rs::WINDOWS_1252
+                .decode_without_bom_handling(bytes)
+                .0
+        }
+    }
+}
+
+fn hidden(element: ElementRef<'_>) -> bool {
+    let value = element.value();
+    matches!(value.name(), "script" | "style" | "template" | "noscript")
+        || value.attr("hidden").is_some()
+        || value
+            .attr("aria-hidden")
+            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        || value.attr("style").is_some_and(|style| {
+            style.split(';').any(|declaration| {
+                let Some((property, value)) = declaration.split_once(':') else {
+                    return false;
+                };
+                let property = property.trim();
+                let value = value.split('!').next().unwrap_or("").trim();
+                (property.eq_ignore_ascii_case("display") && value.eq_ignore_ascii_case("none"))
+                    || (property.eq_ignore_ascii_case("visibility")
+                        && value.eq_ignore_ascii_case("hidden"))
+                    || (property.eq_ignore_ascii_case("content-visibility")
+                        && value.eq_ignore_ascii_case("hidden"))
+            })
+        })
+}
+
+fn block(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "br"
+            | "caption"
+            | "dd"
+            | "div"
+            | "dl"
+            | "dt"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hr"
+            | "li"
+            | "main"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "section"
+            | "table"
+            | "td"
+            | "th"
+            | "tr"
+            | "ul"
+    )
+}
+
+fn visible_text(root: ElementRef<'_>) -> String {
+    // Iterative traversal avoids growing the Rust stack on deeply nested HTML.
+    let mut stack = vec![(*root, false)];
+    let mut out = String::new();
+    while let Some((node, closing)) = stack.pop() {
+        if let Some(element) = ElementRef::wrap(node) {
+            if hidden(element) {
+                continue;
+            }
+            let name = element.value().name();
+            if block(name) {
                 out.push(' ');
             }
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    // Collapse runs of whitespace.
-    let mut collapsed = String::with_capacity(out.len());
-    let mut last_was_space = false;
-    for ch in out.chars() {
-        if ch.is_whitespace() {
-            if !last_was_space {
-                collapsed.push(' ');
-                last_was_space = true;
+            if closing {
+                continue;
             }
-        } else {
-            collapsed.push(ch);
-            last_was_space = false;
+            if name == "img" {
+                if let Some(alt) = element.value().attr("alt") {
+                    out.push(' ');
+                    out.push_str(alt);
+                    out.push(' ');
+                }
+            }
+            stack.push((node, true));
+            stack.extend(node.children().rev().map(|child| (child, false)));
+        } else if let Some(text) = node.value().as_text() {
+            out.push_str(text);
         }
     }
-    collapsed.trim().to_string()
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
-    fn strips_tags_to_text() {
-        let s = strip_tags("<p>hello</p> <p>world</p>");
-        assert_eq!(s, "hello world");
+    fn preserves_inline_words_and_separates_blocks() {
+        assert_eq!(
+            visible_html("<p>inter<b>oper</b>able</p><p>second<br>line</p>").unwrap(),
+            "interoperable second line"
+        );
     }
 
     #[test]
-    fn lifts_title_and_headings() {
-        let html = "<html><head><title>Doc Title</title></head><body><h1>Top</h1><p>x</p><h2>Sub</h2></body></html>";
-        let h = lift_headings(html);
-        assert!(h.contains(&"Doc Title".to_string()));
-        assert!(h.contains(&"Top".to_string()));
-        assert!(h.contains(&"Sub".to_string()));
+    fn decodes_entities_once_without_exposing_scripts_or_comments() {
+        assert_eq!(visible_html("<p>A &amp; B &#x1F680; &lt;literal&gt;</p><!-- secret --><script>secret()</script><style>.secret{}</style>").unwrap(), "A & B 🚀 <literal>");
     }
 
     #[test]
-    fn extract_writes_full_text_and_headings() {
-        let tmp = TempDir::new().unwrap();
-        let p = tmp.path().join("page.html");
-        std::fs::write(
-            &p,
-            b"<html><head><title>T</title></head><body><h1>H</h1><p>Body text here.</p></body></html>",
-        )
-        .unwrap();
-        let d = extract(&p).unwrap();
-        assert_eq!(d.headings, vec!["T", "H"]);
-        assert!(d.full_text.contains("Body text here."));
+    fn removes_hidden_subtrees_but_retains_image_alternatives() {
+        assert_eq!(visible_html("<div hidden>one</div><div aria-hidden='true'>two</div><div style='display: none !important'>three</div><template>four</template><p>Visible<img alt='chart legend'></p>").unwrap(), "Visible chart legend");
     }
 
     #[test]
-    fn collapses_whitespace_runs() {
-        let s = strip_tags("<p>foo</p>\n\n  \n  <p>bar</p>");
-        assert_eq!(s, "foo bar");
+    fn parses_quoted_attributes_and_malformed_markup() {
+        assert_eq!(
+            visible_html("<p title='2 > 1'>Start <strong>bold</p><p>End").unwrap(),
+            "Start bold End"
+        );
+    }
+
+    #[test]
+    fn extracts_headings_and_canonical_source_without_fetching() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("saved.html");
+        std::fs::write(&path, "<title>A &amp; B</title><link rel='canonical' href='https://example.test/page'><h1>First</h1><div hidden><h2>Hidden</h2></div><p>Body</p>").unwrap();
+        let doc = extract(&path).unwrap();
+        assert_eq!(doc.headings, ["A & B", "First"]);
+        assert_eq!(doc.full_text, "First Body");
+        assert_eq!(doc.source_url.as_deref(), Some("https://example.test/page"));
+    }
+
+    #[test]
+    fn honors_declared_legacy_encoding() {
+        let text = b"<meta charset='windows-1252'><p>caf\xe9 \x80</p>";
+        assert!(decode_html(text).contains("café €"));
+    }
+
+    #[test]
+    fn honors_utf16_bom() {
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend("<p>東京</p>".encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(visible_html(&decode_html(&bytes)).unwrap(), "東京");
+    }
+
+    #[test]
+    fn bounded_reader_rejects_oversized_sources_without_loading_them() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(1025).unwrap();
+        assert!(read_bounded(file.path(), 1024).is_err());
+    }
+
+    #[test]
+    fn iterative_text_walk_handles_deep_markup() {
+        let html = format!("{}deep{}", "<div>".repeat(2048), "</div>".repeat(2048));
+        assert_eq!(visible_html(&html).unwrap(), "deep");
     }
 }

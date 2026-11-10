@@ -63,7 +63,7 @@
                 <dt><code>climate pre/0 policy</code></dt><dd>{de ? 'Direkt benachbart in dieser Reihenfolge.' : 'Adjacent words in this order.'}</dd>
                 <dt><code>report* · colo?r · report~1</code></dt><dd>{de ? 'Platzhalter oder Tippfehlertoleranz (0–2 Änderungen).' : 'Wildcards or typo tolerance (0–2 edits).'}</dd>
             </dl>
-            <p>{de ? 'Volltext erzwingt Operatoren. Semantisch sucht nach Bedeutung. Für feste Textbedingungen Volltext wählen. Nähe-Abfragen erlauben Wörter, Wortfolgen und OR-Gruppen; AND und NOT in einem Nähe-Operanden werden abgelehnt.' : 'Full text enforces operators. Semantic mode searches by meaning. Choose Full text for strict text conditions. Proximity accepts words, phrases and OR groups; AND and NOT inside a proximity operand are rejected.'}</p>
+            <p>{de ? 'Volltext und Hybrid erzwingen explizite Textbedingungen. Semantisch sucht nach Bedeutung. Nähe-Abfragen erlauben Wörter, Wortfolgen und OR-Gruppen; AND und NOT in einem Nähe-Operanden werden abgelehnt.' : 'Full text and Hybrid enforce explicit text conditions. Semantic mode searches by meaning. Proximity accepts words, phrases and OR groups; AND and NOT inside a proximity operand are rejected.'}</p>
         </section>
         <section aria-label={de ? 'Indizierte Wörter' : 'Indexed words'}>
             <h3>{de ? 'Indizierte Wörter' : 'Indexed words'}</h3>

@@ -3103,7 +3103,7 @@ Bugs hit on first walkthrough, all fixed:
 
 > Originally `rag_plan.md`. Phases P1–P13 are all shipped; this section
 > remains as the design rationale for the search-index architecture
-> (LanceDB + Tantivy + dtSearch query syntax + URI-based location
+> (LanceDB + Tantivy + extended full-text query syntax + URI-based location
 > tracking + multi-user-from-day-one). When the code references
 > "§N rationale" it points at the corresponding section below.
 >
@@ -3635,7 +3635,7 @@ code comments). For active work, see [PLAN.md](PLAN.md).
 
 ### P2 — Search index / RAG (full plan)
 
-The detailed P2 plan — LanceDB schema, dtSearch query translator,
+The detailed P2 plan — LanceDB schema, full-text query translator,
 embedder selection, dense + sparse + BM25 + RRF + cross-encoder
 reranking — is the §1-§13 archive at the top of this file (originally
 `rag_plan.md`). All P1-P12 phases shipped; the §14 "Session Continuity"

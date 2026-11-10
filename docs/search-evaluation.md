@@ -23,7 +23,7 @@ Citation presence is a formatting check, not proof that an answer is supported.
 The viewer opens the actual source and displays its known excerpt and anchor;
 unknown page numbers remain unknown.
 
-The app still pins [CrispEmbed v0.17.12](https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.12).
+The app currently pins [CrispEmbed v0.17.17](https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.17).
 At upstream development commit [364f92199584](https://github.com/CrispStrobe/CrispEmbed/commit/364f9219958493bc34d3dfa6228e3037f242a835),
 MoEdern and UltraBERT continuations remain under active qualification; the
 newly registered workflows are not themselves passing model results or a new

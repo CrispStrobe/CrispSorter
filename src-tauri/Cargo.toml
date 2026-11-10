@@ -64,6 +64,10 @@ crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features
 # update`. Off by default; see the `anydoc` feature.
 anydoc           = { version = "=0.1.7", optional = true }
 html2text        = "0.16.7"
+scraper          = { version = "=0.25.0", default-features = false }
+encoding_rs      = "=0.8.35"
+# Bounded MIME parsing and checked, lazy decoding (requires Rust 1.98+).
+mail-parser      = { version = "=1.0.1", features = ["full_encoding"] }
 futures          = "0.3"
 
 tauri = { version = "2", features = ["protocol-asset"] }

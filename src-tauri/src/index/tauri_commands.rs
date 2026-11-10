@@ -1364,14 +1364,11 @@ pub async fn index_promote_l2(
 
         let meta = l2_metadata::read(&path);
 
-        // Preserve a document that already has full text and embeddings.
-        let mut merged: serde_json::Map<String, serde_json::Value> = row
-            .metadata_json
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
-        let level = merged.get("level").and_then(|v| v.as_u64()).unwrap_or(1).max(2);
-        merged.insert("level".to_owned(), serde_json::Value::from(level));
+        // Send only newly extracted keys. The paired writer merges against
+        // the current generation and keeps its level monotonic under its lease.
+        // A copied read-time snapshot could overwrite newer review evidence.
+        let mut merged = serde_json::Map::new();
+        merged.insert("level".to_owned(), serde_json::Value::from(2));
         if let Some(pc) = meta.page_count {
             merged.insert("page_count".to_owned(), serde_json::Value::from(pc));
         }

@@ -57,6 +57,7 @@ if (process.argv.includes('--serve')) {
     const { chromium } = playwright;
     const browserPath = process.env.OCR_SMOKE_CHROMIUM ?? [chromium.executablePath(), '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
     const results = [];
+    const scenarioNames = new Set();
     const browserErrors = [];
     const textExportEvidence = [];
     let phoneCornerEvidence = null;
@@ -76,6 +77,8 @@ if (process.argv.includes('--serve')) {
             return page;
         }
         async function test(name, scenario, action) {
+            assert.equal(scenarioNames.has(name), false, `Duplicate smoke scenario: ${name}`);
+            scenarioNames.add(name);
             const start = performance.now();
             let page;
             try {
@@ -788,11 +791,16 @@ if (process.argv.includes('--serve')) {
             await reason.waitFor();
             evidence.native_reason = await reason.innerText();
             const format = page.getByRole('combobox', { name: /^Output format/ });
-            await format.selectOption('docx');
+            const options = await format.locator('option').evaluateAll(options => options.map(option => ({ value: option.value, disabled: option.disabled })));
+            assert.equal(options.at(-1).value, 'pdfa');
+            const enabledFormats = options.filter(option => !option.disabled).map(option => option.value);
+            assert.ok(enabledFormats.length >= 2);
+            const lastEnabled = enabledFormats.at(-1), previousEnabled = enabledFormats.at(-2);
+            await format.selectOption(lastEnabled);
             await format.focus();
             // First prove native keyboard navigation works, then prove it
             // cannot enter the unavailable option after the last supported one.
-            for (const [key, expected] of [['ArrowUp', 'alto'], ['ArrowDown', 'docx'], ['ArrowDown', 'docx']]) {
+            for (const [key, expected] of [['ArrowUp', previousEnabled], ['ArrowDown', lastEnabled], ['ArrowDown', lastEnabled]]) {
                 await page.keyboard.press(key);
                 const selected = await format.inputValue();
                 evidence.keyboard.push({ key, expected, selected });
@@ -842,7 +850,21 @@ if (process.argv.includes('--serve')) {
                 assert.equal(request.pages[0].regions[2].original_text, rtlReviewedText);
                 assert.equal(request.pages[0].approved, true);
                 assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
-                if (index) assert.deepEqual(request.pages, requests[0].pages);
+                const owner = request.pages[0];
+                if (format === 'docx') {
+                    assert.deepEqual(owner.figure_regions, []);
+                    assert.equal(owner.structure.version, 1);
+                    assert.deepEqual(owner.structure.sections, [{ id: `section-${owner.id}`, columns: 1 }]);
+                    assert.deepEqual(owner.structure.blocks.map(block => block.sourceRegionId), owner.regions.map(region => region.id));
+                    assert.ok(owner.structure.blocks.every(block => block.sectionId === `section-${owner.id}`));
+                } else {
+                    assert.equal(owner.structure, undefined);
+                    assert.equal(owner.figure_regions, undefined);
+                }
+                // Semantic Word fields are an additional projection; every
+                // source anchor, geometry value and reviewed character stays
+                // identical to the lossless plain-text request.
+                if (index) assert.deepEqual(request.pages.map(({ structure, figure_regions, ...source }) => source), requests[0].pages);
             }
             await selector.selectOption('pdf');
             await page.getByRole('button', { name: /^Page 1:/ }).click();
@@ -1063,36 +1085,6 @@ if (process.argv.includes('--serve')) {
             assert.equal(await table.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).inputValue(), 'EUR 1,250.00');
         });
 
-        await test('delayed extraction follows its source page and undo restores visible and exported cells', 'extraction-delay', async page => {
-            await page.getByRole('tab', { name: 'Extract', exact: true }).click();
-            await page.getByRole('button', { name: 'Table', exact: true }).click();
-            await page.getByRole('button', { name: 'Extract table', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.pendingExtractions === 1);
-            await page.getByRole('button', { name: /^Page 3:/ }).click();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.releaseExtraction()), true);
-            await page.getByText(/rows × 2 columns extracted · saved to/).waitFor();
-            assert.equal(await page.getByRole('textbox', { name: 'Row 2, column 1', exact: true }).count(), 0);
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].provenance.extraction?.tableRows?.length === 2);
-            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
-            assert.equal(saved.pages[0].provenance.extraction.sourceImagePath, saved.pages[0].imagePath);
-            assert.equal(saved.pages[2].provenance.extraction, undefined);
-
-            await page.getByRole('button', { name: /^Page 1:/ }).click();
-            const cell = page.getByRole('textbox', { name: 'Row 2, column 1', exact: true });
-            await cell.waitFor();
-            assert.equal(await cell.inputValue(), 'Secure cell');
-            await cell.fill('Reviewed material');
-            await cell.blur();
-            await page.getByRole('button', { name: 'Save table as CSV', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.writes.length === 1);
-            assert.match(await page.evaluate(() => window.ocrSmoke.writes[0].text), /Reviewed material/);
-            await page.getByRole('button', { name: 'Undo', exact: true }).click();
-            await page.waitForFunction(() => document.querySelector('[aria-label="Row 2, column 1"]')?.value === 'Secure cell');
-            await page.getByRole('button', { name: 'Save table as CSV', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.writes.length === 2);
-            assert.equal(await page.evaluate(() => window.ocrSmoke.writes[1].text), '"Item","Value"\r\n"Secure cell","EUR 1,250.00"');
-        });
 
         await test('an invalid saved project leaves the current project and autosaver usable', 'project-recovery', async page => {
             await page.getByRole('button', { name: 'Projects', exact: true }).click();
@@ -2302,87 +2294,10 @@ if (process.argv.includes('--serve')) {
             assert.deepEqual(saved.pages[0].regions.filter((_, i) => i !== 2), before.pages[0].regions.filter((_, i) => i !== 2));
         });
 
-        await test('a document sent from another tab is imported once and selected', `review&open=${encodeURIComponent('/fixtures/sent-from-library.png')}`, async page => {
-            await page.getByRole('button', { name: /^Page 4:/ }).waitFor();
-            await page.waitForFunction(() => [...document.querySelectorAll('[aria-current="page"]')]
-                .some(el => /^Page 4:/.test(el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '')));
-            const imports = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importDocument'));
-            assert.equal(imports.length, 1);
-            assert.equal(imports[0].data.locationUri, '/fixtures/sent-from-library.png');
-            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 4);
-        });
 
-        await test('a document already in the project is selected instead of imported again', `review&open=${encodeURIComponent('/fixtures/northstar-statement.pdf')}`, async page => {
-            await page.getByText('is already in this project').waitFor();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'importDocument').length), 0);
-            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
-        });
 
-        await test('next issue navigates from uncertain text to an unrecognized page', 'review', async page => {
-            await page.getByRole('button', { name: 'Next issue', exact: true }).click();
-            assert.equal(await page.locator('.region-card.selected textarea').inputValue(), 'Inv0ice NS-2026-1042');
-            await page.getByRole('button', { name: 'Next issue', exact: true }).click();
-            await page.getByRole('heading', { name: 'Ready to recognize', exact: true }).waitFor();
-            assert.equal(await page.getByRole('button', { name: /^Page 2:/ }).getAttribute('aria-current'), 'page');
-            await page.keyboard.press('F8');
-            assert.equal(await page.getByRole('button', { name: /^Page 1:/ }).getAttribute('aria-current'), 'page');
-        });
 
-        await test('unchanged preparation preserves corrections and approval while showing its warning', 'prepare-unchanged', async page => {
-            await page.getByRole('button', { name: /^Page 3:/ }).click();
-            const corrected = 'Invoice NS-2026-1042 · confirmed';
-            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
-            await text.fill(corrected);
-            await text.blur();
-            await page.getByRole('button', { name: 'Approve page', exact: true }).click();
-            await page.getByRole('button', { name: 'Page approved', exact: true }).waitFor();
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[2].approved === true &&
-                window.ocrSmoke.lastSaved.pages[2].regions[2].text.endsWith(' · confirmed'));
-            const before = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[2]);
 
-            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
-            await page.getByRole('button', { name: 'Apply preparation to this page', exact: true }).click();
-            await page.locator('.status-message').filter({ hasText: 'Cleanup unavailable; original pixels retained.' }).waitFor({ state: 'visible' });
-            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
-            await page.getByRole('tab', { name: 'Review', exact: true }).click();
-            assert.equal(await text.inputValue(), corrected);
-            await page.getByRole('button', { name: 'Page approved', exact: true }).waitFor();
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.getByText('Project saved', { exact: true }).waitFor();
-            const after = await page.evaluate(() => window.ocrSmoke.lastSaved.pages[2]);
-            assert.equal(after.status, 'recognized');
-            assert.equal(after.approved, true);
-            assert.equal(after.imagePath, before.imagePath);
-            assert.deepEqual([after.width, after.height, after.widthPoints, after.heightPoints],
-                [before.width, before.height, before.widthPoints, before.heightPoints]);
-            assert.deepEqual(after.regions, before.regions);
-            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 0);
-        });
-
-        await test('the low-memory CPU profile is offered only for Qwen2 VL and reaches recognition', 'review', async page => {
-            await page.getByRole('button', { name: /^Page 2:/ }).click();
-            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
-            const toggle = page.getByRole('checkbox', { name: /Low-memory CPU profile/ });
-            assert.equal(await toggle.count(), 0);
-            const engine = page.getByRole('combobox', { name: 'Recognition engine' });
-            await engine.selectOption('qwen2vl');
-            await toggle.check();
-            await page.getByRole('button', { name: 'Recognize page', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.calls.some(call => call.method === 'recognize'));
-            let calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'recognize').map(call => call.data));
-            assert.equal(calls.at(-1).engine, 'qwen2vl');
-            assert.equal(calls.at(-1).cpuPixelBudget, true);
-            // Switching away hides the option and stops sending it, even though
-            // the saved preference stays on for when Qwen2 VL is chosen again.
-            await engine.selectOption('tesseract');
-            assert.equal(await toggle.count(), 0);
-            await page.getByRole('button', { name: 'Recognize page', exact: true }).click();
-            await page.waitForFunction(n => window.ocrSmoke.calls.filter(call => call.method === 'recognize').length > n, calls.length);
-            calls = await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'recognize').map(call => call.data));
-            assert.equal(calls.at(-1).engine, 'tesseract');
-            assert.equal(calls.at(-1).cpuPixelBudget, false);
-        });
 
         await test('workbook export preserves explicit sheet names, saved strings and captured request scope', 'workbook-export', async page => {
             const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
@@ -2483,6 +2398,8 @@ if (process.argv.includes('--serve')) {
 
             await page.getByRole('button', { name: /^Page 1:/ }).click();
             await page.setViewportSize({ width: 390, height: 844 });
+            await page.getByRole('navigation', { name: 'Workspace views', exact: true })
+                .getByRole('button', { name: 'Text & tools', exact: true }).click();
             await sheet(blank).scrollIntoViewIfNeeded();
             const dimensions = await page.evaluate(() => ({ width: innerWidth, documentWidth: document.documentElement.scrollWidth }));
             assert.ok(dimensions.documentWidth <= dimensions.width + 2, 'Workbook controls overflow compact layout');
@@ -2587,87 +2504,9 @@ if (process.argv.includes('--serve')) {
             assert.deepEqual(json.pages[0].provenance.extractionObjects, first.provenance.extractionObjects);
         });
 
-        await test('export preflight blocks incomplete pages and exports explicit approved scope', 'review', async page => {
-            await page.getByRole('tab', { name: 'Export', exact: true }).click();
-            await page.getByText(/recognition is pending/).waitFor();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.exports.length), 0);
-            await page.getByRole('button', { name: /^Page 3:/ }).click();
-            // Implicit labels wrap the select, so their text includes options.
-            await page.getByRole('combobox', { name: /^Pages/ }).selectOption('current');
-            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('text');
-            await page.getByRole('button', { name: 'Save Plain text', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
-            const request = await page.evaluate(() => window.ocrSmoke.exports[0]);
-            assert.equal(request.pages.length, 1);
-            assert.equal(request.pages[0].image_path, '/fixtures/northstar-page-3.png');
-            assert.equal(request.pages[0].regions[2].text, 'Invoice NS-2026-1042');
-            assert.equal(request.overwrite, false);
-            assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
 
-            await page.getByRole('combobox', { name: /^Output format/ }).selectOption('pdf');
-            await page.getByRole('combobox', { name: /^Page sizes/ }).selectOption('dpi');
-            await page.getByRole('spinbutton', { name: /^Scan resolution \(DPI\)/ }).fill('150');
-            await page.getByRole('button', { name: 'Save Searchable PDF', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.exports.length === 2);
-            const pdf = await page.evaluate(() => window.ocrSmoke.exports[1]);
-            assert.equal(pdf.format, 'pdf');
-            assert.equal(pdf.pdfa, false);
-            assert.equal(pdf.pages.length, 1);
-            assert.equal(pdf.pages[0].image_path, request.pages[0].image_path);
-            assert.deepEqual([pdf.pages[0].width, pdf.pages[0].height], [1000, 1400]);
-            assert.equal(pdf.pages[0].page_width_points, pdf.pages[0].width * 72 / 150);
-            assert.equal(pdf.pages[0].page_height_points, pdf.pages[0].height * 72 / 150);
-            assert.deepEqual(pdf.pages[0].regions, request.pages[0].regions);
-        });
 
-        await test('batch errors stay per page and retry only failed work', 'queue-failure', async page => {
-            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
-            await page.getByText('Batch complete', { exact: true }).waitFor();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 3);
-            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
-            assert.match(await page.getByRole('button', { name: /^Page 2:/ }).innerText(), /Failed/);
-            assert.match(await page.getByRole('button', { name: /^Page 3:/ }).innerText(), /Recognized/);
-            await page.evaluate(() => { window.ocrSmoke.failPages = []; });
-            await page.getByRole('button', { name: 'Retry failed', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.recognitions.length === 4 && window.ocrSmoke.activeNative === 0);
-            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.recognitions.slice(3)), ['/fixtures/northstar-page-2.png']);
-            await page.getByText('Batch complete', { exact: true }).waitFor();
-            assert.doesNotMatch(await page.getByRole('button', { name: /^Page 2:/ }).innerText(), /Failed/);
-        });
 
-        await test('pause, resume and stop preserve finished and pending pages without concurrent inference', 'queue-control', async page => {
-            await page.getByRole('button', { name: 'Process pending', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
-            await page.getByRole('button', { name: 'Pause', exact: true }).click();
-            await page.evaluate(() => window.ocrSmoke.releaseNext());
-            await page.getByText('Queue paused', { exact: true }).waitFor();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 1);
-            await page.getByRole('button', { name: 'Resume', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.recognitions.length === 2 && window.ocrSmoke.activeNative === 1);
-            await page.getByRole('button', { name: 'Stop', exact: true }).click();
-            await page.evaluate(() => window.ocrSmoke.releaseNext());
-            await page.getByText('Queue stopped', { exact: true }).waitFor();
-            assert.equal(await page.evaluate(() => window.ocrSmoke.recognitions.length), 2);
-            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
-            assert.match(await page.getByRole('button', { name: /^Page 3:/ }).innerText(), /Pending/);
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[1].status === 'recognized');
-            const saved = await page.evaluate(() => window.ocrSmoke.lastSaved);
-            assert.deepEqual(saved.pages.map(item => item.status), ['recognized', 'recognized', 'pending']);
-        });
-
-        await test('table extraction renders cell text and strips active HTML', 'review', async page => {
-            await page.getByRole('tab', { name: 'Extract', exact: true }).click();
-            await page.getByRole('button', { name: 'Table', exact: true }).click();
-            await page.getByRole('button', { name: 'Extract table', exact: true }).click();
-            const cell = page.getByRole('textbox', { name: 'Row 2, column 1', exact: true });
-            await cell.waitFor();
-            assert.equal(await cell.inputValue(), 'Secure cell');
-            assert.equal(await page.evaluate(() => window.__ocrInjected === true), false);
-            const table = cell.locator('xpath=ancestor::table');
-            assert.equal(await table.locator('img,script,a,iframe').count(), 0);
-            assert.equal(await table.getByRole('textbox', { name: 'Row 2, column 2', exact: true }).inputValue(), 'EUR 1,250.00');
-        });
 
         await test('saved extraction objects retain independent sources, edits, history and exports', 'extraction-objects', async page => {
             const initial = await page.evaluate(() => window.ocrSmoke.initialProject);
@@ -3137,75 +2976,9 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.evaluate(() => window.ocrSmoke.writes[1].text), '"Item","Value"\r\n"Secure cell","EUR 1,250.00"');
         });
 
-        await test('an invalid saved project leaves the current project and autosaver usable', 'project-recovery', async page => {
-            await page.getByRole('button', { name: 'Projects', exact: true }).click();
-            await page.getByRole('region', { name: 'Saved projects', exact: true }).getByRole('button', { name: /Invalid archived project/ }).click();
-            await page.getByText('Unsupported OCR project version: 99.', { exact: true }).waitFor();
-            assert.equal(await page.getByRole('textbox', { name: 'Project name', exact: true }).inputValue(), 'Northstar · quarterly statement');
-            await page.getByRole('button', { name: 'Close projects', exact: true }).click();
-            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
-            await text.fill('Invoice corrected after invalid restore');
-            await text.blur();
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === 'Invoice corrected after invalid restore');
-            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.id), 'ocr-fixture-project-recovery');
-            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.at(-1).revision), 8);
-        });
 
-        await test('reopening the current project flushes pending edits without rollback or revision conflicts', 'project-recovery', async page => {
-            await page.getByRole('button', { name: 'Projects', exact: true }).click();
-            await page.evaluate(() => { window.ocrSmoke.holdSaves = true; });
-            const text = page.getByRole('textbox', { name: 'Text for region 3', exact: true });
-            await text.fill('Invoice with an unsaved correction');
-            await text.blur();
-            await page.getByRole('region', { name: 'Saved projects', exact: true }).getByRole('button', { name: /Northstar · quarterly statement/ }).click();
-            await page.waitForFunction(() => window.ocrSmoke.pendingSaves === 1);
-            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'load').length), 1);
-            await page.evaluate(() => { window.ocrSmoke.holdSaves = false; window.ocrSmoke.releaseSave(); });
-            await page.getByText('Current project saved', { exact: true }).waitFor();
-            assert.equal(await text.inputValue(), 'Invoice with an unsaved correction');
-            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.at(-1).revision), 8);
-            await text.fill('Invoice after reopening the same project');
-            await text.blur();
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[2].text === 'Invoice after reopening the same project');
-            assert.equal(await page.evaluate(() => window.ocrSmoke.saves.at(-1).revision), 9);
-        });
 
-        await test('a confirmation blocks navigation shortcuts and removes only its captured page', 'review', async page => {
-            await page.getByRole('button', { name: 'Remove page', exact: true }).click();
-            const dialog = page.getByRole('dialog', { name: 'Remove this page?', exact: true });
-            await dialog.waitFor();
-            await page.keyboard.press('Alt+ArrowRight');
-            await page.keyboard.press('F8');
-            assert.match(await page.locator('button[aria-current="page"]').getAttribute('aria-label'), /^Page 1:/);
-            await dialog.getByRole('button', { name: 'Remove page', exact: true }).click();
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages.length === 2);
-            assert.deepEqual(await page.evaluate(() => window.ocrSmoke.lastSaved.pages.map(item => item.imagePath)), ['/fixtures/northstar-page-2.png', '/fixtures/northstar-page-3.png']);
-            await page.getByRole('button', { name: 'Undo', exact: true }).click();
-            assert.equal(await page.getByRole('button', { name: /^Page \d:/ }).count(), 3);
-        });
 
-        await test('changing the search query cannot replace text at a stale match offset', 'review', async page => {
-            await page.getByRole('button', { name: 'Find and replace', exact: true }).click();
-            const query = page.getByRole('textbox', { name: 'Find text', exact: true });
-            await query.fill('Inv0ice');
-            await page.getByRole('textbox', { name: 'Replacement text', exact: true }).fill('Receipt');
-            await page.getByRole('button', { name: 'Next match', exact: true }).click();
-            assert.equal(await page.locator('.region-card.selected textarea').inputValue(), 'Inv0ice NS-2026-1042');
-            await query.fill('Total due');
-            await page.getByRole('button', { name: 'Replace', exact: true }).click();
-            assert.equal(await page.getByRole('textbox', { name: 'Text for region 3', exact: true }).inputValue(), 'Inv0ice NS-2026-1042');
-            assert.equal(await page.locator('.region-card.selected textarea').inputValue(), 'Total due EUR 1,250.00');
-            await page.getByRole('button', { name: 'Replace', exact: true }).click();
-            // Successful replacement advances to the next page's matching text.
-            await page.getByRole('button', { name: /^Page 1:/ }).click();
-            assert.equal(await page.getByRole('textbox', { name: 'Text for region 6', exact: true }).inputValue(), 'Receipt EUR 1,250.00');
-            await page.getByRole('button', { name: 'Save', exact: true }).click();
-            await page.waitForFunction(() => window.ocrSmoke.lastSaved?.pages[0].regions[5].text === 'Receipt EUR 1,250.00');
-            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[0].regions[2].text), 'Inv0ice NS-2026-1042');
-        });
 
         await test('entering the passage editor clears an earlier search replacement target', 'review', async page => {
             await page.getByRole('button', { name: 'Find and replace', exact: true }).click();

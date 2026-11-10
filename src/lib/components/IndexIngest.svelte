@@ -1,3 +1,19 @@
+<script module lang="ts">
+    // A view remount must wait for the previous worker to acknowledge its writes
+    // before reclaiming that worker's in-progress rows.
+    const queueRunDrains = new Map<string, Promise<void>>();
+    function reserveQueueRun(jobId: string): (() => void) | null {
+        if (queueRunDrains.has(jobId)) return null;
+        let release!: () => void;
+        const drain = new Promise<void>(resolve => { release = resolve; });
+        queueRunDrains.set(jobId, drain);
+        return () => {
+            if (queueRunDrains.get(jobId) === drain) queueRunDrains.delete(jobId);
+            release();
+        };
+    }
+</script>
+
 <script lang="ts">
     import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
@@ -65,6 +81,17 @@
         docId:       string | null;
         targetLevel: number;
         retryCount:  number;
+    }
+
+    interface QueueSummary {
+        id: string;
+        status: string;
+        jobType: string;
+        totalFiles: number;
+        doneFiles: number;
+        errorFiles: number;
+        skippedFiles: number;
+        inProgressFiles: number;
     }
 
     interface ManagedFolder {
@@ -166,6 +193,15 @@
 
     /** Active durable job id in crisp_jobs.db (null = no active job yet). */
     let activeJobId = $state<string | null>(null);
+    let queueSummary = $state<QueueSummary | null>(null);
+    let queueError = $state('');
+    let queueLoading = $state(true);
+    let queueMutating = $state(false);
+    let queueRestored = $state(false);
+    let stopping = $state(false);
+    let queueFilter = $state<'all' | 'pending' | 'error' | 'done'>('all');
+    let queueOffset = $state(0);
+    const QUEUE_PAGE_SIZE = 200;
 
     /** Ingest depth requested by the user.
      *   L1 = filesystem metadata only (fast — path/size/date),
@@ -176,6 +212,12 @@
     let ingestLevel = $state<1 | 2 | 3>(1);
     let l1Running   = $state(false);
     let l2RunningInline = $state(false);
+    const queueBusy = $derived(running || l1Running || l2RunningInline || queueMutating || queueLoading);
+    const queuePageTotal = $derived(queueFilter === 'all' ? (queueSummary?.totalFiles ?? 0)
+        : queueFilter === 'done' ? (queueSummary?.doneFiles ?? 0)
+        : queueFilter === 'error' ? (queueSummary?.errorFiles ?? 0)
+        : Math.max(0, (queueSummary?.totalFiles ?? 0) - (queueSummary?.doneFiles ?? 0)
+            - (queueSummary?.errorFiles ?? 0) - (queueSummary?.skippedFiles ?? 0) - (queueSummary?.inProgressFiles ?? 0)));
 
     let contents    = $state<any[]>([]);
     let contentsLoading = $state(false);
@@ -762,11 +804,12 @@
     // ── Stats ──────────────────────────────────────────────────────────────────
 
     const stats = $derived.by(() => ({
-        total:   entries.length,
-        done:    entries.filter(e => e.status === 'done').length,
-        errors:  entries.filter(e => e.status === 'error').length,
-        pending: entries.filter(e => e.status === 'pending' || e.status === 'error').length,
-        active:  entries.find(e => e.status === 'extracting' || e.status === 'embedding'),
+        total: queueSummary?.totalFiles ?? entries.length,
+        done: queueSummary?.doneFiles ?? 0,
+        errors: queueSummary?.errorFiles ?? 0,
+        pending: Math.max(0, (queueSummary?.totalFiles ?? 0)
+            - (queueSummary?.doneFiles ?? 0) - (queueSummary?.skippedFiles ?? 0)),
+        active: entries.find(e => e.status === 'extracting' || e.status === 'embedding'),
     }));
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -835,29 +878,12 @@
                 }
             });
 
-            // Restore the active ingest job from the SQLite durable queue.
-            // Any files that were in_progress when the app was previously
-            // closed are reclaimed back to pending so they'll be re-tried.
-            try {
-                const jobs = await invoke<{ id: string; status: string; jobType: string }[]>('jobs_list');
-                const active = jobs.find(j =>
-                    j.jobType === 'hinzufuegen' &&
-                    (j.status === 'pending' || j.status === 'running' || j.status === 'paused')
-                );
-                if (active) {
-                    activeJobId = active.id;
-                    const reclaimed = await invoke<number>('jobs_reclaim', { jobId: active.id });
-                    if (reclaimed > 0) logInfo(`Hinzufügen: reclaimed ${reclaimed} in-progress files from previous session`);
-                    await loadEntriesFromQueue();
-                    logInfo(`Hinzufügen: restored ${entries.length} entries from durable queue`);
-                } else {
-                    logInfo('Hinzufügen: no active job found — queue is empty');
-                }
-            } catch (e: any) {
-                logError(`Hinzufügen: queue restore failed -- ${e?.message ?? e}`);
-            }
+            await restoreQueue();
 
-            cleanup = () => { unlistenProgress?.(); unlistenDrag?.(); unlistenDownload?.(); };
+            cleanup = () => {
+                abortCtrl?.abort();
+                unlistenProgress?.(); unlistenDrag?.(); unlistenDownload?.();
+            };
         })();
         return () => cleanup();
     });
@@ -1230,86 +1256,155 @@
         };
     }
 
+    function reportQueueError(context: string, error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error);
+        queueError = `${context}: ${detail}`;
+        logError(`Hinzufügen: ${queueError}`);
+    }
+
     async function loadEntriesFromQueue(): Promise<void> {
-        if (!activeJobId) { entries = []; return; }
+        const jobId = activeJobId;
+        if (!jobId) { entries = []; queueSummary = null; return; }
+        const [files, summary] = await Promise.all([
+            invoke<ListedFile[]>('jobs_list_files', {
+                jobId, statusFilter: queueFilter === 'all' ? null : queueFilter,
+                limit: QUEUE_PAGE_SIZE, offset: queueOffset,
+            }),
+            invoke<QueueSummary | null>('jobs_get', { jobId }),
+        ]);
+        if (jobId !== activeJobId) return;
+        if (!summary) throw new Error('Der gespeicherte Auftrag wurde nicht gefunden. Warteschlange neu laden.');
+        queueSummary = summary;
+        if (files.length === 0 && queueOffset > 0) {
+            queueOffset = Math.max(0, queueOffset - QUEUE_PAGE_SIZE);
+            await loadEntriesFromQueue();
+            return;
+        }
+        const previous = new Map(entries.map(entry => [entry.rowId, entry]));
+        entries = files.map(file => ({ ...previous.get(file.rowId), ...listedFileToEntry(file) }));
+    }
+
+    async function restoreQueue() {
+        if (running || l1Running || l2RunningInline || queueMutating) return;
+        queueLoading = true;
+        queueError = '';
         try {
-            const files = await invoke<ListedFile[]>('jobs_list_files', {
-                jobId: activeJobId,
-                statusFilter: null,
-                limit: 500,
-                offset: 0,
-            });
-            entries = files.map(listedFileToEntry);
-        } catch (e: any) {
-            logError(`Hinzufügen: failed to load entries from queue — ${e?.message ?? e}`);
+            await Promise.all([...queueRunDrains.values()]);
+            const jobs = await invoke<QueueSummary[]>('jobs_list');
+            const active = jobs.find(j => j.jobType === 'hinzufuegen'
+                && (j.status !== 'done' || j.errorFiles > 0 || j.inProgressFiles > 0));
+            activeJobId = active?.id ?? null;
+            if (active) {
+                await invoke('jobs_reclaim', { jobId: active.id });
+                await invoke('jobs_set_status', { jobId: active.id, status: 'paused' });
+            }
+            queueOffset = 0;
+            await loadEntriesFromQueue();
+            queueRestored = true;
+        } catch (error) {
+            queueRestored = false;
+            reportQueueError('Warteschlange konnte nicht wiederhergestellt werden', error);
+        } finally {
+            queueLoading = false;
         }
     }
 
-    async function ensureActiveJob(): Promise<boolean> {
-        if (activeJobId) return true;
-        try {
-            activeJobId = await invoke<string>('jobs_create', {
-                jobType: 'hinzufuegen',
-                sourcePaths: ['manual'],
-                targetLevel: ingestLevel,
-                configJson: null,
-            });
-            logInfo(`Hinzufügen: created job ${activeJobId}`);
-            return true;
-        } catch (e: any) {
-            logError(`Hinzufügen: failed to create job — ${e?.message ?? e}`);
-            return false;
-        }
+    async function refreshQueue() {
+        try { await loadEntriesFromQueue(); }
+        catch (error) { reportQueueError('Warteschlange konnte nicht geladen werden', error); }
     }
 
-    // ── File queue mutations ───────────────────────────────────────────────────
+    async function changeQueuePage(offset: number) {
+        if (queueBusy) return;
+        queueOffset = Math.max(0, offset);
+        await refreshQueue();
+    }
 
+    async function ensureActiveJob(): Promise<void> {
+        if (activeJobId) return;
+        activeJobId = await invoke<string>('jobs_create', {
+            jobType: 'hinzufuegen', sourcePaths: ['manual'], targetLevel: ingestLevel, configJson: null,
+        });
+    }
+
+    // Queue mutations update the visible list only after durable acknowledgement.
     async function addPaths(paths: string[]) {
+        if (queueBusy || !queueRestored) return;
         const validPaths = paths.filter(p => supported.has(p.split('.').pop()?.toLowerCase() ?? ''));
         if (validPaths.length === 0) return;
-        if (!(await ensureActiveJob())) return;
+        queueMutating = true;
+        queueError = '';
         try {
+            await ensureActiveJob();
             const added = await invoke<number>('jobs_add_files', {
                 jobId: activeJobId,
                 files: validPaths.map(p => ({ filePath: p, docId: null, targetLevel: ingestLevel })),
             });
-            logInfo(`Hinzufügen: queued ${added} new files (${validPaths.length - added} already present)`);
-        } catch (e: any) {
-            logError(`Hinzufügen: failed to add files — ${e?.message ?? e}`);
-        }
-        await loadEntriesFromQueue();
+            await invoke('jobs_set_status', { jobId: activeJobId, status: 'pending' });
+            logInfo(`Hinzufügen: queued ${added} new files`);
+            queueOffset = 0;
+            await loadEntriesFromQueue();
+        } catch (error) {
+            reportQueueError('Dateien konnten nicht gespeichert werden', error);
+        } finally { queueMutating = false; }
     }
 
     async function removeEntry(id: string) {
-        const rowId = parseInt(id, 10);
-        if (!isNaN(rowId)) {
-            await invoke('jobs_remove_file', { rowId }).catch((e: any) =>
-                logError(`Hinzufügen: remove_file failed — ${e?.message ?? e}`)
-            );
-        }
-        entries = entries.filter(e => e.id !== id);
+        if (queueBusy) return;
+        const rowId = Number(id);
+        if (!Number.isInteger(rowId)) return;
+        queueMutating = true;
+        queueError = '';
+        try {
+            await invoke('jobs_remove_file', { rowId });
+            await loadEntriesFromQueue();
+        } catch (error) {
+            reportQueueError('Datei konnte nicht aus der Warteschlange entfernt werden', error);
+        } finally { queueMutating = false; }
     }
 
     async function clearAll() {
-        if (running) return;
-        if (activeJobId) {
-            await invoke('jobs_delete', { jobId: activeJobId }).catch((e: any) =>
-                logError(`Hinzufügen: delete job failed — ${e?.message ?? e}`)
-            );
+        if (queueBusy) return;
+        queueMutating = true;
+        queueError = '';
+        try {
+            if (activeJobId) await invoke('jobs_delete', { jobId: activeJobId });
             activeJobId = null;
-        }
-        entries = [];
+            queueSummary = null;
+            queueOffset = 0;
+            entries = [];
+        } catch (error) {
+            reportQueueError('Warteschlange konnte nicht gelöscht werden', error);
+        } finally { queueMutating = false; }
     }
 
     async function clearDone() {
-        if (activeJobId) {
-            await invoke<number>('jobs_remove_files_by_status', {
-                jobId: activeJobId,
-                status: 'done',
-            }).catch((e: any) =>
-                logError(`Hinzufügen: clear done failed — ${e?.message ?? e}`)
-            );
-        }
+        if (queueBusy) return;
+        queueMutating = true;
+        queueError = '';
+        try {
+            if (activeJobId) await invoke('jobs_remove_files_by_status', { jobId: activeJobId, status: 'done' });
+            await loadEntriesFromQueue();
+        } catch (error) {
+            reportQueueError('Fertige Einträge konnten nicht entfernt werden', error);
+        } finally { queueMutating = false; }
+    }
+
+    async function beginQueuedRun(jobId: string) {
+        queueError = '';
+        await invoke('jobs_retry_errors', { jobId });
+        await invoke('jobs_set_status', { jobId, status: 'running' });
+        await loadEntriesFromQueue();
+    }
+
+    async function finishQueuedRun(jobId: string) {
+        // The caller has awaited every native write and acknowledgement. Only
+        // unstarted or unacknowledged claims are returned to pending here.
+        await invoke('jobs_reclaim', { jobId });
+        const summary = await invoke<QueueSummary | null>('jobs_get', { jobId });
+        if (!summary) throw new Error('Der gespeicherte Auftrag wurde nicht gefunden.');
+        const unfinished = summary.totalFiles - summary.doneFiles - summary.skippedFiles;
+        await invoke('jobs_set_status', { jobId, status: unfinished > 0 ? 'paused' : 'done' });
         await loadEntriesFromQueue();
     }
 
@@ -1383,98 +1478,107 @@
         }
     }
 
-    async function startL1Ingest() {
-        if (l1Running || running) return;
-        if (!activeJobId || !(await ensureIndexReady(false))) return;
-
-        l1Running = true;
+    async function startMetadataIngest(level: 1 | 2) {
+        if (queueBusy || !queueRestored || !activeJobId) return;
+        const jobId = activeJobId;
+        const releaseRun = reserveQueueRun(jobId);
+        if (!releaseRun) return;
+        l1Running = level === 1;
+        l2RunningInline = level === 2;
+        stopping = false;
+        abortCtrl = new AbortController();
+        const signal = abortCtrl.signal;
         try {
-            while (true) {
-                const batch = await invoke<QueuedFile[]>('jobs_claim_batch', {
-                    jobId: activeJobId,
-                    batchSize: 64,
-                });
+            if (!(await ensureIndexReady(false))) return;
+            await beginQueuedRun(jobId);
+            while (!signal.aborted) {
+                const batch = await invoke<QueuedFile[]>('jobs_claim_batch', { jobId, batchSize: 64 });
                 if (batch.length === 0) break;
-
-                for (const qf of batch) updateEntry(String(qf.rowId), { status: 'embedding' });
-
-                const l1Files = [];
-                // Resolve volume once per batch — all files share the same mount.
-                const batchDir = batch[0]?.filePath?.replace(/\\/g, '/').replace(/\/[^/]+$/, '') || '';
-                const batchVolumeId: string | null = batchDir
-                    ? await invoke<string | null>('index_volume_id_for_path', { path: batchDir }).catch(() => null)
-                    : null;
-                for (const qf of batch) {
-                    const meta = await stat(qf.filePath).catch(() => null);
-                    const size = (meta as any)?.size ?? 0;
-                    const mtime = ((meta as any)?.mtime ?? new Date()).valueOf();
-                    const ctime = ((meta as any)?.birthtime ?? (meta as any)?.mtime ?? new Date()).valueOf();
-                    const parentDir = qf.filePath.replace(/\\/g, '/').replace(/\/[^/]+$/, '') || '';
-                    const parts = qf.filePath.replace(/\\/g, '/').split('/');
-                    const filename = parts[parts.length - 1];
-                    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-                    const docId = await hashText(qf.filePath);
-                    l1Files.push({ docId, sourceHash: docId, locationUri: qf.filePath, ownerId: 'local', filename, ext, parentDir, size, mtimeMs: mtime, ctimeMs: ctime, volumeId: batchVolumeId ?? undefined });
-                }
-
-                try {
-                    await invoke('index_ingest_l1', { files: l1Files });
-                    const rowIds = batch.map(qf => qf.rowId);
-                    await invoke('jobs_mark_done', { jobId: activeJobId, rowIds });
-                    for (const qf of batch) updateEntry(String(qf.rowId), { status: 'done', chunks: 0 });
-                } catch (err: any) {
-                    logError(`[L1] batch ingest failed: ${err?.message ?? err}`);
-                    for (const qf of batch) {
-                        await invoke('jobs_mark_error', { jobId: activeJobId, rowId: qf.rowId, error: String(err), maxRetries: 0 }).catch(() => {});
-                        updateEntry(String(qf.rowId), { status: 'error', error: String(err) });
+                const prepared: { file: QueuedFile; input: {
+                    docId: string; sourceHash: string; locationUri: string; ownerId: string;
+                    filename: string; ext: string; parentDir: string; size: number;
+                    mtimeMs: number; ctimeMs: number; volumeId?: string;
+                } }[] = [];
+                const volumeByDirectory = new Map<string, string | null>();
+                for (const file of batch) {
+                    if (signal.aborted) break;
+                    updateEntry(String(file.rowId), { status: 'extracting', error: undefined });
+                    try {
+                        const metadata = await stat(file.filePath);
+                        const normalPath = file.filePath.replaceAll(String.fromCharCode(92), '/');
+                        const parentDir = normalPath.slice(0, Math.max(0, normalPath.lastIndexOf('/')));
+                        const filename = normalPath.split('/').pop() ?? normalPath;
+                        if (!volumeByDirectory.has(parentDir)) {
+                            volumeByDirectory.set(parentDir, await invoke<string | null>('index_volume_id_for_path', { path: parentDir }));
+                        }
+                        const docId = file.docId ?? await hashText(file.filePath);
+                        await invoke('jobs_set_doc_id', { rowId: file.rowId, docId });
+                        prepared.push({ file, input: {
+                            docId, sourceHash: docId, locationUri: file.filePath, ownerId: 'local', filename,
+                            ext: filename.split('.').pop()?.toLowerCase() ?? '', parentDir,
+                            size: metadata.size,
+                            mtimeMs: metadata.mtime?.valueOf() ?? 0,
+                            ctimeMs: metadata.birthtime?.valueOf() ?? metadata.mtime?.valueOf() ?? 0,
+                            volumeId: volumeByDirectory.get(parentDir) ?? undefined,
+                        } });
+                    } catch (error) {
+                        await invoke('jobs_mark_error', { jobId, rowId: file.rowId, error: String(error), maxRetries: 0 });
+                        updateEntry(String(file.rowId), { status: 'error', error: String(error) });
                     }
                 }
-
+                if (prepared.length > 0) {
+                    let outcomes: { doc_id: string; error: string | null }[] | null = null;
+                    let stageError: string | null = null;
+                    try {
+                        await invoke('index_ingest_l1', { files: prepared.map(item => item.input) });
+                        if (level === 2) {
+                            outcomes = await invoke('index_promote_l2', {
+                                docIds: prepared.map(item => item.input.docId),
+                                sourcePaths: prepared.map(item => item.file.filePath),
+                            });
+                        }
+                    } catch (error) { stageError = String(error); }
+                    const done: number[] = [];
+                    for (const [position, item] of prepared.entries()) {
+                        const outcome = outcomes?.[position];
+                        const error = stageError ?? (level === 2
+                            ? (outcome ? outcome.error : 'Kein Ergebnis für die Metadaten-Extraktion erhalten.') : null);
+                        if (error) {
+                            await invoke('jobs_mark_error', { jobId, rowId: item.file.rowId, error, maxRetries: 0 });
+                            updateEntry(String(item.file.rowId), { status: 'error', error });
+                        } else {
+                            if (outcome) await invoke('jobs_set_doc_id', { rowId: item.file.rowId, docId: outcome.doc_id });
+                            done.push(item.file.rowId);
+                        }
+                    }
+                    if (done.length > 0) await invoke('jobs_mark_done', { jobId, rowIds: done });
+                }
                 await loadEntriesFromQueue();
             }
-            await invoke('jobs_set_status', { jobId: activeJobId, status: 'done' }).catch(() => {});
+        } catch (error) {
+            reportQueueError('Indexierung wurde unterbrochen; offene Dateien bleiben für den nächsten Versuch gespeichert', error);
         } finally {
-            l1Running = false;
-        }
-    }
-
-    /** L2 ingest: L1 ingest first to create doc rows, then promote via
-     *  the embedded-metadata reader.  Doesn't require the embedder. */
-    async function startL2Ingest() {
-        if (l2RunningInline) return;
-        if (!activeJobId || !(await ensureIndexReady(false))) return;
-        l2RunningInline = true;
-        try {
-            // Step 1: L1 ingest all pending files (same claim_batch loop).
-            await startL1Ingest();
-            // Step 2: promote to L2 by matching doc_id.
-            const docs = await invoke<any[]>('index_list_documents', { limit: 1000 }).catch(() => []);
-            const ids: string[] = [];
-            for (const e of entries.filter(e => e.status === 'done')) {
-                const found = docs.find(d =>
-                    (d.filename ?? '') === e.filename &&
-                    String(d.location_uri ?? '').includes(e.path.replace(/\\/g, '/'))
-                );
-                if (found?.doc_id) ids.push(found.doc_id);
+            try { await finishQueuedRun(jobId); }
+            catch (error) {
+                queueRestored = false;
+                reportQueueError('Fortschritt konnte nicht bestätigt werden. Warteschlange vor dem nächsten Lauf neu laden', error);
             }
-            if (ids.length > 0) await invoke('index_promote_l2', { docIds: ids });
-        } catch (err: any) {
-            logError(`[L2] ingest failed: ${err?.message ?? err}`);
-        } finally {
+            l1Running = false;
             l2RunningInline = false;
+            stopping = false;
+            abortCtrl = null;
+            releaseRun();
         }
     }
 
     async function startIngest() {
-        if (running) return;
-        if (!activeJobId) return;
-        if (ingestLevel === 1) { await startL1Ingest(); return; }
-        if (ingestLevel === 2) { await startL2Ingest(); return; }
-
-        // L3 = full text + embedding.
-        if (!(await ensureIndexReady(true))) return;
-
-        running   = true;
+        if (queueBusy || !queueRestored || !activeJobId) return;
+        if (ingestLevel === 1 || ingestLevel === 2) { await startMetadataIngest(ingestLevel); return; }
+        const jobId = activeJobId;
+        const releaseRun = reserveQueueRun(jobId);
+        if (!releaseRun) return;
+        running = true;
+        stopping = false;
         paused    = false;
         abortCtrl = new AbortController();
         const signal = abortCtrl.signal;
@@ -1491,22 +1595,21 @@
             };
         };
 
-        await invoke('jobs_set_status', { jobId: activeJobId, status: 'running' }).catch(() => {});
-
         try {
+            if (!(await ensureIndexReady(true))) return;
+            await beginQueuedRun(jobId);
             while (!signal.aborted) {
                 while (paused && !signal.aborted) await new Promise(r => setTimeout(r, 200));
                 if (signal.aborted) break;
 
                 const batch = await invoke<QueuedFile[]>('jobs_claim_batch', {
-                    jobId: activeJobId,
+                    jobId,
                     batchSize: INGEST_BATCH_SIZE,
                 });
                 if (batch.length === 0) break; // queue drained
 
                 const pendingWrites: PendingWrite[] = [];
                 const errored: { rowId: number; error: string }[] = [];
-                const skipped: number[] = [];
 
                 for (const qf of batch) {
                     if (signal.aborted) break;
@@ -1530,6 +1633,7 @@
                             continue;
                         }
 
+                        const sourceFingerprint = await hashBytes(bytes);
                         // Pass `path` so extractText can route audio/video
                         // extensions to the Rust audio_extract_text command
                         // (keeps the PCM buffer in Rust).
@@ -1540,13 +1644,18 @@
                         });
                         logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
 
-                        if (!result.text || result.text.trim().length < 20) {
-                            logWarn(`Skip ${filename}: too little text (${result.text?.length ?? 0} chars)`);
-                            skipped.push(qf.rowId);
-                            updateEntry(String(qf.rowId), { status: 'skipped', error: 'Zu wenig Text extrahiert' });
+                        if (!result.text?.trim()) {
+                            const message = 'Kein durchsuchbarer Text erkannt. OCR aktivieren oder die Extraktionseinstellungen prüfen und erneut versuchen.';
+                            logWarn(`${filename}: ${message}`);
+                            errored.push({ rowId: qf.rowId, error: message });
+                            updateEntry(String(qf.rowId), { status: 'error', error: message });
                             continue;
                         }
 
+                        const verifiedFingerprint = await invoke<string>('file_sha256', { path: qf.filePath });
+                        if (verifiedFingerprint !== sourceFingerprint) {
+                            throw new Error('Die Quelldatei wurde während der Extraktion verändert. Die vorherige Indexversion bleibt erhalten; bitte erneut versuchen.');
+                        }
                         updateEntry(String(qf.rowId), { status: 'embedding' });
                         const language   = detectLanguage(result.text);
                         const sourceHash = await hashText(result.text + qf.filePath);
@@ -1586,7 +1695,7 @@
                         );
                         const n = pendingWrites.length;
                         await invoke('jobs_mark_done', {
-                            jobId: activeJobId,
+                            jobId,
                             rowIds: pendingWrites.map(w => w.rowId),
                         });
                         for (const w of pendingWrites) {
@@ -1606,31 +1715,29 @@
                     }
                 }
 
-                // Persist errors and skips
+                // Persist each failed outcome before another batch is claimed
                 for (const { rowId, error } of errored) {
-                    await invoke('jobs_mark_error', { jobId: activeJobId, rowId, error, maxRetries: 0 }).catch(() => {});
-                }
-                for (const rowId of skipped) {
-                    await invoke('jobs_mark_skipped', { jobId: activeJobId, rowId }).catch(() => {});
+                    await invoke('jobs_mark_error', { jobId, rowId, error, maxRetries: 0 });
                 }
 
                 await loadEntriesFromQueue();
             }
 
-            if (!signal.aborted) {
-                await invoke('jobs_set_status', { jobId: activeJobId, status: 'done' }).catch(() => {});
-            } else {
-                await invoke('jobs_reclaim', { jobId: activeJobId }).catch(() => {});
-                await invoke('jobs_set_status', { jobId: activeJobId, status: 'paused' }).catch(() => {});
-            }
-
+        } catch (error) {
+            reportQueueError('Indexierung wurde unterbrochen; offene Dateien bleiben für den nächsten Versuch gespeichert', error);
         } finally {
-            running   = false;
-            paused    = false;
+            try { await finishQueuedRun(jobId); }
+            catch (error) {
+                queueRestored = false;
+                reportQueueError('Fortschritt konnte nicht bestätigt werden. Warteschlange vor dem nächsten Lauf neu laden', error);
+            }
+            running = false;
+            stopping = false;
+            paused = false;
             abortCtrl = null;
-            currentFile    = '';
+            currentFile = '';
             currentMessage = '';
-            await loadEntriesFromQueue();
+            releaseRun();
         }
     }
 
@@ -1640,14 +1747,11 @@
     }
 
     function stopIngest() {
-        abortCtrl?.abort();
-        // The finally block in startIngest calls jobs_reclaim + loadEntriesFromQueue.
-        // Set flags immediately so the UI reflects the stop without waiting for the
-        // async teardown to finish.
-        running = false;
-        paused  = false;
-        currentFile    = '';
-        currentMessage = '';
+        if (!abortCtrl || stopping) return;
+        stopping = true;
+        paused = false;
+        abortCtrl.abort();
+        currentMessage = 'Laufende Verarbeitung wird sicher abgeschlossen …';
     }
 
     // ── Index contents ─────────────────────────────────────────────────────────
@@ -1666,17 +1770,18 @@
     }
 
     /** Return the `extraction_failure` object from metadata_json, or null. */
-    function extractionFailure(d: any): { reason: string; msg: string } | null {
+    function extractionFailure(d: any): { reason: string; msg: string; skipped: boolean } | null {
         if (!d.metadata_json) return null;
         try {
             const m = JSON.parse(d.metadata_json);
-            return m.extraction_failure ?? null;
+            return m.extraction_failure ? { ...m.extraction_failure, skipped: m.extraction_skip === true } : null;
         } catch { return null; }
     }
 
     const FAIL_LABELS: Record<string, string> = {
         drm:         'DRM',
         timeout:     'timeout',
+        empty_text:  'kein Text',
         corrupt:     'korrupt',
         password:    'passwort',
         unsupported: 'N/A',
@@ -1689,6 +1794,7 @@
             'Titel und Autor sind ggf. trotzdem vorhanden.\n' +
             'Die Datei ist verschlüsselt — CrispSorter kann nur Metadaten lesen.',
         timeout:     'Zeitlimit überschritten — Datei wird beim nächsten Lauf erneut versucht.',
+        empty_text:  'Kein durchsuchbarer Text erkannt. Metadaten bleiben erhalten. OCR aktivieren oder die Extraktionseinstellungen prüfen und erneut versuchen.',
         corrupt:     'Datei scheint beschädigt oder ist kein gültiges Format.',
         password:    'Passwortgeschützt — Entschlüsselung erforderlich.',
         unsupported: 'Kein Extraktor für diesen Dateityp verfügbar.',
@@ -2289,7 +2395,10 @@
                 try {
                     const parsed = JSON.parse(updated.metadata_json ?? '{}');
                     delete parsed.extraction_failure;
-                    parsed.level = 1;
+                    delete parsed.failed_source_hash;
+                    delete parsed.extraction_skip;
+                    delete parsed.mtime_unix;
+                    parsed.level = docLevel(contents[idx]) === 3 ? 3 : 1;
                     updated.metadata_json = JSON.stringify(parsed);
                 } catch { /* ignore parse error */ }
                 contents = [...contents.slice(0, idx), updated, ...contents.slice(idx + 1)];
@@ -2810,8 +2919,11 @@
     }
 
     async function hashText(text: string): Promise<string> {
-        const buf = new TextEncoder().encode(text.slice(0, 65536));
-        const digest = await crypto.subtle.digest('SHA-256', buf);
+        return hashBytes(new TextEncoder().encode(text));
+    }
+
+    async function hashBytes(bytes: Uint8Array): Promise<string> {
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
         return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
@@ -3426,19 +3538,19 @@
     {#if activeTab === 'add'}
         <div class="toolbar">
             <div class="toolbar-actions">
-                <button class="tb-btn" onclick={addFiles}><FileText size={14} /> Dateien</button>
+                <button class="tb-btn" onclick={addFiles} disabled={queueBusy || !queueRestored}><FileText size={14} /> Dateien</button>
                 <button class="tb-btn" onclick={() => { activeTab = 'sources'; }}>
                     <FolderOpen size={14} /> Ordner verwalten
                 </button>
                 <span class="level-inline-label">Tiefe:</span>
-                <button class="chip" class:active={ingestLevel === 1} onclick={() => ingestLevel = 1} title="Nur Pfad / Größe / Datum (sehr schnell)">L1</button>
-                <button class="chip" class:active={ingestLevel === 2} onclick={() => ingestLevel = 2} title="Eingebettete Metadaten (PDF Info, DOCX core, EPUB OPF, EXIF)">L2</button>
-                <button class="chip" class:active={ingestLevel === 3} onclick={() => ingestLevel = 3} title="Volltext extrahieren + embedden">L3</button>
+                <button class="chip" class:active={ingestLevel === 1} onclick={() => ingestLevel = 1} disabled={queueBusy} title="Nur Pfad / Größe / Datum (sehr schnell)">L1</button>
+                <button class="chip" class:active={ingestLevel === 2} onclick={() => ingestLevel = 2} disabled={queueBusy} title="Eingebettete Metadaten (PDF Info, DOCX core, EPUB OPF, EXIF)">L2</button>
+                <button class="chip" class:active={ingestLevel === 3} onclick={() => ingestLevel = 3} disabled={queueBusy} title="Volltext extrahieren + embedden">L3</button>
                 {#if stats.done > 0}
-                    <button class="tb-btn ghost" onclick={clearDone}><Trash2 size={14} /> Fertige entfernen</button>
+                    <button class="tb-btn ghost" onclick={clearDone} disabled={queueBusy}><Trash2 size={14} /> Fertige entfernen</button>
                 {/if}
-                {#if entries.length > 0 && !running}
-                    <button class="tb-btn ghost danger" onclick={clearAll}><X size={14} /> Alle löschen</button>
+                {#if stats.total > 0}
+                    <button class="tb-btn ghost danger" onclick={clearAll} disabled={queueBusy}><X size={14} /> Alle löschen</button>
                 {/if}
             </div>
             <div class="level-hint-inline">
@@ -3452,13 +3564,33 @@
             </div>
         </div>
 
+        {#if queueLoading}
+            <div class="queue-notice" role="status"><Loader2 size={14} class="spin" /> Gespeicherte Warteschlange wird geladen …</div>
+        {/if}
+        {#if queueError}
+            <div class="queue-notice error" role="alert">
+                <AlertCircle size={15} /> <span>{queueError}</span>
+                <button class="tb-btn" onclick={restoreQueue} disabled={queueBusy}>Warteschlange neu laden</button>
+            </div>
+        {/if}
+        {#if stopping}
+            <div class="queue-notice" role="status"><Loader2 size={14} class="spin" /> Laufende Verarbeitung und Speicherung werden abgeschlossen. Offene Dateien bleiben für den nächsten Lauf erhalten.</div>
+        {/if}
+
         <!-- Stats bar -->
-        {#if entries.length > 0}
+        {#if stats.total > 0}
             <div class="stats-bar">
                 <span class="sb-chip total">{stats.total} Dateien</span>
                 {#if stats.done > 0}    <span class="sb-chip done">{stats.done} fertig</span>{/if}
                 {#if stats.errors > 0}  <span class="sb-chip error">{stats.errors} Fehler</span>{/if}
                 {#if stats.pending > 0} <span class="sb-chip pending">{stats.pending} ausstehend</span>{/if}
+                <label class="queue-filter">Anzeigen
+                    <select aria-label="Warteschlange filtern" bind:value={queueFilter} disabled={queueBusy}
+                        onchange={() => { queueOffset = 0; refreshQueue(); }}>
+                        <option value="all">Alle</option><option value="error">Fehler</option>
+                        <option value="pending">Ausstehend</option><option value="done">Fertig</option>
+                    </select>
+                </label>
             </div>
         {/if}
 
@@ -3496,7 +3628,9 @@
         {/if}
 
         <!-- Drop area or file list -->
-        {#if entries.length === 0}
+        {#if stats.total > 0 && entries.length === 0}
+            <div class="queue-notice" role="status">Keine Einträge für diesen Filter.</div>
+        {:else if entries.length === 0}
             <div class="drop-area" class:active={dropActive}>
                 <UploadCloud size={40} style="color:#3b82f6; opacity:0.7;" />
                 <p>Dateien hier ablegen</p>
@@ -3512,7 +3646,7 @@
                             <span class="file-name" title={entry.path}>{entry.filename}</span>
                             <div class="file-sub">
                                 {#if entry.status === 'done'}
-                                    <span class="file-meta">{entry.chunks} Chunks · embed {entry.embedMs}ms · write {entry.writeMs}ms</span>
+                                    <span class="file-meta">Gespeichert{#if entry.chunks !== undefined} · {entry.chunks} Chunks{/if}{#if entry.embedMs !== undefined} · embed {entry.embedMs}ms{/if}{#if entry.writeMs !== undefined} · write {entry.writeMs}ms{/if}</span>
                                 {:else if entry.status === 'error'}
                                     <span class="file-meta" style="color:#ef4444">{entry.error}</span>
                                 {:else if (entry.status === 'embedding') && entry.chunksTotal}
@@ -3536,32 +3670,41 @@
                                 <AlertCircle size={13} />
                             {/if}
                         </div>
-                        {#if !running}
-                            <button class="remove-btn" onclick={() => removeEntry(entry.id)}><X size={12} /></button>
-                        {/if}
+                        <button class="remove-btn" aria-label={`${entry.filename} aus Warteschlange entfernen`}
+                            disabled={queueBusy} onclick={() => removeEntry(entry.id)}><X size={12} /></button>
                     </div>
                 {/each}
             </div>
         {/if}
 
+        {#if queuePageTotal > QUEUE_PAGE_SIZE}
+            <div class="queue-pagination">
+                <button class="tb-btn" disabled={queueBusy || queueOffset === 0} onclick={() => changeQueuePage(queueOffset - QUEUE_PAGE_SIZE)}>Zurück</button>
+                <span>{queueOffset + 1}–{Math.min(queueOffset + entries.length, queuePageTotal)} von {queuePageTotal}</span>
+                <button class="tb-btn" disabled={queueBusy || queueOffset + entries.length >= queuePageTotal} onclick={() => changeQueuePage(queueOffset + QUEUE_PAGE_SIZE)}>Weiter</button>
+            </div>
+        {/if}
+
         <!-- Run controls -->
-        {#if entries.length > 0}
+        {#if stats.total > 0}
             <div class="run-bar">
                 {#if !running && !l1Running && !l2RunningInline}
                     <button class="run-btn primary" onclick={startIngest}
-                        disabled={stats.pending === 0}>
+                        disabled={stats.pending === 0 || queueBusy || !queueRestored}>
                         <Play size={15} />
                         {ingestLevel === 1 ? 'L1 Quick-Scan' : ingestLevel === 2 ? 'L2 Metadaten-Lesen' : 'L3 Volltext-Indexierung'} ({stats.pending})
                     </button>
+                    {#if stats.errors > 0}<span class="status-text">{stats.errors} fehlgeschlagene Dateien werden erneut versucht. Bereits fertige Dateien bleiben erhalten.</span>{/if}
                 {:else if l1Running || l2RunningInline}
                     <span class="status-text" style="color:#3b82f6">
                         <Loader2 size={14} class="spin" /> {l1Running ? 'L1' : 'L2'} Indexierung läuft …
                     </span>
+                    <button class="run-btn danger" onclick={stopIngest} disabled={stopping}><X size={15} /> {stopping ? 'Wird gestoppt …' : 'Stoppen'}</button>
                 {:else}
-                    <button class="run-btn" onclick={pauseResume}>
+                    <button class="run-btn" onclick={pauseResume} disabled={stopping}>
                         {#if paused}<Play size={15} /> Fortsetzen{:else}<Pause size={15} /> Pausieren{/if}
                     </button>
-                    <button class="run-btn danger" onclick={stopIngest}><X size={15} /> Stoppen</button>
+                    <button class="run-btn danger" onclick={stopIngest} disabled={stopping}><X size={15} /> {stopping ? 'Wird gestoppt …' : 'Stoppen'}</button>
                     {#if paused}
                         <span class="status-text" style="color:#f59e0b">Pausiert</span>
                     {/if}
@@ -4315,7 +4458,7 @@
                                         {#if isPromoting}<Loader2 size={13} class="spin" />{:else}<CloudDownload size={13} />{/if}
                                     </button>
                                 {/if}
-                                {#if failure && (failure.reason === 'timeout' || failure.reason === 'other')}
+                                {#if failure && (failure.skipped || ['timeout', 'empty_text', 'other'].includes(failure.reason))}
                                     {@const isRetrying = retryingIds.has(doc.doc_id)}
                                     <button class="icon-btn" onclick={() => retryExtraction(doc.doc_id)}
                                         disabled={isRetrying}
@@ -4441,6 +4584,12 @@
     .tb-btn.active { background: #1e1b4b; color: #a5b4fc; border-color: #6366f1; }
     .tb-btn.active:hover { background: #312e81; color: white; }
 
+    .queue-notice { margin: 10px 16px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #334155; border-radius: 6px; color: #cbd5e1; background: #0f172a; font-size: 0.82rem; }
+    .queue-notice.error { border-color: #7f1d1d; color: #fecaca; }
+    .queue-notice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .queue-filter { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 0.75rem; color: #a1a1aa; }
+    .queue-filter select { border: 1px solid #3f3f46; border-radius: 4px; padding: 3px 6px; background: #18181b; color: #e4e4e7; }
+    .queue-pagination { margin: 8px 16px; display: flex; gap: 12px; align-items: center; justify-content: center; font-size: 0.75rem; color: #a1a1aa; }
     .stats-bar { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
     .sb-chip { padding: 2px 10px; border-radius: 99px; font-size: 0.75rem; font-weight: 600; }
     .sb-chip.total   { background: #27272a; color: #a1a1aa; }
@@ -4820,6 +4969,7 @@
     .fail-badge.fail-password { background: #2e1a5233; color: #c084fc; }
     .fail-badge.fail-unsupported { background: #27272a;   color: #71717a; }
     .fail-badge.fail-other    { background: #1a1a2e33; color: #94a3b8; }
+    .fail-badge.fail-empty_text { background: #854d0e33; color: #facc15; }
 
     .cb-tier-bar { display: flex; align-items: center; gap: 8px; padding: 5px 12px;
         background: #1c1917; border-bottom: 1px solid #292524; font-size: 0.72rem; flex-wrap: wrap; }

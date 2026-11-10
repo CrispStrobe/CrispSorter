@@ -21,8 +21,10 @@
 //! * **Text + source** — UTF-8 read, no transformation. Covers .txt,
 //!   .md, .rst, .log, .csv, .tsv, .json, .yaml, .toml, .xml, .html,
 //!   plus most source-code extensions.
-//! * **HTML** — basic tag-stripping via the regex crate. Lower
-//!   fidelity than scraper but zero new heavy deps.
+//! * **HTML** — bounded HTML5 parsing, character-set and entity decoding,
+//!   visible text and headings, and saved-page source URLs.
+//! * **Email** — bounded MIME decoding, plain alternatives, text attachments,
+//!   forwarded messages and mbox; binary attachment names carry a coverage tag.
 //!
 //! EPUB has an in-process reader; DOCX uses crisp-docx-core.
 
