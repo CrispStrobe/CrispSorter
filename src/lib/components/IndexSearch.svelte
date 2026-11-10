@@ -10,7 +10,7 @@
     import { i18n } from '$lib/i18n.svelte';
     import { searchLabels } from '$lib/search/labels';
     import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
-        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, validateSearchFilters,
+        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, validateSearchFilters,
         type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
@@ -36,7 +36,7 @@
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
     import { cloudDrivePanel, localPathPanel, remoteSearchPanel, searchResultsPanel } from '$lib/drives/panels';
-    import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
+    import { drivePathFromSearchUri as driveUriParts, localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
@@ -100,6 +100,8 @@
     // ── State ──────────────────────────────────────────────────────────────────
 
     let query       = $state('');
+    let searchRoot = $state<HTMLDivElement>();
+    let queryInput = $state<HTMLInputElement>();
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
     let vectorEnabled = $state(true);
     let limit       = $state(20);
@@ -689,6 +691,7 @@
     // Format detection + rendering is handled entirely by the viewer.
     let previewing = $state<SearchResult | null>(null);
     let previewTab = $state<'original' | 'indexed'>('original');
+    let previewPreference = $state<'original' | 'indexed'>('original');
     let previewCloseButton = $state<HTMLButtonElement>();
     let previewTrigger: HTMLButtonElement | null = null;
 
@@ -696,7 +699,7 @@
         if (previewing && previewing.doc_id === r.doc_id) { await closePreview(); return; }
         previewTrigger = trigger;
         previewing = r;
-        previewTab = 'original';
+        previewTab = r.chunk_index >= 0 && !r.catalog_source ? previewPreference : 'original';
         await tick();
         // Narrow screens show the preview in place of the result list. Move
         // focus to its close control instead of leaving it on a hidden trigger.
@@ -713,6 +716,11 @@
         if (trigger?.isConnected) trigger.focus();
     }
 
+    async function openResultPreview(result: SearchResult, trigger: HTMLButtonElement) {
+        await openPreview(result, trigger);
+        if (previewing?.doc_id === result.doc_id) previewCloseButton?.focus({ preventScroll: true });
+    }
+
     function revealResultsOnNarrowScreen() {
         if (window.matchMedia('(max-width: 800px)').matches) {
             previewing = null;
@@ -720,10 +728,60 @@
         }
     }
 
+    function clearLocalPreview() {
+        previewing = null;
+        previewTrigger = null;
+    }
+
+    function resultFocusTarget(docId: string): HTMLButtonElement | undefined {
+        return Array.from(searchRoot?.querySelectorAll<HTMLButtonElement>('.result-title') ?? [])
+            .find(button => button.dataset.documentId === docId);
+    }
+
+    function focusResult(index: number) {
+        const group = displayedGroups[index];
+        if (!group) return;
+        const target = resultFocusTarget(group.doc_id);
+        target?.focus({ preventScroll: true });
+        target?.scrollIntoView({ block: 'nearest' });
+    }
+
+    function handleWorkspaceKeydown(event: KeyboardEvent) {
+        if (event.defaultPrevented || event.isComposing || !searchRoot?.contains(event.target as Node)) return;
+        const target = event.target as HTMLElement;
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+            event.preventDefault(); queryInput?.focus(); queryInput?.select(); return;
+        }
+        if (event.key === 'Escape') {
+            if (showSavedDropdown || showHistory) {
+                showSavedDropdown = false; showHistory = false;
+                event.preventDefault(); queryInput?.focus(); return;
+            }
+            if (previewing && target.closest('.preview-pane')) {
+                event.preventDefault(); void closePreview(); return;
+            }
+        }
+        if (event.altKey && !event.ctrlKey && !event.metaKey && previewing && target.closest('.preview-pane')
+            && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault(); movePreview(event.key === 'ArrowDown' ? 1 : -1); return;
+        }
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || loading || error) return;
+        if (target === queryInput && event.key === 'ArrowDown' && displayedGroups.length) {
+            event.preventDefault(); focusResult(0); return;
+        }
+        if (!target.matches('.result-title')) return;
+        const index = displayedGroups.findIndex(group => group.doc_id === target.dataset.documentId);
+        const next = event.key === 'ArrowDown' ? Math.min(index + 1, displayedGroups.length - 1)
+            : event.key === 'ArrowUp' ? Math.max(index - 1, 0)
+            : event.key === 'Home' ? 0 : event.key === 'End' ? displayedGroups.length - 1 : -1;
+        if (next >= 0) { event.preventDefault(); focusResult(next); }
+    }
+
     async function findByField(tag: string, value: string) {
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
         const request = ++searchRequest;
         resetFilters(); searchNotice = ''; displayedRecipeKey = null; imageSearchLoading = false;
+        executedRecipe = null; executedQuery = ''; searchTags = new Set(); batchSelection = new Set();
         loading = true; error = ''; searched = true;
         filterTag = tag; query = value; clearTranslations();
         try {
@@ -780,10 +838,12 @@
         fuzzy: filterFuzzy, synonyms: filterSynonyms, includeUnmounted,
     });
     const activeFilterKeys = $derived(activeSearchFilters(currentFilters));
-    const searchOptionsChanged = $derived(displayedRecipeKey !== null && displayedRecipeKey !== searchRecipeKey(currentRecipe()));
+    const searchOptionsChanged = $derived(displayedRecipeKey !== null && displayedRecipeKey !== searchRequestKey(currentRecipe()));
 
     function currentRecipe(): SearchRecipe {
-        return normalizeSearchRecipe({ query, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope });
+        return normalizeSearchRecipe({ query, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope,
+            view: { sort: resultSort, compact: compactResults, preview: previewPreference, reportFormat,
+                displayTags: [...searchTags], tagCloud: showSearchTagCloud } });
     }
 
     function applyFilters(f: SearchFilters): void {
@@ -803,6 +863,9 @@
         limit = recipe.limit; smartSearch = recipe.smart;
         refinementScope = [...recipe.docIdScope];
         applyFilters(recipe.filters);
+        resultSort = recipe.view.sort; compactResults = recipe.view.compact;
+        previewPreference = recipe.view.preview; reportFormat = recipe.view.reportFormat;
+        searchTags = new Set(recipe.view.displayTags); showSearchTagCloud = recipe.view.tagCloud;
     }
 
     function resetFilters(): void {
@@ -980,7 +1043,8 @@
     async function inspectPassage(result: SearchResult, trigger: HTMLButtonElement) {
         if (previewing?.doc_id !== result.doc_id) await openPreview(result, trigger);
         else previewing = result;
-        previewTab = 'indexed';
+        previewTab = 'indexed'; previewPreference = 'indexed';
+        previewTrigger = trigger;
     }
 
     function movePreview(delta: number) {
@@ -988,14 +1052,15 @@
         const index = displayedGroups.findIndex(group => group.doc_id === previewing?.doc_id);
         const next = displayedGroups[(index + delta + displayedGroups.length) % displayedGroups.length];
         previewing = next.best;
-        if (next.best.chunk_index < 0) previewTab = 'original';
+        previewTrigger = resultFocusTarget(next.doc_id) ?? null;
+        previewTab = next.best.chunk_index >= 0 && !next.best.catalog_source ? previewPreference : 'original';
     }
 
     async function loadMoreResults() {
         if (!executedRecipe || searchOptionsChanged) return;
         const nextLimit = [50, 100, 200, 500].find(value => value > executedRecipe!.limit);
         if (!nextLimit) return;
-        applyRecipe({ ...executedRecipe, limit: nextLimit });
+        applyRecipe({ ...executedRecipe, limit: nextLimit, view: currentRecipe().view });
         await runSearch();
     }
 
@@ -1009,8 +1074,8 @@
 
     async function runSearch() {
         if (!query.trim()) return;
-        revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
+        clearLocalPreview();
         const request = ++searchRequest;
         const recipe = currentRecipe();
         const started = performance.now();
@@ -1018,7 +1083,7 @@
         loading = true; error = ''; searchNotice = ''; searched = true;
         resultActionFeedback = null;
         similarHeader = ''; compareResults = []; batchSelection = new Set();
-        clearTranslations(); searchTags = new Set();
+        clearTranslations();
         try {
             let searchQuery = recipe.query;
             if (recipe.smart) {
@@ -1070,7 +1135,7 @@
             executedQuery = searchQuery;
             searchedAt = new Date().toISOString();
             elapsedMs = Math.round(performance.now() - started);
-            displayedRecipeKey = searchRecipeKey(recipe);
+            displayedRecipeKey = searchRequestKey(recipe);
             // Keep the scope visible until explicitly cleared; repeated searches
             // and bookmarks must not silently broaden the user's selection.
             try { await addToHistory(recipe, results.length); }
@@ -1091,7 +1156,7 @@
     let similarHeader = $state('');
 
     async function findSimilar(r: SearchResult) {
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
         const request = ++searchRequest;
         displayedRecipeKey = null; imageSearchLoading = false;
         executedRecipe = null; executedQuery = '';
@@ -1152,13 +1217,14 @@
 
     // P23 — search within current results (progressive refinement)
     function refineSearch() {
-        if (results.length === 0) return;
-        // Scope the next search to the doc_ids in the current result set
-        const docIds = [...new Set(results.map(r => r.doc_id))];
-        refinementScope = docIds;
+        if (!displayedGroups.length) return;
+        // Only the visible window enters the scope, including display tag filters.
+        refinementScope = displayedGroups.map(group => group.doc_id);
+        searchTags = new Set();
         // Clear query so the user can type a new one
         query = '';
         void runSkeletonSearch('');
+        queryInput?.focus();
     }
 
     function onKeydown(e: KeyboardEvent) {
@@ -1179,7 +1245,7 @@
         const imagePath = typeof selected === 'string' ? selected : (selected as any).path;
         if (!imagePath) return;
 
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
         const request = ++searchRequest;
         displayedRecipeKey = null;
         executedRecipe = null; executedQuery = '';
@@ -1334,7 +1400,7 @@
     }
 
     function clearSearch() {
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
         searchRequest += 1;
         remoteRequest += 1; fedRequest += 1;
         remoteResults = []; remoteLoading = false; remoteSearched = false; remoteError = ''; remoteQuery = '';
@@ -1402,17 +1468,6 @@
         }, `${labels.openSourceFailed} (${url})`);
     }
 
-    function driveUriParts(uri: string): { driveId: string; remotePath: string } | null {
-        if (!uri.startsWith('crisp+drive://')) return null;
-        const rest = uri.slice('crisp+drive://'.length);
-        const slash = rest.indexOf('/');
-        if (slash < 0) return null;
-        return {
-            driveId: rest.slice(0, slash),
-            remotePath: decodeURIComponent(rest.slice(slash)),
-        };
-    }
-
     function driveIdFromUri(uri: string): string {
         return driveUriParts(uri)?.driveId ?? '';
     }
@@ -1465,12 +1520,30 @@
     async function copyResultPath(uri: string): Promise<void> {
         const drive = driveUriParts(uri);
         const local = localPathFromSearchUri(uri);
-        const value = drive ? `${drive.driveId}:${drive.remotePath}` : local;
+        const value = drive ? `${drive.driveId}:${drive.remotePath}` : local || uri;
         if (!value) return;
         await runResultAction(`copy:${uri}`, async () => {
             await navigator.clipboard.writeText(value);
             return `${labels.pathCopied}: ${value}`;
         }, labels.copyPathFailed);
+    }
+
+    async function copyResultCitation(result: SearchResult): Promise<void> {
+        const content = [
+            result.title || result.filename || result.doc_id,
+            [result.author, result.year].filter(value => value != null && value !== '').join(' · '),
+            `Source: ${result.location_uri}`,
+            ...(result.url && result.url !== result.location_uri ? [`Original URL: ${result.url}`] : []),
+            `Document: ${result.doc_id}`,
+            ...(result.catalog_source ? [`Catalog: ${result.catalog_source}`]
+                : result.chunk_index >= 0 ? [`Indexed passage: ${result.chunk_index + 1}`] : []),
+            ...(result.source_hash ? [`Source SHA-256: ${result.source_hash}`] : []),
+            ...(executedQuery ? [`Search: ${executedQuery}`] : []),
+        ].filter(Boolean).join('\n');
+        await runResultAction(`citation:${result.doc_id}:${result.chunk_index}`, async () => {
+            await navigator.clipboard.writeText(content);
+            return i18n.lang === 'de' ? 'Quellenangabe kopiert.' : 'Source citation copied.';
+        }, i18n.lang === 'de' ? 'Quellenangabe konnte nicht kopiert werden' : 'Could not copy source citation');
     }
 
     /**
@@ -1660,7 +1733,9 @@
     }
 </script>
 
-<div class="search-root">
+<svelte:window onkeydown={handleWorkspaceKeydown} />
+
+<div class="search-root" bind:this={searchRoot}>
     <!-- ── Query bar ─────────────────────────────────────────────────────────── -->
     <div class="query-bar">
         <div class="query-input-wrap">
@@ -1669,10 +1744,12 @@
             <input
                 class="query-input"
                 type="text"
+                bind:this={queryInput}
                 bind:value={query}
                 oninput={event => runSkeletonSearch(event.currentTarget.value)}
                 onkeydown={onKeydown}
                 aria-label={labels.query}
+                aria-keyshortcuts="Control+k Meta+k ArrowDown"
                 placeholder={labels.placeholder}
                 title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
                 autofocus
@@ -1736,7 +1813,7 @@
             </button>
             {#if showSavedDropdown && savedSearches.length > 0}
                 <div class="saved-dropdown">
-                    <p class="saved-help">{labels.restoreHint}</p>
+                    <p class="saved-help">{labels.restoreHint} {i18n.lang === 'de' ? 'Sortierung und Ansicht werden ebenfalls wiederhergestellt.' : 'Sort order and view preferences are restored too.'}</p>
                     {#each savedSearches as s, i}
                         <div class="saved-item">
                             <button
@@ -1748,9 +1825,10 @@
                                 <span class="saved-meta">
                                     {s.mode} · {s.limit} · {activeSearchFilters(s.filters).length} {labels.filterCount}
                                     {#if s.docIdScope.length} · {s.docIdScope.length} {labels.scope}{/if}
+                                    {#if s.view.displayTags.length} · {s.view.displayTags.join(', ')}{/if}
                                 </span>
                             </button>
-                            {#if activeSearchFilters(s.filters).length === 0 && s.docIdScope.length === 0 && !s.smart}
+                            {#if activeSearchFilters(s.filters).length === 0 && s.docIdScope.length === 0 && !s.smart && !s.view.displayTags.length}
                             <button
                                 class="saved-context"
                                 onclick={() => requestBrowserContext(searchResultsPanel(s.query, `Saved search: ${s.name}`))}
@@ -1851,9 +1929,10 @@
                 </button>
             {/each}
             {#if refinementScope.length}
-                <button class="filter-chip" onclick={() => refinementScope = []}>{refinementScope.length} {labels.scope} <X size={12} /></button>
+                <button class="filter-chip" onclick={() => refinementScope = []}
+                    aria-label={i18n.lang === 'de' ? 'Dokumentbereich entfernen' : 'Remove document scope'}>{refinementScope.length} {labels.scope} <X size={12} /></button>
             {/if}
-            {#if smartSearch}<button class="filter-chip" onclick={() => smartSearch = false}>Smart <X size={12} /></button>{/if}
+            {#if smartSearch}<button class="filter-chip" onclick={() => smartSearch = false} aria-label={i18n.lang === 'de' ? 'Smart-Suche entfernen' : 'Remove smart search'}>Smart <X size={12} /></button>{/if}
             <button class="reset-filters" onclick={resetFilters}>{labels.reset}</button>
         </div>
     {/if}
@@ -1996,7 +2075,7 @@
             </div>
 
         {:else if searched && grouped.length === 0}
-            <div class="state-hint">
+            <div class="state-hint" aria-live="polite">
                 <Search size={32} />
                 <p>{labels.noResults}</p><p class="hint-sub">{labels.noResultsHint}</p>
                 {#if activeFilterKeys.length || refinementScope.length || smartSearch}
@@ -2021,31 +2100,36 @@
                 </div>
             {/if}
             <div class="result-count">
+                <span class="result-count-summary" aria-live="polite" aria-atomic="true">
                 {#if searchTags.size > 0}
-                    {displayedGroups.length} / {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
+                    {displayedGroups.length} / {grouped.length} {i18n.lang === 'de' ? 'Dokumente' : 'documents'} · {results.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
                 {:else}
-                    {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
+                    {grouped.length} {i18n.lang === 'de' ? 'Dokumente' : 'documents'} · {results.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
                 {/if}
+                </span>
                 {#if searchTagFacets.length > 0}
                     <button
                         class="tagcloud-toggle"
                         class:active={showSearchTagCloud}
                         onclick={() => showSearchTagCloud = !showSearchTagCloud}
-                        title="Tag-Wolke ein-/ausblenden"
+                        title={i18n.lang === 'de' ? 'Tags im Ergebnisfenster anzeigen' : 'Show tags in returned results'}
+                        aria-label={i18n.lang === 'de' ? 'Tags im Ergebnisfenster' : 'Tags in returned results'}
+                        aria-expanded={showSearchTagCloud}
                     >
                         <Tag size={11} /> Tags{#if searchTags.size > 0} ({searchTags.size}){/if}
                     </button>
                 {/if}
-                {#if grouped.length >= 2}
+                {#if displayedGroups.length > 0}
                     <button
                         class="tagcloud-toggle refine-btn"
                         onclick={refineSearch}
-                        title="Search within these {grouped.length} results (progressive narrowing)"
+                        title="Search within these {displayedGroups.length} displayed documents"
+                        aria-label={i18n.lang === 'de' ? 'Angezeigte Dokumente durchsuchen' : 'Search within displayed documents'}
                     >
                         Refine
                     </button>
                 {/if}
-                {#if !activeFilterKeys.length && !refinementScope.length && !smartSearch}
+                {#if !activeFilterKeys.length && !refinementScope.length && !smartSearch && !searchTags.size && !searchOptionsChanged}
                 <button
                     class="tagcloud-toggle"
                     onclick={openSearchResultsContext}
@@ -2062,7 +2146,7 @@
                 {#if refinementScope.length > 0}
                     <span class="refine-badge" title="Searching within {refinementScope.length} docs from previous results">
                         Scoped to {refinementScope.length} docs
-                        <button class="clear-similar" onclick={() => refinementScope = []}>
+                        <button class="clear-similar" onclick={() => refinementScope = []} aria-label={i18n.lang === 'de' ? 'Dokumentbereich aufheben' : 'Clear document scope'}>
                             <X size={10} />
                         </button>
                     </span>
@@ -2087,13 +2171,27 @@
                 {#if batchSelection.size > selectedDisplayedCount}<span>{batchSelection.size - selectedDisplayedCount} {i18n.lang === 'de' ? 'ausgeblendet; nicht im Export' : 'hidden; excluded from export'}</span>{/if}
             </section>
             <p class="search-window-note">{i18n.lang === 'de'
-                ? 'Sortierung, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
-                : 'Sorting, passage counts, and exports apply to this returned window, not every match in the corpus.'}
+                ? 'Sortierung, Tags, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
+                : 'Sorting, tags, passage counts, and exports apply to this returned window, not every match in the corpus.'}
                 {#if executedRecipe} · {elapsedMs} ms · {i18n.lang === 'de' ? 'Angefordertes Limit' : 'Requested limit'} {executedRecipe.limit}{/if}
                 {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < 500}
                     <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
                 {/if}
             </p>
+            <p class="search-keyboard-note">{i18n.lang === 'de'
+                ? 'Tastatur: Strg/⌘ K zur Suche · ↓ zu Ergebnissen · ↑/↓ zwischen Dokumenten · Enter zur Vorschau · Alt ↑/↓ in der Vorschau · Esc zum Schließen.'
+                : 'Keyboard: Ctrl/⌘ K to search · ↓ to results · ↑/↓ between documents · Enter to preview · Alt ↑/↓ inside preview · Esc to close.'}</p>
+
+            {#if searchTags.size}
+                <div class="active-filters display-filters" aria-label={i18n.lang === 'de' ? 'Tags für angezeigte Ergebnisse' : 'Displayed-result tag filters'}>
+                    <span>{i18n.lang === 'de' ? 'Angezeigte Ergebnisse:' : 'Displayed results:'}</span>
+                    {#each [...searchTags] as tag}
+                        <button class="filter-chip" onclick={() => toggleSearchTag(tag)}
+                            aria-label={i18n.lang === 'de' ? `Anzeige-Tag ${tag} entfernen` : `Remove displayed tag ${tag}`}>{tag} <X size={12} /></button>
+                    {/each}
+                    <button class="reset-filters" onclick={() => searchTags = new Set()}>{i18n.lang === 'de' ? 'Anzeige-Filter aufheben' : 'Clear display filters'}</button>
+                </div>
+            {/if}
 
             {#if showSearchTagCloud && searchTagFacets.length > 0}
                 <div class="search-tagcloud-wrap">
@@ -2135,6 +2233,13 @@
                 </section>
             {/if}
 
+            {#if !displayedGroups.length}
+                <div class="state-hint" aria-live="polite">
+                    <p>{i18n.lang === 'de' ? 'Kein Dokument in diesem Fenster hat alle ausgewählten Tags.' : 'No document in this returned window has all selected tags.'}</p>
+                    <button class="reset-filters" onclick={() => searchTags = new Set()}>{i18n.lang === 'de' ? 'Anzeige-Filter aufheben' : 'Clear display filters'}</button>
+                </div>
+            {/if}
+
             {#each displayedGroups as group (group.doc_id)}
                 {@const r = group.best}
                 {@const resultName = r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
@@ -2146,9 +2251,12 @@
                         <div class="ext-badge ext-{(r.ext ?? '').toLowerCase()}">{(r.ext ?? '?').toUpperCase()}</div>
 
                         <div class="result-meta">
-                            <span class="result-title">
+                            <button class="result-title" data-document-id={group.doc_id}
+                                onclick={event => openResultPreview(r, event.currentTarget)}
+                                aria-label={i18n.lang === 'de' ? `Vorschau: ${resultName}` : `Preview ${resultName}`}
+                                aria-keyshortcuts="ArrowDown ArrowUp Home End Enter">
                                 {resultName}
-                            </span>
+                            </button>
                             {#if r.author || r.year}
                                 <span class="result-byline">{r.author ?? ''}{r.author && r.year ? ' · ' : ''}{r.year ?? ''}</span>
                             {/if}
@@ -2158,7 +2266,12 @@
                                     catalog: {catalogName(r.catalog_source)}
                                 </span>
                             {/if}
-                            <span class="result-path" title={r.location_uri}>{r.filename ?? r.location_uri}</span>
+                            <span class="result-path" title={r.location_uri}>{compareLabel(r.location_uri)}</span>
+                            <span class="result-origin">{r.catalog_source
+                                ? (i18n.lang === 'de' ? 'Dateinamen-Treffer im Katalog' : 'Catalog filename match')
+                                : r.chunk_index >= 0
+                                    ? `${i18n.lang === 'de' ? 'Indizierte Textstelle' : 'Indexed passage'} ${r.chunk_index + 1}`
+                                    : (i18n.lang === 'de' ? 'Dokumentmetadaten' : 'Document metadata')}</span>
                         </div>
 
                         <div class="result-right" role="group" aria-label={i18n.lang === 'de' ? `Aktionen für ${resultName}` : `Actions for ${resultName}`}>
@@ -2207,14 +2320,17 @@
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
                             </button>
-                            {#if driveUriParts(r.location_uri) || localPathFromSearchUri(r.location_uri)}
                                 <button class="open-btn"
                                     disabled={resultActionsBusy.has(`copy:${r.location_uri}`)}
                                     onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri); }}
                                     title="Copy path">
                                     <Copy size={13} />
                                 </button>
-                            {/if}
+                            <button class="open-btn" onclick={() => copyResultCitation(r)}
+                                disabled={resultActionsBusy.has(`citation:${r.doc_id}:${r.chunk_index}`)}
+                                title={i18n.lang === 'de' ? 'Quellenangabe kopieren' : 'Copy citation'}>
+                                <Copy size={13} /><span>{i18n.lang === 'de' ? 'Quelle' : 'Cite'}</span>
+                            </button>
                             {#if driveUriParts(r.location_uri)}
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); openDriveInContext(r.location_uri); }}
@@ -2587,8 +2703,13 @@
             <div class="preview-navigation" role="group" aria-label={i18n.lang === 'de' ? 'Dokumentnavigation' : 'Document navigation'}>
                 <button onclick={() => movePreview(-1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Vorheriges Dokument' : 'Previous document'}</button>
                 <button onclick={() => movePreview(1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Nächstes Dokument' : 'Next document'}</button>
-                <button aria-pressed={previewTab === 'original'} onclick={() => previewTab = 'original'}>{i18n.lang === 'de' ? 'Originaldatei' : 'Original file'}</button>
-                {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => previewTab = 'indexed'}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
+                <button aria-pressed={previewTab === 'original'} onclick={() => { previewTab = 'original'; previewPreference = 'original'; }}>{i18n.lang === 'de' ? 'Originaldatei' : 'Original file'}</button>
+                {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => { previewTab = 'indexed'; previewPreference = 'indexed'; }}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
+            </div>
+            <div class="preview-source-context">
+                <code>{compareLabel(previewing.location_uri)}</code>
+                <span>{i18n.lang === 'de' ? 'Die Originaldatei kann seit der Indizierung geändert worden sein.' : 'The original file may have changed since indexing.'}</span>
+                <button class="reset-filters" onclick={() => previewing && copyResultCitation(previewing)}>{i18n.lang === 'de' ? 'Quellenangabe kopieren' : 'Copy citation'}</button>
             </div>
             {#if localPathFromSearchUri(previewing.location_uri)}
                 <div class="document-actions">
@@ -2832,6 +2953,11 @@
     .inspection-toolbar button:focus-visible,.inspection-toolbar select:focus-visible,.preview-navigation button:focus-visible { outline:2px solid #93c5fd;outline-offset:2px; }
     .inspection-toolbar span { color:#fbbf24;font-size:.7rem; }
     .search-window-note { font-size:.7rem;color:#a1a1aa;margin:8px 16px 12px;line-height:1.6; }
+    .search-keyboard-note { font-size:.7rem;color:#a1a1aa;margin:0 16px 10px;line-height:1.6; }
+    .display-filters { padding:0 16px 10px;font-size:.74rem;color:#d4d4d8; }
+    .preview-source-context { display:flex;flex-direction:column;gap:6px;padding:8px 12px;border-bottom:1px solid #3f3f46;font-size:.72rem;color:#a1a1aa; }
+    .preview-source-context code { color:#d4d4d8;overflow-wrap:anywhere; }
+    .preview-source-context button { align-self:flex-start; }
     .preview-navigation { display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #27272a;flex-shrink:0; }
     .preview-navigation button[aria-pressed=true] { background:#1e3a8a;border-color:#60a5fa; }
     .inspect-text { display:inline-flex;gap:4px;align-items:center; }
@@ -3139,9 +3265,13 @@
     .ext-epub { background: #4c1d9533; color: #c4b5fd; }
 
     .result-meta { flex: 1 1 160px; min-width: 0; }
-    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere; }
+    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere;
+        max-width:100%;padding:0;background:none;border:0;text-align:left;font-family:inherit;cursor:pointer;border-radius:3px; }
+    .result-title:focus-visible { outline:2px solid #93c5fd;outline-offset:3px; }
+    .result-title:hover { color:#93c5fd; }
     .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; overflow-wrap: anywhere; }
-    .result-path { display: block; font-size: 0.72rem; color: #52525b; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-path { display: block; font-size: 0.72rem; color: #a1a1aa; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-origin { display:block;margin-top:3px;font-size:.7rem;color:#a1a1aa; }
 
     .result-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 0 1 auto; min-width: 0; max-width: 100%; }
     .score-wrap { display: flex; align-items: center; gap: 5px; }

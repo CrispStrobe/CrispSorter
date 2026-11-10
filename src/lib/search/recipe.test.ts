@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
-    restoreSavedSearches, restoreSearchHistory, searchRecipeKey, validateSearchFilters } from './recipe';
+    normalizeSearchView, restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, validateSearchFilters } from './recipe';
 
 describe('saved search recipes', () => {
     it('restores old bookmarks and history with fresh defaults instead of current filters', () => {
@@ -9,6 +9,7 @@ describe('saved search recipes', () => {
         expect(saved.filters).toEqual(defaultSearchFilters());
         expect(saved.smart).toBe(false);
         expect(saved.docIdScope).toEqual([]);
+        expect(saved.view).toEqual(normalizeSearchView(null));
         const [history] = restoreSearchHistory([{ query: 'old', mode: 'text', ts: 3, resultCount: 2 }]);
         expect(history.limit).toBe(20);
         expect(history.filters).toEqual(defaultSearchFilters());
@@ -21,14 +22,19 @@ describe('saved search recipes', () => {
                 folderPrefix: '/papers', urlDomain: 'example.org', tag: 'reviewed', audioMin: 0,
                 audioMax: 300, cameraMake: 'Canon', cameraModel: 'R5', colbert: true, omni: true,
                 fuzzy: true, synonyms: true, includeUnmounted: true },
+            view: { sort: 'year-desc', compact: true, preview: 'indexed', reportFormat: 'json',
+                displayTags: ['reviewed', 'approved', 'reviewed'], tagCloud: true },
         });
         const [restored] = restoreSavedSearches(JSON.parse(JSON.stringify([{ ...original, name: 'Research', savedAt: 123 }])));
         expect(normalizeSearchRecipe(restored)).toEqual(original);
         expect(restored.filters.ext).toBe('docx,pdf');
         expect(restored.filters.language).toBe('de');
         expect(restored.filters.audioMin).toBe(0);
+        expect(restored.view.displayTags).toEqual(['approved', 'reviewed']);
         restored.filters.tag = 'changed';
+        restored.view.displayTags.push('changed');
         expect(original.filters.tag).toBe('reviewed');
+        expect(original.view.displayTags).toEqual(['approved', 'reviewed']);
     });
 
     it('distinguishes equal query text with different filters, modes, limits or scope', () => {
@@ -47,6 +53,18 @@ describe('saved search recipes', () => {
         expect(restoreSavedSearches([null, {}, 'x', { query: 3 }, { query: 'ok', filters: null }])).toHaveLength(1);
         expect(normalizeSearchRecipe({ query: 'ok', mode: 'bogus', limit: 9999 }).mode).toBe('hybrid');
         expect(normalizeSearchRecipe({ query: 'ok', limit: 9999 }).limit).toBe(20);
+        expect(normalizeSearchView({ sort: 'invalid', compact: 'true', preview: 'bad', reportFormat: 'pdf', displayTags: [null, 3, ' a ', 'a', ''], tagCloud: 1 }))
+            .toEqual({ ...normalizeSearchView(null), displayTags: ['a'] });
+    });
+
+    it('keeps view variants as distinct bookmarks without invalidating the executed search', () => {
+        const recipe = normalizeSearchRecipe({ query: 'report', filters: { language: 'de' } });
+        const variant = normalizeSearchRecipe({ ...recipe, view: { sort: 'title', compact: true, preview: 'indexed', displayTags: ['reviewed'] } });
+        expect(searchRecipeKey(variant)).not.toBe(searchRecipeKey(recipe));
+        expect(searchRequestKey(variant)).toBe(searchRequestKey(recipe));
+        expect(localSearchArguments(variant)).toEqual(localSearchArguments(recipe));
+        expect(searchRequestKey(normalizeSearchRecipe({ ...variant, filters: { language: 'en' } })))
+            .not.toBe(searchRequestKey(recipe));
     });
 });
 

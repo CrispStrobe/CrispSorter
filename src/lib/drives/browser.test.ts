@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     availableDriveActions,
+    drivePathFromSearchUri,
     joinDrivePath,
     localPathFromSearchUri,
     normalizeDrivePath,
@@ -55,6 +56,41 @@ describe('drive browser path contract', () => {
         expect(localPathFromSearchUri('crisp+cb-archive://archive/paper.pdf')).toBeNull();
         expect(localPathFromSearchUri('https://example.test/paper.pdf')).toBeNull();
         expect(pathBaseName('/Users/alice/paper.pdf')).toBe('paper.pdf');
+    });
+
+    it('disables local actions for malformed encoded provenance without throwing', () => {
+        for (const uri of [
+            'crisp+local://host/docs/100%.pdf',
+            'crisp+local://host/docs/%Q1.pdf',
+            'crisp+local://host/docs/%E2%82.pdf',
+            'crisp+local://host/docs/%80.pdf',
+            'crisp+local://host/docs/%00.pdf',
+            'crisp+local://host',
+            '/docs/invalid\0.pdf',
+        ]) {
+            expect(() => localPathFromSearchUri(uri)).not.toThrow();
+            expect(localPathFromSearchUri(uri)).toBeNull();
+        }
+    });
+
+    it('decodes valid local URIs once and preserves literal percentages in filesystem paths', () => {
+        expect(localPathFromSearchUri('crisp+local://host/docs/r%C3%A9sum%C3%A9%20100%25.pdf'))
+            .toBe('/docs/résumé 100%.pdf');
+        expect(localPathFromSearchUri('crisp+local://host/docs/literal%252Fname.pdf'))
+            .toBe('/docs/literal%2Fname.pdf');
+        expect(localPathFromSearchUri('/docs/100%.pdf')).toBe('/docs/100%.pdf');
+        expect(localPathFromSearchUri('C:\\docs\\100%.pdf')).toBe('C:\\docs\\100%.pdf');
+    });
+
+    it('parses registered-drive locations while rejecting invalid provenance', () => {
+        expect(drivePathFromSearchUri('crisp+drive://research/docs/r%C3%A9sum%C3%A9%20%252F.pdf'))
+            .toEqual({ driveId: 'research', remotePath: '/docs/résumé %2F.pdf' });
+        expect(drivePathFromSearchUri('crisp+drive://research/')).toEqual({ driveId: 'research', remotePath: '/' });
+        for (const uri of [
+            'crisp+drive://research/docs/%', 'crisp+drive://research/docs/%80.pdf',
+            'crisp+drive://research/docs/%00.pdf', 'crisp+drive:///docs/file.pdf',
+            'crisp+drive://research', '/docs/file.pdf', 'https://example.test/file.pdf',
+        ]) expect(drivePathFromSearchUri(uri)).toBeNull();
     });
 
     it('only enables remote version queries when advertised', () => {

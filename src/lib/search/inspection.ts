@@ -83,12 +83,12 @@ export function queryTerms(query: string): string[] {
         if (/^NOT$/i.test(token)) { negateNext = !negateNext; continue; }
         if (token === '(') { exclusions.push(exclusions.at(-1)! !== negateNext); negateNext = false; continue; }
         if (token === ')') { if (exclusions.length > 1) exclusions.pop(); negateNext = false; continue; }
-        if (/^(title|body|headings|translated):$/i.test(token)) continue;
+        if (/^(title|body|text|headings|h|translated|body_translated):$/i.test(token)) continue;
         if (/^(w|pre)\/\d+$/i.test(token)) continue;
         const excluded = exclusions.at(-1)! !== negateNext;
         negateNext = false;
         if (excluded) continue;
-        token = token.replace(/^(title|body|headings|translated):/i, '').replace(/~[012]$/, '').replace(/[?*]/g, '');
+        token = token.replace(/^(title|body|text|headings|h|translated|body_translated):/i, '').replace(/~[012]$/, '').replace(/[?*]/g, '');
         if (token.startsWith('"') && token.endsWith('"')) token = token.slice(1, -1).replace(/\\(["\\])/g, '$1');
         // Split punctuation like the native simple tokenizer. This is a visual
         // aid, not a claim that fuzzy or semantic matches are exact occurrences.
@@ -98,15 +98,19 @@ export function queryTerms(query: string): string[] {
 }
 
 export interface TextRange { start: number; end: number }
-export function occurrenceRanges(text: string, terms: readonly string[], max = 1000): TextRange[] {
+export interface FindOptions { caseSensitive?: boolean; wholeWords?: boolean }
+export function occurrenceRanges(text: string, terms: readonly string[], max = 1000, options: FindOptions = {}): TextRange[] {
+    if (!Number.isFinite(max) || max <= 0) return [];
+    const limit = Math.min(10001, Math.floor(max));
     const needles = [...new Set(terms.filter(Boolean))].sort((a, b) => b.length - a.length);
     if (!needles.length) return [];
     const pattern = needles.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-    const re = new RegExp(pattern, 'giu');
+    const bounded = options.wholeWords ? `(?<![\\p{L}\\p{N}\\p{M}_])(?:${pattern})(?![\\p{L}\\p{N}\\p{M}_])` : pattern;
+    const re = new RegExp(bounded, options.caseSensitive ? 'gu' : 'giu');
     const ranges: TextRange[] = [];
     for (const match of text.matchAll(re)) {
         ranges.push({ start: match.index!, end: match.index! + match[0].length });
-        if (ranges.length >= max) break;
+        if (ranges.length >= limit) break;
     }
     return ranges;
 }

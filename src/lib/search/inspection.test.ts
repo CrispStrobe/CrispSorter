@@ -52,6 +52,18 @@ describe('result inspection', () => {
         expect(queryTerms('title:report AND NOT draft w/5 policy~1')).toEqual(['report', 'policy']);
         expect(queryTerms('"annual report" OR warranty')).toEqual(['annual', 'report', 'warranty']);
         expect(queryTerms('title:"annual report" AND NOT (draft OR obsolete)')).toEqual(['annual', 'report']);
+        expect(queryTerms('text:report OR h:"NOT text" OR body_translated:review')).toEqual(['report', 'not', 'text', 'review']);
+    });
+    it('supports case-sensitive and Unicode whole-word find without changing source offsets', () => {
+        const text = 'War warranty war WAR _war war2 aWar e\u0301 e 東京 東京都';
+        expect(occurrenceRanges(text, ['war'], 1000, { wholeWords: true }).map(range => text.slice(range.start, range.end)))
+            .toEqual(['War', 'war', 'WAR']);
+        expect(occurrenceRanges(text, ['war'], 1000, { wholeWords: true, caseSensitive: true }).map(range => text.slice(range.start, range.end)))
+            .toEqual(['war']);
+        expect(occurrenceRanges(text, ['e'], 1000, { wholeWords: true })).toHaveLength(1);
+        expect(occurrenceRanges(text, ['東京'], 1000, { wholeWords: true })).toHaveLength(1);
+        expect(occurrenceRanges('zero', ['zero'], 0)).toEqual([]);
+        expect(occurrenceRanges('zero', ['zero'], Number.NaN)).toEqual([]);
     });
 });
 
