@@ -35,6 +35,7 @@
         Columns2, Eye, RotateCcw, CloudDownload, Images, Tag, AlertTriangle
     } from 'lucide-svelte';
     import { extractText, extractionTags, usesNativePathExtraction, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractionIndexMetadata } from '$lib/extractors/indexMetadata';
     import IndexSearch from './IndexSearch.svelte';
     import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
@@ -1682,6 +1683,7 @@
                                 sourceHash,
                                 sourceFingerprint,
                                 tags:        extractionTags(result),
+                                ...extractionIndexMetadata(result),
                             },
                         });
 
@@ -2842,6 +2844,7 @@
                         sourceHash,
                         sourceFingerprint,
                         tags:        extractionTags(result),
+                        ...extractionIndexMetadata(result),
                     });
                     if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {

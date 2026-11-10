@@ -29,6 +29,7 @@ fn row(id: &str) -> SearchHit {
         chunk_index: 0,
         indexed_at: 42,
         source_hash: "same-content-hash".into(),
+        ..Default::default()
     }
 }
 fn cursor(id: &str) -> String {

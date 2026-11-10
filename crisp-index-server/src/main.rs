@@ -28,6 +28,8 @@ mod queue;
 mod routes;
 #[path = "../../shared/source_identity.rs"]
 mod source_identity;
+#[path = "../../shared/source_paths.rs"]
+mod source_paths;
 mod state;
 
 use std::sync::Arc;
@@ -93,11 +95,12 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&data_dir)?;
 
     // Initialise indexes.
-    tracing::info!("Opening VectorStore at {:?} (dims={})", data_dir, dims);
-    let vector = Arc::new(VectorStore::open_or_create(&data_dir, dims).await?);
-
+    // Claim the process lease before any optional column migration can change
+    // a store still being served by another process.
     tracing::info!("Opening FtsStore");
     let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts-v2"))?);
+    tracing::info!("Opening VectorStore at {:?} (dims={})", data_dir, dims);
+    let vector = Arc::new(VectorStore::open_or_create(&data_dir, dims).await?);
 
     let search_index = Arc::new(SearchIndex::new(vector, fts));
     search_index.ensure_ready().await?;
@@ -143,6 +146,11 @@ async fn main() -> Result<()> {
         .route("/ingest/batch", post(routes::ingest::ingest_batch))
         .route("/tasks/{task_id}", get(routes::tasks::task_status))
         .route("/search", post(routes::search::search))
+        .route("/search/generation", post(routes::complete::generation))
+        .route("/search/complete", post(routes::complete::summary))
+        .route("/search/complete/page", post(routes::complete::page))
+        .route("/search/complete/destination", post(routes::complete::destination))
+        .route("/search/complete/{request_id}", delete(routes::complete::cancel))
         .route("/passages/read", post(routes::passages::read_passage))
         .route("/docs/{doc_id}", delete(routes::docs::delete_doc))
         .route(

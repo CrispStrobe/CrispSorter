@@ -79,6 +79,7 @@ pub async fn index_search(
 
     let lock = state.index.lock().await;
     let config_enabled = lock.config.enabled;
+    let remote_backend = matches!(lock.config.backend_type, super::BackendType::Remote);
 
     let mut filters = search_filters.unwrap_or_default();
     // Keep older callers working while the UI sends the complete filter set.
@@ -91,13 +92,15 @@ pub async fn index_search(
     let limit = limit.clamp(1, 500);
     let catalog_eligible = filters.to_lance_sql().is_none()
         && mode != "vector" && !super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?;
-    let mounted_ids: Option<std::collections::HashSet<String>> = if include_unmounted.unwrap_or(false) { None } else {
+    let mounted_ids: Option<std::collections::HashSet<String>> = if remote_backend || include_unmounted.unwrap_or(false) { None } else {
         Some(tokio::task::spawn_blocking(crate::volume::list_mounted_volumes).await
             .map_err(|e| format!("list_mounted_volumes join: {e}"))?.into_iter().map(|volume| volume.id).collect())
     };
     // Filter before the candidate limit so offline hits do not crowd out
-    // available documents. Keep the remote legacy fallback below as well.
-    if lock.engine.is_some() {
+    // available local documents. Desktop mount IDs cannot establish whether
+    // a remote server's source volumes are available. Explicit remote volume
+    // constraints remain in search_filters and are negotiated by the client.
+    if !remote_backend && lock.engine.is_some() {
         filters.mounted_volume_ids = mounted_ids.as_ref().map(|ids| {
             let mut ids: Vec<String> = ids.iter().cloned().collect(); ids.sort(); ids
         });
@@ -110,7 +113,7 @@ pub async fn index_search(
     // replace) the catalog channel below.
     let mut results: Vec<SearchResult> = if !config_enabled {
         Vec::new()
-    } else if let Some(engine) = lock.engine.clone() {
+    } else if let Some(engine) = lock.engine.clone().filter(|_| !remote_backend) {
         // ── Local path: SearchEngine wraps FTS + ANN + RRF ────────────
         drop(lock);
         match mode.as_str() {
@@ -221,19 +224,11 @@ pub(crate) fn validate_search_filters(filters: &super::SearchFilters) -> Result<
 }
 
 fn ensure_remote_search_filters_supported(filters: &super::SearchFilters) -> Result<(), String> {
-    let mut unsupported = filters.clone();
-    unsupported.owner_id = None;
-    unsupported.language = None;
-    unsupported.year_min = None;
-    unsupported.year_max = None;
-    // The HTTP client negotiates and verifies these server-side predicates.
-    unsupported.ext.clear();
-    unsupported.tag = None;
-    unsupported.source_hash_prefix = None;
-    unsupported.doc_id_scope.clear();
-    if unsupported.to_lance_sql().is_some() || !unsupported.tags.is_empty() || unsupported.fuzzy || unsupported.synonyms
-        || unsupported.colbert_rerank || unsupported.omni_search {
-        return Err("This remote index supports language, publication years, extensions, an exact tag, a source fingerprint prefix and a document scope. Clear other search options or switch to the local index.".into());
+    // Every metadata predicate is negotiated with the server by RemoteClient.
+    // Fuzzy/synonym expansion uses the same lexical transformation as local
+    // search. These local model channels still have no remote wire contract.
+    if filters.colbert_rerank || filters.omni_search {
+        return Err("Remote search does not support the local token reranker or cross-modal model channel. Disable those options or choose the local index.".into());
     }
     Ok(())
 }
@@ -535,6 +530,8 @@ pub struct DocumentIngestInput {
     #[serde(default)]
     pub source_fingerprint: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default, flatten)]
+    pub metadata: super::ingest_metadata::IngestMetadata,
 }
 
 fn source_receipt(input: &DocumentIngestInput) -> Result<Option<(std::path::PathBuf, String)>, String> {
@@ -753,9 +750,41 @@ pub async fn index_ingest_batch(
     let sources: Vec<_> = inputs.iter().map(source_receipt)
         .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect();
     for input in &mut inputs {
+        input.metadata.validate().map_err(|error| error.to_string())?;
         if let Some(fingerprint) = &input.source_fingerprint {
             input.source_hash = fingerprint.to_ascii_lowercase();
         }
+    }
+    // Enrich real host paths outside the async executor. These source volume
+    // IDs are retained remotely as provenance, never treated as server mount
+    // liveness. Explicit extractor metadata stays authoritative.
+    inputs = tokio::task::spawn_blocking(move || {
+        for input in &mut inputs {
+            let path = if input.location_uri.starts_with("crisp+local://") {
+                match super::location::FileLocation::from_uri(&input.location_uri) {
+                    Ok(super::location::FileLocation::Local { path, .. }) => Some(path),
+                    _ => None,
+                }
+            } else if !input.location_uri.contains("://") {
+                Some(std::path::PathBuf::from(&input.location_uri))
+            } else { None };
+            if let Some(path) = path.filter(|path| path.is_absolute()) {
+                if input.metadata.parent_dir.is_none() {
+                    input.metadata.parent_dir = path.parent().map(|parent| parent.to_string_lossy().into_owned());
+                }
+                if input.metadata.volume_id.is_none() {
+                    input.metadata.volume_id = crate::volume::volume_id_for_path(&path);
+                }
+            }
+            if input.metadata.url.is_none() && (input.location_uri.starts_with("https://") || input.location_uri.starts_with("http://")) {
+                input.metadata.url = Some(input.location_uri.clone());
+            }
+        }
+        inputs
+    }).await.map_err(|error| format!("Reading source metadata: {error}"))?;
+    // Derived paths and URLs obey the same limits as extractor-supplied values.
+    for input in &inputs {
+        input.metadata.validate().map_err(|error| error.to_string())?;
     }
     let progress_filename = if inputs.len() == 1 { inputs[0].filename.clone() }
         else { format!("(batch of {})", inputs.len()) };
@@ -812,25 +841,24 @@ pub async fn index_ingest_batch(
                 mtime_unix: None,
                 images_indexed: false,
                 file_size: None,
-                volume_id: None,
-                parent_dir: None,
-                // Frontend-driven batch ingest doesn't run the extractor's
-                // MT pass — Phase 8 on-demand handles per-result translation.
-                translated_text: None,
-                translated_to_lang: None,
-                audio_duration_seconds: None,
+                volume_id: input.metadata.volume_id,
+                parent_dir: input.metadata.parent_dir,
+                // Preserve a supplied extractor translation and its language.
+                translated_text: input.metadata.text_translated,
+                translated_to_lang: input.metadata.text_translated_lang,
+                audio_duration_seconds: input.metadata.audio_duration_seconds,
                 audio_codec: None,
                 audio_sample_rate_hz: None,
                 audio_channels: None,
                 audio_bitrate_kbps: None,
-                image_camera_make: None,
-                image_camera_model: None,
+                image_camera_make: input.metadata.image_camera_make,
+                image_camera_model: input.metadata.image_camera_model,
                 image_lens_model: None,
                 image_taken_at_unix: None,
                 image_iso: None,
                 multivec_packed: None,
                 multivec_n_tokens: None,
-                url: None,
+                url: input.metadata.url,
                 embedding_omni: None,
                 embedding_vit: None,
             })
@@ -905,24 +933,24 @@ pub async fn index_ingest_batch(
             mtime_unix: None,
             images_indexed: false,
             file_size: None,
-            volume_id: None,
-            parent_dir: None,
-            // Remote-batch ingest doesn't run the extractor's MT pass.
-            translated_text: None,
-            translated_to_lang: None,
-            audio_duration_seconds: None,
+            volume_id: input.metadata.volume_id,
+            parent_dir: input.metadata.parent_dir,
+            // Preserve supplied translation and native source metadata.
+            translated_text: input.metadata.text_translated,
+            translated_to_lang: input.metadata.text_translated_lang,
+            audio_duration_seconds: input.metadata.audio_duration_seconds,
             audio_codec: None,
             audio_sample_rate_hz: None,
             audio_channels: None,
             audio_bitrate_kbps: None,
-            image_camera_make: None,
-            image_camera_model: None,
+            image_camera_make: input.metadata.image_camera_make,
+            image_camera_model: input.metadata.image_camera_model,
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
-            url: None,
+            url: input.metadata.url,
             embedding_omni: None,
             embedding_vit: None,
         };
@@ -978,6 +1006,15 @@ pub async fn index_ingest_batch(
                 owner_id: raw.owner_id.clone(),
                 source_hash: raw.source_hash.clone(),
                 tags: raw.tags.clone(),
+                parent_dir: raw.parent_dir.clone(),
+                volume_id: raw.volume_id.clone(),
+                url: raw.url.clone(),
+                text_translated: if tc.chunk_index == 0 { raw.translated_text.clone() } else { None },
+                text_translated_lang: if tc.chunk_index == 0 { raw.translated_to_lang.clone() } else { None },
+                audio_duration_seconds: raw.audio_duration_seconds,
+                image_camera_make: raw.image_camera_make.clone(),
+                image_camera_model: raw.image_camera_model.clone(),
+                doc_status: None,
             });
         }
     }
@@ -5305,6 +5342,7 @@ mod source_receipt_boundary_tests {
             location_uri: location_uri.into(), owner_id: "local".into(),
             source_hash: "legacy-text-derived-id".into(),
             source_fingerprint: fingerprint.map(str::to_owned), tags: Vec::new(),
+            metadata: Default::default(),
         }
     }
 
@@ -5391,7 +5429,7 @@ mod search_filter_boundary_tests {
     }
 
     #[test]
-    fn remote_index_refuses_filters_missing_from_its_wire_protocol() {
+    fn remote_index_defers_metadata_capabilities_and_refuses_unmapped_model_channels() {
         assert!(ensure_remote_search_filters_supported(&SearchFilters {
             language: Some("de".into()), year_min: Some(2000), year_max: Some(2025),
             ext: vec!["pdf".into()], tag: Some("invoice".into()),
@@ -5401,10 +5439,13 @@ mod search_filter_boundary_tests {
         for filters in [
             SearchFilters { parent_dir_prefix: Some("/docs".into()), ..Default::default() },
             SearchFilters { prefer_translated_lang: Some("en".into()), ..Default::default() },
-            SearchFilters { synonyms: true, ..Default::default() },
+            SearchFilters { synonyms: true, fuzzy: true, ..Default::default() },
             SearchFilters { doc_status: Some("reviewed".into()), ..Default::default() },
-        ] {
-            assert!(ensure_remote_search_filters_supported(&filters).is_err());
-        }
+            SearchFilters { tags: vec!["required".into()], mounted_volume_ids: Some(vec![]), ..Default::default() },
+        ] { assert!(ensure_remote_search_filters_supported(&filters).is_ok()); }
+        for filters in [
+            SearchFilters { colbert_rerank: true, ..Default::default() },
+            SearchFilters { omni_search: true, ..Default::default() },
+        ] { assert!(ensure_remote_search_filters_supported(&filters).is_err()); }
     }
 }

@@ -23,6 +23,7 @@ fn wire(owner: &str, id: &str, text: &str) -> IngestChunk {
         location_uri: format!("test://{owner}/{id}"),
         source_hash: format!("{owner}/{id}"),
         tags: vec![],
+        ..Default::default()
     }
 }
 

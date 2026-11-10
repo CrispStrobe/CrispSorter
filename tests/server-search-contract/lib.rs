@@ -5,6 +5,8 @@ mod fts;
 mod index;
 #[path = "../../crisp-index-server/src/auth.rs"]
 mod auth;
+#[path = "../../shared/source_paths.rs"]
+mod source_paths;
 #[cfg(test)]
 #[path = "../../crisp-index-protocol/src/lib.rs"]
 mod protocol_contract;
@@ -31,6 +33,10 @@ pub mod embedder {
 }
 #[cfg(test)]
 mod http_contract;
+#[cfg(test)]
+mod remote_client_complete_contract;
+#[cfg(test)]
+mod complete_contract;
 #[cfg(test)]
 mod passage_contract;
 #[path = "../../crisp-index-server/src/queue.rs"]
@@ -63,7 +69,7 @@ mod tests {
             language: "en".into(),
             year: Some(2024),
             headings: "Report heading".into(),
-            text: text.into(),
+            text: text.into(), translated: None,
             start,
             end: start.map(|s| s + text.len() as i32),
         }
@@ -249,7 +255,6 @@ mod tests {
             "title:",
             "alpha) beta",
             "unknown:foo",
-            "translated:hello",
         ] {
             assert!(
                 store.prepare(query, &Default::default()).is_err(),

@@ -12,13 +12,13 @@ async function lastSearch(page: Page) {
     return page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search').at(-1)?.args);
 }
 
-async function summaryFixture(page: Page) {
-    await page.evaluate(() => {
+async function summaryFixture(page: Page, scope = 'local_indexed_documents') {
+    await page.evaluate(scope => {
         const root = window as any;
-        root.__summaryGeneration = 'snapshot-1'; root.__holdSummary = false; root.__pendingSummaries = [];
+        root.__summaryGeneration = 'snapshot-1'; root.__summaryScope = scope; root.__holdSummary = false; root.__pendingSummaries = [];
         const make = (query: string) => {
             const facet = (value: string) => ({ values: [{ value, documents: 633 }], distinctValues: 1, omittedValues: 0, missingDocuments: 0 });
-            return { version: 1, scope: 'local_indexed_documents', query, effectiveQuery: query, generation: root.__summaryGeneration,
+            return { version: 1, scope: root.__summaryScope, query, effectiveQuery: query, generation: root.__summaryGeneration,
                 matchingDocuments: 633, scannedRows: 900, facetValueLimit: 25,
                 facets: { extensions: facet('pdf'), languages: facet('en'), years: facet('2026'),
                     tags: { ...facet('reviewed'), distinctValues: 31, omittedValues: 30 } } };
@@ -30,11 +30,11 @@ async function summaryFixture(page: Page) {
                 const value = make(args.query);
                 return root.__holdSummary ? new Promise(resolve => root.__pendingSummaries.push(() => resolve(value))) : Promise.resolve(value);
             }
-            if (command === 'index_search_summary_generation') return Promise.resolve(root.__summaryGeneration);
+            if (command === 'index_search_summary_generation') { root.__fixtureCalls.push({ command, args }); return Promise.resolve(root.__summaryGeneration); }
             if (command === 'index_cancel_search_summary') { root.__fixtureCalls.push({ command, args }); return Promise.resolve(true); }
             return original(command, args, options);
         };
-    });
+    }, scope);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -242,7 +242,7 @@ test('explicit full-corpus counts remain separate from returned-window counts an
     await summaryFixture(page);
     await search(page);
     await expect(page.getByRole('button', { name: 'Count all full-text matches', exact: true })).toHaveCount(0);
-    await expect(page.locator('.corpus-summary')).toContainText('Semantic, hybrid and remote searches show the returned window.');
+    await expect(page.locator('.corpus-summary')).toContainText('Semantic and hybrid searches show the returned window.');
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await search(page);
     expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search_summary'))).toHaveLength(0);
@@ -272,7 +272,7 @@ test('obsolete and cancelled scans cannot replace a newer query and focus invali
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-total')).toContainText('633');
     await page.evaluate(() => { (window as any).__summaryGeneration = 'snapshot-2'; window.dispatchEvent(new Event('focus')); });
-    await expect(page.locator('.corpus-notice')).toHaveText('The index or mounted sources changed. Count again to refresh the totals.');
+    await expect(page.locator('.corpus-notice')).toHaveText('The index or source scope changed. Count again to refresh the totals.');
     await expect(page.locator('.corpus-total')).toHaveCount(0);
     await page.evaluate(() => { (window as any).__holdSummary = true; });
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
@@ -402,4 +402,101 @@ test('accepted cancellation reports no completed full-corpus file', async ({ pag
     await expect(page.locator('.corpus-export-feedback')).toContainText('The matching-document scan was cancelled');
     await expect(page.locator('.corpus-export-feedback')).not.toContainText('Exported all');
     await expect(page.getByRole('button', { name: 'Export all full-text matches', exact: true })).toBeEnabled();
+});
+
+
+async function remoteIndex(page: Page) {
+    await page.locator('.tab-bar').getByRole('button', { name: 'Add', exact: true }).click();
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) =>
+            command === 'index_get_config' ? Promise.resolve({ enabled: true, backend_type: 'remote', use_vector: true })
+                : original(command, args, options);
+    });
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+}
+
+test('remote corpus totals are owner scoped, exceed the result window and apply real facet filters', async ({ page }) => {
+    await summaryFixture(page, 'remote_indexed_documents');
+    await remoteIndex(page);
+    await page.evaluate(async () => {
+        await (window as any).__TAURI_INTERNALS__.invoke('plugin:store|set', { key: 'savedSearches', value: [
+            { name: 'Remote owner scope', query: 'warranty', mode: 'text', ownerId: 'reader', limit: 200,
+                docIdScope: ['z', 'a', 'u'], filters: { folderPrefix: '/recorded/library', fuzzy: true } },
+        ] });
+    });
+    // Remount to restore the saved recipe through the real store adapter.
+    await page.locator('.tab-bar').getByRole('button', { name: 'Add', exact: true }).click();
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
+    await page.locator('.saved-dropdown .saved-name').filter({ hasText: 'Remote owner scope' }).click();
+    await expect(page.locator('.result-card')).toHaveCount(3);
+    await page.getByRole('button', { name: 'Search filters', exact: true }).click();
+    await expect(page.locator('label[title="Include hits from drives that aren\'t currently mounted"]')).toHaveCount(0);
+    await expect(page.locator('.corpus-summary')).toContainText('Entire remote text index');
+    await expect(page.locator('.corpus-summary')).toContainText('Desktop drive mounts do not change this scope.');
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-total')).toContainText('633 matching indexed documents in total');
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search_summary_generation').at(-1)?.args))
+        .toMatchObject({ query: 'warranty', mode: 'text', ownerId: 'reader', docIdScope: ['a', 'u', 'z'], fuzzy: true,
+            searchFilters: { parent_dir_prefix: '/recorded/library' } });
+    await page.locator('.corpus-facets summary').click();
+    await page.getByRole('button', { name: 'Filter by Tags: reviewed (633)', exact: true }).click();
+    await expect.poll(() => lastSearch(page)).toMatchObject({ query: 'warranty', ownerId: 'reader', tag: 'reviewed',
+        searchFilters: { parent_dir_prefix: '/recorded/library' } });
+    await expect(page.locator('.corpus-total')).toHaveCount(0);
+});
+
+test('unsupported remote totals fail visibly and a wrong backend scope cannot become an exact count', async ({ page }) => {
+    await summaryFixture(page, 'local_indexed_documents');
+    await remoteIndex(page);
+    await search(page);
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-notice')).toContainText('invalid matching-document summary');
+    await expect(page.locator('.corpus-total')).toHaveCount(0);
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_search_summary' || command === 'index_search_summary_generation')
+                return Promise.reject(new Error('This server does not advertise complete lexical search. Upgrade the server.'));
+            if (command === 'plugin:dialog|save') { root.__unsupportedSave = true; return Promise.resolve('/reports/all.csv'); }
+            return original(command, args, options);
+        };
+    });
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-notice')).toContainText('Upgrade the server.');
+    await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-export-feedback')).toContainText('Upgrade the server.');
+    expect(await page.evaluate(() => Boolean((window as any).__unsupportedSave))).toBe(false);
+    await expect(page.locator('.result-card')).toHaveCount(3);
+});
+
+test('remote complete export captures generation before Save and accepts only the remote receipt', async ({ page }) => {
+    await summaryFixture(page, 'remote_indexed_documents');
+    await remoteIndex(page);
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__summaryGeneration = 'remote-v1:connection-a:generation-a';
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'plugin:dialog|save') return new Promise(resolve => { root.__finishRemoteSave = () => resolve('/reports/remote.json'); });
+            if (command === 'index_export_lexical_report') {
+                root.__remoteExport = args.request;
+                return Promise.resolve({ path: args.request.path, documents: 633, scope: 'remote_indexed_documents',
+                    generation: args.request.expectedGeneration, format: args.request.format, sort: args.request.sort });
+            }
+            return original(command, args, options);
+        };
+    });
+    await search(page);
+    await page.getByRole('combobox', { name: 'Complete report format', exact: true }).selectOption('json');
+    await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean((window as any).__finishRemoteSave))).toBe(true);
+    await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('edited draft');
+    await page.evaluate(() => (window as any).__finishRemoteSave());
+    await expect(page.locator('.corpus-export-feedback')).toContainText('Exported all 633 matching documents: /reports/remote.json');
+    expect(await page.evaluate(() => (window as any).__remoteExport)).toMatchObject({ query: 'warranty', mode: 'text',
+        expectedGeneration: 'remote-v1:connection-a:generation-a', format: 'json' });
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search_summary_generation').at(-1)?.args))
+        .toMatchObject({ query: 'warranty', mode: 'text' });
 });

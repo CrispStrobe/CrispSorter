@@ -1,10 +1,10 @@
-use crate::desktop::{remote_client::RemoteClient, IndexBackend};
+use crate::desktop::{remote_client::RemoteClient, schema::SearchFilters, IndexBackend};
 use axum::{
     routing::{get, post},
     Json, Router,
 };
 use crisp_index_protocol::{
-    SearchCapabilities, SearchFilters, FTS_SCHEMA_VERSION, QUERY_LANGUAGE_VERSION,
+    SearchCapabilities, FTS_SCHEMA_VERSION, QUERY_LANGUAGE_VERSION,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -14,10 +14,11 @@ use std::sync::{
 fn capabilities() -> SearchCapabilities {
     SearchCapabilities {
         api_version: 1,
-        metadata_filter_version: crisp_index_protocol::METADATA_FILTER_VERSION,
+        metadata_filter_version: 1, metadata_filter_max_version: crisp_index_protocol::METADATA_FILTER_VERSION,
         stored_passage_version: crisp_index_protocol::STORED_PASSAGE_VERSION,
+        complete_search_version: 1, metadata_schema_version: 2, metadata_fields: Vec::new(), embedding_query_version: 1,
         query_language_version: QUERY_LANGUAGE_VERSION,
-        fts_schema_version: FTS_SCHEMA_VERSION,
+        fts_schema_version: 2, active_fts_schema_version: FTS_SCHEMA_VERSION,
         fts_ready: true,
         strict_hybrid_constraints: true,
         searchable_fields: vec!["title".into(), "body".into(), "headings".into()],
@@ -359,7 +360,7 @@ async fn exact_uri_http_move_preserves_copies_and_rejects_ambiguous_sources_and_
         .with_state(state);
     let (url, server) = serve(router).await;
     let client = RemoteClient::new(url, "");
-    let a = SearchFilters {
+    let a = crisp_index_protocol::SearchFilters {
         owner_id: Some("a".into()),
         ..Default::default()
     };
@@ -379,7 +380,7 @@ async fn exact_uri_http_move_preserves_copies_and_rejects_ambiguous_sources_and_
     assert_eq!(after.source_hash, before.source_hash);
     assert_eq!(after.location_uri, new);
     assert!(after.indexed_at > before.indexed_at);
-    let b = SearchFilters {
+    let b = crisp_index_protocol::SearchFilters {
         owner_id: Some("b".into()),
         ..Default::default()
     };
@@ -424,7 +425,7 @@ async fn legacy_metadata_capabilities_fail_before_any_search_request() {
         let seen = calls.clone();
         let router = Router::new()
             .route("/v1/capabilities", get(move || async move {
-                let mut caps = capabilities(); caps.metadata_filter_version = advertised_version; Json(caps)
+                let mut caps = capabilities(); caps.metadata_filter_version = advertised_version; caps.metadata_filter_max_version = 0; Json(caps)
             }))
             .route("/v1/search", post(move || {
                 let seen = seen.clone(); async move { seen.fetch_add(1, Ordering::SeqCst); Json(Vec::<crisp_index_protocol::SearchHit>::new()) }
@@ -445,7 +446,7 @@ async fn metadata_negotiation_round_trips_every_supported_predicate_and_requires
         let router = Router::new()
             .route("/v1/capabilities", get(|| async { Json(capabilities()) }))
             .route("/v1/search", post(move |Json(request): Json<crisp_index_protocol::SearchRequest>| async move {
-                assert_eq!(request.metadata_filter_version, Some(crisp_index_protocol::METADATA_FILTER_VERSION));
+                assert_eq!(request.metadata_filter_version, Some(1));
                 assert_eq!(request.ext, ["pdf"]);
                 assert_eq!(request.tag.as_deref(), Some("reviewed"));
                 assert_eq!(request.source_hash_prefix.as_deref(), Some("abc"));

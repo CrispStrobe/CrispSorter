@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSearchRecipe } from './recipe';
-import { canCountLexicalMatches, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet } from './summary';
+import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet } from './summary';
 
 const facet = { values: [{ value: 'reviewed', documents: 633 }], distinctValues: 31, omittedValues: 30, missingDocuments: 0 };
 const response = () => ({ version: 1, scope: 'local_indexed_documents', query: 'needle', effectiveQuery: 'needle',
@@ -25,16 +25,35 @@ describe('exhaustive lexical summary contracts', () => {
         ]) expect(() => readLexicalSummary(altered, 'needle')).toThrow();
     });
 
-    it('only offers complete counts for local lexical search and uses full exact request filters', () => {
+    it('offers complete counts only for lexical modes and uses full exact request filters', () => {
         const recipe = normalizeSearchRecipe({ query: 'smart original', mode: 'text', limit: 20, ownerId: 'reader',
             docIdScope: ['a', 'b'], filters: { tag: 'reviewed', folderPrefix: '/research', fuzzy: true, includeUnmounted: true } });
         expect(canCountLexicalMatches(recipe, 'Local')).toBe(true);
-        for (const backend of ['remote', undefined, 'unknown']) expect(canCountLexicalMatches(recipe, backend)).toBe(false);
-        for (const mode of ['hybrid', 'vector']) expect(canCountLexicalMatches(normalizeSearchRecipe({ ...recipe, mode }), 'local')).toBe(false);
+        expect(canCountLexicalMatches(recipe, 'Remote')).toBe(true);
+        for (const backend of [undefined, 'unknown']) expect(canCountLexicalMatches(recipe, backend)).toBe(false);
+        for (const mode of ['hybrid', 'vector']) for (const backend of ['local', 'remote'])
+            expect(canCountLexicalMatches(normalizeSearchRecipe({ ...recipe, mode }), backend)).toBe(false);
         const args = lexicalSummaryArguments(recipe, 'parsed query', 'request-1');
         expect(args).toMatchObject({ query: 'parsed query', mode: 'text', ownerId: 'reader', docIdScope: ['a', 'b'],
             tag: 'reviewed', fuzzy: true, includeUnmounted: true, requestId: 'request-1', searchFilters: { parent_dir_prefix: '/research' } });
         expect(args).not.toHaveProperty('limit');
+        const { requestId: _requestId, ...generationScope } = args;
+        expect(lexicalGenerationArguments(recipe, 'parsed query')).toEqual(generationScope);
+    });
+
+    it('binds remote count and report receipts to the captured backend scope', () => {
+        const remote = { ...response(), scope: 'remote_indexed_documents' };
+        expect(corpusScopeForBackend('remote')).toBe('remote_indexed_documents');
+        expect(corpusScopeForBackend('hybrid')).toBe('local_indexed_documents');
+        expect(corpusScopeForBackend('unknown')).toBeNull();
+        expect(readLexicalSummary(remote, 'needle', 'remote_indexed_documents').matchingDocuments).toBe(633);
+        expect(() => readLexicalSummary(remote, 'needle', 'local_indexed_documents')).toThrow();
+        expect(() => readLexicalSummary(response(), 'needle', 'remote_indexed_documents')).toThrow();
+        const receipt = { path: '/reports/all.json', documents: 633, scope: 'remote_indexed_documents',
+            generation: 'remote-v1:connection:snapshot', format: 'json', sort: 'year-desc' };
+        expect(readCorpusReportReceipt(receipt, 'json', 'year-desc', 'remote_indexed_documents').documents).toBe(633);
+        expect(() => readCorpusReportReceipt(receipt, 'json', 'year-desc', 'local_indexed_documents')).toThrow();
+        expect(() => readCorpusReportReceipt(receipt, 'json', 'year-desc', 'remote_indexed_documents', 'different-generation')).toThrow();
     });
 
     it('turns corpus facet clicks into real backend filters without retaining display tag hiding', () => {

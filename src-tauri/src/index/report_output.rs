@@ -3,6 +3,10 @@ use std::{fs::{self, File}, io::{Read, Write}, path::{Path, PathBuf}};
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 
+#[path = "../../../shared/source_paths.rs"]
+mod source_paths;
+use source_paths::local_source_paths;
+
 pub struct StagedReport {
     file: tempfile::NamedTempFile,
     destination: PathBuf,
@@ -87,42 +91,20 @@ pub fn reject_source_destination(destination: &Path, source_uri: &str) -> Result
     Ok(())
 }
 
-fn local_source_paths(uri: &str) -> Vec<PathBuf> {
-    if uri.contains('\0') { return vec![]; }
-    let (raw, encoded) = if let Some(rest) = uri.strip_prefix("crisp+local://") {
-        let Some(slash) = rest.find('/') else { return vec![]; };
-        (&rest[slash..], true)
-    } else if let Some(rest) = uri.strip_prefix("file://") {
-        let path = rest.strip_prefix("localhost/").map(|_| &rest["localhost".len()..]).unwrap_or(rest);
-        if !path.starts_with('/') { return vec![]; }
-        (path, true)
-    } else {
-        if !Path::new(uri).is_absolute() { return vec![]; }
-        (uri, false)
-    };
-    let mut paths = vec![local_path(raw)];
-    if encoded {
-        let mut bytes = Vec::with_capacity(raw.len());
-        let source = raw.as_bytes(); let mut cursor = 0;
-        while cursor < source.len() {
-            if source[cursor] == b'%' {
-                let Some(pair) = source.get(cursor + 1..cursor + 3) else { return paths; };
-                let Some(hi) = (pair[0] as char).to_digit(16) else { return paths; };
-                let Some(lo) = (pair[1] as char).to_digit(16) else { return paths; };
-                let value = (hi * 16 + lo) as u8;
-                if value == 0 { return paths; }
-                bytes.push(value); cursor += 3;
-            } else { bytes.push(source[cursor]); cursor += 1; }
-        }
-        if let Ok(decoded) = String::from_utf8(bytes) { paths.push(local_path(&decoded)); }
-    }
-    paths
-}
 
-fn local_path(raw: &str) -> PathBuf {
-    #[cfg(windows)]
-    let raw = if raw.starts_with('/') && raw.as_bytes().get(2) == Some(&b':') { &raw[1..] } else { raw };
-    PathBuf::from(raw)
+/// Desktop paths used by the remote collision check. The server compares these
+/// with decoded lexical source paths and never resolves them on its filesystem.
+pub fn destination_path_aliases(path: &Path) -> Result<Vec<String>> {
+    ensure!(path.is_absolute(), "Choose an absolute report destination");
+    let mut paths = std::collections::BTreeSet::new();
+    paths.insert(path.to_string_lossy().into_owned());
+    let normalized = path.canonicalize().or_else(|_| {
+        Ok::<_, std::io::Error>(path.parent().context("The destination has no folder")
+            .map_err(|error| std::io::Error::other(error.to_string()))?.canonicalize()?
+            .join(path.file_name().unwrap_or_default()))
+    }).context("Resolving the report destination")?;
+    paths.insert(normalized.to_string_lossy().into_owned());
+    Ok(paths.into_iter().collect())
 }
 
 pub fn write_captured_report(path: &Path, content: &str, protected_roots: &[PathBuf], protected_sources: &[String]) -> Result<PathBuf> {

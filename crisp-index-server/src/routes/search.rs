@@ -16,12 +16,17 @@ use crate::state::SharedState;
 /// `text` (BM25 only), `vector` (ANN only), or `hybrid` (RRF k=60 merge).
 /// Defaults to `hybrid` when absent.
 pub async fn search(state: State<Arc<SharedState>>, request: Json<SearchRequest>) -> Response {
+    let metadata_version = request.metadata_filter_version.unwrap_or(crisp_index_protocol::METADATA_FILTER_VERSION);
+    let embedding_version = request.embedding_query_version;
     let (status, body) = search_inner(state, request).await;
     let mut response = (status, body).into_response();
     if status.is_success() {
+        if let Some(version) = embedding_version {
+            response.headers_mut().insert(crisp_index_protocol::EMBEDDING_QUERY_VERSION_HEADER,version.to_string().parse().expect("integer header"));
+        }
         response.headers_mut().insert(
             crisp_index_protocol::METADATA_FILTER_VERSION_HEADER,
-            crisp_index_protocol::METADATA_FILTER_VERSION.to_string().parse().expect("integer header"),
+            metadata_version.to_string().parse().expect("integer header"),
         );
         response.headers_mut().insert(
             crisp_index_protocol::QUERY_VERSION_HEADER,
@@ -78,11 +83,16 @@ async fn search_inner(
         }
     }
 
+    if req.embedding_query_version.is_some_and(|version|version != 1)
+        || (req.embedding_query.is_some() && req.embedding_query_version != Some(1))
+        || req.embedding_query.as_ref().is_some_and(|q|q.trim().is_empty() || q.len() > 8192) {
+        return (StatusCode::UNPROCESSABLE_ENTITY,Json(json!({"error":"A separate embedding query requires negotiated version 1 and 1 to 8192 bytes"})));
+    }
     let filters = req.filters();
     if let Err(error) = filters.validate() {
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": error})));
     }
-    if req.metadata_filter_version.is_some_and(|version| version != crisp_index_protocol::METADATA_FILTER_VERSION) {
+    if req.metadata_filter_version.is_some_and(|version| version > crisp_index_protocol::METADATA_FILTER_VERSION || version < filters.required_metadata_filter_version()) {
         return (StatusCode::CONFLICT, Json(json!({"error": "Unsupported metadata filter version; negotiate /v1/capabilities"})));
     }
     if filters.needs_metadata_filter_version() && req.metadata_filter_version.is_none() {
@@ -139,7 +149,7 @@ async fn search_inner(
                         ),
                     );
                 };
-                match embedder.embed_query(query).await {
+                match embedder.embed_query(req.embedding_query.as_deref().unwrap_or(query)).await {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("server-side query embedding failed: {e:#}");
@@ -185,7 +195,7 @@ async fn search_inner(
                         ),
                     );
                 };
-                match embedder.embed_query(query).await {
+                match embedder.embed_query(req.embedding_query.as_deref().unwrap_or(query)).await {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("server-side hybrid query embedding failed: {e:#}");

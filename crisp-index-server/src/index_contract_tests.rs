@@ -1,5 +1,82 @@
 use super::*;
 
+#[tokio::test]
+async fn metadata_upgrade_backfills_decoded_folders_without_changing_core_rows() {
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("lance");
+    std::fs::create_dir_all(&path).unwrap();
+    let db=connect(path.to_string_lossy().as_ref()).execute().await.unwrap();
+    let current=build_lance_schema(2);let core=current.index_of("parent_dir").unwrap();
+    let fields=(0..core).collect::<Vec<_>>();let mut batches=Vec::new();
+    for (id,uri) in [("posix","file:///home/me/Space%20Dir/doc.pdf"),("windows",r"C:\Docs\Records\doc.pdf"),("windows-uri","file:///C:/Docs/Space%20Dir/doc.pdf")] {
+        let mut row=wire("owner",id,0,"needle",None,None);row.location_uri=uri.into();
+        batches.push(chunk_to_record_batch(&row,2,&current).unwrap().project(&fields).unwrap());
+    }
+    let old_schema=batches[0].schema();
+    db.create_table(TABLE_NAME,arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok),old_schema)).execute().await.unwrap();
+    drop(db);
+    let vector=VectorStore::open_or_create(directory.path(),2).await.unwrap();
+    assert_eq!(vector.table.schema().await.unwrap(),current);
+    let keys=["posix","windows","windows-uri"].map(|id|DocumentKey {owner_id:"owner".into(),doc_id:id.into()});
+    for (id,parent) in [("posix","/home/me/Space Dir"),("windows",r"C:\Docs\Records"),("windows-uri",r"C:\Docs\Space Dir")] {
+        let filters=SearchFilters {parent_dir_prefix:Some(parent.into()),..Default::default()};
+        let matched=vector.matching_keys_for_filters(&keys,&filters).await.unwrap();
+        assert_eq!(matched,HashSet::from([DocumentKey {owner_id:"owner".into(),doc_id:id.into()}]),"{parent}");
+    }
+    assert_eq!(vector.count().await.unwrap(),3);
+    let version=vector.table.version().await.unwrap();
+    assert!(VectorStore::open_or_create(directory.path(),3).await.is_err());
+    vector.table.checkout_latest().await.unwrap();assert_eq!(vector.table.version().await.unwrap(),version);
+    let reopened=VectorStore::open_or_create(directory.path(),2).await.unwrap();assert_eq!(reopened.count().await.unwrap(),3);
+}
+
+#[tokio::test]
+async fn translated_schema_upgrade_rebuilds_from_stored_text_and_preserves_previous_generation() {
+    let directory=tempfile::tempdir().unwrap();let index=open(directory.path()).await;
+    let mut row=wire("owner","translated",0,"needle source",Some(1),Some(0));
+    row.text_translated=Some("übersetzungsnadel".into());row.text_translated_lang=Some("de".into());
+    index.ingest_batch(&IngestBatch {chunks:vec![row]}).await.unwrap();drop(index);
+    let root=directory.path().join("fts-v2");let state=rusqlite::Connection::open(root.join("state.sqlite")).unwrap();
+    let current:String=state.query_row("SELECT value FROM metadata WHERE key='active_generation'",[],|row|row.get(0)).unwrap();
+    let current_schema=tantivy::Index::open_in_dir(root.join(current)).unwrap().schema();
+    let mut legacy=serde_json::to_value(current_schema).unwrap();
+    legacy.as_array_mut().unwrap().retain(|field|field["name"]!="body_translated");
+    let legacy:tantivy::schema::Schema=serde_json::from_value(legacy).unwrap();
+    let legacy_dir=root.join("generation-legacy");std::fs::create_dir(&legacy_dir).unwrap();
+    let old=tantivy::Index::create_in_dir(&legacy_dir,legacy.clone()).unwrap();
+    old.tokenizers().register("crisp_shared_v1",crisp_search_query::text_analyzer());
+    let mut writer=old.writer(50_000_000).unwrap();let mut old_doc=tantivy::TantivyDocument::default();
+    old_doc.add_text(legacy.get_field("body").unwrap(),"oldsentinel");writer.add_document(old_doc).unwrap();writer.commit().unwrap();writer.wait_merging_threads().unwrap();drop(old);
+    state.execute("UPDATE metadata SET value='generation-legacy' WHERE key='active_generation'",[]).unwrap();
+    state.execute("UPDATE metadata SET value='2' WHERE key='active_schema_version'",[]).unwrap();drop(state);
+    let reopened=open(directory.path()).await;
+    let hits=reopened.search_text("translated:ubersetzungsnadel",&SearchFilters::default(),10).await.unwrap();
+    assert_eq!(hits.len(),1);assert_eq!(hits[0].doc_id,"translated");
+    assert!(reopened.search_text("oldsentinel",&SearchFilters::default(),10).await.unwrap().is_empty());
+    let old=tantivy::Index::open_in_dir(&legacy_dir).unwrap();let reader=old.reader().unwrap();assert_eq!(reader.searcher().num_docs(),1);
+    let state=rusqlite::Connection::open(root.join("state.sqlite")).unwrap();
+    assert_eq!(state.query_row("SELECT value FROM metadata WHERE key='active_schema_version'",[],|row|row.get::<_,String>(0)).unwrap(),"3");
+}
+
+#[tokio::test]
+async fn legacy_chunk_tag_union_is_bounded_before_export_materialization() {
+    let directory=tempfile::tempdir().unwrap();let index=open(directory.path()).await;
+    let chunks=(0..65).map(|n|wire("owner","legacy-tags",n,"needle",None,None)).collect::<Vec<_>>();
+    index.ingest_batch(&IngestBatch {chunks:chunks.clone()}).await.unwrap();
+    // Reproduce pre-invariant rows with individually small but different tags.
+    // The lexical text is unchanged; only the stored chunk metadata varies.
+    let schema=build_lance_schema(2);let batches=chunks.into_iter().enumerate().map(|(n,mut row)|{
+        row.tags=(0..100).map(|k|format!("tag{:05}",n*100+k)).collect();chunk_to_record_batch(&row,2,&schema).unwrap()
+    }).collect::<Vec<_>>();
+    index.vector.table.delete("doc_id='legacy-tags'").await.unwrap();
+    index.vector.table.add(arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok),schema)).execute().await.unwrap();
+    let request=crisp_index_protocol::CompleteSearchRequest {scope:crisp_index_protocol::CompleteSearchScope {version:1,query:"needle".into(),filters:SearchFilters::default()},
+        request_id:uuid::Uuid::new_v4().to_string(),expected_generation:None};
+    let summary=index.complete_summary(request.clone()).await.unwrap();assert_eq!(summary.matching_documents,1);assert_eq!(summary.facets.tags.distinct_values,6500);
+    let error=index.complete_page(crisp_index_protocol::CompletePageRequest {version:1,session_id:summary.session_id,generation:summary.generation,offset:0,limit:1,
+        sort:crisp_index_protocol::CompleteSort::Filename}).await.unwrap_err();
+    assert!(error.to_string().contains("combined tags"),"{error:#}");index.cancel_complete(&request.request_id).unwrap();
+}
+
 fn wire(
     owner: &str,
     id: &str,
@@ -29,6 +106,7 @@ fn wire(
         location_uri: format!("test://{owner}/{id}"),
         source_hash: id.into(),
         tags: Vec::new(),
+        ..Default::default()
     }
 }
 async fn open(path: &Path) -> SearchIndex {

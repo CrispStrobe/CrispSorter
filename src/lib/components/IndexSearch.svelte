@@ -12,7 +12,7 @@
     import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
         restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, searchResultLimitForBackend, validateSearchFilters,
         type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
-    import { canCountLexicalMatches, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet,
+    import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet,
         type CorpusFacet, type LexicalSummary, type CorpusReportFormat, type CorpusReportSort } from '$lib/search/summary';
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
@@ -200,11 +200,11 @@
         if (generationCheck?.sequence === sequence) return generationCheck.promise;
         const check = (async () => {
             try {
-                const generation = await invoke<string>('index_search_summary_generation', { includeUnmounted: recipe.filters.includeUnmounted });
+                const generation = await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, snapshot.query));
                 if (sequence !== summarySequence || corpusSummary?.generation !== snapshot.generation) return false;
                 if (generation !== snapshot.generation) {
-                    clearCorpusSummary(i18n.lang === 'de' ? 'Index oder eingebundene Quellen haben sich geändert. Erneut zählen, um aktuelle Gesamtzahlen zu sehen.'
-                        : 'The index or mounted sources changed. Count again to refresh the totals.');
+                    clearCorpusSummary(i18n.lang === 'de' ? 'Index oder Quellenbereich haben sich geändert. Erneut zählen, um aktuelle Gesamtzahlen zu sehen.'
+                        : 'The index or source scope changed. Count again to refresh the totals.');
                     return false;
                 }
                 return true;
@@ -223,13 +223,15 @@
         clearCorpusSummary();
         const sequence = summarySequence, request = searchRequest;
         const recipe = normalizeSearchRecipe(executedRecipe), searchedQuery = executedQuery;
+        const scope = corpusScopeForBackend(activeBackend);
+        if (!scope) return;
         const requestId = crypto.randomUUID();
         summaryRequestId = requestId; summaryLoading = true;
         try {
             const value = await invoke<unknown>('index_search_summary', lexicalSummaryArguments(recipe, searchedQuery, requestId));
             if (sequence !== summarySequence || request !== searchRequest) return;
-            const summary = readLexicalSummary(value, searchedQuery);
-            const generation = await invoke<string>('index_search_summary_generation', { includeUnmounted: recipe.filters.includeUnmounted });
+            const summary = readLexicalSummary(value, searchedQuery, scope);
+            const generation = await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, searchedQuery));
             if (sequence !== summarySequence || request !== searchRequest) return;
             if (generation !== summary.generation) throw new Error(i18n.lang === 'de'
                 ? 'Der Index hat sich während der Zählung geändert. Bitte erneut zählen.' : 'The index changed while counting matches. Count again to refresh the totals.');
@@ -253,19 +255,19 @@
         if (!executedRecipe || corpusExportBusy || summaryLoading || searchOptionsChanged || !canCountLexicalMatches(executedRecipe, activeBackend)) return;
         const recipe = normalizeSearchRecipe(executedRecipe), searchedQuery = executedQuery;
         const format = corpusReportFormat, sort = corpusReportSort;
+        const scope = corpusScopeForBackend(activeBackend);
+        if (!scope) return;
         corpusExportBusy = true; corpusExportError = false; corpusExportNotice = ''; corpusExportQuery = searchedQuery;
         try {
             if (corpusSummary && !(await verifySummaryGeneration())) return;
-            const expectedGeneration = corpusSummary?.generation ?? await invoke<string>('index_search_summary_generation', {
-                includeUnmounted: recipe.filters.includeUnmounted,
-            });
+            const expectedGeneration = corpusSummary?.generation ?? await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, searchedQuery));
             if (typeof expectedGeneration !== 'string' || !expectedGeneration) throw new Error('The active index snapshot could not be captured for export.');
             const path = await save({ defaultPath: `CrispSorter-all-text-matches-${new Date().toISOString().slice(0, 10)}.${format}`,
                 filters: [{ name: `Complete matching-document report (${format.toUpperCase()})`, extensions: [format] }] });
             if (!path) return;
             const requestId = crypto.randomUUID(); corpusExportRequestId = requestId;
             const receipt = readCorpusReportReceipt(await invoke<unknown>('index_export_lexical_report',
-                lexicalExportArguments(recipe, searchedQuery, { requestId, path, format, sort, expectedGeneration })), format, sort);
+                lexicalExportArguments(recipe, searchedQuery, { requestId, path, format, sort, expectedGeneration })), format, sort, scope, expectedGeneration);
             corpusExportNotice = i18n.lang === 'de'
                 ? `${receipt.documents.toLocaleString()} passende Dokumente exportiert: ${receipt.path}`
                 : `Exported all ${receipt.documents.toLocaleString()} matching documents: ${receipt.path}`;
@@ -2115,10 +2117,12 @@
                     {#each resultLimitOptions as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>
+            {#if activeBackend !== 'remote'}
             <label class="filter-field" title="Include hits from drives that aren't currently mounted">
                 <input type="checkbox" bind:checked={includeUnmounted} />
                 <span>{labels.mounted}</span>
             </label>
+            {/if}
             <!-- P13.5 on-demand translation — target language for the
                  per-result "Translate to …" button.  m2m100 covers
                  100 langs any-to-any; this dropdown surfaces the
@@ -2236,7 +2240,9 @@
             <section class="corpus-summary" aria-label={i18n.lang === 'de' ? 'Vollständige Texttreffer' : 'Complete full-text matches'}>
                 {#if canCountLexicalMatches(executedRecipe, activeBackend)}
                     <div class="corpus-summary-heading">
-                        <strong>{i18n.lang === 'de' ? 'Gesamter Textindex' : 'Entire text index'}</strong>
+                        <strong>{activeBackend === 'remote'
+                            ? (i18n.lang === 'de' ? 'Gesamter Remote-Textindex' : 'Entire remote text index')
+                            : (i18n.lang === 'de' ? 'Gesamter Textindex' : 'Entire text index')}</strong>
                         {#if summaryLoading}
                             <span role="status"><Loader2 size={13} class="spin" /> {i18n.lang === 'de' ? 'Alle passenden Dokumente werden gezählt …' : 'Counting every matching document…'}</span>
                             <button class="reset-filters" onclick={() => clearCorpusSummary(i18n.lang === 'de' ? 'Zählung abgebrochen.' : 'Match count cancelled.')}
@@ -2251,6 +2257,9 @@
                     <p class="corpus-scope">{i18n.lang === 'de'
                         ? 'Exakte Dokumentzahlen über alle Texttreffer der ausgeführten Abfrage und Filter. Separate Katalog-Dateinamen sind ausgeschlossen. Die Zählung kann bei großen Indizes dauern.'
                         : 'Exact document totals across all full-text matches for the executed query and filters. Separate catalog filename references are excluded. Large indexes can take time to count.'}</p>
+                    {#if activeBackend === 'remote'}<p class="corpus-scope">{i18n.lang === 'de'
+                        ? 'Gezählt werden gespeicherte Quellen im ausgewählten Serverindex. Lokal eingebundene Laufwerke ändern diesen Bereich nicht. Der Server muss vollständige, versionsgebundene Suchergebnisse unterstützen.'
+                        : 'Counts cover stored sources in the selected server index. Desktop drive mounts do not change this scope. The server must support complete search snapshots and will report an upgrade requirement if unavailable.'}</p>{/if}
                     <div class="corpus-export-controls">
                         <label>{i18n.lang === 'de' ? 'Vollständiges Berichtsformat' : 'Complete report format'}
                             <select bind:value={corpusReportFormat} disabled={corpusExportBusy}><option value="csv">CSV</option><option value="json">JSON</option></select>
@@ -2305,8 +2314,8 @@
                     {#if summaryNotice}<p class="corpus-notice" role="status">{summaryNotice}</p>{/if}
                 {:else}
                     <p class="corpus-scope">{i18n.lang === 'de'
-                        ? 'Exakte Gesamtzahlen sind für die lokale Volltextsuche verfügbar. Semantische, hybride und Remote-Ergebnisse zeigen das zurückgegebene Fenster.'
-                        : 'Exact totals are available for local Full text search. Semantic, hybrid and remote searches show the returned window.'}</p>
+                        ? 'Exakte Gesamtzahlen sind für Volltextsuche in lokalen und unterstützten Remote-Indizes verfügbar. Semantische und hybride Suchen zeigen das zurückgegebene Fenster.'
+                        : 'Exact totals are available for Full text search in local and supported remote indexes. Semantic and hybrid searches show the returned window.'}</p>
                 {/if}
             </section>
         {/if}

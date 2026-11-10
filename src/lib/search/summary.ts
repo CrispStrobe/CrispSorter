@@ -1,6 +1,7 @@
 import { localSearchArguments, normalizeSearchRecipe, type SearchRecipe } from './recipe';
 
 export type CorpusFacet = 'extensions' | 'languages' | 'years' | 'tags';
+export type CorpusScope = 'local_indexed_documents' | 'remote_indexed_documents';
 export interface CorpusFacetValue { value: string; documents: number }
 export interface CorpusFacetSummary {
     values: CorpusFacetValue[];
@@ -10,7 +11,7 @@ export interface CorpusFacetSummary {
 }
 export interface LexicalSummary {
     version: 1;
-    scope: 'local_indexed_documents';
+    scope: CorpusScope;
     query: string;
     effectiveQuery: string;
     generation: string;
@@ -24,7 +25,7 @@ export type CorpusReportSort = 'filename' | 'title' | 'year-asc' | 'year-desc' |
 export interface CorpusReportReceipt {
     path: string;
     documents: number;
-    scope: 'local_indexed_documents';
+    scope: CorpusScope;
     generation: string;
     format: CorpusReportFormat;
     sort: CorpusReportSort;
@@ -36,10 +37,12 @@ export function lexicalExportArguments(recipe: SearchRecipe, executedQuery: stri
     return { request: { ...lexicalSummaryArguments(recipe, executedQuery, options.requestId), ...options } };
 }
 
-export function readCorpusReportReceipt(value: unknown, format: CorpusReportFormat, sort: CorpusReportSort): CorpusReportReceipt {
+export function readCorpusReportReceipt(value: unknown, format: CorpusReportFormat, sort: CorpusReportSort,
+    expectedScope: CorpusScope = 'local_indexed_documents', expectedGeneration?: string): CorpusReportReceipt {
     const raw = value as Partial<CorpusReportReceipt> | null;
-    if (!raw || typeof raw.path !== 'string' || !raw.path || raw.scope !== 'local_indexed_documents'
-        || typeof raw.generation !== 'string' || !raw.generation || raw.format !== format || raw.sort !== sort
+    if (!raw || typeof raw.path !== 'string' || !raw.path || raw.scope !== expectedScope
+        || typeof raw.generation !== 'string' || !raw.generation || (expectedGeneration !== undefined && raw.generation !== expectedGeneration)
+        || raw.format !== format || raw.sort !== sort
         || typeof raw.documents !== 'number' || !Number.isSafeInteger(raw.documents) || raw.documents < 0) {
         throw new Error('The index returned an invalid complete-report receipt. Check the selected destination before trying again.');
     }
@@ -47,12 +50,13 @@ export function readCorpusReportReceipt(value: unknown, format: CorpusReportForm
 }
 
 /** Keep malformed/legacy responses from turning an absent total into zero. */
-export function readLexicalSummary(value: unknown, expectedQuery: string): LexicalSummary {
+export function readLexicalSummary(value: unknown, expectedQuery: string,
+    expectedScope: CorpusScope = 'local_indexed_documents'): LexicalSummary {
     const fail = (): never => { throw new Error('The index returned an invalid matching-document summary. Search again to refresh it.'); };
     if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
     const raw = value as Record<string, any>;
     const count = (item: unknown): number => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 ? item : fail();
-    if (raw.version !== 1 || raw.scope !== 'local_indexed_documents' || raw.query !== expectedQuery
+    if (raw.version !== 1 || raw.scope !== expectedScope || raw.query !== expectedQuery
         || typeof raw.effectiveQuery !== 'string' || typeof raw.generation !== 'string' || !raw.generation
         || !raw.facets || typeof raw.facets !== 'object') return fail();
     const matchingDocuments = count(raw.matchingDocuments);
@@ -76,17 +80,28 @@ export function readLexicalSummary(value: unknown, expectedQuery: string): Lexic
     }
     const scannedRows = count(raw.scannedRows);
     if (scannedRows < matchingDocuments) return fail();
-    return { version: 1, scope: 'local_indexed_documents', query: raw.query, effectiveQuery: raw.effectiveQuery,
+    return { version: 1, scope: expectedScope, query: raw.query, effectiveQuery: raw.effectiveQuery,
         generation: raw.generation, matchingDocuments, scannedRows, facetValueLimit, facets };
 }
 
 export function canCountLexicalMatches(recipe: SearchRecipe | null, backend: unknown): boolean {
-    return recipe?.mode === 'text' && typeof backend === 'string' && ['local', 'hybrid'].includes(backend.toLowerCase());
+    return recipe?.mode === 'text' && corpusScopeForBackend(backend) !== null;
+}
+
+export function corpusScopeForBackend(backend: unknown): CorpusScope | null {
+    if (typeof backend !== 'string') return null;
+    if (backend.toLowerCase() === 'remote') return 'remote_indexed_documents';
+    return ['local', 'hybrid'].includes(backend.toLowerCase()) ? 'local_indexed_documents' : null;
+}
+
+/** Remote generation tokens include the complete query/filter/owner scope. */
+export function lexicalGenerationArguments(recipe: SearchRecipe, executedQuery: string) {
+    const { limit: _limit, ...args } = localSearchArguments({ ...recipe, query: executedQuery });
+    return args;
 }
 
 export function lexicalSummaryArguments(recipe: SearchRecipe, executedQuery: string, requestId: string) {
-    const { limit: _limit, ...args } = localSearchArguments({ ...recipe, query: executedQuery });
-    return { ...args, requestId };
+    return { ...lexicalGenerationArguments(recipe, executedQuery), requestId };
 }
 
 /** Corpus chips change actual query filters and reset the returned-window tag view. */

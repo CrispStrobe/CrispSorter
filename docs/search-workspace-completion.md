@@ -31,10 +31,11 @@ so its new changes can be reviewed separately from earlier integration work.
 | Federated ranking | Each source contributes at most once per document identity. Preserve the best finite raw-score evidence separately from the fused score and use deterministic ties. Owner-aware local identities avoid conflating different documents. |
 | Initial passage selection | Use parsed positive body terms and the index analyzer. Operators, excluded words, unrelated fields, and substring fragments do not receive invented literal scores. |
 | Structured constraints | Local multi-tag constraints use AND semantics. Wildcard characters in folder, camera, and URL substring filter values are literal. Hash prefixes are case-normalized. |
-| Remote filtering | Negotiate versioned extension, exact-tag, hash-prefix, and document-scope support alongside owner, language, and year. Apply constraints before limits in every supported retrieval mode and require the response receipt. |
+| Remote filtering | Negotiate extension, multi-tag AND, hash-prefix, document-scope, folder, URL, audio duration, camera, translated-language, review-status, and recorded-volume constraints alongside owner, language, and year. Preserve ingest metadata, apply constraints before limits, and require the response receipt. |
 | Saved workspace | Version 3 recipes retain filters, scope, sort, compact layout, preferred preview, report format, displayed tags, and tag-cloud visibility. Legacy recipes receive safe defaults. Request identity excludes view-only changes. |
 | Complete local counts and facets | Scan all matching stored rows under a consistent index lease, deduplicate owner/document identities, and count matching extensions, languages, years, and tags. Report omitted facet values explicitly. Cancel work cooperatively and invalidate stale summaries. |
 | Complete local reports | Stream all lexical matches as CSV or JSON in a selected global metadata order, with query, filters, generation, source provenance, and total count. Atomic publication preserves an earlier report on pre-publication failure or cancellation and protects indexed sources and index storage. |
+| Complete remote counts and reports | Use authenticated, disk-backed lexical sessions tied to exact query, owner/filters, connection, and index generation. Return complete facets and globally ordered pages; verify every page, total, and identity before atomic CSV/JSON publication. |
 | Keyboard investigation | Ctrl/Cmd+Shift+F focuses search; Arrow Down enters results; arrows/Home/End traverse titles; Enter opens; Alt+Up/Down traverses previewed documents; Escape closes and restores the current document's focus. |
 | Stored evidence | Navigate actual previous/next stored chunks even when only one passage was returned. Display actual offsets, stored fingerprint, and a notice if the index changed since the search. |
 | Remote evidence | An authenticated, versioned endpoint returns the exact requested owner/document passage, actual sparse navigation, and current stored provenance. Clients verify response identity, the capability receipt, and the bounded response. Legacy servers fail visibly. |
@@ -60,8 +61,9 @@ so its new changes can be reviewed separately from earlier integration work.
    unavailable, rather than borrowed from an older search result. Original-file preview remains separate:
    the original may have changed since it was indexed.
 5. Save the query and its view preferences, or export displayed/selected results
-   with the executed recipe and explicit coverage information. Local Full text
-   searches also offer complete match counts and complete CSV/JSON exports.
+   with the executed recipe and explicit coverage information. Local and
+   compatible remote Full text searches also offer complete match counts and
+   complete CSV/JSON exports.
 
 The local interactive window is at most 500 documents; remote search accepts
 at most 200. The UI offers limits compatible with the active backend. Restoring
@@ -70,7 +72,7 @@ record the effective limit.
 
 ### Complete lexical counts and reports
 
-Use **Count all full-text matches** to inspect exact local matching-document
+Use **Count all full-text matches** to inspect exact matching-document
 totals. This scan applies the executed lexical query, owner, document scope,
 mounted-source scope, and structured filters independently of the interactive
 window. It includes matches in late or sparse chunks. Each owner/document pair
@@ -98,8 +100,30 @@ report. Source documents, index storage, and symbolic-link destinations cannot
 be used as report destinations. Returned-window HTML, CSV, and JSON reports use
 the same atomic writer.
 
-Counts and complete reports are currently local Full text operations. Semantic,
-Hybrid, and remote result windows retain their explicit window scope.
+Remote counts use the same document semantics and disclose their remote scope.
+The client negotiates complete-search version 1, active full-text schema 3, and
+metadata schema 2; older servers display a clear unsupported-feature error.
+Generation receipts include the exact lexical query and filters, and client
+tokens are also bound to the configured server URL and credential. Remote
+fuzzy/synonym expansion preserves the original semantic query separately when
+server-side embedding is requested.
+
+The server materializes metadata in a private SQLite session and returns up to
+200 documents / 4 MiB per page. Complete scans have a 120-second deadline,
+1,000,000-document ceiling, two concurrent-build slots, eight retained-session
+slots, and 15-minute expiry. Exceeding a bound is an explicit error, never a
+truncated result represented as complete. Cancellation removes the session and
+interrupts its SQLite worker. The client verifies scope, generation, page
+continuity, global order, distinct owner/document identity, and total count;
+zero-result reports retain the same metadata receipt as nonempty reports.
+
+Remote volume IDs describe recorded source provenance. They are never inferred
+from drives mounted on the desktop or treated as evidence that the remote
+source is currently online. The desktop mount toggle is therefore absent for a
+remote connection. The existing server bearer key grants server-wide access;
+owner selection scopes results and sessions without adding per-user access
+control. Semantic and Hybrid results remain explicitly bounded retrieval
+windows; complete reports apply to lexical matching.
 
 ## Extraction coverage and source identity
 
@@ -201,6 +225,15 @@ existence is not evidence that it ran on every platform.
 | Browser interactions | Updated scenarios were discovered. Local execution was blocked by Chromium socket restrictions; the alternate browser download also failed. No local browser pass is claimed. |
 | Hosted browser and application builds | Queued or pending at final handoff; inspect the PR's latest commit checks for their eventual result. |
 
+The subsequent remote-reporting checkpoint reran the complete frontend suite
+(678 tests across 70 files), the locked native index suite (299 tests), and the
+locked server suite (146 tests), all successfully on the default thread stack.
+The focused summary/recipe tests passed 17 cases; the type check retained
+0 errors and 54 existing warnings. Seventeen search-workspace browser scenarios
+were discovered, including three remote reporting flows. Discovery does not
+claim browser execution. The server suite includes real HTTP/storage sessions
+over 633 documents and production client/atomic-report contracts.
+
 The native packages use actual index databases, extractors, query execution,
 and report writers. The search-engine tests use a fixed query vector where
 dense candidate joins must be deterministic. They do not exercise model
@@ -212,12 +245,6 @@ packaging, and platform rendering remain outside these standalone packages.
 This implementation does not claim universal search or format parity. These
 capabilities need further implementation or qualification before being promised:
 
-- Complete remote matching totals, facets, and exports. Complete local lexical
-  scans and metadata-ordered reports are implemented; semantic and hybrid
-  relevance still operate on bounded retrieval candidates.
-- Remote predicates for columns the server does not store, including folder,
-  audio/camera, translated-language, review-status, and volume constraints.
-  Unsupported remote filters fail visibly.
 - Binary email-attachment extraction and additional archive/mail-container
   families. ZIP, EML, and MBOX support does not imply support for other types.
 - Per-member source identities and direct opening of archive members. ZIP keeps

@@ -30,6 +30,9 @@ use lancedb::{
 };
 
 const MAX_AFFECTED_CHUNKS: usize = 65_536;
+#[path = "complete_search.rs"]
+mod complete_search;
+pub use complete_search::CompleteError;
 #[path = "../../shared/stored_passage.rs"]
 mod stored_passage;
 pub use stored_passage::PassageReadError;
@@ -106,6 +109,15 @@ pub fn build_lance_schema(dims: usize) -> Arc<Schema> {
             true,
         ),
         Field::new("metadata_json", DataType::Utf8, true),
+        Field::new("parent_dir", DataType::Utf8, true),
+        Field::new("volume_id", DataType::Utf8, true),
+        Field::new("url", DataType::Utf8, true),
+        Field::new("text_translated", DataType::Utf8, true),
+        Field::new("text_translated_lang", DataType::Utf8, true),
+        Field::new("doc_status", DataType::Utf8, true),
+        Field::new("image_camera_make", DataType::Utf8, true),
+        Field::new("image_camera_model", DataType::Utf8, true),
+        Field::new("audio_duration_seconds", DataType::Float64, true),
     ]))
 }
 
@@ -117,6 +129,49 @@ pub fn build_lance_schema(dims: usize) -> Arc<Schema> {
 // `../../crisp-index-protocol/src/lib.rs` for per-field documentation.
 
 // ── VectorStore ───────────────────────────────────────────────────────────────
+
+fn parent_directory(uri: &str) -> String {
+    crate::source_paths::source_parent_directory(uri)
+        .unwrap_or_else(||uri.rfind('/').map(|position|uri[..position].to_owned()).unwrap_or_default())
+}
+
+/// Add only the explicitly versioned optional metadata columns. Existing core
+/// fields and embedding dimensions must match before any storage mutation.
+async fn migrate_metadata_schema(table: &Table, dims: usize) -> Result<()> {
+    let expected = build_lance_schema(dims);
+    let existing = table.schema().await?;
+    let additional = ["parent_dir", "volume_id", "url", "text_translated", "text_translated_lang",
+        "doc_status", "image_camera_make", "image_camera_model", "audio_duration_seconds"];
+    for field in existing.fields() {
+        ensure!(expected.field_with_name(field.name()).is_ok_and(|target| target == field.as_ref()),
+            "Stored vector schema contains an incompatible field {}; existing data was preserved", field.name());
+    }
+    let mut missing = Vec::new();
+    for field in expected.fields() {
+        if existing.field_with_name(field.name()).is_err() {
+            ensure!(additional.contains(&field.name().as_str()), "Stored vector schema is missing core field {}",field.name());
+            missing.push(field.as_ref().clone());
+        }
+    }
+    if !missing.is_empty() {
+        let output_schema=Arc::new(Schema::new(missing));
+        let mapped_schema=output_schema.clone();
+        table.add_columns(lancedb::table::NewColumnTransform::BatchUDF(lance::dataset::BatchUDF {
+            output_schema, result_checkpoint:None,
+            mapper:Box::new(move |batch| {
+                let uris=batch.column_by_name("location_uri").and_then(|column|column.as_any().downcast_ref::<StringArray>())
+                    .ok_or_else(||arrow_schema::ArrowError::SchemaError("Missing source URI during metadata migration".into()))?;
+                let columns=mapped_schema.fields().iter().map(|field| {
+                    if field.name()=="parent_dir" {
+                        Arc::new(StringArray::from(uris.iter().map(|uri|uri.map(parent_directory)).collect::<Vec<_>>())) as arrow_array::ArrayRef
+                    } else { arrow_array::new_null_array(field.data_type(),batch.num_rows()) }
+                }).collect();
+                Ok(RecordBatch::try_new(mapped_schema.clone(),columns)?)
+            }),
+        }), Some(vec!["location_uri".into()])).await.context("Adding and backfilling optional remote metadata columns")?;
+    }
+    Ok(())
+}
 
 pub struct VectorStore {
     _db: Connection,
@@ -150,6 +205,7 @@ impl VectorStore {
             Err(e) => return Err(e).context("open LanceDB table"),
         };
 
+        migrate_metadata_schema(&table, dims).await?;
         ensure!(table.schema().await?.as_ref() == build_lance_schema(dims).as_ref(),
             "Stored vector schema or embedding dimension differs from this server; preserve the existing data and use a compatible configuration");
         Ok(VectorStore {
@@ -170,6 +226,9 @@ impl VectorStore {
         chunks: &[IngestChunk],
     ) -> Result<(Vec<IngestChunk>, Vec<SourceRemoval>)> {
         let mut normalized = chunks.to_vec();
+        for chunk in &mut normalized {
+            if chunk.parent_dir.is_none() { chunk.parent_dir = Some(parent_directory(&chunk.location_uri)); }
+        }
         let mut groups = BTreeMap::<(String, String, String), Vec<usize>>::new();
         for (position, chunk) in chunks.iter().enumerate() {
             if let Some(version) = chunk.source_identity_version {
@@ -601,7 +660,7 @@ impl VectorStore {
                 "language",
                 "year",
                 "headings_text",
-                "full_text",
+                "full_text", "text_translated",
                 "chunk_start_char",
                 "chunk_end_char",
             ]))
@@ -733,6 +792,7 @@ impl VectorStore {
             .update()
             .only_if(keys_sql(keys))
             .column("location_uri", format!("'{}'", sql_escape(new_uri)))
+            .column("parent_dir", format!("'{}'",sql_escape(&parent_directory(new_uri))))
             .column(
                 "indexed_at",
                 format!("timestamp '{}'", iso_from_ms(indexed_at)),
@@ -784,6 +844,7 @@ pub struct SearchIndex {
     pub vector: Arc<VectorStore>,
     pub fts: Arc<FtsStore>,
     gate: tokio::sync::Mutex<()>,
+    complete: Arc<complete_search::CompleteRegistry>,
 }
 
 impl SearchIndex {
@@ -792,6 +853,7 @@ impl SearchIndex {
             vector,
             fts,
             gate: tokio::sync::Mutex::new(()),
+            complete: Arc::new(complete_search::CompleteRegistry::default()),
         }
     }
 
@@ -1226,6 +1288,13 @@ fn same_document_metadata(left: &IngestChunk, right: &IngestChunk) -> bool {
         && left.location_uri == right.location_uri
         && left.source_hash == right.source_hash
         && left.tags == right.tags
+        && left.parent_dir == right.parent_dir
+        && left.volume_id == right.volume_id
+        && left.url == right.url
+        && left.doc_status == right.doc_status
+        && left.image_camera_make == right.image_camera_make
+        && left.image_camera_model == right.image_camera_model
+        && left.audio_duration_seconds == right.audio_duration_seconds
 }
 
 /// Partial chunk updates still publish one coherent document metadata view.
@@ -1254,6 +1323,12 @@ fn propagate_document_metadata(
         "language",
         "location_uri",
         "source_hash",
+        "parent_dir",
+        "volume_id",
+        "url",
+        "doc_status",
+        "image_camera_make",
+        "image_camera_model",
     ] {
         let old = string_column(batch, name)?;
         let values: Vec<Option<&str>> = metadata
@@ -1267,7 +1342,18 @@ fn propagate_document_metadata(
                     "ext" => Some(chunk.ext.as_str()),
                     "language" => Some(chunk.language.as_str()),
                     "location_uri" => Some(chunk.location_uri.as_str()),
-                    _ => Some(chunk.source_hash.as_str()),
+                    "source_hash" => Some(chunk.source_hash.as_str()),
+                    "parent_dir" => chunk.parent_dir.as_deref(),
+                    "volume_id" => chunk.volume_id.as_deref(),
+                    "url" => chunk.url.as_deref(),
+                    "text_translated" => groups.get(&DocumentKey {owner_id:chunk.owner_id.clone(),doc_id:chunk.doc_id.clone()})
+                        .and_then(|group|group.iter().find_map(|c|c.text_translated.as_deref())),
+                    "text_translated_lang" => groups.get(&DocumentKey {owner_id:chunk.owner_id.clone(),doc_id:chunk.doc_id.clone()})
+                        .and_then(|group|group.iter().find(|c|c.text_translated.is_some())).and_then(|c|c.text_translated_lang.as_deref()),
+                    "doc_status" => chunk.doc_status.as_deref(),
+                    "image_camera_make" => chunk.image_camera_make.as_deref(),
+                    "image_camera_model" => chunk.image_camera_model.as_deref(),
+                    _ => unreachable!(),
                 },
                 None => {
                     if old.is_null(row) {
@@ -1300,6 +1386,13 @@ fn propagate_document_metadata(
             })
             .collect::<Vec<_>>(),
     ));
+    let old_audio = batch.column_by_name("audio_duration_seconds")
+        .and_then(|column| column.as_any().downcast_ref::<arrow_array::Float64Array>()).context("Missing audio duration column")?;
+    columns[batch.schema().index_of("audio_duration_seconds")?] = Arc::new(arrow_array::Float64Array::from(
+        metadata.iter().enumerate().map(|(row, chunk)| match chunk {
+            Some(chunk) => chunk.audio_duration_seconds,
+            None => (!old_audio.is_null(row)).then(|| old_audio.value(row)),
+        }).collect::<Vec<_>>()));
     let old_tags = batch
         .column_by_name("tags")
         .and_then(|column| column.as_any().downcast_ref::<arrow_array::ListArray>())
@@ -1380,6 +1473,13 @@ pub fn validate_embedding(embedding: &[f32], dims: usize) -> Result<()> {
 }
 
 pub fn validate_chunk_shape(chunk: &IngestChunk) -> Result<()> {
+    ensure!(chunk.tags.len() <= 1024 && chunk.tags.iter().all(|v|v.len() <= 1024), "Stored tags exceed supported limits");
+    ensure!([Some(&chunk.location_uri),Some(&chunk.filename),Some(&chunk.ext),Some(&chunk.language),chunk.title.as_ref(),chunk.author.as_ref(),
+        chunk.parent_dir.as_ref(),chunk.volume_id.as_ref(),chunk.url.as_ref(),chunk.text_translated_lang.as_ref(),chunk.doc_status.as_ref(),
+        chunk.image_camera_make.as_ref(),chunk.image_camera_model.as_ref()].into_iter().flatten().all(|v|v.len() <= 16384),
+        "Stored document metadata exceeds 16384 bytes per value");
+    ensure!(chunk.text_translated.as_ref().is_none_or(|value|value.len() <= 64 * 1024 * 1024), "Translated text exceeds 64 MiB");
+    ensure!(chunk.audio_duration_seconds.is_none_or(|value|value.is_finite() && value >= 0.0), "Audio duration must be finite and nonnegative");
     ensure!(
         !chunk.doc_id.is_empty() && chunk.doc_id.len() <= 512,
         "Document identifier must contain 1 to 512 bytes"
@@ -1554,6 +1654,8 @@ fn stored_chunks(batch: &RecordBatch) -> Result<Vec<StoredChunk>> {
                 year: integer("year", row),
                 headings: string("headings_text", row),
                 text: string("full_text", row),
+                translated: batch.column_by_name("text_translated").and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .filter(|c| !c.is_null(row)).map(|c|c.value(row).to_owned()),
                 start: integer("chunk_start_char", row),
                 end: integer("chunk_end_char", row),
             })
@@ -1659,6 +1761,15 @@ fn chunk_to_record_batch(
             Arc::new(StringArray::from(vec![Some(chunk.source_hash.as_str())])),
             Arc::new(tags_builder.finish()),
             Arc::new(StringArray::from(vec![None::<&str>])), // metadata_json
+            Arc::new(StringArray::from(vec![chunk.parent_dir.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.volume_id.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.url.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.text_translated.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.text_translated_lang.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.doc_status.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.image_camera_make.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.image_camera_model.as_deref()])),
+            Arc::new(arrow_array::Float64Array::from(vec![chunk.audio_duration_seconds])),
         ],
     )?;
 
@@ -1754,7 +1865,23 @@ fn batches_to_results(
                 })
                 .unwrap_or_default();
 
+            let optional = |name: &str| batch.column_by_name(name).and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(i)).map(|c| c.value(i).to_owned());
+            let tags = batch.column_by_name("tags").and_then(|c| c.as_any().downcast_ref::<arrow_array::ListArray>())
+                .filter(|c| !c.is_null(i)).map(|c| c.value(i)).and_then(|a| a.as_any().downcast_ref::<StringArray>()
+                    .map(|c|c.iter().flatten().map(str::to_owned).collect())).unwrap_or_default();
             results.push(SearchHit {
+                parent_dir: optional("parent_dir"),
+                volume_id: optional("volume_id"),
+                url: optional("url"),
+                text_translated: optional("text_translated"),
+                text_translated_lang: optional("text_translated_lang"),
+                doc_status: optional("doc_status"),
+                image_camera_make: optional("image_camera_make"),
+                image_camera_model: optional("image_camera_model"),
+                audio_duration_seconds: batch.column_by_name("audio_duration_seconds").and_then(|c|c.as_any().downcast_ref::<arrow_array::Float64Array>())
+                    .filter(|c|!c.is_null(i)).map(|c|c.value(i)),
+                tags,
                 doc_id,
                 location_uri: loc_col.map(|c| c.value(i).to_owned()).unwrap_or_default(),
                 owner_id: owner_col.map(|c| c.value(i).to_owned()).unwrap_or_default(),

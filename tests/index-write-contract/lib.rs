@@ -17,7 +17,9 @@ pub mod cli_federated_contract { include!(concat!(env!("OUT_DIR"), "/cli_federat
 
 #[path = "../../src-tauri/src/index/fts_query.rs"] pub mod fts_query_production;
 #[path = "../../src-tauri/src/index/search_summary.rs"] pub mod search_summary_production;
+#[path = "../../src-tauri/src/index/search_report.rs"] pub mod search_report_production;
 #[path = "../../src-tauri/src/index/report_output.rs"] pub mod report_output_production;
+#[path = "../../src-tauri/src/index/ingest_metadata.rs"] pub mod ingest_metadata_production;
 
 pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
@@ -34,6 +36,7 @@ pub mod index {
     pub use crate::synonyms_production as synonyms;
     pub mod fts_index { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/fts_index.rs")); }
     pub use crate::search_summary_production as search_summary;
+    pub use crate::search_report_production as search_report;
     pub use crate::report_output_production as report_output;
     pub mod local_index {
         include!(concat!(env!("OUT_DIR"), "/local_index.rs"));

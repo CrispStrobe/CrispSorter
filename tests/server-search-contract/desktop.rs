@@ -2,34 +2,20 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
+#[path = "../../src-tauri/src/index/schema.rs"]
+mod local_schema;
 pub mod schema {
-    pub use crisp_index_protocol::{SearchFilters, SearchHit as SearchResult};
+    pub use super::local_schema::SearchFilters;
+    pub use crisp_index_protocol::SearchHit as SearchResult;
 }
-pub mod fts_query {
-    pub use crisp_search_query::has_explicit_syntax;
-}
-
-pub struct DocumentChunk {
-    pub doc_id: String,
-    pub owner_id: String,
-    pub chunk_index: i32,
-    pub chunk_total: i32,
-    pub chunk_start_char: Option<i32>,
-    pub chunk_end_char: Option<i32>,
-    pub full_text: Option<String>,
-    pub headings_text: Option<String>,
-    pub full_text_md: Option<String>,
-    pub embedding: Option<Vec<f32>>,
-    pub title: Option<String>,
-    pub author: Option<String>,
-    pub year: Option<i32>,
-    pub filename: Option<String>,
-    pub ext: Option<String>,
-    pub language: Option<String>,
-    pub location_uri: String,
-    pub source_hash: String,
-    pub tags: Vec<String>,
-}
+pub use local_schema::DocumentChunk;
+pub mod fts_query { pub use crisp_search_query::*; }
+#[path = "../../src-tauri/src/index/synonyms.rs"]
+pub mod synonyms;
+#[path = "../../src-tauri/src/index/search_report.rs"]
+pub mod search_report;
+#[path = "../../src-tauri/src/index/report_output.rs"]
+pub mod report_output;
 #[async_trait]
 pub trait IndexBackend: Send + Sync {
     async fn ingest(&self, doc: DocumentChunk) -> Result<()>;
@@ -58,3 +44,6 @@ pub trait IndexBackend: Send + Sync {
 }
 #[path = "../../src-tauri/src/index/remote_client.rs"]
 pub mod remote_client;
+
+#[path = "../../src-tauri/src/index/remote_summary.rs"]
+pub mod remote_summary;

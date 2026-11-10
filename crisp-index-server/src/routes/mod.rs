@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod capabilities;
+pub mod complete;
 pub mod docs;
 pub mod health;
 pub mod ingest;

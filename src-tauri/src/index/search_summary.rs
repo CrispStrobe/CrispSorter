@@ -4,52 +4,23 @@
 //! a private temporary SQLite database instead of a corpus-sized in-memory set.
 //! The interactive result limit never limits this scan. Catalog filename
 //! references and semantic similarity are separate retrieval channels.
-use std::{collections::{BTreeMap, BTreeSet}, io::{BufWriter, Write}, path::PathBuf, sync::{Arc, atomic::{AtomicU8, Ordering}}};
+use std::{collections::{BTreeMap, BTreeSet}, io::{BufWriter, Write}, path::PathBuf, sync::Arc};
 
 use anyhow::{bail, ensure, Context, Result};
 use arrow_array::{Array, Int32Array, ListArray, RecordBatch, StringArray, TimestampMillisecondArray};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase, QueryExecutionOptions, Select};
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+pub use crate::index::search_report::{ReportFormat, ReportSort, ReportReceipt, ScanCancellation};
+use crate::index::search_report::check_cancelled;
+use crate::index::search_report::{ReportDocument as MetadataRow, ReportMetadata, ReportStream};
 use sha2::{Digest, Sha256};
 
 use crate::index::{fts_index::PreparedFtsSearch, schema::SearchFilters, FtsIndex, LocalIndex};
 
 const BATCH_ROWS: u32 = 512;
 pub const FACET_VALUE_LIMIT: usize = 25;
-
-#[derive(Default)]
-pub struct ScanCancellation {
-    phase: AtomicU8,
-    changed: tokio::sync::Notify,
-}
-impl ScanCancellation {
-    /// Once the atomic publication begins it must report its actual outcome;
-    /// callers cannot claim cancellation after the destination was replaced.
-    pub fn cancel(&self) -> bool {
-        match self.phase.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => { self.changed.notify_waiters(); true },
-            Err(1) => true,
-            Err(_) => false,
-        }
-    }
-    fn begin_publish(&self) -> Result<()> {
-        self.phase.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| anyhow::anyhow!("The report was cancelled before publication"))?;
-        Ok(())
-    }
-    fn finish_publish(&self) { self.phase.store(3, Ordering::Release); }
-    async fn cancelled(&self) {
-        loop {
-            let changed = self.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if self.phase.load(Ordering::Acquire) == 1 { return; }
-            changed.await;
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -183,42 +154,12 @@ pub async fn summarize(
         generation, matching_documents, scanned_rows, facet_value_limit: FACET_VALUE_LIMIT, facets })
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ReportFormat { Csv, Json }
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ReportSort { Filename, Title, YearAsc, YearDesc, Location }
-impl ReportSort {
-    fn sql(self) -> &'static str {
-        match self {
-            Self::Filename => "sort_filename COLLATE NOCASE ASC, owner ASC, doc_id ASC",
-            Self::Title => "sort_title COLLATE NOCASE ASC, owner ASC, doc_id ASC",
-            Self::YearAsc => "sort_year IS NULL ASC, sort_year ASC, owner ASC, doc_id ASC",
-            Self::YearDesc => "sort_year IS NULL ASC, sort_year DESC, owner ASC, doc_id ASC",
-            Self::Location => "sort_location COLLATE NOCASE ASC, owner ASC, doc_id ASC",
-        }
-    }
-}
-
 pub struct ExportOptions {
     pub path: PathBuf,
     pub format: ReportFormat,
     pub sort: ReportSort,
     pub expected_generation: Option<String>,
     pub protected_roots: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReportReceipt {
-    pub path: PathBuf,
-    pub documents: u64,
-    pub scope: &'static str,
-    pub generation: String,
-    pub format: ReportFormat,
-    pub sort: ReportSort,
 }
 
 /// Retains the real read lease through final generation validation and atomic
@@ -311,12 +252,6 @@ pub async fn protect_index_sources(local: &LocalIndex, destination: PathBuf,
     Ok(())
 }
 
-fn check_cancelled(cancellation: &Option<Arc<ScanCancellation>>) -> Result<()> {
-    ensure!(!cancellation.as_ref().is_some_and(|flag| flag.phase.load(Ordering::Acquire) == 1),
-        "The matching-document scan was cancelled");
-    Ok(())
-}
-
 async fn await_sqlite<T>(mut work: tokio::task::JoinHandle<Result<T>>, interrupt: rusqlite::InterruptHandle,
     cancellation: &Option<Arc<ScanCancellation>>) -> Result<T> {
     if let Some(cancellation) = cancellation {
@@ -331,26 +266,6 @@ async fn await_sqlite<T>(mut work: tokio::task::JoinHandle<Result<T>>, interrupt
         }
     }
     work.await?
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MetadataRow {
-    doc_id: String,
-    owner_id: String,
-    #[serde(rename = "representativeChunkIndex")]
-    chunk_index: i32,
-    title: Option<String>,
-    filename: Option<String>,
-    author: Option<String>,
-    location_uri: String,
-    url: Option<String>,
-    source_hash: Option<String>,
-    indexed_at: Option<i64>,
-    extension: Option<String>,
-    language: Option<String>,
-    year: Option<i32>,
-    tags: Vec<String>,
 }
 
 fn metadata_rows(batch: &RecordBatch) -> Result<Vec<MetadataRow>> {
@@ -405,7 +320,7 @@ impl Accumulator {
         let file = tempfile::NamedTempFile::new().context("Creating temporary search summary storage")?;
         let database = Connection::open(file.path())?;
         if let Some(cancellation) = cancellation {
-            database.progress_handler(1000, Some(move || cancellation.phase.load(Ordering::Acquire) == 1))?;
+            database.progress_handler(1000, Some(move || cancellation.is_cancelled()))?;
         }
         database.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;
             PRAGMA cache_size=-2048; PRAGMA mmap_size=0;
@@ -495,72 +410,33 @@ impl Accumulator {
         format: ReportFormat, sort: ReportSort, cancellation: &Option<Arc<ScanCancellation>>,
     ) -> Result<(crate::index::report_output::StagedReport, u64)> {
         let total = self.database.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get::<_, i64>(0))? as u64;
-        let header = serde_json::json!({ "schema": "CrispSorter.lexical-report", "version": 1,
-            "scope": "local_indexed_documents", "complete": true, "matchingDocuments": total,
-            "query": query, "effectiveQuery": effective_query, "filters": filters, "generation": generation,
-            "sort": sort, "ordering": "global metadata order; owner and document ID break ties; unknown years follow known years",
-            "representative": "lowest matching stored chunk; tags are the per-document union of matching stored rows",
-            "excludedChannels": ["catalog_filename_references", "semantic_similarity"],
-            "exportedAtUnixMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis(),
-        });
         {
             let mut output = BufWriter::new(staging.file_mut());
-            if matches!(format, ReportFormat::Json) {
-                let mut prefix = serde_json::to_vec(&header)?; prefix.pop();
-                output.write_all(&prefix)?; output.write_all(b",\"documents\":[")?;
-            } else {
-                output.write_all(b"record_type,owner_id,doc_id,title,filename,author,year,extension,language,location_uri,source_url,source_hash,indexed_at,representative_chunk_index,tags_json,query,effective_query,scope,generation,total_documents,sort,filters_json\r\n")?;
-                let mut metadata = vec!["report".to_owned()]; metadata.extend(vec![String::new(); 14]);
-                metadata.extend([query.to_owned(), effective_query.to_owned(), "local_indexed_documents".into(), generation.to_owned(),
-                    total.to_string(), serde_json::to_string(&sort)?.trim_matches('"').to_owned(), serde_json::to_string(filters)?]);
-                output.write_all(metadata.iter().map(|value| csv_cell(value)).collect::<Vec<_>>().join(",").as_bytes())?;
-                output.write_all(b"\r\n")?;
-            }
+            let mut writer = ReportStream::start(&mut output, ReportMetadata {
+                scope: "local_indexed_documents", query: query.to_owned(), effective_query: effective_query.to_owned(),
+                filters: serde_json::to_value(filters)?, generation: generation.to_owned(), matching_documents: total, sort,
+            }, format)?;
             let mut rows = self.database.prepare(&format!("SELECT metadata FROM documents ORDER BY {}", sort.sql()))?;
             let mut tags = self.database.prepare("SELECT value FROM facets WHERE kind='tag' AND owner=?1 AND doc_id=?2 ORDER BY value")?;
             let mut rows = rows.query([])?;
-            let mut written = 0u64;
-            let filters_json = serde_json::to_string(filters)?;
-            let sort_json = serde_json::to_string(&sort)?;
             while let Some(row) = rows.next()? {
                 check_cancelled(cancellation)?;
                 let mut document: MetadataRow = serde_json::from_str(&row.get::<_, String>(0)?)?;
                 document.tags = tags.query_map(params![document.owner_id, document.doc_id], |row| row.get::<_, String>(0))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
-                if matches!(format, ReportFormat::Json) {
-                    if written > 0 { output.write_all(b",")?; }
-                    serde_json::to_writer(&mut output, &document)?;
-                } else {
-                    let values = vec!["document".into(), document.owner_id, document.doc_id, document.title.unwrap_or_default(),
-                        document.filename.unwrap_or_default(), document.author.unwrap_or_default(),
-                        document.year.map(|value| value.to_string()).unwrap_or_default(), document.extension.unwrap_or_default(),
-                        document.language.unwrap_or_default(), document.location_uri, document.url.unwrap_or_default(),
-                        document.source_hash.unwrap_or_default(), document.indexed_at.map(|value| value.to_string()).unwrap_or_default(),
-                        document.chunk_index.to_string(), serde_json::to_string(&document.tags)?, query.to_owned(), effective_query.to_owned(),
-                        "local_indexed_documents".into(), generation.to_owned(), total.to_string(), sort_json.trim_matches('"').to_owned(), filters_json.clone()];
-                    let line = values.iter().map(|value| csv_cell(value)).collect::<Vec<_>>().join(",");
-                    output.write_all(line.as_bytes())?; output.write_all(b"\r\n")?;
-                }
-                written += 1;
+                writer.push(&mut output, &document)?;
             }
-            ensure!(written == total, "The complete report row count changed while exporting");
-            if matches!(format, ReportFormat::Json) { output.write_all(b"]}\n")?; }
-            output.flush().context("Flushing the complete matching-document report")?;
+            writer.finish(&mut output)?;
         }
         check_cancelled(cancellation)?;
         Ok((staging, total))
     }
 }
 
-fn csv_cell(value: &str) -> String {
-    // Keep file names and metadata from being evaluated as spreadsheet formulas.
-    let prefix = if value.trim_start().starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r', '\n']) { "'" } else { "" };
-    format!("\"{prefix}{}\"", value.replace('"', "\"\""))
-}
-
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    use crate::index::search_report::csv_cell;
 
     #[tokio::test]
     async fn sqlite_aggregation_is_cooperatively_interruptible() {
