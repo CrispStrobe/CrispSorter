@@ -546,6 +546,50 @@ impl LocalIndex {
         self.fts_inputs_for_doc_changes(doc_ids, &[], &[]).await
     }
 
+    /// Reconstruct exact stored identities during full-text maintenance. Legacy
+    /// append-only rows can share a chunk key, so use the same latest-row rule
+    /// as passage inspection before validating source ranges and boundaries.
+    pub(crate) async fn fts_inputs_for_keys(&self, keys: &[(String, String)]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
+        if keys.is_empty() { return Ok(Vec::new()); }
+        let mut stream = self.table.query().only_if(document_keys_sql(keys))
+            .select(lancedb::query::Select::Columns(["id", "doc_id", "owner_id", "language", "title", "headings_text", "full_text", "text_translated", "chunk_index", "chunk_start_char", "chunk_end_char", "indexed_at"]
+                .into_iter().map(str::to_owned).collect()))
+            .with_row_id().execute().await?;
+        let mut rows = std::collections::BTreeMap::<(String, String, i32), (i64, u64, FtsPiece)>::new();
+        while let Some(batch) = stream.try_next().await? {
+            let docs = str_col(&batch, "doc_id")?;
+            let owners = str_col(&batch, "owner_id")?;
+            let indices = i32_col(&batch, "chunk_index")?;
+            let times = ts_ms_col_opt(&batch, "indexed_at");
+            let row_ids = batch.column_by_name("_rowid").and_then(|c| c.as_any().downcast_ref::<arrow_array::UInt64Array>())
+                .context("Missing stored full-text row identities")?;
+            for row in 0..batch.num_rows() {
+                anyhow::ensure!(!docs.is_null(row) && !owners.is_null(row) && !indices.is_null(row) && !row_ids.is_null(row),
+                    "Stored full-text document identity is incomplete");
+                let key = (owners.value(row).to_owned(), docs.value(row).to_owned(), indices.value(row));
+                let version = (times.filter(|c| !c.is_null(row)).map(|c| c.value(row)).unwrap_or(0), row_ids.value(row));
+                if rows.get(&key).is_some_and(|(time, row_id, _)| (*time, *row_id) >= version) { continue; }
+                let string = |name: &str| str_col_opt(&batch, name).filter(|c| !c.is_null(row)).map(|c| c.value(row).to_owned());
+                let number = |name: &str| i32_col_opt(&batch, name).filter(|c| !c.is_null(row)).map(|c| c.value(row));
+                let piece = FtsPiece {
+                    id: string("id").context("Missing stored full-text chunk ID")?,
+                    doc_id: key.1.clone(), owner: key.0.clone(), chunk_index: key.2,
+                    language: string("language").unwrap_or_default(), title: string("title").unwrap_or_default(),
+                    headings: string("headings_text").unwrap_or_default(), body: string("full_text").unwrap_or_default(),
+                    translated: string("text_translated"), start: number("chunk_start_char"), end: number("chunk_end_char"),
+                };
+                rows.insert(key, (version.0, version.1, piece));
+            }
+        }
+        let mut grouped = std::collections::BTreeMap::<(String, String), Vec<FtsPiece>>::new();
+        for ((owner, doc_id, _), (_, _, piece)) in rows { grouped.entry((owner, doc_id)).or_default().push(piece); }
+        let mut inputs = Vec::new();
+        for ((_, doc_id), pieces) in grouped {
+            if let Some(input) = fts_input_from_pieces(doc_id, pieces)? { inputs.push(input); }
+        }
+        Ok(inputs)
+    }
+
     async fn fts_inputs_for_doc_changes(&self, doc_ids: &[String], chunks: &[DocumentChunk], replace_doc_ids: &[String]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
         if doc_ids.is_empty() { return Ok(Vec::new()); }
         let replaced = import_replacement_ids(chunks, replace_doc_ids);
@@ -2943,28 +2987,22 @@ impl LocalIndex {
     /// `LocalIndex::open_cidx` API.
     ///
     /// `volume_id` — export only rows for this volume. `None` = full snapshot.
-    /// Scan the FTS-relevant columns for the v103 Tantivy rebuild migration.
-    /// Returns `RecordBatch`es containing `doc_id`, `owner_id`, `language`,
-    /// `title`, `headings_text`, `full_text`, `text_translated`, and
-    /// `chunk_index`.  Used exclusively by `index::migrations::RebuildFtsForBodyTranslated`.
-    pub async fn scan_for_fts_rebuild(&self) -> anyhow::Result<Vec<RecordBatch>> {
-        let select_cols: Vec<String> = [
-            "doc_id", "owner_id", "language", "title",
-            "headings_text", "full_text", "text_translated", "chunk_index",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-        self.table
-            .query()
-            .select(lancedb::query::Select::Columns(select_cols))
-            .execute()
-            .await
-            .context("scan_for_fts_rebuild: LanceDB execute")?
-            .try_collect()
-            .await
-            .context("scan_for_fts_rebuild: collecting batches")
+    /// Collect only identities for maintenance; load one document's text at a
+    /// time through `fts_inputs_for_keys` instead of retaining the corpus body.
+    pub(crate) async fn fts_document_keys(&self) -> Result<Vec<(String, String)>> {
+        let mut stream = self.table.query()
+            .select(lancedb::query::Select::Columns(vec!["owner_id".into(), "doc_id".into()]))
+            .execute().await?;
+        let mut keys = std::collections::BTreeSet::new();
+        while let Some(batch) = stream.try_next().await? {
+            let owners = str_col(&batch, "owner_id")?;
+            let docs = str_col(&batch, "doc_id")?;
+            for row in 0..batch.num_rows() {
+                anyhow::ensure!(!owners.is_null(row) && !docs.is_null(row), "Stored full-text document identity is incomplete");
+                keys.insert((owners.value(row).to_owned(), docs.value(row).to_owned()));
+            }
+        }
+        Ok(keys.into_iter().collect())
     }
 
     /// `include_embeddings` — when `false` (default) the embedding columns

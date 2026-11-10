@@ -2523,6 +2523,7 @@ dependencies = [
  "arrow",
  "arrow-array",
  "arrow-schema",
+ "async-trait",
  "crisp-index-protocol",
  "crisp-search-query",
  "deunicode",

@@ -23,6 +23,7 @@ pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
 
 pub mod jobs { include!(concat!(env!("OUT_DIR"), "/jobs.rs")); }
+#[path = "../../src-tauri/src/migrations/mod.rs"] pub mod migrations;
 #[path = "../../src-tauri/src/bg_ingest/queue.rs"] pub mod bg_queue_production;
 pub mod extractors { include!(concat!(env!("OUT_DIR"), "/extractor_options.rs")); }
 pub mod bg_ingest { pub use crate::bg_queue_production as queue; include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
@@ -51,6 +52,7 @@ pub mod index {
     pub use crate::source_identity_production as source_identity;
     pub use crate::snippet_production as snippet;
     pub mod result_cache { include!(concat!(env!("OUT_DIR"), "/result_cache.rs")); }
+    pub mod migrations { include!(concat!(env!("OUT_DIR"), "/migrations.rs")); }
     pub mod search { include!(concat!(env!("OUT_DIR"), "/search.rs")); }
     pub mod reranker {
         pub struct RerankerHandle;
@@ -117,6 +119,9 @@ mod search_summary_contract;
 
 #[cfg(test)]
 mod search_export_contract;
+
+#[cfg(test)]
+mod migration_contract;
 
 pub mod images { pub mod vit_embed {
     pub fn embed_image(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Image models are unavailable") }

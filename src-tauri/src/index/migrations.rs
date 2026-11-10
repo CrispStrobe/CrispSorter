@@ -27,6 +27,7 @@
 //! into the framework later without renumbering.
 
 use anyhow::{anyhow, Context, Result};
+#[cfg(test)]
 use arrow_array::{Array as _, StringArray};
 use async_trait::async_trait;
 use futures::TryStreamExt as _;
@@ -279,31 +280,51 @@ impl Migration for AddImageMetadataColumns {
     }
 }
 
-/// **v103** — Rebuild the Tantivy FTS index from LanceDB so that the
-/// `body_translated` field is present in the on-disk schema.
+/// **v103** — Rebuild legacy Tantivy indexes with translated-body support.
 ///
-/// Tantivy's schema is write-once: a field omitted at index creation can
-/// never be added retroactively without deleting and recreating the index.
-/// Fresh installations already get the full schema (including
-/// `body_translated`) because `fts_index::build_schema()` has included it
-/// since the `be73321` commit.  Existing users whose index predates that
-/// commit get FTS-over-translated-body only after this migration rebuilds
-/// their Tantivy index from the rows stored in LanceDB.
+/// A new index is built beside the active one from all verified stored text
+/// regions. Only a committed, checked index receives a completion marker and
+/// replaces the active directory. The previous index remains available until
+/// publication, and a sibling backup protects the gap between directory moves.
 ///
-/// Safety model:
-/// * The migration runs BEFORE `FtsIndex::open_or_create` is called by the
-///   init path (the caller is responsible for this ordering — see Stage Y
-///   reorder in `tauri_commands::init_index`).
-/// * Idempotency: a `.v103_done` marker file is written as the last step
-///   of a successful rebuild.  If the process is killed between "delete
-///   old dir" and "commit writer", the next startup re-enters `apply`
-///   (no ledger entry yet), finds no marker, and rebuilds from scratch.
-///   The empty or partial FTS dir that may remain from the interrupted run
-///   is handled: Tantivy recreates a fresh schema on an empty dir, and if
-///   body_translated is already in that schema the migration writes the
-///   marker and exits without touching LanceDB.
-/// * LanceDB is unchanged — only the Tantivy `fts/` subtree is modified.
+/// An external in-progress marker and staging/backup directories distinguish an
+/// interrupted rebuild from an ordinary current-schema installation. Restart
+/// restores a displaced old index and rebuilds incomplete staging from LanceDB;
+/// the presence of a new schema in staging never proves completion. Existing
+/// current-schema indexes without recovery state retain the original skip path.
+/// Startup must run this migration before opening long-lived FTS handles.
 pub struct RebuildFtsForBodyTranslated;
+
+const V103_STAGING: &str = "fts.v103-staging";
+const V103_BACKUP: &str = "fts.v103-backup";
+const V103_IN_PROGRESS: &str = ".v103_in_progress";
+
+fn v103_sync_directory(path: &std::path::Path) -> Result<()> {
+    // Unix supports synchronizing a directory after rename. On Windows the
+    // files themselves are synchronized and directory rename provides the
+    // publication boundary; opening a directory as a File is not portable.
+    #[cfg(unix)]
+    std::fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+fn v103_write_marker(path: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(b"103\n")?;
+    file.sync_all()?;
+    v103_sync_directory(path.parent().context("Missing migration marker directory")?)
+}
+
+fn v103_cleanup(data_dir: &std::path::Path) -> Result<()> {
+    for name in [V103_STAGING, V103_BACKUP] {
+        let path = data_dir.join(name);
+        if path.exists() { std::fs::remove_dir_all(path)?; }
+    }
+    let progress = data_dir.join(V103_IN_PROGRESS);
+    if progress.exists() { std::fs::remove_file(progress)?; }
+    v103_sync_directory(data_dir)
+}
 
 #[async_trait]
 impl Migration for RebuildFtsForBodyTranslated {
@@ -311,136 +332,119 @@ impl Migration for RebuildFtsForBodyTranslated {
     fn name(&self) -> &str { "rebuild fts for body_translated field" }
 
     async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        // Exclude concurrent desktop/CLI writes while capturing stored rows and
+        // publishing. No FTS handle is needed to acquire this durable lease.
+        let _guard = match &ctx.lance {
+            Some(lance) => Some(super::ingest::acquire_index_guard(lance.ingest_journal_path()).await?),
+            None => None,
+        };
         let fts_dir = ctx.data_dir.join("fts");
+        let staging = ctx.data_dir.join(V103_STAGING);
+        let backup = ctx.data_dir.join(V103_BACKUP);
+        let progress = ctx.data_dir.join(V103_IN_PROGRESS);
         let done_marker = fts_dir.join(".v103_done");
+        let recovering = progress.exists() || staging.exists() || backup.exists();
 
-        // Fast path 1: marker from a previous (possibly un-ledgered) run.
         if done_marker.exists() {
-            eprintln!("[index] v103 migration skipped — .v103_done marker present");
+            // A crash after publication can leave only cleanup outstanding.
+            if recovering {
+                if let Err(error) = v103_cleanup(&ctx.data_dir) {
+                    eprintln!("[index] v103 published; cleanup will retry: {error:#}");
+                }
+            }
             return Ok(());
         }
-
-        // Fast path 2: no FTS dir at all (fresh install, first ingest hasn't run yet).
-        // The dir will be created with the new schema by open_or_create.
-        if !fts_dir.exists() {
-            eprintln!("[index] v103 migration skipped — no fts/ dir yet (fresh install)");
-            return Ok(());
+        if !recovering && !fts_dir.exists() {
+            // An older interrupted rebuild may have deleted the active
+            // directory before creating a replacement. Stored rows distinguish
+            // that recoverable state from an empty first installation.
+            let has_stored_rows = match &ctx.lance {
+                Some(lance) => {
+                    lance.table_ref().checkout_latest().await?;
+                    lance.table_ref().count_rows(None).await? > 0
+                }
+                None => false,
+            };
+            if !has_stored_rows {
+                eprintln!("[index] v103 skipped — no stored index yet");
+                return Ok(());
+            }
         }
-
-        // Check whether the on-disk schema already has body_translated.
-        // If yes, just write the marker and exit.  This handles the case
-        // where the dir exists but the process was killed after building
-        // the fresh dir but before writing the marker.
-        //
-        // If the dir exists but is unopenable (missing required fields,
-        // i.e. created by a much older CrispSorter that predates the
-        // current schema entirely), fall through to the rebuild path
-        // instead of bailing — that path deletes the dir and recreates
-        // it from LanceDB anyway, which is the correct recovery.
-        match super::fts_index::FtsIndex::open_or_create(&fts_dir) {
-            Ok(fts_check) => {
-                if fts_check.fields.body_translated.is_some() {
-                    eprintln!("[index] v103 migration skipped — body_translated already in FTS schema");
-                    let _ = std::fs::write(&done_marker, b"");
+        if !recovering && fts_dir.exists() {
+            // Probe an existing index before open_or_create: an empty/corrupt
+            // directory must not be turned into a fresh schema and mistaken
+            // for an already-completed rebuild.
+            match tantivy::Index::open_in_dir(&fts_dir)
+                .map_err(anyhow::Error::from)
+                .and_then(|_| super::fts_index::FtsIndex::open_or_create(&fts_dir))
+            {
+                Ok(fts) if fts.fields.body_translated.is_some() => {
+                    v103_write_marker(&done_marker).context("v103: marking existing current schema")?;
                     return Ok(());
                 }
-            }
-            Err(e) => {
-                eprintln!(
-                    "[index] v103: existing FTS dir not openable ({e:#}); \
-                     proceeding to full rebuild from LanceDB"
-                );
-                // Fall through to the rebuild path below.
+                Ok(_) => {}
+                Err(error) => eprintln!("[index] v103 rebuilding unreadable legacy FTS: {error:#}"),
             }
         }
 
-        let lance = ctx
-            .lance
-            .as_ref()
+        let lance = ctx.lance.as_ref()
             .ok_or_else(|| anyhow!("v103 (rebuild_fts_for_body_translated) needs the LanceDB handle"))?;
-
-        eprintln!("[index] v103 migration: rebuilding FTS index for body_translated …");
-
-        // ── Stream FTS-relevant columns from LanceDB ──────────────────────
-        let batches = lance
-            .scan_for_fts_rebuild()
-            .await
-            .context("v103: scanning LanceDB for FTS rebuild")?;
-
-        // ── Delete old Tantivy dir, create fresh ──────────────────────────
-        std::fs::remove_dir_all(&fts_dir)
-            .context("v103: removing old fts dir")?;
-
-        let fts = super::fts_index::FtsIndex::open_or_create(&fts_dir)
-            .context("v103: creating fresh fts dir")?;
-        let mut writer = fts.writer().context("v103: opening fts writer")?;
-        let mut count = 0usize;
-
-        for batch in &batches {
-            // Option<&StringArray> — Copy, so plain .map() works without .as_ref().
-            let doc_id_col: Option<&StringArray> = col_str(batch, "doc_id");
-            let owner_col:  Option<&StringArray> = col_str(batch, "owner_id");
-            let lang_col:   Option<&StringArray> = col_str(batch, "language");
-            let title_col:  Option<&StringArray> = col_str(batch, "title");
-            let heads_col:  Option<&StringArray> = col_str(batch, "headings_text");
-            let text_col:   Option<&StringArray> = col_str(batch, "full_text");
-            let trans_col:  Option<&StringArray> = col_str(batch, "text_translated");
-            let cidx_col: Option<&arrow_array::Int32Array> = batch
-                .schema()
-                .index_of("chunk_index")
-                .ok()
-                .and_then(|idx| batch.column(idx).as_any().downcast_ref());
-
-            let (Some(doc_id_col), Some(owner_col)) = (doc_id_col, owner_col) else {
-                continue;
-            };
-
-            for i in 0..batch.num_rows() {
-                // Index only the first chunk per document.
-                if let Some(c) = cidx_col {
-                    if !c.is_null(i) && c.value(i) != 0 {
-                        continue;
-                    }
-                }
-                if doc_id_col.is_null(i) {
-                    continue;
-                }
-
-                let doc_id = doc_id_col.value(i).to_owned();
-                let owner  = str_val_or(owner_col, i, "");
-                let lang   = lang_col.map(|c| str_val_or(c, i, "")).unwrap_or_default();
-                let title  = title_col.map(|c| str_val_or(c, i, "")).unwrap_or_default();
-                let heads  = heads_col.map(|c| str_val_or(c, i, "")).unwrap_or_default();
-                let body   = text_col.map(|c| str_val_or(c, i, "")).unwrap_or_default();
-                let body_translated = trans_col
-                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) });
-
-                fts.add_document(
-                    &mut writer,
-                    super::fts_index::TantivyInput {
-                        doc_id: &doc_id,
-                        owner_id: &owner,
-                        language: &lang,
-                        title: &title,
-                        headings: &heads,
-                        body: &body,
-                        body_translated,
-                    },
-                )
-                .context("v103: writing fts doc")?;
+        v103_write_marker(&progress).context("v103: recording rebuild intent")?;
+        if backup.exists() {
+            anyhow::ensure!(!fts_dir.exists(),
+                "v103: both an uncommitted active index and its backup exist; both were retained");
+            std::fs::rename(&backup, &fts_dir).context("v103: restoring displaced previous index")?;
+            v103_sync_directory(&ctx.data_dir)?;
+        }
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging).context("v103: removing incomplete staging index")?;
+        }
+        lance.table_ref().checkout_latest().await?;
+        let keys = lance.fts_document_keys().await.context("v103: reading stored document identities")?;
+        let fts = super::fts_index::FtsIndex::open_or_create(&staging)
+            .context("v103: creating staging index")?;
+        let mut writer = fts.writer().context("v103: opening staging writer")?;
+        let mut count = 0u64;
+        for key in keys {
+            // Read one document at a time; overlap validation and positional
+            // gaps are shared with import and archive reconstruction.
+            for input in lance.fts_inputs_for_keys(std::slice::from_ref(&key)).await
+                .context("v103: reconstructing stored document text")?
+            {
+                input.write_to(&fts, &mut writer).context("v103: indexing complete stored text")?;
                 count += 1;
             }
         }
-
-        writer.commit().context("v103: committing fts writer")?;
-
-        // Write done marker — last thing so interruption mid-rebuild
-        // leaves the marker absent and causes a retry on next startup.
-        std::fs::write(&done_marker, b"").context("v103: writing done marker")?;
-
-        eprintln!(
-            "[index] v103 migration applied — rebuilt FTS with {count} docs (body_translated schema)"
-        );
+        writer.commit().context("v103: committing staging writer")?;
+        writer.wait_merging_threads().context("v103: finishing staging segments")?;
+        drop(fts);
+        {
+            let verified = super::fts_index::FtsIndex::open_or_create(&staging)
+                .context("v103: checking committed staging index")?;
+            anyhow::ensure!(verified.fields.body_translated.is_some() && verified.doc_count() == count,
+                "v103: committed staging index failed validation");
+        }
+        v103_write_marker(&staging.join(".v103_done")).context("v103: marking committed staging index")?;
+        if fts_dir.exists() {
+            std::fs::rename(&fts_dir, &backup).context("v103: retaining previous index for publication")?;
+        }
+        let publish = (|| -> Result<()> {
+            v103_sync_directory(&ctx.data_dir)?;
+            std::fs::rename(&staging, &fts_dir).context("v103: publishing committed index")?;
+            v103_sync_directory(&ctx.data_dir)
+        })();
+        if let Err(error) = publish {
+            if !fts_dir.exists() && backup.exists() {
+                std::fs::rename(&backup, &fts_dir)
+                    .with_context(|| format!("v103: restoring previous index after publication failed: {error:#}"))?;
+                v103_sync_directory(&ctx.data_dir)?;
+            }
+            return Err(error);
+        }
+        if let Err(error) = v103_cleanup(&ctx.data_dir) {
+            eprintln!("[index] v103 published; cleanup will retry: {error:#}");
+        }
+        eprintln!("[index] v103 rebuilt FTS with {count} complete stored documents");
         Ok(())
     }
 }
@@ -504,21 +508,6 @@ impl Migration for NullifyTranslationOnSubChunks {
         eprintln!("[index] v104 migration applied — text_translated nulled on sub-chunk rows");
         Ok(())
     }
-}
-
-fn col_str<'a>(
-    batch: &'a arrow_array::RecordBatch,
-    name: &str,
-) -> Option<&'a StringArray> {
-    batch
-        .schema()
-        .index_of(name)
-        .ok()
-        .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>())
-}
-
-fn str_val_or<'a>(col: &'a StringArray, i: usize, default: &'a str) -> &'a str {
-    if col.is_null(i) { default } else { col.value(i) }
 }
 
 #[cfg(test)]
