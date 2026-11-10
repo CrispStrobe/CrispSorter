@@ -35,7 +35,9 @@ pub async fn index_read_passage(
     let lock = state.index.lock().await;
     if !lock.config.enabled { return Err("Enable the search index to inspect stored passages".into()); }
     let local = lock.local.clone().ok_or("Stored passage inspection requires a local index")?;
+    let fts = lock.fts.clone().ok_or("The local text index is not ready")?;
     drop(lock);
+    let _consistent = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
     let id = chunk_row_id(&doc_id, chunk_index).replace('\'', "''");
     let batches: Vec<arrow_array::RecordBatch> = local.table_ref().query()
         .only_if(format!("id = '{id}'"))

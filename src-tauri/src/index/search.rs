@@ -9,7 +9,7 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 
 use super::embedder::Embedder;
-use super::fts_index::{FtsHit, FtsIndex};
+use super::fts_index::{FtsHit, FtsIndex, PreparedFtsSearch};
 use super::local_index::LocalIndex;
 use super::reranker::RerankerHandle;
 use super::schema::{SearchFilters, SearchResult};
@@ -217,10 +217,15 @@ impl SearchEngine {
                 return results;
             }
         };
-        let docs: Vec<&str> = results.iter().map(|r| {
-            passages.get(&super::ingest::chunk_row_id(&r.doc_id, r.chunk_index))
-                .map(|p| p.text.as_str()).unwrap_or("")
-        }).collect();
+        let docs: Vec<&str> = results
+            .iter()
+            .map(|r| {
+                passages
+                    .get(&super::ingest::chunk_row_id(&r.doc_id, r.chunk_index))
+                    .map(|p| p.text.as_str())
+                    .unwrap_or("")
+            })
+            .collect();
         let scores: Vec<f32> = match path {
             RerankPath::Dedicated(handle) => handle.score_batch(query, &docs).await,
             RerankPath::EmbedderBiEncoder => {
@@ -240,8 +245,7 @@ impl SearchEngine {
                 match self.embedder.as_ref() {
                     None => vec![f32::NAN; docs.len()],
                     Some(embedder) => {
-                        let docs_owned: Vec<String> =
-                            docs.iter().map(|s| s.to_string()).collect();
+                        let docs_owned: Vec<String> = docs.iter().map(|s| s.to_string()).collect();
                         let mut emb = embedder.lock().await;
                         match emb.rerank_biencoder(query, &docs_owned) {
                             Ok(s) => s,
@@ -259,10 +263,19 @@ impl SearchEngine {
             RerankPath::None => unreachable!(),
         };
 
-        let scores: Vec<f32> = (0..results.len()).map(|i| {
-            if docs[i].is_empty() { f32::NAN }
-            else { scores.get(i).copied().filter(|s| s.is_finite()).unwrap_or(f32::NAN) }
-        }).collect();
+        let scores: Vec<f32> = (0..results.len())
+            .map(|i| {
+                if docs[i].is_empty() {
+                    f32::NAN
+                } else {
+                    scores
+                        .get(i)
+                        .copied()
+                        .filter(|s| s.is_finite())
+                        .unwrap_or(f32::NAN)
+                }
+            })
+            .collect();
         // Annotate each result with its reranker score; preserve the RRF
         // score for the NaN fallback path so we keep stable ordering.
         let mut paired: Vec<(SearchResult, f32, usize)> = results
@@ -288,7 +301,9 @@ impl SearchEngine {
             .map(|(mut r, rr, _)| {
                 // Replace .score with reranker score when available; the
                 // RRF score is no longer meaningful once we've reranked.
-                if rr.is_finite() { r.score = rr; }
+                if rr.is_finite() {
+                    r.score = rr;
+                }
                 r
             })
             .collect();
@@ -390,16 +405,39 @@ impl SearchEngine {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<FtsHit>> {
-        if limit == 0 { return Ok(Vec::new()); }
-        let Some(sql) = filters.to_lance_sql() else {
-            return self.fts.search(query, filters, limit);
-        };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let prepared = self.prepare_fts_search(query, filters).await?;
+        self.filter_prepared_fts_hits(prepared, filters, limit)
+            .await
+    }
+
+    async fn prepare_fts_search(
+        &self,
+        query: &str,
+        filters: &SearchFilters,
+    ) -> Result<Arc<PreparedFtsSearch>> {
         let fts = self.fts.clone();
         let query = query.to_owned();
         let fts_filters = filters.clone();
-        let prepared = Arc::new(tokio::task::spawn_blocking(move || {
-            fts.prepare_search(&query, &fts_filters)
-        }).await??);
+        Ok(Arc::new(
+            tokio::task::spawn_blocking(move || fts.prepare_search(&query, &fts_filters)).await??,
+        ))
+    }
+
+    async fn filter_prepared_fts_hits(
+        &self,
+        prepared: Arc<PreparedFtsSearch>,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<FtsHit>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(sql) = filters.to_lance_sql() else {
+            return tokio::task::spawn_blocking(move || prepared.search_page(limit, 0)).await?;
+        };
         let total_documents = prepared.doc_count();
         let mut offset = 0usize;
         let mut matches = Vec::with_capacity(limit);
@@ -408,30 +446,41 @@ impl SearchEngine {
             // Double the explored prefix each time. Fixed-size TopDocs pages
             // repeatedly recollect increasingly long prefixes; doubling uses
             // logarithmically many collections and parses the query only once.
-            let page_size = offset.max(limit.clamp(128, 512))
+            let page_size = offset
+                .max(limit.clamp(128, 512))
                 .min(total_documents - offset);
             let prepared_page = prepared.clone();
-            let page = tokio::task::spawn_blocking(move || {
-                prepared_page.search_page(page_size, offset)
-            }).await??;
+            let page =
+                tokio::task::spawn_blocking(move || prepared_page.search_page(page_size, offset))
+                    .await??;
             let exhausted = page.len() < page_size;
             offset += page.len();
-            if page.is_empty() { break; }
+            if page.is_empty() {
+                break;
+            }
             // Keep Lance predicates/hydration bounded even when the ranked
             // candidate prefix grows large for a selective metadata filter.
             for batch in page.chunks(512) {
                 let ids: Vec<String> = batch.iter().map(|hit| hit.doc_id.clone()).collect();
-                let allowed: HashSet<String> = self.vector
-                    .fetch_search_results_by_ids_filtered(&ids, Some(&sql)).await?
-                    .into_iter().map(|hit| hit.doc_id).collect();
+                let allowed: HashSet<String> = self
+                    .vector
+                    .fetch_search_results_by_ids_filtered(&ids, Some(&sql))
+                    .await?
+                    .into_iter()
+                    .map(|hit| hit.doc_id)
+                    .collect();
                 for hit in batch {
                     if allowed.contains(&hit.doc_id) && seen.insert(hit.doc_id.clone()) {
                         matches.push(hit.clone());
-                        if matches.len() == limit { return Ok(matches); }
+                        if matches.len() == limit {
+                            return Ok(matches);
+                        }
                     }
                 }
             }
-            if exhausted { break; }
+            if exhausted {
+                break;
+            }
         }
         Ok(matches)
     }
@@ -447,6 +496,7 @@ impl SearchEngine {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        let _read_guard = self.vector.read_guard(&self.fts).await?;
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`.
         let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
@@ -458,7 +508,9 @@ impl SearchEngine {
         if filters.fuzzy {
             effective_query = super::fts_query::fuzzify_query(&effective_query);
         }
-        let hits = self.filtered_fts_hits(&effective_query, filters, inner_limit).await?;
+        let hits = self
+            .filtered_fts_hits(&effective_query, filters, inner_limit)
+            .await?;
         if hits.is_empty() {
             return Ok(vec![]);
         }
@@ -490,7 +542,9 @@ impl SearchEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
-        let results = self.maybe_colbert_rerank(query, results, filters, inner_limit).await;
+        let results = self
+            .maybe_colbert_rerank(query, results, filters, inner_limit)
+            .await;
         Ok(self.maybe_rerank(query, results, limit).await)
     }
 
@@ -504,6 +558,7 @@ impl SearchEngine {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_query(query_text).await?;
+        let _read_guard = self.vector.read_guard(&self.fts).await?;
         let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
         let mut results = self
             .vector
@@ -532,24 +587,9 @@ impl SearchEngine {
         if self.embedder.is_none() {
             return self.search_text(query_text, filters, limit).await;
         }
-        // P23 — check result cache before doing any work.
-        let filters_hash = super::result_cache::hash_request(filters, limit);
-        {
-            let mut c = self.cache.lock().await;
-            if let Some(cached) = c.get(query_text, "hybrid", filters_hash) {
-                return Ok(cached);
-            }
-        }
-
-        // Embed first, then run both searches concurrently.
-        let embedding = self.embed_query(query_text).await?;
-
-        // When reranking is on, pull a wider candidate window so the cross
-        // encoder has enough material to re-sort to `limit`. The internal
-        // *2 multiplier still applies on top so RRF has slack on each side.
-        let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
-
-        let vec_clone = self.vector.clone();
+        // Explicit lexical constraints must remain true after fusion. A dense
+        // match is not permission to ignore NOT, a field, or a proximity bound.
+        let constrained = super::fts_query::has_explicit_syntax(query_text)?;
         let mut q_owned = if filters.synonyms {
             super::synonyms::synonym_expand_query(query_text)
         } else {
@@ -558,11 +598,30 @@ impl SearchEngine {
         if filters.fuzzy {
             q_owned = super::fts_query::fuzzify_query(&q_owned);
         }
-        let filters_fts = filters.clone();
+        let filters_hash = super::result_cache::hash_request(filters, limit);
+        {
+            // Repair before trusting a cached answer. Preflight also binds
+            // actual fields and bounds dictionary expansion before model work.
+            let _read_guard = self.vector.read_guard(&self.fts).await?;
+            let mut cache = self.cache.lock().await;
+            if let Some(cached) = cache.get(query_text, "hybrid", filters_hash) {
+                return Ok(cached);
+            }
+            drop(cache);
+            self.prepare_fts_search(&q_owned, filters).await?;
+        }
+        // Do not hold the index lease while computing the initial embedding.
+        // Ingestion may progress during inference; take a fresh snapshot after.
+        let embedding = self.embed_query(query_text).await?;
+        let _read_guard = self.vector.read_guard(&self.fts).await?;
+        let cache_generation = self.cache.lock().await.generation_token();
+        let prepared = self.prepare_fts_search(&q_owned, filters).await?;
+        let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
+        let vec_clone = self.vector.clone();
         let filters_vec = filters.clone();
         let emb_clone = embedding.clone();
 
-        let fts_task = self.filtered_fts_hits(&q_owned, &filters_fts, inner_limit * 2);
+        let fts_task = self.filter_prepared_fts_hits(prepared.clone(), filters, inner_limit * 2);
         let vec_task = tokio::spawn(async move {
             vec_clone
                 .search_vector(&emb_clone, &filters_vec, inner_limit * 2)
@@ -571,13 +630,13 @@ impl SearchEngine {
 
         let (fts_result, vec_result) = tokio::join!(fts_task, vec_task);
         let fts_hits = fts_result?;
-        let vec_hits = vec_result??;
+        let mut vec_hits = vec_result??;
 
         // Optional 3rd modality: BGE-M3 / SPLADE sparse retrieval, scored on
         // the union of FTS+ANN candidates. Cheap (no extra DB scan beyond
         // what we'd already need to hydrate snippets) and only runs when the
         // active embedder has a sparse head.
-        let sparse_hits = self
+        let mut sparse_hits = self
             .maybe_sparse_search(query_text, &fts_hits, &vec_hits, filters, inner_limit)
             .await;
 
@@ -585,8 +644,7 @@ impl SearchEngine {
         // Encode the query text into the 2048-D omni space, then ANN-search
         // the embedding_omni column.  Hits include images and audio files
         // that match the query semantically across modalities.
-        let omni_hits = if filters.omni_search
-            && crate::index::omni_embed::is_omni_available()
+        let mut omni_hits = if filters.omni_search && crate::index::omni_embed::is_omni_available()
         {
             match tokio::task::spawn_blocking({
                 let q = query_text.to_owned();
@@ -594,17 +652,11 @@ impl SearchEngine {
             })
             .await
             {
-                Ok(Ok(omni_emb)) => {
-                    self.vector
-                        .search_vector_column(
-                            &omni_emb,
-                            "embedding_omni",
-                            filters,
-                            inner_limit * 2,
-                        )
-                        .await
-                        .ok()
-                }
+                Ok(Ok(omni_emb)) => self
+                    .vector
+                    .search_vector_column(&omni_emb, "embedding_omni", filters, inner_limit * 2)
+                    .await
+                    .ok(),
                 Ok(Err(e)) => {
                     eprintln!("[search] omni query encode failed, skipping: {e:#}");
                     None
@@ -618,11 +670,40 @@ impl SearchEngine {
             None
         };
 
+        if constrained {
+            let candidates: HashSet<String> = vec_hits
+                .iter()
+                .chain(sparse_hits.iter().flatten())
+                .chain(omni_hits.iter().flatten())
+                .map(|hit| hit.doc_id.clone())
+                .collect();
+            let candidates: Vec<String> = candidates.into_iter().collect();
+            let mut allowed = HashSet::new();
+            for ids in candidates.chunks(1024) {
+                let prepared = prepared.clone();
+                let ids = ids.to_vec();
+                allowed.extend(
+                    tokio::task::spawn_blocking(move || prepared.matching_doc_ids(&ids)).await??,
+                );
+            }
+            vec_hits.retain(|hit| allowed.contains(&hit.doc_id));
+            if let Some(hits) = &mut sparse_hits {
+                hits.retain(|hit| allowed.contains(&hit.doc_id));
+            }
+            if let Some(hits) = &mut omni_hits {
+                hits.retain(|hit| allowed.contains(&hit.doc_id));
+            }
+        }
+
         // RRF merge — 2-way, 3-way (with sparse), or 4-way (with omni).
         let fts_ids: Vec<&str> = fts_hits.iter().map(|h| h.doc_id.as_str()).collect();
         let vec_ids: Vec<&str> = vec_hits.iter().map(|r| r.doc_id.as_str()).collect();
-        let sparse_ids: Vec<&str> = sparse_hits.as_ref().map_or(vec![], |s| s.iter().map(|r| r.doc_id.as_str()).collect());
-        let omni_ids: Vec<&str> = omni_hits.as_ref().map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
+        let sparse_ids: Vec<&str> = sparse_hits
+            .as_ref()
+            .map_or(vec![], |s| s.iter().map(|r| r.doc_id.as_str()).collect());
+        let omni_ids: Vec<&str> = omni_hits
+            .as_ref()
+            .map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
         let mut lists: Vec<&[&str]> = vec![&fts_ids, &vec_ids];
         if sparse_hits.is_some() {
             lists.push(&sparse_ids);
@@ -702,13 +783,21 @@ impl SearchEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
-        let results = self.maybe_colbert_rerank(query_text, results, filters, inner_limit).await;
+        let results = self
+            .maybe_colbert_rerank(query_text, results, filters, inner_limit)
+            .await;
         let out = self.maybe_rerank(query_text, results, limit).await;
 
         // P23 — populate cache.
         {
             let mut c = self.cache.lock().await;
-            c.put(query_text, "hybrid", filters_hash, out.clone());
+            c.put_at_generation(
+                query_text,
+                "hybrid",
+                filters_hash,
+                out.clone(),
+                cache_generation,
+            );
         }
         Ok(out)
     }
@@ -733,10 +822,8 @@ impl SearchEngine {
 
         // Encode the image in a blocking thread (both encoders do FFI).
         let path_vit = path.clone();
-        let vit_result = tokio::task::spawn_blocking(move || {
-            vit_embed::embed_image(&path_vit)
-        })
-        .await;
+        let vit_result =
+            tokio::task::spawn_blocking(move || vit_embed::embed_image(&path_vit)).await;
 
         let vit_emb = match vit_result {
             Ok(Ok(emb)) => Some(emb),
@@ -752,10 +839,8 @@ impl SearchEngine {
 
         let omni_emb = if omni_embed::is_omni_available() {
             let path_omni = path.clone();
-            match tokio::task::spawn_blocking(move || {
-                omni_embed::encode_image_omni(&path_omni)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || omni_embed::encode_image_omni(&path_omni))
+                .await
             {
                 Ok(Ok(emb)) => Some(emb),
                 Ok(Err(e)) => {
@@ -777,6 +862,7 @@ impl SearchEngine {
             ));
         }
 
+        let _read_guard = self.vector.read_guard(&self.fts).await?;
         let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
 
         // ViT channel — image-to-image similarity.
@@ -800,8 +886,12 @@ impl SearchEngine {
         };
 
         // RRF merge across available channels.
-        let vit_ids: Vec<&str> = vit_hits.as_ref().map_or(vec![], |h| h.iter().map(|r| r.doc_id.as_str()).collect());
-        let omni_ids: Vec<&str> = omni_hits.as_ref().map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
+        let vit_ids: Vec<&str> = vit_hits
+            .as_ref()
+            .map_or(vec![], |h| h.iter().map(|r| r.doc_id.as_str()).collect());
+        let omni_ids: Vec<&str> = omni_hits
+            .as_ref()
+            .map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
         let mut lists: Vec<&[&str]> = Vec::new();
         if vit_hits.is_some() {
             lists.push(&vit_ids);
@@ -970,7 +1060,11 @@ fn rrf_merge_n(lists: &[&[&str]], k: usize, limit: usize) -> Vec<(String, f32)> 
         .into_iter()
         .map(|(id, s)| (id.to_owned(), s))
         .collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     ranked.truncate(limit);
     ranked
 }
@@ -1006,9 +1100,13 @@ pub(crate) fn maxsim(query_vecs: &[Vec<f32>], doc_vecs: &[Vec<f32>]) -> f32 {
 /// Returns an empty Vec on size mismatch or when `packed` is empty.
 pub(crate) fn unpack_multivec(packed: &[u8], n_tokens: i16, dim: usize) -> Vec<Vec<f32>> {
     let n = n_tokens as usize;
-    if packed.is_empty() || n == 0 || dim == 0 { return vec![]; }
+    if packed.is_empty() || n == 0 || dim == 0 {
+        return vec![];
+    }
     let expected = n * dim * 4;
-    if packed.len() < expected { return vec![]; }
+    if packed.len() < expected {
+        return vec![];
+    }
     (0..n)
         .map(|i| {
             (0..dim)
@@ -1301,7 +1399,10 @@ mod tests {
             mk_result("der text", Some("The translated text"), Some("en")),
         ];
         SearchEngine::apply_translation_snippet(&mut rows, Some("en"));
-        assert_eq!(rows[0].snippet, "le texte", "fr row must NOT swap when filter is en");
+        assert_eq!(
+            rows[0].snippet, "le texte",
+            "fr row must NOT swap when filter is en"
+        );
         assert_eq!(rows[1].snippet, "The translated text");
     }
 
@@ -1430,24 +1531,45 @@ mod tests {
         let fts_dir = tempfile::TempDir::new().unwrap();
         let lance_dir = tempfile::TempDir::new().unwrap();
         let fts = std::sync::Arc::new(
-            super::super::fts_index::FtsIndex::open_or_create(fts_dir.path()).unwrap());
+            super::super::fts_index::FtsIndex::open_or_create(fts_dir.path()).unwrap(),
+        );
         let vector = std::sync::Arc::new(
             super::super::local_index::LocalIndex::open_or_create(lance_dir.path(), 4)
-                .await.unwrap());
+                .await
+                .unwrap(),
+        );
         let engine = SearchEngine::new(fts, vector, None);
 
-        let input = vec![
-            SearchResult { doc_id: "a".into(), location_uri: "u".into(),
-                owner_id: "o".into(), title: None, author: None, year: None,
-                filename: None, ext: None, language: None, snippet: String::new(),
-                score: 0.5, chunk_index: 0, metadata_json: None,
-                catalog_source: None, volume_id: None, indexed_at: 0,
-                source_hash: String::new(), text_translated: None,
-                text_translated_lang: None, url: None, tags: vec![], summary: None, doc_status: None },
-        ];
+        let input = vec![SearchResult {
+            doc_id: "a".into(),
+            location_uri: "u".into(),
+            owner_id: "o".into(),
+            title: None,
+            author: None,
+            year: None,
+            filename: None,
+            ext: None,
+            language: None,
+            snippet: String::new(),
+            score: 0.5,
+            chunk_index: 0,
+            metadata_json: None,
+            catalog_source: None,
+            volume_id: None,
+            indexed_at: 0,
+            source_hash: String::new(),
+            text_translated: None,
+            text_translated_lang: None,
+            url: None,
+            tags: vec![],
+            summary: None,
+            doc_status: None,
+        }];
         let mut filters = SearchFilters::default();
         filters.colbert_rerank = false; // flag off → no-op
-        let out = engine.maybe_colbert_rerank("any", input.clone(), &filters, 10).await;
+        let out = engine
+            .maybe_colbert_rerank("any", input.clone(), &filters, 10)
+            .await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].doc_id, "a");
         assert_eq!(out[0].score, 0.5);
@@ -1460,24 +1582,45 @@ mod tests {
         let fts_dir = tempfile::TempDir::new().unwrap();
         let lance_dir = tempfile::TempDir::new().unwrap();
         let fts = std::sync::Arc::new(
-            super::super::fts_index::FtsIndex::open_or_create(fts_dir.path()).unwrap());
+            super::super::fts_index::FtsIndex::open_or_create(fts_dir.path()).unwrap(),
+        );
         let vector = std::sync::Arc::new(
             super::super::local_index::LocalIndex::open_or_create(lance_dir.path(), 4)
-                .await.unwrap());
+                .await
+                .unwrap(),
+        );
         let engine = SearchEngine::new(fts, vector, None); // no embedder
 
-        let input = vec![
-            SearchResult { doc_id: "a".into(), location_uri: "u".into(),
-                owner_id: "o".into(), title: None, author: None, year: None,
-                filename: None, ext: None, language: None, snippet: String::new(),
-                score: 0.5, chunk_index: 0, metadata_json: None,
-                catalog_source: None, volume_id: None, indexed_at: 0,
-                source_hash: String::new(), text_translated: None,
-                text_translated_lang: None, url: None, tags: vec![], summary: None, doc_status: None },
-        ];
+        let input = vec![SearchResult {
+            doc_id: "a".into(),
+            location_uri: "u".into(),
+            owner_id: "o".into(),
+            title: None,
+            author: None,
+            year: None,
+            filename: None,
+            ext: None,
+            language: None,
+            snippet: String::new(),
+            score: 0.5,
+            chunk_index: 0,
+            metadata_json: None,
+            catalog_source: None,
+            volume_id: None,
+            indexed_at: 0,
+            source_hash: String::new(),
+            text_translated: None,
+            text_translated_lang: None,
+            url: None,
+            tags: vec![],
+            summary: None,
+            doc_status: None,
+        }];
         let mut filters = SearchFilters::default();
         filters.colbert_rerank = true; // flag ON but no embedder
-        let out = engine.maybe_colbert_rerank("any", input, &filters, 10).await;
+        let out = engine
+            .maybe_colbert_rerank("any", input, &filters, 10)
+            .await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].score, 0.5);
     }
@@ -1539,7 +1682,6 @@ mod tests {
         }
     }
 
-
     /// A matching document below the first 128 BM25 candidates must still be
     /// found, and a full-text channel must not leak out-of-filter documents.
     #[tokio::test(flavor = "current_thread")]
@@ -1548,21 +1690,39 @@ mod tests {
         let fts_dir = tempfile::TempDir::new().unwrap();
         let lance_dir = tempfile::TempDir::new().unwrap();
         let fts = Arc::new(FtsIndex::open_or_create(fts_dir.path()).unwrap());
-        let vector = Arc::new(LocalIndex::open_or_create(lance_dir.path(), 4).await.unwrap());
+        let vector = Arc::new(
+            LocalIndex::open_or_create(lance_dir.path(), 4)
+                .await
+                .unwrap(),
+        );
         let mut writer = fts.writer().unwrap();
         let ids: Vec<String> = (0..260).map(|i| format!("document-{i}")).collect();
         for id in &ids {
-            fts.add_document(&mut writer, TantivyInput {
-                doc_id: id, owner_id: "owner", language: "en", title: "Warranty",
-                headings: "", body: "warranty standard coverage", body_translated: None,
-            }).unwrap();
+            fts.add_document(
+                &mut writer,
+                TantivyInput {
+                    doc_id: id,
+                    owner_id: "owner",
+                    language: "en",
+                    title: "Warranty",
+                    headings: "",
+                    body: "warranty standard coverage",
+                    body_translated: None,
+                },
+            )
+            .unwrap();
         }
         writer.commit().unwrap();
-        let ranked = fts.search("warranty", &SearchFilters::default(), 260).unwrap();
+        let ranked = fts
+            .search("warranty", &SearchFilters::default(), 260)
+            .unwrap();
         let target = ranked[200].doc_id.clone();
-        let mut chunks: Vec<_> = ids.iter().map(|id| {
-            filtered_search_chunk(id, 0, 1, Some("warranty standard coverage"), None, None)
-        }).collect();
+        let mut chunks: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                filtered_search_chunk(id, 0, 1, Some("warranty standard coverage"), None, None)
+            })
+            .collect();
         let selected = chunks.iter_mut().find(|row| row.doc_id == target).unwrap();
         selected.ext = Some("pdf".into());
         selected.language = Some("de".into());
@@ -1571,22 +1731,36 @@ mod tests {
         vector.ingest_batch(&chunks).await.unwrap();
         let engine = SearchEngine::new(fts, vector, None);
         let mut filters = SearchFilters {
-            ext: vec!["pdf".into()], language: Some("de".into()),
-            year_min: Some(2020), year_max: Some(2025), tag: Some("approved".into()),
-            parent_dir_prefix: Some("/data".into()), ..Default::default()
+            ext: vec!["pdf".into()],
+            language: Some("de".into()),
+            year_min: Some(2020),
+            year_max: Some(2025),
+            tag: Some("approved".into()),
+            parent_dir_prefix: Some("/data".into()),
+            ..Default::default()
         };
         let found = engine.search_text("warranty", &filters, 1).await.unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].doc_id, target);
         // This same filtered FTS entry point is used before hybrid fusion.
-        let ranked_filtered = engine.filtered_fts_hits("warranty", &filters, 2).await.unwrap();
+        let ranked_filtered = engine
+            .filtered_fts_hits("warranty", &filters, 2)
+            .await
+            .unwrap();
         assert_eq!(ranked_filtered.len(), 1);
         assert_eq!(ranked_filtered[0].doc_id, target);
         filters.doc_id_scope = vec![ranked[0].doc_id.clone()];
-        assert!(engine.search_text("warranty", &filters, 1).await.unwrap().is_empty());
+        assert!(engine
+            .search_text("warranty", &filters, 1)
+            .await
+            .unwrap()
+            .is_empty());
         filters.doc_id_scope.clear();
         filters.tag = Some("missing".into());
-        assert!(engine.search_text("warranty", &filters, 1).await.unwrap().is_empty());
+        assert!(engine
+            .search_text("warranty", &filters, 1)
+            .await
+            .unwrap()
+            .is_empty());
     }
-
 }

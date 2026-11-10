@@ -8,6 +8,9 @@
 pub enum TaskFailureReason {
     /// Extraction produced no output within the time budget.
     Timeout,
+    /// Extraction completed without searchable text. OCR or changed extraction
+    /// settings may recover the content; this is not successful full indexing.
+    EmptyText,
     /// File is DRM-protected (EPUB ADEPT/FairPlay, PDF owner-lock).
     Drm,
     /// File requires a user password to decrypt.
@@ -37,22 +40,28 @@ impl TaskFailureReason {
             Self::Password
         } else if lower.contains("no extractor") || lower.contains("unsupported") {
             Self::Unsupported
-        } else {
-            // All other extraction errors are treated as corrupt/unknown.
-            // Timeout is set before classify() is called (elapsed future).
+        } else if lower.contains("timed out") || lower.contains("timeout") {
+            Self::Timeout
+        } else if lower.contains("malformed") || lower.contains("corrupt")
+            || lower.contains("unexpected eof") || lower.contains("invalid xref") {
             Self::Corrupt
+        } else {
+            // Model availability, permissions, remote access and temporary I/O
+            // failures are not evidence that the document itself is corrupt.
+            Self::Other
         }
     }
 
     /// Returns `false` for reasons that won't improve on retry
     /// (DRM, Password, Corrupt, Unsupported); `true` for transient ones.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Timeout | Self::Other)
+        matches!(self, Self::Timeout | Self::EmptyText | Self::Other)
     }
 
     pub fn as_tag(&self) -> &'static str {
         match self {
             Self::Timeout      => "timeout",
+            Self::EmptyText    => "empty_text",
             Self::Drm          => "drm",
             Self::Password     => "password",
             Self::Corrupt      => "corrupt",
@@ -103,10 +112,13 @@ mod tests {
     }
 
     #[test]
-    fn classify_falls_back_to_corrupt() {
+    fn classify_only_calls_explicit_parse_failures_corrupt() {
         assert_eq!(TaskFailureReason::classify("xref table malformed"),        TaskFailureReason::Corrupt);
         assert_eq!(TaskFailureReason::classify("unexpected EOF"),              TaskFailureReason::Corrupt);
-        assert_eq!(TaskFailureReason::classify(""),                            TaskFailureReason::Corrupt);
+        assert_eq!(TaskFailureReason::classify(""),                            TaskFailureReason::Other);
+        assert_eq!(TaskFailureReason::classify("model is not loaded"),         TaskFailureReason::Other);
+        assert_eq!(TaskFailureReason::classify("permission denied"),          TaskFailureReason::Other);
+        assert_eq!(TaskFailureReason::classify("request timed out"),          TaskFailureReason::Timeout);
     }
 
     #[test]
@@ -117,9 +129,10 @@ mod tests {
     }
 
     #[test]
-    fn is_retryable_only_timeout_and_other() {
+    fn retryable_reasons_include_empty_extraction() {
         assert!( TaskFailureReason::Timeout.is_retryable());
         assert!( TaskFailureReason::Other.is_retryable());
+        assert!( TaskFailureReason::EmptyText.is_retryable());
         assert!(!TaskFailureReason::Drm.is_retryable());
         assert!(!TaskFailureReason::Password.is_retryable());
         assert!(!TaskFailureReason::Corrupt.is_retryable());
@@ -131,7 +144,7 @@ mod tests {
         // The `serde(rename_all = "snake_case")` derive must produce these
         // exact strings — they're what gets persisted in metadata_json.
         for r in [
-            TaskFailureReason::Timeout, TaskFailureReason::Drm,
+            TaskFailureReason::Timeout, TaskFailureReason::EmptyText, TaskFailureReason::Drm,
             TaskFailureReason::Password, TaskFailureReason::Corrupt,
             TaskFailureReason::Unsupported, TaskFailureReason::Other,
         ] {

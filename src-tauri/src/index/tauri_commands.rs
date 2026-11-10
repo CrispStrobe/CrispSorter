@@ -36,7 +36,9 @@ pub async fn index_vocabulary(
     if !lock.config.enabled { return Err("Enable the local index to browse indexed words".into()); }
     let fts = lock.engine.as_ref().map(|engine| engine.fts.clone())
         .ok_or("Indexed words are available after the local text index is initialized")?;
+    let local = lock.local.clone().ok_or("Indexed words require a local index")?;
     drop(lock);
+    let _consistent = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
     tokio::task::spawn_blocking(move || fts.vocabulary(&prefix, limit.unwrap_or(50).clamp(1, 100), &super::SearchFilters::default()))
         .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
@@ -1096,6 +1098,9 @@ pub async fn index_ingest_batch(
             chunks.push(RemoteIngestChunk {
                 doc_id: doc_id.clone(),
                 chunk_index: tc.chunk_index,
+                chunk_total: Some(i32::try_from(text_chunks.len()).map_err(|_| "Too many document chunks")?),
+                chunk_start_char: Some(i32::try_from(tc.start_char).map_err(|_| "Document offset exceeds supported range")?),
+                chunk_end_char: Some(i32::try_from(tc.end_char).map_err(|_| "Document offset exceeds supported range")?),
                 full_text: tc.text.clone(),
                 full_text_md: if i == 0 {
                     Some(raw.full_text_md.clone())
@@ -1280,13 +1285,18 @@ pub struct L2PromoteResult {
 
 /// Read embedded metadata (PDF Info dict, DOCX core.xml, EPUB OPF) for each
 /// `doc_id`, write the discovered Title / Author / Year fields back to the
-/// row, and bump `metadata_json.level` to 2.
+/// row, and promote `metadata_json.level` to at least 2.
 #[tauri::command]
 pub async fn index_promote_l2(
     state: State<'_, AppState>,
     doc_ids: Vec<String>,
+    source_paths: Option<Vec<String>>,
 ) -> Result<Vec<L2PromoteResult>, String> {
     use super::l2_metadata;
+
+    if source_paths.as_ref().is_some_and(|paths| paths.len() != doc_ids.len()) {
+        return Err("Source paths must align with document IDs".into());
+    }
 
     let lock = state.index.lock().await;
     if !lock.config.enabled {
@@ -1297,20 +1307,29 @@ pub async fn index_promote_l2(
         .as_ref()
         .ok_or("L2 promotion requires the local backend")?
         .clone();
+    let fts = lock.fts.clone().ok_or("Full-text index not ready")?;
     drop(lock);
 
     let mut out = Vec::with_capacity(doc_ids.len());
-    for doc_id in doc_ids {
+    for (position, requested_doc_id) in doc_ids.into_iter().enumerate() {
         // Look up the row to find location_uri + existing metadata_json.
-        let rows = local
-            .list_documents(usize::MAX)
+        let read_guard = local.read_guard(&fts).await.map_err(|e| e.to_string())?;
+        let mut row = local
+            .fetch_document_summary(&requested_doc_id)
             .await
             .map_err(|e| e.to_string())?;
-        let row = match rows.iter().find(|r| r.doc_id == doc_id) {
-            Some(r) => r.clone(),
+        if row.is_none() {
+            if let Some(path) = source_paths.as_ref().and_then(|paths| paths.get(position)) {
+                row = local.fetch_document_summary_for_uri(path, "local")
+                    .await.map_err(|e| e.to_string())?;
+            }
+        }
+        drop(read_guard);
+        let row = match row {
+            Some(r) => r,
             None => {
                 out.push(L2PromoteResult {
-                    doc_id,
+                    doc_id: requested_doc_id,
                     updated: false,
                     title: None,
                     author: None,
@@ -1320,6 +1339,7 @@ pub async fn index_promote_l2(
                 continue;
             }
         };
+        let doc_id = row.doc_id.clone();
 
         // Resolve location_uri to a path. Strip our `crisp+local://…/` prefix.
         let path_str = if row.location_uri.starts_with("crisp+local://") {
@@ -1344,13 +1364,14 @@ pub async fn index_promote_l2(
 
         let meta = l2_metadata::read(&path);
 
-        // Build merged metadata_json: existing keys + L2 fields + level=2.
+        // Preserve a document that already has full text and embeddings.
         let mut merged: serde_json::Map<String, serde_json::Value> = row
             .metadata_json
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
-        merged.insert("level".to_owned(), serde_json::Value::from(2));
+        let level = merged.get("level").and_then(|v| v.as_u64()).unwrap_or(1).max(2);
+        merged.insert("level".to_owned(), serde_json::Value::from(level));
         if let Some(pc) = meta.page_count {
             merged.insert("page_count".to_owned(), serde_json::Value::from(pc));
         }
@@ -2044,14 +2065,7 @@ pub async fn index_delete_document(
 
     drop(lock);
 
-    // Remove all chunks from LanceDB.
-    local.delete_doc(&doc_id).await.map_err(|e| e.to_string())?;
-
-    // Remove the document entry from Tantivy.
-    let mut writer = fts.writer().map_err(|e| e.to_string())?;
-    fts.delete_document(&mut writer, &doc_id)
-        .map_err(|e| e.to_string())?;
-    writer.commit().map_err(|e| e.to_string())?;
+    local.delete_document_with_fts(&doc_id, &fts).await.map_err(|e| e.to_string())?;
 
     // Audit trail
     if let Ok(dir) = state.data_dir.lock().await.as_ref().ok_or(()) {
@@ -2104,12 +2118,18 @@ pub async fn index_retry_extraction(
         .extraction_failure_reason_for_uri_by_doc_id(&doc_id)
         .await
         .map_err(|e| e.to_string())?;
+    if local.document_metadata(&doc_id).await.map_err(|e| e.to_string())?
+        .get("extraction_skip").and_then(|value| value.as_bool()) == Some(true) {
+        local.clear_extraction_failure(&doc_id).await.map_err(|e| e.to_string())?;
+        return Ok(reason);
+    }
     if let Some(ref r) = reason {
         use crate::index::task_failure::TaskFailureReason;
         // Only clear if the reason is retryable.
         let tfr = match r.as_str() {
             "timeout" => TaskFailureReason::Timeout,
             "other"   => TaskFailureReason::Other,
+            "empty_text" => TaskFailureReason::EmptyText,
             _         => return Ok(reason), // non-retryable — refuse
         };
         if tfr.is_retryable() {
@@ -2970,6 +2990,8 @@ pub async fn init_index(
                 )
                 .with_ner(ner_handle.clone()),
             );
+            emit!("recovery", "Recovering interrupted index updates …", 95);
+            pipeline.ensure_ready().await?;
             let backend: Arc<dyn IndexBackend> = local.clone();
 
             emit!("done", "Index bereit", 100);
@@ -3221,33 +3243,14 @@ pub async fn index_purge(
     }))
 }
 
-/// Mark all failed-extraction rows as "skipped" (unsupported) so they
-/// stop appearing in the retry queue.
+/// Persist an explicit user skip without discarding source/review metadata.
 #[tauri::command]
 pub async fn index_skip_all_failed(
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
     let local = state.index.lock().await.local.clone()
         .ok_or("Local index not initialised")?;
-    let rows = local.list_failed_extractions(false).await.map_err(|e| e.to_string())?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    let new_meta = format!(
-        r#"{{"level":2,"extraction_failure":{{"reason":"unsupported","msg":"skipped via GUI","at":{}}}}}"#,
-        now_ms
-    );
-    let mut n = 0usize;
-    for row in &rows {
-        let _ = local.update_l2_fields(
-            &row.doc_id,
-            None, None, None, None, None,
-            Some(&new_meta),
-        ).await;
-        n += 1;
-    }
-    Ok(n)
+    local.skip_failed_extractions().await.map_err(|e| e.to_string())
 }
 
 /// Walk a local directory and write L1 (metadata-only) rows into the

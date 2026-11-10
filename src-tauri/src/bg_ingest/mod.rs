@@ -221,15 +221,23 @@ impl BackgroundIngest {
 /// only once: the re-ingested row then carries the flag.
 fn skip_unchanged(
     file_mtime: Option<i64>,
+    source_hash: &str,
     indexed: Option<crate::index::local_index::IndexedState>,
     images_indexing_on: bool,
 ) -> bool {
-    let (Some(file_mt), Some(state)) = (file_mtime, indexed) else {
+    let Some(state) = indexed else {
         return false;
     };
-    // Unchanged file? Rows without a recorded mtime can't prove it.
+    if state.source_hash.as_deref() != Some(source_hash) {
+        return false;
+    }
+    if state.extraction_skip { return true; }
+    if state.extraction_failed { return false; }
+    let Some(file_mt) = file_mtime else { return false; };
+    // Moving an older file over a newer one is still a change. Equality is
+    // required; a timestamp in the future must never make a source immutable.
     match state.mtime_unix {
-        Some(indexed_mt) if indexed_mt >= file_mt => {}
+        Some(indexed_mt) if indexed_mt == file_mt => {}
         _ => return false,
     }
     // The setting moved since this row was written: re-ingest to backfill.
@@ -237,6 +245,22 @@ fn skip_unchanged(
         return false;
     }
     true
+}
+
+/// Hash with bounded memory. Holding a second full copy of a large PDF or
+/// recording for the entire extraction needlessly multiplies peak memory.
+fn hash_source(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 { break; }
+        hash.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hash.finalize()))
 }
 
 /// Spawn worker tasks up to the configured concurrency.  Safe to call
@@ -367,7 +391,6 @@ async fn worker_loop(
 async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String> {
     use crate::index::task_failure::{epub_is_drm_protected, TaskFailureReason};
     use crate::AppState;
-    use sha2::{Digest, Sha256};
     use std::time::Duration;
     use tauri::Manager;
 
@@ -501,6 +524,13 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
+    // Content verification catches same-size edits within one timestamp tick
+    // and files copied over an existing path with preserved timestamps.
+    let source_hash = tokio::task::spawn_blocking({
+        let p = p.clone();
+        move || hash_source(&p)
+    }).await.map_err(|e| format!("source hash task: {e}"))?
+        .map_err(|e| format!("reading {}: {e}", p.display()))?;
     if let Some(local) = local.as_ref() {
         let owner_probe = item
             .owner_id
@@ -522,30 +552,12 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .await
             .ok()
             .flatten();
-        if skip_unchanged(file_mtime, indexed_state, image_indexing_enabled) {
+        if skip_unchanged(file_mtime, &source_hash, indexed_state, image_indexing_enabled) {
             return Ok(());
         }
-        // Failure-skip: non-retryable reason already stored — don't waste
-        // extraction time on DRM EPUBs, corrupt files, or unsupported types.
-        if let Ok(Some(reason)) = local.extraction_failure_reason_for_uri(&probe_uri).await {
-            match reason.as_str() {
-                "drm" | "corrupt" | "unsupported" | "password" => return Ok(()),
-                _ => {} // Timeout / Other — still worth retrying.
-            }
-        }
+        // Do not permanently blacklist a location after one failed parse:
+        // its bytes or extraction capabilities may have changed since then.
     }
-
-    // ── Read bytes + hash ───────────────────────────────────────────────
-    let bytes = tokio::task::spawn_blocking({
-        let p = p.clone();
-        move || std::fs::read(&p)
-    })
-    .await
-    .map_err(|e| format!("read join: {e}"))?
-    .map_err(|e| format!("reading {}: {e}", p.display()))?;
-    let mut h = Sha256::new();
-    h.update(&bytes);
-    let source_hash = hex::encode(h.finalize());
 
     // ── Shared fields used by both success and L2-fallback paths ───────
     let owner = item
@@ -571,7 +583,9 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let file_size = bg_meta.as_ref().map(|m| m.len() as i64);
     let volume_id = crate::volume::volume_id_for_path(&p);
     let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
-    let doc_id = uuid::Uuid::new_v4().to_string();
+    // Failed attempts and successful extraction share one deterministic
+    // identity, so retries replace their metadata row rather than multiply it.
+    let doc_id = source_hash.clone();
 
     // ── Stage W — skeleton-only fast path ──────────────────────────────
     // When `local_skeleton_only = true` we skip everything except the two
@@ -640,8 +654,18 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             embedding_omni: None,
             embedding_vit: None,
         };
-        // Write L1 row locally (mtime guard already ran above).
-        let _ = pipeline.ingest_document(raw_l1.clone()).await;
+        // Metadata-only indexing must use the metadata writer. Passing an
+        // empty body through full ingest could falsely report success while
+        // storing no document row at all.
+        pipeline.ingest_l1(&[crate::index::ingest::L1FileEntry {
+            doc_id: doc_id.clone(), source_hash: source_hash.clone(),
+            location_uri: location_uri.clone(), owner_id: owner.clone(),
+            filename: filename.clone(), ext: ext_from_path.clone(),
+            parent_dir: parent_dir.clone().unwrap_or_default(),
+            size: file_size.unwrap_or(0),
+            mtime_ms: mtime_unix.unwrap_or(0).saturating_mul(1000),
+            ctime_ms: 0, volume_id: volume_id.clone(),
+        }]).await.map_err(|e| format!("Saving metadata for {}: {e:#}", p.display()))?;
 
         // Enqueue manifest push + file upload for the VPS.
         if cb_auto_push_enabled {
@@ -890,6 +914,26 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 }
             }
 
+            let verified_hash = tokio::task::spawn_blocking({
+                let p = p.clone();
+                move || hash_source(&p)
+            }).await.map_err(|e| format!("source verification task: {e}"))?
+                .map_err(|e| format!("verifying {}: {e}", p.display()))?;
+            if verified_hash != raw.source_hash {
+                return Err(format!("{} changed during extraction; the previous index is retained. Retry the file.", p.display()));
+            }
+            if raw.full_text.trim().is_empty()
+                && raw.embedding_vit.is_none() && raw.embedding_omni.is_none() {
+                let message = "No searchable text was extracted. Metadata is retained; enable OCR or adjust extraction settings and retry.";
+                pipeline.ingest_l2_row(
+                    raw.source_hash.clone(), raw.location_uri, raw.owner_id, raw.filename,
+                    raw.ext, raw.source_hash, raw.mtime_unix, raw.file_size,
+                    raw.parent_dir, raw.volume_id, raw.title, raw.author, raw.year,
+                    Some(raw.language), None, &TaskFailureReason::EmptyText, message,
+                ).await.map_err(|e| format!("{message} Could not save the failure record: {e:#}"))?;
+                return Err(format!("{}: {message}", p.display()));
+            }
+
             // P13.7 Stage F + N — capture the wire-shape snapshot
             // BEFORE ingest_document consumes `raw`.  If the auto-
             // partition map (Stage N) has an entry for this file's
@@ -979,7 +1023,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 TaskFailureReason::classify(&err_msg)
             };
             let l2 = crate::index::l2_metadata::read(&p);
-            let _ = pipeline
+            pipeline
                 .ingest_l2_row(
                     doc_id,
                     location_uri,
@@ -999,15 +1043,15 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                     &reason,
                     &err_msg,
                 )
-                .await;
-            Ok(())
+                .await.map_err(|e| format!("{err_msg}; could not save failure metadata: {e:#}"))?;
+            Err(format!("{}: {err_msg}", p.display()))
         }
 
         // ── spawn_blocking panicked ──────────────────────────────────────
         Ok(Err(join_err)) => {
             let err_msg = join_err.to_string();
             let l2 = crate::index::l2_metadata::read(&p);
-            let _ = pipeline
+            pipeline
                 .ingest_l2_row(
                     doc_id,
                     location_uri,
@@ -1027,8 +1071,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                     &TaskFailureReason::Other,
                     &err_msg,
                 )
-                .await;
-            Ok(())
+                .await.map_err(|e| format!("{err_msg}; could not save failure metadata: {e:#}"))?;
+            Err(format!("{}: {err_msg}", p.display()))
         }
 
         // ── Timeout ──────────────────────────────────────────────────────
@@ -1038,7 +1082,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 EXTRACTION_TIMEOUT_SECS
             );
             let l2 = crate::index::l2_metadata::read(&p);
-            let _ = pipeline
+            pipeline
                 .ingest_l2_row(
                     doc_id,
                     location_uri,
@@ -1058,7 +1102,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                     &TaskFailureReason::Timeout,
                     &err_msg,
                 )
-                .await;
+                .await.map_err(|e| format!("{err_msg}; could not save failure metadata: {e:#}"))?;
             // Timeout is retryable — count as errored so the user can
             // see which files didn't complete and retry them later.
             Err(err_msg)
@@ -1222,36 +1266,55 @@ mod tests {
     use crate::index::local_index::IndexedState;
 
     fn state(mtime: Option<i64>, images: bool) -> Option<IndexedState> {
-        Some(IndexedState { mtime_unix: mtime, images_indexed: images })
+        Some(IndexedState { mtime_unix: mtime, images_indexed: images, source_hash: Some("hash".into()), extraction_failed: false, extraction_skip: false })
     }
 
     #[test]
     fn skip_requires_the_file_to_be_untouched() {
-        // Store is newer than the file → up to date.
-        assert!(skip_unchanged(Some(100), state(Some(120), true), false));
+        // Replacing a source with an older version is still a change.
+        assert!(!skip_unchanged(Some(100), "hash", state(Some(120), true), false));
         // Same timestamp is still up to date (sub-second edits are ignored).
-        assert!(skip_unchanged(Some(100), state(Some(100), true), false));
+        assert!(skip_unchanged(Some(100), "hash", state(Some(100), true), false));
         // File changed after ingest → re-ingest.
-        assert!(!skip_unchanged(Some(200), state(Some(120), true), false));
+        assert!(!skip_unchanged(Some(200), "hash", state(Some(120), true), false));
     }
 
     #[test]
     fn skip_never_happens_without_an_index_record() {
-        assert!(!skip_unchanged(Some(100), None, false));
-        assert!(!skip_unchanged(Some(100), None, true));
+        assert!(!skip_unchanged(Some(100), "hash", None, false));
+        assert!(!skip_unchanged(Some(100), "hash", None, true));
         // A row with no recorded mtime cannot prove it is current.
-        assert!(!skip_unchanged(Some(100), state(None, true), false));
+        assert!(!skip_unchanged(Some(100), "hash", state(None, true), false));
         // ...and no file mtime means there is nothing to compare.
-        assert!(!skip_unchanged(None, state(Some(100), true), false));
+        assert!(!skip_unchanged(None, "hash", state(Some(100), true), false));
     }
 
     #[test]
     fn enabling_image_indexing_backfills_old_rows_once() {
         // Row written while the feature was off, file untouched: re-ingest.
-        assert!(!skip_unchanged(Some(100), state(Some(120), false), true));
+        assert!(!skip_unchanged(Some(100), "hash", state(Some(100), false), true));
         // Row written with the feature on: skip, so no reindex loop.
-        assert!(skip_unchanged(Some(100), state(Some(120), true), true));
+        assert!(skip_unchanged(Some(100), "hash", state(Some(100), true), true));
         // Feature off again: the old row is fine as-is.
-        assert!(skip_unchanged(Some(100), state(Some(120), false), false));
+        assert!(skip_unchanged(Some(100), "hash", state(Some(100), false), false));
+    }
+
+    #[test]
+    fn content_changes_and_failed_attempts_are_never_skipped() {
+        assert!(!skip_unchanged(Some(100), "different-hash", state(Some(100), true), false));
+        let mut failed = state(Some(100), true).unwrap();
+        failed.extraction_failed = true;
+        assert!(!skip_unchanged(Some(100), "hash", Some(failed), false));
+    }
+
+    #[test]
+    fn streaming_hash_detects_same_length_replacements() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"first").unwrap();
+        let before = hash_source(file.path()).unwrap();
+        std::fs::write(file.path(), b"other").unwrap();
+        let after = hash_source(file.path()).unwrap();
+        assert_ne!(before, after);
+        assert_eq!(before.len(), 64);
     }
 }

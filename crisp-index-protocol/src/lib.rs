@@ -58,6 +58,15 @@ pub struct IngestChunk {
     pub doc_id: String,
     /// 0-based index within the document's chunk sequence.
     pub chunk_index: i32,
+    /// Total chunks in a complete document replacement, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_total: Option<i32>,
+    /// Inclusive UTF-8 byte offset in the original document text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_start_char: Option<i32>,
+    /// Exclusive UTF-8 byte offset in the original document text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_end_char: Option<i32>,
     /// Plain-text body of the chunk. Required.
     pub full_text: String,
     /// Optional Markdown rendering of the chunk (preserves headings /
@@ -177,6 +186,42 @@ pub struct IngestBatch {
     pub chunks: Vec<IngestChunk>,
 }
 
+/// Lexical grammar version shared by the desktop and server query engine.
+pub const QUERY_LANGUAGE_VERSION: u32 = 1;
+
+/// Current server full-text schema. Older generations remain preserved on disk.
+pub const FTS_SCHEMA_VERSION: u32 = 2;
+
+/// Negotiated search support returned by `GET /v1/capabilities`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchCapabilities {
+    /// HTTP API generation.
+    pub api_version: u32,
+    /// Exact Boolean, field, phrase, fuzzy, wildcard, and proximity grammar.
+    pub query_language_version: u32,
+    /// Active full-text index schema generation.
+    pub fts_schema_version: u32,
+    /// Whether the current generation is published and all pending writes repaired.
+    pub fts_ready: bool,
+    /// Whether hybrid candidates obey explicit lexical constraints.
+    pub strict_hybrid_constraints: bool,
+    /// Searchable field names understood by the active parser and index.
+    pub searchable_fields: Vec<String>,
+    /// How source chunks with unknown boundaries affect positional queries.
+    pub chunk_boundary_policy: String,
+}
+
+impl SearchCapabilities {
+    /// Validate support before sending a query whose meaning requires exact parsing.
+    pub fn supports_strict_search(&self, hybrid: bool) -> bool {
+        self.api_version == 1
+            && self.query_language_version == QUERY_LANGUAGE_VERSION
+            && self.fts_schema_version == FTS_SCHEMA_VERSION
+            && self.fts_ready
+            && (!hybrid || self.strict_hybrid_constraints)
+    }
+}
+
 // ── Search ──────────────────────────────────────────────────────────────────
 
 /// Hybrid-search request body for `POST /v1/search`. The server picks the
@@ -199,6 +244,9 @@ pub struct SearchRequest {
     /// Maximum results to return; server clamps to a sane upper bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// Required lexical grammar version negotiated through `/v1/capabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_language_version: Option<u32>,
 
     // ── Filters (flat for backwards compatibility; matches existing wire). ──
 
@@ -381,6 +429,9 @@ mod tests {
         let c = IngestChunk {
             doc_id: "abc".into(),
             chunk_index: 0,
+            chunk_total: None,
+            chunk_start_char: None,
+            chunk_end_char: None,
             full_text: "hello".into(),
             full_text_md: None,
             headings: None,
@@ -413,6 +464,9 @@ mod tests {
         let chunk = |i: i32| IngestChunk {
             doc_id: format!("doc-{i}"),
             chunk_index: 0,
+            chunk_total: None,
+            chunk_start_char: None,
+            chunk_end_char: None,
             full_text: format!("text-{i}"),
             full_text_md: None,
             headings: None,

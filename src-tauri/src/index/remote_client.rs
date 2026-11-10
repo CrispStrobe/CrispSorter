@@ -179,6 +179,9 @@ impl IndexBackend for RemoteClient {
         let payload = IngestChunk {
             doc_id: doc.doc_id.clone(),
             chunk_index: doc.chunk_index,
+            chunk_total: Some(doc.chunk_total),
+            chunk_start_char: doc.chunk_start_char,
+            chunk_end_char: doc.chunk_end_char,
             full_text: doc.full_text.clone().unwrap_or_default(),
             full_text_md: doc.full_text_md.clone(),
             headings: None, // headings stored in full_text_md already
@@ -283,6 +286,7 @@ fn build_search_request(
         embedding: embedding.map(|e| e.to_vec()),
         mode: Some(mode.to_owned()),
         limit: Some(limit),
+        query_language_version: None,
         owner_id: filters.owner_id.clone(),
         language: filters.language.clone(),
         year_min: filters.year_min,

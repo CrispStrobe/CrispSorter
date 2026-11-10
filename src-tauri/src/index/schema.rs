@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(empty.to_lance_sql().as_deref(), Some("volume_id IS NULL"));
         let mounted = SearchFilters { mounted_volume_ids: Some(vec!["drive'one".into(), "two".into()]), ..Default::default() };
         assert_eq!(mounted.to_lance_sql().as_deref(), Some("(volume_id IS NULL OR volume_id IN ('drive''one','two'))"));
-        let restored: SearchFilters = serde_json::from_value(serde_json::json!({})).unwrap();
+        let restored: SearchFilters = serde_json::from_value(serde_json::json!({"tags":[]})).unwrap();
         assert!(restored.mounted_volume_ids.is_none());
     }
 
