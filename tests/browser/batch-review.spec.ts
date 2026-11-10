@@ -441,3 +441,25 @@ test('a failed metadata save restores applied values and keeps the draft availab
     await expect.poll(() => savedDrafts(page)).toEqual({});
     expect(await callsFor(page, 'batch_session_upsert_item')).toHaveLength(2);
 });
+
+test('Cmd/Ctrl+A selects every visible file instead of page text, but not while typing', async ({ page }) => {
+    await seedBatch(page, reviewFiles);
+    await openReview(page);
+    const selectAll = page.getByRole('checkbox', { name: 'Select all visible', exact: true });
+    const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+    await page.locator('.batch-container .file-name').first().click();
+    await page.keyboard.press(`${modifier}+A`);
+    await expect(selectAll).toBeChecked();
+    await expect(page.getByRole('checkbox', { name: 'Select item', exact: true })).toHaveCount(2);
+    for (const box of await page.getByRole('checkbox', { name: 'Select item', exact: true }).all()) await expect(box).toBeChecked();
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+
+    // In a text field the shortcut keeps its normal text meaning.
+    await page.keyboard.press('Escape');
+    await expect(selectAll).not.toBeChecked();
+    const search = page.getByRole('textbox', { name: 'Search items', exact: true });
+    await search.fill('pdf');
+    await search.press(`${modifier}+A`);
+    await expect(selectAll).not.toBeChecked();
+    expect(await search.evaluate((input: HTMLInputElement) => input.value.slice(input.selectionStart ?? 0, input.selectionEnd ?? 0))).toBe('pdf');
+});

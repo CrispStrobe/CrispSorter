@@ -77,6 +77,8 @@
         }
     }
     let secretStoreAlertDismissed = $state(false);
+    /** Settings section to open next, e.g. Secret storage from the banner. */
+    let settingsSection = $state<string | null>(null);
     let navCollapsed = $state(false);
     let showMobileTools = $state(false);
     let showLogs = $state(false);
@@ -781,7 +783,12 @@
         {#if secretStoreAlert && !secretStoreAlertDismissed}
             <div class="secret-store-banner" role="alert">
                 <span>
-                    {#if secretStoreAlert.denied}
+                    {#if !secretStoreAlert.chosen && !secretStoreAlert.fromEnv && secretStoreAlert.error}
+                        Choose where CrispSorter keeps API keys and passwords. On macOS it no
+                        longer opens your login keychain unless you pick it, because that
+                        keychain asks for its password after every update. Until you choose,
+                        saved keys are not read and new ones are not saved.
+                    {:else if secretStoreAlert.denied}
                         Your system credential store refused to release CrispSorter's
                         saved keys. On macOS this is the login keychain asking for a
                         password — CrispSorter cannot supply it, and will stop asking
@@ -792,12 +799,12 @@
                         saved until it opens. ({secretStoreAlert.error})
                     {/if}
                 </span>
-                {#if secretStoreAlert.error}
+                {#if secretStoreAlert.error && secretStoreAlert.chosen}
                     <button class="secret-store-banner-action" disabled={secretStoreRetrying} onclick={retrySecretStore}>
                         {secretStoreRetrying ? 'Retrying…' : 'Retry'}
                     </button>
                 {/if}
-                <button class="secret-store-banner-action" onclick={() => { activeTab = 'settings'; secretStoreAlertDismissed = true; }}>
+                <button class="secret-store-banner-action" onclick={() => { settingsSection = 'security'; activeTab = 'settings'; secretStoreAlertDismissed = true; }}>
                     Choose where secrets are stored
                 </button>
                 <button class="secret-store-banner-close" aria-label="Dismiss" onclick={() => secretStoreAlertDismissed = true}>×</button>
@@ -808,7 +815,7 @@
         {/if}
         <div class="content-area">
             {#if activeTab === 'settings'}
-                <Settings />
+                <Settings section={settingsSection} />
             {:else if activeTab === 'batch'}
                 <BatchReview workflow="inbox" />
             {:else if activeTab === 'review'}

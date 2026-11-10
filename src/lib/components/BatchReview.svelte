@@ -429,6 +429,15 @@
                     return;
                 }
 
+                // Cmd/Ctrl+A selects every visible file, like a file manager,
+                // instead of the web page's text. Fields keep their own Select All.
+                if (!isEditable && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a') {
+                    e.preventDefault();
+                    window.getSelection()?.removeAllRanges();
+                    selectedIds = sortedItems.map(item => item.id);
+                    return;
+                }
+
                 // Delete / Backspace removes the selected entries (Stapel view).
                 if (!isEditable && (e.key === 'Delete' || e.key === 'Backspace')) {
                     if (selection.visibleIds.length === 0 || batchBusy) return;
