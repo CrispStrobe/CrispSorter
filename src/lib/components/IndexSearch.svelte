@@ -15,6 +15,10 @@
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
+    import SearchQueryTools from './SearchQueryTools.svelte';
+    import SearchPassage from './SearchPassage.svelte';
+    import { buildSearchReport, groupResults, highlightedSnippet, searchReportCsv, searchReportHtml,
+        sortGroups, type ResultSort } from '$lib/search/inspection';
     import FieldEvidencePanel from './FieldEvidencePanel.svelte';
     import DocumentDecisionPanel from './DocumentDecisionPanel.svelte';
     import { experimentalCrispEmbed, loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
@@ -56,6 +60,7 @@
         location_uri:    string;
         snippet:         string;   // backend sends "snippet", not "full_text"
         source_hash?:    string;
+        indexed_at?:     number;
         // PLAN P6 4c / P7.1: when set, this hit came from the catalog
         // table (a substring filename match across active .caf-derived
         // catalogs) rather than the documents table. The path here is
@@ -149,6 +154,13 @@
     }
     let searchRequest = 0;
     let displayedRecipeKey = $state<string | null>(null);
+    let executedRecipe = $state<SearchRecipe | null>(null);
+    let executedQuery = $state('');
+    let searchedAt = $state('');
+    let elapsedMs = $state(0);
+    let resultSort = $state<ResultSort>('relevance');
+    let reportFormat = $state<'json' | 'csv' | 'html'>('html');
+    let compactResults = $state(false);
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
@@ -220,6 +232,8 @@
     let remoteLoading  = $state(false);
     let remoteError    = $state('');
     let remoteSearched = $state(false);
+    let remoteQuery = $state('');
+    let remoteRequest = 0;
     let remoteUsedText   = $state(false);
     let remoteUsedVector = $state(false);
     let remoteShards     = $state(0);
@@ -271,6 +285,7 @@
     let fedBackendsActive = $derived(fedBackends.filter((b) => fedBackendsAvailable.includes(b)));
     let fedResults      = $state<FederatedHit[]>([]);
     let fedLoading      = $state(false);
+    let fedRequest = 0;
     let fedSearched     = $state(false);
     let fedErrors       = $state<Record<string, string>>({});
     let fedQuery = $state('');
@@ -338,6 +353,7 @@
         if (!q) return;
         revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
+        const request = ++fedRequest;
         // The current remote federation wire paths do not carry these
         // options. Never silently broaden an explicitly filtered search.
         if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length
@@ -375,12 +391,14 @@
                     omniSearch: filterOmniSearch || null,
                 },
             );
+            if (request !== fedRequest) return;
             fedResults = r.hits ?? [];
             fedErrors  = r.errors ?? {};
         } catch (e: any) {
+            if (request !== fedRequest) return;
             fedErrors = { global: String(e?.message ?? e) };
         } finally {
-            fedLoading = false;
+            if (request === fedRequest) fedLoading = false;
         }
     }
 
@@ -667,6 +685,7 @@
     // Right-side slide-in pane using the universal DocumentViewer component.
     // Format detection + rendering is handled entirely by the viewer.
     let previewing = $state<SearchResult | null>(null);
+    let previewTab = $state<'original' | 'indexed'>('original');
     let previewCloseButton = $state<HTMLButtonElement>();
     let previewTrigger: HTMLButtonElement | null = null;
 
@@ -674,6 +693,7 @@
         if (previewing && previewing.doc_id === r.doc_id) { await closePreview(); return; }
         previewTrigger = trigger;
         previewing = r;
+        previewTab = 'original';
         await tick();
         // Narrow screens show the preview in place of the result list. Move
         // focus to its close control instead of leaving it on a hidden trigger.
@@ -896,20 +916,7 @@
     }
 
     // Group results by doc_id
-    const grouped = $derived.by(() => {
-        const map = new Map<string, SearchResult[]>();
-        for (const r of results) {
-            if (!map.has(r.doc_id)) map.set(r.doc_id, []);
-            map.get(r.doc_id)!.push(r);
-        }
-        return Array.from(map.entries())
-            .map(([doc_id, chunks]) => ({
-                doc_id,
-                best:   chunks.sort((a, b) => b.score - a.score)[0],
-                chunks: chunks.sort((a, b) => a.chunk_index - b.chunk_index),
-            }))
-            .sort((a, b) => b.best.score - a.best.score);
-    });
+    const grouped = $derived(sortGroups(groupResults(results), 'relevance'));
 
     // ── Tier 2 tag cloud on the local results pane ──────────────────────────────
     // Opt-in (default-hidden) and computed entirely client-side from the hits
@@ -935,14 +942,59 @@
     // Groups narrowed by the AND tag selection — a document survives only if
     // its hits collectively carry every selected tag.
     const displayedGroups = $derived.by(() => {
-        if (searchTags.size === 0) return grouped;
-        return grouped.filter((g) => {
+        const filtered = searchTags.size === 0 ? grouped : grouped.filter((g) => {
             const docTags = new Set<string>();
             for (const c of g.chunks) for (const t of (c.tags ?? [])) docTags.add(t);
             for (const sel of searchTags) if (!docTags.has(sel)) return false;
             return true;
         });
+        return sortGroups(filtered, resultSort);
     });
+    const selectedDisplayedCount = $derived(displayedGroups.filter(group => batchSelection.has(group.doc_id)).length);
+
+    async function exportSearchReport(selectedOnly: boolean) {
+        if (!executedRecipe) return;
+        const groups = displayedGroups.filter(group => !selectedOnly || batchSelection.has(group.doc_id));
+        if (!groups.length) return;
+        // Freeze the executed recipe and current window before opening a dialog.
+        // Editing the query or changing selection during export cannot relabel it.
+        const report = buildSearchReport({ recipe: executedRecipe, executedQuery, searchedAt,
+            exportedAt: new Date().toISOString(), elapsedMs, sort: resultSort, displayTags: [...searchTags],
+            scope: selectedOnly ? 'selected' : 'displayed', returnedDocuments: grouped.length,
+            returnedPassages: results.length, groups });
+        const format = reportFormat;
+        const content = format === 'json' ? JSON.stringify(report, null, 2)
+            : format === 'csv' ? searchReportCsv(report) : searchReportHtml(report);
+        await runResultAction('report', async () => {
+            const path = await save({ defaultPath: `CrispSorter-search-${report.exportedAt.slice(0, 10)}.${format}`,
+                filters: [{ name: `Search report (${format.toUpperCase()})`, extensions: [format] }] });
+            if (!path) return null;
+            await writeFile(path, new TextEncoder().encode(content));
+            return `${i18n.lang === 'de' ? 'Suchbericht gespeichert' : 'Search report saved'}: ${path}`;
+        }, i18n.lang === 'de' ? 'Suchbericht konnte nicht gespeichert werden' : 'Could not save search report');
+    }
+
+    async function inspectPassage(result: SearchResult, trigger: HTMLButtonElement) {
+        if (previewing?.doc_id !== result.doc_id) await openPreview(result, trigger);
+        else previewing = result;
+        previewTab = 'indexed';
+    }
+
+    function movePreview(delta: number) {
+        if (!previewing || !displayedGroups.length) return;
+        const index = displayedGroups.findIndex(group => group.doc_id === previewing?.doc_id);
+        const next = displayedGroups[(index + delta + displayedGroups.length) % displayedGroups.length];
+        previewing = next.best;
+        if (next.best.chunk_index < 0) previewTab = 'original';
+    }
+
+    async function loadMoreResults() {
+        if (!executedRecipe || searchOptionsChanged) return;
+        const nextLimit = [50, 100, 200, 500].find(value => value > executedRecipe!.limit);
+        if (!nextLimit) return;
+        applyRecipe({ ...executedRecipe, limit: nextLimit });
+        await runSearch();
+    }
 
     function toggleSearchTag(tag: string) {
         const next = new Set(searchTags);
@@ -958,6 +1010,7 @@
         if (!validateFilters()) return;
         const request = ++searchRequest;
         const recipe = currentRecipe();
+        const started = performance.now();
         imageSearchLoading = false;
         loading = true; error = ''; searchNotice = ''; searched = true;
         resultActionFeedback = null;
@@ -1010,6 +1063,10 @@
                 }
             }
             results = found;
+            executedRecipe = normalizeSearchRecipe(recipe);
+            executedQuery = searchQuery;
+            searchedAt = new Date().toISOString();
+            elapsedMs = Math.round(performance.now() - started);
             displayedRecipeKey = searchRecipeKey(recipe);
             // Keep the scope visible until explicitly cleared; repeated searches
             // and bookmarks must not silently broaden the user's selection.
@@ -1034,6 +1091,7 @@
         revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         displayedRecipeKey = null; imageSearchLoading = false;
+        executedRecipe = null; executedQuery = '';
         loading = true;
         error = '';
         searched = true;
@@ -1121,6 +1179,7 @@
         revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         displayedRecipeKey = null;
+        executedRecipe = null; executedQuery = '';
         loading = true; imageSearchLoading = true;
         error    = '';
         searched = true;
@@ -1152,6 +1211,7 @@
         if (!q) return;
         revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
+        const request = ++remoteRequest;
         const recipe = currentRecipe();
         const f = recipe.filters;
         if (f.audioMin != null || f.audioMax != null || f.cameraMake || f.cameraModel || f.fuzzy
@@ -1160,6 +1220,7 @@
             return;
         }
         remoteLoading  = true;
+        remoteQuery = q;
         remoteError    = '';
         remoteSearched = true;
         remoteResults  = [];
@@ -1176,14 +1237,16 @@
                         url_domain: f.urlDomain || null, tag: f.tag || null },
                 },
             });
+            if (request !== remoteRequest) return;
             remoteResults    = (r.rows ?? []) as RemoteHit[];
             remoteUsedText   = !!r.used_text;
             remoteUsedVector = !!r.used_vector;
             remoteShards     = Number(r.shards_queried ?? 0);
         } catch (e: any) {
+            if (request !== remoteRequest) return;
             remoteError = String(e);
         } finally {
-            remoteLoading = false;
+            if (request === remoteRequest) remoteLoading = false;
         }
     }
 
@@ -1270,9 +1333,13 @@
     function clearSearch() {
         revealResultsOnNarrowScreen();
         searchRequest += 1;
+        remoteRequest += 1; fedRequest += 1;
+        remoteResults = []; remoteLoading = false; remoteSearched = false; remoteError = ''; remoteQuery = '';
+        fedResults = []; fedLoading = false; fedSearched = false; fedErrors = {}; fedBody = new Map();
         dismissResultActionFeedback();
         loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
         displayedRecipeKey = null; similarHeader = '';
+        executedRecipe = null; executedQuery = ''; searchedAt = ''; elapsedMs = 0;
         void runSkeletonSearch('');
         clearTranslations(); searchTags = new Set();
         query    = '';
@@ -1552,7 +1619,7 @@
     async function addSelectedToBatch(): Promise<void> {
         // Snapshot documents, not matching chunks. Retry keeps the same targets
         // even if the user changes the current selection while storage is busy.
-        const selected = grouped.filter(group => batchSelection.has(group.doc_id)).map(group => group.best);
+        const selected = displayedGroups.filter(group => batchSelection.has(group.doc_id)).map(group => group.best);
         const local = new Map<string, { result: SearchResult; path: string }>();
         let skipped = 0;
         for (const result of selected) {
@@ -1575,15 +1642,8 @@
         }, labels.addBatchFailed, local.size > 0);
     }
 
-    function highlightSnippet(text: string, q: string): string {
-        if (!text) return '';
-        const words = q.trim()
-            .split(/\s+/)
-            .filter(w => w.length > 2)
-            .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        if (!words.length) return escHtml(text);
-        const re = new RegExp(`(${words.join('|')})`, 'gi');
-        return escHtml(text).replace(re, '<mark>$1</mark>');
+    function highlightSnippet(text: string, q: string, marked = false): string {
+        return highlightedSnippet(text, q, marked);
     }
 
     function escHtml(s: string): string {
@@ -1766,6 +1826,7 @@
     </div>
 
     <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
+    <SearchQueryTools bind:query onapply={() => void runSkeletonSearch(query)} />
     <div class="mode-row">
         {#each (['hybrid', 'text', 'vector'] as const) as m}
             <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
@@ -1809,7 +1870,7 @@
             <label class="filter-field">
                 <span>{labels.max}</span>
                 <select bind:value={limit} aria-label={labels.max}>
-                    {#each [10, 20, 50, 100] as n}<option value={n}>{n}</option>{/each}
+                    {#each [10, 20, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>
             <label class="filter-field" title="Include hits from drives that aren't currently mounted">
@@ -1918,7 +1979,7 @@
 
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
     <div class="results-and-preview">
-    <div class="results-area" class:with-preview={previewing !== null}>
+    <div class="results-area" class:with-preview={previewing !== null} class:compact-results={compactResults}>
         {#if loading}
             <div class="state-msg" role="status"><Loader2 size={22} class="spin" /> {labels.loading}</div>
 
@@ -1990,9 +2051,9 @@
                     <FolderOpen size={11} /> Context
                 </button>
                 {/if}
-                {#if batchSelection.size > 0}
+                {#if selectedDisplayedCount > 0}
                     <button class="tagcloud-toggle" onclick={() => void addSelectedToBatch()} disabled={resultActionsBusy.has('batch:selection')} title="Add selected local results to batch sorter">
-                        <ListPlus size={11} /> Batch ({batchSelection.size})
+                        <ListPlus size={11} /> Batch ({selectedDisplayedCount})
                     </button>
                 {/if}
                 {#if refinementScope.length > 0}
@@ -2004,6 +2065,32 @@
                     </span>
                 {/if}
             </div>
+
+            <section class="inspection-toolbar" aria-label={i18n.lang === 'de' ? 'Ergebnisse prüfen und exportieren' : 'Inspect and export results'}>
+                <label>{i18n.lang === 'de' ? 'Sortieren' : 'Sort results'}<select bind:value={resultSort}>
+                    <option value="relevance">{i18n.lang === 'de' ? 'Relevanz' : 'Relevance'}</option>
+                    <option value="title">{i18n.lang === 'de' ? 'Titel' : 'Title'}</option>
+                    <option value="filename">{i18n.lang === 'de' ? 'Dateiname' : 'Filename'}</option>
+                    <option value="year-desc">{i18n.lang === 'de' ? 'Jahr: neueste zuerst' : 'Year: newest first'}</option>
+                    <option value="year-asc">{i18n.lang === 'de' ? 'Jahr: älteste zuerst' : 'Year: oldest first'}</option>
+                    <option value="location">{i18n.lang === 'de' ? 'Speicherort' : 'Location'}</option>
+                </select></label>
+                <label class="compact-toggle"><input type="checkbox" bind:checked={compactResults} />{i18n.lang === 'de' ? 'Kompakt' : 'Compact results'}</label>
+                <button onclick={() => batchSelection = new Set([...batchSelection, ...displayedGroups.map(group => group.doc_id)])}>{i18n.lang === 'de' ? 'Angezeigte auswählen' : 'Select displayed'}</button>
+                {#if batchSelection.size}<button onclick={() => batchSelection = new Set()}>{i18n.lang === 'de' ? 'Auswahl aufheben' : 'Clear selection'} ({batchSelection.size})</button>{/if}
+                <label>{i18n.lang === 'de' ? 'Berichtsformat' : 'Report format'}<select bind:value={reportFormat}><option value="html">HTML</option><option value="csv">CSV</option><option value="json">JSON</option></select></label>
+                <button onclick={() => exportSearchReport(false)} disabled={!executedRecipe || resultActionsBusy.has('report') || !displayedGroups.length}>{i18n.lang === 'de' ? 'Angezeigte exportieren' : 'Export displayed'}</button>
+                <button onclick={() => exportSearchReport(true)} disabled={!executedRecipe || resultActionsBusy.has('report') || !selectedDisplayedCount}>{i18n.lang === 'de' ? 'Auswahl exportieren' : 'Export selected'} ({selectedDisplayedCount})</button>
+                {#if batchSelection.size > selectedDisplayedCount}<span>{batchSelection.size - selectedDisplayedCount} {i18n.lang === 'de' ? 'ausgeblendet; nicht im Export' : 'hidden; excluded from export'}</span>{/if}
+            </section>
+            <p class="search-window-note">{i18n.lang === 'de'
+                ? 'Sortierung, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
+                : 'Sorting, passage counts, and exports apply to this returned window, not every match in the corpus.'}
+                {#if executedRecipe} · {elapsedMs} ms · {i18n.lang === 'de' ? 'Angefordertes Limit' : 'Requested limit'} {executedRecipe.limit}{/if}
+                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < 500}
+                    <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
+                {/if}
+            </p>
 
             {#if showSearchTagCloud && searchTagFacets.length > 0}
                 <div class="search-tagcloud-wrap">
@@ -2049,7 +2136,7 @@
                 {@const r = group.best}
                 {@const resultName = r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
                 {@const chunksId = `library-result-chunks-${encodeURIComponent(group.doc_id)}`}
-                <div class="result-card">
+                <div class="result-card" data-document-id={group.doc_id}>
                     <!-- Doc header -->
                     <div class="result-header">
 
@@ -2094,6 +2181,9 @@
                                 title="Vorschau (Preview)">
                                 <Eye size={13} />
                             </button>
+                            {#if r.chunk_index >= 0 && !r.catalog_source}
+                                <button class="open-btn inspect-text" onclick={event => inspectPassage(r, event.currentTarget)} title={i18n.lang === 'de' ? 'Indizierte Textstelle prüfen' : 'Inspect indexed passage'}><FileText size={13} /><span>{i18n.lang === 'de' ? 'Text' : 'Text'}</span></button>
+                            {/if}
                             <button class="open-btn"
                                 class:active={compareResults.some((item) => item.doc_id === r.doc_id)}
                                 aria-pressed={compareResults.some((item) => item.doc_id === r.doc_id)}
@@ -2234,7 +2324,7 @@
                     {#if r.snippet}
                         <div class="chunk-preview">
                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                            {@html highlightSnippet(r.snippet, query)}{#if r.snippet.length >= 400}…{/if}
+                            {@html highlightSnippet(r.snippet, executedQuery || query)}{#if r.snippet.length >= 400}…{/if}
                         </div>
                     {:else}
                         <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
@@ -2457,12 +2547,13 @@
                                     <div class="chunk-text">
                                         {#if chunk.snippet}
                                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), query)}{#if chunk.snippet.length > 280}…{/if}
+                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), executedQuery || query)}{#if chunk.snippet.length > 280}…{/if}
                                         {:else}
                                             <span style="color:#52525b">(leer)</span>
                                         {/if}
                                     </div>
                                     <span class="chunk-score">{chunk.score.toFixed(3)}</span>
+                                    <button class="chunk-compare" onclick={event => inspectPassage(chunk, event.currentTarget)} title={i18n.lang === 'de' ? 'Diese Textstelle prüfen' : 'Inspect this passage'}><FileText size={12} /></button>
                                     <button class="chunk-compare"
                                         class:active={compareResults.some((item) => item.doc_id === chunk.doc_id && item.chunk_index === chunk.chunk_index)}
                                         onclick={(e) => { e.stopPropagation(); toggleCompare(chunk); }}
@@ -2490,6 +2581,12 @@
                     <span class="preview-close-label">{i18n.lang === 'de' ? 'Schließen' : 'Close preview'}</span>
                 </button>
             </header>
+            <div class="preview-navigation" role="group" aria-label={i18n.lang === 'de' ? 'Dokumentnavigation' : 'Document navigation'}>
+                <button onclick={() => movePreview(-1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Vorheriges Dokument' : 'Previous document'}</button>
+                <button onclick={() => movePreview(1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Nächstes Dokument' : 'Next document'}</button>
+                <button aria-pressed={previewTab === 'original'} onclick={() => previewTab = 'original'}>{i18n.lang === 'de' ? 'Originaldatei' : 'Original file'}</button>
+                {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => previewTab = 'indexed'}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
+            </div>
             {#if localPathFromSearchUri(previewing.location_uri)}
                 <div class="document-actions">
                     {#each availableDocumentTools(previewing.filename || previewing.location_uri, $caps) as tool}
@@ -2498,6 +2595,9 @@
                 </div>
             {/if}
             <div class="preview-body">
+                {#if previewTab === 'indexed' && previewing.chunk_index >= 0}
+                    <SearchPassage docId={previewing.doc_id} chunkIndex={previewing.chunk_index} query={executedQuery || query} sourceHash={previewing.source_hash || ''} />
+                {:else}
                 <DocumentDecisionPanel document={previewing} onUse={useReviewedFields} />
                 <FieldEvidencePanel docId={previewing.doc_id}
                     onFilter={findByField}
@@ -2506,6 +2606,7 @@
                     locationUri={previewing.location_uri}
                     filename={previewing.title || previewing.filename || ''}
                 />
+                {/if}
             </div>
         </aside>
     {/if}
@@ -2707,7 +2808,7 @@
                                          <mark> tags; strip them and re-highlight
                                          client-side via the XSS-safe path
                                          (highlightSnippet HTML-escapes first). -->
-                                    <div class="remote-snippet">{@html highlightSnippet(hit.snippet.replace(/<\/?mark>/g, ''), query)}</div>
+                                    <div class="remote-snippet">{@html highlightSnippet(hit.snippet, fedQuery, true)}</div>
                                 {/if}
                             </div>
                         </li>
@@ -2719,6 +2820,22 @@
 </div>
 
 <style>
+    .inspection-toolbar { display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;padding:10px 16px;background:#111116;border-block:1px solid #27272a;font-size:.73rem; }
+    .inspection-toolbar label { display:flex;flex-direction:column;gap:4px;color:#a1a1aa; }
+    .inspection-toolbar .compact-toggle { flex-direction:row;align-items:center;align-self:center; }
+    .inspection-toolbar select,.inspection-toolbar button,.preview-navigation button { border:1px solid #52525b;border-radius:5px;background:#27272a;color:#e4e4e7;padding:7px 9px;font-size:.73rem; }
+    .inspection-toolbar button,.preview-navigation button { cursor:pointer; }
+    .inspection-toolbar button:disabled,.preview-navigation button:disabled { opacity:.45;cursor:default; }
+    .inspection-toolbar button:focus-visible,.inspection-toolbar select:focus-visible,.preview-navigation button:focus-visible { outline:2px solid #93c5fd;outline-offset:2px; }
+    .inspection-toolbar span { color:#fbbf24;font-size:.7rem; }
+    .search-window-note { font-size:.7rem;color:#a1a1aa;margin:8px 16px 12px;line-height:1.6; }
+    .preview-navigation { display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #27272a;flex-shrink:0; }
+    .preview-navigation button[aria-pressed=true] { background:#1e3a8a;border-color:#60a5fa; }
+    .inspect-text { display:inline-flex;gap:4px;align-items:center; }
+    .compact-results .result-card { margin-bottom:4px; }
+    .compact-results .result-header { padding-block:8px; }
+    .compact-results .chunk-preview { max-height:3.2em;overflow:hidden;margin-block:4px; }
+    @media(max-width:800px){.inspection-toolbar{padding-inline:12px}.inspection-toolbar button,.inspection-toolbar select,.preview-navigation button{min-height:40px}.inspection-toolbar label{flex:1;min-width:100px}.inspection-toolbar .compact-toggle{min-width:auto}.preview-navigation{gap:8px}}
     .document-actions { display: flex; gap: 6px; padding: 8px; flex-wrap: wrap; }
     .document-actions button { background: #27272a; color: #eee; border: 1px solid #52525b; border-radius: 4px; padding: 5px; }
 

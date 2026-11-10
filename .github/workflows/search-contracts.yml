@@ -1,0 +1,73 @@
+name: Search engine contracts
+
+on:
+  pull_request:
+    paths:
+      - 'crates/crisp-search-query/**'
+      - 'src-tauri/src/index/**'
+      - 'src-tauri/src/bg_ingest/**'
+      - 'src-tauri/src/jobs/**'
+      - 'src-tauri/src/extractors/eml.rs'
+      - 'src-tauri/src/extractors/html.rs'
+      - 'tests/search-contract/**'
+      - 'tests/index-write-contract/**'
+      - 'tests/extraction-contract/**'
+      - 'Cargo.lock'
+      - '.github/workflows/search-contracts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: search-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  query-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/search-contract
+      - name: Test production query semantics on a real text index
+        run: cargo test --locked --manifest-path tests/search-contract/Cargo.toml -- --test-threads=2
+
+  index-write-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native index build requirements
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/index-write-contract
+      - name: Test durable replacement, recovery, metadata, and job acknowledgement
+        run: cargo test --locked --manifest-path tests/index-write-contract/Cargo.toml -- --test-threads=2
+
+  extraction-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/extraction-contract
+      - name: Test production MIME and HTML extraction
+        run: cargo test --locked --manifest-path tests/extraction-contract/Cargo.toml

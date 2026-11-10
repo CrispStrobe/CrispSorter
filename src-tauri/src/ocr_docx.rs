@@ -215,8 +215,15 @@ fn add_runs(mut paragraph: Paragraph, text: &str, marks: &[InlineRun]) -> Paragr
     paragraph
 }
 
+fn directed_paragraph(mut paragraph: Paragraph, text: &str) -> Paragraph {
+    use unicode_bidi::{get_base_direction, Direction};
+    paragraph.property = paragraph.property.bidi(get_base_direction(text) == Direction::Rtl);
+    paragraph
+}
+
 fn plain_paragraph(text: &str) -> Paragraph {
-    Paragraph::new().line_spacing(LineSpacing::new().before(0).after(0)).add_run(literal_run(text, None))
+    directed_paragraph(Paragraph::new().line_spacing(LineSpacing::new().before(0).after(0)), text)
+        .add_run(literal_run(text, None))
 }
 
 #[derive(Default)]
@@ -303,7 +310,7 @@ fn table_element(data: &OfficeTableData, available_points: f64) -> Result<Table,
             let anchor = source.row == row;
             let mut run = literal_run(if anchor { &source.text } else { "" }, None);
             if source.header == Some(true) && anchor { run = run.bold(); }
-            let paragraph = Paragraph::new().line_spacing(LineSpacing::new().before(0).after(0)).add_run(run);
+            let paragraph = directed_paragraph(Paragraph::new().line_spacing(LineSpacing::new().before(0).after(0)), if anchor { &source.text } else { "" }).add_run(run);
             let mut cell = TableCell::new().add_paragraph(paragraph)
                 .width(column_widths[column..column + source.column_span].iter().sum(), WidthType::Dxa);
             if source.column_span > 1 { cell = cell.grid_span(source.column_span); }
@@ -433,7 +440,7 @@ fn page_parts(page: &DocxPage, first_page: bool, lists: &mut Lists, warnings: &m
                 items.push(BodyItem::Paragraph(add_runs(paragraph, text, &block.runs)));
             } else {
                 if text_seen && region.separator_before.as_deref() == Some("\n\n") { items.push(BodyItem::Paragraph(plain_paragraph(""))); }
-                let mut paragraph = styled_paragraph(block, lists);
+                let mut paragraph = directed_paragraph(styled_paragraph(block, lists), text);
                 if pending_page_break { paragraph = paragraph.page_break_before(true); }
                 if column_break { paragraph = paragraph.add_run(Run::new().add_break(BreakType::Column)); }
                 items.push(BodyItem::Paragraph(add_runs(paragraph, text, &block.runs)));
@@ -535,6 +542,20 @@ mod tests {
         archive.by_name(path).unwrap().read_to_string(&mut text).unwrap();
         text
     }
+    #[test]
+    fn structured_paragraphs_keep_logical_text_and_base_direction() {
+        let output = render_docx(&[page(vec![region("rtl", "العربية ABC 123"), region("ltr", "English שלום 456")])]).unwrap();
+        let document = xml(&output.bytes, "word/document.xml");
+        assert!(document.contains("العربية ABC 123"));
+        assert!(document.contains("English שלום 456"));
+        let parsed = parse_xml(&document);
+        let mut directions = Vec::new();
+        parsed.descendants("w:bidi", &mut directions);
+        // The writer omits false because left-to-right is the OOXML default.
+        assert_eq!(directions.len(), 1);
+        assert!(directions[0].attributes.get("w:val").is_none_or(|value| ["1", "true"].contains(&value.as_str())));
+    }
+
     // Inspect the actual packaged XML, including definitions inserted by the
     // library. Presence checks cannot detect a reference resolving to a second
     // definition with the same ID (the original list-start/bullet regression).

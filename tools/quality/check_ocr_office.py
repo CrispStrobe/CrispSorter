@@ -431,7 +431,7 @@ def lock_packages(lock: Path) -> dict[tuple[str, str], dict]:
 
 def harness_manifest(repository: Path) -> str:
     packages = lock_packages(repository / "Cargo.lock")
-    pins = {"docx-rs": "0.4.20", "zip": "7.2.0", "unicode-segmentation": "1.13.3", "image": "0.25.10", "quick-xml": "0.38.4"}
+    pins = {"docx-rs": "0.4.20", "zip": "7.2.0", "unicode-segmentation": "1.13.3", "unicode-bidi": "0.3.18", "image": "0.25.10", "quick-xml": "0.38.4"}
     for name in ["serde", "serde_json"]:
         versions = [version for package, version in packages if package == name]
         require(len(versions) == 1, f"choose the production {name} version explicitly")
@@ -453,6 +453,7 @@ path = "main.rs"
 serde = {{ version = "={pins['serde']}", features = ["derive"] }}
 serde_json = "={pins['serde_json']}"
 unicode-segmentation = "={pins['unicode-segmentation']}"
+unicode-bidi = "={pins['unicode-bidi']}"
 docx-rs = "={pins['docx-rs']}"
 zip = "={pins['zip']}"
 quick-xml = "={pins['quick-xml']}"

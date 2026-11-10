@@ -48,6 +48,18 @@ describe('durable single-page text drafts',()=>{
         expect(next.pageTextDraft).toBe(saved);
     });
 
+    it('retains mobile source archives and evidence identity through draft recovery',()=>{
+        const p=source(['Original']);
+        p.documents[0].sourceUri='content://provider/document/42';
+        p.documents[0].archiveUri='/private/imported-original.pdf';
+        const next=draft(p,'Reviewed');
+        const restored=parseProject(serializeProject(next));
+        expect(restored.pageTextDraft!.document.archiveUri).toBe('/private/imported-original.pdf');
+        expect(restored.pageTextDraft!.page.contentRevision).toBe(p.pages[0].contentRevision);
+        expect(pageTextDraftSourceIsCurrent(restored,restored.pageTextDraft!)).toBe(true);
+        expect(applyPageTextEdit(restored,review(restored)).pages[0].regions[0].text).toBe('Reviewed');
+    });
+
     it('updates only actual normalized text changes and protects the existing draft',()=>{
         let p=draft(source(['Original']));
         expect(updatePageTextDraft(p,'Original')).toBe(p);

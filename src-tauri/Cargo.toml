@@ -22,6 +22,8 @@ tauri-build = { version = "2", features = [] }
 protoc-bin-vendored = "3"
 
 [dependencies]
+crisp-search-query = { path = "../crates/crisp-search-query" }
+
 # Wire-format types shared with the in-tree crisp-index-server backend
 # (see ../crisp-index-server). Single source of truth for `IngestChunk`,
 # `SearchRequest`, etc. Path dep stays inside the workspace; both crates
@@ -62,6 +64,10 @@ crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features
 # update`. Off by default; see the `anydoc` feature.
 anydoc           = { version = "=0.1.7", optional = true }
 html2text        = "0.16.7"
+scraper          = { version = "=0.25.0", default-features = false }
+encoding_rs      = "=0.8.35"
+# Bounded MIME parsing and checked, lazy decoding (requires Rust 1.98+).
+mail-parser      = { version = "=1.0.1", features = ["full_encoding"] }
 futures          = "0.3"
 
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -299,7 +305,7 @@ desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "
 # Structured Word/XLSX export of reviewed OCR objects. Figures are embedded
 # with explicit pixel sizes (Pic::new_with_dimensions), so docx-rs keeps its
 # image decoder feature off, as for ocr-text-export.
-ocr-office = ["dep:docx-rs"]
+ocr-office = ["dep:docx-rs", "dep:unicode-bidi"]
 # P36.1 — the right to spawn a helper process, split out of `desktop`.
 #
 # App Sandbox (Mac App Store, iOS) forbids fork/exec of anything outside the

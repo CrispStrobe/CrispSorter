@@ -1517,10 +1517,16 @@ fn validate_export_format(format: &str, pdfa: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_export_text(pages: &[ExportPage], format: &str) -> Result<(), String> {
+/// Overlapping shared sources cannot be bound to page geometry. Checked before
+/// renderer availability so the actionable passage error is reported first.
+fn validate_shared_sources(pages: &[ExportPage], format: &str) -> Result<(), String> {
     if OcrOutputFormat::from_name(format).is_some_and(|format| format.needs_render_binding()) && pages.iter().any(has_shared_source_overlap) {
         return Err("Passages share overlapping source areas. Divide their boxes or merge the passages before exporting PDF, hOCR, or ALTO. Text and JSON retain the exact edited text.".into());
     }
+    Ok(())
+}
+
+fn validate_export_text(pages: &[ExportPage], format: &str) -> Result<(), String> {
     if ["pdf", "html", "hocr", "alto"].contains(&format) {
         crate::ocr_text_export::validate_xml_text(&export_text_pages(pages))?;
     }
@@ -1547,6 +1553,7 @@ fn reviewed_render_pages(pages: &[ExportPage]) -> Vec<RenderPage> {
 }
 
 fn export_bytes(pages: &[ExportPage], format: &str, pdfa: bool) -> Result<Vec<u8>, String> {
+    validate_shared_sources(pages, format)?;
     validate_export_format(format, pdfa)?;
     validate_export_text(pages, format)?;
     match format {
@@ -1594,6 +1601,7 @@ fn write_export(
     mut progress: impl FnMut(&str, u64),
 ) -> Result<usize, String> {
     control.check().map_err(|error| error.to_string())?;
+    validate_shared_sources(pages, format)?;
     validate_export_format(format, pdfa)?;
     validate_export_text(pages, format)?;
     let streaming_pdf = OcrOutputFormat::from_name(format) == Some(OcrOutputFormat::Pdf)

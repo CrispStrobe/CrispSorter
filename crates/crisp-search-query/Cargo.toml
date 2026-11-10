@@ -1,0 +1,11 @@
+[package]
+name = "crisp-search-query"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Shared validated lexical query language for CrispSorter indexes"
+publish = false
+
+[dependencies]
+anyhow = "1"
+tantivy = "0.22"

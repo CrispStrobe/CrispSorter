@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "extraction-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.98"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "=1.0.102"
+mail-parser = { version = "=1.0.1", features = ["full_encoding"] }
+scraper = { version = "=0.25.0", default-features = false }
+encoding_rs = "=0.8.35"
+
+[dev-dependencies]
+tempfile = "=3.27.0"

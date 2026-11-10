@@ -62,7 +62,7 @@ export function normalizeSearchRecipe(value: unknown): SearchRecipe {
         version: 2,
         query: text(raw.query),
         mode: raw.mode === 'text' || raw.mode === 'vector' ? raw.mode : 'hybrid',
-        limit: [10, 20, 50, 100].includes(Number(raw.limit)) ? Number(raw.limit) : 20,
+        limit: [10, 20, 50, 100, 200, 500].includes(Number(raw.limit)) ? Number(raw.limit) : 20,
         smart: raw.smart === true,
         filters,
         docIdScope: Array.isArray(raw.docIdScope) ? [...new Set(raw.docIdScope.filter((id): id is string => typeof id === 'string' && id.length > 0))].sort() : [],

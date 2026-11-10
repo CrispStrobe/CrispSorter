@@ -12,6 +12,7 @@ describe('user proofreading preference writer',()=>{
         },()=>{});
         data.entries.push(createVocabularyEntry('Invoice','en'));writer.schedule(data);
         const active=writer.flush();
+        await vi.waitFor(() => expect(saved).toHaveLength(1));
         data.entries.push(createVocabularyEntry('Total','en'));writer.schedule(data);
         data.entries.push(createVocabularyEntry('unscheduled','en'));
         // The shared autosave installs its write lock and starts the first

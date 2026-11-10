@@ -57,6 +57,7 @@ if (process.argv.includes('--serve')) {
     const { chromium } = playwright;
     const browserPath = process.env.OCR_SMOKE_CHROMIUM ?? [chromium.executablePath(), '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync);
     const results = [];
+    const scenarioNames = new Set();
     const browserErrors = [];
     const textExportEvidence = [];
     let phoneCornerEvidence = null;
@@ -76,6 +77,8 @@ if (process.argv.includes('--serve')) {
             return page;
         }
         async function test(name, scenario, action) {
+            assert.equal(scenarioNames.has(name), false, `Duplicate smoke scenario: ${name}`);
+            scenarioNames.add(name);
             const start = performance.now();
             let page;
             try {
@@ -788,11 +791,25 @@ if (process.argv.includes('--serve')) {
             await reason.waitFor();
             evidence.native_reason = await reason.innerText();
             const format = page.getByRole('combobox', { name: /^Output format/ });
-            await format.selectOption('docx');
+            // Capabilities can still be settling on a slow runner; read the
+            // option list only once two consecutive reads agree.
+            const readOptions = () => format.locator('option').evaluateAll(options => options.map(option => ({ value: option.value, disabled: option.disabled })));
+            let options = await readOptions();
+            for (let attempt = 0; attempt < 20; attempt++) {
+                await page.waitForTimeout(100);
+                const next = await readOptions();
+                if (JSON.stringify(next) === JSON.stringify(options)) break;
+                options = next;
+            }
+            assert.equal(options.at(-1).value, 'pdfa');
+            const enabledFormats = options.filter(option => !option.disabled).map(option => option.value);
+            assert.ok(enabledFormats.length >= 2);
+            const lastEnabled = enabledFormats.at(-1), previousEnabled = enabledFormats.at(-2);
+            await format.selectOption(lastEnabled);
             await format.focus();
             // First prove native keyboard navigation works, then prove it
             // cannot enter the unavailable option after the last supported one.
-            for (const [key, expected] of [['ArrowUp', 'alto'], ['ArrowDown', 'docx'], ['ArrowDown', 'docx']]) {
+            for (const [key, expected] of [['ArrowUp', previousEnabled], ['ArrowDown', lastEnabled], ['ArrowDown', lastEnabled]]) {
                 await page.keyboard.press(key);
                 const selected = await format.inputValue();
                 evidence.keyboard.push({ key, expected, selected });
@@ -842,10 +859,21 @@ if (process.argv.includes('--serve')) {
                 assert.equal(request.pages[0].regions[2].original_text, rtlReviewedText);
                 assert.equal(request.pages[0].approved, true);
                 assert.deepEqual(request.sourceUris, ['/fixtures/northstar-statement.pdf']);
-                // Word requests also carry the page structure and figure areas
-                // the structured Office writer needs; the reviewed content is shared.
-                const reviewed = pages => pages.map(({ structure, figure_regions, ...page }) => page);
-                if (index) assert.deepEqual(reviewed(request.pages), reviewed(requests[0].pages));
+                const owner = request.pages[0];
+                if (format === 'docx') {
+                    assert.deepEqual(owner.figure_regions, []);
+                    assert.equal(owner.structure.version, 1);
+                    assert.deepEqual(owner.structure.sections, [{ id: `section-${owner.id}`, columns: 1 }]);
+                    assert.deepEqual(owner.structure.blocks.map(block => block.sourceRegionId), owner.regions.map(region => region.id));
+                    assert.ok(owner.structure.blocks.every(block => block.sectionId === `section-${owner.id}`));
+                } else {
+                    assert.equal(owner.structure, undefined);
+                    assert.equal(owner.figure_regions, undefined);
+                }
+                // Semantic Word fields are an additional projection; every
+                // source anchor, geometry value and reviewed character stays
+                // identical to the lossless plain-text request.
+                if (index) assert.deepEqual(request.pages.map(({ structure, figure_regions, ...source }) => source), requests[0].pages);
             }
             await selector.selectOption('pdf');
             await page.getByRole('button', { name: /^Page 1:/ }).click();

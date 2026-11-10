@@ -128,8 +128,10 @@ impl JobQueue {
             .context("setting busy timeout")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enabling WAL mode")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")
+        conn.pragma_update(None, "synchronous", "FULL")
             .context("setting synchronous mode")?;
+        conn.pragma_update(None, "foreign_keys", true)
+            .context("enabling queue references")?;
         conn.execute_batch(SCHEMA).context("creating jobs schema")?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
@@ -176,12 +178,14 @@ impl JobQueue {
     }
 
     pub fn set_job_status(&self, job_id: &str, status: &str) -> Result<()> {
+        anyhow::ensure!(matches!(status, "pending" | "running" | "paused" | "done" | "error"), "Invalid job status");
         let now = now_ms();
-        self.conn.lock().unwrap().execute(
+        let changed = self.conn.lock().unwrap().execute(
             "UPDATE ingest_jobs SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status, now, job_id],
         )
         .context("updating job status")?;
+        anyhow::ensure!(changed == 1, "Job no longer exists");
         Ok(())
     }
 
@@ -207,6 +211,8 @@ impl JobQueue {
     pub fn delete_job(&self, job_id: &str) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().context("starting delete transaction")?;
+        let active: i64 = tx.query_row("SELECT COUNT(*) FROM file_queue WHERE job_id = ?1 AND status = 'in_progress'", [job_id], |r| r.get(0))?;
+        anyhow::ensure!(active == 0, "Wait for active files to finish before deleting this job");
         tx.execute("DELETE FROM file_queue WHERE job_id = ?1", params![job_id])
             .context("deleting file_queue rows")?;
         tx.execute("DELETE FROM ingest_jobs WHERE id = ?1", params![job_id])
@@ -332,17 +338,21 @@ impl JobQueue {
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().context("starting mark_done transaction")?;
+        let mut completed = 0i64;
+        let mut recovered = 0i64;
         for &id in row_ids {
-            tx.execute(
-                "UPDATE file_queue SET status = 'done', error_text = NULL WHERE id = ?1",
-                params![id],
-            )
-            .context("marking file done")?;
+            let previous: Option<String> = tx.query_row(
+                "SELECT status FROM file_queue WHERE id = ?1 AND job_id = ?2", params![id, job_id], |r| r.get(0)).optional()?;
+            let Some(previous) = previous else { anyhow::bail!("File {id} is not part of this job"); };
+            if previous == "done" || previous == "skipped" { continue; }
+            tx.execute("UPDATE file_queue SET status = 'done', error_text = NULL WHERE id = ?1 AND job_id = ?2", params![id, job_id])
+                .context("marking file done")?;
+            completed += 1;
+            if previous == "error" { recovered += 1; }
         }
-        let n = i64::try_from(row_ids.len()).unwrap_or(i64::MAX);
         tx.execute(
-            "UPDATE ingest_jobs SET done_files = done_files + ?1, updated_at = ?2 WHERE id = ?3",
-            params![n, now_ms(), job_id],
+            "UPDATE ingest_jobs SET done_files = done_files + ?1, error_files = MAX(0, error_files - ?2), updated_at = ?3 WHERE id = ?4",
+            params![completed, recovered, now_ms(), job_id],
         )
         .context("incrementing done_files")?;
         tx.commit().context("committing mark_done")?;
@@ -361,39 +371,43 @@ impl JobQueue {
     ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().context("starting mark_error transaction")?;
-        let retry_count: i32 = tx
+        let (retry_count, previous): (i32, String) = tx
             .query_row(
-                "SELECT retry_count FROM file_queue WHERE id = ?1",
-                params![row_id],
-                |r: &Row<'_>| r.get(0),
+                "SELECT retry_count, status FROM file_queue WHERE id = ?1 AND job_id = ?2",
+                params![row_id, job_id],
+                |r: &Row<'_>| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .context("reading retry_count")?
-            .unwrap_or(0);
+            .ok_or_else(|| anyhow::anyhow!("File {row_id} is not part of this job"))?;
+        // A lost acknowledgement must not turn an already committed success
+        // into an error or count the same failure again.
+        if previous == "done" || previous == "skipped" { return Ok(()); }
 
         if retry_count < max_retries {
             tx.execute(
                 r#"
                 UPDATE file_queue
                 SET status = 'pending', retry_count = retry_count + 1, error_text = ?1
-                WHERE id = ?2
+                WHERE id = ?2 AND job_id = ?3
                 "#,
-                params![error, row_id],
+                params![error, row_id, job_id],
             )
             .context("re-queuing errored file")?;
+            tx.execute("UPDATE ingest_jobs SET error_files = MAX(0, error_files - ?1), updated_at = ?2 WHERE id = ?3", params![i64::from(previous == "error"), now_ms(), job_id])?;
         } else {
             tx.execute(
                 r#"
                 UPDATE file_queue
                 SET status = 'error', retry_count = retry_count + 1, error_text = ?1
-                WHERE id = ?2
+                WHERE id = ?2 AND job_id = ?3
                 "#,
-                params![error, row_id],
+                params![error, row_id, job_id],
             )
             .context("marking file error")?;
             tx.execute(
-                "UPDATE ingest_jobs SET error_files = error_files + 1, updated_at = ?1 WHERE id = ?2",
-                params![now_ms(), job_id],
+                "UPDATE ingest_jobs SET error_files = error_files + ?1, updated_at = ?2 WHERE id = ?3",
+                params![i64::from(previous != "error"), now_ms(), job_id],
             )
             .context("incrementing error_files")?;
         }
@@ -405,14 +419,18 @@ impl JobQueue {
     pub fn mark_skipped(&self, job_id: &str, row_id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().context("starting mark_skipped transaction")?;
+        let previous: Option<String> = tx.query_row(
+            "SELECT status FROM file_queue WHERE id = ?1 AND job_id = ?2", params![row_id, job_id], |r| r.get(0)).optional()?;
+        let Some(previous) = previous else { anyhow::bail!("File {row_id} is not part of this job"); };
+        if previous == "done" || previous == "skipped" { return Ok(()); }
         tx.execute(
-            "UPDATE file_queue SET status = 'skipped' WHERE id = ?1",
-            params![row_id],
+            "UPDATE file_queue SET status = 'skipped' WHERE id = ?1 AND job_id = ?2",
+            params![row_id, job_id],
         )
         .context("marking file skipped")?;
         tx.execute(
-            "UPDATE ingest_jobs SET skipped_files = skipped_files + 1, updated_at = ?1 WHERE id = ?2",
-            params![now_ms(), job_id],
+            "UPDATE ingest_jobs SET skipped_files = skipped_files + 1, error_files = MAX(0, error_files - ?1), updated_at = ?2 WHERE id = ?3",
+            params![i64::from(previous == "error"), now_ms(), job_id],
         )
         .context("incrementing skipped_files")?;
         tx.commit().context("committing mark_skipped")?;
@@ -446,6 +464,26 @@ impl JobQueue {
             )
             .context("reclaiming in_progress files")?;
         Ok(n)
+    }
+
+    /// Explicit user retry. Successful and skipped rows remain untouched;
+    /// errored rows become claimable again in one durable transaction.
+    pub fn retry_errors(&self, job_id: &str) -> Result<usize> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().context("starting retry transaction")?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM ingest_jobs WHERE id = ?1)", [job_id], |r| r.get(0))?;
+        anyhow::ensure!(exists, "Job no longer exists");
+        let in_progress: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM file_queue WHERE job_id = ?1 AND status = 'in_progress'",
+            [job_id], |r| r.get(0))?;
+        anyhow::ensure!(in_progress == 0, "Wait for active files to finish before retrying errors");
+        let changed = tx.execute(
+            "UPDATE file_queue SET status = 'pending', retry_count = 0, error_text = NULL WHERE job_id = ?1 AND status = 'error'", [job_id])?;
+        if changed > 0 {
+            tx.execute("UPDATE ingest_jobs SET status = 'paused', error_files = 0, updated_at = ?1 WHERE id = ?2", params![now_ms(), job_id])?;
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// How many files in this job are still pending or in_progress.
@@ -516,46 +554,59 @@ impl JobQueue {
 
     /// Delete a single file-queue row.  Returns `true` if a row was deleted.
     pub fn remove_file(&self, row_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let job_id: Option<String> = conn
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().context("starting remove transaction")?;
+        let previous: Option<(String, String)> = tx
             .query_row(
-                "SELECT job_id FROM file_queue WHERE id = ?1",
+                "SELECT job_id, status FROM file_queue WHERE id = ?1",
                 params![row_id],
-                |r: &Row<'_>| r.get(0),
+                |r: &Row<'_>| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .context("reading job_id for remove_file")?;
-        let Some(job_id) = job_id else { return Ok(false) };
-        conn.execute("DELETE FROM file_queue WHERE id = ?1", params![row_id])
+        let Some((job_id, status)) = previous else { return Ok(false) };
+        anyhow::ensure!(status != "in_progress", "Wait for this file to finish before removing it");
+        tx.execute("DELETE FROM file_queue WHERE id = ?1", params![row_id])
             .context("deleting file_queue row")?;
-        conn.execute(
-            "UPDATE ingest_jobs SET total_files = (SELECT COUNT(*) FROM file_queue WHERE job_id = ?1), updated_at = ?2 WHERE id = ?1",
+        tx.execute(
+            REFRESH_COUNTS_SQL,
             params![job_id, now_ms()],
         )
         .context("refreshing total_files after remove")?;
+        tx.commit().context("committing remove")?;
         Ok(true)
     }
 
     /// Delete all file-queue rows for a job that match `status`.
     /// Returns the number of rows deleted.
     pub fn remove_files_by_status(&self, job_id: &str, status: &str) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let n = conn
+        anyhow::ensure!(status != "in_progress", "Active files cannot be removed");
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().context("starting bulk remove transaction")?;
+        let n = tx
             .execute(
                 "DELETE FROM file_queue WHERE job_id = ?1 AND status = ?2",
                 params![job_id, status],
             )
             .context("deleting file_queue rows by status")?;
-        conn.execute(
-            "UPDATE ingest_jobs SET total_files = (SELECT COUNT(*) FROM file_queue WHERE job_id = ?1), updated_at = ?2 WHERE id = ?1",
+        tx.execute(
+            REFRESH_COUNTS_SQL,
             params![job_id, now_ms()],
         )
         .context("refreshing total_files after bulk remove")?;
+        tx.commit().context("committing bulk remove")?;
         Ok(n)
     }
 }
 
 // ── SQL ───────────────────────────────────────────────────────────────────────
+
+const REFRESH_COUNTS_SQL: &str = "UPDATE ingest_jobs SET
+    total_files = (SELECT COUNT(*) FROM file_queue WHERE job_id = ?1),
+    done_files = (SELECT COUNT(*) FROM file_queue WHERE job_id = ?1 AND status = 'done'),
+    error_files = (SELECT COUNT(*) FROM file_queue WHERE job_id = ?1 AND status = 'error'),
+    skipped_files = (SELECT COUNT(*) FROM file_queue WHERE job_id = ?1 AND status = 'skipped'),
+    updated_at = ?2 WHERE id = ?1";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS ingest_jobs (
@@ -593,7 +644,10 @@ const JOB_SELECT_SQL: &str = r#"
 SELECT
     j.id, j.created_at, j.updated_at, j.status, j.job_type,
     j.source_paths, j.target_level,
-    j.total_files, j.done_files, j.error_files, j.skipped_files,
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id),
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id AND status = 'done'),
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id AND status = 'error'),
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id AND status = 'skipped'),
     COALESCE((SELECT COUNT(*) FROM file_queue
               WHERE job_id = j.id AND status = 'in_progress'), 0) AS in_progress
 FROM ingest_jobs j
@@ -604,7 +658,10 @@ const JOB_SELECT_ALL_SQL: &str = r#"
 SELECT
     j.id, j.created_at, j.updated_at, j.status, j.job_type,
     j.source_paths, j.target_level,
-    j.total_files, j.done_files, j.error_files, j.skipped_files,
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id),
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id AND status = 'done'),
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id AND status = 'error'),
+    (SELECT COUNT(*) FROM file_queue WHERE job_id = j.id AND status = 'skipped'),
     COALESCE((SELECT COUNT(*) FROM file_queue
               WHERE job_id = j.id AND status = 'in_progress'), 0) AS in_progress
 FROM ingest_jobs j
@@ -744,5 +801,71 @@ mod tests {
         q.add_files(&jid, &sample_files(&jid, 2)).unwrap();
         q.delete_job(&jid).unwrap();
         assert!(q.get_job(&jid).unwrap().is_none());
+    }
+
+    #[test]
+    fn acknowledgements_are_idempotent_and_scoped_to_the_job() {
+        let (q, _dir) = tmp_queue();
+        let first = q.create_job("ingest", &[], 3, None).unwrap();
+        let second = q.create_job("ingest", &[], 3, None).unwrap();
+        q.add_files(&first, &sample_files(&first, 3)).unwrap();
+        let rows = q.claim_batch(&first, 3).unwrap();
+        assert!(q.mark_done(&second, &[rows[0].row_id]).is_err());
+        assert!(q.mark_error(&second, rows[1].row_id, "wrong job", 0).is_err());
+        assert!(q.mark_skipped(&second, rows[2].row_id).is_err());
+        for _ in 0..2 {
+            q.mark_done(&first, &[rows[0].row_id, rows[0].row_id]).unwrap();
+            q.mark_error(&first, rows[1].row_id, "failed", 0).unwrap();
+            q.mark_skipped(&first, rows[2].row_id).unwrap();
+        }
+        q.mark_error(&first, rows[0].row_id, "late error", 0).unwrap();
+        let summary = q.get_job(&first).unwrap().unwrap();
+        assert_eq!((summary.total_files, summary.done_files, summary.error_files, summary.skipped_files), (3, 1, 1, 1));
+        q.remove_file(rows[1].row_id).unwrap();
+        q.remove_files_by_status(&first, "done").unwrap();
+        let summary = q.get_job(&first).unwrap().unwrap();
+        assert_eq!((summary.total_files, summary.done_files, summary.error_files, summary.skipped_files), (1, 0, 0, 1));
+    }
+
+    #[test]
+    fn retry_after_reopen_preserves_successes_and_reclaims_only_unfinished_work() {
+        let (q, dir) = tmp_queue();
+        let job = q.create_job("ingest", &[], 3, None).unwrap();
+        q.add_files(&job, &sample_files(&job, 4)).unwrap();
+        let rows = q.claim_batch(&job, 4).unwrap();
+        q.mark_done(&job, &[rows[0].row_id]).unwrap();
+        q.mark_error(&job, rows[1].row_id, "OCR unavailable", 0).unwrap();
+        q.mark_skipped(&job, rows[2].row_id).unwrap();
+        assert!(q.retry_errors(&job).is_err());
+        assert!(q.remove_file(rows[3].row_id).is_err());
+        assert!(q.delete_job(&job).is_err());
+        drop(q);
+
+        let reopened = JobQueue::open_or_create(dir.path()).unwrap();
+        assert_eq!(reopened.reclaim_in_progress(&job).unwrap(), 1);
+        assert_eq!(reopened.retry_errors(&job).unwrap(), 1);
+        assert_eq!(reopened.retry_errors(&job).unwrap(), 0);
+        let retry = reopened.claim_batch(&job, 10).unwrap();
+        assert_eq!(retry.iter().map(|f| f.row_id).collect::<Vec<_>>(), vec![rows[1].row_id, rows[3].row_id]);
+        assert_eq!(retry[0].retry_count, 0);
+        let summary = reopened.get_job(&job).unwrap().unwrap();
+        assert_eq!((summary.done_files, summary.skipped_files, summary.error_files), (1, 1, 0));
+    }
+
+    #[test]
+    fn failed_acknowledgement_rolls_back_the_whole_batch() {
+        let (q, _dir) = tmp_queue();
+        let job = q.create_job("ingest", &[], 3, None).unwrap();
+        q.add_files(&job, &sample_files(&job, 2)).unwrap();
+        let rows = q.claim_batch(&job, 2).unwrap();
+        q.conn.lock().unwrap().execute_batch(&format!(
+            "CREATE TRIGGER fail_ack BEFORE UPDATE ON file_queue WHEN NEW.id = {} AND NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'simulated storage failure'); END;", rows[1].row_id)).unwrap();
+        assert!(q.mark_done(&job, &[rows[0].row_id, rows[1].row_id]).is_err());
+        let summary = q.get_job(&job).unwrap().unwrap();
+        assert_eq!(summary.done_files, 0);
+        assert_eq!(summary.in_progress_files, 2);
+        q.conn.lock().unwrap().execute_batch("DROP TRIGGER fail_ack;").unwrap();
+        q.mark_done(&job, &[rows[0].row_id, rows[1].row_id]).unwrap();
+        assert_eq!(q.get_job(&job).unwrap().unwrap().done_files, 2);
     }
 }

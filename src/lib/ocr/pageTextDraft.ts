@@ -72,7 +72,7 @@ export function readPageTextDraft(raw:unknown):PageTextDraft|undefined {
     const pageKeys=['id','documentId','sourcePage','name','imagePath','originalImagePath','width','height','widthPoints','heightPoints',
         'status','regions','excluded','approved','error','elapsedMs','provenance','profileId','structure','contentRevision'];
     if(Object.keys(raw.page).some(key=>!pageKeys.includes(key))||
-        Object.keys(raw.document).some(key=>!['id','sourceUri','name'].includes(key)))
+        Object.keys(raw.document).some(key=>!['id','sourceUri','archiveUri','name'].includes(key)))
         return fail('The saved page draft contains unsupported source fields.');
     const draft=raw as unknown as PageTextDraft;
     validateDraftSize(draft);

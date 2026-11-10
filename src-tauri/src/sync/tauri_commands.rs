@@ -723,20 +723,24 @@ pub async fn sync_accept_remote_conflict(
         .await.map_err(|e| e.to_string())?;
     let remote = resolved.rows.into_iter().next()
         .ok_or_else(|| "remote conflict candidate is no longer available".to_string())?;
-    if remote.path != conflict.path || remote.sha256 != conflict.remote_hash {
+    if remote.path != conflict.path || remote.sha256 != conflict.remote_hash
+        || remote.sha256.trim().is_empty() {
         return Err("remote conflict candidate failed identity validation".into());
     }
-    let local = state.index.lock().await.local.clone()
-        .ok_or("Local index not initialised")?;
-    for row in local.conflict_rows_for_location(&conflict.path).await
-        .map_err(|e| e.to_string())? {
-        local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
-    }
+    let (local, fts) = {
+        let index = state.index.lock().await;
+        (index.local.clone().ok_or("Local index not initialised")?,
+         index.fts.clone().ok_or("Local full-text index not initialised")?)
+    };
+    let replace_doc_ids: Vec<String> = local.conflict_rows_for_location(&conflict.path).await
+        .map_err(|e| e.to_string())?.into_iter().map(|row| row.doc_id).collect();
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default().as_millis() as i64;
     let doc_id = remote.sha256.clone();
+    let has_body = remote.full_text.as_deref().is_some_and(|text| !text.trim().is_empty());
+    let chunk_index = if has_body { 0 } else { -1 };
     let chunk = crate::index::schema::DocumentChunk {
-        id: crate::index::ingest::chunk_row_id(&doc_id, -1),
+        id: crate::index::ingest::chunk_row_id(&doc_id, chunk_index),
         doc_id,
         location_uri: remote.path.clone(), owner_id: remote.owner_id.clone(),
         filename: Some(remote.filename.clone()), title: remote.title.clone(),
@@ -744,9 +748,12 @@ pub async fn sync_accept_remote_conflict(
         language: remote.language.clone(), page_count: None, headings_text: None,
         full_text: remote.full_text.clone(), full_text_md: remote.full_text.clone(),
         embedding: None, embedding_sparse: None, embedding_model: None,
-        chunk_index: -1, chunk_total: 0, chunk_start_char: None, chunk_end_char: None,
+        chunk_index, chunk_total: if has_body { 1 } else { 0 }, chunk_start_char: None, chunk_end_char: None,
         indexed_at: now_ms, source_hash: remote.sha256.clone(), tags: remote.tags.clone(),
-        metadata_json: Some(format!(r#"{{"level":1,"source":"cb_conflict_accept","cb_indexed_at":{}}}"#, remote.indexed_at)),
+        metadata_json: Some(serde_json::json!({
+            "level": if has_body { 3 } else { 1 }, "source": "cb_conflict_accept",
+            "cb_indexed_at": remote.indexed_at,
+        }).to_string()),
         parent_dir: if remote.parent_dir.is_empty() { None } else { Some(remote.parent_dir.clone()) },
         volume_id: None, text_translated: None, text_translated_lang: None,
         audio_duration_seconds: None, audio_codec: None, audio_sample_rate_hz: None,
@@ -756,7 +763,8 @@ pub async fn sync_accept_remote_conflict(
         url: remote.url.clone(), embedding_omni: None, embedding_vit: None,
         summary: None, doc_status: None,
     };
-    local.ingest_batch(&[chunk]).await.map_err(|e| e.to_string())?;
+    local.ingest_batch_with_fts(&[chunk], &replace_doc_ids, &fts).await
+        .map_err(|e| format!("applying remote conflict: {e:#}"))?;
     mgr.remove_conflict(id).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"id": id, "path": conflict.path, "sha256": conflict.remote_hash, "accepted": true}))
 }
@@ -1063,24 +1071,25 @@ pub async fn sync_enqueue(
 /// to L3", same UX as cb-archive rows).
 ///
 /// At-least-once semantics: `last_pull_ts` only advances after the
-/// LanceDB writes succeed. A mid-apply crash will re-fetch the same rows
-/// on the next pull (LanceDB add-with-existing-id is idempotent because
-/// our `id = doc_id + ":" + chunk_index` row PK is stable).
+/// paired local writes succeed. A mid-apply crash will re-fetch the same rows
+/// on the next pull; the import writer replaces stable identities instead of
+/// appending duplicate rows.
 #[tauri::command]
 pub async fn sync_pull(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (data_dir, remote_url, api_key, local) = {
+    let (data_dir, remote_url, api_key, local, fts) = {
         let dd  = state.data_dir.lock().await.clone();
         let idx = state.index.lock().await;
         let url = idx.config.remote_url.clone()
             .ok_or_else(|| "remote_url not configured".to_string())?;
         let key = idx.config.remote_api_key.clone().unwrap_or_default();
         let local = idx.local.clone();
-        (dd, url, key, local)
+        (dd, url, key, local, idx.fts.clone())
     };
     let data_dir = data_dir.ok_or("data_dir not initialised")?;
     let local = local.ok_or("Local index not initialised — Hybrid mode requires a local cache")?;
+    let fts = fts.ok_or("Local full-text index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
 
     let (rows, max_ts) = mgr.pull_pending(&remote_url, &api_key, 200)
@@ -1155,7 +1164,8 @@ pub async fn sync_pull(
         .collect();
 
     let applied = chunks.len();
-    local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+    local.ingest_batch_with_fts(&chunks, &[], &fts).await
+        .map_err(|e| format!("indexing pulled metadata: {e:#}"))?;
 
     // Only after a successful apply do we advance the watermark.
     mgr.set_state("last_pull_ts", &max_ts.to_string()).map_err(|e| e.to_string())?;
@@ -1490,10 +1500,9 @@ pub async fn sync_cb_manifest_push(
 }
 
 /// Pull rows newer than the local `cb_last_manifest_pull_ts`
-/// watermark and write them as L1 metadata-only rows
-/// (chunk_index = -1 sentinel) into the local LanceDB.  At-least-once
-/// semantics: watermark advances only after the local writes succeed,
-/// so a crash mid-apply re-fetches the same rows next time.
+/// watermark and cache metadata plus any requested full text. At-least-once
+/// semantics: the watermark advances only after the paired local writes
+/// succeed, so a crash mid-apply re-fetches the same rows next time.
 #[tauri::command]
 pub async fn sync_cb_manifest_pull(
     state: State<'_, AppState>,
@@ -1509,6 +1518,7 @@ pub async fn sync_cb_manifest_pull(
             idx.config.conflict_policy)
     };
     let local = local.ok_or("Local index not initialised")?;
+    let fts = fts.ok_or("Local full-text index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
 
     let last_ts: i64 = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
@@ -1538,16 +1548,16 @@ pub async fn sync_cb_manifest_pull(
     // Translate each PullRow → DocumentChunk, resolving same-path changes
     // before they reach LanceDB.
     let mut chunks = Vec::with_capacity(pulled.rows.len());
+    let mut replace_doc_ids = Vec::new();
     let mut skipped_local = 0usize;
     let mut queued_manual = 0usize;
     let mut replaced_remote = 0usize;
     let mut kept_both = 0usize;
     for r in &pulled.rows {
-        // Build a stable doc_id from the hash so re-pulls of the same
-        // file are idempotent (LanceDB upsert by row id).
-        let base_doc_id = if r.sha256.is_empty() {
-            uuid::Uuid::new_v4().to_string()
-        } else { r.sha256.clone() };
+        if r.sha256.trim().is_empty() {
+            return Err(format!("Remote manifest row is missing a document identity: {}", r.path));
+        }
+        let base_doc_id = r.sha256.clone();
         let local_rows = local.conflict_rows_for_location(&r.path)
             .await.map_err(|e| e.to_string())?;
         let matching = local_rows.iter().any(|row| row.source_hash == r.sha256);
@@ -1569,9 +1579,7 @@ pub async fn sync_cb_manifest_pull(
                         continue;
                     }
                     crate::sync::conflict::Resolution::UseRemote => {
-                        for row in &local_rows {
-                            local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
-                        }
+                        replace_doc_ids.extend(local_rows.iter().map(|row| row.doc_id.clone()));
                         replaced_remote += 1;
                     }
                     crate::sync::conflict::Resolution::KeepBoth { remote_doc_id } => {
@@ -1588,7 +1596,7 @@ pub async fn sync_cb_manifest_pull(
                 }
             }
         }
-        let has_body = r.full_text.as_deref().is_some_and(|s| !s.is_empty());
+        let has_body = r.full_text.as_deref().is_some_and(|text| !text.trim().is_empty());
         let chunk_index = if has_body { 0 } else { -1 };
         let row_id = crate::index::ingest::chunk_row_id(&doc_id, chunk_index);
         chunks.push(crate::index::schema::DocumentChunk {
@@ -1623,10 +1631,10 @@ pub async fn sync_cb_manifest_pull(
             indexed_at: now_ms,
             source_hash: r.sha256.clone(),
             tags: r.tags.clone(),
-            metadata_json: Some(format!(
-                r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
-                r.indexed_at
-            )),
+            metadata_json: Some(serde_json::json!({
+                "level": if has_body { 3 } else { 1 }, "source": "cb_sync_pull",
+                "cb_indexed_at": r.indexed_at,
+            }).to_string()),
             parent_dir: if r.parent_dir.is_empty() { None } else { Some(r.parent_dir.clone()) },
             volume_id: None,
             text_translated: None,
@@ -1652,12 +1660,8 @@ pub async fn sync_cb_manifest_pull(
     }
 
     let applied = chunks.len();
-    local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
-    if chunks.iter().any(|c| c.full_text.as_deref().is_some_and(|s| !s.is_empty())) {
-        let fts = fts.ok_or("Local full-text index not initialised")?;
-        crate::index::fts_index::index_synced_documents(&fts, &chunks)
-            .map_err(|e| format!("indexing pulled text: {e:#}"))?;
-    }
+    local.ingest_batch_with_fts(&chunks, &replace_doc_ids, &fts).await
+        .map_err(|e| format!("indexing pulled documents: {e:#}"))?;
 
     let new_watermark = pulled.max_indexed_at;
     mgr.set_state("cb_last_manifest_pull_ts", &new_watermark.to_string())

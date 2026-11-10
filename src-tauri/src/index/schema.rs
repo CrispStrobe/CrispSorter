@@ -466,6 +466,10 @@ pub struct SearchFilters {
     /// P26.8 — filter by document review status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_status: Option<String>,
+    /// Internal local-source availability filter, applied before ranking/limit.
+    /// None includes every volume; Some([]) includes only unbound documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mounted_volume_ids: Option<Vec<String>>,
 }
 
 impl SearchFilters {
@@ -563,6 +567,11 @@ impl SearchFilters {
         }
         if let Some(ref status) = self.doc_status {
             parts.push(format!("doc_status = '{}'", status.replace('\'', "''")));
+        }
+        if let Some(ref volumes) = self.mounted_volume_ids {
+            let ids: Vec<String> = volumes.iter().map(|id| format!("'{}'", id.replace('\'', "''"))).collect();
+            parts.push(if ids.is_empty() { "volume_id IS NULL".to_owned() }
+                else { format!("(volume_id IS NULL OR volume_id IN ({}))", ids.join(",")) });
         }
         if !parts.is_empty() {
             Some(parts.join(" AND "))
@@ -793,6 +802,16 @@ mod tests {
     fn filters_sql_none_when_empty() {
         let f = SearchFilters::default();
         assert!(f.to_lance_sql().is_none());
+    }
+
+    #[test]
+    fn source_availability_is_a_pre_limit_predicate_and_escapes_ids() {
+        let empty = SearchFilters { mounted_volume_ids: Some(vec![]), ..Default::default() };
+        assert_eq!(empty.to_lance_sql().as_deref(), Some("volume_id IS NULL"));
+        let mounted = SearchFilters { mounted_volume_ids: Some(vec!["drive'one".into(), "two".into()]), ..Default::default() };
+        assert_eq!(mounted.to_lance_sql().as_deref(), Some("(volume_id IS NULL OR volume_id IN ('drive''one','two'))"));
+        let restored: SearchFilters = serde_json::from_value(serde_json::json!({"tags":[]})).unwrap();
+        assert!(restored.mounted_volume_ids.is_none());
     }
 
     #[test]
