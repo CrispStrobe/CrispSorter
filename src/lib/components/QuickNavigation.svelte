@@ -51,7 +51,24 @@
         } else if (event.key === 'Enter') {
             event.preventDefault();
             if (results[selectedIndex]) choose(results[selectedIndex].id);
+        } else if (event.key === 'Escape') {
+            // A non-empty type="search" field would consume the first Escape
+            // to clear itself; Escape always dismisses the palette instead.
+            event.preventDefault();
+            onClose();
         }
+    }
+
+    // A modal <dialog> blocks the page, but Chromium still lets Tab leave it
+    // for the browser UI after the last control. Wrap focus inside instead.
+    function onDialogKey(event: KeyboardEvent) {
+        if (event.key !== 'Tab') return;
+        const focusable = [...dialog.querySelectorAll<HTMLElement>('button:not([tabindex="-1"]), input:not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])')]
+            .filter(element => !element.hasAttribute('disabled') && element.getClientRects().length > 0);
+        if (!focusable.length) return;
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
 
     function onBackdropClick(event: MouseEvent) {
@@ -62,7 +79,7 @@
 </script>
 
 <dialog class="quick-navigation" bind:this={dialog} aria-labelledby="quick-navigation-title"
-    oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={onBackdropClick}>
+    oncancel={(event) => { event.preventDefault(); onClose(); }} onclick={onBackdropClick} onkeydown={onDialogKey}>
     <div class="palette-header">
         <h2 id="quick-navigation-title">{copy.title}</h2>
         <button class="close-button" aria-label={copy.close} onclick={onClose}><X size={18} /></button>

@@ -1743,7 +1743,7 @@
         <div class="filter-row">
             <label class="filter-field">
                 <span>{labels.max}</span>
-                <select bind:value={limit}>
+                <select bind:value={limit} aria-label={labels.max}>
                     {#each [10, 20, 50, 100] as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>

@@ -51,8 +51,8 @@ for (const platform of ['ios', 'android']) {
 test('document OCR action carries the selected Inbox file into the workbench', async ({ page }) => {
     await page.locator('.batch-container').getByText('Pending scan.png', { exact: true }).first().click();
     await page.getByRole('button', { name: 'OCR selected document', exact: true }).click();
-    await expect(page.locator('.ocrwb')).toBeVisible();
-    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'ocr_doc_open' && call.args.locationUri === '/fixtures/scan.png').length)).toBe(1);
+    await expect(page.getByRole('region', { name: 'OCR document workspace', exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'ocr_workspace_import' && call.args.locationUri === '/fixtures/scan.png').length)).toBe(1);
 });
 
 test('script generation reports no file moves and preserves the batch', async ({ page }) => {
@@ -135,37 +135,10 @@ test('empty library evidence answers explicitly without calling a model', async 
     expect(await page.evaluate(() => (window as any).__fixturePrompts.length)).toBe(0);
 });
 
-test('OCR retries only weak pages and preserves edits through crop failure and undo', async ({ page }) => {
-    await page.getByRole('button', { name: 'OCR', exact: true }).first().click();
-    const workbench = page.locator('.ocrwb');
-    await workbench.getByRole('button', { name: 'Open document…', exact: true }).first().click();
-    await workbench.getByLabel('OCR task preset').selectOption('quick');
-    await expect(workbench.getByLabel('CPU pixel budget', { exact: true })).toBeDisabled();
-    await workbench.getByLabel('OCR task preset').selectOption('multilingual');
-    await workbench.getByLabel('CPU pixel budget', { exact: true }).check();
-    await workbench.getByRole('button', { name: 'Run OCR (all pages)', exact: true }).click();
-    await expect(workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true })).toBeEnabled();
-    await page.evaluate(() => { (window as any).__fixtureCalls = []; });
-    await workbench.getByRole('button', { name: 'Retry weak pages (1)', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'ocr_page_regions').length)).toBe(1);
-    expect(await page.evaluate(() => (window as any).__fixtureCalls.find((c: any) => c.command === 'ocr_page_regions').args)).toMatchObject({ pagePath: '/fixtures/page1.png', preset: 'multilingual', cpuPixelBudget: true });
-    const text = workbench.locator('textarea').first();
-    await text.fill('My proofread warranty text.');
-    await page.evaluate(() => { (window as any).__fixtureRegionEmpty = true; });
-    await workbench.getByRole('button', { name: 'Retry selected region', exact: true }).click();
-    await expect(workbench).toContainText('previous text was retained');
-    await expect(text).toHaveValue('My proofread warranty text.');
-    await page.evaluate(() => { (window as any).__fixtureRegionEmpty = false; });
-    await workbench.getByRole('button', { name: 'Retry selected region', exact: true }).click();
-    await expect(workbench).toContainText('My proofread warranty text.');
-    await expect(workbench).toContainText('Corrected crop text.');
-    await workbench.getByRole('button', { name: 'Apply retry', exact: true }).click();
-    await expect(text).toHaveValue('Corrected crop text.');
-    await workbench.getByRole('button', { name: 'Undo OCR', exact: true }).click();
-    await expect(text).toHaveValue('My proofread warranty text.');
-    await workbench.getByLabel('Proofread', { exact: true }).check();
-    await expect(workbench.getByRole('button', { name: 'Retry weak pages (0)', exact: true })).toBeDisabled();
-});
+// The legacy OCR panel this file once drove (weak-page retry, region retry,
+// undo) was replaced by the production OCR workspace. Its page retry, partial
+// re-OCR with apply/undo, and correction-preserving flows are covered by
+// tests/ocr-workspace/smoke.mjs against the real component.
 
 test('field review preserves evidence, finds exact values, exports and stages sorting without moves', async ({ page }) => {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();

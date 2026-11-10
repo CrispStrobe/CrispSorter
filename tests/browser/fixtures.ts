@@ -100,8 +100,6 @@ export async function fixtures(page: Page) {
                 if (command === 'index_get_config') return { enabled: true, mode: 'Hybrid', backend_type: 'Local', use_vector: true };
                 if (command === 'sync_status') return { pending_count: 0, last_push_ts: null, remote_online: false };
                 if (command === 'index_retrieve_passages') return root.__fixtureEmptyEvidence ? [] : [{ document: { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8 }, passage: { text: 'The cobalt warranty expires in November 2031.', start_char: 4000, end_char: 4045, offset_unit: 'utf8_bytes' } }];
-                if (command === 'ocr_doc_open') return { count: 2, pages: ['/fixtures/page1.png', '/fixtures/page2.png'] };
-                if (command === 'ocr_page_regions') return { width: 500, height: 700, regions: args.region && root.__fixtureRegionEmpty ? [] : [{ text: args.region ? 'Corrected crop text.' : 'Warranty expires in November 2031.', x: 10, y: 20, w: 350, h: 40, confidence: args.pagePath.endsWith('page2.png') ? 0.9 : 0.2, char_conf: [] }] };
                 if (command === 'plugin:http|fetch') {
                     const id = rid++;
                     const config = args.clientConfig;
