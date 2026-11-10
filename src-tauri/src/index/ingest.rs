@@ -206,11 +206,27 @@ pub(crate) struct TantivyInputOwned {
     pub(crate) title: String,
     pub(crate) headings: String,
     pub(crate) body: String,
+    /// Separate regions have unknown or discontinuous source positions. Old
+    /// journals omit this field and retain their already prepared whole body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) body_segments: Option<Vec<String>>,
     /// MT-pass output replicated for the FTS write — `None` when the
     /// extractor didn't translate (no `--translate-to`, source lang
     /// unknown, or MT failed).  Wired into the `body_translated`
     /// Tantivy field when the on-disk schema has it.
     pub(crate) body_translated: Option<String>,
+}
+
+impl TantivyInputOwned {
+    pub(crate) fn write_to(&self, fts: &FtsIndex, writer: &mut tantivy::IndexWriter) -> Result<()> {
+        let input = TantivyInput { doc_id: &self.doc_id, owner_id: &self.owner_id,
+            language: &self.language, title: &self.title, headings: &self.headings,
+            body: &self.body, body_translated: self.body_translated.as_deref() };
+        match &self.body_segments {
+            Some(segments) => fts.add_document_segments(writer, input, segments),
+            None => fts.add_document(writer, input),
+        }
+    }
 }
 
 /// The intent is durable before Lance commits. A generation marker on the
@@ -312,14 +328,7 @@ fn apply_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
     for doc_id in &pending.replace_ids {
         fts.delete_document(&mut writer, doc_id)?;
     }
-    for input in &pending.inputs {
-        fts.add_document(&mut writer, TantivyInput {
-            doc_id: &input.doc_id, owner_id: &input.owner_id,
-            language: &input.language, title: &input.title,
-            headings: &input.headings, body: &input.body,
-            body_translated: input.body_translated.as_deref(),
-        })?;
-    }
+    for input in &pending.inputs { input.write_to(fts, &mut writer)?; }
     writer.commit().context("committing full-text repair")?;
     super::result_cache::invalidate();
     Ok(())
@@ -919,6 +928,7 @@ impl IngestPipeline {
                 title: raw.title.clone().unwrap_or_default(),
                 headings: raw.headings.join(" "),
                 body: raw.full_text.clone(),
+                body_segments: None,
                 body_translated: raw.translated_text.clone(),
             });
         }
@@ -1493,7 +1503,7 @@ mod tests {
             inputs: vec![TantivyInputOwned {
                 doc_id: doc_id_for(raw), owner_id: raw.owner_id.clone(),
                 language: raw.language.clone(), title: raw.title.clone().unwrap_or_default(),
-                headings: raw.headings.join(" "), body: raw.full_text.clone(),
+                headings: raw.headings.join(" "), body: raw.full_text.clone(), body_segments: None,
                 body_translated: raw.translated_text.clone(),
             }],
             receipt_rows: Vec::new(), delete_only: false, absent_occurrences: Vec::new(),
@@ -1504,6 +1514,103 @@ mod tests {
         build_doc_chunk(&super::super::embedder::TextChunk {
             text: raw.full_text.clone(), start_char: 0, end_char: raw.full_text.len(), chunk_index: 0,
         }, raw, 1, None, None, String::new(), None)
+    }
+
+    fn imported_piece(raw: &RawDocument, index: i32, total: i32, text: &str, start: Option<i32>) -> DocumentChunk {
+        let mut chunk = one_chunk(raw);
+        chunk.id = chunk_row_id(&chunk.doc_id, index);
+        chunk.chunk_index = index;
+        chunk.chunk_total = total;
+        chunk.full_text = Some(text.to_owned());
+        chunk.chunk_start_char = start;
+        chunk.chunk_end_char = start.map(|offset| offset + text.len() as i32);
+        chunk
+    }
+
+    #[tokio::test]
+    async fn imported_source_regions_preserve_only_verified_cross_chunk_phrases() {
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let mut known = sample_raw();
+        known.location_uri = "crisp+local://user@machine/known.pdf".into();
+        let mut unknown = sample_raw();
+        unknown.location_uri = "crisp+local://user@machine/unknown.pdf".into();
+        let mut gap = sample_raw();
+        gap.location_uri = "crisp+local://user@machine/gap.pdf".into();
+        let chunks = vec![
+            imported_piece(&known, 0, 3, "café beta", Some(0)),
+            // A contained overlap must not move the previous end backwards.
+            imported_piece(&known, 1, 3, "beta", Some(6)),
+            imported_piece(&known, 2, 3, "beta gamma", Some(6)),
+            imported_piece(&unknown, 0, 2, "red", None),
+            imported_piece(&unknown, 1, 2, "fox", None),
+            imported_piece(&gap, 0, 2, "red", Some(0)),
+            imported_piece(&gap, 1, 2, "fox", Some(10)),
+        ];
+        local.ingest_batch_with_fts(&chunks, &[], &fts).await.unwrap();
+        let exact = fts.search(r#""cafe beta gamma""#, &Default::default(), 10).unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].doc_id, doc_id_for(&known));
+        assert_eq!(fts.search("red AND fox", &Default::default(), 10).unwrap().len(), 2);
+        for query in [r#""red fox""#, "red w/1024 fox", "red pre/1024 fox"] {
+            assert!(fts.search(query, &Default::default(), 10).unwrap().is_empty(), "{query}");
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_imported_overlaps_fail_before_changing_last_good_document() {
+        let (_dir, fts, local, pipeline) = test_indexes().await;
+        let original = sample_raw();
+        pipeline.ingest_document(original.clone()).await.unwrap();
+        let replacement = vec![
+            imported_piece(&original, 0, 2, "alpha beta", Some(0)),
+            imported_piece(&original, 1, 2, "wrong gamma", Some(6)),
+        ];
+        let error = local.ingest_batch_with_fts(&replacement, &[], &fts).await.unwrap_err();
+        assert!(format!("{error:#}").contains("inconsistent source text"));
+        let mut bad_utf8 = imported_piece(&original, 0, 1, "café", Some(0));
+        bad_utf8.chunk_end_char = Some(4);
+        let error = local.ingest_batch_with_fts(&[bad_utf8], &[], &fts).await.unwrap_err();
+        assert!(format!("{error:#}").contains("offsets disagree"));
+        let mut incomplete = imported_piece(&original, 0, 1, "body", None);
+        incomplete.chunk_start_char = Some(0);
+        assert!(local.ingest_batch_with_fts(&[incomplete], &[], &fts).await.is_err());
+        assert_eq!(local.fetch_full_text(&doc_id_for(&original)).await.unwrap(), original.full_text);
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert!(fts.search("alpha", &Default::default(), 10).unwrap().is_empty());
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn imported_segments_survive_failed_full_text_commit_and_restart() {
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let mut original = sample_raw();
+        original.full_text = "priorstable".into();
+        pipeline.ingest_document(original.clone()).await.unwrap();
+        let held_writer = fts.writer().unwrap();
+        let chunks = vec![
+            imported_piece(&original, 0, 2, "red", None),
+            imported_piece(&original, 1, 2, "fox", None),
+        ];
+        let error = local.ingest_batch_with_fts(&chunks, &[], &fts).await.unwrap_err();
+        assert!(format!("{error:#}").contains("full-text repair is pending"));
+        let pending = pending_fts_writes(local.ingest_journal_path()).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].inputs[0].body_segments.as_deref(), Some(["red".to_owned(), "fox".to_owned()].as_slice()));
+        assert_eq!(local.table_ref().count_rows(None).await.unwrap(), 2);
+        drop(held_writer);
+        drop(pipeline);
+        drop(local);
+        drop(fts);
+
+        let reopened = LocalIndex::open_or_create(dir.path(), 4).await.unwrap();
+        let reopened_fts = FtsIndex::open_or_create(&dir.path().join("fts")).unwrap();
+        let _guard = reopened.read_guard(&reopened_fts).await.unwrap();
+        assert_eq!(reopened_fts.search("red AND fox", &Default::default(), 10).unwrap().len(), 1);
+        for query in [r#""red fox""#, "red w/1024 fox", "priorstable"] {
+            assert!(reopened_fts.search(query, &Default::default(), 10).unwrap().is_empty(), "{query}");
+        }
+        assert_eq!(reopened_fts.doc_count(), 1);
+        assert!(pending_fts_writes(reopened.ingest_journal_path()).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1589,6 +1696,9 @@ mod tests {
         changed.source_hash = "replacement-hash".into();
         changed.full_text = "First passage with Unicode 日本語. Exact complete body contains endmarker.".into();
         let pending = pending_for(&changed, vec![doc_id_for(&original)]);
+        // Whole-body journals retain the legacy payload shape, and the real
+        // restart below must recover it without the new optional field.
+        assert!(serde_json::to_value(&pending).unwrap()["inputs"][0].get("body_segments").is_none());
         record_fts_intent(local.ingest_journal_path(), &pending).unwrap();
         local.replace_documents(&mut [one_chunk(&changed)], &pending.generation).await.unwrap();
         // Simulate process death after Lance commit but before full-text commit.
@@ -2514,7 +2624,7 @@ mod tests {
         local.replace_imported_rows(&mut [canonical.clone()], &[], "imported-while-queued").await.unwrap();
         let pending = PendingFtsWrite { generation: "fixture".into(), doc_ids: vec![canonical.doc_id.clone()], replace_ids: vec![canonical.doc_id.clone()],
             inputs: vec![TantivyInputOwned { doc_id: canonical.doc_id.clone(), owner_id: raw.owner_id.clone(), language: raw.language.clone(),
-                title: String::new(), headings: String::new(), body: canonical.full_text.clone().unwrap(), body_translated: None }],
+                title: String::new(), headings: String::new(), body: canonical.full_text.clone().unwrap(), body_segments: None, body_translated: None }],
             receipt_rows: Vec::new(), delete_only: false, absent_occurrences: Vec::new() };
         apply_fts_write(&fts, &pending).unwrap();
         drop(guard);

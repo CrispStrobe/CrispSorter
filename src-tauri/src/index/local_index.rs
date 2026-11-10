@@ -103,6 +103,67 @@ impl From<&DocumentChunk> for FtsPiece {
     }
 }
 
+/// Reconstruct only verified contiguous text; preserve every other source region
+/// as a separate positional segment for imported documents and archive indexes.
+fn fts_input_from_pieces(doc_id: String, mut pieces: Vec<FtsPiece>) -> Result<Option<super::ingest::TantivyInputOwned>> {
+    pieces.sort_by_key(|piece| piece.chunk_index);
+    let extracted = pieces.iter().any(|piece| piece.chunk_index >= 0);
+    let Some(first) = pieces.iter().find(|piece| piece.chunk_index >= 0).or_else(|| pieces.first()) else { return Ok(None); };
+    let mut input = super::ingest::TantivyInputOwned {
+        doc_id, owner_id: first.owner.clone(), language: first.language.clone(), title: first.title.clone(),
+        headings: String::new(), body: String::new(), body_segments: None, body_translated: None,
+    };
+    anyhow::ensure!(pieces.iter().all(|piece| piece.owner == input.owner_id), "Full-text reconstruction mixed owners");
+    let bytes = pieces.iter().try_fold(0usize, |sum, piece| sum.checked_add(piece.body.len()))
+        .ok_or_else(|| anyhow!("Document size overflow"))?;
+    anyhow::ensure!(bytes <= 64 * 1024 * 1024, "Document exceeds the 64 MiB full-text reconstruction limit");
+    let mut segments = Vec::<String>::new();
+    let mut previous_end = None::<usize>;
+    let mut seen_headings = std::collections::BTreeSet::new();
+    for piece in pieces {
+        if !piece.headings.is_empty() && seen_headings.insert(piece.headings.clone()) {
+            if !input.headings.is_empty() { input.headings.push('\n'); }
+            input.headings.push_str(&piece.headings);
+        }
+        if input.body_translated.is_none() { input.body_translated = piece.translated; }
+        // Metadata-only rows may retain old source offsets but have no text
+        // positions to reconstruct or compare.
+        if piece.body.is_empty() { continue; }
+        let range = match (piece.start, piece.end) {
+            (Some(start), Some(end)) if start >= 0 && end >= start => {
+                anyhow::ensure!((end - start) as usize == piece.body.len(), "Chunk byte offsets disagree with its text length");
+                Some((start as usize, end as usize))
+            }
+            (None, None) => None,
+            _ => anyhow::bail!("Stored chunk has incomplete or invalid source offsets"),
+        };
+        if let (Some(prior_end), Some((start, end))) = (previous_end, range) {
+            if start <= prior_end {
+                let previous = segments.last_mut().context("Missing reconstructed source region")?;
+                let prior_start = prior_end.checked_sub(previous.len()).context("Invalid reconstructed range")?;
+                anyhow::ensure!(start >= prior_start, "Chunk offsets move backwards");
+                let overlap = prior_end.min(end) - start;
+                let prior = previous.get(start - prior_start..start - prior_start + overlap)
+                    .context("Chunk overlap splits a UTF-8 character")?;
+                let incoming = piece.body.get(..overlap).context("Chunk overlap splits a UTF-8 character")?;
+                anyhow::ensure!(prior == incoming, "Overlapping chunks contain inconsistent source text");
+                if end > prior_end {
+                    previous.push_str(&piece.body[overlap..]);
+                    previous_end = Some(end);
+                }
+                continue;
+            }
+        }
+        previous_end = range.map(|(_, end)| end);
+        segments.push(piece.body);
+    }
+    input.body = segments.join("\n");
+    // A single known or unknown region has the same positional behavior as a
+    // whole body. Multiple regions must survive durable journal serialization.
+    if segments.len() > 1 { input.body_segments = Some(segments); }
+    Ok((extracted || !input.body.trim().is_empty()).then_some(input))
+}
+
 /// One row returned by `list_failed_extractions`.
 pub struct FailedExtractionRow {
     pub doc_id:       String,
@@ -483,28 +544,8 @@ impl LocalIndex {
         let mut grouped = std::collections::BTreeMap::<String, Vec<FtsPiece>>::new();
         for (_, piece) in rows { grouped.entry(piece.doc_id.clone()).or_default().push(piece); }
         let mut inputs = Vec::new();
-        for (doc_id, mut group) in grouped {
-            group.sort_by_key(|c| c.chunk_index);
-            let Some(first) = group.first() else { continue; };
-            let has_extracted_row = group.iter().any(|piece| piece.chunk_index >= 0);
-            let mut input = super::ingest::TantivyInputOwned { doc_id, owner_id: first.owner.clone(), language: first.language.clone(),
-                title: first.title.clone(), headings: first.headings.clone(), body: String::new(), body_translated: None };
-            let mut previous_end: Option<i32> = None;
-            for piece in group {
-                if input.body_translated.is_none() { input.body_translated = piece.translated; }
-                let overlap = previous_end.zip(piece.start).and_then(|(end, start)| end.checked_sub(start))
-                    .and_then(|n| usize::try_from(n).ok()).filter(|n| *n <= piece.body.len() && piece.body.is_char_boundary(*n));
-                if let Some(overlap) = overlap {
-                    input.body.push_str(&piece.body[overlap..]);
-                } else {
-                    if !input.body.is_empty() && !piece.body.is_empty() { input.body.push('\n'); }
-                    input.body.push_str(&piece.body);
-                }
-                previous_end = piece.end;
-            }
-            // Visual/audio documents can have no textual body while their
-            // title and other indexed fields remain searchable.
-            if has_extracted_row || !input.body.trim().is_empty() { inputs.push(input); }
+        for (doc_id, pieces) in grouped {
+            if let Some(input) = fts_input_from_pieces(doc_id, pieces)? { inputs.push(input); }
         }
         Ok(inputs)
     }
@@ -2899,6 +2940,7 @@ impl LocalIndex {
         if include_fts {
             meta_cols.push("full_text");
             meta_cols.push("headings_text");
+            meta_cols.extend(["text_translated", "text_translated_lang", "url", "summary", "doc_status"]);
         }
         let meta_columns: Vec<String> = meta_cols.into_iter().map(String::from).collect();
 
@@ -2942,56 +2984,17 @@ impl LocalIndex {
             let mut writer = fts.writer().context("opening FTS writer")?;
             let mut fts_docs = 0usize;
 
+            // Build from the immutable exported rows, not the live source
+            // table. A source write during export must not alter its companion.
+            let mut doc_ids = std::collections::BTreeSet::new();
             for batch in &batches {
-                let doc_id_col  = batch.schema().index_of("doc_id").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let owner_col   = batch.schema().index_of("owner_id").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let lang_col    = batch.schema().index_of("language").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let title_col   = batch.schema().index_of("title").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let heads_col   = batch.schema().index_of("headings_text").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let text_col    = batch.schema().index_of("full_text").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                // text_translated is post-v100-migration only — older
-                // archives don't have the column, hence the optional Some
-                // and the per-row null-guard below.
-                let text_trans_col = batch.schema().index_of("text_translated").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let cidx_col    = batch.schema().index_of("chunk_index").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<arrow_array::Int32Array>());
-
-                let (Some(doc_id_col), Some(owner_col)) = (doc_id_col, owner_col)
-                else { continue };
-
-                for i in 0..batch.num_rows() {
-                    // Only index chunk_index = 0 (first/only chunk per doc).
-                    if let Some(cidx) = cidx_col.as_ref() {
-                        if !cidx.is_null(i) && cidx.value(i) != 0 { continue; }
-                    }
-                    if doc_id_col.is_null(i) { continue; }
-                    let doc_id  = doc_id_col.value(i).to_owned();
-                    let owner   = if owner_col.is_null(i) { String::new() } else { owner_col.value(i).to_owned() };
-                    let lang    = lang_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let title   = title_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let heads   = heads_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let body    = text_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let body_translated = text_trans_col
-                        .as_ref()
-                        .filter(|c| !c.is_null(i))
-                        .map(|c| c.value(i));
-
-                    fts.add_document(&mut writer, super::fts_index::TantivyInput {
-                        doc_id: &doc_id,
-                        owner_id: &owner,
-                        language: &lang,
-                        title: &title,
-                        headings: &heads,
-                        body: &body,
-                        body_translated,
-                    })?;
+                doc_ids.extend(str_col(batch, "doc_id")?.iter().flatten().map(str::to_owned));
+            }
+            let snapshot = Self::open_cidx(dest_path).await?;
+            let doc_ids: Vec<_> = doc_ids.into_iter().collect();
+            for ids in doc_ids.chunks(256) {
+                for input in snapshot.fts_inputs_for_docs(ids).await? {
+                    input.write_to(&fts, &mut writer)?;
                     fts_docs += 1;
                 }
             }

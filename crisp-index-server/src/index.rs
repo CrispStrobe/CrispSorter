@@ -1331,16 +1331,25 @@ fn keys_sql(keys: &[DocumentKey]) -> String {
     if keys.is_empty() {
         return "false".into();
     }
-    keys.iter()
-        .map(|key| {
-            format!(
-                "(owner_id='{}' AND doc_id='{}')",
-                sql_escape(&key.owner_id),
-                sql_escape(&key.doc_id)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ")
+    // A left-deep OR for each document can exhaust the SQL planner's stack
+    // for ordinary import or retrieval batches. IN lists keep one owner's
+    // IDs shallow; a balanced tree handles batches spanning many owners.
+    let mut grouped = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for key in keys {
+        grouped.entry(&key.owner_id).or_default().insert(&key.doc_id);
+    }
+    let mut parts: Vec<_> = grouped.into_iter().map(|(owner, ids)| {
+        let ids = ids.into_iter().map(|id| format!("'{}'", sql_escape(id))).collect::<Vec<_>>().join(",");
+        format!("(owner_id='{}' AND doc_id IN ({ids}))", sql_escape(owner))
+    }).collect();
+    while parts.len() > 1 {
+        parts = parts.chunks(2).map(|pair| match pair {
+            [left, right] => format!("({left} OR {right})"),
+            [only] => only.clone(),
+            _ => unreachable!(),
+        }).collect();
+    }
+    parts.pop().expect("nonempty keys")
 }
 
 pub fn validate_embedding(embedding: &[f32], dims: usize) -> Result<()> {

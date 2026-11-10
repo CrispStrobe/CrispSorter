@@ -511,14 +511,14 @@ impl SearchFilters {
             // forgets the validation.  LIKE 'prefix%' uses LanceDB's
             // string-index when prefix is non-empty.
             parts.push(format!(
-                "source_hash LIKE '{}%'",
-                h.replace('\'', "''")
+                "source_hash LIKE '{}%' ESCAPE '\\'",
+                sql_like_literal(&h.to_ascii_lowercase())
             ));
         }
         if let Some(ref pdir) = self.parent_dir_prefix {
             parts.push(format!(
-                "parent_dir LIKE '{}%'",
-                pdir.replace('\'', "''")
+                "parent_dir LIKE '{}%' ESCAPE '\\'",
+                sql_like_literal(pdir)
             ));
         }
         if let Some(d_min) = self.audio_duration_min_seconds {
@@ -529,14 +529,14 @@ impl SearchFilters {
         }
         if let Some(ref make) = self.image_camera_make {
             parts.push(format!(
-                "image_camera_make LIKE '%{}%'",
-                make.replace('\'', "''")
+                "image_camera_make LIKE '%{}%' ESCAPE '\\'",
+                sql_like_literal(make)
             ));
         }
         if let Some(ref model) = self.image_camera_model {
             parts.push(format!(
-                "image_camera_model LIKE '%{}%'",
-                model.replace('\'', "''")
+                "image_camera_model LIKE '%{}%' ESCAPE '\\'",
+                sql_like_literal(model)
             ));
         }
         if let Some(ref dom) = self.url_domain {
@@ -544,11 +544,11 @@ impl SearchFilters {
             // url and won't match (intended — the filter narrows to
             // rows with provenance).
             parts.push(format!(
-                "url LIKE '%{}%'",
-                dom.replace('\'', "''")
+                "url LIKE '%{}%' ESCAPE '\\'",
+                sql_like_literal(dom)
             ));
         }
-        if let Some(ref t) = self.tag {
+        for t in self.tags.iter().chain(self.tag.iter()).collect::<std::collections::BTreeSet<_>>() {
             // Element-of match on the Lance List<Utf8> tags column
             // via DataFusion's `array_has`.  Pre-v107 rows have NULL
             // tags and don't match.
@@ -579,6 +579,13 @@ impl SearchFilters {
             None
         }
     }
+}
+
+/// User-entered filter text is literal. Only the surrounding wildcard added by
+/// the filter supplies prefix/substring semantics; '%' and '_' in a real path,
+/// camera name or URL must not broaden the selected source set.
+fn sql_like_literal(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_").replace('\'', "''")
 }
 
 // ── Document query API (PLAN P9 Übersicht scaling) ───────────────────────

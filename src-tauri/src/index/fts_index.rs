@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use serde::{Deserialize, Serialize};
 /// Tantivy full-text index — create, write, search.
 ///
@@ -30,6 +30,7 @@ use tantivy::{
         Field, IndexRecordOption, Schema, SchemaBuilder, TextFieldIndexing, TextOptions, STORED,
         STRING,
     },
+    tokenizer::{PreTokenizedString, Token},
     Index, IndexReader, IndexWriter, ReloadPolicy, Score, TantivyDocument, Term,
 };
 
@@ -278,13 +279,52 @@ impl FtsIndex {
 
     /// Add a document to an open writer. Call `writer.commit()` when done.
     pub fn add_document(&self, writer: &mut IndexWriter, input: TantivyInput) -> Result<()> {
+        self.add_document_with_segments(writer, input, None)
+    }
+
+    /// Preserve discontinuous source regions without inventing adjacent terms.
+    pub fn add_document_segments(&self, writer: &mut IndexWriter, input: TantivyInput, segments: &[String]) -> Result<()> {
+        self.add_document_with_segments(writer, input, Some(segments))
+    }
+
+    fn add_document_with_segments(&self, writer: &mut IndexWriter, input: TantivyInput, segments: Option<&[String]>) -> Result<()> {
         let mut doc = TantivyDocument::default();
         doc.add_text(self.fields.doc_id, input.doc_id);
         doc.add_text(self.fields.owner_id, input.owner_id);
         doc.add_text(self.fields.language, input.language);
         doc.add_text(self.fields.title, input.title);
         doc.add_text(self.fields.headings, input.headings);
-        doc.add_text(self.fields.body, input.body);
+        if let Some(segments) = segments {
+            let mut text = String::new();
+            let mut tokens = Vec::<Token>::new();
+            let mut base_position = 0usize;
+            let mut analyzer = text_analyzer();
+            for body in segments {
+                ensure!(text.len().saturating_add(body.len()).saturating_add(1) <= 64 * 1024 * 1024,
+                    "Document exceeds the 64 MiB full-text reconstruction limit");
+                if !text.is_empty() { text.push('\n'); }
+                let base_offset = text.len();
+                let mut stream = analyzer.token_stream(body);
+                let mut last_position = base_position;
+                while stream.advance() {
+                    let mut token = stream.token().clone();
+                    token.position = token.position.checked_add(base_position)
+                        .ok_or_else(|| anyhow!("Document token position overflow"))?;
+                    token.offset_from += base_offset;
+                    token.offset_to += base_offset;
+                    last_position = token.position;
+                    tokens.push(token);
+                }
+                // The grammar caps proximity at 1024 intervening words.
+                base_position = last_position.checked_add(2048)
+                    .ok_or_else(|| anyhow!("Document token position overflow"))?;
+                ensure!(base_position < u32::MAX as usize, "Document has too many token positions");
+                text.push_str(body);
+            }
+            doc.add_pre_tokenized_text(self.fields.body, PreTokenizedString { text, tokens });
+        } else {
+            doc.add_text(self.fields.body, input.body);
+        }
 
         // body_translated is only written when both the on-disk schema
         // exposes the field AND the caller supplied a translation.  Legacy

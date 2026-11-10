@@ -1016,3 +1016,27 @@ async fn extended_metadata_filters_apply_before_lexical_limits_and_all_retrieval
         assert!(index.search_vector(&[1.0, 0.0], &invalid, 1).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn large_scoped_key_sets_remain_exact_across_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let mut chunks = Vec::new();
+    let mut keys = Vec::new();
+    for n in 0..256 {
+        let owner = format!("owner'{n:03}");
+        let wanted = format!("doc'{n:03}");
+        let other = format!("doc'{:03}", (n + 1) % 256);
+        keys.push(DocumentKey { owner_id: owner.clone(), doc_id: wanted.clone() });
+        chunks.push(wire(&owner, &wanted, 0, "selected", Some(1), None));
+        chunks.push(wire(&owner, &other, 0, "crossed pair", Some(1), None));
+    }
+    index.ingest_batch(&IngestBatch { chunks }).await.unwrap();
+    let batches = index.vector.fetch_by_keys(&keys).await.unwrap();
+    let mut actual = BTreeSet::new();
+    for batch in &batches {
+        actual.extend(stored_chunks(batch).unwrap().into_iter().map(|chunk| chunk.key));
+    }
+    assert_eq!(actual, keys.into_iter().collect());
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 256);
+}

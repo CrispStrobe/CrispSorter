@@ -91,7 +91,7 @@ mod tests {
             "id": chunk_row_id(doc_id, index), "doc_id": doc_id, "owner_id": "reader",
             "location_uri": "/library/book.txt", "filename": "book.txt", "title": "Book",
             "full_text": text, "chunk_index": index, "chunk_total": 900,
-            "chunk_start_char": 37, "chunk_end_char": 37 + text.len(),
+            "chunk_start_char": 37 + index.max(0) as usize * 100, "chunk_end_char": 37 + index.max(0) as usize * 100 + text.len(),
             "source_hash": "current-fingerprint", "indexed_at": 1234, "tags": [],
         })).unwrap()
     }
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!((middle.previous_chunk_index, middle.next_chunk_index), (Some(2), Some(9)));
         assert_eq!(middle.source_hash.as_deref(), Some("current-fingerprint"));
         assert_eq!(middle.indexed_at, Some(1234));
-        assert_eq!((middle.start_char, middle.end_char), (Some(37), Some(43)));
+        assert_eq!((middle.start_char, middle.end_char), (Some(537), Some(543)));
         let first = read_passage(local.table_ref(), id, 2).await.unwrap();
         assert_eq!(first.previous_chunk_index, None);
         assert_eq!(first.passage_number, 1);

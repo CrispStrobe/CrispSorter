@@ -126,7 +126,7 @@ fn copied_row(batch: &RecordBatch, row: usize, doc_id: &str, generation: &str) -
     Ok(result)
 }
 
-fn fts_from_rows(batches: &[RecordBatch]) -> Vec<TantivyInputOwned> {
+fn fts_from_rows(batches: &[RecordBatch]) -> Result<Vec<TantivyInputOwned>> {
     let mut groups = BTreeMap::<String, Vec<FtsPiece>>::new();
     for batch in batches {
         for row in 0..batch.num_rows() {
@@ -144,27 +144,10 @@ fn fts_from_rows(batches: &[RecordBatch]) -> Vec<TantivyInputOwned> {
         }
     }
     let mut inputs = Vec::new();
-    for (doc_id, mut rows) in groups {
-        rows.sort_by_key(|r| r.chunk_index);
-        let extracted = rows.iter().any(|r| r.chunk_index >= 0);
-        let Some(first) = rows.iter().find(|r| r.chunk_index >= 0).or_else(|| rows.first()) else { continue; };
-        let mut input = TantivyInputOwned { doc_id, owner_id: first.owner.clone(), language: first.language.clone(),
-            title: first.title.clone(), headings: first.headings.clone(), body: String::new(), body_translated: None };
-        let mut previous_end: Option<i32> = None;
-        for row in rows {
-            if input.body_translated.is_none() { input.body_translated = row.translated; }
-            let overlap = previous_end.zip(row.start).and_then(|(end, start)| end.checked_sub(start))
-                .and_then(|n| usize::try_from(n).ok()).filter(|n| *n <= row.body.len() && row.body.is_char_boundary(*n));
-            if let Some(overlap) = overlap { input.body.push_str(&row.body[overlap..]); }
-            else {
-                if !input.body.is_empty() && !row.body.is_empty() { input.body.push('\n'); }
-                input.body.push_str(&row.body);
-            }
-            previous_end = row.end;
-        }
-        if extracted || !input.body.trim().is_empty() { inputs.push(input); }
+    for (doc_id, pieces) in groups {
+        if let Some(input) = fts_input_from_pieces(doc_id, pieces)? { inputs.push(input); }
     }
-    inputs
+    Ok(inputs)
 }
 
 impl LocalIndex {
@@ -358,7 +341,7 @@ impl LocalIndex {
         Ok(OccurrencePlan {
             doc_ids: input_order.iter().map(|id| resolved.get(id).cloned().context("Missing source result identity")).collect::<Result<_>>()?,
             replace_ids: replace_ids.into_iter().collect(), receipt_rows: receipts.into_iter().collect(), absent_occurrences,
-            preserved_inputs: fts_from_rows(&preserved), preserved,
+            preserved_inputs: fts_from_rows(&preserved)?, preserved,
             filter: if filters.is_empty() { "false".into() } else { format!("({})", filters.join(" OR ")) },
         })
     }

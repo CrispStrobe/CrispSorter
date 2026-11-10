@@ -326,6 +326,7 @@ pub struct SearchFilters {
 }
 
 impl SearchRequest {
+    /// Copy every supported metadata predicate into the shared filter model.
     pub fn filters(&self) -> SearchFilters {
         SearchFilters {
             owner_id: self.owner_id.clone(), language: self.language.clone(),
@@ -343,6 +344,7 @@ impl SearchFilters {
             || !self.doc_id_scope.is_empty()
     }
 
+    /// Check filter values and bounded list sizes before building a query.
     pub fn validate(&self) -> Result<(), String> {
         for year in [self.year_min, self.year_max].into_iter().flatten() {
             if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999".into()); }

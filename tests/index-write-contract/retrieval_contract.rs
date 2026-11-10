@@ -98,3 +98,41 @@ async fn initial_passage_uses_positive_whole_tokens_with_the_index_analyzer() {
         assert_eq!(hits[0].chunk_index, 1);
     }
 }
+
+#[tokio::test]
+async fn exported_archive_searches_late_passages_and_preserves_source_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = LocalIndex::open_or_create(dir.path(), 4).await.unwrap();
+    let mut chunks = Vec::new();
+    for (number, start, body) in [(0, 0, "alpha beta "), (1, 6, "beta gamma "), (2, 11, "gamma archivalmarker")] {
+        let mut row = chunk("book", number, 3, body);
+        row.chunk_start_char = Some(start); row.chunk_end_char = Some(start + body.len() as i32);
+        row.volume_id = Some("selected".into());
+        row.headings_text = Some(if number == 2 { "Ending section" } else { "Opening" }.into());
+        row.text_translated = Some("translatedarchiveword".into()); row.text_translated_lang = Some("en".into());
+        chunks.push(row);
+    }
+    for (number, body) in [(0, "red"), (1, "fox")] {
+        let mut row = chunk("separate", number, 2, body);
+        row.volume_id = Some("selected".into()); chunks.push(row);
+    }
+    let mut other = chunk("other-volume", 0, 1, "excludedarchivemarker");
+    other.volume_id = Some("other".into()); chunks.push(other);
+    index.ingest_batch(&chunks).await.unwrap();
+    let destination = dir.path().join("volume.cidx");
+    assert_eq!(index.export_cidx(&destination, Some("selected"), false, true).await.unwrap(), 5);
+    let fts = crate::index::FtsIndex::open_or_create(&destination.join("fts")).unwrap();
+    let filters = crate::index::schema::SearchFilters::default();
+    for query in ["archivalmarker", "\"alpha beta gamma\"", "headings:ending", "translated:translatedarchiveword"] {
+        let hits = fts.search(query, &filters, 20).unwrap();
+        assert_eq!(hits.len(), 1, "{query}"); assert_eq!(hits[0].doc_id, "book");
+    }
+    assert_eq!(fts.search("red AND fox", &filters, 20).unwrap().len(), 1);
+    for query in ["\"red fox\"", "red w/1024 fox", "excludedarchivemarker"] {
+        assert!(fts.search(query, &filters, 20).unwrap().is_empty(), "{query}");
+    }
+    let archive = LocalIndex::open_cidx(&destination).await.unwrap();
+    let results = archive.fetch_best_chunk_per_doc(&["book".into()], &["archivalmarker"], &HashMap::new()).await.unwrap();
+    assert_eq!(results[0].chunk_index, 2);
+    assert!(results[0].snippet.contains("archivalmarker"));
+}
