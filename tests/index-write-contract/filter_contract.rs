@@ -54,3 +54,45 @@ async fn wildcard_characters_in_filter_values_do_not_expand_matching_sources() {
     ] { assert_eq!(ids(&index, filters).await, ["literal"]); }
     assert!(ids(&index, SearchFilters { source_hash_prefix: Some("%".into()), ..Default::default() }).await.is_empty());
 }
+
+#[test]
+fn filter_validation_accepts_supported_tag_conjunctions_and_rejects_invalid_ranges() {
+    assert!(SearchFilters { tags: vec!["reviewed".into(), "reader's".into()], ..Default::default() }.validate().is_ok());
+    for filters in [
+        SearchFilters { tags: vec![" ".into()], ..Default::default() },
+        SearchFilters { tags: vec!["one".into(); 33], ..Default::default() },
+        SearchFilters { tags: vec!["x".repeat(1025)], ..Default::default() },
+        SearchFilters { year_min: Some(0), ..Default::default() },
+        SearchFilters { year_min: Some(2026), year_max: Some(2025), ..Default::default() },
+        SearchFilters { audio_duration_min_seconds: Some(f64::NAN), ..Default::default() },
+        SearchFilters { audio_duration_min_seconds: Some(5.0), audio_duration_max_seconds: Some(4.0), ..Default::default() },
+    ] { assert!(filters.validate().is_err()); }
+}
+
+#[tokio::test]
+async fn browse_filename_title_and_folder_filters_preserve_literal_wildcards_and_backslashes() {
+    use crate::index::{local_index::filter_to_sql, schema::DocumentFilter};
+    let dir = tempfile::tempdir().unwrap();
+    let index = LocalIndex::open_or_create(dir.path(), 4).await.unwrap();
+    let mut literal = chunk("literal", &[], r"C:\100%_ready\", "Camera", "abcd");
+    literal.filename = Some(r"file_100%\reader's.txt".into());
+    literal.title = Some(r"Report_100%\reader's".into());
+    let mut broad = chunk("broad", &[], r"C:\100anythingXready\", "Camera", "abcd");
+    broad.filename = Some("fileX100anythingZreader's.txt".into());
+    broad.title = Some("ReportX100anythingZreader's".into());
+    index.ingest_batch(&[literal, broad]).await.unwrap();
+    for filter in [
+        DocumentFilter { parent_dir_prefix: Some(r"C:\100%_ready\".into()), ..Default::default() },
+        DocumentFilter { name_substring: Some(r"file_100%\reader's".into()), ..Default::default() },
+        DocumentFilter { name_substring: Some(r"Report_100%\reader's".into()), ..Default::default() },
+    ] {
+        let mut stream = index.table_ref().query().only_if(filter_to_sql(&filter).unwrap())
+            .select(Select::Columns(vec!["doc_id".into()])).execute().await.unwrap();
+        let mut found = Vec::new();
+        while let Some(batch) = stream.try_next().await.unwrap() {
+            let docs = batch.column_by_name("doc_id").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+            found.extend(docs.iter().flatten().map(str::to_owned));
+        }
+        assert_eq!(found, ["literal"]);
+    }
+}

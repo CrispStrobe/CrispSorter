@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSearchRecipe } from './recipe';
 import { buildSearchReport, groupResults, highlightedSnippet, occurrenceRanges, plainSnippet,
-    queryTerms, searchReportCsv, searchReportHtml, sortGroups, type InspectableHit } from './inspection';
+    queryTerms, resultIdentity, searchReportCsv, searchReportHtml, sortGroups, type InspectableHit } from './inspection';
 
 const hit = (doc_id: string, patch: Partial<InspectableHit> = {}): InspectableHit => ({
     doc_id, chunk_index: 0, score: .04, location_uri: `/library/${doc_id}.txt`,
@@ -16,6 +16,19 @@ describe('result inspection', () => {
         expect(group.chunks.map(item => item.chunk_index)).toEqual([0, 2]);
         expect(group.best.chunk_index).toBe(2);
         expect(JSON.stringify(rows)).toBe(before);
+    });
+    it('keeps identical document IDs and passage indices from different owners separate', () => {
+        const rows = [hit('shared', { owner_id: 'alice', snippet: 'Alice source', score: .8 }),
+            hit('shared', { owner_id: 'bob', snippet: 'Bob source', score: .9 }),
+            hit('shared', { owner_id: 'alice', chunk_index: 2, snippet: 'Later Alice source', score: .1 })];
+        const groups = groupResults(rows);
+        expect(groups).toHaveLength(2);
+        expect(groups[0].chunks.map(row => row.snippet)).toEqual(['Alice source', 'Later Alice source']);
+        expect(groups[1].chunks.map(row => row.snippet)).toEqual(['Bob source']);
+        expect(groups.map(group => [group.doc_id, group.owner_id])).toEqual([['shared', 'alice'], ['shared', 'bob']]);
+        expect(new Set(groups.map(group => group.key)).size).toBe(2);
+        expect(resultIdentity(hit('c', { owner_id: 'a:b' }))).not.toBe(resultIdentity(hit('b:c', { owner_id: 'a' })));
+        expect(resultIdentity(hit('legacy'))).toBe(resultIdentity(hit('legacy', { owner_id: '' })));
     });
     it('sorts years in either direction with missing values last and stable ties', () => {
         const groups = groupResults([hit('unknown'), hit('old', { year: 2001 }), hit('new', { year: 2026 })]);
@@ -107,5 +120,16 @@ describe('reproducible result reports', () => {
         recipe.filters.language = 'en'; groups[0].best.snippet = 'mutated';
         expect(value.recipe.filters.language).toBe('de');
         expect(value.documents[0].passages[0].excerpt).toBe('A <literal> & source excerpt.');
+    });
+    it('exports exact owner/document identities in every report format', () => {
+        const value = buildSearchReport({ recipe: normalizeSearchRecipe({ query: 'source' }),
+            groups: groupResults([hit('shared', { owner_id: '<alice>' }), hit('shared', { owner_id: 'bob' })]),
+            executedQuery: 'source', searchedAt: '', exportedAt: '', elapsedMs: 1,
+            sort: 'relevance', displayTags: [], scope: 'displayed', returnedDocuments: 2, returnedPassages: 2 });
+        expect(value.documents.map(doc => doc.ownerId)).toEqual(['<alice>', 'bob']);
+        expect(value.documents.map(doc => doc.documentKey)).toEqual(['["<alice>","shared"]', '["bob","shared"]']);
+        expect(searchReportCsv(value)).toContain('"owner_id","document_key"');
+        expect(searchReportHtml(value)).toContain('Owner: <code>&lt;alice&gt;</code>');
+        expect(searchReportHtml(value)).not.toContain('<alice>');
     });
 });

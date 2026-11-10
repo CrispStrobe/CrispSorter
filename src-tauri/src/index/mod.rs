@@ -40,6 +40,8 @@ pub mod config_persist;
 pub mod migrations;
 pub mod schema;
 pub mod search;
+pub mod search_summary;
+pub mod summary_commands;
 pub mod snippet;
 pub mod token_highlight;
 pub mod summary;

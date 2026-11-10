@@ -80,4 +80,7 @@ test('does not imply a truncated occurrence count when exactly one thousand matc
     const navigation = page.getByRole('group', { name: 'Text occurrence navigation', exact: true });
     await expect(navigation).toContainText('1 / 1000');
     await expect(navigation).not.toContainText('1000+');
+    const passage = page.getByRole('region', { name: 'Indexed passage', exact: true });
+    await expect(passage).toContainText('Stored fingerprint unavailable');
+    await expect(passage.locator('[title="old-fingerprint"]')).toHaveCount(0);
 });

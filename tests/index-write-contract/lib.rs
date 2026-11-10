@@ -11,6 +11,7 @@
 pub mod sync { pub use crate::sync_conflict_production as conflict; }
 
 #[path = "../../src-tauri/src/index/fts_query.rs"] pub mod fts_query_production;
+#[path = "../../src-tauri/src/index/search_summary.rs"] pub mod search_summary_production;
 
 pub use fts_query_production as fts_query;
 #[path = "../../src-tauri/src/index/synonyms.rs"] pub mod synonyms_production;
@@ -25,6 +26,7 @@ pub mod index {
     pub use crate::fts_query_production as fts_query;
     pub use crate::synonyms_production as synonyms;
     pub mod fts_index { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/fts_index.rs")); }
+    pub use crate::search_summary_production as search_summary;
     pub mod local_index {
         include!(concat!(env!("OUT_DIR"), "/local_index.rs"));
         mod occurrence { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/occurrence.rs")); }
@@ -39,22 +41,42 @@ pub mod index {
     pub use crate::task_failure_production as task_failure;
     pub use crate::source_identity_production as source_identity;
     pub use crate::snippet_production as snippet;
-    pub mod result_cache { pub fn invalidate() {} }
+    pub mod result_cache { include!(concat!(env!("OUT_DIR"), "/result_cache.rs")); }
+    pub mod search { include!(concat!(env!("OUT_DIR"), "/search.rs")); }
+    pub mod reranker {
+        pub struct RerankerHandle;
+        impl RerankerHandle {
+            pub async fn score_batch(&self, _: &str, _: &[&str]) -> Vec<f32> { panic!("Reranker models are unavailable") }
+        }
+    }
+    pub mod omni_embed {
+        pub fn is_omni_available() -> bool { false }
+        pub fn encode_text_omni(_: &str) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Models are unavailable") }
+        pub fn encode_image_omni(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Models are unavailable") }
+    }
 
     pub mod embedder {
         use anyhow::{Result, bail};
         pub struct Embedder;
         pub struct TextChunk { pub text: String, pub start_char: usize, pub end_char: usize, pub chunk_index: i32 }
         pub struct Dense { pub vectors: Vec<Vec<f32>> }
-        pub struct Sparse;
-        impl Sparse { pub fn to_json(&self) -> serde_json::Value { serde_json::Value::Null } }
-        pub enum EmbedRole { Passage }
+        include!(concat!(env!("OUT_DIR"), "/sparse_vector.rs"));
+        pub type Sparse = SparseVector;
+        pub enum EmbedRole { Passage, Query }
         impl Embedder {
             pub fn chunk_for_embedding(&self, _: &str) -> Result<Vec<TextChunk>> { bail!("Models are unavailable in the transaction harness") }
             pub fn has_colbert(&self) -> bool { false }
             pub fn embed_full(&mut self, _: Vec<String>, _: EmbedRole) -> Result<(Dense, Vec<Option<Sparse>>)> { bail!("Models are unavailable") }
             pub fn embed_multivec(&mut self, _: Vec<String>) -> Result<Vec<Vec<Vec<f32>>>> { bail!("Models are unavailable") }
             pub fn model(&self) -> &str { "unavailable" }
+            pub fn has_sparse(&self) -> bool { false }
+            pub fn embed_sparse(&mut self, _: Vec<String>) -> Result<Vec<Option<SparseVector>>> { bail!("Models are unavailable") }
+            pub fn rerank_biencoder(&mut self, _: &str, _: &[String]) -> Result<Vec<f32>> { bail!("Models are unavailable") }
+            // A fixed query vector makes retrieval joins deterministic; model
+            // inference and relevance quality remain outside this contract.
+            pub fn embed_dense(&mut self, texts: Vec<String>, _: EmbedRole) -> Result<Dense> {
+                Ok(Dense { vectors: texts.iter().map(|_| vec![1.0, 0.0, 0.0, 0.0]).collect() })
+            }
         }
     }
     pub mod ner {
@@ -80,3 +102,10 @@ pub mod passage;
 
 #[cfg(test)]
 mod filter_contract;
+
+#[cfg(test)]
+mod search_summary_contract;
+
+pub mod images { pub mod vit_embed {
+    pub fn embed_image(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Image models are unavailable") }
+} }

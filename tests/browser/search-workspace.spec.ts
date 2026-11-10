@@ -12,6 +12,31 @@ async function lastSearch(page: Page) {
     return page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search').at(-1)?.args);
 }
 
+async function summaryFixture(page: Page) {
+    await page.evaluate(() => {
+        const root = window as any;
+        root.__summaryGeneration = 'snapshot-1'; root.__holdSummary = false; root.__pendingSummaries = [];
+        const make = (query: string) => {
+            const facet = (value: string) => ({ values: [{ value, documents: 633 }], distinctValues: 1, omittedValues: 0, missingDocuments: 0 });
+            return { version: 1, scope: 'local_indexed_documents', query, effectiveQuery: query, generation: root.__summaryGeneration,
+                matchingDocuments: 633, scannedRows: 900, facetValueLimit: 25,
+                facets: { extensions: facet('pdf'), languages: facet('en'), years: facet('2026'),
+                    tags: { ...facet('reviewed'), distinctValues: 31, omittedValues: 30 } } };
+        };
+        const original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_search_summary') {
+                root.__fixtureCalls.push({ command, args });
+                const value = make(args.query);
+                return root.__holdSummary ? new Promise(resolve => root.__pendingSummaries.push(() => resolve(value))) : Promise.resolve(value);
+            }
+            if (command === 'index_search_summary_generation') return Promise.resolve(root.__summaryGeneration);
+            if (command === 'index_cancel_search_summary') { root.__fixtureCalls.push({ command, args }); return Promise.resolve(true); }
+            return original(command, args, options);
+        };
+    });
+}
+
 test.beforeEach(async ({ page }) => {
     await fixtures(page);
     await page.goto('/');
@@ -211,4 +236,86 @@ test('an active remote index visibly caps a saved request and its report at 200 
         const [saved] = await (window as any).__TAURI_INTERNALS__.invoke('plugin:store|get', { key: 'savedSearches' });
         return saved.at(-1).limit;
     })).toBe(200);
+});
+
+test('explicit full-corpus counts remain separate from returned-window counts and facets rerun real filters', async ({ page }) => {
+    await summaryFixture(page);
+    await search(page);
+    await expect(page.getByRole('button', { name: 'Count all full-text matches', exact: true })).toHaveCount(0);
+    await expect(page.locator('.corpus-summary')).toContainText('Semantic, hybrid and remote searches show the returned window.');
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await search(page);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search_summary'))).toHaveLength(0);
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-total')).toContainText('633 matching indexed documents in total');
+    await expect(page.locator('.corpus-total')).toContainText('3 in the returned window');
+    await expect(page.locator('.corpus-summary')).toContainText('Separate catalog filename references are excluded.');
+    await page.locator('.corpus-facets summary').click();
+    await expect(page.locator('.corpus-facets')).toContainText('Top 1 of 31 values; 30 additional values are not displayed.');
+    await page.getByRole('button', { name: 'Filter by Tags: reviewed (633)', exact: true }).click();
+    await expect.poll(() => lastSearch(page)).toMatchObject({ query: 'warranty', tag: 'reviewed' });
+    await expect(page.getByRole('button', { name: 'Remove Tag', exact: true })).toBeVisible();
+    await expect(page.locator('.corpus-total')).toHaveCount(0);
+});
+
+test('obsolete and cancelled scans cannot replace a newer query and focus invalidates changed generations', async ({ page }) => {
+    await summaryFixture(page);
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await search(page);
+    await page.evaluate(() => { (window as any).__holdSummary = true; });
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__pendingSummaries.length)).toBe(1);
+    await search(page, 'renewal');
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_cancel_search_summary').length)).toBe(1);
+    await page.evaluate(() => { const root = window as any; root.__pendingSummaries.shift()(); root.__holdSummary = false; });
+    await expect(page.locator('.corpus-total')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-total')).toContainText('633');
+    await page.evaluate(() => { (window as any).__summaryGeneration = 'snapshot-2'; window.dispatchEvent(new Event('focus')); });
+    await expect(page.locator('.corpus-notice')).toHaveText('The index or mounted sources changed. Count again to refresh the totals.');
+    await expect(page.locator('.corpus-total')).toHaveCount(0);
+    await page.evaluate(() => { (window as any).__holdSummary = true; });
+    await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
+    await page.getByRole('button', { name: 'Cancel match count', exact: true }).click();
+    await page.evaluate(() => (window as any).__pendingSummaries.shift()());
+    await expect(page.locator('.corpus-notice')).toHaveText('Match count cancelled.');
+    await expect(page.locator('.corpus-total')).toHaveCount(0);
+});
+
+test('same document IDs from distinct owners retain separate selection, preview and passage requests', async ({ page }) => {
+    await page.locator('.tab-bar').getByRole('button', { name: 'Add', exact: true }).click();
+    await page.evaluate(() => {
+        const root = window as any, template = root.__fixtureResults[0];
+        root.__fixtureResults = [
+            { ...template, doc_id: 'shared', owner_id: 'alpha', title: 'Alpha owner source', chunk_index: 0, location_uri: 'crisp+vps://server/alpha/shared.txt' },
+            { ...template, doc_id: 'shared', owner_id: 'beta', title: 'Beta owner source', chunk_index: 0, location_uri: 'crisp+vps://server/beta/shared.txt' },
+        ];
+        root.__passageOwners = [];
+        const original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_get_config') return Promise.resolve({ enabled: true, backend_type: 'remote', use_vector: true });
+            if (command === 'index_read_passage') {
+                root.__passageOwners.push(args.ownerId);
+                const value = { text: `Stored content for ${args.ownerId}`, start_char: 0, end_char: 24, offset_unit: 'utf8_bytes', truncated: false };
+                return args.ownerId === 'alpha' ? new Promise(resolve => { root.__resolveAlphaPassage = () => resolve(value); }) : Promise.resolve(value);
+            }
+            return original(command, args, options);
+        };
+    });
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('warranty');
+    await page.locator('.search-btn').click();
+    await expect(page.locator('.result-card')).toHaveCount(2);
+    const alpha = page.locator('.result-card[data-owner-id="alpha"]'), beta = page.locator('.result-card[data-owner-id="beta"]');
+    await alpha.getByTitle('Select for batch sorter', { exact: true }).click();
+    await expect(alpha.getByTitle('Remove from batch selection', { exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(beta.getByTitle('Select for batch sorter', { exact: true })).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('button', { name: 'Search within displayed documents', exact: true })).toBeDisabled();
+    await alpha.getByTitle('Inspect indexed passage', { exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__passageOwners)).toEqual(['alpha']);
+    await beta.getByTitle('Inspect indexed passage', { exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Indexed passage', exact: true })).toContainText('Stored content for beta');
+    await page.evaluate(() => (window as any).__resolveAlphaPassage());
+    await expect(page.getByRole('region', { name: 'Indexed passage', exact: true })).not.toContainText('Stored content for alpha');
+    expect(await page.evaluate(() => (window as any).__passageOwners)).toEqual(['alpha', 'beta']);
 });

@@ -37,6 +37,8 @@ export interface SearchRecipe {
     smart: boolean;
     filters: SearchFilters;
     docIdScope: string[];
+    /** Exact owner restriction; null retains the legacy unscoped search. */
+    ownerId: string | null;
     view: SearchViewPreferences;
 }
 
@@ -96,6 +98,7 @@ export function normalizeSearchRecipe(value: unknown, maximumLimit: 200 | 500 = 
         smart: raw.smart === true,
         filters,
         docIdScope: Array.isArray(raw.docIdScope) ? [...new Set(raw.docIdScope.filter((id): id is string => typeof id === 'string' && id.length > 0))].sort() : [],
+        ownerId: typeof raw.ownerId === 'string' ? raw.ownerId : null,
         view: normalizeSearchView(raw.view),
     };
 }
@@ -147,12 +150,12 @@ export function validateSearchFilters(filters: SearchFilters): 'year' | 'yearRan
 export function localSearchArguments(recipe: SearchRecipe, candidateLimit = recipe.limit) {
     const f = recipe.filters;
     return {
-        query: recipe.query, mode: recipe.mode, limit: candidateLimit, ownerId: null,
+        query: recipe.query, mode: recipe.mode, limit: candidateLimit, ownerId: recipe.ownerId,
         includeUnmounted: f.includeUnmounted, fuzzy: f.fuzzy, synonyms: f.synonyms,
         docIdScope: recipe.docIdScope.length ? recipe.docIdScope : null,
         tag: f.tag || null,
         searchFilters: {
-            owner_id: null, language: f.language || null, year_min: f.yearMin, year_max: f.yearMax,
+            owner_id: recipe.ownerId, language: f.language || null, year_min: f.yearMin, year_max: f.yearMax,
             tags: [], ext: f.ext ? f.ext.split(',') : [], parent_dir_prefix: f.folderPrefix || null,
             url_domain: f.urlDomain || null,
             audio_duration_min_seconds: f.audioMin, audio_duration_max_seconds: f.audioMax,

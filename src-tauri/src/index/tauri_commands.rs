@@ -216,23 +216,8 @@ pub async fn index_search(
 }
 
 /// Validate ranges at the IPC boundary as well as in the form.
-fn validate_search_filters(filters: &super::SearchFilters) -> Result<(), String> {
-    if !filters.tags.is_empty() {
-        return Err("The legacy 'tags' list is not supported for search. Use the singular 'tag' filter for one exact tag.".into());
-    }
-    for year in [filters.year_min, filters.year_max].into_iter().flatten() {
-        if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999.".into()); }
-    }
-    if matches!((filters.year_min, filters.year_max), (Some(min), Some(max)) if min > max) {
-        return Err("The minimum publication year must not exceed the maximum.".into());
-    }
-    for seconds in [filters.audio_duration_min_seconds, filters.audio_duration_max_seconds].into_iter().flatten() {
-        if !seconds.is_finite() || seconds < 0.0 { return Err("Audio duration must be a non-negative number of seconds.".into()); }
-    }
-    if matches!((filters.audio_duration_min_seconds, filters.audio_duration_max_seconds), (Some(min), Some(max)) if min > max) {
-        return Err("The minimum audio duration must not exceed the maximum.".into());
-    }
-    Ok(())
+pub(crate) fn validate_search_filters(filters: &super::SearchFilters) -> Result<(), String> {
+    filters.validate()
 }
 
 fn ensure_remote_search_filters_supported(filters: &super::SearchFilters) -> Result<(), String> {
@@ -5384,10 +5369,12 @@ mod search_filter_boundary_tests {
 
     #[test]
     fn search_ranges_fail_closed() {
-        let tag_error = validate_search_filters(&SearchFilters {
-            tags: vec!["invoice".into()], ..Default::default()
-        }).unwrap_err();
-        assert!(tag_error.contains("singular 'tag'"));
+        assert!(validate_search_filters(&SearchFilters {
+            tags: vec!["invoice".into(), "reviewed".into()], ..Default::default()
+        }).is_ok());
+        assert!(validate_search_filters(&SearchFilters {
+            tags: vec![" ".into()], ..Default::default()
+        }).is_err());
         assert!(validate_search_filters(&SearchFilters {
             year_min: Some(2025), year_max: Some(2020), ..Default::default()
         }).is_err());

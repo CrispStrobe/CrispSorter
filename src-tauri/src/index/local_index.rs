@@ -69,6 +69,25 @@ fn sql_values(values: &[String]) -> String {
     values.iter().map(|s| format!("'{}'", s.replace('\'', "''"))).collect::<Vec<_>>().join(",")
 }
 
+/// Key returned by passage hydration, scoped to the selected source owner.
+pub fn passage_key(owner_id: &str, doc_id: &str, chunk_index: i32) -> String {
+    super::fts_index::document_key(owner_id, &chunk_row_id(doc_id, chunk_index))
+}
+
+fn document_keys_sql(keys: &[(String, String)]) -> String {
+    if keys.is_empty() { return "false".into(); }
+    let mut owners = std::collections::BTreeMap::<&str, Vec<String>>::new();
+    for (owner, doc) in keys { owners.entry(owner).or_default().push(doc.clone()); }
+    let mut parts: Vec<_> = owners.into_iter().map(|(owner, ids)|
+        format!("(owner_id = '{}' AND doc_id IN ({}))", owner.replace('\'', "''"), sql_values(&ids))).collect();
+    while parts.len() > 1 {
+        parts = parts.chunks(2).map(|pair| if pair.len() == 2 {
+            format!("({} OR {})", pair[0], pair[1])
+        } else { pair[0].clone() }).collect();
+    }
+    parts.pop().unwrap_or_else(|| "false".into())
+}
+
 fn import_replacement_ids(chunks: &[DocumentChunk], explicit: &[String]) -> std::collections::BTreeSet<String> {
     let mut replaced: std::collections::BTreeSet<String> = explicit.iter().cloned().collect();
     let mut grouped = std::collections::BTreeMap::<&str, Vec<&DocumentChunk>>::new();
@@ -279,38 +298,46 @@ impl LocalIndex {
         Ok(())
     }
 
-    /// Hydrate only the requested chunk IDs, without embedding columns.
+    /// Hydrate exact owner/document/chunk identities, without embedding columns.
     pub async fn fetch_passages(
         &self,
         candidates: &[SearchResult],
     ) -> Result<std::collections::HashMap<String, Passage>> {
         let mut passages = std::collections::HashMap::new();
-        if candidates.is_empty() { return Ok(passages); }
-        let ids: Vec<String> = candidates.iter().map(|r| {
-            format!("'{}'", chunk_row_id(&r.doc_id, r.chunk_index).replace('\'', "''"))
-        }).collect();
-        let batches: Vec<RecordBatch> = self.table.query()
-            .only_if(format!("id IN ({})", ids.join(",")))
-            .select(lancedb::query::Select::Columns(vec![
-                "id".into(), "full_text".into(),
-                "chunk_start_char".into(), "chunk_end_char".into(),
-            ]))
-            .limit(candidates.len()).execute().await?.try_collect().await?;
-        for batch in batches {
-            let id = str_col(&batch, "id")?;
-            let text = str_col(&batch, "full_text")?;
-            let start = batch.column_by_name("chunk_start_char")
-                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-            let end = batch.column_by_name("chunk_end_char")
-                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-            for i in 0..batch.num_rows() {
-                if text.is_null(i) || text.value(i).trim().is_empty() { continue; }
-                passages.insert(id.value(i).to_owned(), Passage {
-                    text: text.value(i).to_owned(),
-                    start_char: start.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
-                    end_char: end.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
-                    offset_unit: "utf8_bytes".into(),
-                });
+        let mut latest = std::collections::HashMap::<String, (i64, u64)>::new();
+        for group in candidates.chunks(256) {
+            let wanted: std::collections::HashSet<_> = group.iter().map(|r| passage_key(&r.owner_id, &r.doc_id, r.chunk_index)).collect();
+            let keys: Vec<_> = group.iter().map(|r| (r.owner_id.clone(), r.doc_id.clone())).collect();
+            let ids: Vec<_> = group.iter().map(|r| chunk_row_id(&r.doc_id, r.chunk_index)).collect();
+            let mut stream = self.table.query()
+                .only_if(format!("({}) AND id IN ({})", document_keys_sql(&keys), sql_values(&ids)))
+                .select(lancedb::query::Select::Columns(["doc_id", "owner_id", "chunk_index", "full_text",
+                    "chunk_start_char", "chunk_end_char", "indexed_at"].into_iter().map(str::to_owned).collect()))
+                .with_row_id().execute().await?;
+            while let Some(batch) = stream.try_next().await? {
+                let docs = str_col(&batch, "doc_id")?;
+                let owners = str_col(&batch, "owner_id")?;
+                let indices = i32_col(&batch, "chunk_index")?;
+                let text = str_col(&batch, "full_text")?;
+                let times = ts_ms_col_opt(&batch, "indexed_at");
+                let row_ids = batch.column_by_name("_rowid").and_then(|c| c.as_any().downcast_ref::<arrow_array::UInt64Array>())
+                    .context("Missing stored passage row IDs")?;
+                let start = i32_col_opt(&batch, "chunk_start_char");
+                let end = i32_col_opt(&batch, "chunk_end_char");
+                for row in 0..batch.num_rows() {
+                    let key = passage_key(owners.value(row), docs.value(row), indices.value(row));
+                    if !wanted.contains(&key) { continue; }
+                    let order = (times.filter(|c| !c.is_null(row)).map_or(i64::MIN, |c| c.value(row)), row_ids.value(row));
+                    if latest.get(&key).is_some_and(|previous| *previous > order) { continue; }
+                    latest.insert(key.clone(), order);
+                    if text.is_null(row) || text.value(row).trim().is_empty() { passages.remove(&key); continue; }
+                    passages.insert(key, Passage {
+                        text: text.value(row).to_owned(),
+                        start_char: start.filter(|c| !c.is_null(row)).map(|c| c.value(row)),
+                        end_char: end.filter(|c| !c.is_null(row)).map(|c| c.value(row)),
+                        offset_unit: "utf8_bytes".into(),
+                    });
+                }
             }
         }
         Ok(passages)
@@ -830,22 +857,18 @@ impl LocalIndex {
             return Ok(out);
         }
 
-        // Build `id IN (...)` filter from the candidates' (doc_id,
-        // chunk_index) — matches the row-id formula used at ingest.
-        let quoted: Vec<String> = candidates
-            .iter()
-            .map(|r| {
-                let id = chunk_row_id(&r.doc_id, r.chunk_index);
-                format!("'{}'", id.replace('\'', "''"))
-            })
-            .collect();
-        let filter = format!("id IN ({})", quoted.join(", "));
+        let keys: Vec<_> = candidates.iter().map(|r| (r.owner_id.clone(), r.doc_id.clone())).collect();
+        let ids: Vec<_> = candidates.iter().map(|r| chunk_row_id(&r.doc_id, r.chunk_index)).collect();
+        let wanted: std::collections::HashSet<_> = candidates.iter().map(|r| passage_key(&r.owner_id, &r.doc_id, r.chunk_index)).collect();
+        let filter = format!("({}) AND id IN ({})", document_keys_sql(&keys), sql_values(&ids));
 
         let batches: Vec<RecordBatch> = self
             .table
             .query()
             .only_if(filter)
-            .limit(candidates.len())
+            .select(lancedb::query::Select::Columns(["doc_id", "owner_id", "chunk_index", "indexed_at", "multivec_packed", "multivec_n_tokens"]
+                .into_iter().map(str::to_owned).collect()))
+            .with_row_id()
             .execute()
             .await?
             .try_collect()
@@ -855,8 +878,14 @@ impl LocalIndex {
         let dim = query_multivec[0].len();
         let mut score_by_id: std::collections::HashMap<String, f32> =
             std::collections::HashMap::with_capacity(candidates.len());
+        let mut latest = std::collections::HashMap::<String, (i64, u64)>::new();
         for batch in &batches {
-            let id_col = str_col(batch, "id")?;
+            let docs = str_col(batch, "doc_id")?;
+            let owners = str_col(batch, "owner_id")?;
+            let indices = i32_col(batch, "chunk_index")?;
+            let times = ts_ms_col_opt(batch, "indexed_at");
+            let row_ids = batch.column_by_name("_rowid").and_then(|c| c.as_any().downcast_ref::<arrow_array::UInt64Array>())
+                .context("Missing reranker row identities")?;
             let packed_col = batch
                 .column_by_name("multivec_packed")
                 .and_then(|c| c.as_any().downcast_ref::<LargeBinaryArray>());
@@ -869,9 +898,13 @@ impl LocalIndex {
                 break;
             };
             for i in 0..batch.num_rows() {
-                if packed_col.is_null(i) || n_tok_col.is_null(i) {
-                    continue;
-                }
+                let key = passage_key(owners.value(i), docs.value(i), indices.value(i));
+                if !wanted.contains(&key) { continue; }
+                let order = (times.filter(|c| !c.is_null(i)).map_or(i64::MIN, |c| c.value(i)), row_ids.value(i));
+                if latest.get(&key).is_some_and(|previous| *previous > order) { continue; }
+                latest.insert(key.clone(), order);
+                score_by_id.remove(&key);
+                if packed_col.is_null(i) || n_tok_col.is_null(i) { continue; }
                 let packed = packed_col.value(i);
                 let n_tok = n_tok_col.value(i);
                 let doc_vecs = unpack_multivec(packed, n_tok, dim);
@@ -879,14 +912,14 @@ impl LocalIndex {
                     continue;
                 }
                 let score = maxsim(query_multivec, &doc_vecs);
-                if score.is_finite() { score_by_id.insert(id_col.value(i).to_owned(), score); }
+                if score.is_finite() { score_by_id.insert(key, score); }
             }
         }
 
         let mut out: Vec<SearchResult> = candidates
             .into_iter()
             .map(|mut r| {
-                let id = chunk_row_id(&r.doc_id, r.chunk_index);
+                let id = passage_key(&r.owner_id, &r.doc_id, r.chunk_index);
                 if let Some(s) = score_by_id.get(&id) {
                     r.score = *s;
                 }
@@ -896,8 +929,8 @@ impl LocalIndex {
         // MaxSim and the incoming RRF/BM25 scores have different units.
         // Rank scored rows together, followed by unscored rows in input order.
         out.sort_by(|a, b| {
-            let a_scored = score_by_id.get(&chunk_row_id(&a.doc_id, a.chunk_index)).filter(|v| v.is_finite());
-            let b_scored = score_by_id.get(&chunk_row_id(&b.doc_id, b.chunk_index)).filter(|v| v.is_finite());
+            let a_scored = score_by_id.get(&passage_key(&a.owner_id, &a.doc_id, a.chunk_index)).filter(|v| v.is_finite());
+            let b_scored = score_by_id.get(&passage_key(&b.owner_id, &b.doc_id, b.chunk_index)).filter(|v| v.is_finite());
             match (a_scored, b_scored) {
                 (Some(a), Some(b)) => b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -922,45 +955,72 @@ impl LocalIndex {
         query_terms: &[&str],
         score_map: &std::collections::HashMap<String, f32>,
     ) -> Result<Vec<SearchResult>> {
-        let mut best = std::collections::HashMap::<String, (SearchResult, usize)>::new();
+        let keys = self.matching_document_keys(doc_ids, None).await?;
+        let mut owners = std::collections::HashMap::new();
+        for (owner, doc) in keys {
+            if let Some(previous) = owners.insert(doc, owner.clone()) {
+                anyhow::ensure!(previous == owner, "Document identity belongs to multiple owners; select an exact owner before hydration");
+            }
+        }
+        let keys: Vec<_> = doc_ids.iter().filter_map(|doc| owners.get(doc).map(|owner| (owner.clone(), doc.clone()))).collect();
+        let scores = keys.iter().map(|(owner, doc)| (super::fts_index::document_key(owner, doc), score_map.get(doc).copied().unwrap_or(0.0))).collect();
+        self.fetch_best_chunk_per_keys(&keys, query_terms, &scores, &SearchFilters::default()).await
+    }
+
+    /// Return every exact owner/document with any stored row matching metadata.
+    /// Sparse chunk numbering and long documents do not change eligibility.
+    pub async fn matching_document_keys(&self, doc_ids: &[String], extra_sql: Option<&str>) -> Result<Vec<(String, String)>> {
+        let mut keys = std::collections::BTreeSet::new();
         for ids in doc_ids.chunks(256) {
-            let filter = format!("doc_id IN ({})", sql_values(ids));
-            let mut stream = self
-                .table
-                .query()
-                .only_if(filter)
-                .select(search_result_columns())
-                .execute()
-                .await?;
+            let mut filter = format!("doc_id IN ({})", sql_values(ids));
+            if let Some(extra) = extra_sql.filter(|sql| !sql.trim().is_empty()) { filter = format!("({filter}) AND ({extra})"); }
+            let mut stream = self.table.query().only_if(filter)
+                .select(lancedb::query::Select::Columns(vec!["owner_id".into(), "doc_id".into()])).execute().await?;
+            while let Some(batch) = stream.try_next().await? {
+                let owners = str_col(&batch, "owner_id")?;
+                let docs = str_col(&batch, "doc_id")?;
+                for row in 0..batch.num_rows() { keys.insert((owners.value(row).to_owned(), docs.value(row).to_owned())); }
+            }
+        }
+        Ok(keys.into_iter().collect())
+    }
+
+    /// Choose a passage only from the exact lexical identities and matching
+    /// metadata rows. Scores use owner-scoped document keys throughout fusion.
+    pub async fn fetch_best_chunk_per_keys(
+        &self,
+        keys: &[(String, String)],
+        query_terms: &[&str],
+        score_map: &std::collections::HashMap<String, f32>,
+        filters: &SearchFilters,
+    ) -> Result<Vec<SearchResult>> {
+        let mut best = std::collections::HashMap::<String, (SearchResult, usize)>::new();
+        let extra_sql = filters.to_lance_sql();
+        for group in keys.chunks(256) {
+            let mut filter = document_keys_sql(group);
+            if let Some(extra) = &extra_sql { filter = format!("({filter}) AND ({extra})"); }
+            let mut stream = self.table.query().only_if(filter).select(search_result_columns()).execute().await?;
             while let Some(batch) = stream.try_next().await? {
                 let text = str_col_opt(&batch, "full_text");
-                let results = batches_to_search_results_with_scores(
-                    std::slice::from_ref(&batch), score_map,
-                )?;
-                for (row, result) in results.into_iter().enumerate() {
-                    let body = text.filter(|column| !column.is_null(row))
-                        .map(|column| column.value(row)).unwrap_or("");
-                    // Match the index analyzer: accent folding and whole tokens
-                    // keep short/CJK terms useful without matching word fragments.
+                let results = record_batches_to_search_results(std::slice::from_ref(&batch))?;
+                for (row, mut result) in results.into_iter().enumerate() {
+                    let key = super::fts_index::document_key(&result.owner_id, &result.doc_id);
+                    result.score = score_map.get(&key).copied().unwrap_or(0.0);
+                    let body = text.filter(|column| !column.is_null(row)).map(|column| column.value(row)).unwrap_or("");
                     let hits = if query_terms.is_empty() { 0 } else {
-                        let tokens: std::collections::HashSet<_> =
-                            super::fts_query::simple_tokenize(body).into_iter().collect();
+                        let tokens: std::collections::HashSet<_> = super::fts_query::simple_tokenize(body).into_iter().collect();
                         query_terms.iter().filter(|&&term| tokens.contains(term)).count()
                     };
-                    let replace = match best.get(&result.doc_id) {
+                    let replace = match best.get(&key) {
                         None => true,
                         Some((previous, previous_hits)) => hits > *previous_hits
                             || (hits == *previous_hits && result.chunk_index < previous.chunk_index),
                     };
-                    if replace {
-                        best.insert(result.doc_id.clone(), (result, hits));
-                    }
+                    if replace { best.insert(key, (result, hits)); }
                 }
             }
         }
-        // Removing from the map also deduplicates repeated input IDs without
-        // losing the ranking supplied by the full-text collector.
-        Ok(doc_ids.iter().filter_map(|id| best.remove(id).map(|(result, _)| result)).collect())
+        Ok(keys.iter().filter_map(|(owner, doc)| best.remove(&super::fts_index::document_key(owner, doc)).map(|(result, _)| result)).collect())
     }
 
     /// Score a candidate doc-id pool by sparse dot product.
@@ -978,18 +1038,14 @@ impl LocalIndex {
     pub async fn search_sparse_in_pool(
         &self,
         query: &SparseVector,
-        candidate_doc_ids: &[String],
+        candidate_doc_ids: &[(String, String)],
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         if candidate_doc_ids.is_empty() || query.indices.is_empty() {
             return Ok(vec![]);
         }
-        let quoted: Vec<String> = candidate_doc_ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect();
-        let mut filter = format!("doc_id IN ({})", quoted.join(", "));
+        let mut filter = document_keys_sql(candidate_doc_ids);
         if let Some(extra) = filters.to_lance_sql() {
             filter = format!("({}) AND ({})", filter, extra);
         }
@@ -1110,7 +1166,7 @@ impl LocalIndex {
                     summary: str_col_val_opt(&summary_col, i),
                     doc_status: str_col_val_opt(&doc_status_col, i),
                 };
-                let doc_id = result.doc_id.clone();
+                let doc_id = super::fts_index::document_key(&result.owner_id, &result.doc_id);
                 let is_better = match best.get(&doc_id) {
                     None => true,
                     Some((_, prev)) => score > *prev,
@@ -3923,18 +3979,15 @@ async fn migrate_add_volume_id_column(table: &Table) -> Result<()> {
 /// The implicit `chunk_index <= 0` clause is always added so we list one
 /// row per document (L1 metadata rows + L3 representative rows) and
 /// never return chunk-level rows from the catalog overview.
-fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
+pub(crate) fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
     let mut parts: Vec<String> = vec!["chunk_index <= 0".to_owned()];
 
     if let Some(prefix) = f.parent_dir_prefix.as_ref().filter(|s| !s.is_empty()) {
         // parent_dir is now a first-class column with a BTree scalar index
         // (P9 step 3). Escape single-quotes for SQL safety; escape LIKE
         // wildcards (%_) so they are treated as literals within the prefix.
-        let escaped = prefix
-            .replace('\'', "''")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        parts.push(format!("parent_dir LIKE '{}%'", escaped));
+        let escaped = super::schema::sql_like_literal(prefix);
+        parts.push(format!("parent_dir LIKE '{}%' ESCAPE '\\'", escaped));
     }
     if !f.ext.is_empty() {
         let lits: Vec<String> = f
@@ -3967,12 +4020,12 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
         }
     }
     if let Some(sub) = f.name_substring.as_ref().filter(|s| !s.is_empty()) {
-        let pat = sub.replace('\'', "''").replace('%', "\\%");
+        let pat = super::schema::sql_like_literal(sub);
         // Search both filename and title (LIKE in LanceDB is
         // case-insensitive in 0.26 — verified by the existing
         // metadata_json LIKE patterns elsewhere in the codebase).
         parts.push(format!(
-            "(filename LIKE '%{}%' OR title LIKE '%{}%')",
+            "(filename LIKE '%{}%' ESCAPE '\\' OR title LIKE '%{}%' ESCAPE '\\')",
             pat, pat
         ));
     }
@@ -5016,12 +5069,12 @@ mod push_candidate_tests {
         local.ingest_batch(&[chunk]).await.unwrap();
         let result = SearchResult { chunk_index: 2, snippet: "clipped preview".into(), ..mk_result("long-doc", None, None) };
         let passages = local.fetch_passages(&[result]).await.unwrap();
-        let passage = passages.get(&crate::index::ingest::chunk_row_id("long-doc", 2)).unwrap();
+        let passage = passages.get(&passage_key("owner", "long-doc", 2)).unwrap();
         assert!(passage.text.contains("November 2031"));
         assert!(passage.text.len() > 400);
         assert_eq!(passage.start_char, Some(125));
         assert_eq!(passage.offset_unit, "utf8_bytes");
-        assert!(!passages.contains_key(&crate::index::ingest::chunk_row_id("long-doc", 0)));
+        assert!(!passages.contains_key(&passage_key("owner", "long-doc", 0)));
     }
 
     /// Stage AE coverage — a candidate whose row has NULL multivec data

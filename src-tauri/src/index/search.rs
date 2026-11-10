@@ -9,7 +9,7 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 
 use super::embedder::Embedder;
-use super::fts_index::{FtsHit, FtsIndex, PreparedFtsSearch};
+use super::fts_index::{document_key, FtsHit, FtsIndex, PreparedFtsSearch};
 use super::local_index::LocalIndex;
 use super::reranker::RerankerHandle;
 use super::schema::{SearchFilters, SearchResult};
@@ -221,7 +221,7 @@ impl SearchEngine {
             .iter()
             .map(|r| {
                 passages
-                    .get(&super::ingest::chunk_row_id(&r.doc_id, r.chunk_index))
+                    .get(&super::local_index::passage_key(&r.owner_id, &r.doc_id, r.chunk_index))
                     .map(|p| p.text.as_str())
                     .unwrap_or("")
             })
@@ -435,9 +435,7 @@ impl SearchEngine {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(sql) = filters.to_lance_sql() else {
-            return tokio::task::spawn_blocking(move || prepared.search_page(limit, 0)).await?;
-        };
+        let sql = filters.to_lance_sql();
         let total_documents = prepared.doc_count();
         let mut offset = 0usize;
         let mut matches = Vec::with_capacity(limit);
@@ -462,15 +460,13 @@ impl SearchEngine {
             // candidate prefix grows large for a selective metadata filter.
             for batch in page.chunks(512) {
                 let ids: Vec<String> = batch.iter().map(|hit| hit.doc_id.clone()).collect();
-                let allowed: HashSet<String> = self
-                    .vector
-                    .fetch_search_results_by_ids_filtered(&ids, Some(&sql))
-                    .await?
-                    .into_iter()
-                    .map(|hit| hit.doc_id)
-                    .collect();
+                let allowed: HashSet<String> = if let Some(sql) = &sql {
+                    self.vector.matching_document_keys(&ids, Some(sql)).await?.into_iter()
+                        .map(|(owner, doc)| document_key(&owner, &doc)).collect()
+                } else { batch.iter().map(FtsHit::key).collect() };
                 for hit in batch {
-                    if allowed.contains(&hit.doc_id) && seen.insert(hit.doc_id.clone()) {
+                    let key = hit.key();
+                    if allowed.contains(&key) && seen.insert(key) {
                         matches.push(hit.clone());
                         if matches.len() == limit {
                             return Ok(matches);
@@ -515,9 +511,8 @@ impl SearchEngine {
             return Ok(vec![]);
         }
 
-        let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
-        let score_map: HashMap<String, f32> =
-            hits.iter().map(|h| (h.doc_id.clone(), h.score)).collect();
+        let keys: Vec<_> = hits.iter().map(|h| (h.owner_id.clone(), h.doc_id.clone())).collect();
+        let score_map: HashMap<String, f32> = hits.iter().map(|h| (h.key(), h.score)).collect();
 
         // Only positive literal body terms are useful passage seeds. Boolean
         // operators, exclusions and metadata fields must not win the preview.
@@ -526,7 +521,7 @@ impl SearchEngine {
 
         let mut results = self
             .vector
-            .fetch_best_chunk_per_doc(&doc_ids, &term_refs, &score_map)
+            .fetch_best_chunk_per_keys(&keys, &term_refs, &score_map, filters)
             .await?;
 
         results.sort_by(|a, b| {
@@ -667,39 +662,38 @@ impl SearchEngine {
         };
 
         if constrained {
-            let candidates: HashSet<String> = vec_hits
-                .iter()
-                .chain(sparse_hits.iter().flatten())
-                .chain(omni_hits.iter().flatten())
-                .map(|hit| hit.doc_id.clone())
-                .collect();
-            let candidates: Vec<String> = candidates.into_iter().collect();
+            let mut candidates = std::collections::BTreeMap::<String, Vec<String>>::new();
+            for hit in vec_hits.iter().chain(sparse_hits.iter().flatten()).chain(omni_hits.iter().flatten()) {
+                candidates.entry(hit.owner_id.clone()).or_default().push(hit.doc_id.clone());
+            }
             let mut allowed = HashSet::new();
-            for ids in candidates.chunks(1024) {
-                let prepared = prepared.clone();
-                let ids = ids.to_vec();
-                allowed.extend(
-                    tokio::task::spawn_blocking(move || prepared.matching_doc_ids(&ids)).await??,
-                );
+            for (owner, ids) in candidates {
+                for group in ids.chunks(1024) {
+                    let prepared = prepared.clone();
+                    let group = group.to_vec(); let scoped_owner = owner.clone();
+                    let matching = tokio::task::spawn_blocking(move || prepared.matching_doc_ids_for_owner(&group, &scoped_owner)).await??;
+                    allowed.extend(matching.into_iter().map(|doc| document_key(&owner, &doc)));
+                }
             }
-            vec_hits.retain(|hit| allowed.contains(&hit.doc_id));
-            if let Some(hits) = &mut sparse_hits {
-                hits.retain(|hit| allowed.contains(&hit.doc_id));
-            }
-            if let Some(hits) = &mut omni_hits {
-                hits.retain(|hit| allowed.contains(&hit.doc_id));
-            }
+            vec_hits.retain(|hit| allowed.contains(&document_key(&hit.owner_id, &hit.doc_id)));
+            if let Some(hits) = &mut sparse_hits { hits.retain(|hit| allowed.contains(&document_key(&hit.owner_id, &hit.doc_id))); }
+            if let Some(hits) = &mut omni_hits { hits.retain(|hit| allowed.contains(&document_key(&hit.owner_id, &hit.doc_id))); }
         }
 
         // RRF merge — 2-way, 3-way (with sparse), or 4-way (with omni).
-        let fts_ids: Vec<&str> = fts_hits.iter().map(|h| h.doc_id.as_str()).collect();
-        let vec_ids: Vec<&str> = vec_hits.iter().map(|r| r.doc_id.as_str()).collect();
-        let sparse_ids: Vec<&str> = sparse_hits
-            .as_ref()
-            .map_or(vec![], |s| s.iter().map(|r| r.doc_id.as_str()).collect());
-        let omni_ids: Vec<&str> = omni_hits
-            .as_ref()
-            .map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
+        let mut identities: HashMap<String, (String, String)> = fts_hits.iter()
+            .map(|hit| (hit.key(), (hit.owner_id.clone(), hit.doc_id.clone()))).collect();
+        for hit in vec_hits.iter().chain(sparse_hits.iter().flatten()).chain(omni_hits.iter().flatten()) {
+            identities.insert(document_key(&hit.owner_id, &hit.doc_id), (hit.owner_id.clone(), hit.doc_id.clone()));
+        }
+        let fts_keys: Vec<_> = fts_hits.iter().map(FtsHit::key).collect();
+        let vec_keys: Vec<_> = vec_hits.iter().map(|r| document_key(&r.owner_id, &r.doc_id)).collect();
+        let sparse_keys: Vec<_> = sparse_hits.iter().flatten().map(|r| document_key(&r.owner_id, &r.doc_id)).collect();
+        let omni_keys: Vec<_> = omni_hits.iter().flatten().map(|r| document_key(&r.owner_id, &r.doc_id)).collect();
+        let fts_ids: Vec<_> = fts_keys.iter().map(String::as_str).collect();
+        let vec_ids: Vec<_> = vec_keys.iter().map(String::as_str).collect();
+        let sparse_ids: Vec<_> = sparse_keys.iter().map(String::as_str).collect();
+        let omni_ids: Vec<_> = omni_keys.iter().map(String::as_str).collect();
         let mut lists: Vec<&[&str]> = vec![&fts_ids, &vec_ids];
         if sparse_hits.is_some() {
             lists.push(&sparse_ids);
@@ -718,12 +712,12 @@ impl SearchEngine {
         // Omni hits are merged in so they don't need separate hydration.
         let mut vec_by_doc: HashMap<String, SearchResult> =
             vec_hits.into_iter().fold(HashMap::new(), |mut map, r| {
-                map.entry(r.doc_id.clone()).or_insert(r);
+                map.entry(document_key(&r.owner_id, &r.doc_id)).or_insert(r);
                 map
             });
         if let Some(omni) = omni_hits {
             for r in omni {
-                vec_by_doc.entry(r.doc_id.clone()).or_insert(r);
+                vec_by_doc.entry(document_key(&r.owner_id, &r.doc_id)).or_insert(r);
             }
         }
 
@@ -742,12 +736,10 @@ impl SearchEngine {
                 .iter()
                 .filter_map(|id| score_map.get(id).map(|&s| (id.clone(), s)))
                 .collect();
-            let hydrated = self
-                .vector
-                .fetch_best_chunk_per_doc(&fts_only_ids, &term_refs, &fts_score_sub)
-                .await?;
+            let scoped_keys: Vec<_> = fts_only_ids.iter().filter_map(|id| identities.get(id).cloned()).collect();
+            let hydrated = self.vector.fetch_best_chunk_per_keys(&scoped_keys, &term_refs, &fts_score_sub, filters).await?;
             for r in hydrated {
-                fts_hydrated.insert(r.doc_id.clone(), r);
+                fts_hydrated.insert(document_key(&r.owner_id, &r.doc_id), r);
             }
         }
 
@@ -874,12 +866,10 @@ impl SearchEngine {
         };
 
         // RRF merge across available channels.
-        let vit_ids: Vec<&str> = vit_hits
-            .as_ref()
-            .map_or(vec![], |h| h.iter().map(|r| r.doc_id.as_str()).collect());
-        let omni_ids: Vec<&str> = omni_hits
-            .as_ref()
-            .map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
+        let vit_keys: Vec<_> = vit_hits.iter().flatten().map(|r| document_key(&r.owner_id, &r.doc_id)).collect();
+        let omni_keys: Vec<_> = omni_hits.iter().flatten().map(|r| document_key(&r.owner_id, &r.doc_id)).collect();
+        let vit_ids: Vec<_> = vit_keys.iter().map(String::as_str).collect();
+        let omni_ids: Vec<_> = omni_keys.iter().map(String::as_str).collect();
         let mut lists: Vec<&[&str]> = Vec::new();
         if vit_hits.is_some() {
             lists.push(&vit_ids);
@@ -910,12 +900,12 @@ impl SearchEngine {
         let mut by_doc: HashMap<String, SearchResult> = HashMap::new();
         if let Some(hits) = vit_hits {
             for r in hits {
-                by_doc.entry(r.doc_id.clone()).or_insert(r);
+                by_doc.entry(document_key(&r.owner_id, &r.doc_id)).or_insert(r);
             }
         }
         if let Some(hits) = omni_hits {
             for r in hits {
-                by_doc.entry(r.doc_id.clone()).or_insert(r);
+                by_doc.entry(document_key(&r.owner_id, &r.doc_id)).or_insert(r);
             }
         }
 
@@ -968,10 +958,10 @@ impl SearchEngine {
         let sparse_q = sparse_vecs.pop().flatten()?;
 
         // Union of doc_ids from both retrieval sources, dedup'd.
-        let mut pool: std::collections::BTreeSet<String> =
-            fts_hits.iter().map(|h| h.doc_id.clone()).collect();
-        pool.extend(vec_hits.iter().map(|r| r.doc_id.clone()));
-        let pool: Vec<String> = pool.into_iter().collect();
+        let mut pool: std::collections::BTreeSet<(String, String)> =
+            fts_hits.iter().map(|h| (h.owner_id.clone(), h.doc_id.clone())).collect();
+        pool.extend(vec_hits.iter().map(|r| (r.owner_id.clone(), r.doc_id.clone())));
+        let pool: Vec<_> = pool.into_iter().collect();
         if pool.is_empty() {
             return None;
         }
@@ -1118,7 +1108,7 @@ mod tests {
         ids.iter()
             .enumerate()
             .map(|(i, id)| FtsHit {
-                doc_id: id.to_string(),
+                doc_id: id.to_string(), owner_id: String::new(),
                 score: (ids.len() - i) as f32,
             })
             .collect()

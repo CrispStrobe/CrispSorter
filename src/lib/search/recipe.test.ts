@@ -9,6 +9,7 @@ describe('saved search recipes', () => {
         expect(saved.filters).toEqual(defaultSearchFilters());
         expect(saved.smart).toBe(false);
         expect(saved.docIdScope).toEqual([]);
+        expect(saved.ownerId).toBeNull();
         expect(saved.view).toEqual(normalizeSearchView(null));
         const [history] = restoreSearchHistory([{ query: 'old', mode: 'text', ts: 3, resultCount: 2 }]);
         expect(history.limit).toBe(20);
@@ -77,6 +78,15 @@ describe('saved search recipes', () => {
         expect(saved.limit).toBe(500);
         expect(localSearchArguments(effective).limit).toBe(200);
         expect(normalizeSearchRecipe({ query: 'research', limit: 50 }, 200).limit).toBe(50);
+    });
+
+    it('preserves exact owner scopes, including the empty owner, through saved searches and requests', () => {
+        for (const ownerId of ['one', 'two', '']) {
+            const recipe = normalizeSearchRecipe({ query: 'needle', ownerId, docIdScope: ['shared'] });
+            expect(restoreSavedSearches([recipe])[0].ownerId).toBe(ownerId);
+            expect(localSearchArguments(recipe)).toMatchObject({ ownerId, docIdScope: ['shared'], searchFilters: { owner_id: ownerId } });
+            expect(searchRequestKey(recipe)).not.toBe(searchRequestKey(normalizeSearchRecipe({ ...recipe, ownerId: null })));
+        }
     });
 });
 

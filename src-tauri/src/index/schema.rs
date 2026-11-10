@@ -473,6 +473,26 @@ pub struct SearchFilters {
 }
 
 impl SearchFilters {
+    /// Validate user-provided ranges before building storage predicates.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.tags.len() > 32 || self.tags.iter().any(|tag| tag.trim().is_empty() || tag.len() > 1024) {
+            return Err("Choose at most 32 nonempty required tags, each at most 1024 bytes.".into());
+        }
+        for year in [self.year_min, self.year_max].into_iter().flatten() {
+            if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999.".into()); }
+        }
+        if matches!((self.year_min, self.year_max), (Some(min), Some(max)) if min > max) {
+            return Err("The minimum publication year must not exceed the maximum.".into());
+        }
+        for seconds in [self.audio_duration_min_seconds, self.audio_duration_max_seconds].into_iter().flatten() {
+            if !seconds.is_finite() || seconds < 0.0 { return Err("Audio duration must be a non-negative number of seconds.".into()); }
+        }
+        if matches!((self.audio_duration_min_seconds, self.audio_duration_max_seconds), (Some(min), Some(max)) if min > max) {
+            return Err("The minimum audio duration must not exceed the maximum.".into());
+        }
+        Ok(())
+    }
+
     /// Build a LanceDB SQL `WHERE` clause fragment from the active filters.
     /// Returns `None` if no filters are set (no WHERE clause needed).
     pub fn to_lance_sql(&self) -> Option<String> {
@@ -584,7 +604,7 @@ impl SearchFilters {
 /// User-entered filter text is literal. Only the surrounding wildcard added by
 /// the filter supplies prefix/substring semantics; '%' and '_' in a real path,
 /// camera name or URL must not broaden the selected source set.
-fn sql_like_literal(value: &str) -> String {
+pub(crate) fn sql_like_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_").replace('\'', "''")
 }
 

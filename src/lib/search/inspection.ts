@@ -2,6 +2,7 @@ import { normalizeSearchRecipe, type SearchRecipe } from './recipe';
 
 export interface InspectableHit {
     doc_id: string;
+    owner_id?: string;
     chunk_index: number;
     score: number;
     location_uri: string;
@@ -19,22 +20,28 @@ export interface InspectableHit {
     url?: string;
     tags?: string[];
 }
-export interface ResultGroup<T extends InspectableHit = InspectableHit> { doc_id: string; best: T; chunks: T[] }
+export interface ResultGroup<T extends InspectableHit = InspectableHit> { key: string; doc_id: string; owner_id: string; best: T; chunks: T[] }
 export type ResultSort = 'relevance' | 'title' | 'filename' | 'year-desc' | 'year-asc' | 'location';
+
+/** JSON tuples keep arbitrary owner/document IDs distinct without delimiter collisions. */
+export function resultIdentity(hit: Pick<InspectableHit, 'doc_id' | 'owner_id'>): string {
+    return JSON.stringify([hit.owner_id ?? '', hit.doc_id]);
+}
 
 /** Keep the strongest passage and deterministic ties without mutating search responses. */
 export function groupResults<T extends InspectableHit>(hits: readonly T[]): ResultGroup<T>[] {
     const documents = new Map<string, Map<number, T>>();
     for (const hit of hits) {
-        let chunks = documents.get(hit.doc_id);
-        if (!chunks) { chunks = new Map(); documents.set(hit.doc_id, chunks); }
+        const key = resultIdentity(hit);
+        let chunks = documents.get(key);
+        if (!chunks) { chunks = new Map(); documents.set(key, chunks); }
         const previous = chunks.get(hit.chunk_index);
         if (!previous || finiteScore(hit.score) > finiteScore(previous.score)) chunks.set(hit.chunk_index, hit);
     }
-    return [...documents].map(([doc_id, values]) => {
+    return [...documents].map(([key, values]) => {
         const chunks = [...values.values()].sort((a, b) => a.chunk_index - b.chunk_index);
         const best = [...chunks].sort((a, b) => finiteScore(b.score) - finiteScore(a.score) || a.chunk_index - b.chunk_index)[0];
-        return { doc_id, best, chunks };
+        return { key, doc_id: best.doc_id, owner_id: best.owner_id ?? '', best, chunks };
     });
 }
 const finiteScore = (value: number): number => Number.isFinite(value) ? value : 0;
@@ -57,7 +64,7 @@ export function sortGroups<T extends InspectableHit>(groups: readonly ResultGrou
                 || finiteScore(b.best.score) - finiteScore(a.best.score);
         }
         return order || compare(a.best.title || a.best.filename || '', b.best.title || b.best.filename || '')
-            || compare(a.best.location_uri, b.best.location_uri) || a.doc_id.localeCompare(b.doc_id);
+            || compare(a.best.location_uri, b.best.location_uri) || a.key.localeCompare(b.key);
     });
 }
 
@@ -156,7 +163,8 @@ export function buildSearchReport(input: SearchReportInput) {
             note: 'This report contains the returned search window. It does not establish a complete corpus match count. Sorting and display tags apply within that window.',
         },
         documents: input.groups.map(group => ({
-            docId: group.doc_id, title: group.best.title || '', filename: group.best.filename || '',
+            docId: group.doc_id, ownerId: group.owner_id, documentKey: group.key,
+            title: group.best.title || '', filename: group.best.filename || '',
             author: group.best.author || '', year: group.best.year ?? null,
             location: group.best.location_uri, sourceUrl: group.best.url || '',
             sourceHash: group.best.source_hash || '', indexedAt: group.best.indexed_at ?? null,
@@ -175,11 +183,11 @@ function csvCell(value: unknown): string {
     return '"' + text.replace(/"/g, '""') + '"';
 }
 export function searchReportCsv(report: SearchReport): string {
-    const headers = ['query', 'executed_query', 'mode', 'filters_json', 'searched_at', 'doc_id', 'title', 'filename', 'author', 'year', 'location', 'source_url', 'source_hash', 'indexed_at', 'chunk_index', 'score', 'excerpt', 'coverage'];
+    const headers = ['query', 'executed_query', 'mode', 'filters_json', 'searched_at', 'doc_id', 'owner_id', 'document_key', 'title', 'filename', 'author', 'year', 'location', 'source_url', 'source_hash', 'indexed_at', 'chunk_index', 'score', 'excerpt', 'coverage'];
     const rows: unknown[][] = [headers];
     for (const doc of report.documents) for (const passage of doc.passages) rows.push([
         report.recipe.query, report.executedQuery, report.recipe.mode, JSON.stringify(report.recipe.filters), report.searchedAt,
-        doc.docId, doc.title, doc.filename, doc.author, doc.year, doc.location, doc.sourceUrl, doc.sourceHash,
+        doc.docId, doc.ownerId, doc.documentKey, doc.title, doc.filename, doc.author, doc.year, doc.location, doc.sourceUrl, doc.sourceHash,
         doc.indexedAt, passage.chunkIndex, passage.score, passage.excerpt, report.coverage.note,
     ]);
     return '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
@@ -194,6 +202,6 @@ export function searchReportHtml(report: SearchReport): string {
         + escapeHtml(JSON.stringify({ recipe: report.recipe, executedQuery: report.executedQuery, sort: report.sort, displayTags: report.displayTags, scope: report.scope }, null, 2)) + '</pre></details>'
         + report.documents.map(doc => '<article><h2>' + escapeHtml(doc.title || doc.filename || doc.docId) + '</h2><p><code>'
             + escapeHtml(doc.location) + '</code></p><p>' + escapeHtml([doc.author, doc.year, doc.language].filter(Boolean).join(' · '))
-            + '</p><p>Document: <code>' + escapeHtml(doc.docId) + '</code> · Source hash: <code>' + escapeHtml(doc.sourceHash || 'Unavailable') + '</code></p>'
+            + '</p><p>Document: <code>' + escapeHtml(doc.docId) + '</code> · Owner: <code>' + escapeHtml(doc.ownerId || 'Unspecified') + '</code> · Source hash: <code>' + escapeHtml(doc.sourceHash || 'Unavailable') + '</code></p>'
             + doc.passages.map(p => '<p>Chunk ' + p.chunkIndex + ' · Score ' + p.score + '</p><pre>' + escapeHtml(p.excerpt) + '</pre>').join('') + '</article>').join('') + '</html>';
 }

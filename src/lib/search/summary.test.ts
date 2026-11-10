@@ -1,0 +1,54 @@
+import { describe, expect, it } from 'vitest';
+import { normalizeSearchRecipe } from './recipe';
+import { canCountLexicalMatches, lexicalSummaryArguments, readLexicalSummary, recipeWithCorpusFacet } from './summary';
+
+const facet = { values: [{ value: 'reviewed', documents: 633 }], distinctValues: 31, omittedValues: 30, missingDocuments: 0 };
+const response = () => ({ version: 1, scope: 'local_indexed_documents', query: 'needle', effectiveQuery: 'needle',
+    generation: 'snapshot-1', matchingDocuments: 633, scannedRows: 900, facetValueLimit: 25,
+    facets: { extensions: facet, languages: facet, years: facet, tags: facet } });
+
+describe('exhaustive lexical summary contracts', () => {
+    it('retains exact counts beyond the returned window and explicit omitted facet values', () => {
+        const summary = readLexicalSummary(response(), 'needle');
+        expect(summary.matchingDocuments).toBe(633);
+        expect(summary.facets.tags.omittedValues).toBe(30);
+        expect(summary.facets.tags.values[0].documents).toBe(633);
+    });
+
+    it('rejects absent counts, wrong query/scope, duplicate facets and impossible values', () => {
+        for (const altered of [null, {}, { ...response(), query: 'old' }, { ...response(), scope: 'semantic' },
+            { ...response(), matchingDocuments: undefined }, { ...response(), matchingDocuments: -1 },
+            { ...response(), matchingDocuments: 3.5 }, { ...response(), scannedRows: 10 },
+            { ...response(), facets: { ...response().facets, tags: { ...facet, missingDocuments: 1000 } } },
+            { ...response(), facets: { ...response().facets, tags: { ...facet, omittedValues: 0 } } },
+            { ...response(), facets: { ...response().facets, tags: { ...facet, values: [...facet.values, ...facet.values], omittedValues: 29 } } },
+        ]) expect(() => readLexicalSummary(altered, 'needle')).toThrow();
+    });
+
+    it('only offers complete counts for local lexical search and uses full exact request filters', () => {
+        const recipe = normalizeSearchRecipe({ query: 'smart original', mode: 'text', limit: 20, ownerId: 'reader',
+            docIdScope: ['a', 'b'], filters: { tag: 'reviewed', folderPrefix: '/research', fuzzy: true, includeUnmounted: true } });
+        expect(canCountLexicalMatches(recipe, 'Local')).toBe(true);
+        for (const backend of ['remote', undefined, 'unknown']) expect(canCountLexicalMatches(recipe, backend)).toBe(false);
+        for (const mode of ['hybrid', 'vector']) expect(canCountLexicalMatches(normalizeSearchRecipe({ ...recipe, mode }), 'local')).toBe(false);
+        const args = lexicalSummaryArguments(recipe, 'parsed query', 'request-1');
+        expect(args).toMatchObject({ query: 'parsed query', mode: 'text', ownerId: 'reader', docIdScope: ['a', 'b'],
+            tag: 'reviewed', fuzzy: true, includeUnmounted: true, requestId: 'request-1', searchFilters: { parent_dir_prefix: '/research' } });
+        expect(args).not.toHaveProperty('limit');
+    });
+
+    it('turns corpus facet clicks into real backend filters without retaining display tag hiding', () => {
+        const recipe = normalizeSearchRecipe({ query: 'needle', mode: 'text', ownerId: 'reader', docIdScope: ['a'],
+            filters: { folderPrefix: '/research' }, view: { displayTags: ['hidden'], sort: 'year-desc' } });
+        for (const [key, value, filters] of [
+            ['extensions', 'pdf', { ext: 'pdf' }], ['languages', 'de', { language: 'de' }],
+            ['tags', "reader's", { tag: "reader's" }], ['years', '2026', { yearMin: 2026, yearMax: 2026 }],
+        ] as const) {
+            const next = recipeWithCorpusFacet(recipe, key, value);
+            expect(next.filters).toMatchObject({ ...filters, folderPrefix: '/research' });
+            expect(next).toMatchObject({ ownerId: 'reader', docIdScope: ['a'], view: { displayTags: [], sort: 'year-desc' } });
+        }
+        expect(() => recipeWithCorpusFacet(recipe, 'years', 'unknown')).toThrow();
+        expect(recipe.view.displayTags).toEqual(['hidden']);
+    });
+});

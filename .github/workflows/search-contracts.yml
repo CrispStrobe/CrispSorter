@@ -5,6 +5,7 @@ on:
     paths:
       - 'crates/crisp-search-query/**'
       - 'shared/source_identity.rs'
+      - 'shared/stored_passage.rs'
       - 'crisp-index-protocol/**'
       - 'crisp-index-server/**'
       - 'src-tauri/src/index/**'
@@ -12,6 +13,9 @@ on:
       - 'src-tauri/src/jobs/**'
       - 'src-tauri/src/extractors/eml.rs'
       - 'src-tauri/src/extractors/html.rs'
+      - 'src-tauri/src/extractors/archive.rs'
+      - 'src-tauri/src/extractors/text.rs'
+      - 'src-tauri/src/extractors/mod.rs'
       - 'tests/search-contract/**'
       - 'tests/index-write-contract/**'
       - 'tests/extraction-contract/**'
@@ -100,5 +104,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tests/extraction-contract
-      - name: Test production MIME and HTML extraction
+      - name: Test production ZIP, MIME, HTML, and text extraction
         run: cargo test --locked --manifest-path tests/extraction-contract/Cargo.toml

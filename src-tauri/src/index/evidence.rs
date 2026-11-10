@@ -2,7 +2,7 @@
 use tauri::State;
 use serde::Serialize;
 use crate::AppState;
-use super::{ingest::chunk_row_id, local_index::Passage, SearchFilters, SearchResult};
+use super::{local_index::Passage, SearchFilters, SearchResult};
 #[path = "passage.rs"]
 mod passage;
 pub use passage::InspectedPassage;
@@ -81,7 +81,7 @@ pub async fn index_retrieve_passages(
     };
     let mut passages = local.fetch_passages(&results).await.map_err(|e| e.to_string())?;
     Ok(results.into_iter().filter_map(|document| {
-        passages.remove(&chunk_row_id(&document.doc_id, document.chunk_index))
+        passages.remove(&super::local_index::passage_key(&document.owner_id, &document.doc_id, document.chunk_index))
             .map(|passage| Evidence { document, passage })
     }).collect())
 }

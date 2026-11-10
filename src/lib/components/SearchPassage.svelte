@@ -3,7 +3,7 @@
     import { tick } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
     import { occurrenceRanges, queryTerms } from '$lib/search/inspection';
-    let { docId, chunkIndex, query, sourceHash = '' }: { docId: string; chunkIndex: number; query: string; sourceHash?: string } = $props();
+    let { docId, chunkIndex, query, sourceHash = '', ownerId }: { docId: string; chunkIndex: number; query: string; sourceHash?: string; ownerId?: string } = $props();
     interface Passage {
         text: string; start_char: number | null; end_char: number | null; offset_unit: string; truncated: boolean;
         chunk_index?: number; passage_number?: number; chunk_count?: number;
@@ -19,15 +19,15 @@
     const occurrences = $derived(occurrenceRanges(passage?.text || '', find.trim() ? [find.trim()] : queryTerms(query), 1001,
         find.trim() ? { caseSensitive, wholeWords } : {}));
     const ranges = $derived(occurrences.slice(0, 1000));
-    const storedHash = $derived(passage?.source_hash || sourceHash);
+    const storedHash = $derived(passage?.source_hash);
     const refreshed = $derived(Boolean(sourceHash && passage?.source_hash && sourceHash !== passage.source_hash));
-    $effect(() => { docId; inspectedChunk = chunkIndex; find = ''; active = 0; pendingFocus = null; });
+    $effect(() => { docId; ownerId; inspectedChunk = chunkIndex; find = ''; active = 0; pendingFocus = null; });
     $effect(() => {
-        const id = docId, index = inspectedChunk; retry;
+        const id = docId, owner = ownerId, index = inspectedChunk; retry;
         const navigationFocus = pendingFocus; pendingFocus = null;
         let cancelled = false;
         passage = null; loading = true; error = ''; active = 0;
-        invoke<Passage>('index_read_passage', { docId: id, chunkIndex: index })
+        invoke<Passage>('index_read_passage', { docId: id, ownerId: owner, chunkIndex: index })
             .then(async value => {
                 if (cancelled) return;
                 passage = value; loading = false;
@@ -85,7 +85,8 @@
         </div>
         <p class="provenance">{de ? 'Gespeicherte Textstelle' : 'Stored passage'} · {de ? 'Chunk' : 'Chunk'} {inspectedChunk}
             {#if passage.start_char != null} · UTF-8 {passage.start_char}–{passage.end_char ?? '?'}{/if}
-            {#if storedHash} · <span title={storedHash}>SHA-256 {storedHash.slice(0, 12)}…</span>{/if}
+            {#if storedHash} · <span title={storedHash}>SHA-256 {storedHash.slice(0, 12)}…</span>
+            {:else} · {de ? 'Gespeicherter Fingerabdruck nicht verfügbar' : 'Stored fingerprint unavailable'}{/if}
         </p>
         {#if refreshed}<p class="refresh-notice" role="status">{de ? 'Der Index wurde seit dieser Suche aktualisiert. Sie sehen die aktuelle gespeicherte Textstelle; erneut suchen aktualisiert die Treffer.' : 'The index changed after this search. This is the current stored passage; search again to refresh the results.'}</p>{/if}
         <p class="provenance">{de ? 'Markierungen zeigen Textvorkommen, keine semantischen oder unscharfen Treffer. Enter / Umschalt+Enter navigiert im Suchfeld.' : 'Highlights show text occurrences, not semantic or fuzzy matches. Enter / Shift+Enter navigates from the find field.'}</p>
