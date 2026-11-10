@@ -3,6 +3,7 @@ pub mod audio;
 pub mod audit;
 pub mod batch_session;
 mod batch_file_ops;
+mod duplicate_file_ops;
 mod batch_script;
 pub mod capabilities;
 pub mod bg_ingest;
@@ -469,15 +470,37 @@ async fn catalog_save_caf(
 /// Returns an error string if the file is unreadable.
 #[tauri::command]
 async fn file_sha256(path: String) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
     tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
-        let mut h = Sha256::new();
-        h.update(&bytes);
-        Ok(hex::encode(h.finalize()))
+        let mut file = std::fs::File::open(&path).map_err(|e| format!("read {path}: {e}"))?;
+        sha256_open_file(&mut file).map_err(|e| format!("read {path}: {e}"))
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+fn sha256_open_file(file: &mut std::fs::File) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
+/// Verify a distinct retained file and the reviewed hash in the same native
+/// operation as deletion. Arbitrary delete_files cannot provide this guarantee.
+#[tauri::command]
+async fn delete_duplicate_copy(keep_path: String, path: String, expected_sha256: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        duplicate_file_ops::delete_verified_copy(
+            std::path::Path::new(&keep_path), std::path::Path::new(&path),
+            &expected_sha256, sha256_open_file,
+        )
+    }).await.map_err(|error| format!("duplicate verification task failed: {error}"))?
 }
 
 /// `hash_algo` is one of `"md5"`, `"sha1"`, `"sha256"`, or absent for
@@ -3223,6 +3246,7 @@ pub fn run() {
             check_mlx_models_cached,
             delete_mlx_model,
             delete_files,
+            delete_duplicate_copy,
             extract_pdf_native,
             extract_pdf_metadata,
             feed_fetch_and_parse,
@@ -3674,6 +3698,7 @@ pub fn run() {
             scan_folder,
             download_file,
             delete_files,
+            delete_duplicate_copy,
             extract_pdf_native,
             extract_pdf_metadata,
             get_app_data_dir,

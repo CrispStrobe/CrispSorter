@@ -33,6 +33,10 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      - name: Verify guarded duplicate filesystem operations
+        run: |
+          rustc --edition 2021 --test src-tauri/src/duplicate_file_ops.rs -o "$RUNNER_TEMP/duplicate-file-ops"
+          "$RUNNER_TEMP/duplicate-file-ops"
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
       - name: Keep browser evidence
