@@ -106,6 +106,8 @@ export const caps = writable<Capabilities>(UNKNOWN);
 
 /** True once the backend has answered — lets views hold a spinner rather than flashing an empty state. */
 export const capsLoaded = writable(false);
+export const capsLoading = writable(false);
+export const capsError = writable<string | null>(null);
 
 /** Build keys for tab visibility, including the workbench derived from reported OCR tiers. */
 export const buildFlags = derived(caps, ($caps) => {
@@ -128,22 +130,34 @@ let probe: Promise<Capabilities> | null = null;
  */
 export async function loadCapabilities(): Promise<Capabilities> {
 	if (probe) return probe;
-	probe = invoke<Capabilities>('build_capabilities')
+	capsLoading.set(true);
+	probe = invoke<unknown>('build_capabilities')
 		.then((c) => {
-			caps.set(c);
+			if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('Invalid app capabilities response.');
+			const data = c as Record<string, unknown>;
+			const valid = typeof data.platform === 'string' && data.platform.trim() !== '' && data.platform !== 'unknown'
+				&& Object.entries(UNKNOWN).every(([key, value]) => {
+					if (Array.isArray(value)) return Array.isArray(data[key]) && (data[key] as unknown[]).every(item => typeof item === 'string');
+					return typeof data[key] === typeof value;
+				});
+			if (!valid) throw new Error('Invalid app capabilities response.');
+			const capabilities = c as Capabilities;
+			caps.set(capabilities);
+			capsError.set(null);
 			capsLoaded.set(true);
-			return c;
+			return capabilities;
 		})
 		.catch((e) => {
-			// A failed probe must not take the app down. Leaving UNKNOWN in
-			// place hides the conditional surfaces, which is the safe
-			// direction; the error is worth seeing in the console because it
-			// means every gated control is now missing.
+			// Keep gated tools unavailable until a valid response arrives.
+			// The shell exposes this failure and can retry the probe alone.
 			console.error('[capabilities] probe failed; conditional UI stays hidden', e);
+			caps.set(UNKNOWN);
+			capsError.set(e instanceof Error ? e.message : String(e));
 			probe = null;
 			capsLoaded.set(true);
 			return UNKNOWN;
-		});
+		})
+		.finally(() => capsLoading.set(false));
 	return probe;
 }
 

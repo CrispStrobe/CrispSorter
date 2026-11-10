@@ -18,6 +18,10 @@ do not describe a published application release.
 | P1 | Select-all compared counts rather than membership; bulk actions could include selections hidden by a filter. | Select-all uses visible membership. Bulk actions use selected visible rows, and the toolbar reports hidden selections excluded from those actions. |
 | P1 | Focusing another document discarded unsaved metadata. Empty filtered results looked like an empty batch. | Recoverable per-document drafts, explicit Save/Discard, Save & next, stage-aware filters, and distinct empty/filter states. |
 | P2 | Numerous destinations were hard to discover; short windows clipped sidebar actions and collapsed navigation lacked accessible names. | Searchable quick navigation, capability-aware destinations, keyboard/focus handling, accessible active states, and scrolling navigation. |
+| P0 | Batch additions appeared before storage completed, repeated Stop could release active workers, and sort-report cleanup could discard recoverable rows. | Persisted additions with retryable partial progress, cancellation that drains workers before unlocking, and persistence-first cleanup that retains copied originals and failed operations. |
+| P1 | Optional startup failures could interrupt restoration, and Library action notifications replaced the result list with a search error. | Independent startup notices and retries; result-action feedback preserves results, preview and selection and retries the failed action. |
+| P1 | Library result headers nested interactive controls, actions clipped on phones, and the preview had a desktop minimum width. | Separate native passage buttons, independent keyboard actions, wrapping touch controls and a full-width phone preview with focus restoration. |
+| P0 | History import and resume cleared the saved batch before the replacement was safely stored. | Complete validation, a concrete replacement confirmation and one SQLite transaction for rows and extracted text; failed replacements preserve current rows and drafts. |
 
 ## Using the improved workflows
 
@@ -122,6 +126,84 @@ This fixes a concrete issue in the first CI screenshot: hiding desktop metadata
 columns left the desktop table width in place, spreading the remaining columns
 so far apart that the filename was entirely outside a 390-pixel viewport.
 
+Library search now also fits narrow screens. Query controls and result actions
+wrap, with 44-pixel phone action targets and wrapping long titles and passages.
+The matching-passages control is a native button with an explicit expanded state;
+using Enter or Space on another action no longer expands the document accidentally.
+On screens up to 800 pixels wide, document preview fills the results area instead
+of competing with it. Close restores focus to the result that opened it, retaining
+selection and expanded passages. Starting another search reveals its results or
+validation message. Desktop keeps the adjacent results and preview layout.
+
+### Recover startup and document actions
+
+Preferences, runtime capabilities and the saved batch have independent recovery
+states. A failed optional preference load does not prevent the other startup
+steps. Unavailable or malformed capability data keeps unsupported tools hidden
+until a successful retry. A failed batch restore keeps any current work intact
+and blocks new additions until restoration succeeds. Retrying does not register
+duplicate listeners or repeat unrelated startup work.
+
+Folder-watcher arrivals during failed restoration are retained in a deduplicated
+queue for the current app session, including shell remounts. A successful restore
+replays them. A failed replay retains the path and exposes its own Retry; it does
+not restart watchers or report an addition before storage confirms it.
+
+Library actions now report their outcome separately from search retrieval.
+Copying a path, exporting a search excerpt, adding to a reading list or adding
+documents to the sorter leaves the current results, preview and selection in
+place. Retry runs the failed action without rerunning search. Multiple matching
+passages count as one document when adding to the batch, and the result reports
+new additions, existing entries and unsupported cloud items. If copying a newly
+created share link fails, retry reuses that link instead of creating another.
+
+### Add, stop and clean up batches without losing work
+
+File additions are serialized and persisted before they become visible. Overlapping
+additions of the same path produce one row. Large imports save in chunks; if a
+later chunk fails, the successfully saved files remain and a retry skips them.
+An arrival during another batch update waits for that update to finish.
+
+Stop now enters a visible **Stopping…** state. Repeated clicks cannot release the
+batch while extraction or analysis workers are still running. The queue waits for
+those workers and the final save before another run can start. Successfully
+extracted text remains available for resumption, and unfinished-only batches can
+use Resume. A late progress event cannot overwrite a newer run.
+
+The sort report keeps successful copies whose original could not be removed
+visible as **Copied; original kept**. **Keep problematic** retains these files and
+failed operations for follow-up. Report cleanup commits the database change before
+removing rows or closing the report; a storage error leaves both available for
+retry. Active processing and sorting cannot be force-reset into an overlapping run.
+
+### Import or resume a batch safely
+
+History validates every incoming file before offering to replace the current
+batch. The confirmation names the source, incoming and current file counts, and
+the current unapplied draft count. If saved drafts could not be read at startup,
+replacement first retries that read and waits for the drafts before confirming.
+Cancel and Escape retain the current batch;
+keyboard focus returns to the initiating action. Empty imports also require
+confirmation. Loading, failed history reads and failed operations have distinct
+states and retry controls, and History actions fit narrow screens.
+
+Replacement holds the batch update lock through reading, confirmation and the
+native commit. One SQLite transaction stages extracted text, replaces rows and
+restores text. If any step fails, rollback preserves the previous rows and full
+text. The visible batch changes only after that transaction succeeds; drafts for
+removed files are pruned afterward. Stored text is reused only when the exact
+source path, recorded size and modification time match. Explicit imported text,
+including an empty string, takes precedence. Reused IDs for different sources
+do not inherit unrelated text.
+
+JSON export includes applied metadata and the full stored extracted text, even
+when the current view has not loaded that text yet. The UI explains that unapplied
+metadata drafts remain in the app. Import normalizes saved in-progress statuses
+to unfinished work, and a failed import or resume stays in History for retry.
+See [transfer validation](../src/lib/batch/sessionTransfer.ts),
+[History](../src/lib/components/History.svelte), and
+[the native transaction](../src-tauri/src/batch_session/mod.rs).
+
 ### Preserve proofread text when a recognition retry finds nothing
 
 An OCR zone retry that returns no regions, or only whitespace, now leaves the
@@ -134,55 +216,70 @@ OCR workspace.
 
 ## Verification snapshot
 
-Changes were committed and pushed incrementally to
-`feat/ux-workflow-essentials`. The first completed **Workflow UX verification** run
-at `a096e285` passed 37 browser tests and all five isolated native duplicate guard
-tests. Its seven browser failures exposed a palette focus problem, overly broad
-or mismatched test selectors, a short cold-start wait, and OCR fixtures still
-targeting the previous workspace. The follow-up corrects those cases and adds
-the mobile layout and empty OCR retry protections described above. The next run,
-at `4e55d839`, passed 47 of 48 browser tests, including all seven previous failure
-cases. Its remaining phone-field assertion reported a 0.19-pixel intersection
-difference after scrolling; the follow-up checks a one-pixel visibility tolerance
-and explicitly checks that the author can be edited, saved, and reopened. The filename and
-main control visibility checks remain strict. Consult the
-[checks on PR #37](https://github.com/CrispStrobe/CrispSorter/pull/37/checks)
-for the latest rerun and full native compilation results.
+Changes are committed and pushed incrementally to
+`feat/ux-workflow-essentials`. The first complete workflow increment at
+`96813ae2` passed its browser and full native checks. The first recovery checkpoint
+at `34134db4` subsequently passed all 57 browser scenarios. Later commits add
+batch cancellation, partial-import, phone Library and session-transfer coverage;
+[the checks on PR #37](https://github.com/CrispStrobe/CrispSorter/pull/37/checks)
+record the result for each exact commit.
 
-| Check | Observed result |
+Local verification after the atomic replacement and watcher recovery changes
+passed all **219 frontend unit tests in 32 files**, including 18 new validation
+and replacement-contract tests. Type checking reported **zero errors and the 54
+existing warnings**, and the production build passed. The expanded browser suite
+collects **72 scenarios in 13 files**, including unread-draft recovery before
+replacement; discovery and TypeScript checks passed.
+Seven native SQLite replacement regressions cover rollback and retry, full and
+empty text, exact source identity and invalid input. Browser execution and these
+native tests are tracked by the checks on the corresponding remote commit.
+
+The integrated run at `892182bc` passed **70 of 71 browser scenarios**. Its one
+failure was a phone action's fractional intersection with the inner scrollport
+after a minimum-scroll operation. The follow-up explicitly centers each action
+before checking complete visibility; the strict visibility and width checks stay
+in place. The phone preview screenshot and all other recovery scenarios passed.
+At that same checkpoint the full macOS native job passed **1,657 library tests**
+(47 ignored), all five batch-script tests, CLI compilation and the secret-store
+smoke test. Its published log confirms all seven SQLite replacement regressions
+passed individually. Subsequent frontend corrections leave that native source
+unchanged.
+
+| Check | Observed result and scope |
 | --- | --- |
-| `npm run check` | Passed: zero errors; 54 pre-existing warnings. |
-| `npm test` | Passed after the OCR guard: 199 tests in 29 files. |
-| `npx vite build` | Passed: frontend production bundle generated. |
-| Playwright discovery | 48 tests across six files, including phone layout and current OCR workspace regressions. |
-| Browser execution | Remote run at `4e55d839`: 47 passed, one phone-field geometry assertion failed; its focused correction is awaiting rerun. |
-| Isolated native duplicate guard | All five filesystem tests passed on the remote Unix runner. |
-| Existing frontend CI | Type checking, unit tests, extractor regressions, pin checks and license generation passed remotely. |
-| OCR component verification | 67 OCR unit tests and 16 Chromium scenarios passed with no captured page errors on `190099da`; OCR source is unchanged in `4e55d839`. Desktop and compact screenshots were inspected. |
+| Type checking | `npm run check`: zero errors and 54 existing warnings at the passing recovery checkpoint. |
+| Frontend unit tests | 201 tests in 30 files passed at `34134db4`. |
+| Production bundle | `npx vite build` passed for the first complete workflow increment. |
+| Full-app browser execution | [48 of 48 passed at `96813ae2`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42784281098); [57 of 57 passed at `34134db4`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42799789873). |
+| Native desktop CI | [Linux, Windows and macOS passed at `96813ae2`](https://github.com/CrispStrobe/CrispSorter/actions/runs/42784281278). Linux reported 1,646 passed and 46 ignored, including the filtered-search candidate-window regression. |
+| Isolated duplicate guard | All five filesystem tests passed on the remote Unix runner, including at `34134db4`. |
+| Other existing CI | Frontend tests, extractor regressions, pin checks, license generation and enabled cloud/facade checks passed for the first complete workflow increment. |
+| OCR component verification | 67 OCR unit tests and 16 Chromium scenarios passed with no captured page errors; OCR source is unchanged by the recovery increment. Desktop and compact screenshots were inspected. |
 | Local browser execution | Blocked: Chromium could not create a socket under the workspace permissions. Discovery is not a browser pass. |
-| Local Rust execution | Not run: no Rust toolchain was available. |
+| Local Rust execution | Not available: native compilation and execution use the repository's remote CI. |
 
-The new [Workflow UX verification job](../.github/workflows/workflow-ux.yml)
+The [Workflow UX verification job](../.github/workflows/workflow-ux.yml)
 runs frontend checks/tests, Chromium browser regressions, and five standalone
 native duplicate filesystem-guard tests on its Unix runner. Those standalone
 tests use a deterministic hash callback to exercise filesystem invariants; the
 application command supplies streaming SHA-256. They do not require the complete
-application/model build. Native search regression tests are also present,
-including a matching document beyond the first candidate window; their execution
-remains pending the full native CI environment.
+application/model build. Full native CI additionally compiles the application and
+runs the actual search and batch-session persistence regressions.
 
-Browser tests use explicit IPC fixtures to exercise draft recovery, hidden
-selections, duplicate failures, complete search restoration, stale responses,
-bookmark persistence and keyboard/focus behavior. They do not establish native
-filesystem correctness, model accuracy or physical-device behavior. The frontend
-bundle is not a packaged desktop/mobile release.
+Browser tests use explicit IPC fixtures to exercise persisted state, failure and
+retry behavior, cancellation, hidden selections, draft recovery, duplicate
+failures, complete search restoration, stale responses and keyboard/focus
+behavior. Phone tests check inner-panel geometry as well as the viewport, and
+save screenshots for visual inspection. They do not establish native filesystem
+correctness, model accuracy or physical-device behavior. The frontend bundle is
+not a packaged desktop/mobile release.
 
 ## Limits and prioritized follow-ups
 
-1. **Complete execution qualification before merging.** Review the latest browser
-   and native CI results, particularly the native search-filter fixture. Real
-   platform checks remain necessary for filesystem and
-   desktop/mobile behavior beyond the fixture-backed UI.
+1. **Review the latest commit before merging.** Each follow-up runs the browser
+   and native checks again. Real-device checks remain necessary for file pickers,
+   platform permissions, cloud providers and desktop/mobile behavior beyond the
+   fixture-backed UI.
 2. **Measure selective search on large libraries.** The new search path reuses one
    query/searcher snapshot, doubles the explored ranked prefix, and hydrates
    newly exposed candidates in batches of at most 512 IDs. A rare metadata filter
