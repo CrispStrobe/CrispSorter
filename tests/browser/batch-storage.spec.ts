@@ -107,7 +107,7 @@ test('a file arriving during another batch write is queued instead of lost', asy
         batchManager.isUpdatingBatch = true;
         root.__arrivalSettled = false;
         root.__arrival = batchManager.addItem('/fixtures/watched.pdf', 'watched.pdf', 20)
-            .then(added => { root.__arrivalSettled = true; return added; });
+            .then((added: boolean) => { root.__arrivalSettled = true; return added; });
     });
     expect(await page.evaluate(() => (window as any).__arrivalSettled)).toBe(false);
     expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'batch_session_upsert_items_bulk'))).toHaveLength(0);

@@ -5,7 +5,7 @@
     import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { save } from '@tauri-apps/plugin-dialog';
     import { writeFile } from '@tauri-apps/plugin-fs';
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
     import { i18n } from '$lib/i18n.svelte';
     import { searchLabels } from '$lib/search/labels';
@@ -335,7 +335,9 @@
 
     async function runFederatedSearch() {
         const q = query.trim();
-        if (!q || !validateFilters()) return;
+        if (!q) return;
+        revealResultsOnNarrowScreen();
+        if (!validateFilters()) return;
         // The current remote federation wire paths do not carry these
         // options. Never silently broaden an explicitly filtered search.
         if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length
@@ -665,17 +667,38 @@
     // Right-side slide-in pane using the universal DocumentViewer component.
     // Format detection + rendering is handled entirely by the viewer.
     let previewing = $state<SearchResult | null>(null);
+    let previewCloseButton = $state<HTMLButtonElement>();
+    let previewTrigger: HTMLButtonElement | null = null;
 
-    function openPreview(r: SearchResult) {
-        if (previewing && previewing.doc_id === r.doc_id) { closePreview(); return; }
+    async function openPreview(r: SearchResult, trigger: HTMLButtonElement) {
+        if (previewing && previewing.doc_id === r.doc_id) { await closePreview(); return; }
+        previewTrigger = trigger;
         previewing = r;
+        await tick();
+        // Narrow screens show the preview in place of the result list. Move
+        // focus to its close control instead of leaving it on a hidden trigger.
+        if (previewing?.doc_id === r.doc_id && window.matchMedia('(max-width: 800px)').matches) {
+            previewCloseButton?.focus({ preventScroll: true });
+        }
     }
 
-    function closePreview() {
+    async function closePreview() {
+        const trigger = previewTrigger;
         previewing = null;
+        previewTrigger = null;
+        await tick();
+        if (trigger?.isConnected) trigger.focus();
+    }
+
+    function revealResultsOnNarrowScreen() {
+        if (window.matchMedia('(max-width: 800px)').matches) {
+            previewing = null;
+            previewTrigger = null;
+        }
     }
 
     async function findByField(tag: string, value: string) {
+        revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         resetFilters(); searchNotice = ''; displayedRecipeKey = null; imageSearchLoading = false;
         loading = true; error = ''; searched = true;
@@ -930,7 +953,9 @@
     // ── Search ─────────────────────────────────────────────────────────────────
 
     async function runSearch() {
-        if (!query.trim() || !validateFilters()) return;
+        if (!query.trim()) return;
+        revealResultsOnNarrowScreen();
+        if (!validateFilters()) return;
         const request = ++searchRequest;
         const recipe = currentRecipe();
         imageSearchLoading = false;
@@ -1006,6 +1031,7 @@
     let similarHeader = $state('');
 
     async function findSimilar(r: SearchResult) {
+        revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         displayedRecipeKey = null; imageSearchLoading = false;
         loading = true;
@@ -1092,6 +1118,7 @@
         const imagePath = typeof selected === 'string' ? selected : (selected as any).path;
         if (!imagePath) return;
 
+        revealResultsOnNarrowScreen();
         const request = ++searchRequest;
         displayedRecipeKey = null;
         loading = true; imageSearchLoading = true;
@@ -1122,7 +1149,9 @@
     // alongside FTS — true hybrid retrieval.
     async function runRemoteSearch() {
         const q = query.trim();
-        if (!q || !validateFilters()) return;
+        if (!q) return;
+        revealResultsOnNarrowScreen();
+        if (!validateFilters()) return;
         const recipe = currentRecipe();
         const f = recipe.filters;
         if (f.audioMin != null || f.audioMax != null || f.cameraMake || f.cameraModel || f.fuzzy
@@ -1239,6 +1268,7 @@
     }
 
     function clearSearch() {
+        revealResultsOnNarrowScreen();
         searchRequest += 1;
         dismissResultActionFeedback();
         loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
@@ -2017,18 +2047,17 @@
 
             {#each displayedGroups as group (group.doc_id)}
                 {@const r = group.best}
+                {@const resultName = r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
+                {@const chunksId = `library-result-chunks-${encodeURIComponent(group.doc_id)}`}
                 <div class="result-card">
                     <!-- Doc header -->
-                    <div class="result-header"
-                        role="button" tabindex="0"
-                        onclick={() => toggleExpand(group.doc_id)}
-                        onkeydown={e => e.key === 'Enter' && toggleExpand(group.doc_id)}>
+                    <div class="result-header">
 
                         <div class="ext-badge ext-{(r.ext ?? '').toLowerCase()}">{(r.ext ?? '?').toUpperCase()}</div>
 
                         <div class="result-meta">
                             <span class="result-title">
-                                {r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
+                                {resultName}
                             </span>
                             {#if r.author || r.year}
                                 <span class="result-byline">{r.author ?? ''}{r.author && r.year ? ' · ' : ''}{r.year ?? ''}</span>
@@ -2042,28 +2071,39 @@
                             <span class="result-path" title={r.location_uri}>{r.filename ?? r.location_uri}</span>
                         </div>
 
-                        <div class="result-right">
+                        <div class="result-right" role="group" aria-label={i18n.lang === 'de' ? `Aktionen für ${resultName}` : `Actions for ${resultName}`}>
                             <div class="score-wrap" title="Score {r.score.toFixed(4)}">
                                 <div class="score-bar"><div class="score-fill" style="width:{scoreBarPct(r.score)}%"></div></div>
                                 <span class="score-label">{r.score.toFixed(3)}</span>
                             </div>
                             {#if group.chunks.length > 1}
-                                <span class="chunk-count">{group.chunks.length} Chunks</span>
+                                <button type="button" class="expand-result"
+                                    aria-expanded={expanded.has(group.doc_id)} aria-controls={chunksId}
+                                    aria-label={i18n.lang === 'de'
+                                        ? `${group.chunks.length} passende Textstellen für ${resultName}`
+                                        : `${group.chunks.length} matching passages for ${resultName}`}
+                                    onclick={() => toggleExpand(group.doc_id)}>
+                                    {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
+                                    {group.chunks.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
+                                </button>
                             {/if}
                             <button class="open-btn"
                                 class:active={previewing && previewing.doc_id === group.doc_id}
-                                onclick={(e) => { e.stopPropagation(); openPreview(r); }}
+                                aria-pressed={previewing?.doc_id === group.doc_id}
+                                onclick={(e) => { e.stopPropagation(); void openPreview(r, e.currentTarget); }}
                                 title="Vorschau (Preview)">
                                 <Eye size={13} />
                             </button>
                             <button class="open-btn"
                                 class:active={compareResults.some((item) => item.doc_id === r.doc_id)}
+                                aria-pressed={compareResults.some((item) => item.doc_id === r.doc_id)}
                                 onclick={(e) => { e.stopPropagation(); toggleCompare(r); }}
                                 title="Compare with another result">
                                 ⇄
                             </button>
                             <button class="open-btn"
                                 class:active={batchSelection.has(r.doc_id)}
+                                aria-pressed={batchSelection.has(r.doc_id)}
                                 onclick={(e) => { e.stopPropagation(); toggleBatchSelection(r); }}
                                 title={batchSelection.has(r.doc_id) ? 'Remove from batch selection' : 'Select for batch sorter'}>
                                 <ListPlus size={13} />
@@ -2180,9 +2220,6 @@
                                 title="Add to reading list">
                                 ★
                             </button>
-                            {#if group.chunks.length > 1}
-                                {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
-                            {/if}
                         </div>
                     </div>
 
@@ -2412,8 +2449,8 @@
                     {/if}
 
                     <!-- Expanded: all chunks -->
-                    {#if expanded.has(group.doc_id) && group.chunks.length > 1}
-                        <div class="chunk-list">
+                    {#if group.chunks.length > 1}
+                        <div class="chunk-list" id={chunksId} hidden={!expanded.has(group.doc_id)}>
                             {#each group.chunks as chunk (chunk.chunk_index)}
                                 <div class="chunk-item">
                                     <span class="chunk-idx">#{chunk.chunk_index + 1}</span>
@@ -2442,13 +2479,15 @@
     </div>
 
     {#if previewing}
-        <aside class="preview-pane">
+        <aside class="preview-pane" aria-label={i18n.lang === 'de' ? 'Dokumentvorschau' : 'Document preview'}>
             <header class="preview-header">
                 <span class="preview-title" title={previewing.location_uri}>
                     {previewing.title || previewing.filename || (previewing.doc_id.slice(0, 24) + '…')}
                 </span>
-                <button class="preview-close" onclick={closePreview} title="Vorschau schließen">
+                <button class="preview-close" bind:this={previewCloseButton} onclick={closePreview}
+                    title="Vorschau schließen" aria-label={i18n.lang === 'de' ? 'Vorschau schließen' : 'Close preview'}>
                     <X size={14} />
+                    <span class="preview-close-label">{i18n.lang === 'de' ? 'Schließen' : 'Close preview'}</span>
                 </button>
             </header>
             {#if localPathFromSearchUri(previewing.location_uri)}
@@ -2705,7 +2744,7 @@
     .search-root {
         display: flex; flex-direction: column; height: 100%;
         background: #09090b; color: #fafafa; padding: 20px;
-        box-sizing: border-box; gap: 12px; overflow: hidden;
+        box-sizing: border-box; gap: 12px; overflow: hidden; min-width: 0; min-height: 0;
     }
 
     .search-help { margin: 0; font-size: .78rem; color: #a1a1aa; }
@@ -2801,13 +2840,13 @@
         flex: 1;
         gap: 12px;
         overflow: hidden;
-        min-height: 0;
+        min-height: 0; min-width: 0;
     }
     .results-area.with-preview { flex: 1; min-width: 0; }
     .preview-pane {
-        flex: 1;
+        flex: 1 1 360px;
         max-width: 50%;
-        min-width: 360px;
+        min-width: 0; min-height: 0;
         display: flex;
         flex-direction: column;
         background: #18181b;
@@ -2817,13 +2856,14 @@
     }
     .preview-header {
         display: flex; align-items: center; justify-content: space-between;
+        flex-shrink: 0; min-width: 0;
         padding: 8px 12px;
         background: #27272a;
         border-bottom: 1px solid #3f3f46;
         font-size: 0.85rem;
     }
     .preview-title {
-        flex: 1;
+        flex: 1; min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -2833,14 +2873,18 @@
     }
     .preview-close {
         background: none; border: none; cursor: pointer;
-        color: #a1a1aa; padding: 2px;
+        color: #a1a1aa; padding: 4px; display: inline-flex; align-items: center;
+        justify-content: center; gap: 5px; flex-shrink: 0; min-width: 32px; min-height: 32px;
     }
+    .preview-close-label { display: none; font-size: .75rem; }
     .preview-close:hover { color: #fafafa; }
     .preview-body {
-        flex: 1;
+        flex: 1; min-width: 0; min-height: 0;
         overflow: auto;
+        overflow-wrap: anywhere;
         background: #0a0a0c;
     }
+    .preview-body :global(.document-viewer) { min-height: 240px; }
     .preview-body object { display: block; width: 100%; height: 100%; border: 0; }
     .preview-image {
         max-width: 100%;
@@ -2876,16 +2920,16 @@
         font-weight: 500;
     }
 
-    .query-bar { display: flex; gap: 8px; align-items: center; }
+    .query-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0; min-width: 0; }
     .query-input-wrap {
-        flex: 1; display: flex; align-items: center; gap: 8px;
+        flex: 1 1 240px; display: flex; align-items: center; gap: 8px; min-width: 0;
         background: #18181b; border: 1px solid #3f3f46; border-radius: 8px; padding: 0 10px;
         transition: border-color 0.2s;
     }
     .query-input-wrap:focus-within { border-color: #3b82f6; }
     :global(.query-icon) { color: #71717a; flex-shrink: 0; }
     .query-input {
-        flex: 1; background: transparent; border: none; outline: none;
+        flex: 1; min-width: 0; background: transparent; border: none; outline: none;
         color: #fafafa; font-size: 0.9375rem; padding: 10px 0;
     }
     .query-input::placeholder { color: #52525b; }
@@ -2925,7 +2969,7 @@
         color: white; padding: 5px 8px; font-size: 0.8125rem;
     }
 
-    .results-area { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .results-area { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 
     .state-msg { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #71717a; text-align: center; }
     .state-msg.error { color: #f87171; }
@@ -2954,15 +2998,14 @@
     @media (max-width: 700px) { .compare-columns { grid-template-columns: 1fr; } }
 
     .result-card {
-        background: #18181b; border: 1px solid #27272a; border-radius: 8px; overflow: hidden;
+        background: #18181b; border: 1px solid #27272a; border-radius: 8px; overflow: hidden; flex-shrink: 0; min-width: 0; overflow-wrap: anywhere;
     }
     .result-card:hover { border-color: #3f3f46; }
 
     .result-header {
-        display: flex; align-items: flex-start; gap: 10px;
-        padding: 12px 14px; cursor: pointer; user-select: none;
+        display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+        padding: 12px 14px;
     }
-    .result-header:hover { background: #1c1c1f; }
 
     .ext-badge {
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;
@@ -2975,26 +3018,30 @@
     .ext-txt  { background: #44403c33; color: #d6d3d1; }
     .ext-epub { background: #4c1d9533; color: #c4b5fd; }
 
-    .result-meta { flex: 1; min-width: 0; }
-    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; }
-    .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; }
+    .result-meta { flex: 1 1 160px; min-width: 0; }
+    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere; }
+    .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; overflow-wrap: anywhere; }
     .result-path { display: block; font-size: 0.72rem; color: #52525b; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    .result-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .result-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 0 1 auto; min-width: 0; max-width: 100%; }
     .score-wrap { display: flex; align-items: center; gap: 5px; }
     .score-bar { width: 40px; height: 4px; background: #27272a; border-radius: 2px; }
     .score-fill { height: 100%; background: #3b82f6; border-radius: 2px; }
     .score-label { font-size: 0.7rem; color: #71717a; font-variant-numeric: tabular-nums; }
-    .chunk-count { font-size: 0.7rem; color: #52525b; white-space: nowrap; }
+    .expand-result { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 7px;
+        border: 1px solid #3f3f46; border-radius: 5px; background: transparent; color: #a1a1aa; font-size: .75rem; cursor: pointer; }
+    .expand-result:hover { color: #93c5fd; border-color: #3b82f6; }
 
-    .open-btn { background: none; border: none; color: #52525b; cursor: pointer; padding: 4px; border-radius: 4px; }
+    .open-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px;
+        background: none; border: none; color: #a1a1aa; cursor: pointer; padding: 4px; border-radius: 4px; }
     .open-btn:hover { color: #3b82f6; background: #3b82f622; }
     .open-btn.danger-btn:hover { color: #ef4444; background: #ef444422; }
+    .open-btn:focus-visible, .expand-result:focus-visible, .preview-close:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
 
     .chunk-preview {
         padding: 8px 14px 12px 52px;
         font-size: 0.8rem; color: #a1a1aa; line-height: 1.55;
-        border-top: 1px solid #1c1c1f;
+        border-top: 1px solid #1c1c1f; overflow-wrap: anywhere;
     }
     .chunk-preview.no-snippet { color: #52525b; font-style: italic; }
 
@@ -3067,10 +3114,22 @@
     }
     .chunk-item:last-child { border-bottom: none; }
     .chunk-idx { font-size: 0.7rem; color: #52525b; flex-shrink: 0; width: 24px; padding-top: 2px; }
-    .chunk-text { flex: 1; font-size: 0.78rem; color: #a1a1aa; line-height: 1.45; }
+    .chunk-text { flex: 1; min-width: 0; font-size: 0.78rem; color: #a1a1aa; line-height: 1.45; overflow-wrap: anywhere; }
     .chunk-score { font-size: 0.7rem; color: #52525b; flex-shrink: 0; }
     .chunk-compare { border: 1px solid #3f3f46; border-radius: 4px; padding: 2px 5px; color: #a1a1aa; background: transparent; cursor: pointer; flex-shrink: 0; }
     .chunk-compare.active { color: #93c5fd; border-color: #2563eb; background: #1e3a8a33; }
+
+    @media (max-width: 800px) {
+        .search-root { padding: 12px; gap: 10px; }
+        .query-input-wrap { flex-basis: 100%; }
+        .query-input { font-size: 1rem; }
+        .result-right { flex-basis: 100%; }
+        .open-btn, .expand-result, .preview-close { min-width: 44px; min-height: 44px; }
+        .chunk-preview, .translate-surface { padding-left: 14px; }
+        .results-area.with-preview { display: none; }
+        .preview-pane { flex: 1; width: 100%; max-width: 100%; }
+        .preview-close-label { display: inline; }
+    }
 
     :global(mark) { background: #854d0e55; color: #fbbf24; border-radius: 2px; padding: 0 1px; }
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
