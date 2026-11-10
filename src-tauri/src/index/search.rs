@@ -2,14 +2,14 @@
 ///
 /// `SearchEngine` holds references to both indexes and the embedder.
 /// The three public methods cover all search modes exposed in the UI.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 
 use super::embedder::Embedder;
-use super::fts_index::FtsIndex;
+use super::fts_index::{FtsHit, FtsIndex};
 use super::local_index::LocalIndex;
 use super::reranker::RerankerHandle;
 use super::schema::{SearchFilters, SearchResult};
@@ -381,6 +381,61 @@ impl SearchEngine {
         }
     }
 
+    /// Tantivy indexes the text and owner; Lance owns the rest of the metadata.
+    /// Filter ranked pages before hydration/fusion, continuing until enough
+    /// matching documents are found or the full-text channel is exhausted.
+    async fn filtered_fts_hits(
+        &self,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<FtsHit>> {
+        if limit == 0 { return Ok(Vec::new()); }
+        let Some(sql) = filters.to_lance_sql() else {
+            return self.fts.search(query, filters, limit);
+        };
+        let fts = self.fts.clone();
+        let query = query.to_owned();
+        let fts_filters = filters.clone();
+        let prepared = Arc::new(tokio::task::spawn_blocking(move || {
+            fts.prepare_search(&query, &fts_filters)
+        }).await??);
+        let total_documents = prepared.doc_count();
+        let mut offset = 0usize;
+        let mut matches = Vec::with_capacity(limit);
+        let mut seen = HashSet::new();
+        while offset < total_documents {
+            // Double the explored prefix each time. Fixed-size TopDocs pages
+            // repeatedly recollect increasingly long prefixes; doubling uses
+            // logarithmically many collections and parses the query only once.
+            let page_size = offset.max(limit.clamp(128, 512))
+                .min(total_documents - offset);
+            let prepared_page = prepared.clone();
+            let page = tokio::task::spawn_blocking(move || {
+                prepared_page.search_page(page_size, offset)
+            }).await??;
+            let exhausted = page.len() < page_size;
+            offset += page.len();
+            if page.is_empty() { break; }
+            // Keep Lance predicates/hydration bounded even when the ranked
+            // candidate prefix grows large for a selective metadata filter.
+            for batch in page.chunks(512) {
+                let ids: Vec<String> = batch.iter().map(|hit| hit.doc_id.clone()).collect();
+                let allowed: HashSet<String> = self.vector
+                    .fetch_search_results_by_ids_filtered(&ids, Some(&sql)).await?
+                    .into_iter().map(|hit| hit.doc_id).collect();
+                for hit in batch {
+                    if allowed.contains(&hit.doc_id) && seen.insert(hit.doc_id.clone()) {
+                        matches.push(hit.clone());
+                        if matches.len() == limit { return Ok(matches); }
+                    }
+                }
+            }
+            if exhausted { break; }
+        }
+        Ok(matches)
+    }
+
     // ── Text-only search ───────────────────────────────────────────────────
 
     /// BM25 full-text search via Tantivy, then hydrate metadata from LanceDB.
@@ -403,7 +458,7 @@ impl SearchEngine {
         if filters.fuzzy {
             effective_query = super::fts_query::fuzzify_query(&effective_query);
         }
-        let hits = self.fts.search(&effective_query, filters, inner_limit)?;
+        let hits = self.filtered_fts_hits(&effective_query, filters, inner_limit).await?;
         if hits.is_empty() {
             return Ok(vec![]);
         }
@@ -494,7 +549,6 @@ impl SearchEngine {
         // *2 multiplier still applies on top so RRF has slack on each side.
         let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
 
-        let fts_clone = self.fts.clone();
         let vec_clone = self.vector.clone();
         let mut q_owned = if filters.synonyms {
             super::synonyms::synonym_expand_query(query_text)
@@ -508,18 +562,16 @@ impl SearchEngine {
         let filters_vec = filters.clone();
         let emb_clone = embedding.clone();
 
-        let fts_task = tokio::spawn(async move {
-            fts_clone.search(&q_owned, &filters_fts, inner_limit * 2)
-        });
+        let fts_task = self.filtered_fts_hits(&q_owned, &filters_fts, inner_limit * 2);
         let vec_task = tokio::spawn(async move {
             vec_clone
                 .search_vector(&emb_clone, &filters_vec, inner_limit * 2)
                 .await
         });
 
-        let (fts_result, vec_result) = tokio::try_join!(fts_task, vec_task)?;
+        let (fts_result, vec_result) = tokio::join!(fts_task, vec_task);
         let fts_hits = fts_result?;
-        let vec_hits = vec_result?;
+        let vec_hits = vec_result??;
 
         // Optional 3rd modality: BGE-M3 / SPLADE sparse retrieval, scored on
         // the union of FTS+ANN candidates. Cheap (no extra DB scan beyond
@@ -1429,4 +1481,112 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].score, 0.5);
     }
+    fn filtered_search_chunk(
+        doc_id: &str,
+        chunk_index: i32,
+        indexed_at: i64,
+        full_text: Option<&str>,
+        embedding: Option<Vec<f32>>,
+        model_id: Option<&str>,
+    ) -> super::super::schema::DocumentChunk {
+        super::super::schema::DocumentChunk {
+            id: crate::index::ingest::chunk_row_id(doc_id, chunk_index),
+            doc_id: doc_id.to_owned(),
+            location_uri: format!("crisp+local://owner@m1/{doc_id}.txt"),
+            owner_id: "owner".to_owned(),
+            filename: Some(format!("{doc_id}.txt")),
+            title: Some(format!("Title-{doc_id}")),
+            author: None,
+            year: None,
+            ext: Some("txt".into()),
+            language: Some("en".into()),
+            page_count: None,
+            headings_text: None,
+            full_text: full_text.map(|s| s.to_owned()),
+            full_text_md: full_text.map(|s| s.to_owned()),
+            embedding,
+            embedding_sparse: None,
+            embedding_model: model_id.map(|s| s.to_owned()),
+            chunk_index,
+            chunk_total: if chunk_index < 0 { 0 } else { 1 },
+            chunk_start_char: None,
+            chunk_end_char: None,
+            indexed_at,
+            source_hash: format!("hash-{doc_id}"),
+            tags: vec![],
+            metadata_json: None,
+            parent_dir: Some("/data".into()),
+            volume_id: None,
+            text_translated: None,
+            text_translated_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
+            url: None,
+            embedding_omni: None,
+            embedding_vit: None,
+            summary: None,
+            doc_status: None,
+        }
+    }
+
+
+    /// A matching document below the first 128 BM25 candidates must still be
+    /// found, and a full-text channel must not leak out-of-filter documents.
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_text_filters_continue_past_first_page_and_apply_before_limit() {
+        use super::super::fts_index::TantivyInput;
+        let fts_dir = tempfile::TempDir::new().unwrap();
+        let lance_dir = tempfile::TempDir::new().unwrap();
+        let fts = Arc::new(FtsIndex::open_or_create(fts_dir.path()).unwrap());
+        let vector = Arc::new(LocalIndex::open_or_create(lance_dir.path(), 4).await.unwrap());
+        let mut writer = fts.writer().unwrap();
+        let ids: Vec<String> = (0..260).map(|i| format!("document-{i}")).collect();
+        for id in &ids {
+            fts.add_document(&mut writer, TantivyInput {
+                doc_id: id, owner_id: "owner", language: "en", title: "Warranty",
+                headings: "", body: "warranty standard coverage", body_translated: None,
+            }).unwrap();
+        }
+        writer.commit().unwrap();
+        let ranked = fts.search("warranty", &SearchFilters::default(), 260).unwrap();
+        let target = ranked[200].doc_id.clone();
+        let mut chunks: Vec<_> = ids.iter().map(|id| {
+            filtered_search_chunk(id, 0, 1, Some("warranty standard coverage"), None, None)
+        }).collect();
+        let selected = chunks.iter_mut().find(|row| row.doc_id == target).unwrap();
+        selected.ext = Some("pdf".into());
+        selected.language = Some("de".into());
+        selected.year = Some(2024);
+        selected.tags = vec!["approved".into()];
+        vector.ingest_batch(&chunks).await.unwrap();
+        let engine = SearchEngine::new(fts, vector, None);
+        let mut filters = SearchFilters {
+            ext: vec!["pdf".into()], language: Some("de".into()),
+            year_min: Some(2020), year_max: Some(2025), tag: Some("approved".into()),
+            parent_dir_prefix: Some("/data".into()), ..Default::default()
+        };
+        let found = engine.search_text("warranty", &filters, 1).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].doc_id, target);
+        // This same filtered FTS entry point is used before hybrid fusion.
+        let ranked_filtered = engine.filtered_fts_hits("warranty", &filters, 2).await.unwrap();
+        assert_eq!(ranked_filtered.len(), 1);
+        assert_eq!(ranked_filtered[0].doc_id, target);
+        filters.doc_id_scope = vec![ranked[0].doc_id.clone()];
+        assert!(engine.search_text("warranty", &filters, 1).await.unwrap().is_empty());
+        filters.doc_id_scope.clear();
+        filters.tag = Some("missing".into());
+        assert!(engine.search_text("warranty", &filters, 1).await.unwrap().is_empty());
+    }
+
 }
