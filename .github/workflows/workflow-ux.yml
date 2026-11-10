@@ -3,9 +3,18 @@ name: Workflow UX verification
 on:
   push:
     branches: [feat/ux-workflow-essentials]
+    paths:
+      - src/**
+      - src-tauri/**
+      - tests/browser/**
+      - package.json
+      - package-lock.json
+      - playwright.config.ts
+      - .github/workflows/workflow-ux.yml
   pull_request:
     paths:
       - src/**
+      - src-tauri/**
       - tests/browser/**
       - package.json
       - package-lock.json

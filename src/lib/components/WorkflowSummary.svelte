@@ -3,6 +3,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { batchManager } from '$lib/batch/store.svelte';
     import { inWorkflow } from '$lib/workflow';
+    import { i18n } from '$lib/i18n.svelte';
     let { navigate }: { navigate: (tab: string) => void } = $props();
     const inbox = $derived(batchManager.items.filter(i => inWorkflow(i, 'inbox')).length);
     const review = $derived(batchManager.items.filter(i => inWorkflow(i, 'review') && !i.isAccepted).length);
@@ -19,11 +20,11 @@
         return () => { cancelled = true; clearInterval(timer); };
     });
 </script>
-<div class="workflow-summary" aria-label="Work remaining">
-    <button onclick={() => navigate('batch')}>Inbox · {inbox}</button>
-    <button onclick={() => navigate('review')}>{review} files need review</button>
-    {#if failed}<button onclick={() => { batchManager.filterStatus = 'error'; navigate('batch'); }}>{failed} processing failures</button>{/if}
-    {#if filenamesOnly != null && filenamesOnly > 0}<button onclick={() => navigate('catalog')}>{filenamesOnly} files have filenames indexed only</button>{/if}
+<div class="workflow-summary" aria-label={i18n.lang === 'de' ? 'Offene Aufgaben' : 'Work remaining'}>
+    <button onclick={() => { batchManager.resetFilters(); navigate('batch'); }}>{i18n.t.nav.batch} · {inbox}</button>
+    <button onclick={() => { batchManager.resetFilters(); navigate('review'); }}>{review} {i18n.lang === 'de' ? 'Dateien benötigen Prüfung' : 'files need review'}</button>
+    {#if failed}<button onclick={() => { batchManager.resetFilters('error'); navigate('batch'); }}>{failed} {i18n.lang === 'de' ? 'Verarbeitungsfehler' : 'processing failures'}</button>{/if}
+    {#if filenamesOnly != null && filenamesOnly > 0}<button onclick={() => navigate('catalog')}>{filenamesOnly} {i18n.lang === 'de' ? 'Dateien nur mit Dateinamen indexiert' : 'files have filenames indexed only'}</button>{/if}
 </div>
 <style>
     .workflow-summary { display: flex; gap: 8px; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #3f3f46; }

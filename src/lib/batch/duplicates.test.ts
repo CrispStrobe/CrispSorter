@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-    deleteVerifiedCopies, deletionWasConfirmed, DUPLICATE_MAX_BYTES,
+    deleteVerifiedCopies, DUPLICATE_MAX_BYTES,
     findVerifiedDuplicates, type DuplicateSource, type VerifiedDuplicateGroup,
 } from './duplicates';
 
@@ -106,11 +106,4 @@ describe('duplicate cleanup', () => {
         expect(deleteFile).not.toHaveBeenCalledWith('/in/keeper.pdf');
     });
 
-    it('requires explicit native confirmation for the exact deleted path', () => {
-        const path = '/in/copy.pdf';
-        expect(deletionWasConfirmed(path, [`Deleted: ${path}`])).toBe(true);
-        for (const response of [null, [], ['Error deleting /in/copy.pdf: Permission denied'], ['Deleted: /different.pdf'], ['Deleted: /in/copy.pdf', 'Error']]) {
-            expect(deletionWasConfirmed(path, response)).toBe(false);
-        }
-    });
 });

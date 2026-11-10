@@ -20,6 +20,7 @@ import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
 import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
+import { reviewDrafts } from './reviewDrafts.svelte';
 import { findVerifiedDuplicates } from './duplicates';
 
 export interface ProcessOverrides {
@@ -69,10 +70,17 @@ export class BatchManager {
     isProcessing = $state(false);
     isExecuting = $state(false);
     isCleaningDuplicates = $state(false);
+    isUpdatingBatch = $state(false);
     searchQuery = $state('');
     filterExtension = $state('all');
     filterStatus = $state('all');
     filterMinSize = $state(0);
+    resetFilters(status = 'all') {
+        this.searchQuery = '';
+        this.filterExtension = 'all';
+        this.filterStatus = status;
+        this.filterMinSize = 0;
+    }
     isMetadataExtractionEnabled = $state(true);
     /** Live worker counts -- bound to the bottom-left throughput chip
      *  in +page.svelte. Updated as workers enter / leave their critical
@@ -93,12 +101,13 @@ export class BatchManager {
 
     filteredItems = $derived.by(() => {
         return this.items.filter(item => {
-            const matchesSearch = item.originalName.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
-                                item.suggestedTitle?.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
-                                item.suggestedAuthor?.toLowerCase().includes(this.searchQuery.toLowerCase());
+            const query = this.searchQuery.trim().toLowerCase();
+            const matchesSearch = item.originalName.toLowerCase().includes(query) ||
+                                item.suggestedTitle?.toLowerCase().includes(query) ||
+                                item.suggestedAuthor?.toLowerCase().includes(query);
             const matchesExt = this.filterExtension === 'all' || item.extension.toLowerCase() === this.filterExtension.toLowerCase();
             const matchesStatus = this.filterStatus === 'all' || item.status === this.filterStatus;
-            const matchesSize = item.size >= this.filterMinSize * 1024;
+            const matchesSize = item.size >= Math.max(0, this.filterMinSize || 0) * 1024;
             return matchesSearch && matchesExt && matchesStatus && matchesSize;
         });
     });
@@ -161,26 +170,37 @@ export class BatchManager {
     }
 
     async removeItems(ids: string[]) {
+        if (reviewDrafts.applyingId || this.isUpdatingBatch) throw new Error('Wait for the current batch changes to finish.');
+        this.isUpdatingBatch = true;
         flog('info', 'Removing ' + ids.length + ' item(s) from batch...');
-        this.items = this.items.filter(i => !ids.includes(i.id));
         try {
             await deleteItems(ids);
+            this.items = this.items.filter(i => !ids.includes(i.id));
+            reviewDrafts.discard(ids);
             flog('info', 'Removed ' + ids.length + ' item(s) from SQLite.');
         } catch (e: any) {
             flog('error', 'Failed to remove items from SQLite: ' + (e.message || e));
+            throw e;
+        } finally {
+            this.isUpdatingBatch = false;
         }
     }
 
     async clear() {
-        if (this.isProcessing) return;
+        if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        this.isUpdatingBatch = true;
         const count = this.items.length;
         flog('info', 'Clearing batch (' + count + ' items)...');
-        this.items = [];
         try {
             await clearBatch();
+            reviewDrafts.discard(this.items.map(item => item.id));
+            this.items = [];
             flog('info', 'Batch cleared in SQLite.');
         } catch (e: any) {
             flog('error', 'Failed to clear batch in SQLite: ' + (e.message || e));
+            throw e;
+        } finally {
+            this.isUpdatingBatch = false;
         }
     }
 
@@ -222,6 +242,7 @@ export class BatchManager {
      *  Useful when the user wants to re-run with a different model / prompt
      *  or after manually editing metadata on some items. */
     async resetToQueued(ids?: string[]) {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const targets = ids
             ? this.items.filter(i => ids.includes(i.id))
             : this.items;
@@ -238,6 +259,7 @@ export class BatchManager {
     }
 
     resetStuckItems() {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const changed: BatchItem[] = [];
         for (const item of this.items) {
             if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
@@ -266,6 +288,7 @@ export class BatchManager {
      *  exit; nothing here can leak a subprocess (the Rust side owns
      *  its own scoped tasks). */
     forceReset() {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         flog('warn', 'Force reset — abandoning in-flight workers, lifting stuck items back to queued.');
         // 1. Force-finalize the state machine.  Abort controllers
         // first so any awaiting worker wakes up before we null them.
@@ -294,6 +317,7 @@ export class BatchManager {
     }
 
     async reextractItems(ids: string[], enforceOcr: boolean = false) {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
@@ -310,6 +334,7 @@ export class BatchManager {
     }
 
     async reprocessItems(ids: string[], overrides?: ProcessOverrides) {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
@@ -336,7 +361,7 @@ export class BatchManager {
 
     async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
         flog('info', `processAll started${onlyIds ? ` (${onlyIds.size} items)` : ''}`);
-        if (this.isProcessing || this.isCleaningDuplicates) return;
+        if (this.isProcessing || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         this.isProcessing = true;
         this.stopRequested = false;
         this.llmAbort = new AbortController();
@@ -1111,36 +1136,49 @@ export class BatchManager {
     async recalculateTargetPath(itemId: string, autoAccept = true) {
         const item = this.items.find(i => i.id === itemId);
         if (!item) return;
-        await this.calculateTargetPath(item);
-
-        // Auto-accept on completion: when the user has edited Title +
-        // Author so that neither is a sentinel ("Unknown", "n.n.",
-        // "?", "anonymous", …), flip the green check on automatically.
-        // Year is excluded by user choice — many sources never carry
-        // a year and the sort template tolerates "0000".  Inverse
-        // direction is also covered — if the user edits Title or
-        // Author back to a sentinel, the check flips OFF so sort
-        // can't accidentally include the row.  Reported: "if we
-        // change items metadata per column field or in right side
-        // item view, and complete it, so that no more 'Unknown'
-        // fields, the checkmark should become auto-green … but year
-        // is not that important, unknown/empty year we could ignore".
-        const titleOk  = !isUnknownSentinel(item.suggestedTitle);
-        const authorOk = !isUnknownSentinel(item.suggestedAuthor);
-        const allComplete = titleOk && authorOk;
-        if (autoAccept && allComplete && !item.isAccepted) {
-            item.isAccepted = true;
-            flog('info', `Auto-accepted '${item.originalName}' — Title + Author are non-sentinel.`);
-        } else if (autoAccept && !allComplete && item.isAccepted) {
-            // Same fairness rule in reverse: don't keep a green check
-            // on a row the user just downgraded by reverting Title or
-            // Author to "Unknown".  Prevents an awkward "I unchecked
-            // it implicitly and the next Sortieren still moved the
-            // file" surprise.
-            item.isAccepted = false;
-            flog('info', `Auto-unchecked '${item.originalName}' — Title or Author reverted to a sentinel.`);
+        if (this.isUpdatingBatch || this.isCleaningDuplicates || (reviewDrafts.applyingId && reviewDrafts.applyingId !== itemId)) {
+            throw new Error('Wait for the current batch changes to finish.');
         }
-        await upsertItem(item);
+        const ownsLock = reviewDrafts.applyingId == null;
+        const originalPath = item.originalPath;
+        if (ownsLock) reviewDrafts.applyingId = itemId;
+        try {
+            await this.calculateTargetPath(item);
+            if (this.items.find(candidate => candidate.id === itemId) !== item || item.originalPath !== originalPath) {
+                throw new Error('The document changed while saving. Review it again.');
+            }
+
+            // Auto-accept on completion: when the user has edited Title +
+            // Author so that neither is a sentinel ("Unknown", "n.n.",
+            // "?", "anonymous", …), flip the green check on automatically.
+            // Year is excluded by user choice — many sources never carry
+            // a year and the sort template tolerates "0000".  Inverse
+            // direction is also covered — if the user edits Title or
+            // Author back to a sentinel, the check flips OFF so sort
+            // can't accidentally include the row.  Reported: "if we
+            // change items metadata per column field or in right side
+            // item view, and complete it, so that no more 'Unknown'
+            // fields, the checkmark should become auto-green … but year
+            // is not that important, unknown/empty year we could ignore".
+            const titleOk  = !isUnknownSentinel(item.suggestedTitle);
+            const authorOk = !isUnknownSentinel(item.suggestedAuthor);
+            const allComplete = titleOk && authorOk;
+            if (autoAccept && allComplete && !item.isAccepted) {
+                item.isAccepted = true;
+                flog('info', `Auto-accepted '${item.originalName}' — Title + Author are non-sentinel.`);
+            } else if (autoAccept && !allComplete && item.isAccepted) {
+                // Same fairness rule in reverse: don't keep a green check
+                // on a row the user just downgraded by reverting Title or
+                // Author to "Unknown".  Prevents an awkward "I unchecked
+                // it implicitly and the next Sortieren still moved the
+                // file" surprise.
+                item.isAccepted = false;
+                flog('info', `Auto-unchecked '${item.originalName}' — Title or Author reverted to a sentinel.`);
+            }
+            await upsertItem(item);
+        } finally {
+            if (ownsLock) reviewDrafts.applyingId = null;
+        }
     }
 
     private async calculateTargetPath(item: BatchItem) {
@@ -1221,6 +1259,8 @@ export class BatchManager {
                 }
                 return item;
             });
+            await reviewDrafts.load();
+            reviewDrafts.retainItems(this.items);
             if (this.items.length > 0) {
                 flog('info', 'Resumed ' + this.items.length + ' item(s) from SQLite.');
             } else {
@@ -1236,9 +1276,13 @@ export class BatchManager {
         // cannot both dispatch. Validate again after all asynchronous work.
         if (this.isExecuting) throw new Error('A sort is already running.');
         if (this.isCleaningDuplicates) throw new Error('Duplicate cleanup is still running. Wait before sorting.');
+        if (this.isUpdatingBatch || reviewDrafts.applyingId) throw new Error('Wait for the current batch changes to finish.');
         this.isExecuting = true;
         try {
             const saveTxt = await getSetting('saveTxt', true) as boolean;
+            if (plan.items.some(planned => { const item = this.items.find(candidate => candidate.id === planned.id); return item && reviewDrafts.get(item); })) {
+                throw new Error('Save or discard metadata drafts for accepted files before sorting.');
+            }
             if (!plan.items.length || !sortPlanMatches(plan, this.items, saveTxt)) {
                 throw new Error('The sort plan changed. Review it again before sorting.');
             }
@@ -1334,7 +1378,9 @@ export class BatchManager {
     }
 
     async loadSession(id: string) {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const saved = await getSetting('sessions', {}) as Record<string, BatchSession>;
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const session = saved[id];
         if (session?.items) {
             this.items = session.items;
@@ -1353,11 +1399,13 @@ export class BatchManager {
     }
 
     async importBatch() {
+        if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         const { open } = await import('@tauri-apps/plugin-dialog');
         const { readTextFile } = await import('@tauri-apps/plugin-fs');
         const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] });
         if (typeof path === 'string') {
             const text = await readTextFile(path);
+            if (this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
             const items = JSON.parse(text) as BatchItem[];
             if (Array.isArray(items)) {
                 this.items = items;

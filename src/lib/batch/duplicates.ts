@@ -99,11 +99,6 @@ export async function findVerifiedDuplicates<T extends DuplicateSource>(
     return result;
 }
 
-/** Fail closed when the native delete command reports an error or an unfamiliar response. */
-export function deletionWasConfirmed(path: string, response: unknown): boolean {
-    return Array.isArray(response) && response.length === 1 && response[0] === `Deleted: ${path}`;
-}
-
 /**
  * Delete only other copies, rechecking both the retained file and each target
  * immediately before its delete call. Failed checks/deletes stay in the batch.

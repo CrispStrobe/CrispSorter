@@ -17,7 +17,7 @@ test.beforeEach(async ({ page }) => {
         root.__duplicateConfirm = true;
         root.__duplicateDeleteError = false;
         root.__TAURI_INTERNALS__.invoke = async (command: string, args: any = {}) => {
-            if (['file_sha256', 'delete_files', 'plugin:dialog|message'].includes(command)) {
+            if (['file_sha256', 'delete_duplicate_copy', 'plugin:dialog|message'].includes(command)) {
                 root.__fixtureCalls.push({ command, args });
             }
             if (command === 'file_sha256') {
@@ -25,10 +25,13 @@ test.beforeEach(async ({ page }) => {
                 if (!hash) throw new Error('Permission denied');
                 return hash;
             }
-            if (command === 'delete_files') {
-                return [root.__duplicateDeleteError
-                    ? `Error deleting ${args.paths[0]}: Permission denied`
-                    : `Deleted: ${args.paths[0]}`];
+            if (command === 'delete_duplicate_copy') {
+                if (root.__duplicateDeleteError) throw new Error('Permission denied');
+                if (root.__duplicateNativeError) throw new Error(root.__duplicateNativeError);
+                if (root.__duplicateDeleteGate) {
+                    await new Promise<void>(resolve => { root.__duplicateDeleteResolve = resolve; });
+                }
+                return;
             }
             if (command === 'plugin:dialog|message') return root.__duplicateConfirm ? 'Permanently delete' : 'Cancel';
             return originalInvoke(command, args);
@@ -52,7 +55,7 @@ test('duplicate review uses verified content and distinguishes same-size files',
     await expect(panel.locator('.dupe-group')).toHaveCount(1);
     await expect(panel.locator('.dupe-name')).toHaveText(['original.pdf', 'copy.pdf']);
     await expect(panel).toContainText('SHA-256');
-    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'delete_files'))).toHaveLength(0);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'delete_duplicate_copy'))).toHaveLength(0);
 });
 
 test('unreadable candidates are reported and cannot become false duplicates', async ({ page }) => {
@@ -72,15 +75,15 @@ test('permanent duplicate deletion needs explicit confirmation and keeps the cho
     await page.evaluate(() => { (window as any).__duplicateConfirm = false; });
     await panel.getByRole('button', { name: 'Delete other copies', exact: true }).first().click();
     await expect(panel.getByRole('button', { name: 'Delete other copies', exact: true }).first()).toBeEnabled();
-    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'delete_files'))).toHaveLength(0);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'delete_duplicate_copy'))).toHaveLength(0);
 
     await page.evaluate(() => { (window as any).__duplicateConfirm = true; });
     await panel.getByRole('button', { name: 'Delete other copies', exact: true }).first().click();
     await expect(panel).toContainText('1 copy/copies deleted. The selected file was kept.');
     expect(await page.evaluate(() => (window as any).__duplicateBatchIds())).toEqual(['original', 'unrelated']);
     const calls = await page.evaluate(() => (window as any).__fixtureCalls);
-    const deletion = calls.find((call: any) => call.command === 'delete_files');
-    expect(deletion.args.paths).toEqual(['/fixtures/copy.pdf']);
+    const deletion = calls.find((call: any) => call.command === 'delete_duplicate_copy');
+    expect(deletion.args).toEqual({ keepPath: '/fixtures/original.pdf', path: '/fixtures/copy.pdf', expectedSha256: 'a'.repeat(64) });
     expect(calls.find((call: any) => call.command === 'plugin:dialog|message').args.message)
         .toContain('Keep this file:\n/fixtures/original.pdf');
 });
@@ -103,6 +106,39 @@ test('files changed since duplicate review are rechecked before any deletion', a
     await page.evaluate(() => { (window as any).__duplicateHashes['/fixtures/copy.pdf'] = 'c'.repeat(64); });
     await panel.getByRole('button', { name: 'Delete other copies', exact: true }).first().click();
     await expect(panel.getByRole('alert')).toContainText('File contents changed since verification');
-    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'delete_files'))).toHaveLength(0);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'delete_duplicate_copy'))).toHaveLength(0);
     expect(await page.evaluate(() => (window as any).__duplicateBatchIds())).toEqual(['original', 'copy', 'unrelated']);
+});
+
+test('a native same-file guard failure retains both entries', async ({ page }) => {
+    await page.evaluate(() => { (window as any).__duplicateNativeError = 'These entries refer to the same file. No copy was deleted.'; });
+    await page.getByRole('button', { name: 'Duplicates', exact: true }).click();
+    const panel = page.getByRole('region', { name: 'Identical files', exact: true });
+    await expect(panel.locator('.dupe-group')).toHaveCount(1);
+    await panel.getByRole('button', { name: 'Delete other copies', exact: true }).first().click();
+    await expect(panel.getByRole('alert')).toContainText('These entries refer to the same file');
+    expect(await page.evaluate(() => (window as any).__duplicateBatchIds())).toEqual(['original', 'copy', 'unrelated']);
+});
+
+test('cleanup lock prevents asynchronous reprocessing and session replacement', async ({ page }) => {
+    await page.evaluate(() => { (window as any).__duplicateDeleteGate = true; });
+    await page.getByRole('button', { name: 'Duplicates', exact: true }).click();
+    const panel = page.getByRole('region', { name: 'Identical files', exact: true });
+    await expect(panel.locator('.dupe-group')).toHaveCount(1);
+    await panel.getByRole('button', { name: 'Delete other copies', exact: true }).first().click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__duplicateDeleteResolve)).toBe('function');
+    const status = await page.evaluate(async () => {
+        const modulePath = '/src/lib/batch/store.svelte.ts';
+        const { batchManager } = await import(modulePath);
+        await batchManager.reprocessItems(['unrelated']);
+        await batchManager.reextractItems(['unrelated']);
+        await batchManager.resetToQueued();
+        batchManager.forceReset();
+        await batchManager.loadSession('other-session');
+        await batchManager.importBatch();
+        return { locked: batchManager.isCleaningDuplicates, states: batchManager.items.map((item: any) => item.status) };
+    });
+    expect(status).toEqual({ locked: true, states: ['review', 'review', 'review'] });
+    await page.evaluate(() => (window as any).__duplicateDeleteResolve());
+    await expect(panel).toContainText('1 copy/copies deleted. The selected file was kept.');
 });
