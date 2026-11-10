@@ -140,7 +140,12 @@ at `a096e285` passed 37 browser tests and all five isolated native duplicate gua
 tests. Its seven browser failures exposed a palette focus problem, overly broad
 or mismatched test selectors, a short cold-start wait, and OCR fixtures still
 targeting the previous workspace. The follow-up corrects those cases and adds
-the mobile layout and empty OCR retry protections described above. Consult the
+the mobile layout and empty OCR retry protections described above. The next run,
+at `4e55d839`, passed 47 of 48 browser tests, including all seven previous failure
+cases. Its remaining phone-field assertion reported a 0.19-pixel intersection
+difference after scrolling; the follow-up checks a one-pixel visibility tolerance
+and explicitly checks that the author can be edited, saved, and reopened. The filename and
+main control visibility checks remain strict. Consult the
 [checks on PR #37](https://github.com/CrispStrobe/CrispSorter/pull/37/checks)
 for the latest rerun and full native compilation results.
 
@@ -150,9 +155,10 @@ for the latest rerun and full native compilation results.
 | `npm test` | Passed after the OCR guard: 199 tests in 29 files. |
 | `npx vite build` | Passed: frontend production bundle generated. |
 | Playwright discovery | 48 tests across six files, including phone layout and current OCR workspace regressions. |
-| Browser execution | First remote run: 37 passed, seven failed; fixes and additional coverage are awaiting the next remote run. |
+| Browser execution | Remote run at `4e55d839`: 47 passed, one phone-field geometry assertion failed; its focused correction is awaiting rerun. |
 | Isolated native duplicate guard | All five filesystem tests passed on the remote Unix runner. |
 | Existing frontend CI | Type checking, unit tests, extractor regressions, pin checks and license generation passed remotely. |
+| OCR component verification | 67 OCR unit tests and 16 Chromium scenarios passed with no captured page errors on `190099da`; OCR source is unchanged in `4e55d839`. Desktop and compact screenshots were inspected. |
 | Local browser execution | Blocked: Chromium could not create a socket under the workspace permissions. Discovery is not a browser pass. |
 | Local Rust execution | Not run: no Rust toolchain was available. |
 

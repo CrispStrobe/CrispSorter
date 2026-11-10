@@ -38,13 +38,39 @@ test('phone rows expose filename, status and selection immediately and open usab
     await title.scrollIntoViewIfNeeded();
     await expect(title).toBeInViewport({ ratio: 1 });
     await title.fill('Reviewed scan');
+    await expect(page.locator('.draft-summary')).toHaveText('1 metadata draft');
     const author = detail.getByRole('textbox', { name: 'Edit Author', exact: true });
     await author.scrollIntoViewIfNeeded();
-    await expect(author).toBeInViewport({ ratio: 1 });
+    // Native scrolling can leave a fractional border pixel at the clipping
+    // edge (CI observed 0.19px). Keep the field inside its scroll pane to one
+    // CSS pixel, then verify it can actually receive input and save the edit.
+    await expect.poll(() => author.evaluate(element => {
+        const field = element.getBoundingClientRect();
+        const content = element.closest('.detail-content')!.getBoundingClientRect();
+        const split = element.closest('.main-split')!.getBoundingClientRect();
+        return Math.max(0,
+            Math.max(content.top, split.top, 0) - field.top,
+            field.bottom - Math.min(content.bottom, split.bottom, window.innerHeight),
+            Math.max(content.left, split.left, 0) - field.left,
+            field.right - Math.min(content.right, split.right, window.innerWidth));
+    })).toBeLessThanOrEqual(1);
+    await author.click();
+    await expect(author).toBeFocused();
+    await author.fill('Mobile Reviewer');
+    await detail.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls
+        .filter((call: any) => call.command === 'batch_session_upsert_item' && call.args.item.id === 'pending')
+        .map((call: any) => call.args.item))).toEqual([
+        expect.objectContaining({ id: 'pending', suggestedTitle: 'Reviewed scan', suggestedAuthor: 'Mobile Reviewer', isAccepted: true }),
+    ]);
+    await expect(page.locator('.draft-summary')).not.toBeVisible();
     await detail.getByRole('button', { name: 'Close details', exact: true }).click();
     await expect(detail).not.toBeVisible();
     await expect(filename).toBeInViewport({ ratio: 1 });
     await expectNoHorizontalOverflow(table);
+    await filename.click();
+    await expect(title).toHaveValue('Reviewed scan');
+    await expect(author).toHaveValue('Mobile Reviewer');
 });
 
 test('phone filters and bulk actions stay within reach and use English index states', async ({ page }) => {

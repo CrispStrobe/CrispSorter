@@ -56,7 +56,7 @@
         inboxClear: 'Der Eingang ist erledigt', inboxClearHint: 'Analysierte Dokumente findest du unter Prüfen. Du kannst weitere Dateien hinzufügen.',
         emptyReview: 'Noch nichts zu prüfen', emptyReviewHint: 'Füge im Eingang Dateien hinzu und starte die Analyse. Die Vorschläge erscheinen hier.',
         addFiles: 'Dateien hinzufügen', addFolder: 'Ordner hinzufügen', shown: 'Dateien angezeigt',
-        drafts: 'Metadatenentwürfe', draft: 'Entwurf', savedDraft: 'Entwurf gespeichert; noch nicht angewendet.', savingDraft: 'Entwurf wird gespeichert…',
+        metadataDraft: 'Metadatenentwurf', drafts: 'Metadatenentwürfe', draft: 'Entwurf', savedDraft: 'Entwurf gespeichert; noch nicht angewendet.', savingDraft: 'Entwurf wird gespeichert…',
         draftError: 'Entwürfe sind nur in dieser Sitzung gesichert. Speichern erneut versuchen.', retry: 'Erneut versuchen',
         draftLoadError: 'Gespeicherte Metadatenentwürfe konnten nicht geladen werden. Bitte erneut versuchen, bevor du sie bearbeitest.',
         draftHint: 'Speichern übernimmt die Änderungen und akzeptiert vollständige Titel und Autoren.',
@@ -76,7 +76,7 @@
         inboxClear: 'Your inbox is clear', inboxClearHint: 'Analyzed documents are in Review. You can add more files here.',
         emptyReview: 'Nothing to review yet', emptyReviewHint: 'Add files in Inbox and start analysis. Suggestions will appear here.',
         addFiles: 'Add files', addFolder: 'Add folder', shown: 'files shown',
-        drafts: 'metadata drafts', draft: 'Draft', savedDraft: 'Draft saved; changes are not applied yet.', savingDraft: 'Saving draft…',
+        metadataDraft: 'metadata draft', drafts: 'metadata drafts', draft: 'Draft', savedDraft: 'Draft saved; changes are not applied yet.', savingDraft: 'Saving draft…',
         draftError: 'Drafts are kept in this session only. Retry saving them.', retry: 'Retry',
         draftLoadError: 'Saved metadata drafts could not be loaded. Retry before editing them.',
         draftHint: 'Saving applies changes and accepts complete titles and authors.',
@@ -1251,7 +1251,7 @@
             <option value="quality">Best quality</option><option value="advanced">Advanced settings</option>
         </select>
         {#if draftItems.length}
-            <button class="draft-summary" onclick={() => selectedItemId = draftItems[0].id}>{draftItems.length} {reviewLabels.drafts}</button>
+            <button class="draft-summary" onclick={() => selectedItemId = draftItems[0].id}>{draftItems.length} {draftItems.length === 1 ? reviewLabels.metadataDraft : reviewLabels.drafts}</button>
         {/if}
         {#if selectedItem && !isProviderUri(selectedItem.originalPath)}
             {#each availableDocumentTools(selectedItem.originalName, $caps) as tool}
