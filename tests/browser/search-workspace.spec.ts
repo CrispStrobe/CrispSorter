@@ -85,7 +85,7 @@ test('keyboard traverses results and preview and restores focus to the current d
     await expect(page.getByRole('button', { name: 'Preview Zeta report', exact: true })).toBeFocused();
     await page.keyboard.press('End');
     await expect(page.getByRole('button', { name: 'Preview Unknown report', exact: true })).toBeFocused();
-    await page.keyboard.press('Control+k');
+    await page.keyboard.press('Control+Shift+f');
     await expect(input).toBeFocused();
 });
 
@@ -170,4 +170,45 @@ test('loading a larger returned window keeps current presentation and exact requ
     await expect(page.getByRole('combobox', { name: 'Sort results', exact: true })).toHaveValue('filename');
     await expect(page.getByLabel('Compact results', { exact: true })).toBeChecked();
     await expect(page.locator('.search-window-note')).toContainText('Requested limit 50');
+});
+
+test('an active remote index visibly caps a saved request and its report at 200 results', async ({ page }) => {
+    await page.locator('.tab-bar').getByRole('button', { name: 'Add', exact: true }).click();
+    await page.evaluate(async () => {
+        const root = window as any;
+        await root.__TAURI_INTERNALS__.invoke('plugin:store|set', { key: 'savedSearches', value: [
+            { query: 'warranty', name: 'Large saved window', mode: 'text', limit: 500, savedAt: 1 },
+        ] });
+        const template = root.__fixtureResults[0];
+        root.__fixtureResults = Array.from({ length: 200 }, (_, i) => ({ ...template, doc_id: `remote-${i}`, snippet: '' }));
+        const original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_get_config') return Promise.resolve({ enabled: true, backend_type: 'remote', use_vector: true });
+            if (command === 'plugin:fs|write_file') {
+                root.__remoteWindowReport = JSON.parse(new TextDecoder().decode(new Uint8Array(args)));
+                return Promise.resolve();
+            }
+            return original(command, args, options);
+        };
+    });
+    await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
+    await page.locator('.saved-dropdown .saved-name').filter({ hasText: 'Large saved window' }).click();
+    await expect.poll(() => lastSearch(page)).toMatchObject({ query: 'warranty', limit: 200 });
+    await expect(page.getByText('Result limit adjusted from 500 to 200 for the active index.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Load more results', exact: true })).toHaveCount(0);
+    await expect(page.locator('.search-window-note')).toContainText('Requested limit 200');
+    await page.getByRole('button', { name: 'Search filters', exact: true }).click();
+    const limits = page.getByRole('combobox', { name: 'Maximum results', exact: true });
+    await expect(limits).toHaveValue('200');
+    await expect(limits.locator('option[value="500"]')).toHaveCount(0);
+    await page.getByRole('combobox', { name: 'Report format', exact: true }).selectOption('json');
+    await page.getByRole('button', { name: 'Export displayed', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__remoteWindowReport?.recipe.limit)).toBe(200);
+    expect(await page.evaluate(() => (window as any).__remoteWindowReport.coverage.requestedLimit)).toBe(200);
+    await page.getByRole('button', { name: 'Save this search', exact: true }).click();
+    await expect.poll(() => page.evaluate(async () => {
+        const [saved] = await (window as any).__TAURI_INTERNALS__.invoke('plugin:store|get', { key: 'savedSearches' });
+        return saved.at(-1).limit;
+    })).toBe(200);
 });

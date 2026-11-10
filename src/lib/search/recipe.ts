@@ -73,7 +73,13 @@ export function normalizeSearchView(value: unknown): SearchViewPreferences {
     };
 }
 
-export function normalizeSearchRecipe(value: unknown): SearchRecipe {
+/** Unknown configurations use the shared server-safe window until identified. */
+export function searchResultLimitForBackend(backend: unknown): 200 | 500 {
+    const value = typeof backend === 'string' ? backend.toLowerCase() : '';
+    return value === 'local' || value === 'hybrid' ? 500 : 200;
+}
+
+export function normalizeSearchRecipe(value: unknown, maximumLimit: 200 | 500 = 500): SearchRecipe {
     const raw = record(value);
     const input = record(raw.filters);
     const filters = defaultSearchFilters();
@@ -86,7 +92,7 @@ export function normalizeSearchRecipe(value: unknown): SearchRecipe {
         version: 3,
         query: text(raw.query),
         mode: raw.mode === 'text' || raw.mode === 'vector' ? raw.mode : 'hybrid',
-        limit: [10, 20, 50, 100, 200, 500].includes(Number(raw.limit)) ? Number(raw.limit) : 20,
+        limit: Math.min([10, 20, 50, 100, 200, 500].includes(Number(raw.limit)) ? Number(raw.limit) : 20, maximumLimit),
         smart: raw.smart === true,
         filters,
         docIdScope: Array.isArray(raw.docIdScope) ? [...new Set(raw.docIdScope.filter((id): id is string => typeof id === 'string' && id.length > 0))].sort() : [],

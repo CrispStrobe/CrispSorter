@@ -10,7 +10,7 @@
     import { i18n } from '$lib/i18n.svelte';
     import { searchLabels } from '$lib/search/labels';
     import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
-        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, validateSearchFilters,
+        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, searchResultLimitForBackend, validateSearchFilters,
         type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
@@ -105,6 +105,9 @@
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
     let vectorEnabled = $state(true);
     let limit       = $state(20);
+    let resultLimitMaximum = $state<200 | 500>(200);
+    let resultLimitNotice = $state('');
+    const resultLimitOptions = $derived([10, 20, 50, 100, 200, 500].filter(value => value <= resultLimitMaximum));
     let results     = $state<SearchResult[]>([]);
     let compareResults = $state<SearchResult[]>([]);
     let loading     = $state(false);
@@ -749,7 +752,8 @@
     function handleWorkspaceKeydown(event: KeyboardEvent) {
         if (event.defaultPrevented || event.isComposing || !searchRoot?.contains(event.target as Node)) return;
         const target = event.target as HTMLElement;
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+        // Ctrl/⌘ K belongs to the application's quick navigation palette.
+        if (event.ctrlKey !== event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
             event.preventDefault(); queryInput?.focus(); queryInput?.select(); return;
         }
         if (event.key === 'Escape') {
@@ -843,7 +847,7 @@
     function currentRecipe(): SearchRecipe {
         return normalizeSearchRecipe({ query, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope,
             view: { sort: resultSort, compact: compactResults, preview: previewPreference, reportFormat,
-                displayTags: [...searchTags], tagCloud: showSearchTagCloud } });
+                displayTags: [...searchTags], tagCloud: showSearchTagCloud } }, resultLimitMaximum);
     }
 
     function applyFilters(f: SearchFilters): void {
@@ -860,7 +864,10 @@
         query = recipe.query;
         void runSkeletonSearch(query);
         mode = !vectorEnabled && recipe.mode !== 'text' ? 'text' : recipe.mode;
-        limit = recipe.limit; smartSearch = recipe.smart;
+        limit = Math.min(recipe.limit, resultLimitMaximum); smartSearch = recipe.smart;
+        resultLimitNotice = recipe.limit > limit ? (i18n.lang === 'de'
+            ? `Ergebnislimit für den aktiven Index von ${recipe.limit} auf ${limit} angepasst.`
+            : `Result limit adjusted from ${recipe.limit} to ${limit} for the active index.`) : '';
         refinementScope = [...recipe.docIdScope];
         applyFilters(recipe.filters);
         resultSort = recipe.view.sort; compactResults = recipe.view.compact;
@@ -928,10 +935,12 @@
 
     onMount(async () => {
         try {
-            const config = await invoke<{ use_vector?: boolean }>('index_get_config');
+            const config = await invoke<{ use_vector?: boolean; backend_type?: 'local' | 'remote' | 'hybrid' }>('index_get_config');
+            resultLimitMaximum = searchResultLimitForBackend(config.backend_type);
+            if (limit > resultLimitMaximum) applyRecipe({ ...currentRecipe(), limit });
             vectorEnabled = config.use_vector !== false;
             if (!vectorEnabled) mode = 'text';
-        } catch { /* use the normal default until configuration is available */ }
+        } catch { /* keep the conservative result window if native configuration is unavailable */ }
         await loadExperimentalCrispEmbed().catch(e => console.warn('Could not restore experimental service settings', e));
         await restoreBookmarks();
         try {
@@ -1058,7 +1067,7 @@
 
     async function loadMoreResults() {
         if (!executedRecipe || searchOptionsChanged) return;
-        const nextLimit = [50, 100, 200, 500].find(value => value > executedRecipe!.limit);
+        const nextLimit = resultLimitOptions.find(value => value > executedRecipe!.limit);
         if (!nextLimit) return;
         applyRecipe({ ...executedRecipe, limit: nextLimit, view: currentRecipe().view });
         await runSearch();
@@ -1406,7 +1415,7 @@
         remoteResults = []; remoteLoading = false; remoteSearched = false; remoteError = ''; remoteQuery = '';
         fedResults = []; fedLoading = false; fedSearched = false; fedErrors = {}; fedBody = new Map();
         dismissResultActionFeedback();
-        loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
+        loading = false; imageSearchLoading = false; searchNotice = ''; resultLimitNotice = ''; refinementScope = [];
         displayedRecipeKey = null; similarHeader = '';
         executedRecipe = null; executedQuery = ''; searchedAt = ''; elapsedMs = 0;
         void runSkeletonSearch('');
@@ -1749,7 +1758,7 @@
                 oninput={event => runSkeletonSearch(event.currentTarget.value)}
                 onkeydown={onKeydown}
                 aria-label={labels.query}
-                aria-keyshortcuts="Control+k Meta+k ArrowDown"
+                aria-keyshortcuts="Control+Shift+f Meta+Shift+f ArrowDown"
                 placeholder={labels.placeholder}
                 title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
                 autofocus
@@ -1943,6 +1952,7 @@
         </div>
     {/if}
     {#if searchOptionsChanged && !loading}<p class="search-help">{labels.changed}</p>{/if}
+    {#if resultLimitNotice}<p class="search-help" aria-live="polite">{resultLimitNotice}</p>{/if}
     {#if searchNotice}<div class="search-notice" role="status">{searchNotice}</div>{/if}
 
     <!-- ── Filters ─────────────────────────────────────────────────────────────── -->
@@ -1951,8 +1961,8 @@
         <div class="filter-row">
             <label class="filter-field">
                 <span>{labels.max}</span>
-                <select bind:value={limit} aria-label={labels.max}>
-                    {#each [10, 20, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
+                <select bind:value={limit} aria-label={labels.max} onchange={() => resultLimitNotice = ''}>
+                    {#each resultLimitOptions as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>
             <label class="filter-field" title="Include hits from drives that aren't currently mounted">
@@ -2174,13 +2184,13 @@
                 ? 'Sortierung, Tags, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
                 : 'Sorting, tags, passage counts, and exports apply to this returned window, not every match in the corpus.'}
                 {#if executedRecipe} · {elapsedMs} ms · {i18n.lang === 'de' ? 'Angefordertes Limit' : 'Requested limit'} {executedRecipe.limit}{/if}
-                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < 500}
+                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < resultLimitMaximum}
                     <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
                 {/if}
             </p>
             <p class="search-keyboard-note">{i18n.lang === 'de'
-                ? 'Tastatur: Strg/⌘ K zur Suche · ↓ zu Ergebnissen · ↑/↓ zwischen Dokumenten · Enter zur Vorschau · Alt ↑/↓ in der Vorschau · Esc zum Schließen.'
-                : 'Keyboard: Ctrl/⌘ K to search · ↓ to results · ↑/↓ between documents · Enter to preview · Alt ↑/↓ inside preview · Esc to close.'}</p>
+                ? 'Tastatur: Strg/⌘ Umschalt F zur Suche · ↓ zu Ergebnissen · ↑/↓ zwischen Dokumenten · Enter zur Vorschau · Alt ↑/↓ in der Vorschau · Esc zum Schließen.'
+                : 'Keyboard: Ctrl/⌘ Shift F to search · ↓ to results · ↑/↓ between documents · Enter to preview · Alt ↑/↓ inside preview · Esc to close.'}</p>
 
             {#if searchTags.size}
                 <div class="active-filters display-filters" aria-label={i18n.lang === 'de' ? 'Tags für angezeigte Ergebnisse' : 'Displayed-result tag filters'}>

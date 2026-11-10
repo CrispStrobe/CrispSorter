@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
-    normalizeSearchView, restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, validateSearchFilters } from './recipe';
+    normalizeSearchView, restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, searchResultLimitForBackend, validateSearchFilters } from './recipe';
 
 describe('saved search recipes', () => {
     it('restores old bookmarks and history with fresh defaults instead of current filters', () => {
@@ -65,6 +65,18 @@ describe('saved search recipes', () => {
         expect(localSearchArguments(variant)).toEqual(localSearchArguments(recipe));
         expect(searchRequestKey(normalizeSearchRecipe({ ...variant, filters: { language: 'en' } })))
             .not.toBe(searchRequestKey(recipe));
+    });
+
+    it('uses the active backend window and preserves a saved larger limit until it is applied', () => {
+        for (const backend of ['local', 'Local', 'hybrid']) expect(searchResultLimitForBackend(backend)).toBe(500);
+        for (const backend of ['remote', 'Remote', null, 'unknown']) expect(searchResultLimitForBackend(backend)).toBe(200);
+        const [saved] = restoreSavedSearches([{ query: 'research', limit: 500 }]);
+        expect(saved.limit).toBe(500);
+        const effective = normalizeSearchRecipe(saved, searchResultLimitForBackend('remote'));
+        expect(effective.limit).toBe(200);
+        expect(saved.limit).toBe(500);
+        expect(localSearchArguments(effective).limit).toBe(200);
+        expect(normalizeSearchRecipe({ query: 'research', limit: 50 }, 200).limit).toBe(50);
     });
 });
 
