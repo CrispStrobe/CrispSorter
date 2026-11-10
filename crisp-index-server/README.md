@@ -10,20 +10,13 @@ Optionally, the server can also embed missing vectors itself. Set `SERVER_EMBED=
 
 ## Architecture overview
 
-```
-CrispSorter (client)
-  ├── Extract text / markdown from PDF, DOCX, TXT, MD
-  ├── Chunk text (sliding window)
-  ├── Embed locally via fastembed (BGE-M3, 1024-dim)
-  └── POST /v1/ingest  ──► crisp-index-server
-                                ├── LanceDB  (ANN vector search)
-                                └── Tantivy  (BM25 full-text)
-
-  Search query
-  ├── Embed query locally
-  └── POST /v1/search  ──► crisp-index-server
-                                └── Hybrid RRF result  ──► CrispSorter UI
-```
+| Stage | Responsibility |
+|---|---|
+| Client extraction | Extract source text and metadata, retain chunk byte offsets, and embed chunks |
+| Durable upload | Submit complete documents through `/v1/ingest/batch` and poll their task receipts |
+| Storage publication | Atomically replace Lance rows and publish the repaired Tantivy generation |
+| Query negotiation | Check `/v1/capabilities`, validate the shared grammar, and embed semantic queries |
+| Retrieval | Apply metadata and explicit lexical constraints, fuse ranked lists, and return document results |
 
 ---
 
@@ -40,14 +33,14 @@ CrispSorter (client)
 
 ```bash
 # Debug build (fast compilation, slower runtime)
-cargo build
+cargo build --locked -p crisp-index-server
 
 # Release build (optimised, recommended for production)
-cargo build --release
+cargo build --locked -p crisp-index-server --release
 
 # Static binary for musl targets (for minimal Docker images / Alpine)
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --target x86_64-unknown-linux-musl
+cargo build --locked -p crisp-index-server --release --target x86_64-unknown-linux-musl
 ```
 
 The release binary is at `target/release/crisp-index-server`.
@@ -99,7 +92,7 @@ RUST_LOG=info
 
 ```bash
 # Development
-CRISP_API_KEY=dev-key cargo run
+CRISP_API_KEY=dev-key cargo run --locked -p crisp-index-server
 
 # Production (release binary)
 CRISP_API_KEY=prod-key LANCE_DATA_DIR=/data ./crisp-index-server
@@ -111,13 +104,17 @@ CRISP_API_KEY=prod-key LANCE_DATA_DIR=/data ./crisp-index-server
 
 All endpoints except `/health` require a `Authorization: Bearer <CRISP_API_KEY>` header.
 
+The compact vector examples below assume `EMBED_DIMS=2` for illustration. Supply
+the complete vector for the configured production model, or use an empty vector
+on ingest when server embedding is enabled.
+
 ### `GET /health`
 
 Liveness probe — no authentication required.
 
 **Response 200:**
 ```json
-{ "ok": true }
+{ "status": "ok" }
 ```
 
 ---
@@ -136,7 +133,7 @@ Returns index statistics.
 ```
 
 - `row_count` — total number of chunks in LanceDB
-- `doc_count` — approximate distinct document count
+- `doc_count` — live full-text document count, scoped by owner and document ID
 - `embed_dims` — configured embedding dimension
 
 ---
@@ -148,19 +145,22 @@ Store a single pre-embedded chunk.
 **Request body:**
 ```json
 {
-  "doc_id":       "sha256-of-file-content",
+  "doc_id":       "report-2024",
   "chunk_index":  0,
+  "chunk_total":  1,
+  "chunk_start_char": 0,
+  "chunk_end_char": 23,
   "full_text":    "plain text of the chunk",
   "full_text_md": "## Optional Markdown\n\nmarkdown version of the chunk",
   "headings":     ["Section title", "Subsection"],
-  "embedding":    [0.012, -0.034, ...],
+  "embedding":    [0.012, -0.034],
   "title":        "Document Title",
   "author":       "Jane Smith",
   "year":         2024,
   "filename":     "report.pdf",
   "ext":          "pdf",
   "language":     "en",
-  "location_uri": "crisp+local://machine-uuid/user-uuid/path/to/report.pdf",
+  "location_uri": "crisp+local://user-uuid@machine-uuid/path/to/report.pdf",
   "owner_id":     "user-uuid",
   "source_hash":  "sha256-of-file-content",
   "tags":         ["finance", "Q4"]
@@ -196,10 +196,20 @@ Queue a batch ingest task and return immediately.
 {
   "chunks": [
     {
-      "doc_id": "sha256...",
+      "doc_id": "report-2024",
       "chunk_index": 0,
+      "chunk_total": 1,
+      "chunk_start_char": 0,
+      "chunk_end_char": 10,
       "full_text": "plain text",
-      "embedding": []
+      "embedding": [0.012, -0.034],
+      "filename": "report.pdf",
+      "ext": "pdf",
+      "language": "en",
+      "location_uri": "crisp+local://user-uuid@machine-uuid/path/to/report.pdf",
+      "owner_id": "user-uuid",
+      "source_hash": "sha256-of-file-content",
+      "tags": []
     }
   ]
 }
@@ -216,7 +226,7 @@ Queue a batch ingest task and return immediately.
 {
   "task_id": "6d9b0d31-8f4a-4e52-b12a-7d8d14a4b8e6",
   "queue_depth": 3,
-  "chunk_count": 64
+  "chunk_count": 1
 }
 ```
 
@@ -253,8 +263,9 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 ```json
 {
   "query":     "machine learning transformers",
-  "embedding": [0.012, -0.034, ...],
+  "embedding": [0.012, -0.034],
   "mode":      "hybrid",
+  "query_language_version": 1,
   "limit":     20,
   "owner_id":  "user-uuid",
   "language":  "en",
@@ -265,10 +276,11 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 
 | Field | Required | Description |
 |---|---|---|
-| `mode` | yes | `"text"`, `"vector"`, or `"hybrid"` |
+| `mode` | no | `"text"`, `"vector"`, or `"hybrid"` (default) |
 | `query` | for `text` / `hybrid` | BM25 query string |
 | `embedding` | for `vector` / `hybrid` unless `SERVER_EMBED=1` | pre-computed query vector |
-| `limit` | no | max results (default: 20) |
+| `limit` | no | max results, 1–200 (default: 20) |
+| `query_language_version` | after negotiation | grammar version confirmed by `/v1/capabilities` |
 | `owner_id` | no | filter to a specific user's documents |
 | `language` | no | filter by language code (`"en"`, `"de"`, …) |
 | `year_min` / `year_max` | no | filter by publication year |
@@ -277,7 +289,8 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 ```json
 [
   {
-    "doc_id":       "sha256...",
+    "doc_id":       "report-2024",
+    "owner_id":     "user-uuid",
     "chunk_index":  0,
     "score":        0.0164,
     "title":        "Document Title",
@@ -286,9 +299,10 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
     "filename":     "report.pdf",
     "ext":          "pdf",
     "language":     "en",
-    "location_uri": "crisp+local://machine-uuid/user-uuid/path/to/report.pdf",
-    "full_text":    "plain text of the chunk",
-    "headings":     ["Section title"]
+    "location_uri": "crisp+local://user-uuid@machine-uuid/path/to/report.pdf",
+    "snippet":      "plain text of the matching passage",
+    "indexed_at":   1746547800123,
+    "source_hash":  "sha256-of-file-content"
   }
 ]
 ```
@@ -306,9 +320,11 @@ When `SERVER_EMBED=1`, the client may omit `embedding` for `vector` and `hybrid`
 
 ---
 
-### `DELETE /v1/docs/:doc_id`
+### `DELETE /v1/docs/:doc_id?owner_id=...`
 
-Delete all chunks for a document from both LanceDB and Tantivy.
+Delete all chunks for one owner/document from both LanceDB and Tantivy. The owner
+is optional only when the document ID identifies one source occurrence. An
+ambiguous owner or legacy location returns HTTP 409 before any deletion.
 
 **Response 200:**
 ```json
@@ -317,19 +333,36 @@ Delete all chunks for a document from both LanceDB and Tantivy.
 
 ---
 
-### `POST /v1/docs/:doc_id/location`
+### `POST /v1/docs/:doc_id/location?owner_id=...`
 
 Update the stored `location_uri` for all chunks of a document (called after a file is moved/renamed).
 
 **Request body:**
 ```json
-{ "new_uri": "crisp+local://machine-uuid/user-uuid/new/path/to/report.pdf" }
+{ "new_uri": "crisp+local://user-uuid@machine-uuid/new/path/to/report.pdf" }
 ```
 
 **Response 200:**
 ```json
 { "updated": true }
 ```
+
+---
+
+### `POST /v1/docs/location/by-uri`
+
+Update one source when the client knows its exact previous URI, including a bare
+local path. The server preserves the selected document ID and owner, updates all
+its chunks in one transaction, and advances its monotonic write timestamp.
+
+```json
+{ "old_uri": "/source/report.pdf", "new_uri": "/sorted/report.pdf" }
+```
+
+The response is `{ "updated": true }`. An unindexed old URI is a successful
+no-op. Multiple identities at either URI, or a legacy selected identity shared
+across several locations, return HTTP 409 without changing any rows. Use an
+explicit owner/document operation or resolve the legacy source in those cases.
 
 ---
 
@@ -471,20 +504,19 @@ Then set the CrispSorter remote URL to `https://crisp.example.com`.
 
 ## Data layout
 
-```
-LANCE_DATA_DIR/
-  lance/
-    chunks.lance/          # LanceDB table — one row per chunk
-      _latest_manifest/
-      data/
-      ...
-  fts/
-    meta.json              # Tantivy index metadata
-    .managed.json
-    *.term, *.idx, *.pos   # Tantivy segment files
-```
+| Path within `LANCE_DATA_DIR` | Contents |
+|---|---|
+| `lance/documents.lance/` | Chunk rows, vectors, and retained table versions |
+| `fts-v2/generation-*/` | Verified full-text generations |
+| `fts-v2/state.sqlite` | Active generation, repair intents, logical clock, and deletion history |
+| `fts-v2/server-lock.sqlite` | Exclusive server-process lease |
+| `crisp_jobs.db` | Durable queued ingestion and task receipts |
+| `fts/` | Preserved legacy full-text files when upgrading an earlier installation |
 
-Back up the entire `LANCE_DATA_DIR` to preserve the index. Restoring is just copying the directory back.
+Back up the entire data directory while the server is stopped, or use a coherent
+filesystem snapshot that includes SQLite WAL files. Restore the directory as a
+unit; the next startup repairs any incomplete paired publication before serving
+searches.
 
 ---
 
@@ -614,3 +646,12 @@ timestamp. Older clients can receive complete, deletion-free deltas; a page that
 requires continuation or deletion support returns an upgrade error. Applying a
 remote deletion removes the paired index records according to the configured
 conflict policy while retaining local source files.
+
+This feed transfers document metadata and deletion records, without source
+bytes, full text, or embeddings. Desktop clients can apply accepted same-content
+title/location changes while retaining reviewed body rows and evidence. Local
+Wins and Keep Both preserve local intent. An extracted local document with a
+different fingerprint requires a source refresh before applying remote
+metadata; the client retains its prior checkpoint on that error. Each live
+row includes its source fingerprint and write timestamp so the client can make
+that decision without treating a summary as a complete content replacement.

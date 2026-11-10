@@ -296,3 +296,121 @@ async fn scoped_http_mutations_encode_ids_and_preserve_other_owners() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn exact_uri_http_move_preserves_copies_and_rejects_ambiguous_sources_and_destinations() {
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(
+        crate::index::VectorStore::open_or_create(dir.path(), 2)
+            .await
+            .unwrap(),
+    );
+    let fts = Arc::new(crate::fts::FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = Arc::new(crate::index::SearchIndex::new(vector, fts));
+    index.ensure_ready().await.unwrap();
+    let old = "/source/file's.txt";
+    let new = "/sorted/renamed.txt";
+    let wire = |owner: &str, id: &str, uri: &str, chunk: i32, total: i32| {
+        serde_json::from_value(serde_json::json!({
+        "doc_id":id,"chunk_index":chunk,"chunk_total":total,"full_text":"alpha body","embedding":[1.0,0.0],
+        "filename":"copy.txt","title":id,"ext":"txt","language":"en","location_uri":uri,
+        "owner_id":owner,"source_hash":"preserved content"
+    })).unwrap()
+    };
+    index
+        .ingest_batch(&crisp_index_protocol::IngestBatch {
+            chunks: vec![
+                wire("a", "shared", old, 0, 2),
+                wire("a", "shared", old, 1, 2),
+                wire("b", "shared", "/other-machine/source.txt", 0, 1),
+                wire("c", "ambiguous-c", "/ambiguous.txt", 0, 1),
+                wire("d", "ambiguous-d", "/ambiguous.txt", 0, 1),
+                wire("a", "destination", "/occupied.txt", 0, 1),
+            ],
+        })
+        .await
+        .unwrap();
+    let state = Arc::new(crate::state::SharedState {
+        index: index.clone(),
+        queue: crate::queue::TaskQueue::open_or_create(dir.path(), Default::default()).unwrap(),
+        embedder: None,
+        config: crate::state::ServerConfig {
+            api_key: "".into(),
+            port: 0,
+            data_dir: dir.path().to_owned(),
+            embed_dims: 2,
+            server_embed_enabled: false,
+            queue_lease_secs: 30,
+            queue_retry_base_ms: 1000,
+            queue_max_attempts: 3,
+        },
+    });
+    let router = Router::new()
+        .route(
+            "/v1/docs/location/by-uri",
+            post(crate::routes::docs::update_location_by_uri),
+        )
+        .route(
+            "/v1/docs/{doc_id}/location",
+            post(crate::routes::docs::update_location),
+        )
+        .with_state(state);
+    let (url, server) = serve(router).await;
+    let client = RemoteClient::new(url, "");
+    let a = SearchFilters {
+        owner_id: Some("a".into()),
+        ..Default::default()
+    };
+    let before = index
+        .search_text("title:shared", &a, 20)
+        .await
+        .unwrap()
+        .remove(0);
+    client.update_location_by_uri(old, new).await.unwrap();
+    let after = index
+        .search_text("title:shared", &a, 20)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(after.doc_id, before.doc_id);
+    assert_eq!(after.owner_id, before.owner_id);
+    assert_eq!(after.source_hash, before.source_hash);
+    assert_eq!(after.location_uri, new);
+    assert!(after.indexed_at > before.indexed_at);
+    let b = SearchFilters {
+        owner_id: Some("b".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        index.search_text("alpha", &b, 20).await.unwrap()[0].location_uri,
+        "/other-machine/source.txt"
+    );
+    for (source, destination) in [("/ambiguous.txt", "/unsafe.txt"), (new, "/occupied.txt")] {
+        assert!(client
+            .update_location_by_uri(source, destination)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("409"));
+    }
+    assert_eq!(
+        index.search_text("title:shared", &a, 20).await.unwrap()[0].location_uri,
+        new
+    );
+    assert_eq!(
+        index.search_text("title:shared", &a, 20).await.unwrap()[0].indexed_at,
+        after.indexed_at
+    );
+    assert_eq!(index.stats().await.unwrap(), (6, 5));
+    client
+        .update_location_by_uri("/unindexed.txt", "/unused.txt")
+        .await
+        .unwrap();
+    assert!(client
+        .update_location_by_uri("", new)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("422"));
+    server.abort();
+}

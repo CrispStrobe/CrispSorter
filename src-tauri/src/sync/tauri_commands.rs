@@ -1399,7 +1399,7 @@ pub async fn sync_pull(
             }
             local.table_ref().version().await.map_err(|e| e.to_string())?
         };
-        if crate::index::ingest::apply_imported_chunks_if_version(&local, &fts, &chunks, &[], Some(version))
+        if crate::index::ingest::apply_new_sync_metadata_if_version(&local, &fts, &chunks, version)
             .await.map_err(|e| format!("indexing pulled metadata: {e:#}"))? {
             committed = true;
             break;

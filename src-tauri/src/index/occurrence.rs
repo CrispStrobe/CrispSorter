@@ -63,7 +63,7 @@ fn rekey_fields(metadata: &mut serde_json::Value, doc_id: &str) {
     }
 }
 
-fn retain_reviews(chunk: &mut DocumentChunk, previous: &RecordBatch, row: usize) -> Result<()> {
+fn retain_reviews(chunk: &mut DocumentChunk, previous: &RecordBatch, row: usize, full_text: &str) -> Result<()> {
     let mut prior = metadata_at(previous, row)?;
     let mut current: serde_json::Value = chunk.metadata_json.as_deref().map(serde_json::from_str)
         .transpose()?.unwrap_or_else(|| serde_json::json!({}));
@@ -72,10 +72,21 @@ fn retain_reviews(chunk: &mut DocumentChunk, previous: &RecordBatch, row: usize)
     rekey_fields(&mut current, &chunk.doc_id);
     let mut fields = super::super::fields::read(&current);
     let reviewed = super::super::fields::read(&prior);
-    if !fields.is_empty() {
+    if current.get("field_evidence").is_some() {
         super::super::fields::preserve_reviews(&mut fields, &reviewed);
     } else if string_at(previous, "source_hash", row) == chunk.source_hash {
         fields = reviewed;
+        // The same source bytes can yield different OCR or manually corrected
+        // text. Keep the human decision, but anchor it in this extraction's
+        // full body. Missing evidence must not retain an old page or offset.
+        for field in &mut fields {
+            let at = full_text.find(&field.original_value);
+            field.start_char = at.map(|offset| full_text[..offset].chars().count());
+            field.end_char = field.start_char.map(|start| start + field.original_value.chars().count());
+            field.page = at.filter(|_| full_text.contains('\u{c}'))
+                .map(|offset| full_text[..offset].chars().filter(|&c| c == '\u{c}').count() + 1);
+            field.anchor_method = if at.is_some() { "first_exact_match" } else { "unavailable" }.into();
+        }
     }
     // Carry user metadata across a refresh. Source observations and failure
     // state belong to the new extraction and must never be copied forward.
@@ -254,6 +265,7 @@ impl LocalIndex {
         let representatives: BTreeMap<String, &DocumentChunk> = chunks.iter().filter(|c| c.chunk_index == 0)
             .map(|c| (c.doc_id.clone(), c)).collect();
         let input_order: Vec<String> = inputs.iter().map(|input| input.doc_id.clone()).collect();
+        let full_bodies: BTreeMap<String, &str> = inputs.iter().map(|input| (input.doc_id.clone(), input.body.as_str())).collect();
         let mut selected = BTreeMap::<(String, Scope), String>::new();
         let mut resolved = BTreeMap::<String, String>::new();
         let mut affected = BTreeSet::<String>::new();
@@ -327,7 +339,9 @@ impl LocalIndex {
             let canonical = chunk.doc_id.clone();
             chunk.doc_id = resolved.get(&canonical).cloned().context("Missing resolved source identity")?;
             chunk.id = chunk_row_id(&chunk.doc_id, chunk.chunk_index);
-            if let Some(previous) = prior_rows.get(&canonical) { retain_reviews(chunk, previous, 0)?; }
+            if let Some(previous) = prior_rows.get(&canonical) {
+                retain_reviews(chunk, previous, 0, full_bodies.get(&canonical).copied().unwrap_or_default())?;
+            }
             let mut metadata: serde_json::Value = chunk.metadata_json.as_deref().map(serde_json::from_str).transpose()?.unwrap_or_else(|| serde_json::json!({}));
             anyhow::ensure!(metadata.is_object(), "Document metadata must be an object");
             rekey_fields(&mut metadata, &chunk.doc_id);

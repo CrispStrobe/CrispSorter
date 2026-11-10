@@ -167,6 +167,20 @@ write finishes its safe boundary before the worker stops. Resuming skips work
 already acknowledged as complete and retries the stored failures. Persistence
 does not store account secrets in the scheduler's OCR configuration.
 
+Sorting records completed file moves with pending index markers before waiting
+for index updates. A failed update or acknowledgement stays visible in Inbox
+and survives restart. Its retry action updates the index without executing the
+filesystem move again; an explicitly retried repair cannot be acknowledged while
+indexing is disabled. Normal completed rows remain outside processing and sorting.
+
+Local path updates recognize the URI forms emitted by both foreground and
+background ingestion, preserve occurrence IDs and review evidence, and refresh
+filename, directory, timestamp, and destination volume metadata in one commit.
+The strict adapter checks that the old path remains absent and the destination
+is a file under the writer lease. Reused paths, occupied destinations, and
+ambiguous legacy identities fail before publication. Remote exact-URI moves
+use the server's guarded mutation endpoint.
+
 ## Remote migration and synchronization
 
 The server publishes a versioned full-text generation only after reconstruction
@@ -196,6 +210,16 @@ copy, or expose a reviewable conflict. A conditional local delete checks that
 the revision inspected by policy is still current. Cursor advancement cannot
 acknowledge an unapplied page. See the [server guide](../crisp-index-server/README.md)
 for migration, capabilities, and deployment details.
+
+The synchronization feed carries document metadata and deletion records. It
+does not transfer source files, document bodies, or embeddings. Accepted newer
+metadata for the same content updates the local title, location, and related
+fields while retaining reviewed text, vectors, and per-chunk evidence. Local
+Wins and Keep Both preserve the local version. If an extracted local document
+has a different content fingerprint, the pull requests a source refresh and
+keeps its checkpoint unchanged; newer metadata cannot relabel an older reviewed
+body. A source that appears during a fresh-metadata import also requires policy
+inspection again before the page can be acknowledged.
 
 ## Extraction boundaries
 

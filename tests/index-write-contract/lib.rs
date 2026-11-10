@@ -29,6 +29,7 @@ pub mod index {
         include!(concat!(env!("OUT_DIR"), "/local_index.rs"));
         mod occurrence { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/occurrence.rs")); }
         pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
+        mod source_move { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/source_move.rs")); }
     }
     pub mod ingest { include!(concat!(env!("OUT_DIR"), "/ingest.rs")); }
     pub use fts_index::FtsIndex;

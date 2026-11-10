@@ -217,9 +217,12 @@ async fn expired_snapshot_restarts_at_completed_boundary_without_skipping() {
 
 #[tokio::test]
 async fn malformed_or_unpageable_remote_payload_never_becomes_an_empty_success() {
+    let mut out_of_bounds_row = row("a");
+    out_of_bounds_row.indexed_at = 43;
     for body in [
         serde_json::json!({"rows":"bad","max_indexed_at":42,"has_more":false}),
         serde_json::json!({"rows":[row("a")],"max_indexed_at":42,"has_more":true}),
+        serde_json::json!({"sync_version":2,"snapshot_version":3,"rows":[out_of_bounds_row],"max_indexed_at":42,"has_more":false}),
     ] {
         let router = Router::new().route(
             "/v1/sync/since",
@@ -240,6 +243,39 @@ async fn malformed_or_unpageable_remote_payload_never_becomes_an_empty_success()
         .is_err());
         task.abort();
     }
+}
+
+#[test]
+fn live_rows_cannot_skip_or_regress_a_checkpoint_boundary() {
+    let initial = PullCheckpoint::for_remote(None, 0, "http://server").unwrap();
+    let resumed = initial.after_page(&page(&["a", "b"], true), 2).unwrap();
+    assert!(resumed.after_page(&page(&["c"], false), 2).is_ok());
+    assert!(resumed.after_page(&page(&["b"], false), 2).is_err(), "completed page cannot repeat a consumed tuple");
+    assert!(initial.after_page(&page(&["b", "a"], false), 2).is_err(), "live rows must remain ordered");
+
+    let mut invalid = page(&["c"], false);
+    invalid.rows[0].indexed_at = -1;
+    assert!(initial.after_page(&invalid, 2).is_err());
+    invalid.rows[0].indexed_at = 43;
+    invalid.max_indexed_at = 43;
+    assert!(resumed.after_page(&invalid, 2).is_err(), "final page cannot escape the pinned history horizon");
+    invalid.rows[0].indexed_at = 42;
+    assert!(initial.after_page(&invalid, 2).is_err(), "watermark cannot jump past the returned data");
+    invalid = page(&[], false);
+    assert!(initial.after_page(&invalid, 2).is_err(), "empty payload cannot advance a checkpoint");
+    invalid.max_indexed_at = 0;
+    assert!(initial.after_page(&invalid, 2).is_ok());
+
+    let mut mixed = page(&["a"], true);
+    mixed.deletions.push(crisp_index_protocol::SyncDeletion {
+        owner_id: "owner'one".into(), doc_id: "z".into(), indexed_at: 42,
+    });
+    assert!(initial.after_page(&mixed, 2).is_err(), "cursor must identify the greatest tuple across both change kinds");
+    mixed.next_cursor = Some(cursor("z"));
+    assert!(initial.after_page(&mixed, 2).is_ok());
+    mixed.rows[0].indexed_at = 41;
+    mixed.next_cursor = Some(cursor("a"));
+    assert!(initial.after_page(&mixed, 2).is_err(), "matching identity cannot conceal an inconsistent row timestamp");
 }
 
 #[tokio::test]

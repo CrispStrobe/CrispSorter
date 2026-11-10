@@ -149,21 +149,33 @@ impl PullCheckpoint {
             page.max_indexed_at >= self.since_ms,
             "Server moved the sync watermark backwards"
         );
-        if let Some(previous) = &self.cursor {
-            let previous: SyncCursor = serde_json::from_str(previous)?;
+        ensure!(page.snapshot_version.is_some_and(|version| version > 0),
+            "Server omitted the sync snapshot identity");
+        let previous = self.cursor.as_deref().map(serde_json::from_str::<SyncCursor>).transpose()?;
+        if let Some(previous) = &previous {
             ensure!(
                 page.snapshot_version == Some(previous.snapshot_version)
-                    && page.max_indexed_at >= previous.indexed_at,
+                    && page.max_indexed_at >= previous.indexed_at
+                    && page.max_indexed_at <= previous.tombstone_horizon,
                 "Server changed the snapshot or moved the continuation backwards"
             );
         }
         let mut identities = std::collections::HashSet::new();
+        let mut positions = Vec::with_capacity(page.rows.len() + page.deletions.len());
+        let mut last_live = None;
         for row in &page.rows {
             ensure!(
-                !row.doc_id.is_empty() && identities.insert((&row.owner_id, &row.doc_id)),
+                !row.doc_id.is_empty() && row.doc_id.len() <= 512 && row.owner_id.len() <= 512
+                    && row.indexed_at >= self.since_ms && row.indexed_at <= page.max_indexed_at
+                    && identities.insert((&row.owner_id, &row.doc_id)),
                 "Server returned an invalid or duplicate sync identity"
             );
+            let position = (row.indexed_at, &row.owner_id, &row.doc_id);
+            ensure!(last_live.is_none_or(|last| position > last), "Server returned unordered sync rows");
+            last_live = Some(position);
+            positions.push(position);
         }
+        let mut last_deletion = None;
         for deletion in &page.deletions {
             ensure!(
                 !deletion.doc_id.is_empty()
@@ -174,7 +186,21 @@ impl PullCheckpoint {
                     && identities.insert((&deletion.owner_id, &deletion.doc_id)),
                 "Server returned an invalid or duplicate deletion identity"
             );
+            let position = (deletion.indexed_at, &deletion.owner_id, &deletion.doc_id);
+            ensure!(last_deletion.is_none_or(|last| position > last), "Server returned unordered deletion rows");
+            last_deletion = Some(position);
+            positions.push(position);
         }
+        if let Some(previous) = &previous {
+            ensure!(positions.iter().all(|position| *position >
+                (previous.indexed_at, &previous.owner_id, &previous.doc_id)),
+                "Server repeated or regressed an applied sync change");
+        }
+        let last_position = positions.iter().max().copied();
+        let expected_watermark = last_position.map(|position| position.0)
+            .unwrap_or_else(|| previous.as_ref().map_or(self.since_ms, |cursor| cursor.indexed_at));
+        ensure!(page.max_indexed_at == expected_watermark,
+            "Sync watermark does not describe the last returned change");
         let mut next = self.clone();
         if page.has_more {
             ensure!(
@@ -191,20 +217,11 @@ impl PullCheckpoint {
                     && page.max_indexed_at == cursor.indexed_at,
                 "Server returned an inconsistent sync cursor"
             );
-            let matches_last_row = page.rows.last().is_some_and(|last| {
-                last.owner_id == cursor.owner_id && last.doc_id == cursor.doc_id
-            });
-            let matches_last_deletion = page.deletions.last().is_some_and(|last| {
-                last.owner_id == cursor.owner_id
-                    && last.doc_id == cursor.doc_id
-                    && last.indexed_at == cursor.indexed_at
-            });
             ensure!(
-                matches_last_row || matches_last_deletion,
+                last_position == Some((cursor.indexed_at, &cursor.owner_id, &cursor.doc_id)),
                 "Sync cursor does not identify the last applied change"
             );
-            if let Some(previous) = &self.cursor {
-                let previous: SyncCursor = serde_json::from_str(previous)?;
+            if let Some(previous) = &previous {
                 ensure!(
                     cursor.snapshot_version == previous.snapshot_version
                         && cursor.tombstone_horizon == previous.tombstone_horizon

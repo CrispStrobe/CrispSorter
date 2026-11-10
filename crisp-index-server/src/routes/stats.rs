@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::state::SharedState;
 
 /// GET /v1/stats
-/// Returns total chunk count and approximate distinct-document count.
+/// Returns coherent chunk and live owner/document counts after publication repair.
 pub async fn stats(State(state): State<Arc<SharedState>>) -> (StatusCode, Json<Value>) {
     let (row_count,doc_count)=match state.index.stats().await {
         Ok(counts)=>counts,

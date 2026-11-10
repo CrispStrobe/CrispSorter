@@ -21,7 +21,7 @@ import { sortPlanMatches, type SortPlan } from './sortPlan';
 import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
 import { reviewDrafts } from './reviewDrafts.svelte';
 import { findVerifiedDuplicates } from './duplicates';
-import { canProcessBatchItem } from './recovery';
+import { canProcessBatchItem, isIndexUpdateWarning } from './recovery';
 import { validateBatchItems, validateSessions, type ConfirmBatchReplacement } from './sessionTransfer';
 
 export interface ProcessOverrides {
@@ -1310,7 +1310,7 @@ export class BatchManager {
             if (mode.startsWith('script_')) {
                 const generated = Object.values(results).filter(result => result.success).length;
                 return { success: generated, notFound: 0, notWritable: 0, notPermitted: 0,
-                    error: plan.items.length - generated, copiedFallback: 0, locked: 0, mode };
+                    error: plan.items.length - generated, copiedFallback: 0, indexUpdateWarnings: 0, locked: 0, mode };
             }
 
             let successCount = 0;
@@ -1323,8 +1323,10 @@ export class BatchManager {
             let notPermitted = 0;
             let errorCount = 0;
             let copiedFallback = 0;
+            let indexUpdateWarnings = 0;
             let locked = 0;
             const changedItems: BatchItem[] = [];
+            const indexUpdates: Array<{ item: BatchItem; oldPath: string; newPath: string }> = [];
 
             for (const [id, res] of Object.entries(results)) {
                 const planned = plan.items.find(i => i.id === id);
@@ -1343,10 +1345,10 @@ export class BatchManager {
                             successCount++;
                             // Update search index location if the file was moved (not copied)
                             if (!mode.includes('copy') && planned?.targetPath) {
-                                invoke('index_update_location_by_path', {
-                                    oldPath: planned.originalPath,
-                                    newPath: planned.targetPath,
-                                }).catch(e => console.warn('[Index] update_location_by_path failed:', e));
+                                item.targetPath = planned.targetPath;
+                                item.statusDetail = 'moved (index update pending)';
+                                item.errorMessage = `INDEX_UPDATE_FAILED: File moved to ${planned.targetPath}. Its search index update is pending. Retry the index update from this entry if processing is interrupted.`;
+                                indexUpdates.push({ item, oldPath: planned.originalPath, newPath: planned.targetPath });
                             }
                         }
                         // Persist to processed_history so future batches can skip
@@ -1376,11 +1378,45 @@ export class BatchManager {
                 }
             }
 
+            // Save the file-operation outcomes before any index/network await.
+            // A restart must restore completed moves as pending index repairs,
+            // never as review rows that could be sent through file moving again.
             if (changedItems.length > 0) await upsertItemsBulk(changedItems);
-            return { success: successCount, notFound, notWritable, notPermitted, error: errorCount, copiedFallback, locked, mode };
+            for (const { item, oldPath, newPath } of indexUpdates) {
+                try {
+                    await invoke('index_update_location_by_path', { oldPath, newPath });
+                    const acknowledged = { ...item, errorMessage: undefined, statusDetail: 'moved' };
+                    await upsertItem(acknowledged);
+                    Object.assign(item, acknowledged);
+                } catch (error) {
+                    indexUpdateWarnings++;
+                    item.errorMessage = `INDEX_UPDATE_FAILED: File moved to ${newPath}. Its search index update could not be acknowledged: ${String(error)}. Retry the index update from this entry.`;
+                    // The durable pending marker already exists. Failure to save
+                    // the more specific diagnostic must not erase that receipt.
+                    try { await upsertItem(item); } catch (saveError) { flog('warn', `Index repair remains pending: ${String(saveError)}`); }
+                }
+            }
+            return { success: successCount, notFound, notWritable, notPermitted, error: errorCount, copiedFallback, indexUpdateWarnings, locked, mode };
         } finally {
             this.isExecuting = false;
         }
+    }
+
+    async retryIndexLocation(id: string): Promise<void> {
+        if (this.isExecuting || this.isProcessing || this.isUpdatingBatch || this.isCleaningDuplicates) {
+            throw new Error('Wait for the current batch operation to finish.');
+        }
+        const item = this.items.find(candidate => candidate.id === id);
+        if (!item || !isIndexUpdateWarning(item) || !item.targetPath) {
+            throw new Error('This entry has no pending index location update.');
+        }
+        this.isUpdatingBatch = true;
+        try {
+            await invoke('index_update_location_by_path', { oldPath: item.originalPath, newPath: item.targetPath, requireUpdate: true });
+            const updated = { ...item, errorMessage: undefined, statusDetail: 'moved' };
+            await upsertItem(updated);
+            this.items = this.items.map(candidate => candidate.id === id ? updated : candidate);
+        } finally { this.isUpdatingBatch = false; }
     }
 
     private async commitReplacement(items: BatchItem[], source: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {

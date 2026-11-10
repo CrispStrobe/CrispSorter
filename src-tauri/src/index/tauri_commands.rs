@@ -2035,14 +2035,32 @@ pub async fn index_update_location(
         .map_err(|e| e.to_string())
 }
 
+fn validate_completed_local_move(old_path: &str, new_path: &str) -> Result<(), String> {
+    if old_path == new_path { return Ok(()); }
+    let old = std::path::Path::new(old_path);
+    let new = std::path::Path::new(new_path);
+    if !old.is_absolute() || !new.is_absolute() { return Err("A source move requires absolute local paths".into()); }
+    if old.try_exists().map_err(|e| format!("Checking the original path: {e}"))? {
+        return Err("The original path exists again. Its indexed source was not reassigned; refresh the two source locations before retrying.".into());
+    }
+    if !std::fs::metadata(new).map_err(|e| format!("Checking the moved file: {e}"))?.is_file() {
+        return Err("The move destination must be an existing file".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn index_update_location_by_path(
     state: State<'_, AppState>,
     old_path: String,
     new_path: String,
+    require_update: Option<bool>,
 ) -> Result<(), String> {
     let lock = state.index.lock().await;
     if !lock.config.enabled {
+        if require_update.unwrap_or(false) {
+            return Err("Enable and initialize the search index before retrying this pending location update".into());
+        }
         return Ok(());
     }
     let backend = lock
@@ -2050,11 +2068,25 @@ pub async fn index_update_location_by_path(
         .as_ref()
         .ok_or("Index backend not initialised")?
         .clone();
+    let local = lock.local.clone();
     drop(lock);
-    let old_uri = format!("crisp+local://local/{}", old_path);
-    let new_uri = format!("crisp+local://local/{}", new_path);
+    // A deferred retry must not reassign a new file that has appeared at the
+    // old path, or point an indexed source at a missing destination.
+    let (old, new) = (old_path.clone(), new_path.clone());
+    tokio::task::spawn_blocking(move || validate_completed_local_move(&old, &new))
+        .await.map_err(|e| format!("Checking source move: {e}"))??;
+    if old_path == new_path { return Ok(()); }
+    if let Some(local) = local {
+        let destination = std::path::PathBuf::from(&new_path);
+        let volume_id = tokio::task::spawn_blocking(move || crate::volume::volume_id_for_path(&destination))
+            .await.map_err(|e| format!("Resolving destination volume: {e}"))?;
+        return local.update_location_after_local_move(&old_path, &new_path, volume_id.as_deref())
+            .await.map(|_| ()).map_err(|e| e.to_string());
+    }
+    // Ordinary remote foreground uploads retain the exact supplied local path.
+    // The server resolves an unambiguous occurrence before changing its URI.
     backend
-        .update_location_by_uri(&old_uri, &new_uri)
+        .update_location_by_uri(&old_path, &new_path)
         .await
         .map_err(|e| e.to_string())
 }
@@ -5273,7 +5305,7 @@ async fn get_template_store(state: &State<'_, AppState>) -> Result<super::templa
 
 #[cfg(test)]
 mod source_receipt_boundary_tests {
-    use super::{local_source_owner, source_receipt, DocumentIngestInput};
+    use super::{local_source_owner, source_receipt, validate_completed_local_move, DocumentIngestInput};
 
     fn input(location_uri: &str, fingerprint: Option<&str>) -> DocumentIngestInput {
         DocumentIngestInput {
@@ -5322,6 +5354,21 @@ mod source_receipt_boundary_tests {
         assert_eq!(local_source_owner(uri, None).unwrap(), uuid::Uuid::nil().to_string());
         assert_eq!(local_source_owner("/fixtures/source.txt", None).unwrap(), "local");
         assert!(local_source_owner(uri, Some(" ".into())).is_err());
+    }
+
+    #[test]
+    fn deferred_move_refuses_a_reused_original_path_and_a_missing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("before.txt");
+        let new = dir.path().join("after.txt");
+        std::fs::write(&old, b"original source").unwrap();
+        std::fs::rename(&old, &new).unwrap();
+        assert!(validate_completed_local_move(old.to_str().unwrap(), new.to_str().unwrap()).is_ok());
+        std::fs::write(&old, b"an independently indexed source").unwrap();
+        assert!(validate_completed_local_move(old.to_str().unwrap(), new.to_str().unwrap()).is_err());
+        std::fs::remove_file(&old).unwrap();
+        std::fs::remove_file(&new).unwrap();
+        assert!(validate_completed_local_move(old.to_str().unwrap(), new.to_str().unwrap()).is_err());
     }
 }
 

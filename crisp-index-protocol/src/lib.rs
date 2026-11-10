@@ -103,11 +103,11 @@ pub struct IngestChunk {
     pub ext: String,
     /// ISO-639-1 language code (`en`, `de`, …) or empty if unknown.
     pub language: String,
-    /// Stable URI for the file's location, e.g. `crisp+local://machine-uuid/owner/path`.
+    /// Stable URI for the file's location, e.g. `crisp+local://owner-uuid@machine-uuid/path`.
     pub location_uri: String,
     /// Owner / user identifier — used for multi-tenant filtering.
     pub owner_id: String,
-    /// SHA-256 of the source file's bytes (typically equals `doc_id`).
+    /// SHA-256 of the source file's bytes, independent of the stable document ID.
     pub source_hash: String,
     /// User-supplied tags. Always serialised, empty `[]` if none.
     #[serde(default)]
@@ -377,8 +377,8 @@ pub struct UpdateLocationBody {
 }
 
 /// Body for the auxiliary `POST /v1/docs/location/by-uri` endpoint — used
-/// when the client only knows the *old* URI, not the doc ID. (Currently
-/// only the client posts this; the server stub is forthcoming.)
+/// when the client only knows the exact old URI. Ambiguous sources or
+/// destinations return HTTP 409 without changing either document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateLocationByUriBody {
     /// Existing `location_uri` to match.
@@ -408,8 +408,7 @@ pub struct DeleteResponse {
 pub struct StatsResponse {
     /// Total number of chunk rows across all documents.
     pub row_count: usize,
-    /// Approximate distinct-document count (may be cached / sampled on
-    /// large indexes).
+    /// Live full-text document count, scoped by owner and document identifier.
     pub doc_count: usize,
     /// Server-configured embedding dimension.
     pub embed_dims: usize,

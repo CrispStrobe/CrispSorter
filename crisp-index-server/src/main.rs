@@ -144,6 +144,10 @@ async fn main() -> Result<()> {
         .route("/search", post(routes::search::search))
         .route("/docs/{doc_id}", delete(routes::docs::delete_doc))
         .route(
+            "/docs/location/by-uri",
+            post(routes::docs::update_location_by_uri),
+        )
+        .route(
             "/docs/{doc_id}/location",
             post(routes::docs::update_location),
         )

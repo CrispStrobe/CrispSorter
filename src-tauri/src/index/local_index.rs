@@ -42,6 +42,9 @@ const TABLE_NAME: &str = "documents";
 mod occurrence;
 pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
 
+#[path = "source_move.rs"]
+mod source_move;
+
 fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
     anyhow::ensure!(!chunks.is_empty(), "A document replacement cannot be empty");
     let mut row_ids = std::collections::BTreeSet::new();
@@ -1256,18 +1259,8 @@ impl LocalIndex {
     /// Update the `location_uri` column for all rows of a document.
     pub async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
         let _guard = self.write_guard().await?;
-        anyhow::ensure!(self.document_occurrences(doc_id).await?.len() <= 1,
-            "This legacy identity represents multiple source occurrences; refresh or select an exact source before moving it");
         let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
-        let new_val = format!("'{}'", new_uri.replace('\'', "''"));
-        self.table
-            .update()
-            .only_if(filter)
-            .column("location_uri", new_val)
-            .execute()
-            .await
-            .context("LanceDB update_location")?;
-        super::result_cache::invalidate();
+        self.update_location_filter_locked(&filter, new_uri).await?;
         Ok(())
     }
 
@@ -1275,15 +1268,7 @@ impl LocalIndex {
     pub async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
         let _guard = self.write_guard().await?;
         let filter = format!("location_uri = '{}'", old_uri.replace('\'', "''"));
-        let new_val = format!("'{}'", new_uri.replace('\'', "''"));
-        self.table
-            .update()
-            .only_if(filter)
-            .column("location_uri", new_val)
-            .execute()
-            .await
-            .context("LanceDB update_location_by_uri")?;
-        super::result_cache::invalidate();
+        self.update_location_filter_locked(&filter, new_uri).await?;
         Ok(())
     }
 

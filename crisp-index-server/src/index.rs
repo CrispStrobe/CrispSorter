@@ -35,7 +35,7 @@ const MAX_AFFECTED_CHUNKS: usize = 65_536;
 pub struct AmbiguousDocument;
 impl std::fmt::Display for AmbiguousDocument {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("This document ID represents multiple owners or source locations; resolve the exact occurrence before changing it")
+        formatter.write_str("This selection represents multiple owners, document identities, or source locations; resolve the exact occurrence before changing it")
     }
 }
 impl std::error::Error for AmbiguousDocument {}
@@ -527,6 +527,35 @@ impl VectorStore {
         Ok(keys.into_iter().collect())
     }
 
+    async fn keys_for_location(&self, uri: &str) -> Result<Vec<DocumentKey>> {
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(format!("location_uri='{}'", sql_escape(uri)))
+            .select(Select::columns(&["owner_id", "doc_id"]))
+            .limit(MAX_AFFECTED_CHUNKS + 1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        ensure!(
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>() <= MAX_AFFECTED_CHUNKS,
+            "Source location exceeds the 65536-chunk safety limit"
+        );
+        let mut keys = BTreeSet::new();
+        for batch in &batches {
+            let owners = string_column(batch, "owner_id")?;
+            let ids = string_column(batch, "doc_id")?;
+            for row in 0..batch.num_rows() {
+                keys.insert(DocumentKey {
+                    owner_id: owners.value(row).into(),
+                    doc_id: ids.value(row).into(),
+                });
+            }
+        }
+        Ok(keys.into_iter().collect())
+    }
+
     /// Stream a stable Lance snapshot to disk, prepare the complete FTS view,
     /// and remove legacy duplicate vector rows before publishing either view.
     async fn rebuild_fts(&self, fts: &FtsStore) -> Result<()> {
@@ -877,6 +906,41 @@ impl SearchIndex {
         let _guard = self.read_guard().await?;
         let keys = self.mutation_keys(doc_id, owner_id).await?;
         if keys.is_empty() {
+            return Ok(());
+        }
+        self.vector
+            .update_keys_location(&keys, new_uri, self.fts.next_write_timestamp()?)
+            .await
+    }
+
+    /// Resolve an exact old URI when a filesystem move has no document ID.
+    /// Ambiguous sources and destinations require an explicitly scoped action.
+    pub async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        ensure!(
+            !old_uri.trim().is_empty() && !new_uri.trim().is_empty(),
+            "Source and destination locations are required"
+        );
+        let _guard = self.read_guard().await?;
+        let keys = self.vector.keys_for_location(old_uri).await?;
+        if keys.len() > 1 {
+            return Err(AmbiguousDocument.into());
+        }
+        let Some(key) = keys.first() else {
+            return Ok(());
+        };
+        // A legacy key can cover several locations even when this URI itself
+        // selects only one key. Do not move its unselected source copies.
+        self.mutation_keys(&key.doc_id, Some(&key.owner_id)).await?;
+        if self
+            .vector
+            .keys_for_location(new_uri)
+            .await?
+            .iter()
+            .any(|other| other != key)
+        {
+            return Err(AmbiguousDocument.into());
+        }
+        if old_uri == new_uri {
             return Ok(());
         }
         self.vector

@@ -6,7 +6,7 @@
     $effect(() => {
         const status = batchManager.filterStatus;
         const inStage = status === 'done'
-            ? workflow === 'inbox' && batchManager.items.some(isCopyFallback)
+            ? workflow === 'inbox' && batchManager.items.some(hasSortWarning)
             : inWorkflow({ status: status as BatchStatus }, workflow);
         if (status !== 'all' && !inStage) {
             batchManager.filterStatus = 'all';
@@ -17,7 +17,7 @@
     const activeFilters = $derived(Number(!!batchManager.searchQuery.trim()) + Number(batchManager.filterExtension !== 'all') + Number(batchManager.filterStatus !== 'all') + Number(batchManager.filterMinSize > 0));
     const availableExtensions = $derived([...new Set([...stageItems.map(item => item.extension.toLowerCase()), ...(batchManager.filterExtension === 'all' ? [] : [batchManager.filterExtension])])].filter(Boolean).sort());
     const availableStatuses = $derived((['queued', 'unfinished', 'extracting', 'analyzing', 'review', 'ready', 'moving', 'error', 'done'] as BatchStatus[]).filter(status =>
-        status === 'done' ? workflow === 'inbox' && stageItems.some(isCopyFallback) : inWorkflow({ status }, workflow)));
+        status === 'done' ? workflow === 'inbox' && stageItems.some(hasSortWarning) : inWorkflow({ status }, workflow)));
     const resumableItems = $derived(batchManager.items.filter(canProcessBatchItem));
     const batchBusy = $derived(!batchManager.sessionReady || batchManager.isProcessing || batchManager.isExecuting || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
     const additionsBusy = $derived(!batchManager.sessionReady || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
@@ -32,7 +32,7 @@
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { createSortPlan, textSidecarPath, type SortMode, type SortPlan } from '../batch/sortPlan';
     import { deleteVerifiedCopies, type VerifiedDuplicateGroup, type DuplicateIssue } from '../batch/duplicates';
-    import { canProcessBatchItem, isCopyFallback } from '../batch/recovery';
+    import { canProcessBatchItem, hasSortWarning, isCopyFallback, isIndexUpdateWarning } from '../batch/recovery';
     import { isProviderUri, pickProviderDocuments } from '../mobileProvider';
     import { upsertItem, upsertItemsBulk } from '../batchStore';
     import { i18n } from '../i18n.svelte';
@@ -1062,7 +1062,7 @@
             else {
                 // A copy fallback has a destination, but its original remains.
                 // Keep that unresolved warning with other problematic entries.
-                const removedIds = batchManager.items.filter(item => item.status === 'done' && !isCopyFallback(item)).map(item => item.id);
+                const removedIds = batchManager.items.filter(item => item.status === 'done' && !hasSortWarning(item)).map(item => item.id);
                 await batchManager.removeItems(removedIds);
             }
             selectedIds = selectedIds.filter(id => batchManager.items.some(item => item.id === id));
@@ -1071,6 +1071,14 @@
         } catch (error) {
             reportError = `${reviewLabels.cleanupFailed} ${String(error)}`;
         } finally { reportBusy = false; }
+    }
+
+    async function retrySelectedIndexLocation() {
+        const item = selectedItem;
+        if (!item || batchBusy) return;
+        detailSaveError = '';
+        try { await batchManager.retryIndexLocation(item.id); }
+        catch (error) { detailSaveError = String(error); }
     }
 
     /// PLAN P6 4d — dump the current batch (items the user has loaded
@@ -1712,7 +1720,7 @@
                                 }
                             }}
                             class:status-error={item.status === 'error'}
-                            class:status-done={item.status === 'done' && !isCopyFallback(item)}
+                            class:status-done={item.status === 'done' && !hasSortWarning(item)}
                             class:is-dupe-nonprimary={item.isDuplicatePrimary === false}
                             class:is-chapter-member={!!item.chapterGroupId && !item.isChapterRepresentative}
                             class:is-chapter-rep={!!item.chapterGroupId && item.isChapterRepresentative}
@@ -1738,9 +1746,9 @@
                                             </span>
                                             <span class="status-badge"
                                                 class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}
-                                                class:status-unfinished={item.status === 'unfinished' || isCopyFallback(item)}
+                                                class:status-unfinished={item.status === 'unfinished' || hasSortWarning(item)}
                                                 class:status-error={item.status === 'error'}>
-                                                {isCopyFallback(item) ? reviewLabels.copyFallback : statusLabel(item.status, item.extension)}
+                                                {isCopyFallback(item) ? reviewLabels.copyFallback : isIndexUpdateWarning(item) ? (i18n.lang === 'de' ? 'Index-Aktualisierung offen' : 'Index update pending') : statusLabel(item.status, item.extension)}
                                             </span>
                                             {#if item.statusDetail}
                                                 {#if /^\d+\/\d+/.test(item.statusDetail)}
@@ -1878,7 +1886,12 @@
                 <p class="detail-filename" title={selectedItem.originalPath}>{selectedItem.originalName}</p>
                 <div class="detail-content">
                     {#if selectedItem.errorMessage}
-                        <div class="error-box">{formatErrorCode(selectedItem.errorMessage)}</div>
+                        <div class="error-box">{isIndexUpdateWarning(selectedItem) ? selectedItem.errorMessage.replace(/^INDEX_UPDATE_FAILED: /, '') : formatErrorCode(selectedItem.errorMessage)}</div>
+                        {#if isIndexUpdateWarning(selectedItem)}
+                            <button class="action-btn small" disabled={batchBusy} onclick={retrySelectedIndexLocation}>
+                                {i18n.lang === 'de' ? 'Suchindex erneut aktualisieren' : 'Retry search index update'}
+                            </button>
+                        {/if}
                     {/if}
                     <div class="detail-section">
                         <h4>{i18n.t.batch.target_path}</h4>
@@ -2093,6 +2106,12 @@
                         <div class="stat-line warning"><AlertCircle size={16} /> {i18n.t.batch.report_copy_fallback.replace('{count}', lastExecutionStats.copiedFallback)}</div>
                     {/if}
 
+                    {#if (lastExecutionStats.indexUpdateWarnings ?? 0) > 0}
+                        <div class="stat-line warning" role="alert"><AlertCircle size={16} /> {i18n.lang === 'de'
+                            ? `${lastExecutionStats.indexUpdateWarnings} Datei(en) wurden verschoben; die Suchindex-Aktualisierung ist noch offen. Im Posteingang am Eintrag erneut versuchen.`
+                            : `${lastExecutionStats.indexUpdateWarnings} file(s) moved; their search index updates are still pending. Retry from each entry in Inbox.`}</div>
+                    {/if}
+
                     {#if (lastExecutionStats.locked ?? 0) > 0}
                         <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_locked.replace('{count}', lastExecutionStats.locked)}</div>
                     {/if}
@@ -2121,6 +2140,7 @@
                                            + (lastExecutionStats.notPermitted ?? 0)
                                            + (lastExecutionStats.locked ?? 0)
                                            + (lastExecutionStats.copiedFallback ?? 0)
+                                           + (lastExecutionStats.indexUpdateWarnings ?? 0)
                                            + (lastExecutionStats.error ?? 0)}
                     {@const allSucceeded = problemCount === 0 && lastExecutionStats.success > 0}
                     <div class="report-choices">

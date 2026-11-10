@@ -357,6 +357,23 @@ pub(crate) async fn apply_imported_chunks_if_version(
     local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], replace_doc_ids: &[String],
     expected_version: Option<u64>,
 ) -> Result<bool> {
+    apply_imported_chunks_guarded(local, fts, chunks, replace_doc_ids, expected_version, false).await
+}
+
+/// A pull page classifies absent documents before preparing its L1 rows. If
+/// another writer creates one meanwhile, rerun conflict policy before ACK.
+pub(crate) async fn apply_new_sync_metadata_if_version(
+    local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], expected_version: u64,
+) -> Result<bool> {
+    anyhow::ensure!(chunks.iter().all(|chunk| chunk.chunk_index < 0),
+        "New sync rows must contain metadata only");
+    apply_imported_chunks_guarded(local, fts, chunks, &[], Some(expected_version), true).await
+}
+
+async fn apply_imported_chunks_guarded(
+    local: &LocalIndex, fts: &FtsIndex, chunks: &[DocumentChunk], replace_doc_ids: &[String],
+    expected_version: Option<u64>, require_absent: bool,
+) -> Result<bool> {
     anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
     let _guard = local.read_guard(fts).await?;
     if let Some(expected) = expected_version {
@@ -366,6 +383,7 @@ pub(crate) async fn apply_imported_chunks_if_version(
         .chain(chunks.iter().map(|chunk| chunk.doc_id.as_str())).collect::<std::collections::BTreeSet<_>>();
     for doc_id in affected_ids {
         let occurrences = local.document_occurrences(doc_id).await?;
+        if require_absent && !occurrences.is_empty() { return Ok(false); }
         anyhow::ensure!(occurrences.len() <= 1,
             "This legacy document ID refers to multiple owners or locations; review the selected occurrence before replacement");
         let incoming_scopes = chunks.iter().filter(|chunk| chunk.doc_id == doc_id)
@@ -405,6 +423,8 @@ pub(crate) async fn apply_metadata_update(
 ) -> Result<()> {
     anyhow::ensure!(local.dims > 0, "An index snapshot is read-only");
     let _guard = local.read_guard(fts).await?;
+    anyhow::ensure!(local.document_occurrences(doc_id).await?.len() <= 1,
+        "This legacy document ID refers to multiple owners or locations; select the source occurrence before updating metadata");
     let generation = uuid::Uuid::new_v4().to_string();
     let (receipt_rows, prepared_rows) = local.prepare_metadata_update(
         doc_id, title, author, year, language, page_count, metadata_json, &generation).await?;
@@ -1789,9 +1809,43 @@ mod tests {
         assert!(local.ingest_batch_with_fts(&[collision], &[], &fts).await.is_err());
         assert!(local.ingest_batch_with_fts(&[moved], &["shared-legacy".into()], &fts).await.is_err());
         assert!(local.delete_document_with_fts("shared-legacy", &fts).await.is_err());
+        assert!(local.update_l2_fields("shared-legacy", Some("Must not alter other occurrences"),
+            None, None, None, None, None).await.is_err());
         assert_eq!(local.table_ref().version().await.unwrap(), before);
         assert_eq!(local.table_ref().count_rows(None).await.unwrap(), rows_before);
         assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn newly_appeared_source_requires_sync_policy_retry_without_losing_local_data() {
+        let (_dir, fts, local, _pipeline) = test_indexes().await;
+        let raw = sample_raw();
+        let original = one_chunk(&raw);
+        let absent_version = local.table_ref().version().await.unwrap();
+        assert!(local.fetch_document_summary(&original.doc_id).await.unwrap().is_none());
+        let mut remote = original.clone();
+        remote.id = chunk_row_id(&remote.doc_id, -1);
+        remote.chunk_index = -1;
+        remote.chunk_total = 0;
+        remote.full_text = None;
+        remote.title = Some("Unreviewed remote title".into());
+        local.ingest_batch_with_fts(&[original.clone()], &[], &fts).await.unwrap();
+        assert!(!apply_new_sync_metadata_if_version(&local, &fts, &[remote.clone()], absent_version).await.unwrap());
+        let current_version = local.table_ref().version().await.unwrap();
+        // Merely rereading the table version is insufficient: the absent
+        // decision itself must still hold under the paired writer lease.
+        assert!(!apply_new_sync_metadata_if_version(&local, &fts, &[remote.clone()], current_version).await.unwrap());
+        assert_eq!(local.table_ref().version().await.unwrap(), current_version);
+        assert_eq!(local.fetch_document_summary(&original.doc_id).await.unwrap().unwrap().title, original.title);
+        assert_eq!(local.fetch_full_text(&original.doc_id).await.unwrap(), raw.full_text);
+        assert_eq!(fts.search("fox", &Default::default(), 10).unwrap().len(), 1);
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+
+        remote.doc_id = "still-absent-source".into();
+        remote.id = chunk_row_id(&remote.doc_id, -1);
+        remote.location_uri = "/independent/metadata.txt".into();
+        assert!(apply_new_sync_metadata_if_version(&local, &fts, &[remote.clone()], current_version).await.unwrap());
+        assert_eq!(local.fetch_document_summary(&remote.doc_id).await.unwrap().unwrap().title, remote.title);
     }
 
     #[tokio::test]
@@ -2430,7 +2484,7 @@ mod tests {
         let (_dir, fts, local, pipeline) = test_indexes().await;
         let raws = collision_sources(); seed_shared_legacy(&local, &fts, &raws).await;
         let raw = &raws[0];
-        pipeline.ingest_l2_row("shared-legacy".into(), raw.location_uri.clone(), raw.owner_id.clone(),
+        pipeline.ingest_l2_row(doc_id_for(raw), raw.location_uri.clone(), raw.owner_id.clone(),
             raw.filename.clone(), raw.ext.clone(), "failed-new-bytes".into(), Some(123), Some(100), None, None,
             None, None, None, None, None, &super::super::task_failure::TaskFailureReason::EmptyText, "No text").await.unwrap();
         assert!(local.indexed_state_for_owner_uri(&raw.location_uri, &raw.owner_id).await.unwrap().unwrap().extraction_failed);
@@ -2470,6 +2524,56 @@ mod tests {
         assert_eq!(local.fetch_full_text(&canonical.doc_id).await.unwrap(), canonical.full_text.unwrap());
         assert_eq!(fts.doc_count(), 2);
         assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn same_byte_ocr_refresh_keeps_reviews_and_reanchors_current_unicode_evidence() {
+        let (dir, fts, local, pipeline) = test_indexes().await;
+        let path = dir.path().join("scanned-source.bin"); std::fs::write(&path, b"unchanged scanned source").unwrap();
+        let mut raw = sample_raw(); raw.full_text = "Vendor: Acme".into();
+        raw.source_hash = hash_local_source(&path).unwrap(); raw.location_uri = path.to_string_lossy().into_owned();
+        let mut prior = one_chunk(&raw);
+        let mut fields = super::super::fields::from_extraction(&prior.doc_id, &raw.full_text, "original-model", vec![("vendor".into(), "Acme".into(), 0.91)]);
+        fields[0].review_status = "corrected".into(); fields[0].normalized_value = "Acme Limited".into(); fields[0].revision = 5;
+        super::super::fields::attach(&mut prior.metadata_json, &fields);
+        local.ingest_batch_with_fts(&[prior], &[], &fts).await.unwrap();
+
+        // An explicitly completed extraction with no fields must stay empty;
+        // fallback retention is only for an extraction that did not run NER.
+        {
+            let _guard = local.read_guard(&fts).await.unwrap();
+            let mut empty_fields = one_chunk(&raw); empty_fields.metadata_json = Some("{\"field_evidence\":[]}".into());
+            let mut chunks = [empty_fields]; let mut inputs = pending_for(&raw, Vec::new()).inputs;
+            local.prepare_occurrence_write(&mut chunks, &mut inputs, "uncommitted-check").await.unwrap();
+            let metadata: serde_json::Value = serde_json::from_str(chunks[0].metadata_json.as_deref().unwrap()).unwrap();
+            assert!(super::super::fields::read(&metadata).is_empty());
+        }
+
+        raw.full_text = "Ö intro\u{c}Vendor: Acme".into();
+        let id = pipeline.ingest_verified_document(raw.clone(), path.clone()).await.unwrap().doc_ids[0].clone();
+        let current = super::super::fields::read(&local.document_metadata(&id).await.unwrap());
+        assert_eq!(current[0].id, fields[0].id);
+        assert_eq!(current[0].normalized_value, "Acme Limited");
+        assert_eq!(current[0].review_status, "corrected");
+        assert_eq!(current[0].revision, 5);
+        assert_eq!(current[0].confidence, Some(0.91));
+        assert_eq!(current[0].model, "original-model");
+        assert_eq!(current[0].start_char, Some("Ö intro\u{c}Vendor: ".chars().count()));
+        assert_ne!(current[0].start_char, fields[0].start_char);
+        assert_eq!(current[0].end_char, current[0].start_char.map(|start| start + 4));
+        assert_eq!(current[0].page, Some(2));
+        assert_eq!(current[0].anchor_method, "first_exact_match");
+
+        raw.full_text = "The vendor is unreadable in this extraction".into();
+        pipeline.ingest_verified_document(raw.clone(), path.clone()).await.unwrap();
+        let missing = super::super::fields::read(&local.document_metadata(&id).await.unwrap());
+        assert_eq!(missing[0].normalized_value, "Acme Limited");
+        assert_eq!(missing[0].start_char, None); assert_eq!(missing[0].end_char, None);
+        assert_eq!(missing[0].page, None); assert_eq!(missing[0].anchor_method, "unavailable");
+
+        std::fs::write(&path, b"different scanned source").unwrap(); raw.source_hash = hash_local_source(&path).unwrap();
+        pipeline.ingest_verified_document(raw, path).await.unwrap();
+        assert!(super::super::fields::read(&local.document_metadata(&id).await.unwrap()).is_empty());
     }
 
 }

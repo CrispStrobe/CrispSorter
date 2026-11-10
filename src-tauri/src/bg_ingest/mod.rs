@@ -775,7 +775,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
     // Failed attempts and successful extraction share one deterministic
     // identity, so retries replace their metadata row rather than multiply it.
-    let doc_id = source_hash.clone();
+    let doc_id = crate::index::source_identity::occurrence_id(&owner, &location_uri, &source_hash);
 
     // ── Stage W — skeleton-only fast path ──────────────────────────────
     // When `local_skeleton_only = true` we skip everything except the two
@@ -1116,7 +1116,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 && raw.embedding_vit.is_none() && raw.embedding_omni.is_none() {
                 let message = "No searchable text was extracted. Metadata is retained; enable OCR or adjust extraction settings and retry.";
                 pipeline.ingest_l2_row(
-                    raw.source_hash.clone(), raw.location_uri, raw.owner_id, raw.filename,
+                    doc_id, raw.location_uri, raw.owner_id, raw.filename,
                     raw.ext, raw.source_hash, raw.mtime_unix, raw.file_size,
                     raw.parent_dir, raw.volume_id, raw.title, raw.author, raw.year,
                     Some(raw.language), None, &TaskFailureReason::EmptyText, message,

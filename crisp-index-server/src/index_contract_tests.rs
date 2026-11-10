@@ -825,6 +825,10 @@ async fn legacy_location_collisions_split_only_the_selected_source() {
         .update_scoped_location("legacy-collision", "test://unsafe", Some("a"))
         .await
         .is_err());
+    assert!(index
+        .update_location_by_uri("test://first", "test://unsafe")
+        .await
+        .is_err());
     let replacement = ordinary("a", "test://first", "first hash", "refreshed first");
     let expected = replacement.doc_id.clone();
     index
@@ -903,4 +907,62 @@ async fn partial_updates_publish_coherent_metadata_and_filtered_vector_results()
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn legacy_mixed_chunk_metadata_cannot_bypass_canonical_vector_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let vector = Arc::new(VectorStore::open_or_create(dir.path(), 2).await.unwrap());
+    let mut first = wire("a", "legacy", 0, "legacybody", None, None);
+    first.embedding = vec![0.0, 1.0];
+    let mut later = wire("a", "legacy", 1, "later chunk", None, None);
+    later.language = "fr".into();
+    later.year = Some(2026);
+    let mut visible = wire("a", "visible", 0, "visible body", None, None);
+    visible.language = "fr".into();
+    visible.year = Some(2026);
+    visible.embedding = vec![0.9, 0.1];
+    let schema = build_lance_schema(2);
+    let batches = [first, later, visible]
+        .iter()
+        .map(|chunk| chunk_to_record_batch(chunk, 2, &schema))
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    vector
+        .table
+        .add(arrow_array::RecordBatchIterator::new(
+            batches
+                .into_iter()
+                .map(Ok::<RecordBatch, arrow_schema::ArrowError>),
+            schema,
+        ))
+        .execute()
+        .await
+        .unwrap();
+    let fts = Arc::new(FtsStore::open_or_create(&dir.path().join("fts-v2")).unwrap());
+    let index = SearchIndex::new(vector, fts);
+    index.ensure_ready().await.unwrap();
+    let filters = SearchFilters {
+        owner_id: Some("a".into()),
+        language: Some("fr".into()),
+        year_min: Some(2026),
+        year_max: Some(2026),
+    };
+    for hits in [
+        index.search_vector(&[1.0, 0.0], &filters, 1).await.unwrap(),
+        index
+            .search_hybrid("unrelated natural question", &[1.0, 0.0], &filters, 1)
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, "visible");
+        assert_eq!(hits[0].language.as_deref(), Some("fr"));
+        assert_eq!(hits[0].year, Some(2026));
+    }
+    assert!(index
+        .search_text("legacybody", &filters, 1)
+        .await
+        .unwrap()
+        .is_empty());
 }
