@@ -46,6 +46,9 @@ use serde::{Deserialize, Serialize};
 pub mod complete;
 pub use complete::*;
 
+pub mod container;
+pub use container::*;
+
 pub mod sync;
 pub use sync::{SyncCursor, SyncDeletion, SyncPage, SYNC_CURSOR_VERSION};
 pub mod passage;
