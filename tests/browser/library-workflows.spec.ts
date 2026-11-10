@@ -1,6 +1,6 @@
 // Browser integration uses explicit IPC/provider fixtures. Real native and model
 // qualification is separate; these tests do not claim inference accuracy.
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { fixtures } from './fixtures';
 
 

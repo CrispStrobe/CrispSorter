@@ -20,6 +20,7 @@ import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
 import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
+import { findVerifiedDuplicates } from './duplicates';
 
 export interface ProcessOverrides {
     extractionWorkers?: number;
@@ -67,6 +68,7 @@ export class BatchManager {
     items = $state<BatchItem[]>([]);
     isProcessing = $state(false);
     isExecuting = $state(false);
+    isCleaningDuplicates = $state(false);
     searchQuery = $state('');
     filterExtension = $state('all');
     filterStatus = $state('all');
@@ -334,7 +336,7 @@ export class BatchManager {
 
     async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
         flog('info', `processAll started${onlyIds ? ` (${onlyIds.size} items)` : ''}`);
-        if (this.isProcessing) return;
+        if (this.isProcessing || this.isCleaningDuplicates) return;
         this.isProcessing = true;
         this.stopRequested = false;
         this.llmAbort = new AbortController();
@@ -1233,6 +1235,7 @@ export class BatchManager {
         // Acquire the lock before awaiting settings so concurrent confirmations
         // cannot both dispatch. Validate again after all asynchronous work.
         if (this.isExecuting) throw new Error('A sort is already running.');
+        if (this.isCleaningDuplicates) throw new Error('Duplicate cleanup is still running. Wait before sorting.');
         this.isExecuting = true;
         try {
             const saveTxt = await getSetting('saveTxt', true) as boolean;
@@ -1364,28 +1367,12 @@ export class BatchManager {
         }
     }
 
-    async getDuplicateGroups(deep: boolean = false) {
-        const groups: Record<string, BatchItem[]> = {};
-        for (const item of this.items) {
-            const key = deep ? `${item.size}_${item.originalName}` : `${item.size}`;
-            if (!groups[key]) groups[key] = [];
-            groups[key].push(item);
-        }
-        return Object.values(groups)
-            .filter(g => g.length > 1)
-            .map(items => ({ size: items[0].size, items }));
+    async getDuplicateGroups(onProgress?: (checked: number, total: number) => void) {
+        return findVerifiedDuplicates(this.items,
+            path => invoke<string>('file_sha256', { path }), onProgress);
     }
 
     // ── P15a — content dedup ────────────────────────────────────────────────
-
-    /** SHA-256 via Rust (avoids reading large files into JS). */
-    private async fileHash(path: string): Promise<string> {
-        try {
-            return await invoke<string>('file_sha256', { path });
-        } catch {
-            return `__error_${path}`;
-        }
-    }
 
     /** Group by size → hash; mark duplicateGroupId / isDuplicatePrimary.
      *  Returns number of non-primary duplicates found. */
@@ -1395,41 +1382,20 @@ export class BatchManager {
             item.duplicateGroupId = undefined;
             item.isDuplicatePrimary = undefined;
         }
-        // Skip zero-size and very large files.
-        const MAX_HASH_BYTES = 500 * 1024 * 1024;
-        const candidates = this.items.filter(i => i.size > 0 && i.size <= MAX_HASH_BYTES);
-
-        // Bucket by size.
-        const bySize = new Map<number, BatchItem[]>();
-        for (const item of candidates) {
-            const g = bySize.get(item.size) ?? [];
-            g.push(item);
-            bySize.set(item.size, g);
-        }
+        const scan = await this.getDuplicateGroups();
         let dupeCount = 0;
-        for (const [, sizeGroup] of bySize) {
-            if (sizeGroup.length < 2) continue;
-            // Hash only size-collision candidates in parallel.
-            const hashed = await Promise.all(
-                sizeGroup.map(async item => ({ item, hash: await this.fileHash(item.originalPath) }))
-            );
-            // Re-group by hash.
-            const byHash = new Map<string, BatchItem[]>();
-            for (const { item, hash } of hashed) {
-                const g = byHash.get(hash) ?? [];
-                g.push(item);
-                byHash.set(hash, g);
+        for (const group of scan.groups) {
+            // The batch may have changed while hashing. Ignore stale identities.
+            const current = group.items.map(scanned => this.items.find(item =>
+                item.id === scanned.id && item.originalPath === scanned.originalPath && item.size === scanned.size));
+            if (current.some(item => !item)) continue;
+            for (let index = 0; index < current.length; index++) {
+                current[index]!.duplicateGroupId = group.sha256.slice(0, 8);
+                current[index]!.isDuplicatePrimary = index === 0;
             }
-            for (const [hash, dupeGroup] of byHash) {
-                if (dupeGroup.length < 2) continue;
-                const shortId = hash.slice(0, 8);
-                for (let i = 0; i < dupeGroup.length; i++) {
-                    dupeGroup[i].duplicateGroupId = shortId;
-                    dupeGroup[i].isDuplicatePrimary = i === 0;
-                }
-                dupeCount += dupeGroup.length - 1;
-            }
+            dupeCount += current.length - 1;
         }
+        if (scan.failed.length) flog('warn', `Duplicate verification could not read ${scan.failed.length} file(s); they were not marked as duplicates.`);
         return dupeCount;
     }
 

@@ -19,6 +19,7 @@
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { createSortPlan, textSidecarPath, type SortMode, type SortPlan } from '../batch/sortPlan';
+    import { deleteVerifiedCopies, deletionWasConfirmed, type VerifiedDuplicateGroup, type DuplicateIssue } from '../batch/duplicates';
     import { isProviderUri, pickProviderDocuments } from '../mobileProvider';
     import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
     import { i18n } from '../i18n.svelte';
@@ -131,9 +132,40 @@
     // Duplicates panel
     let showDuplicates = $state(false);
     let showSortOptions = $state(false);
-    let duplicateGroups = $state<Array<{ size: number; items: BatchItem[] }>>([]);
+    let duplicateGroups = $state<VerifiedDuplicateGroup<BatchItem>[]>([]);
     let checkingDuplicates = $state(false);
-    let deepDupeCheck = $state(false);
+    let duplicateProgress = $state({ checked: 0, total: 0 });
+    let duplicateIssues = $state<DuplicateIssue<BatchItem>[]>([]);
+    let duplicateError = $state('');
+    let duplicateNotice = $state('');
+    let duplicateBusy = $derived(checkingDuplicates || batchManager.isCleaningDuplicates || batchManager.isProcessing || batchManager.isExecuting);
+    let duplicateLabels = $derived(i18n.lang === 'de' ? {
+        verified: 'Inhaltsgleiche Dateien', checking: 'Dateiinhalte werden geprüft', refresh: 'Erneut prüfen',
+        description: 'Nur übereinstimmende SHA-256-Prüfsummen gelten als Duplikat. Mindestens eine Kopie bleibt erhalten.',
+        empty: 'Keine inhaltsgleichen Dateien unter den geprüften Dateien gefunden.',
+        skipped: 'Dateien konnten nicht geprüft werden', retry: 'Zugriff prüfen und erneut versuchen.',
+        keep: 'Diesen Eintrag behalten', delete: 'Andere Kopien löschen',
+        keepHint: 'Andere Einträge nur aus dem Stapel entfernen. Dateien bleiben erhalten.',
+        deleteHint: 'Diese Datei behalten und die übrigen inhaltsgleichen Kopien dauerhaft löschen.',
+        confirm: 'Dauerhaft löschen', cancel: 'Abbrechen', keeper: 'Diese Datei bleibt erhalten:', targets: 'Diese Kopien werden dauerhaft gelöscht:',
+        busy: 'Bitte warten, bis Verarbeitung oder Sortierung abgeschlossen ist.',
+        failed: 'Nicht gelöschte Dateien bleiben im Stapel. Zugriff prüfen und erneut versuchen.',
+        removed: 'Andere Einträge entfernt. Dateien auf dem Datenträger bleiben erhalten.',
+        deleted: 'Kopie(n) gelöscht. Die ausgewählte Datei bleibt erhalten.',
+    } : {
+        verified: 'Identical files', checking: 'Verifying file contents', refresh: 'Check again',
+        description: 'Only matching SHA-256 checksums count as duplicates. At least one copy is kept.',
+        empty: 'No identical files found among the files checked.',
+        skipped: 'files could not be checked', retry: 'Check access and try again.',
+        keep: 'Keep this entry', delete: 'Delete other copies',
+        keepHint: 'Remove other entries from the batch only. Files stay on disk.',
+        deleteHint: 'Keep this file and permanently delete the other identical copies.',
+        confirm: 'Permanently delete', cancel: 'Cancel', keeper: 'Keep this file:', targets: 'Permanently delete these copies:',
+        busy: 'Wait for processing or sorting to finish before cleaning up duplicates.',
+        failed: 'Files that could not be deleted remain in the batch. Check access and try again.',
+        removed: 'Other entries removed. Files on disk are unchanged.',
+        deleted: 'copy/copies deleted. The selected file was kept.',
+    });
 
     // Sorting state
     let sortPlan = $state.raw<SortPlan | null>(null);
@@ -424,45 +456,78 @@
     }
 
     async function handleFindDuplicates() {
+        if (duplicateBusy) return;
         checkingDuplicates = true;
-        duplicateGroups = await batchManager.getDuplicateGroups(deepDupeCheck);
-        checkingDuplicates = false;
+        duplicateGroups = [];
+        duplicateIssues = [];
+        duplicateError = '';
         showDuplicates = true;
+        try {
+            const scan = await batchManager.getDuplicateGroups((checked, total) => {
+                duplicateProgress = { checked, total };
+            });
+            duplicateGroups = scan.groups;
+            duplicateIssues = [...scan.failed, ...scan.skipped];
+        } catch (error) {
+            duplicateError = `${String(error)}. ${duplicateLabels.retry}`;
+        } finally {
+            checkingDuplicates = false;
+        }
     }
 
     async function keepOnlyInGroup(groupIdx: number, keepId: string, deleteFromDisk: boolean) {
-        const group = duplicateGroups[groupIdx];
-        const toRemove = group.items.filter(i => i.id !== keepId);
-        if (deleteFromDisk && toRemove.some(i => isProviderUri(i.originalPath))) {
-            showToast('Provider documents are read-only and cannot be deleted here.');
+        if (duplicateBusy) {
+            showToast(duplicateLabels.busy);
             return;
         }
-        if (deleteFromDisk) {
-            const paths = toRemove.map(i => i.originalPath).filter(path => !isProviderUri(path));
-            await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
-        }
-        await batchManager.removeItems(toRemove.map(i => i.id));
-        await handleFindDuplicates();
-    }
-
-    async function keepNewestInGroup(groupIdx: number, deleteFromDisk: boolean) {
         const group = duplicateGroups[groupIdx];
-        const newest = group.items.reduce((a, b) => (a.modifiedAt > b.modifiedAt ? a : b));
-        await keepOnlyInGroup(groupIdx, newest.id, deleteFromDisk);
-    }
-
-    async function removeAllInGroup(groupIdx: number, deleteFromDisk: boolean) {
-        const group = duplicateGroups[groupIdx];
-        if (deleteFromDisk && group.items.some(i => isProviderUri(i.originalPath))) {
-            showToast('Provider documents are read-only and cannot be deleted here.');
-            return;
+        const keeper = group?.items.find(item => item.id === keepId);
+        if (!group || !keeper) return;
+        const toRemove = group.items.filter(item => item.id !== keepId);
+        batchManager.isCleaningDuplicates = true;
+        duplicateError = '';
+        duplicateNotice = '';
+        let refresh = false;
+        try {
+            if (deleteFromDisk) {
+                const confirmed = await ask(
+                    `${duplicateLabels.keeper}\n${keeper.originalPath}\n\n${duplicateLabels.targets} (${toRemove.length})\n${toRemove.map(item => item.originalPath).join('\n')}`,
+                    { title: duplicateLabels.verified, kind: 'warning', okLabel: duplicateLabels.confirm, cancelLabel: duplicateLabels.cancel },
+                );
+                if (!confirmed) return;
+                const outcome = await deleteVerifiedCopies(group, keepId, () => batchManager.items,
+                    path => invoke<string>('file_sha256', { path }),
+                    async path => {
+                        const response = await invoke<unknown>('delete_files', { paths: [path] });
+                        if (!deletionWasConfirmed(path, response)) {
+                            throw new Error(Array.isArray(response) ? response.join('; ') : 'Deletion was not confirmed');
+                        }
+                    });
+                if (outcome.deleted.length) await batchManager.removeItems(outcome.deleted.map(item => item.id));
+                if (outcome.failed.length) {
+                    duplicateError = `${duplicateLabels.failed}\n${outcome.failed.map(issue => `${issue.item.originalName}: ${issue.reason}`).join('\n')}`;
+                }
+                if (outcome.deleted.length) duplicateNotice = `${outcome.deleted.length} ${duplicateLabels.deleted}`;
+            } else {
+                if (!batchManager.items.some(item => item.id === keeper.id && item.originalPath === keeper.originalPath)) {
+                    throw new Error(i18n.lang === 'de' ? 'Der zu behaltende Eintrag wurde geändert. Erneut prüfen.' : 'The entry to keep changed. Refresh and review the group again.');
+                }
+                const current = toRemove.filter(scanned => batchManager.items.some(item => item.id === scanned.id && item.originalPath === scanned.originalPath));
+                await batchManager.removeItems(current.map(item => item.id));
+                duplicateNotice = duplicateLabels.removed;
+            }
+            refresh = true;
+        } catch (error) {
+            duplicateError = `${String(error)}. ${duplicateLabels.retry}`;
+        } finally {
+            batchManager.isCleaningDuplicates = false;
         }
-        if (deleteFromDisk) {
-            const paths = group.items.map(i => i.originalPath).filter(path => !isProviderUri(path));
-            await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
+        if (refresh) {
+            // Refresh the scan while retaining actionable deletion failures.
+            const actionError = duplicateError;
+            await handleFindDuplicates();
+            if (actionError) duplicateError = [actionError, duplicateError].filter(Boolean).join('\n');
         }
-        await batchManager.removeItems(group.items.map(i => i.id));
-        await handleFindDuplicates();
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
@@ -1185,7 +1250,7 @@
         </div>
 
         <div class="right-actions">
-            <button class="action-btn small" onclick={handleFindDuplicates} disabled={checkingDuplicates} title={i18n.t.batch.find_dupes}>
+            <button class="action-btn small" onclick={handleFindDuplicates} disabled={duplicateBusy} title={i18n.t.batch.find_dupes} aria-label={i18n.t.batch.find_dupes}>
                 <Copy size={14} />
                 {#if checkingDuplicates}<span class="loader-anim"><Loader2 size={14} /></span>{/if}
             </button>
@@ -1436,47 +1501,43 @@
     {/if}
 
     {#if showDuplicates}
-        <div class="dupes-panel">
+        <section class="dupes-panel" aria-label={duplicateLabels.verified} aria-busy={checkingDuplicates || batchManager.isCleaningDuplicates}>
             <div class="dupes-header">
-                <span><Copy size={14} /> {i18n.t.batch.find_dupes} — {duplicateGroups.length} {i18n.t.batch.dupe_groups}</span>
+                <span><Copy size={14} /> {duplicateLabels.verified} — {duplicateGroups.length} {i18n.t.batch.dupe_groups}</span>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <label class="dupe-deep-label" for="deep-dupe-check">
-                        <input type="checkbox" id="deep-dupe-check" bind:checked={deepDupeCheck} onchange={handleFindDuplicates} />
-                        {i18n.t.batch.dupe_deep}
-                    </label>
-                    <button class="close-btn-minimal" onclick={() => showDuplicates = false}>×</button>
+                    <button class="action-btn small" onclick={handleFindDuplicates} disabled={duplicateBusy}><RefreshCw size={13} /> {duplicateLabels.refresh}</button>
+                    <button class="close-btn-minimal" onclick={() => showDuplicates = false} aria-label={i18n.lang === 'de' ? 'Duplikatprüfung schließen' : 'Close duplicate review'}>×</button>
                 </div>
             </div>
-            {#if duplicateGroups.length === 0}
-                <div class="dupes-empty">{i18n.t.batch.dupe_none}</div>
+            <p class="dupes-description">{duplicateLabels.description}</p>
+            {#if duplicateNotice}<p class="dupes-description" role="status">{duplicateNotice}</p>{/if}
+            {#if duplicateError}<p class="dupes-error" role="alert">{duplicateError}</p>{/if}
+            {#if duplicateIssues.length > 0}
+                <details class="dupes-issues">
+                    <summary>{duplicateIssues.length} {duplicateLabels.skipped}</summary>
+                    <ul>{#each duplicateIssues as issue}<li>{issue.item.originalName}: {issue.reason}</li>{/each}</ul>
+                </details>
+            {/if}
+            {#if checkingDuplicates}
+                <div class="dupes-empty" role="status"><Loader2 size={14} class="loader-spin" /> {duplicateLabels.checking} · {duplicateProgress.checked} / {duplicateProgress.total}</div>
+            {:else if duplicateGroups.length === 0}
+                <div class="dupes-empty">{duplicateLabels.empty}</div>
             {:else}
                 <div class="dupes-list">
                     {#each duplicateGroups as group, gi}
                         <div class="dupe-group">
                             <div class="dupe-group-header">
-                                <span class="dupe-size">{(group.size / 1024).toFixed(1)} KB — {group.items.length} files</span>
-                                <div class="dupe-group-actions">
-                                    <button class="action-btn small" onclick={() => keepNewestInGroup(gi, false)} title={i18n.t.batch.dupe_keep_newest_remove}>
-                                        Newest
-                                    </button>
-                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} disabled={group.items.some(item => isProviderUri(item.originalPath))} title={i18n.t.batch.dupe_keep_newest_delete}>
-                                        Newest + 🗑
-                                    </button>
-                                    <button class="action-btn small danger" onclick={() => { if (confirm(i18n.t.batch.dupe_confirm_delete_all)) removeAllInGroup(gi, true); }} disabled={group.items.some(item => isProviderUri(item.originalPath))} title={i18n.t.batch.dupe_delete_all}>
-                                        All 🗑
-                                    </button>
-                                </div>
+                                <span class="dupe-size">{formatSize(group.size)} — {group.items.length} {i18n.lang === 'de' ? 'Dateien' : 'files'} · SHA-256 {group.sha256.slice(0, 12)}…</span>
                             </div>
                             {#each group.items as item}
                                 <div class="dupe-row" class:selected={selectedIds.includes(item.id)}>
                                     <div class="dupe-info">
                                         <span class="dupe-name" title={item.originalPath}>{item.originalName}</span>
-                                        <span class="dupe-meta">{item.originalPath.substring(0, item.originalPath.lastIndexOf('/') + 1)} · {new Date(item.modifiedAt).toLocaleDateString()}</span>
+                                        <span class="dupe-meta" title={item.originalPath}>{item.originalPath}</span>
                                     </div>
                                     <div class="dupe-item-actions">
-                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} title={i18n.t.batch.dupe_keep_only}>Keep</button>
-                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} disabled={group.items.some(other => other.id !== item.id && isProviderUri(other.originalPath))} title={i18n.t.batch.dupe_keep_only_delete}>Keep+🗑</button>
-                                        <button class="close-btn-minimal" onclick={() => batchManager.removeItems([item.id]).then(() => handleFindDuplicates())} title={i18n.t.settings.action_remove_from_list}>×</button>
+                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} disabled={duplicateBusy} title={duplicateLabels.keepHint}>{duplicateLabels.keep}</button>
+                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} disabled={duplicateBusy} title={duplicateLabels.deleteHint}>{duplicateLabels.delete}</button>
                                     </div>
                                 </div>
                             {/each}
@@ -1484,7 +1545,7 @@
                     {/each}
                 </div>
             {/if}
-        </div>
+        </section>
     {/if}
 
     <div class="main-split">
@@ -2060,21 +2121,24 @@
     .action-btn.danger:hover { background: #ef4444; color: white; border-color: #ef4444; }
     .small { padding: 4px 8px; font-size: 0.75rem; }
 
-    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 320px; display: flex; flex-direction: column; }
+    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 420px; display: flex; flex-direction: column; overflow: auto; }
     .dupes-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; border-bottom: 1px solid #1e293b; font-size: 0.8125rem; font-weight: 600; color: #94a3b8; flex-shrink: 0; }
-    .dupes-empty { padding: 12px 16px; font-size: 0.8125rem; color: #52525b; }
+    .dupes-empty { padding: 12px 16px; font-size: 0.8125rem; color: #a1a1aa; display: flex; gap: 8px; align-items: center; }
+    .dupes-description, .dupes-error { margin: 0; padding: 6px 16px; font-size: 0.75rem; color: #cbd5e1; }
+    .dupes-error { color: #fca5a5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .dupes-issues { padding: 4px 16px; font-size: 0.75rem; color: #fbbf24; }
+    .dupes-issues summary { cursor: pointer; }
+    .dupes-issues li { overflow-wrap: anywhere; }
     .dupes-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
     .dupe-group { background: #020617; border: 1px solid #1e293b; border-radius: 6px; overflow: hidden; }
     .dupe-group-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; background: #1e293b; gap: 8px; }
     .dupe-size { font-size: 0.65rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; letter-spacing: 0.05em; }
-    .dupe-group-actions { display: flex; gap: 4px; }
     .dupe-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-top: 1px solid #0f172a; gap: 8px; }
     .dupe-row.selected { background: #1e3a8a33; }
     .dupe-info { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
     .dupe-name { font-size: 0.75rem; color: #cbd5e1; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dupe-meta { font-size: 0.65rem; color: #475569; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dupe-item-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
-    .dupe-deep-label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; cursor: pointer; }
+    .dupe-meta { font-size: 0.65rem; color: #94a3b8; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dupe-item-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex-shrink: 0; }
 
     .main-split { display: flex; flex: 1; overflow: hidden; }
     .table-container { flex: 1; overflow: auto; position: relative; display: flex; flex-direction: column; }
