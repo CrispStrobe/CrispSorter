@@ -13,9 +13,55 @@ These receipts retain the denominator, failed cases, source and model hashes, an
 | Dense | 0.6451 | 0.6047 | 0.9250 | 0 | 0 |
 | Existing hybrid | 0.4667 | 0.4385 | 0.6583 | 85 | 13 |
 
-The baseline exposes a query-interpretation defect: natural questions can be parsed as strict constraints, including punctuation or prose conjunctions. The any-term row is an explicit diagnostic comparison, not evidence that the existing search box already applies this interpretation. Advanced syntax must retain its strict semantics; a natural-language choice needs a separate, typed query plan. No ranking weights or thresholds were fitted to these judgments.
+The baseline exposes a query-interpretation defect: natural questions can be parsed as strict constraints, including punctuation or prose conjunctions. The any-term row is an explicit diagnostic comparison, not evidence that the existing search box already applies this interpretation. At that checkpoint the natural-language choice still needed a separate, typed query plan while preserving strict advanced semantics. The continuation below implements and measures that explicit choice. No ranking weights or thresholds were fitted to these judgments.
 
 This run uses a development build. The receipt's native timings are diagnostic and exclude query-model inference, HTTP, the desktop UI, extraction and chunking. Public scientific abstracts do not qualify a private document collection, multilingual material, OCR or a complete desktop release. See [the reproducible native retrieval procedure](../../../tools/quality/native-retrieval.md).
+
+## Explicit query intent, 2026-11-11
+
+[retrieval-query-intent-57bd68c3.json](retrieval-query-intent-57bd68c3.json) records the clean
+`57bd68c3` native source with the same 5,183-document corpus and all 300 test
+queries. It preserves the original four controls and adds production Natural
+language Full text and Hybrid plans. All 1,800 measured query records count;
+failed cases receive zero quality credit and are included in empty-result
+counts. Consequently `completed` is true and `all_queries_succeeded` remains
+false because the two Advanced controls each retain 13 parser errors. An
+independent audit recomputed all four relevance metrics from every raw trace
+and the frozen judgments, verified each aggregate denominator, and checked
+input/model/source/executable/result/trace hashes.
+
+| Mode | nDCG@10 | MRR@10 | Recall@100 | Empty results | Failed queries |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Advanced Full text | 0.0275 | 0.0283 | 0.0275 | 289 | 13 |
+| Diagnostic any-term Full text | 0.5493 | 0.5254 | 0.8342 | 0 | 0 |
+| Semantic (dense) | 0.6451 | 0.6047 | 0.9250 | 0 | 0 |
+| Advanced Hybrid | 0.4667 | 0.4385 | 0.6583 | 85 | 13 |
+| Natural language Full text | 0.5493 | 0.5254 | 0.8342 | 0 | 0 |
+| Natural language Hybrid | 0.6483 | 0.6134 | 0.9410 | 0 | 0 |
+
+Natural language Full text matches the diagnostic any-term ranking exactly.
+Natural language Hybrid retains semantic-only candidates and has no parser
+errors or empty results on this test set. Dense retrieval remains close on
+nDCG, so this single corpus does not establish broad superiority. All four
+control rows reproduce the earlier quality values; no ranking weights or
+judgments were tuned.
+
+The pinned model, tokenizer, input text, judgments and inference configuration
+match the earlier receipt, but regenerated vector-file bytes differ. Compare
+these six rows within the new run. The receipt retains the exact preparation,
+source, executable, result and per-query-trace hashes, along with every failed
+query ID and error. Raw corpus text, query traces, weights and vectors remain
+outside Git.
+
+Native timings are diagnostic development-profile measurements: Natural Full
+text median/p95 are 191.8/269.9 ms, and Natural Hybrid median/p95 are
+448.3/797.3 ms. Modes run sequentially once in the listed order with ten
+unmeasured warm-up queries per mode; this is not a randomized or repeated
+performance study. Timings exclude model inference, HTTP, UI, extraction and
+desktop rendering. The run uses one chunk per abstract and an exact vector scan;
+3,681 document embeddings reach the 256-token model limit. See the
+[continuation report](../../../docs/search-workspace-continuation-20261111.md)
+for all six latency rows and the remaining integration boundaries.
 
 ## System OCR output contract
 

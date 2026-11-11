@@ -15,8 +15,7 @@ is integrated. A fresh review found 71 remote branch heads and one open PR.
 | `57bd68c3a6c0311c3ed2d5b2184d7490f2d6877e` | Add explicit query interpretation, shared local/remote planning, verified query evidence, and six-mode native measurements. |
 
 Each checkpoint was published to the feature branch and the local checkout was
-verified against its exact remote tree. No merge into main or deployment is
-part of this continuation.
+verified against its exact remote tree.
 
 ## Closed implementation gaps
 
@@ -108,6 +107,7 @@ existence of a regression test or a pending hosted job.
 | Locked native server/search contracts | 152 passed, 0 failed; the external-corpus benchmark is a separately invoked ignored test. |
 | Focused native container-cache contracts | 3 passed. |
 | Report evaluation contracts | 12 passed. |
+| Independent retrieval audit | All 1,800 measured records and four relevance metrics recomputed against the frozen judgments; input, model, source and executable hashes verified. |
 | Browser evidence and intent scenarios | 14 scenarios discovered in the two new specs; discovery is not execution. |
 | Diff formatting | Passed. |
 
@@ -123,20 +123,78 @@ from the PR's commit checks. No browser or full application pass is inferred.
 
 ## Public retrieval qualification
 
-The six-mode runner compares strict lexical, diagnostic any-term lexical,
-dense, advanced Hybrid, Natural language lexical and Natural language Hybrid
-against the same 5,183-document corpus and all 300 judged queries. It retains
-parser errors and zero-result queries in every mean. The new production plans
-use unchanged rank weights and no tuning to judgments.
+The completed [six-mode receipt](../tests/quality/measurements/retrieval-query-intent-57bd68c3.json)
+measures clean source revision `57bd68c3a6c0311c3ed2d5b2184d7490f2d6877e`.
+All six modes use the same 5,183 documents, all 300 judged queries and 339
+judgments, giving 1,800 measured query records. Errors and empty results remain
+in every denominator. Empty-result counts include the failed-query cases.
+An independent recomputation checked nDCG@10, MRR@10, Recall@100 and AP@100
+for every trace and aggregate with a denominator of 300 per mode. The maximum
+aggregate floating-point difference was 7.78e-16. Input coverage, original
+result and trace hashes, model bytes and native source fingerprints also passed.
 
-The runner records the clean source revision, source and executable hashes,
-model and dataset receipts, development profile and native thread limits.
-Model inference uses the pinned 384-dimensional MiniLM ONNX configuration.
-This comparison uses one chunk per abstract and an exact vector scan. It does
-not qualify approximate-index builds, desktop extraction/chunking/model routing,
-HTTP or rendering. Development-build latency is diagnostic, not release latency
-on the user's machine. See [the run procedure](../tools/quality/native-retrieval.md)
-and [measurement receipts](../tests/quality/measurements/README.md).
+| Mode | nDCG@10 | MRR@10 | Recall@100 | Empty results | Failed queries |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Advanced Full text | 0.0275 | 0.0283 | 0.0275 | 289 | 13 |
+| Diagnostic any-term Full text | 0.5493 | 0.5254 | 0.8342 | 0 | 0 |
+| Semantic (dense) | 0.6451 | 0.6047 | 0.9250 | 0 | 0 |
+| Advanced Hybrid | 0.4667 | 0.4385 | 0.6583 | 85 | 13 |
+| Natural language Full text | 0.5493 | 0.5254 | 0.8342 | 0 | 0 |
+| Natural language Hybrid | 0.6483 | 0.6134 | 0.9410 | 0 | 0 |
+
+Natural language Full text exactly matches the diagnostic any-term policy.
+Natural language Hybrid recovers semantic-only candidates: its nDCG@10 is
+0.6483 and Recall@100 is 0.9410, with no failed or empty queries. The advanced
+Hybrid control scores 0.4667 and 0.6583 and has 85 empty results, including 13
+parser errors on the prose inputs. The four control rows reproduce the earlier
+ranking-quality values; their strict language semantics are preserved.
+
+Dense retrieval is close to Natural language Hybrid on this corpus (0.6451
+nDCG@10 and 0.9250 recall). This one comparison does not establish a generally
+superior retrieval method. No rank weights, queries, judgments or thresholds
+were adjusted after observing results. Both Natural language rows use the
+production planner with fuzzy and synonym expansion disabled.
+
+### Observed native latency
+
+| Mode | Median native ms | p95 native ms |
+| --- | ---: | ---: |
+| Advanced Full text | 59.5 | 121.2 |
+| Diagnostic any-term Full text | 208.3 | 296.2 |
+| Semantic (dense) | 291.7 | 500.8 |
+| Advanced Hybrid | 444.3 | 2849.4 |
+| Natural language Full text | 191.8 | 269.9 |
+| Natural language Hybrid | 448.3 | 797.3 |
+
+These are development-build, component-only timings on the recorded x86-64
+Linux environment, with `RAYON_NUM_THREADS=2` and `OMP_NUM_THREADS=2`. The modes
+run once each in the listed order, after ten unmeasured warm-up queries per
+mode. This is neither a randomized performance comparison nor a repeated
+release/device benchmark. Query-model inference, HTTP, UI, extraction and
+desktop rendering are outside the native query timings.
+
+Corpus ingestion took 15.59 seconds. Separate batched model
+preparation took 326.35 seconds for documents and
+2.92 seconds for queries; these batch totals must not be treated as
+interactive per-request inference latency.
+
+### Input and audit scope
+
+The run uses pinned 384-dimensional MiniLM ONNX vectors, one `title + newline +
+body` chunk per abstract and an exact vector scan. The 256-token model limit
+truncated 3,681 document inputs and no queries. It does not qualify approximate
+index builds, desktop chunking/model routing, private data, multilingual
+material or OCR.
+
+Regenerated embedding-file bytes differ from the earlier receipt even though
+the pinned model, tokenizer, corpus, judgments and inference configuration match.
+The controlled comparison is therefore among the six rows in this run; no
+bitwise inference reproduction is claimed. Source/executable hashes, all input
+receipts and every failed-query entry are retained in the committed aggregate.
+The full result hash is `8a9847c181b769a66d1b903b8aa833594d3bda5967e4c710f1e41c4d0bce68b7` and the query-trace hash
+is `036324637fec6b6f2daf1da6a7f26c88e8429f64dab37ebae664ca248fc12af9`. Raw source/query text, model weights, vectors
+and per-query traces remain outside Git. See the
+[run procedure](../tools/quality/native-retrieval.md).
 
 ## Retained OCR qualification
 
@@ -164,6 +222,5 @@ See the [OCR measurement receipt](../tests/quality/measurements/system-ocr-expli
 Private-corpus relevance, the intended machine's release latency, full desktop
 model and OCR routing, and hosted platform/browser results remain separate
 qualification gates. Formats outside the documented decoder profile and
-omitted media retain their stated limits. These boundaries are not evidence
-of a missing implemented query, reporting or container feature, and they must
-not be converted into universal quality claims.
+omitted media retain their stated limits. Broader release and quality claims
+require those separate checks.
