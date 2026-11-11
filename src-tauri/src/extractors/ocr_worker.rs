@@ -6,6 +6,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use super::{ExtractedDocument, OcrPipelineConfig, ocr_crispembed::{self, OcrReviewResult, RegionConf}};
+use crate::operation_log::OperationLog;
+use serde_json::{json, Value};
 
 pub const CPU_PIXEL_BUDGET: u32 = 262_144;
 pub const CPU_BUDGET_AVAILABLE: bool =
@@ -21,7 +23,12 @@ struct Request {
     config: OcrPipelineConfig,
     #[serde(default)]
     mode: OutputMode,
+    #[serde(default)]
+    logging: Option<WorkerLogging>,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WorkerLogging { operation_id: String, path: PathBuf }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DocumentOutput {
@@ -38,10 +45,21 @@ pub fn execute(request: &Path, response: &Path) -> Result<()> {
     }
     let input = std::fs::read(request).context("read OCR worker request")?;
     let mut request: Request = serde_json::from_slice(&input).context("parse OCR worker request")?;
+    if let Some(logging) = request.logging.take() {
+        crate::operation_log::with_worker_transport(&logging.path, &logging.operation_id,
+            || execute_request(request, response)).context("open OCR worker event channel")?
+    } else { execute_request(request, response) }
+}
+
+fn execute_request(mut request: Request, response: &Path) -> Result<()> {
+    let log = OperationLog::start("ocr.worker_child", json!({"surface":"worker","engine":request.config.engine}));
+    let result = (|| {
+    log.step("validating", Value::Null);
     super::ocr_policy::validate_config(&request.config).map_err(anyhow::Error::msg)?;
     // Already running in the isolated process; never spawn a second worker.
     request.config.cpu_pixel_budget = false;
     super::ocr_policy::validate_runtime(&request.config).map_err(anyhow::Error::msg)?;
+    log.step("recognizing", json!({"mode":request.mode}));
     let data = match request.mode {
         OutputMode::Detailed => serde_json::to_vec(&ocr_crispembed::ocr_regions_detailed(&request.path, &request.config)?)?,
         OutputMode::Review => serde_json::to_vec(&ocr_crispembed::ocr_regions_for_review(&request.path, &request.config)?)?,
@@ -53,41 +71,67 @@ pub fn execute(request: &Path, response: &Path) -> Result<()> {
                 language: document.language, ext: document.ext })?
         }
     };
-    std::fs::write(response, data).context("write OCR worker response")?;
+    log.step("writing_response", json!({"bytes":data.len()}));
+    std::fs::write(response, &data).context("write OCR worker response")?;
+    log.succeed(json!({"bytes":data.len()}));
     Ok(())
+    })();
+    if result.is_err() { log.fail("worker_execution_failed"); }
+    result
 }
 
 #[cfg(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas"))))]
 fn run_worker<T: serde::de::DeserializeOwned>(path: &Path, config: &OcrPipelineConfig, mode: OutputMode) -> Result<T> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    let log = OperationLog::start("ocr.worker", json!({"engine":config.engine,"mode":mode,"cpu_budget":true}));
+    let result = (|| {
+    log.step("validating", Value::Null);
     super::ocr_policy::validate_cpu_budget(config).map_err(anyhow::Error::msg)?;
+    log.step("releasing_models", Value::Null);
     ocr_crispembed::with_released_pipeline(|| {
         let mut request = tempfile::NamedTempFile::new().context("create OCR request")?;
         let response = tempfile::NamedTempFile::new().context("create OCR response")?;
-        serde_json::to_writer(&mut request, &Request { path: path.to_owned(), config: config.clone(), mode })?;
+        let events = tempfile::NamedTempFile::new().context("create OCR worker event channel")?;
+        serde_json::to_writer(&mut request, &Request { path: path.to_owned(), config: config.clone(), mode,
+            logging: Some(WorkerLogging { operation_id:log.id().into(), path:events.path().to_owned() }) })?;
         request.flush()?;
+        log.step("spawning", Value::Null);
         let output = Command::new(std::env::current_exe()?)
             .arg("--crispsorter-ocr-worker").arg(request.path()).arg(response.path())
             .env("CRISPEMBED_MAX_PIXELS", CPU_PIXEL_BUDGET.to_string())
             .env("QWEN2VL_OCR_FORCE_CPU", "1")
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
             .output().context("start isolated OCR worker")?;
+        match crate::operation_log::replay_worker_events(events.path(), log.id()) {
+            Ok(count) => log.step("worker_events", json!({"event_count":count})),
+            Err(_) => log.warn("worker_events_unavailable", Value::Null),
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let diagnostics = stderr.lines().filter(|line| !line.trim().is_empty()
+            && !["[info] operation ", "[warn] operation ", "[error] operation ", "[debug] operation "]
+                .iter().any(|prefix| line.starts_with(prefix))).count();
+        if diagnostics > 0 { log.warn("native_worker_diagnostics", json!({"diagnostic_lines":diagnostics})); }
         if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            let tail: String = error.chars().rev().take(2000).collect::<String>().chars().rev().collect();
+            let tail: String = stderr.chars().rev().take(2000).collect::<String>().chars().rev().collect();
             anyhow::bail!("isolated OCR worker failed ({}): {}", output.status, tail.trim());
         }
         if response.as_file().metadata()?.len() > 32 * 1024 * 1024 {
             anyhow::bail!("OCR worker response is too large");
         }
         let data = std::fs::read(response.path()).context("read OCR worker response")?;
+        log.step("reading_response", json!({"bytes":data.len()}));
         serde_json::from_slice(&data).context("parse OCR worker response")
     })
+    })();
+    match &result { Ok(_) => log.succeed(Value::Null), Err(_) => log.fail("worker_failed") }
+    result
 }
 
 #[cfg(not(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas")))))]
 fn run_worker<T: serde::de::DeserializeOwned>(_path: &Path, _config: &OcrPipelineConfig, _mode: OutputMode) -> Result<T> {
+    let log = OperationLog::start("ocr.worker", json!({"cpu_budget":true}));
+    log.fail("unsupported_build");
     anyhow::bail!("The isolated CPU OCR profile requires a desktop build with sidecars enabled")
 }
 
@@ -142,6 +186,28 @@ mod tests {
         assert_eq!(request.config.stages[0].det_model.as_deref(), Some("custom.gguf"));
         assert_eq!(request.config.stages[0].vlm_max_tokens, 512);
         assert!(request.config.cpu_pixel_budget);
+        assert!(request.logging.is_none());
+    }
+
+    #[test]
+    fn worker_validation_failure_writes_safe_terminal_events_before_returning() {
+        let request=tempfile::NamedTempFile::new().unwrap();
+        let response=tempfile::NamedTempFile::new().unwrap();
+        let events=tempfile::NamedTempFile::new().unwrap();
+        let operation_id=uuid::Uuid::new_v4().to_string();
+        std::fs::write(request.path(),serde_json::to_vec(&json!({
+            "path":"private-document.png","config":{"engine":"unavailable-engine"},
+            "logging":{"operation_id":operation_id,"path":events.path()}
+        })).unwrap()).unwrap();
+        assert!(execute(request.path(),response.path()).is_err());
+        let logged=std::fs::read_to_string(events.path()).unwrap();
+        let events:Vec<crate::operation_log::OperationEvent>=logged.lines()
+            .map(|line|serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(events.first().unwrap().phase,"started");
+        assert_eq!(events.last().unwrap().phase,"failed");
+        assert!(events.iter().all(|event|event.parent_operation_id.as_deref()==Some(operation_id.as_str())));
+        assert!(!logged.contains("private-document") && !logged.contains("unavailable-engine"));
+        assert_eq!(response.as_file().metadata().unwrap().len(),0);
     }
     #[cfg(not(all(feature = "sidecars", not(any(target_os = "android", target_os = "ios", feature = "desktop-mas")))))]
     #[test]

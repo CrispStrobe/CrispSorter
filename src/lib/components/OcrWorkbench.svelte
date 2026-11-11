@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
+  import { beginOperation, type OperationLog } from "$lib/operationLog";
   import { loadSavedOcrPolicy, type OcrPolicy } from "$lib/extractors/ocrSettings";
   import { ocrEngineOptions, ocrLanguageOptions, engineRequirement } from "$lib/ocr/engineCatalog";
   import { workspaceRecognitionDefaults, updateWorkspaceConfig } from "$lib/ocr/recognitionDefaults";
@@ -312,6 +313,7 @@
   let queuePromise = $state<Promise<void> | null>(null);
   let runningProjectId = "", runningBatchId = "";
   let checkpointFailed = false;
+  let batchOperation: OperationLog | null = null;
   let autosave: ProjectAutosave<OcrProject> | null = null;
   let mounted = true;
   const userProofreadingWriter = createProofreadingWriter(async (data) => {
@@ -580,6 +582,7 @@
       queueState = { ...state, remainingIds: [...state.remainingIds] };
     },
     onStart: async (job) => {
+      batchOperation?.stage("recognizing", { page: project.pages.findIndex(page => page.id === job.id) + 1 });
       change(updateBatchPage(updatePage(project, job.id, { status: "running", error: null }), job.id, "running"), false);
       await autosave?.flush();
     },
@@ -587,14 +590,18 @@
       const next = applyRecognition(project, job.id, result, project.batch?.profileId ?? project.profileId);
       change(updateBatchPage(next, job.id, "completed"), false);
       await autosave?.flush();
+      batchOperation?.stage("page_completed", { regions: result.regions.length, saved: true });
     },
     onError: async (job, failure) => {
+      batchOperation?.stage("warning", { failed: 1 }, "warn");
       const next = updatePage(project, job.id, { status: "failed", error: message(failure), approved: false });
       change(updateBatchPage(next, job.id, "failed", message(failure)), false);
       await autosave?.flush();
     },
     onCheckpointError: (failure, job, stage) => {
       checkpointFailed = true;
+      batchOperation?.stage("checkpoint_failed", {}, "warn");
+      batchOperation?.fail(failure, { saved: false, completed: queueState.completed, failed: queueState.failed });
       let next = project;
       if (stage === "start") next = updateBatchPage(updatePage(next, job.id, { status: "pending" }), job.id, "pending");
       change(updateBatchPhase(next, "stopped"), false);
@@ -636,12 +643,15 @@
     );
   }
   async function flush() {
+    const operation = beginOperation("ocr.checkpoint", { pages: project.pages.length });
     try {
       await autosave?.flush();
       if (!await userProofreadingWriter.flush()) throw new Error(userProofreadingStatus.error ?? "All-project vocabulary could not be saved. Retry saving it before closing.");
       notice = "Project saved";
       error = "";
+      operation.complete({ saved: true });
     } catch (e) {
+      operation.fail(e, { saved: false });
       fail(e);
     }
   }
@@ -833,13 +843,15 @@
   }
   async function importFiles(paths?: string[]) {
     if (locked) return;
+    const operation = beginOperation("ocr.import");
     error = "";
     busy = "Choosing documents";
     try {
       // Resolve an earlier save failure before adding more source documents.
       await autosave?.flush();
       const selected = paths ?? (await client.pickDocuments());
-      if (!selected.length) return;
+      if (!selected.length) { operation.cancel(); return; }
+      operation.stage("ready", { count: selected.length }, "info");
       const controller = new AbortController();
       importController = controller;
       importStopping = false;
@@ -876,6 +888,7 @@
             // The autosaver retains this snapshot for Retry. Stop the import
             // before accepting another document into an unsaved project.
             importSaveFailed = true;
+            operation.stage("checkpoint_failed", { pages: added, saved: false }, "warn");
             errors.push(`${imported.name}: project save failed: ${message(e)}`);
             break;
           }
@@ -888,7 +901,13 @@
         ? ". Import stopped because saving failed. Use Save to retry; keep this workspace open."
         : controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
+      const receipt = { pages: added, warnings: errors.length, saved: !importSaveFailed, partial: errors.length > 0 };
+      if (importSaveFailed) operation.fail(undefined, receipt);
+      else if (controller.signal.aborted) operation.cancel(receipt);
+      else if (errors.length && !added) operation.fail(undefined, receipt);
+      else operation.complete(receipt);
     } catch (e) {
+      operation.fail(e);
       fail(e);
     } finally {
       importController = null;
@@ -904,6 +923,7 @@
     error = "";
     const invalid = captureFileError(file, capabilities.image_import_formats);
     if (invalid) { error = invalid; return; }
+    const operation = beginOperation("ocr.import", { kind: "image", bytes: file.size });
     busy = "Importing photo";
     const controller = new AbortController();
     importController = controller;
@@ -917,6 +937,7 @@
         const first = project.pages.find(page => page.documentId === existing.id);
         if (first) selectPage(first.id);
         notice = "This original photo is already in the project.";
+        operation.complete({ reused: true });
         return;
       }
       const before = project.pages.length;
@@ -927,8 +948,10 @@
       photoOpen = true;
       mobileView = "image";
       await autosave?.flush();
+      operation.complete({ pages: imported.pages.length, saved: true });
       notice = "Photo added. Check its edges, tilt and lighting before recognition.";
     } catch (failure) {
+      operation.fail(failure);
       if (controller.signal.aborted || (failure instanceof DOMException && failure.name === "AbortError")) notice = "Photo import cancelled.";
       else fail(failure);
     }
@@ -1519,16 +1542,23 @@
     change(updateBatchPhase(next, phase), false);
     if (checkpointFailed) return;
     await autosave?.flush();
+    const receipt = { completed: queueState.completed, failed: queueState.failed, pending: queueState.remainingIds.length, saved: true };
+    if (phase === "paused" || phase === "stopped") {
+      batchOperation?.stage(phase === "paused" ? "paused" : "cancel_requested", receipt, "info");
+      batchOperation?.cancel(receipt);
+    } else batchOperation?.complete({ ...receipt, partial: queueState.failed > 0 });
     notice = phase === "paused" ? "Queue paused. Completed pages are saved." : phase === "stopped"
       ? "Queue stopped. Resume the saved batch to finish its original selection."
       : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
   }
   async function runPreparedBatch(pageIds: string[], options: BatchOptions) {
+    batchOperation = beginOperation("ocr.batch", { pages: pageIds.length, engine: options.engine, language: options.language, cpuBudget: options.cpuPixelBudget ?? false });
     busy = "Saving recognition batch";
     checkpointFailed = false;
     try {
       // Persist exact intent and settings before the first native invocation.
       await autosave?.flush();
+      batchOperation.stage("saved", { saved: true }, "info");
       runningProjectId = project.id;
       runningBatchId = project.batch?.id ?? "";
       busy = "";
@@ -1546,6 +1576,7 @@
       await queuePromise;
       await finishQueueSegment();
     } catch (failure) {
+      batchOperation.fail(failure, { saved: false });
       change(updateBatchPhase(project, "stopped"), false);
       fail(failure);
     } finally { busy = ""; queuePromise = null; }
@@ -1563,6 +1594,8 @@
     const paused = queue.state.phase === "paused";
     // The previous segment owns its final checkpoint until it clears this lock.
     if (paused && queuePromise) return;
+    if (paused) batchOperation = beginOperation("ocr.batch", { pending: queueState.remainingIds.length });
+    batchOperation?.stage("cancel_requested", { nativeContinues: queueState.currentId !== null }, "info");
     queue.cancel();
     if (!paused) return; // A running segment saves its stopped phase on settlement.
     const stopped = Promise.resolve().then(() => finishQueueSegment());
@@ -1573,17 +1606,19 @@
   }
   async function resumeQueue() {
     if (busy || queuePromise) return;
+    batchOperation = beginOperation("ocr.batch", { pending: queueState.remainingIds.length });
+    batchOperation.stage("resumed", {}, "info");
     busy = "Saving recognition checkpoint";
     checkpointFailed = false;
     try {
       change(updateBatchPhase(project, "running"), false);
       await autosave?.flush();
       busy = "";
-      if (!queue.resume()) return;
+      if (!queue.resume()) { batchOperation.cancel(); return; }
       queuePromise = queue.whenSettled();
       await queuePromise;
       await finishQueueSegment();
-    } catch (failure) { change(updateBatchPhase(project, "paused"), false); fail(failure); }
+    } catch (failure) { batchOperation.fail(failure, { saved: false }); change(updateBatchPhase(project, "paused"), false); fail(failure); }
     finally { busy = ""; queuePromise = null; }
   }
   function changeExtraction(next: OcrProject, groupKey?: string) {
@@ -1690,6 +1725,7 @@
     }
     busy = "Preparing page";
     error = "";
+    const activity = beginOperation("ocr.transform");
     try {
       const result = await client.transform({
         pagePath: page.imagePath,
@@ -1713,7 +1749,9 @@
       notice = pixelsChanged
         ? "Page updated. Recognize the new pixels before export."
         : "The page pixels are unchanged. Reviewed text and approval were retained.";
+      activity.complete({ pages: result.pages.length });
     } catch (e) {
+      activity.fail(e);
       fail(e);
     } finally {
       busy = "";
@@ -1746,6 +1784,7 @@
     }
     busy = "Preparing the page…";
     error = "";
+    const activity = beginOperation("ocr.prepare");
     const started = Date.now();
     let stage = "Starting";
     const tick = setInterval(() => { busy = `Preparing: ${stage} · ${Math.round((Date.now() - started) / 1000)}s`; }, 1000);
@@ -1770,7 +1809,7 @@
         ? applyPageImage(project, page.id, result, "scan repair")
         : project;
       const updatedPage = next.pages.find((item) => item.id === page.id);
-      if (!updatedPage) return;
+      if (!updatedPage) { activity.stage("discarded"); activity.cancel(); return; }
       change(
         updatePage(next, page.id, {
           provenance: {
@@ -1797,9 +1836,12 @@
           : "Scan repair made no pixel changes. Reviewed text and approval were retained.",
         ...warnings,
       ].join(" · ");
+      activity.complete({ warnings: warnings.length });
     } catch (e) {
       const missing = missingModels(e);
       if (missing && !allowDownloads) {
+        activity.stage("awaiting_models", { count: missing.length }, "info");
+        activity.cancel();
         const list = missing.map((m) => `${m.name} (${m.purpose}${m.license ? `, licence ${m.license}` : ""})`).join(", ");
         busy = "";
         confirmation(
@@ -1810,6 +1852,7 @@
         );
         return;
       }
+      activity.fail(e);
       fail(e);
     } finally {
       clearInterval(tick);
@@ -1818,6 +1861,7 @@
   }
   async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
     if (!pageId || locked || !recognitionAvailable) return;
+    const activity = beginOperation("ocr.recognition", { engine, language, cpuBudget });
     error = "";
     try {
       const request = captureZoneReview(project, pageId, rect);
@@ -1841,6 +1885,7 @@
       });
       const preview = prepareZoneReview(project, request, result, profileSnapshot);
       if (!mounted || !active) {
+        activity.stage("discarded"); activity.cancel();
         notice = "Partial OCR finished without replacing text. Open the OCR workspace and run it again to review the result.";
         return;
       }
@@ -1863,7 +1908,9 @@
         },
       };
       notice = "Partial OCR is ready to compare. Current text has been kept.";
+      activity.complete({ regions: preview.regions.length });
     } catch (e) {
+      activity.fail(e);
       fail(e);
     } finally {
       busy = "";
@@ -2080,6 +2127,7 @@
   }
   async function extract(kind: "fields" | "table" | "formula") {
     if (!activePage || locked) return;
+    const activity = beginOperation("ocr.specialist", { kind });
     const pageId = activePage.id;
     const regionId = region?.id ?? null;
     const layout = useLayoutFields;
@@ -2110,6 +2158,7 @@
       } else {
         const result = await client.math(await extractionPath(source));
         if (result === null || result === "") {
+          activity.complete({ results: 0 });
           notice = "No formula was recognized. Existing saved formulas are unchanged.";
           return;
         }
@@ -2128,7 +2177,9 @@
         extractionSelection = { ...extractionSelection, [pageId + ":" + kind]: request.objectId };
       } else notice += " · saved to " + page.name;
       if (freshness && !freshness.current) notice += " · Historical source: " + freshness.reasons.join(" ");
+      activity.complete({ results: 1 });
     } catch (failure) {
+      activity.fail(failure);
       fail(failure);
     } finally {
       busy = "";

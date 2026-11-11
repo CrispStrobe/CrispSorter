@@ -16,6 +16,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -87,10 +88,10 @@ pub enum TransferState {
 
 /// A transfer job submitted to the queue.  The caller holds on to the
 /// `progress_rx` to monitor progress and the `handle` to await completion.
-pub struct TransferHandle {
+pub struct TransferHandle<T = Vec<u8>> {
     pub job_id: u64,
     pub progress_rx: watch::Receiver<TransferProgress>,
-    pub handle: JoinHandle<Result<Vec<u8>>>,
+    pub handle: JoinHandle<Result<T>>,
     pub cancellation: TransferCancellation,
 }
 
@@ -99,6 +100,7 @@ pub struct TransferHandle {
 pub struct TransferCancellation {
     cancelled: Arc<std::sync::atomic::AtomicBool>,
     notify: Arc<Notify>,
+    publication: Arc<Mutex<bool>>,
 }
 
 struct JobRecord {
@@ -108,12 +110,34 @@ struct JobRecord {
 
 impl TransferCancellation {
     pub fn cancel(&self) {
+        // A completed publication is final. The lock makes cancellation and
+        // the final rename mutually exclusive; a late click cannot report a
+        // successfully published file as cancelled.
+        let published = self.publication.lock().expect("transfer publication lock poisoned");
+        if *published { return; }
         self.cancelled.store(true, Ordering::Release);
-        self.notify.notify_waiters();
+        self.notify.notify_one();
     }
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn publish<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
+        let mut published = self.publication.lock().expect("transfer publication lock poisoned");
+        anyhow::ensure!(!self.is_cancelled(), "transfer cancelled");
+        let result = publish()?;
+        *published = true;
+        Ok(result)
+    }
+
+    /// A synchronous provider returning success has already committed its
+    /// upload. Cancellation cannot undo that mutation, even when requested
+    /// while the provider was writing or waiting for its acknowledgement.
+    fn uploaded(&self) {
+        let mut published = self.publication.lock().expect("transfer publication lock poisoned");
+        *published = true;
+        self.cancelled.store(false, Ordering::Release);
     }
 }
 
@@ -121,7 +145,38 @@ impl TransferCancellation {
 /// local_data)`.  For downloads, `local_data` is empty and the closure
 /// returns the downloaded bytes.  For uploads, `local_data` contains the
 /// payload and the closure returns an empty vec on success.
-type TransferFn = Arc<dyn Fn() -> Result<Vec<u8>> + Send + Sync + 'static>;
+type TransferFn<T> = Arc<dyn Fn() -> Result<T> + Send + Sync + 'static>;
+
+trait TransferOutput {
+    fn byte_count(&self) -> u64;
+}
+impl TransferOutput for Vec<u8> {
+    fn byte_count(&self) -> u64 { self.len() as u64 }
+}
+impl TransferOutput for u64 {
+    fn byte_count(&self) -> u64 { *self }
+}
+
+struct CancellableWriter<'a> {
+    writer: &'a mut dyn Write,
+    cancellation: &'a TransferCancellation,
+}
+impl Write for CancellableWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            // Interrupted is retried by write_all/io::copy, so cancellation
+            // must use a terminal I/O error kind.
+            return Err(std::io::Error::other("transfer cancelled"));
+        }
+        self.writer.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(std::io::Error::other("transfer cancelled"));
+        }
+        self.writer.flush()
+    }
+}
 
 // ── TransferQueue ────────────────────────────────────────────────────────
 
@@ -403,6 +458,99 @@ impl TransferQueue {
         })
     }
 
+    /// Byte-array IPC has an explicit memory limit. File downloads, restore,
+    /// sync and index staging use `submit_drive_download_to_file` instead.
+    pub fn submit_drive_download_bounded(
+        &self,
+        drive_id: String,
+        drive: Arc<dyn crate::drives::CloudDrive>,
+        remote_path: PathBuf,
+        limit: u64,
+    ) -> TransferHandle {
+        self.submit_download(drive_id, remote_path, None, move |path| {
+            crate::drives::read_file_bounded(drive.as_ref(), path, limit)
+        })
+    }
+
+    /// Stream into a private file beside the destination, verify its size,
+    /// and publish only a completed transfer. Each retry starts with a fresh
+    /// private stage; failure/cancellation preserves any previous destination.
+    pub fn submit_drive_download_to_file(
+        &self,
+        drive_id: String,
+        drive: Arc<dyn crate::drives::CloudDrive>,
+        remote_path: PathBuf,
+        local_path: PathBuf,
+        size_hint: Option<u64>,
+    ) -> TransferHandle<u64> {
+        self.submit_download_to_file(drive_id, remote_path, local_path, size_hint,
+            move |path, writer| drive.read_file_to_writer(path, writer))
+    }
+
+    pub fn submit_download_to_file(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        local_path: PathBuf,
+        size_hint: Option<u64>,
+        read_fn: impl Fn(&Path, &mut dyn Write) -> Result<u64> + Send + Sync + 'static,
+    ) -> TransferHandle<u64> {
+        let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+        let initial = TransferProgress {
+            job_id, direction: TransferDirection::Download, drive_id: drive_id.clone(),
+            remote_path: remote_path.to_string_lossy().into_owned(), bytes_done: 0,
+            bytes_total: size_hint, resume_state: None, state: TransferState::Queued,
+        };
+        let (tx, rx) = watch::channel(initial);
+        let sem = self.semaphore.clone();
+        let cancellation = TransferCancellation::default();
+        let task_cancellation = cancellation.clone();
+        let write_cancellation = cancellation.clone();
+        self.register_job(job_id, rx.clone(), cancellation.clone());
+        let handle = tokio::spawn(async move {
+            let source_path = remote_path.clone();
+            run_with_retries(job_id, TransferDirection::Download, drive_id, remote_path,
+                size_hint, None, sem, tx, task_cancellation, Arc::new(move || {
+                    let log = crate::operation_log::OperationLog::start("storage.materialize",
+                        serde_json::json!({"mode":"stream", "job_id":job_id}));
+                    let result = (|| {
+                        let stage = crate::drives::materialize::stage_file(&local_path, size_hint, |writer| {
+                            let mut writer = CancellableWriter { writer, cancellation: &write_cancellation };
+                            read_fn(&source_path, &mut writer)
+                        })?;
+                        log.step("validated", serde_json::json!({"bytes":stage.bytes()}));
+                        write_cancellation.publish(|| stage.publish())
+                    })();
+                    match &result {
+                        Ok(bytes) => log.succeed(serde_json::json!({"bytes":bytes})),
+                        Err(_) if write_cancellation.is_cancelled() => log.cancel(),
+                        Err(_) => log.fail("materialization_failed"),
+                    }
+                    result
+                })).await
+        });
+        TransferHandle { job_id, progress_rx: rx, handle, cancellation }
+    }
+
+    /// Synchronous file-target adapter for filesystem/FUSE consumers. It uses
+    /// the same semaphore, cancellation registry and staged publication path.
+    pub fn download_to_file_blocking(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        local_path: PathBuf,
+        size_hint: Option<u64>,
+        read_fn: impl Fn(&Path, &mut dyn Write) -> Result<u64> + Send + Sync + 'static,
+    ) -> Result<u64> {
+        let queue = self.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().context("creating transfer queue runtime")?;
+            let _guard = runtime.enter();
+            let transfer = queue.submit_download_to_file(drive_id, remote_path, local_path, size_hint, read_fn);
+            runtime.block_on(transfer.handle).context("transfer queue task failed")?
+        }).join().map_err(|_| anyhow!("transfer queue worker panicked"))?
+    }
+
     /// Run an upload from a synchronous caller while still using this queue's
     /// semaphore, retry policy, and job registry.  A short-lived runtime is
     /// isolated on a worker thread so this is safe from FUSE/provider code
@@ -479,7 +627,7 @@ fn backoff_duration(attempt: u32) -> std::time::Duration {
 /// runs inside `spawn_blocking`.  On transient failure, we release the
 /// semaphore permit, sleep with backoff, then re-acquire.
 ///
-async fn run_with_retries(
+async fn run_with_retries<T: TransferOutput + Send + 'static>(
     job_id: u64,
     direction: TransferDirection,
     drive_id: String,
@@ -489,8 +637,15 @@ async fn run_with_retries(
     semaphore: Arc<Semaphore>,
     tx: watch::Sender<TransferProgress>,
     cancellation: TransferCancellation,
-    transfer_fn: TransferFn,
-) -> Result<Vec<u8>> {
+    transfer_fn: TransferFn<T>,
+) -> Result<T> {
+    let operation = match direction {
+        TransferDirection::Upload => "storage.upload",
+        TransferDirection::Download => "storage.download",
+    };
+    let log = crate::operation_log::OperationLog::start(operation,
+        serde_json::json!({"mode":if direction == TransferDirection::Upload { "upload" } else { "download" },
+            "bytes":bytes_total, "job_id":job_id}));
     let remote_str = remote_path.to_string_lossy().into_owned();
 
     let make_progress = |state: TransferState, bytes_done: u64| TransferProgress {
@@ -507,6 +662,7 @@ async fn run_with_retries(
     for attempt in 0..=MAX_RETRIES {
         if cancellation.is_cancelled() {
             let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+            log.cancel();
             return Err(anyhow!("transfer cancelled"));
         }
         // Acquire a fresh permit for every attempt. This prevents a sleeping
@@ -515,28 +671,53 @@ async fn run_with_retries(
             permit = semaphore.acquire() => permit.context("transfer queue semaphore closed")?,
             _ = cancellation.notify.notified() => {
                 let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+                log.cancel();
                 return Err(anyhow!("transfer cancelled"));
             }
         };
-        let _ = tx.send(make_progress(TransferState::Active, 0));
-        let transfer = transfer_fn.clone();
-        let result = tokio::task::spawn_blocking(move || transfer())
-            .await
-            .context("transfer task panicked")?;
-        drop(permit);
-
         if cancellation.is_cancelled() {
             let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+            log.cancel();
             return Err(anyhow!("transfer cancelled"));
+        }
+        let _ = tx.send(make_progress(TransferState::Active, 0));
+        log.step("transfer", serde_json::json!({"attempt":attempt + 1}));
+        let transfer = transfer_fn.clone();
+        let result = match tokio::task::spawn_blocking(move || transfer()).await {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = tx.send(make_progress(TransferState::Failed { error: "transfer task panicked".into() }, 0));
+                log.fail("transfer_task_panicked");
+                return Err(error).context("transfer task panicked");
+            }
+        };
+        drop(permit);
+
+        if direction == TransferDirection::Upload && result.is_ok() {
+            cancellation.uploaded();
+        }
+        if cancellation.is_cancelled() {
+            let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+            log.cancel();
+            // Preserve a provider's failure as the cause when cancellation
+            // stopped further attempts; it must never be turned into success.
+            return match result {
+                Err(error) => Err(error.context("transfer cancelled")),
+                Ok(_) => Err(anyhow!("transfer cancelled")),
+            };
         }
 
         match result {
             Ok(bytes) => {
-                let done = bytes_total.unwrap_or(bytes.len() as u64);
+                let done = if direction == TransferDirection::Upload {
+                    bytes_total.unwrap_or_else(|| bytes.byte_count())
+                } else { bytes.byte_count() };
                 let _ = tx.send(make_progress(TransferState::Done, done));
+                log.succeed(serde_json::json!({"bytes":done}));
                 return Ok(bytes);
             }
             Err(error) if attempt < MAX_RETRIES && is_retryable(&error) => {
+                log.warn("transfer_retry", serde_json::json!({"attempt":attempt + 1}));
                 let _ = tx.send(make_progress(
                     TransferState::Retrying {
                         attempt: attempt + 1,
@@ -547,6 +728,7 @@ async fn run_with_retries(
                     _ = tokio::time::sleep(backoff_duration(attempt)) => {}
                     _ = cancellation.notify.notified() => {
                         let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+                        log.cancel();
                         return Err(anyhow!("transfer cancelled"));
                     }
                 }
@@ -558,6 +740,7 @@ async fn run_with_retries(
                     },
                     0,
                 ));
+                log.fail("transfer_failed");
                 return Err(error);
             }
         }
@@ -725,6 +908,182 @@ mod tests {
             .all(|job| job.state == TransferState::Done));
     }
 
+    struct StreamingOnlyDrive {
+        size: usize,
+        writes: Arc<AtomicUsize>,
+    }
+
+    impl crate::drives::CloudDrive for StreamingOnlyDrive {
+        fn label(&self) -> &str { "streaming-only" }
+        fn drive_type(&self) -> crate::drives::DriveType { crate::drives::DriveType::Local }
+        fn list_dir(&self, _: &Path) -> Result<Vec<crate::drives::DirEntry>> { Ok(Vec::new()) }
+        fn read_file(&self, _: &Path) -> Result<Vec<u8>> {
+            panic!("disk-bound consumer called the whole-file API")
+        }
+        fn write_file(&self, _: &Path, _: &[u8]) -> Result<()> { anyhow::bail!("read-only test drive") }
+        fn delete(&self, _: &Path) -> Result<()> { anyhow::bail!("read-only test drive") }
+        fn stat(&self, _: &Path) -> Result<crate::drives::FileStat> {
+            Ok(crate::drives::FileStat { size: self.size as u64, is_dir: false, mtime_unix: None })
+        }
+        fn read_file_to_writer(&self, _: &Path, writer: &mut dyn Write) -> Result<u64> {
+            let chunk = [73u8; 4096];
+            let mut remaining = self.size;
+            while remaining > 0 {
+                let length = remaining.min(chunk.len());
+                writer.write_all(&chunk[..length])?;
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                remaining -= length;
+            }
+            Ok(self.size as u64)
+        }
+    }
+
+    #[tokio::test]
+    async fn file_target_uses_streaming_provider_and_returns_only_a_byte_count() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("result.bin");
+        let writes = Arc::new(AtomicUsize::new(0));
+        let size = 8 * 1024 * 1024 + 7;
+        let drive = Arc::new(StreamingOnlyDrive { size, writes: writes.clone() });
+        let queue = TransferQueue::new();
+        let transfer = queue.submit_drive_download_to_file("mounted".into(), drive,
+            "large.bin".into(), destination.clone(), Some(size as u64));
+        assert_eq!(transfer.handle.await.unwrap().unwrap(), size as u64);
+        assert_eq!(std::fs::metadata(&destination).unwrap().len(), size as u64);
+        assert!(std::fs::read(&destination).unwrap().iter().all(|byte| *byte == 73));
+        assert_eq!(writes.load(Ordering::SeqCst), size.div_ceil(4096));
+        assert_eq!(transfer.progress_rx.borrow().bytes_done, size as u64);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn partial_retry_starts_a_fresh_private_file_and_preserves_previous_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("result.bin");
+        std::fs::write(&destination, b"previous").unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let checked_destination = destination.clone();
+        let counted = attempts.clone();
+        let queue = TransferQueue::new();
+        let transfer = queue.submit_download_to_file("mounted".into(), "source.bin".into(),
+            destination.clone(), Some(4), move |_, writer| {
+                assert_eq!(std::fs::read(&checked_destination)?, b"previous");
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    writer.write_all(b"bad")?;
+                    anyhow::bail!("transient network timeout");
+                }
+                writer.write_all(b"good")?;
+                Ok(4)
+            });
+        assert_eq!(transfer.handle.await.unwrap().unwrap(), 4);
+        assert_eq!(std::fs::read(destination).unwrap(), b"good");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn file_target_size_mismatch_never_replaces_existing_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("result.bin");
+        std::fs::write(&destination, b"previous").unwrap();
+        let queue = TransferQueue::new();
+        let transfer = queue.submit_download_to_file("mounted".into(), "source.bin".into(),
+            destination.clone(), Some(20), |_, writer| {
+                writer.write_all(b"short")?;
+                Ok(5)
+            });
+        assert!(transfer.handle.await.unwrap().is_err());
+        assert!(matches!(transfer.progress_rx.borrow().state, TransferState::Failed { .. }));
+        assert_eq!(std::fs::read(destination).unwrap(), b"previous");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn active_file_cancellation_stops_writer_and_leaves_previous_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("result.bin");
+        std::fs::write(&destination, b"previous").unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let started = Mutex::new(Some(started_tx));
+        let release = Mutex::new(Some(release_rx));
+        let queue = TransferQueue::new();
+        let transfer = queue.submit_download_to_file("mounted".into(), "source.bin".into(),
+            destination.clone(), None, move |_, writer| {
+                writer.write_all(b"partial")?;
+                started.lock().unwrap().take().unwrap().send(()).unwrap();
+                tokio::runtime::Handle::current().block_on(release.lock().unwrap().take().unwrap()).unwrap();
+                writer.write_all(b"must not be written")?;
+                panic!("cancellation did not stop the streaming producer");
+            });
+        started_rx.await.unwrap();
+        transfer.cancellation.cancel();
+        release_tx.send(()).unwrap();
+        assert!(transfer.handle.await.unwrap().is_err());
+        assert_eq!(transfer.progress_rx.borrow().state, TransferState::Cancelled);
+        assert_eq!(std::fs::read(destination).unwrap(), b"previous");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn file_target_obeys_queue_backpressure_and_queued_cancellation() {
+        let root = tempfile::tempdir().unwrap();
+        let queue = TransferQueue::with_concurrency(1);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let started = Mutex::new(Some(started_tx));
+        let release = Mutex::new(Some(release_rx));
+        let first = queue.submit_download_to_file("mounted".into(), "one".into(),
+            root.path().join("one"), Some(1), move |_, writer| {
+                started.lock().unwrap().take().unwrap().send(()).unwrap();
+                tokio::runtime::Handle::current().block_on(release.lock().unwrap().take().unwrap()).unwrap();
+                writer.write_all(b"1")?;
+                Ok(1)
+            });
+        started_rx.await.unwrap();
+        let second = queue.submit_download_to_file("mounted".into(), "two".into(),
+            root.path().join("two"), None, |_, _| panic!("queued cancellation performed I/O"));
+        assert_eq!(second.progress_rx.borrow().state, TransferState::Queued);
+        assert_eq!(queue.active_count(), 1);
+        second.cancellation.cancel();
+        assert!(second.handle.await.unwrap().is_err());
+        assert_eq!(second.progress_rx.borrow().state, TransferState::Cancelled);
+        assert!(!root.path().join("two").exists());
+        release_tx.send(()).unwrap();
+        first.handle.await.unwrap().unwrap();
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_publication_keeps_completed_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("result.bin");
+        let queue = TransferQueue::new();
+        let transfer = queue.submit_download_to_file("mounted".into(), "source.bin".into(),
+            destination.clone(), Some(4), |_, writer| { writer.write_all(b"done")?; Ok(4) });
+        transfer.handle.await.unwrap().unwrap();
+        transfer.cancellation.cancel();
+        assert!(!transfer.cancellation.is_cancelled());
+        assert_eq!(transfer.progress_rx.borrow().state, TransferState::Done);
+        assert_eq!(std::fs::read(destination).unwrap(), b"done");
+    }
+
+    #[tokio::test]
+    async fn provider_panic_records_failure_and_drops_the_private_file() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("result.bin");
+        let queue = TransferQueue::new();
+        let transfer = queue.submit_download_to_file("mounted".into(), "source.bin".into(),
+            destination.clone(), None, |_, writer| {
+                writer.write_all(b"partial")?;
+                panic!("provider panic");
+            });
+        assert!(transfer.handle.await.unwrap().is_err());
+        assert!(matches!(transfer.progress_rx.borrow().state, TransferState::Failed { .. }));
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
     #[tokio::test]
     async fn upload_reports_done_state() {
         let queue = TransferQueue::new();
@@ -740,6 +1099,88 @@ mod tests {
         let progress = h.progress_rx.borrow().clone();
         assert_eq!(progress.state, TransferState::Done);
         assert_eq!(progress.bytes_total, Some(11));
+    }
+
+    #[tokio::test]
+    async fn confirmed_upload_success_wins_cancellation_during_write_or_acknowledgement() {
+        for publish_before_cancel in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let destination = root.path().join("uploaded.bin");
+            let provider_destination = destination.clone();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let started = Mutex::new(Some(started_tx));
+            let release = Mutex::new(Some(release_rx));
+            let queue = TransferQueue::with_concurrency(1);
+            let transfer = queue.submit_upload("provider".into(), "uploaded.bin".into(),
+                b"committed".to_vec(), move |_, bytes| {
+                    if publish_before_cancel { std::fs::write(&provider_destination, bytes)?; }
+                    started.lock().unwrap().take().unwrap().send(()).unwrap();
+                    tokio::runtime::Handle::current().block_on(release.lock().unwrap().take().unwrap()).unwrap();
+                    if !publish_before_cancel { std::fs::write(&provider_destination, bytes)?; }
+                    Ok(())
+                });
+            started_rx.await.unwrap();
+            assert!(queue.cancel(transfer.job_id));
+            release_tx.send(()).unwrap();
+            transfer.handle.await.unwrap().unwrap();
+            assert_eq!(std::fs::read(destination).unwrap(), b"committed");
+            assert_eq!(transfer.progress_rx.borrow().state, TransferState::Done);
+            assert_eq!(transfer.progress_rx.borrow().bytes_done, 9);
+            assert!(!transfer.cancellation.is_cancelled());
+            transfer.cancellation.cancel();
+            assert!(!transfer.cancellation.is_cancelled(), "published upload accepted a late cancellation");
+            assert_eq!(queue.snapshot()[0].state, TransferState::Done);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_upload_is_never_completed_and_cancel_preserves_the_provider_error() {
+        for cancel in [false, true] {
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let started = Mutex::new(Some(started_tx));
+            let release = Mutex::new(Some(release_rx));
+            let queue = TransferQueue::with_concurrency(1);
+            let transfer = queue.submit_upload("provider".into(), "rejected.bin".into(),
+                b"payload".to_vec(), move |_, _| {
+                    started.lock().unwrap().take().unwrap().send(()).unwrap();
+                    tokio::runtime::Handle::current().block_on(release.lock().unwrap().take().unwrap()).unwrap();
+                    anyhow::bail!("permanent provider rejection")
+                });
+            started_rx.await.unwrap();
+            if cancel { transfer.cancellation.cancel(); }
+            release_tx.send(()).unwrap();
+            let error = transfer.handle.await.unwrap().unwrap_err();
+            assert!(format!("{error:#}").contains("permanent provider rejection"));
+            let state = transfer.progress_rx.borrow().state.clone();
+            if cancel { assert_eq!(state, TransferState::Cancelled); }
+            else { assert!(matches!(state, TransferState::Failed { .. })); }
+            assert_eq!(transfer.progress_rx.borrow().bytes_done, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_upload_cancellation_prevents_provider_invocation() {
+        let queue = TransferQueue::with_concurrency(1);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let started = Mutex::new(Some(started_tx));
+        let release = Mutex::new(Some(release_rx));
+        let first = queue.submit_upload("provider".into(), "first.bin".into(), vec![1], move |_, _| {
+            started.lock().unwrap().take().unwrap().send(()).unwrap();
+            tokio::runtime::Handle::current().block_on(release.lock().unwrap().take().unwrap()).unwrap();
+            Ok(())
+        });
+        started_rx.await.unwrap();
+        let second = queue.submit_upload("provider".into(), "second.bin".into(), vec![2],
+            |_, _| panic!("cancelled queued upload reached the provider"));
+        assert_eq!(second.progress_rx.borrow().state, TransferState::Queued);
+        second.cancellation.cancel();
+        assert!(second.handle.await.unwrap().is_err());
+        assert_eq!(second.progress_rx.borrow().state, TransferState::Cancelled);
+        release_tx.send(()).unwrap();
+        first.handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -786,13 +1227,13 @@ mod tests {
     #[tokio::test]
     async fn cancel_by_job_id_reaches_active_transfer() {
         let queue = TransferQueue::new();
-        let h = queue.submit_upload(
+        let h = queue.submit_download(
             "cancel-drive".into(),
             PathBuf::from("slow.txt"),
-            vec![1],
-            |_path, _data| {
+            Some(1),
+            |_path| {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                Ok(())
+                Ok(vec![1])
             },
         );
         let mut progress = h.progress_rx.clone();

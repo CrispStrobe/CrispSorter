@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import type { ExtractionOptions } from './index';
 import { createOcrSession, withExtractionAbort } from './ocrDispatcher';
-import { logInfo } from '../log';
+import { beginOperation, type OperationLog } from '../operationLog';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
 
@@ -55,7 +55,7 @@ function textFromItems(items: unknown[]): string {
 }
 
 /** Short digital titles need no OCR; scan images and outlined text still do. */
-async function needsOcr(page: PdfPage, text: string, signal?: AbortSignal): Promise<boolean> {
+async function needsOcr(page: PdfPage, text: string, signal?: AbortSignal, operation?: OperationLog): Promise<boolean> {
     if (text.trim().length >= MIN_DIGITAL_TEXT) return false;
     try {
         const operators = await withExtractionAbort(page.getOperatorList(), signal);
@@ -63,7 +63,7 @@ async function needsOcr(page: PdfPage, text: string, signal?: AbortSignal): Prom
     } catch (error) {
         signal?.throwIfAborted();
         // An unavailable operator list must not silently skip a scanned page.
-        console.warn('[PDFExtractor] Could not inspect page drawing operations:', error);
+        operation?.stage('warning', { warnings: 1 }, 'warn');
         return true;
     }
 }
@@ -75,10 +75,22 @@ function pageLimit(value: number | undefined, name: string): number {
 }
 
 export async function extractPdf(arrayBuffer: ArrayBuffer, options: ExtractionOptions = {}): Promise<string> {
+    const operation = beginOperation('ocr.pdf', { bytes: arrayBuffer.byteLength, forced: options.forceOCR === true });
+    try {
+        const result = await extractPdfPages(arrayBuffer, options, operation);
+        operation.complete({ completed: result.completed, characters: result.text.length });
+        return result.text;
+    } catch (error) {
+        if (options.signal?.aborted && error === options.signal.reason) operation.cancel(); else operation.fail(error);
+        throw error;
+    }
+}
+
+async function extractPdfPages(arrayBuffer: ArrayBuffer, options: ExtractionOptions, operation: OperationLog): Promise<{ text: string; completed: number }> {
     options.signal?.throwIfAborted();
     const maxPages = pageLimit(options.maxPages, 'maxPages');
     const maxChars = pageLimit(options.maxChars, 'maxChars');
-    if (maxPages === 0 || maxChars === 0) return '';
+    if (maxPages === 0 || maxChars === 0) return { text: '', completed: 0 };
     const ocr = await createOcrSession(options);
     options.signal?.throwIfAborted();
     const ocrEnabled = options.forceOCR === true || ocr.policy.enabled;
@@ -86,9 +98,9 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, options: ExtractionOp
         data: new Uint8Array(arrayBuffer), useSystemFonts: true, disableFontFace: true,
         disableRange: true, disableStream: true, disableAutoFetch: true,
     });
-    let reportedEngine = false;
     try {
         const pdf = await withExtractionAbort(loadingTask.promise, options.signal);
+        operation.stage('ready', { pages: pdf.numPages }, 'info');
         const chunks: string[] = [];
         let length = 0;
         for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, maxPages) && length < maxChars; pageNumber++) {
@@ -108,7 +120,8 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, options: ExtractionOp
                         textFailed = true;
                     }
                 }
-                if (ocrEnabled && (options.forceOCR || textFailed || await needsOcr(page, pageText, options.signal))) {
+                if (ocrEnabled && (options.forceOCR || textFailed || await needsOcr(page, pageText, options.signal, operation))) {
+                    operation.stage('rendering', { page: pageNumber });
                     const base = page.getViewport({ scale: 1 });
                     if (!Number.isFinite(base.width) || !Number.isFinite(base.height) || base.width <= 0 || base.height <= 0) {
                         throw new Error(`PDF page ${pageNumber} has invalid dimensions.`);
@@ -125,8 +138,7 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, options: ExtractionOp
                         await withExtractionAbort(render.promise, options.signal, () => render.cancel());
                         options.signal?.throwIfAborted();
                         const result = await ocr.recognize(canvas, `page-${pageNumber}.png`);
-                        if (!reportedEngine) { logInfo(`PDF OCR uses ${result.engine}`); reportedEngine = true; }
-                        for (const warning of result.warnings) console.warn(`[PDFExtractor] Page ${pageNumber}: ${warning}`);
+                        if (result.warnings.length) operation.stage('warning', { page: pageNumber, warnings: result.warnings.length }, 'warn');
                         // A sparse existing text layer remains useful if OCR finds no text.
                         if (result.text.trim() || options.forceOCR) pageText = result.text;
                     } finally { canvas.width = 0; canvas.height = 0; }
@@ -134,14 +146,15 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, options: ExtractionOp
                 const chunk = `${chunks.length ? '\n' : ''}${pageText}`.slice(0, maxChars - length);
                 chunks.push(chunk);
                 length += chunk.length;
+                operation.stage('page_completed', { page: pageNumber, characters: pageText.length });
             } finally {
-                try { page.cleanup(); } catch (error) { console.warn('[PDFExtractor] Page cleanup failed:', error); }
+                try { page.cleanup(); } catch { operation.stage('cleanup_failed', { page: pageNumber }, 'warn'); }
             }
         }
         options.signal?.throwIfAborted();
-        return chunks.join('').trim();
+        return { text: chunks.join('').trim(), completed: chunks.length };
     } finally {
         // Covers parse, text, render, recognition, cancellation and early-stop paths.
-        try { await loadingTask.destroy(); } catch (error) { console.warn('[PDFExtractor] PDF cleanup failed:', error); }
+        try { await loadingTask.destroy(); } catch { operation.stage('cleanup_failed', {}, 'warn'); }
     }
 }

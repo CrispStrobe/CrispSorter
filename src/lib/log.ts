@@ -18,8 +18,16 @@ const LEVEL_RANK: Record<LogLevel, number> = {
 };
 
 let _verbosity: LogLevel = 'info';
+let nativeVerbositySync: Promise<void> = Promise.resolve();
 export function setLogVerbosity(level: LogLevel) {
     _verbosity = level;
+    // Keep the UI call synchronous, but serialize native acknowledgements so
+    // an earlier setting cannot overtake a later selection. Do not mirror log
+    // entries: LogPanel already merges the independent frontend/native sinks.
+    nativeVerbositySync = nativeVerbositySync.then(async () => {
+        const core = await import('@tauri-apps/api/core');
+        if (typeof core.isTauri === 'function' && core.isTauri()) await core.invoke('set_log_verbosity', { level });
+    }).catch(() => { flog('error', 'log.verbosity phase=failed reason=native_sync'); });
 }
 export function getLogVerbosity(): LogLevel {
     return _verbosity;
@@ -28,8 +36,8 @@ export function getLogVerbosity(): LogLevel {
 /** Returns true when a message at `msgLevel` should be shown given
  *  the current verbosity threshold. */
 function shouldLog(msgLevel: 'info' | 'warn' | 'error' | 'debug'): boolean {
-    if (msgLevel === 'error' || msgLevel === 'warn') {
-        // Errors + warnings are gated only by the silent threshold.
+    if (msgLevel === 'error') return true;
+    if (msgLevel === 'warn') {
         return LEVEL_RANK[_verbosity] >= LEVEL_RANK.error;
     }
     if (msgLevel === 'debug') {
@@ -64,8 +72,8 @@ export function flog(level: 'info' | 'warn' | 'error' | 'debug', msg: string) {
     // Map debug -> console.debug; the rest are the matching methods.
     const fn = level === 'debug' ? 'debug' : level;
     // eslint-disable-next-line no-console
-    (console as any)[fn](`[app:${level}] ${msg}`);
-    frontendLogs.push(level, msg);
+    try { (console as any)[fn](`[app:${level}] ${msg}`); } catch { /* logging must not change an operation's outcome */ }
+    try { frontendLogs.push(level, msg); } catch { /* a failed observer must not mask a committed operation */ }
 }
 
 export function logInfo(msg: string)  { flog('info',  msg); }

@@ -11,6 +11,8 @@
 //! Gated behind `--features crispembed`.
 
 use anyhow::Result;
+use crate::operation_log::OperationLog;
+use serde_json::{json, Value};
 #[cfg(feature = "crispembed")]
 use anyhow::Context;
 use std::path::Path;
@@ -443,6 +445,9 @@ pub fn table_extract_with_config(
     ocr_model: Option<&str>,
     config: &super::OcrPipelineConfig,
 ) -> Result<(i32, i32, String)> {
+    let log = OperationLog::start("ocr.table", json!({"engine":config.engine,"kind":"table"}));
+    let result = (|| {
+    log.step("validating", Value::Null);
     super::ocr_policy::validate_config(config).map_err(anyhow::Error::msg)?;
     super::ocr_policy::validate_runtime(config).map_err(anyhow::Error::msg)?;
     super::ocr_policy::validate_table_config(config).map_err(anyhow::Error::msg)?;
@@ -451,9 +456,31 @@ pub fn table_extract_with_config(
     let model = ocr_model.or(stage.rec_model.as_deref()).unwrap_or_else(|| {
         if stage.engine == "tesseract_fraktur" { "tesseract-fraktur" } else { TABLE_REC_MODEL }
     });
+    log.step("detecting_grid", Value::Null);
     let (rows, cols) = table_grid(&prepared.path)?;
+    log.step("recognizing_cells", json!({"rows":rows,"cols":cols}));
     let html = table_to_html(&prepared.path, Some(model))?;
     Ok((rows, cols, html))
+    })();
+    match &result {
+        Ok((rows,cols,html)) => log.succeed(json!({"rows":rows,"cols":cols,"bytes":html.len()})),
+        Err(_) => log.fail("table_extraction_failed"),
+    }
+    result
+}
+
+/// Detect a table's grid dimensions (rows, cols) without OCR.
+/// Apply the current preparation recipe without loading a cell recognizer.
+pub fn table_grid_with_config(path: &Path, config: &super::OcrPipelineConfig) -> Result<(i32, i32)> {
+    let log = OperationLog::start("ocr.table_grid", json!({"kind":"table","mode":"grid"}));
+    let result = (|| {
+        let (config, _) = super::ocr_policy::recognition_config(config.clone(), None, None).map_err(anyhow::Error::msg)?;
+        let prepared = super::prepare_ocr_page(path, &config, true)?;
+        log.step("detecting_grid", Value::Null);
+        table_grid(&prepared.path)
+    })();
+    match &result { Ok((rows,cols)) => log.succeed(json!({"rows":rows,"cols":cols})), Err(_) => log.fail("grid_detection_failed") }
+    result
 }
 
 /// Detect a table's grid dimensions (rows, cols) without OCR.
@@ -490,6 +517,9 @@ pub fn kie_extract_lilt_with_config(
     lilt_model: Option<&str>,
     config: &super::OcrPipelineConfig,
 ) -> Result<Vec<(String, String, f32)>> {
+    let log = OperationLog::start("ocr.lilt", json!({"engine":config.engine,"kind":"fields","count":labels.len()}));
+    let result = (|| {
+    log.step("validating", Value::Null);
     super::ocr_policy::validate_config(config).map_err(anyhow::Error::msg)?;
     super::ocr_policy::validate_runtime(config).map_err(anyhow::Error::msg)?;
     super::ocr_policy::validate_lilt_config(config).map_err(anyhow::Error::msg)?;
@@ -497,16 +527,21 @@ pub fn kie_extract_lilt_with_config(
     let image_path = &prepared.path;
     let img = image_path.to_str().context("image path not UTF-8")?;
     let stage = &config.stages[0];
+    log.step("loading_models", Value::Null);
     let det = resolve_checked(stage.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?;
     let rec = resolve_checked(stage.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL))?;
     let lilt = resolve_checked(lilt_model.unwrap_or("lilt-funsd"))?;
     let kie = crispembed::CrispKie::new_lilt(&det, &rec, "", &lilt, 0)
         .map_err(|e| anyhow::anyhow!("LiLT KIE init: {e}"))?;
     let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    log.step("extracting_fields", Value::Null);
     let fields = kie
         .extract(img, &label_refs, threshold)
         .map_err(|e| anyhow::anyhow!("LiLT KIE extract: {e}"))?;
-    Ok(fields.into_iter().map(|f| (f.label, f.value, f.score)).collect())
+    Ok(fields.into_iter().map(|f| (f.label, f.value, f.score)).collect::<Vec<_>>())
+    })();
+    match &result { Ok(fields) => log.succeed(json!({"results":fields.len()})), Err(_) => log.fail("lilt_extraction_failed") }
+    result
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -517,6 +552,8 @@ pub fn kie_extract_lilt_with_config(
     _lilt_model: Option<&str>,
     _config: &super::OcrPipelineConfig,
 ) -> Result<Vec<(String, String, f32)>> {
+    let log = OperationLog::start("ocr.lilt", json!({"kind":"fields"}));
+    log.fail("unsupported_build");
     anyhow::bail!("LiLT KIE requires the `crispembed` cargo feature")
 }
 
@@ -698,15 +735,23 @@ fn with_ocr_pipeline<T>(
     cfg: &super::OcrPipelineConfig,
     run: impl FnOnce(&mut crispembed::CrispOcrPipeline) -> Result<T>,
 ) -> Result<T> {
+    let log = OperationLog::start("ocr.pipeline", json!({"engine":cfg.engine,"stages":cfg.stages.len()}));
+    let result = (|| {
+    log.step("waiting_for_model", Value::Null);
     let key = serde_json::to_string(cfg).context("serialize OCR configuration")?;
     let mut slot = OCR_ORCH.get_or_init(|| Mutex::new(None)).lock()
         .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
     if slot.as_ref().map(|p| p.key.as_str()) != Some(key.as_str()) {
         // Release the previous bundle before loading another large model.
         *slot = None;
+        log.step("loading_models", json!({"reused":false}));
         *slot = Some(CachedOcrPipeline { key, pipeline: build_pipeline(cfg)? });
-    }
+    } else { log.step("models_ready", json!({"reused":true})); }
+    log.step("recognizing", Value::Null);
     run(&mut slot.as_mut().context("OCR pipeline was not initialized")?.pipeline)
+    })();
+    match &result { Ok(_) => log.succeed(Value::Null), Err(_) => log.fail("pipeline_failed") }
+    result
 }
 
 /// Run the C++ OCR pipeline orchestrator (source-type routing + per-stage
@@ -724,11 +769,11 @@ pub fn ocr_via_pipeline(
         Ok((result, pipeline.detected_lang()))
     })?;
     if res.mean_confidence > 0.0 {
-        println!(
+        crate::app_log("debug", format!(
             "[ocr] pipeline: {} regions, mean confidence {:.2}",
             res.regions.len(),
             res.mean_confidence,
-        );
+        ));
     }
     // Capture the LID result (ISO 639-1) detected during the pipeline run,
     // if a lid_model was configured. Populates the `language` field so

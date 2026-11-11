@@ -237,7 +237,9 @@ pub fn render_pages_from_file(
     cfg: &crate::extractors::OcrPipelineConfig,
 ) -> std::result::Result<Vec<RenderPage>, String> {
     use crate::extractors::{ocr_crispembed, ocr_policy, page_source};
-
+    let log = crate::operation_log::OperationLog::start("ocr.render_pages", serde_json::json!({"engine":cfg.engine}));
+    let result = (|| {
+    log.step("validating", serde_json::Value::Null);
     let (cfg, _) = ocr_policy::recognition_config(cfg.clone(), None, None)?;
     ocr_policy::validate_runtime(&cfg)?;
     if [Some("ocrs"), Some("paddle")].contains(&cfg.engine.as_deref()) {
@@ -247,6 +249,7 @@ pub fn render_pages_from_file(
         return Err("This profile requests spread splitting. Split the source pages in OCR Workbench before structured export so both page images and their physical dimensions are retained.".into());
     }
 
+    log.step("rendering_pages", serde_json::Value::Null);
     let images = std::sync::Arc::new(if ext == "pdf" {
         page_source::rasterize_pdf(file).map_err(|e| format!("rasterize PDF: {e:#}"))?
     } else {
@@ -255,6 +258,7 @@ pub fn render_pages_from_file(
 
     let mut pages = Vec::with_capacity(images.len());
     for (i, page_path) in images.paths().iter().enumerate() {
+        log.step("recognizing_page", serde_json::json!({"page":i+1,"pages":images.len()}));
         let prepared = std::sync::Arc::new(super::prepare_ocr_page(page_path, &cfg, true)
             .map_err(|e| format!("Prepare OCR page {}: {e:#}", i + 1))?);
         let working = &prepared.path;
@@ -281,6 +285,9 @@ pub fn render_pages_from_file(
         pages.push(page);
     }
     Ok(pages)
+    })();
+    match &result { Ok(pages) => log.succeed(serde_json::json!({"pages":pages.len()})), Err(_) => log.fail("structured_ocr_failed") }
+    result
 }
 
 fn recognize_render_regions(path: &std::path::Path, config: &super::OcrPipelineConfig) -> Result<Vec<OcrRegion>> {

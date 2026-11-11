@@ -8,6 +8,7 @@
 use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
 use crate::index::tauri_commands::KieFieldDto;
 use crate::AppState;
+use crate::operation_log::OperationLog;
 use crate::ocr_photo::{PhotoAssessment, PhotoPoint};
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,7 @@ use tauri::{Emitter, Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
-#[path = "ocr_atomic_output.rs"]
-mod atomic_output;
+use crate::ocr_atomic_output as atomic_output;
 use atomic_output::{atomic_write, atomic_write_with, sync_directory};
 #[path = "ocr_export_control.rs"]
 mod export_control;
@@ -303,6 +303,9 @@ fn reviewed_pdf_available() -> bool {
 
 #[tauri::command]
 pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String, request_id: Option<String>) -> Result<ImportedDocument, String> {
+    let log=OperationLog::start_with_id("ocr.import",json!({"surface":"gui"}),request_id.as_deref());
+    let result: Result<ImportedDocument,String> = async {
+    log.step("validating",Value::Null);
     let root = workspace_root(&app)?;
     let path = local_file(&location_uri)?;
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -326,28 +329,52 @@ pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String, r
         tokio::task::spawn_blocking(move || import_document_with_progress(&root, &path, Some(&job))).await
             .map_err(|e| format!("Import worker: {e}"))?
     }
+    }.await;
+    finish_import_log(&log,&result);
+    result
 }
 
 /// Camera and provider bytes never become paths supplied by the webview. Keep
 /// their originals by content hash before creating the oriented page assets.
 #[tauri::command]
 pub async fn ocr_workspace_import_image(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
+    let log=OperationLog::start("ocr.import_image",json!({"surface":"gui","kind":"image"}));
+    let result: Result<ImportedDocument,String> = async {
     let (mut metadata, bytes) = import_request(&request)?;
     let root = workspace_root(&app)?;
     metadata.source_uri = None;
     document_import::from_bytes(app, root, metadata, bytes, false).await
+    }.await;
+    finish_import_log(&log,&result);
+    result
 }
 
 #[tauri::command]
 pub async fn ocr_workspace_import_bytes(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
+    let log=OperationLog::start("ocr.import_bytes",json!({"surface":"gui"}));
+    let result: Result<ImportedDocument,String> = async {
     let (metadata, bytes) = import_request(&request)?;
     let root = workspace_root(&app)?;
     document_import::from_bytes(app, root, metadata, bytes, true).await
+    }.await;
+    finish_import_log(&log,&result);
+    result
+}
+
+fn finish_import_log(log:&OperationLog,result:&Result<ImportedDocument,String>) {
+    match result {
+        Ok(document)=>log.succeed(json!({"pages":document.pages.len()})),
+        Err(error) if error == "OCR_IMPORT_CANCELLED"=>log.cancel(),
+        Err(_)=>log.fail("import_failed"),
+    }
 }
 
 #[tauri::command]
 pub fn ocr_workspace_cancel_import(request_id: String) -> Result<(), String> {
-    document_import::cancel(&request_id)
+    let log=OperationLog::start("ocr.import_cancel",json!({"surface":"gui"}));
+    let result=document_import::cancel(&request_id);
+    match &result {Ok(())=>log.succeed(json!({"accepted":true})),Err(_)=>log.fail("cancel_request_failed")}
+    result
 }
 
 #[derive(Deserialize)]
@@ -399,6 +426,9 @@ fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String>
 }
 
 fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document_import::ImportJob>) -> Result<ImportedDocument, String> {
+    let log=OperationLog::start("ocr.import_pages",Value::Null);
+    let result=(|| {
+    log.step("rendering_pages",Value::Null);
     if let Some(job) = job { job.check()?; job.progress("rendering", 0, None); }
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
     if !["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"].contains(&ext.as_str()) {
@@ -414,6 +444,7 @@ fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document
     }
     let mut pages = Vec::with_capacity(images.len());
     for (index, page) in images.paths().iter().enumerate() {
+        log.step("verifying_page",json!({"page":index+1,"pages":images.len()}));
         if let Some(job) = job { job.check()?; job.progress("verifying", index, Some(images.len())); }
         let img = decode_page(page).map_err(|e| format!("Page {}: {e}", index + 1))?;
         let orientation = images.page_orientation(index);
@@ -435,6 +466,9 @@ fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document
         name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
         pages,
     })
+    })();
+    finish_import_log(&log,&result);
+    result
 }
 
 fn checked_rect(rect: PixelRect, width: u32, height: u32) -> Result<(u32, u32, u32, u32), String> {
@@ -465,11 +499,16 @@ pub async fn ocr_workspace_transform(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
 ) -> Result<TransformedPages, String> {
+    let log=OperationLog::start("ocr.transform",json!({"surface":"gui"}));
+    let result: Result<TransformedPages,String> = async {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
     tokio::task::spawn_blocking(move || transform_page_with_photo(&root, &path, &operation, degrees, crop, split_x, size, quad, angle)).await
         .map_err(|e| format!("Page transform worker: {e}"))?
+    }.await;
+    match &result {Ok(pages)=>log.succeed(json!({"pages":pages.pages.len()})),Err(_)=>log.fail("transform_failed")}
+    result
 }
 
 fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>, physical_size: Option<(f64, f64)>) -> Result<TransformedPages, String> {
@@ -532,39 +571,43 @@ pub async fn ocr_workspace_prepare(
     page_height_points: Option<f64>,
     allow_downloads: Option<bool>,
 ) -> Result<PreparedPage, String> {
+    let log=std::sync::Arc::new(OperationLog::start("ocr.workspace_prepare",json!({"surface":"gui","engine":config.engine})));
+    let result: Result<PreparedPage,String> = async {
+    log.step("validating",Value::Null);
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let config = active_preparation_config(config);
     validate_config(&config)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let worker_log=log.clone();
     tokio::task::spawn_blocking(move || {
         // Models are downloaded only after the user agreed for this request.
         if !allow_downloads.unwrap_or(false) {
             let missing = missing_preparation_models(&config);
             if !missing.is_empty() {
-                let names = missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
-                crate::app_log("info", format!("OCR preparation of {name}: waiting for consent to download {names}"));
+                worker_log.warn("model_consent_required",json!({"models":missing.len()}));
                 return Err(format!("{MODEL_DOWNLOAD_REQUIRED}{}", serde_json::to_string(&missing).unwrap_or_default()));
             }
         }
-        let started = std::time::Instant::now();
-        crate::app_log("info", format!("OCR preparation of {name} started"));
         let progress = |stage: &str| {
-            crate::app_log("info", format!("OCR preparation of {name}: {stage} ({:.1}s)", started.elapsed().as_secs_f64()));
+            let code = if stage.starts_with("Straightening") {"dewarp"}
+                else if stage.starts_with("Image restoration") {"restore"}
+                else if stage.starts_with("Upscaling") {"upscale"}
+                else if stage.starts_with("Learned denoise") {"denoise"}
+                else if stage.starts_with("Deskew") {"cleanup"} else {"saving_page"};
+            worker_log.step(code,Value::Null);
             let _ = app.emit("ocr-workspace-prepare-stage", json!({ "page": page_path, "stage": stage }));
         };
         let result = prepare_page_with_progress(&root, &path, &config, size, &progress);
-        match &result {
-            Ok(prepared) => {
-                for warning in &prepared.warnings { crate::app_log("warn", format!("OCR preparation of {name}: {warning}")); }
-                crate::app_log("info", format!("OCR preparation of {name} finished in {:.1}s", started.elapsed().as_secs_f64()));
-            }
-            Err(error) => crate::app_log("error", format!("OCR preparation of {name} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
-        }
         result
     }).await
         .map_err(|e| format!("Page preparation worker: {e}"))?
+    }.await;
+    match &result {
+        Ok(prepared) => log.succeed(json!({"warnings":prepared.warnings.len(),"width":prepared.page.width,"height":prepared.page.height})),
+        Err(_) => log.fail("preparation_failed"),
+    }
+    result
 }
 
 /// Error prefix the UI turns into a download confirmation; JSON follows.
@@ -731,16 +774,12 @@ pub async fn ocr_workspace_recognize(
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
 ) -> Result<RecognizedPage, String> {
-    let name = Path::new(&page_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let what = format!("OCR recognition of {name} (engine {}, language {}{})", engine.as_deref().unwrap_or("default"),
-        language.as_deref().unwrap_or("default"), if zone.is_some() { ", selected area" } else { "" });
-    let started = std::time::Instant::now();
-    crate::app_log("info", format!("{what} started"));
+    let log=OperationLog::start("ocr.workspace_recognition",json!({"surface":"gui","engine":engine,"language":language}));
     let result = ocr_workspace_recognize_inner(app, state, page_path, config, engine, language, zone,
-        page_width_points, page_height_points, cpu_pixel_budget).await;
+        page_width_points, page_height_points, cpu_pixel_budget,&log).await;
     match &result {
-        Ok(page) => crate::app_log("info", format!("{what} finished in {:.1}s: {} regions", started.elapsed().as_secs_f64(), page.regions.len())),
-        Err(error) => crate::app_log("error", format!("{what} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
+        Ok(page) => log.succeed(json!({"regions":page.regions.len(),"warnings":page.warnings.len()})),
+        Err(_) => log.fail("recognition_failed"),
     }
     result
 }
@@ -757,7 +796,9 @@ async fn ocr_workspace_recognize_inner(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
+    log: &OperationLog,
 ) -> Result<RecognizedPage, String> {
+    log.step("validating",Value::Null);
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
@@ -770,10 +811,12 @@ async fn ocr_workspace_recognize_inner(
     if let Some(budget) = cpu_pixel_budget { config.cpu_pixel_budget = budget; }
     options.ocr_pipeline = config;
     let (config, warnings) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
+    log.step("policy_resolved",json!({"engine":config.engine,"language":config.language,"stages":config.stages.len(),"cpu_budget":config.cpu_pixel_budget}));
     let legacy_rec_lang = options.ocr_rec_lang;
     crate::extractors::ocr_policy::validate_runtime(&config)?;
     let cpu_budget = config.cpu_pixel_budget;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+    log.step("recognizing",Value::Null);
     tokio::task::spawn_blocking(move || {
         let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget, legacy_rec_lang)?;
         if zone.is_some() || !config.enabled {
@@ -1196,9 +1239,14 @@ fn save_project(root: &Path, project: Value, expected_revision: u64) -> Result<S
 
 #[tauri::command]
 pub async fn ocr_workspace_save(app: tauri::AppHandle, project: Value, expected_revision: Option<u64>) -> Result<SavedProject, String> {
+    let log=OperationLog::start("ocr.project_save",json!({"surface":"gui","revision":expected_revision}));
+    let result: Result<SavedProject,String> = async {
     let root = workspace_root(&app)?;
     tokio::task::spawn_blocking(move || save_project(&root, project, expected_revision.unwrap_or(0))).await
         .map_err(|e| format!("Project save worker: {e}"))?
+    }.await;
+    match &result {Ok(saved)=>log.succeed(json!({"revision":saved.revision,"warnings":saved.warnings.len()})),Err(_)=>log.fail("project_save_failed")}
+    result
 }
 
 #[tauri::command]
@@ -1700,6 +1748,9 @@ fn write_export(
     control: &ExportControl,
     mut progress: impl FnMut(&str, u64),
 ) -> Result<usize, String> {
+    let log=OperationLog::start("ocr.write_export",json!({"format":format,"pages":pages.len(),"overwrite":overwrite}));
+    let result=(|| {
+    log.step("validating",Value::Null);
     control.check().map_err(|error| error.to_string())?;
     validate_shared_sources(pages, format)?;
     validate_export_format(format, pdfa)?;
@@ -1709,6 +1760,7 @@ fn write_export(
     atomic_write_with(path, overwrite, |file| {
         control.check().map_err(|error| error.to_string())?;
         progress("rendering", 0);
+        log.step("rendering",Value::Null);
         let written = {
             let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, &mut *file);
             let mut last_update = std::time::Instant::now();
@@ -1743,14 +1795,25 @@ fn write_export(
         }
         let count = usize::try_from(written).map_err(|_| "The rendered document is too large for this device.")?;
         control.begin_commit().map_err(|error| error.to_string())?;
+        log.step("committing",json!({"bytes":written}));
         progress("committing", written);
         Ok(count)
     })
+    })();
+    match &result {
+        Ok(bytes)=>log.succeed(json!({"bytes":bytes,"saved":true})),
+        Err(error) if atomic_output::is_export_cancelled(error)=>log.cancel(),
+        Err(_)=>log.fail("export_write_failed"),
+    }
+    result
 }
 
 #[tauri::command]
 pub fn ocr_workspace_cancel_export(request_id: String) -> Result<bool, String> {
-    export_control::cancel(&request_id)
+    let log=OperationLog::start("ocr.export_cancel",json!({"surface":"gui"}));
+    let result=export_control::cancel(&request_id);
+    match &result {Ok(accepted)=>log.succeed(json!({"accepted":accepted})),Err(_)=>log.fail("cancel_request_failed")}
+    result
 }
 
 #[derive(Debug, Serialize)]
@@ -1774,8 +1837,12 @@ pub async fn ocr_workspace_export(
     office_options: Option<crate::ocr_office::OfficeOptions>,
     workbook_options: Option<crate::ocr_office::WorkbookOptions>,
 ) -> Result<WorkspaceExportResult, String> {
+    let log=std::sync::Arc::new(OperationLog::start_with_id("ocr.export",json!({"surface":"gui","format":format,"pages":pages.len()}),request_id.as_deref()));
+    let result: Result<WorkspaceExportResult,String> = async {
+    log.step("validating",Value::Null);
     let job = ExportJob::begin(request_id)?;
     let root = workspace_root(&app)?;
+    let worker_log=log.clone();
     tokio::task::spawn_blocking(move || {
         if office_options.is_some() && format != "docx" {
             return Err("Word object placement options are only supported for DOCX export.".into());
@@ -1814,8 +1881,14 @@ pub async fn ocr_workspace_export(
             #[cfg(not(feature = "ocr-office"))]
             { let _ = office_options; }
         }
+        let mut last_stage="";
+        let mut last_log=std::time::Instant::now();
         let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
             MAX_STREAMED_PDF_BYTES, prepared, job.control(), |phase, bytes| {
+                let stage=match phase {"rendering"=>"rendering","committing"=>"committing",_=>"writing"};
+                if stage!=last_stage || last_log.elapsed()>=std::time::Duration::from_secs(5) {
+                    worker_log.step(stage,json!({"bytes":bytes})); last_stage=stage;last_log=std::time::Instant::now();
+                }
                 let _ = app.emit("ocr-workspace-export", json!({
                     "request_id": job.id(), "phase": phase, "bytes": bytes,
                 }));
@@ -1826,6 +1899,13 @@ pub async fn ocr_workspace_export(
             warnings, sheets,
         })
     }).await.map_err(|e| format!("Export worker: {e}"))?
+    }.await;
+    match &result {
+        Ok(export)=>log.succeed(json!({"bytes":export.bytes,"pages":export.pages,"format":export.format,"warnings":export.warnings.len()})),
+        Err(error) if atomic_output::is_export_cancelled(error)=>log.cancel(),
+        Err(_)=>log.fail("export_failed"),
+    }
+    result
 }
 
 /// Create a private render destination before showing the mobile save picker.
@@ -2245,6 +2325,27 @@ mod tests {
             source_components: None, separator_before: None, shared_source_groups: None,
             review: None, kind: None,
         }], id: None, name: None, source_uri: None, source_page: None, approved: None, provenance: None, structure:None, figure_regions:None }
+    }
+
+    #[test]
+    fn export_receipts_follow_publication_and_never_log_reviewed_content() {
+        let root=tempfile::tempdir().unwrap();
+        let pages=vec![export_page(root.path(),"Private patient content")];
+        let path=root.path().join("private-patient.txt");
+        let (result,events)=crate::operation_log::capture(|| write_export(&path,&pages,"text",false,false,
+            MAX_STREAMED_PDF_BYTES,None,&ExportControl::default(),|_,_|{}));
+        assert_eq!(result.unwrap(),fs::metadata(&path).unwrap().len() as usize);
+        assert_eq!(events.last().unwrap().phase,"completed");
+        assert!(events.iter().any(|event|event.stage.as_deref()==Some("committing")));
+        let original=fs::read(&path).unwrap();
+        let (result,failed)=crate::operation_log::capture(|| write_export(&path,&pages,"text",false,false,
+            MAX_STREAMED_PDF_BYTES,None,&ExportControl::default(),|_,_|{}));
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(),original);
+        assert_eq!(failed.last().unwrap().phase,"failed");
+        assert!(!failed.iter().any(|event|event.phase=="completed"));
+        let logged=serde_json::to_string(&[events,failed]).unwrap();
+        assert!(!logged.contains("Private patient") && !logged.contains("private-patient"));
     }
 
     #[test]

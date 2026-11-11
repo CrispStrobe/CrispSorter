@@ -7,12 +7,13 @@
     import { writeFile } from '@tauri-apps/plugin-fs';
     import { onMount, tick } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
+    import { beginOperation, runOperation, type OperationLog } from '$lib/operationLog';
     import { i18n } from '$lib/i18n.svelte';
     import { searchLabels } from '$lib/search/labels';
     import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
         restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, searchResultLimitForBackend, validateSearchFilters,
         type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
-    import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet,
+    import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet, isCorpusCancellation,
         type CorpusFacet, type LexicalSummary, type CorpusReportFormat, type CorpusReportSort } from '$lib/search/summary';
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
@@ -176,12 +177,14 @@
     let summaryLoading = $state(false);
     let summaryNotice = $state('');
     let summaryRequestId: string | null = null;
+    let summaryOperation: OperationLog | null = null;
     let summarySequence = 0;
     let generationCheck: { sequence: number; promise: Promise<boolean> } | null = null;
     let corpusReportFormat = $state<CorpusReportFormat>('csv');
     let corpusReportSort = $state<CorpusReportSort>('filename');
     let corpusExportBusy = $state(false), corpusExportCancelling = $state(false);
     let corpusExportRequestId = $state<string | null>(null);
+    let corpusExportOperation: OperationLog | null = null;
     let corpusExportQuery = $state('');
     let corpusExportNotice = $state(''), corpusExportError = $state(false);
     const corpusFacets: { key: CorpusFacet; en: string; de: string }[] = [
@@ -195,7 +198,10 @@
         const requestId = summaryRequestId;
         summarySequence += 1; summaryRequestId = null;
         corpusSummary = null; summaryLoading = false; summaryNotice = message;
-        if (requestId) void invoke('index_cancel_search_summary', { requestId }).catch(() => {});
+        if (requestId) {
+            summaryOperation?.stage('cancel_requested', {}, 'info');
+            void runOperation('search.cancel', {}, () => invoke('index_cancel_search_summary', { requestId })).catch(() => {});
+        }
     }
 
     async function verifySummaryGeneration(): Promise<boolean> {
@@ -231,19 +237,25 @@
         const scope = corpusScopeForBackend(activeBackend);
         if (!scope) return;
         const requestId = crypto.randomUUID();
+        const operation = beginOperation('search.summary', { backend: scope === 'remote_indexed_documents' ? 'remote' : 'local' });
+        summaryOperation = operation;
         summaryRequestId = requestId; summaryLoading = true;
         try {
             const value = await invoke<unknown>('index_search_summary', lexicalSummaryArguments(recipe, searchedQuery, requestId));
-            if (sequence !== summarySequence || request !== searchRequest) return;
+            if (sequence !== summarySequence || request !== searchRequest) { operation.stage('discarded'); operation.cancel(); return; }
             const summary = readLexicalSummary(value, searchedQuery, scope);
             const generation = await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, searchedQuery));
-            if (sequence !== summarySequence || request !== searchRequest) return;
+            if (sequence !== summarySequence || request !== searchRequest) { operation.stage('discarded'); operation.cancel(); return; }
             if (generation !== summary.generation) throw new Error(i18n.lang === 'de'
                 ? 'Der Index hat sich während der Zählung geändert. Bitte erneut zählen.' : 'The index changed while counting matches. Count again to refresh the totals.');
             corpusSummary = summary;
+            operation.complete({ results: summary.matchingDocuments, count: summary.scannedRows });
         } catch (cause) {
+            if (isCorpusCancellation(cause) || sequence !== summarySequence || request !== searchRequest) operation.cancel();
+            else operation.fail(cause);
             if (sequence === summarySequence && request === searchRequest) summaryNotice = String(cause);
         } finally {
+            if (summaryOperation === operation) summaryOperation = null;
             if (sequence === summarySequence) { summaryLoading = false; summaryRequestId = null; }
         }
     }
@@ -262,33 +274,40 @@
         const format = corpusReportFormat, sort = corpusReportSort;
         const scope = corpusScopeForBackend(activeBackend);
         if (!scope) return;
+        const operation = beginOperation('search.export', { format, backend: scope === 'remote_indexed_documents' ? 'remote' : 'local' });
+        corpusExportOperation = operation;
         corpusExportBusy = true; corpusExportError = false; corpusExportNotice = ''; corpusExportQuery = searchedQuery;
         try {
-            if (corpusSummary && !(await verifySummaryGeneration())) return;
+            if (corpusSummary && !(await verifySummaryGeneration())) { operation.stage('discarded'); operation.cancel(); return; }
             const expectedGeneration = corpusSummary?.generation ?? await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, searchedQuery));
             if (typeof expectedGeneration !== 'string' || !expectedGeneration) throw new Error('The active index snapshot could not be captured for export.');
             const path = await save({ defaultPath: `CrispSorter-all-text-matches-${new Date().toISOString().slice(0, 10)}.${format}`,
                 filters: [{ name: `Complete matching-document report (${format.toUpperCase()})`, extensions: [format] }] });
-            if (!path) return;
+            if (!path) { operation.cancel(); return; }
             const requestId = crypto.randomUUID(); corpusExportRequestId = requestId;
+            operation.stage('dispatching', {}, 'info');
             const receipt = readCorpusReportReceipt(await invoke<unknown>('index_export_lexical_report',
                 lexicalExportArguments(recipe, searchedQuery, { requestId, path, format, sort, expectedGeneration })), format, sort, scope, expectedGeneration);
+            operation.complete({ results: receipt.documents, saved: true });
             corpusExportNotice = i18n.lang === 'de'
                 ? `${receipt.documents.toLocaleString()} passende Dokumente exportiert: ${receipt.path}`
                 : `Exported all ${receipt.documents.toLocaleString()} matching documents: ${receipt.path}`;
         } catch (cause) {
-            corpusExportError = !/cancelled/i.test(String(cause));
+            corpusExportError = !isCorpusCancellation(cause);
+            if (corpusExportError) operation.fail(cause); else operation.cancel();
             corpusExportNotice = String(cause);
-        } finally { corpusExportBusy = false; corpusExportCancelling = false; corpusExportRequestId = null; }
+        } finally { corpusExportBusy = false; corpusExportCancelling = false; corpusExportRequestId = null; if (corpusExportOperation === operation) corpusExportOperation = null; }
     }
 
     async function cancelCorpusExport(): Promise<void> {
         const requestId = corpusExportRequestId;
         if (!requestId || corpusExportCancelling) return;
         corpusExportCancelling = true;
+        corpusExportOperation?.stage('cancel_requested', {}, 'info');
         try {
-            const accepted = await invoke<boolean>('index_cancel_search_summary', { requestId });
+            const accepted = await runOperation('search.cancel', {}, () => invoke<boolean>('index_cancel_search_summary', { requestId }));
             if (corpusExportRequestId !== requestId) return;
+            if (!accepted) corpusExportOperation?.stage('cancel_refused', {}, 'info');
             corpusExportNotice = accepted
                 ? (i18n.lang === 'de' ? 'Export wird abgebrochen …' : 'Cancelling export…')
                 : (i18n.lang === 'de' ? 'Der Bericht wird veröffentlicht. Das endgültige Ergebnis folgt.' : 'The report is being published. Waiting for its final result.');
@@ -302,7 +321,7 @@
         window.addEventListener('focus', onFocus);
         return () => {
             window.removeEventListener('focus', onFocus); clearCorpusSummary();
-            if (corpusExportRequestId) void invoke('index_cancel_search_summary', { requestId: corpusExportRequestId }).catch(() => {});
+            if (corpusExportRequestId) void runOperation('search.cancel', {}, () => invoke('index_cancel_search_summary', { requestId: corpusExportRequestId })).catch(() => {});
         };
     });
     let resultSort = $state<ResultSort>('relevance');
@@ -1277,6 +1296,11 @@
         const request = ++searchRequest;
         const recipe = currentRecipe();
         const started = performance.now();
+        const operation = beginOperation('search.request');
+        const isCurrent = () => {
+            if (request === searchRequest) return true;
+            operation.stage('discarded'); operation.cancel(); return false;
+        };
         imageSearchLoading = false;
         loading = true; error = ''; searchNotice = ''; searched = true;
         resultActionFeedback = null;
@@ -1289,7 +1313,7 @@
                     const parsed = await invoke<{ cleaned_query: string; filters: any }>(
                         'index_parse_nl_query', { query: searchQuery }
                     );
-                    if (request !== searchRequest) return;
+                    if (!isCurrent()) return;
                     searchQuery = parsed.cleaned_query || searchQuery;
                     const f = recipe.filters;
                     if (parsed.filters.language) f.language = parsed.filters.language;
@@ -1302,28 +1326,31 @@
                     recipe.filters = normalizeSearchRecipe(recipe).filters;
                     applyFilters(recipe.filters);
                     const issue = validateSearchFilters(recipe.filters);
-                    if (issue) { error = labels[issue]; return; }
+                    if (issue) { error = labels[issue]; operation.fail(); return; }
                 } catch (e) {
-                    if (request !== searchRequest) return;
+                    if (!isCurrent()) return;
+                    operation.stage('fallback', {}, 'warn');
                     // Retain the literal query if the optional parser is unavailable.
                     searchNotice = `${labels.warning}: ${String(e)}`;
                 }
             }
-            if (request !== searchRequest) return;
+            if (!isCurrent()) return;
+            operation.stage('dispatching');
             let found = await invoke<SearchResult[]>('index_search', localSearchArguments(
                 { ...recipe, query: searchQuery }, $experimentalCrispEmbed.moedern ? Math.max(recipe.limit, 50) : recipe.limit,
             ));
-            if (request !== searchRequest) return;
+            if (!isCurrent()) return;
             if ($experimentalCrispEmbed.moedern && $experimentalCrispEmbed.endpoint && found.length) {
                 const original = found;
                 try {
                     const report = await invoke<{ results: SearchResult[] }>('crispembed_rerank_passages', {
                         endpoint: $experimentalCrispEmbed.endpoint, query: searchQuery, candidates: found.slice(0, 100), limit: recipe.limit,
                     });
-                    if (request !== searchRequest) return;
+                    if (!isCurrent()) return;
                     found = report.results;
                 } catch (e) {
-                    if (request !== searchRequest) return;
+                    if (!isCurrent()) return;
+                    operation.stage('fallback', {}, 'warn');
                     found = original.slice(0, recipe.limit);
                     searchNotice = `Experimental reranking unavailable; showing the original search order. ${String(e)}`;
                 }
@@ -1337,10 +1364,13 @@
             // Keep the scope visible until explicitly cleared; repeated searches
             // and bookmarks must not silently broaden the user's selection.
             try { await addToHistory(recipe, results.length); }
-            catch (e) { if (request === searchRequest) searchNotice = String(e); }
+            catch (e) { operation.stage('checkpoint_failed', { saved: false }, 'warn'); if (request === searchRequest) searchNotice = String(e); }
+            if (!isCurrent()) return;
+            operation.complete({ results: found.length });
             void auditSearch(searchQuery);
         } catch (e: any) {
-            if (request !== searchRequest) return;
+            if (!isCurrent()) return;
+            operation.fail(e);
             error = String(e); results = [];
         } finally {
             if (request === searchRequest) loading = false;

@@ -122,6 +122,11 @@ fn with_image<T>(bytes: &[u8], recognize: impl FnOnce(&Path) -> Result<T, String
 
 #[tauri::command]
 pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Result<ImageRecognition, String> {
+    let request_id = request.headers().get("x-operation-id").and_then(|value|value.to_str().ok());
+    let log = std::sync::Arc::new(crate::operation_log::OperationLog::start_with_id("ocr.raw_image",
+        serde_json::json!({"surface":"gui","kind":"image"}), request_id));
+    let result: Result<ImageRecognition,String> = async {
+    log.step("validating_request", serde_json::Value::Null);
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("Image OCR requires a raw binary payload.".into());
     };
@@ -130,18 +135,29 @@ pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::
     let mut owned = Vec::new();
     owned.try_reserve_exact(bytes.len()).map_err(|_| "Not enough memory for this OCR image.")?;
     owned.extend_from_slice(bytes);
+    log.step("snapshot_settings", serde_json::json!({"input_bytes":bytes.len()}));
     let saved = state.bg_ingest.lock().await.ocr_options();
     let options = extraction_options(saved, metadata.options, &metadata.name)?;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+    let worker_log=log.clone();
     tokio::task::spawn_blocking(move || {
         let (config, warnings) = extractors::ocr_policy::resolve_extraction_config(&options)?;
         let engine = config.engine.clone().unwrap_or_else(|| "auto".into());
+        worker_log.step("policy_resolved",serde_json::json!({"engine":engine,"language":config.language,
+            "stages":config.stages.len(),"cpu_budget":config.cpu_pixel_budget}));
+        worker_log.step("staging_image",serde_json::json!({"bytes":owned.len()}));
         with_image(&owned, |path| {
             let document = extractors::extract_text_from_path_with_opts(path, options)
                 .map_err(|e| format!("Image OCR failed: {e:#}"))?;
             Ok(ImageRecognition { text: document.full_text, engine, warnings })
         })
     }).await.map_err(|e| format!("Image OCR worker: {e}"))?
+    }.await;
+    match &result {
+        Ok(image) => log.succeed(serde_json::json!({"engine":image.engine,"characters":image.text.chars().count(),"warnings":image.warnings.len()})),
+        Err(_) => log.fail("image_request_failed"),
+    }
+    result
 }
 
 #[cfg(test)]

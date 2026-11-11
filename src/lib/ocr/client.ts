@@ -17,6 +17,7 @@ import { readProofreadingData, type ProofreadingData } from "./proofreadingData"
 import type { OfficeExportOptions } from "./officeExport";
 import type { WorkbookOptions } from "./workbookExport";
 import { resolveRecognitionLanguage } from "./recognitionLanguage";
+import { runOperation, type OperationLog } from "../operationLog";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -327,14 +328,17 @@ function importFailure(error: unknown): unknown {
 
 /** Register first so fast native imports cannot outrun progress/cancellation.
  * A cancelled worker is awaited: staging must not be removed while it writes. */
-async function trackedImport(options: ImportOptions | undefined, run: (requestId?: string) => Promise<ImportedDocument>): Promise<ImportedDocument> {
+async function trackedImport(options: ImportOptions | undefined, run: (requestId?: string) => Promise<ImportedDocument>, operation?: OperationLog): Promise<ImportedDocument> {
   if (!options) return run().catch(error => { throw importFailure(error); });
   if (options.signal?.aborted) throw importAborted();
   const requestId = crypto.randomUUID();
   let active = true;
   let started = false;
   const cancel = () => {
-    if (started && active) void invoke("ocr_workspace_cancel_import", { requestId }).catch(() => {});
+    if (started && active) {
+      operation?.stage("cancel_requested", {}, "info");
+      void invoke("ocr_workspace_cancel_import", { requestId }).catch(() => { operation?.stage("warning", {}, "warn"); });
+    }
   };
   const unlisten = await listen<ImportProgress>("ocr-workspace-import", event => {
     if (active && !options.signal?.aborted && event.payload.request_id === requestId) options.onProgress?.(event.payload);
@@ -371,7 +375,7 @@ function exportFailure(error: unknown): unknown {
 
 /** A stop request can lose to atomic publication. Only the native cancellation
  * marker means the export stopped; a completed result remains a success. */
-async function trackedExport(request: ExportRequest, options?: ExportOptions, requestId?: string): Promise<ExportResult> {
+async function trackedExport(request: ExportRequest, options?: ExportOptions, requestId?: string, operation?: OperationLog): Promise<ExportResult> {
   if (!options) return invoke<ExportResult>("ocr_workspace_export", { ...request })
     .catch(error => { throw exportFailure(error); });
   if (options.signal?.aborted) throw exportAborted();
@@ -382,12 +386,14 @@ async function trackedExport(request: ExportRequest, options?: ExportOptions, re
   let lastBytes = 0;
   const cancel = () => {
     if (!started || !active || committing) return;
+    operation?.stage("cancel_requested", {}, "info");
     void invoke<boolean>("ocr_workspace_cancel_export", { requestId: id }).then(accepted => {
       if (accepted === false && active && !committing) {
         committing = true;
+        operation?.stage("cancel_refused", { bytes: lastBytes }, "info");
         options.onProgress?.({ request_id: id, phase: "committing", bytes: lastBytes });
       }
-    }).catch(() => { /* The export's eventual result retains its original error. */ });
+    }).catch(() => { operation?.stage("warning", {}, "warn"); /* The export result retains its original error. */ });
   };
   const unlisten = await listen<ExportProgress>("ocr-workspace-export", event => {
     const progress = event.payload;
@@ -397,6 +403,7 @@ async function trackedExport(request: ExportRequest, options?: ExportOptions, re
       (committing && progress.phase !== "committing")) return;
     lastBytes = progress.bytes;
     if (progress.phase === "committing") committing = true;
+    operation?.stage(progress.phase === "committing" ? "committing" : progress.phase === "writing" ? "saving" : "rendering", { bytes: progress.bytes });
     options.onProgress?.(progress);
   });
   options.signal?.addEventListener("abort", cancel, { once: true });
@@ -450,11 +457,11 @@ async function completeMobileExport<T extends { saved_path: string; bytes: numbe
 export const workspaceClient: WorkspaceClient = {
   capabilities: documentCapabilities,
   list: () => invoke("ocr_workspace_list"),
-  load: (projectId) =>
-    invoke("ocr_workspace_load", { projectId: projectId ?? null }),
-  save: (project, expectedRevision) =>
-    invoke("ocr_workspace_save", { project, expectedRevision }),
-  importDocument: (locationUri, options) => trackedImport(options, async requestId => {
+  load: (projectId) => runOperation("ocr.project", {}, () =>
+    invoke("ocr_workspace_load", { projectId: projectId ?? null })),
+  save: (project, expectedRevision) => runOperation("ocr.checkpoint", { revision: expectedRevision, pages: project.pages.length }, () =>
+    invoke<ProjectEnvelope>("ocr_workspace_save", { project, expectedRevision }), result => ({ revision: result.revision, saved: true })),
+  importDocument: (locationUri, options) => runOperation("ocr.import", {}, operation => trackedImport(options, async requestId => {
     if (isProviderUri(locationUri) && (await loadCapabilities()).mobile) {
       const bytes = await readProviderFile(locationUri);
       const name = providerNames.get(locationUri) ?? "Imported document";
@@ -464,94 +471,100 @@ export const workspaceClient: WorkspaceClient = {
       return result;
     }
     return invoke("ocr_workspace_import", { locationUri, ...(requestId ? { requestId } : {}) });
-  }),
-  importImage: (name, bytes, options) => trackedImport(options, requestId => importPayload("ocr_workspace_import_image", name, bytes, undefined, requestId)),
+  }, operation), result => ({ pages: result.pages.length })),
+  importImage: (name, bytes, options) => runOperation("ocr.import", { kind: "image", bytes: bytes.byteLength }, operation => trackedImport(options, requestId => importPayload("ocr_workspace_import_image", name, bytes, undefined, requestId), operation), result => ({ pages: result.pages.length })),
   assessPhoto: (pagePath) => invoke("ocr_workspace_assess_photo", { pagePath }),
   modelStorage: () => invoke("ocr_workspace_model_storage"),
   cleanModelStorage: () => invoke("ocr_workspace_clean_model_storage"),
   removeMobileModel: (name, expectedVersion) => invoke("ocr_workspace_remove_mobile_model", { name, expectedVersion }),
-  installMobileModels: async (language, onProgress) => {
+  installMobileModels: (language, onProgress) => runOperation("ocr.models", { language }, async operation => {
     const requestId = crypto.randomUUID();
     const unlisten = await listen<ModelDownloadProgress>("crispembed-model-download", (event) => {
-      if (event.payload.request_id === requestId) onProgress?.(event.payload);
+      if (event.payload.request_id === requestId) { operation.stage("progress"); onProgress?.(event.payload); }
     });
     try {
       return await invoke<string[]>("ocr_workspace_install_mobile_models", { language, requestId });
     } finally {
       try { unlisten(); } catch { /* Preserve the install result if the event bridge has closed. */ }
     }
-  },
-  recognize: (options) =>
-    invoke("ocr_workspace_recognize", {
+  }, result => ({ count: result.length })),
+  recognize: (options) => runOperation("ocr.recognition", { engine: options.engine ?? "auto", language: options.language ?? "auto", cpuBudget: options.cpuPixelBudget ?? false, backend: "native" }, () =>
+    invoke<RecognitionResult>("ocr_workspace_recognize", {
       ...options,
       config: options.config ?? null,
       engine: options.engine ?? null,
       language: recognitionLanguage(options.engine, options.language, options.config),
       zone: options.zone ?? null,
       cpuPixelBudget: options.cpuPixelBudget ?? null,
-    }),
-  transform: (options) =>
-    invoke("ocr_workspace_transform", {
+    }), result => ({ regions: result.regions.length })),
+  transform: (options) => runOperation("ocr.transform", {}, () =>
+    invoke<{ pages: ImportedPage[] }>("ocr_workspace_transform", {
       ...options,
       degrees: options.degrees ?? null,
       crop: options.crop ?? null,
       splitX: options.splitX ?? null,
       quad: options.quad ?? null,
       angle: options.angle ?? null,
-    }),
-  prepare: async (pagePath, config, pageWidthPoints, pageHeightPoints, options) => {
+    }), result => ({ pages: result.pages.length })),
+  prepare: (pagePath, config, pageWidthPoints, pageHeightPoints, options) => runOperation("ocr.prepare", {}, async operation => {
     let unlisten: (() => void) | undefined;
     if (options?.onStage) {
       const { listen } = await import("@tauri-apps/api/event");
       unlisten = await listen<{ page: string; stage: string }>("ocr-workspace-prepare-stage", (event) => {
-        if (event.payload?.page === pagePath) options.onStage?.(event.payload.stage);
+        if (event.payload?.page === pagePath) { operation.stage("progress"); options.onStage?.(event.payload.stage); }
       });
     }
     try {
-      return await invoke("ocr_workspace_prepare", {
+      return await invoke<ImportedPage>("ocr_workspace_prepare", {
         pagePath,
         config,
         pageWidthPoints,
         pageHeightPoints,
         allowDownloads: options?.allowDownloads ?? false,
       });
-    } finally { unlisten?.(); }
-  },
-  exportDocument: (request, options) => {
+    } finally { try { unlisten?.(); } catch { operation.stage("cleanup_failed", {}, "warn"); } }
+  }),
+  exportDocument: (request, options) => runOperation("ocr.export", { format: request.format, pages: request.pages.length }, async operation => {
     const requestId = options ? crypto.randomUUID() : undefined;
-    return completeMobileExport(request.outputPath, () => trackedExport(request, options, requestId), options, bytes => {
+    const result = await completeMobileExport(request.outputPath, () => trackedExport(request, options, requestId, operation), options, bytes => {
+      operation.stage("committing", { bytes }, "info");
       if (requestId) options?.onProgress?.({ request_id: requestId, phase: "destination", bytes });
     });
-  },
-  extractFields: (text, labels, threshold) =>
-    invoke("ocr_workspace_extract_fields", { text, labels, threshold }),
-  layoutFields: (pagePath, labels, threshold, config) =>
-    invoke("tool_kie_extract", {
+    if (result.cancelled) operation.cancel();
+    return result;
+  }, result => ({ bytes: result.bytes, pages: result.pages, warnings: result.warnings?.length ?? 0, saved: true })),
+  extractFields: (text, labels, threshold) => runOperation("ocr.specialist", { kind: "fields", count: labels.length }, () =>
+    invoke<ExtractionField[]>("ocr_workspace_extract_fields", { text, labels, threshold }), result => ({ results: result.length })),
+  layoutFields: (pagePath, labels, threshold, config) => runOperation("ocr.specialist", { kind: "fields", count: labels.length }, () =>
+    invoke<ExtractionField[]>("tool_kie_extract", {
       locationUri: pagePath,
       labels,
       threshold,
       lilt: true,
       liltModel: null,
       ...(config === undefined ? {} : { config: specialistConfig(config) }),
-    }),
-  table: (pagePath, config) =>
-    invoke("tool_table_extract", {
+    }), result => ({ results: result.length })),
+  table: (pagePath, config) => runOperation("ocr.specialist", { kind: "table" }, () =>
+    invoke<{ html: string; rows: number; cols: number }>("tool_table_extract", {
       locationUri: pagePath,
       ocrModel: null,
       save: false,
       ...(config === undefined ? {} : { config: specialistConfig(config) }),
-    }),
-  math: (pagePath) =>
-    invoke("tool_math_ocr", { locationUri: pagePath, model: null }),
-  writeText: (outputPath, text, sourceUris) =>
-    completeMobileExport(outputPath, () => invoke<{ saved_path: string; bytes: number }>("ocr_workspace_write_text", {
+    }), result => ({ count: result.rows })),
+  math: (pagePath) => runOperation("ocr.specialist", { kind: "formula" }, () =>
+    invoke<string | null>("tool_math_ocr", { locationUri: pagePath, model: null }), result => ({ characters: result?.length ?? 0 })),
+  writeText: (outputPath, text, sourceUris) => runOperation("ocr.export", { format: "text" }, async operation => {
+    const result = await completeMobileExport(outputPath, () => invoke<{ saved_path: string; bytes: number; cancelled?: boolean }>("ocr_workspace_write_text", {
       outputPath,
       text,
       sourceUris,
       overwrite: false,
-    })),
-  reindex: (sourceUri, text) =>
-    invoke("ocr_workbench_reingest", { locationUri: sourceUri, text }),
+    }));
+    if (result.cancelled) operation.cancel();
+    return result;
+  }, result => ({ bytes: result.bytes, saved: true })),
+  reindex: (sourceUri, text) => runOperation("ocr.reindex", {}, () =>
+    invoke("ocr_workbench_reingest", { locationUri: sourceUri, text })),
   pickDocuments: async () => {
     if ((await loadCapabilities()).mobile) {
       const selection = await invoke<{ cancelled: boolean; files: ProviderFile[] }>("plugin:mobile-provider|pick_files");

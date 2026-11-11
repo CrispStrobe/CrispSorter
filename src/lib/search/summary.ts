@@ -1,5 +1,14 @@
 import { localSearchArguments, normalizeSearchRecipe, type SearchRecipe } from './recipe';
 
+/** Exact native cancellation receipts. A filename or unrelated failure may
+ * contain the word cancelled and must retain its error classification. */
+export function isCorpusCancellation(error: unknown): boolean {
+    if (error instanceof Error && error.name === 'AbortError') return true;
+    const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    return message === 'The matching-document scan was cancelled'
+        || message === 'The report was cancelled before publication';
+}
+
 export type CorpusFacet = 'extensions' | 'languages' | 'years' | 'tags';
 export type CorpusScope = 'local_indexed_documents' | 'remote_indexed_documents';
 export interface CorpusFacetValue { value: string; documents: number }

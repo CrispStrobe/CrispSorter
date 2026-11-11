@@ -29,7 +29,7 @@ a new accuracy or latency comparison across models.
 | Template text zones | Hardcoded system Tesseract and converted errors to empty strings. | Use the shared dispatcher and propagate errors. Checkbox OMR remains a separate operation and avoids unnecessary temporary PNGs. |
 | Text-based KIE and batch KIE | Forced OCR discarded settings; batch errors could become empty fields and image extensions were omitted. | Use saved/request-specific policy, include supported images, and surface extraction failures. |
 | Workbench | Engine catalog differed from Settings; configured stages and project/global defaults could conflict. | Shared capability catalog, explicit project precedence, active-stage controls and model/preparation selection. |
-| CLI OCR, KIE, tables and zones | Partial engine enumeration and default-only helper calls. | Shared engine catalog, language/CPU options, and read-only saved-policy access for KIE/tables/zones. |
+| CLI OCR, KIE, tables and zones | Partial engine enumeration, parser defaults masking saved settings and default-only helper calls. | Shared engine catalog, read-only saved-policy access and `--ocr-config` snapshots on all four commands; only explicitly supplied OCR flags override the selected configuration. |
 | Structured OCR export and specialist adapters | Direct calls could bypass selection or replace incompatible models. | Validate selected policy and output capability before recognition; no hidden engine substitution. |
 
 ## Selection rules
@@ -52,8 +52,13 @@ including restoration, layout and language-selection models, are retained.
 
 File/PDF extraction snapshots the complete policy before processing. Workbench
 batches and specialist actions capture their effective project configuration.
-CLI KIE, table and zone commands read saved settings without acquiring scheduler
+CLI OCR, KIE, table and zone commands read saved settings without acquiring scheduler
 ownership, recovering jobs, or changing in-flight background queue entries.
+An explicit JSON snapshot supplies its own defaults without leaking legacy app
+tiers or script choices into that request. Optional boolean CLI processing
+flags support explicit false values. Enabling one processing option on a
+disabled recipe preserves the chosen model without reactivating unrelated
+retained preparation steps.
 
 ## Optimizations
 
@@ -74,6 +79,10 @@ ownership, recovering jobs, or changing in-flight background queue entries.
   fields through a lossy region conversion.
 - Template checkbox processing avoids OCR staging; text zones share one decoded
   source image, then crop and prepare each zone with the same selected policy.
+- CLI table-grid extraction applies the shared image preparation without
+  loading an unused cell recognizer. CLI text/table/structured output and GUI
+  output use private staging before atomic publication; PDF watermarking is
+  completed before the final destination is replaced.
 
 These changes remove repeated setup and unnecessary work by construction.
 No throughput, memory or accuracy improvement percentage is claimed without a
@@ -88,8 +97,8 @@ CPU profile fails with a capability explanation. The current index server
 accepts extracted text/embeddings; it is not an OCR model execution service.
 Desktop remote-index workflows still extract on the local desktop.
 
-Ad-hoc CLI OCR uses its command-line flags and defaults through the same native
-policy. Formula recognition remains a distinct LaTeX-producing operation with
+CLI OCR uses saved settings or an explicit JSON snapshot, with command-line
+overrides, through the same native policy. Formula recognition remains a distinct LaTeX-producing operation with
 its own selected formula model. A preferred document converter can provide PDF
 text before native extraction; explicit forced PDF OCR bypasses that preference.
 The per-page text/OCR merge described above applies to the native PDF route.
@@ -130,3 +139,7 @@ Final suite counts and hosted results are recorded in the pull request after
 the integration checks. The historical six-page System Tesseract measurement
 remains a separate result tied to its unchanged production adapter; no new
 cross-engine measurement is claimed.
+
+The [surface and operation-log audit](surface-observability-audit-20261111.md)
+extends this audit to remote integration, storage consumers, lifecycle events,
+failure/cancellation identity and the critical-step regression coverage.

@@ -16,6 +16,8 @@ import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
 import { extractText, usesNativePathExtraction, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
+import { beginOperation } from '../operationLog';
+import { finishProcessingCheckpoint } from './processingReceipt';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
 import { batchSourceKey, isProviderUri, readProviderFile } from '../mobileProvider';
@@ -331,8 +333,9 @@ export class BatchManager {
     }
 
     async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
-        flog('info', `processAll started${onlyIds ? ` (${onlyIds.size} items)` : ''}`);
         if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
+        const operation = beginOperation('batch.processing', { count: onlyIds?.size ?? this.items.length });
+        let processingFailure: { error: unknown } | undefined;
         this.isProcessing = true;
         this.isStopping = false;
         this.stopRequested = false;
@@ -425,7 +428,7 @@ export class BatchManager {
         // batch by retrying 3× on every file.
         const rrBroken = new Set<string>();
 
-        flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars} fallbacks=${rrProviders.length - 1}`);
+        operation.stage('ready', { language, format: parsingFormat }, 'info');
 
         // P15a — content-dedup: mark duplicates before extraction so
         // UI shows orange badges immediately and sort-skip works.
@@ -822,7 +825,7 @@ export class BatchManager {
                             // Non-fatal -- most PDFs have an Info dict, but
                             // missing or malformed ones shouldn't break extraction.
                             item.metadataReadStatus = 'failed';
-                            flog('warn', `PDF metadata read failed: ${item.originalName}: ${e}`);
+                            operation.stage('warning', { format: 'pdf' }, 'warn');
                         }
                     } else if (!hasMetadataConvention) {
                         // Plain-text-ish formats have no embedded metadata
@@ -865,7 +868,7 @@ export class BatchManager {
                             // matters.  Just log and leave the L2 fields
                             // undefined so the UI renders dashes.
                             item.metadataReadStatus = 'failed';
-                            flog('warn', `Audio metadata probe failed: ${item.originalName}: ${e}`);
+                            operation.stage('warning', {}, 'warn');
                         }
                     }
 
@@ -874,7 +877,7 @@ export class BatchManager {
                     if (overrides?.extractionOnly) await this.calculateTargetPath(item);
                     const extractedBytes = item.extractedText?.length ?? 0;
                     const tool = isPdf && pdfBackend === 'rust' && !forceOCR && !isProviderUri(item.originalPath) ? 'pdf-extract (Rust)'
-                                : forceOCR ? 'OCR (Tesseract)'
+                                : forceOCR ? 'configured OCR'
                                 : `JS extractor (.${ext})`;
                     const extractMs = Math.round(performance.now() - extractStartTs);
                     flog('info',
@@ -896,7 +899,7 @@ export class BatchManager {
                     } else {
                         item.status = 'error';
                         item.errorMessage = e.message || String(e);
-                        flog('error', `Extraction error: ${item.originalName}: ${e.message || e}`);
+                        operation.stage('extraction_failed', {}, 'error');
                     }
                 } finally {
                     this.extractionActive = Math.max(0, this.extractionActive - 1);
@@ -982,7 +985,7 @@ export class BatchManager {
                                         // Sideline this provider for the rest of the run so it
                                         // doesn't waste 3 retries × every item.
                                         rrBroken.add(rr.id);
-                                        flog('warn', `Provider ${rr.id} hard-failed — sidelined for this run: ${e.message}`);
+                                        operation.stage('fallback', {}, 'warn');
                                     }
                                     // Move past this provider on the next pick.
                                     rrIdx = (i + 1) % rrProviders.length;
@@ -1013,24 +1016,15 @@ export class BatchManager {
                         throw lastErr ?? new Error('All LLM providers exhausted');
                     };
 
-                    const activeRR = rrProviders[rrIdx] ?? rrProviders[0];
-                    flog(
-                        'info',
-                        `LLM analyze: ${item.originalName} via ${activeRR?.id ?? '?'}/${activeRR?.modelId ?? '?'}, sent ${prompt.length.toLocaleString()} chars (${textSample.length.toLocaleString()} from doc body)`
-                    );
-                    const llmStart = performance.now();
+                    operation.stage('analyzing', { characters: prompt.length }, 'info');
                     const response = await queryRR(prompt);
-                    const llmMs = Math.round(performance.now() - llmStart);
                     if (this.stopRequested || runLlmAbort.signal.aborted) { item.status = 'unfinished'; item.statusDetail = 'interrupted'; break; }
                     const metadata = this.parseLLMResponse(response, parsingFormat);
 
                     item.suggestedTitle = metadata.title || 'Unknown Title';
                     item.suggestedAuthor = metadata.author || 'Unknown Author';
                     item.suggestedYear = metadata.year || 'Unknown Year';
-                    flog(
-                        'info',
-                        `Analyzed: ${item.originalName} -> title="${item.suggestedTitle}" author="${item.suggestedAuthor}" year=${item.suggestedYear} (${llmMs} ms, ${response.length.toLocaleString()} chars in response)`
-                    );
+                    operation.stage('analyzed', { characters: response.length }, 'info');
 
                     if (authorSortEnabled && item.suggestedAuthor && !isUnknownSentinel(item.suggestedAuthor)) {
                         const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
@@ -1063,7 +1057,7 @@ export class BatchManager {
                     } else {
                         item.status = 'error';
                         item.errorMessage = e.message || String(e);
-                        flog('error', `Analysis error: ${item.originalName}: ${e.message || e}`);
+                        operation.stage('analysis_failed', {}, 'error');
                     }
                 } finally {
                     this.llmActive = Math.max(0, this.llmActive - 1);
@@ -1099,21 +1093,23 @@ export class BatchManager {
             if (!this.stopRequested && !onlyIds) await this.propagateChapterMetadata();
         }
         } catch (e) {
-            flog('error', `processAll failed: ${(e as any)?.message ?? e}`);
+            processingFailure = { error: e };
             throw e;
         } finally {
-            try {
-                await upsertItemsBulk(this.items);
-            } finally {
-                this.isProcessing = false;
-                this.isStopping = false;
-                this.stopRequested = false;
-                this.llmAbort = null;
-                this.extractionAbort = null;
-                this.extractionActive = 0;
-                this.llmActive = 0;
-                flog('info', 'processAll finished');
-            }
+            await finishProcessingCheckpoint({
+                persist: () => upsertItemsBulk(this.items), operation,
+                failure: processingFailure, cancelled: this.stopRequested,
+                counts: { completed: this.extractionDone, failed: this.items.filter(item => (!onlyIds || onlyIds.has(item.id)) && item.status === 'error').length },
+                release: () => {
+                    this.isProcessing = false;
+                    this.isStopping = false;
+                    this.stopRequested = false;
+                    this.llmAbort = null;
+                    this.extractionAbort = null;
+                    this.extractionActive = 0;
+                    this.llmActive = 0;
+                },
+            });
         }
     }
 
@@ -1285,6 +1281,8 @@ export class BatchManager {
         if (this.isCleaningDuplicates) throw new Error('Duplicate cleanup is still running. Wait before sorting.');
         if (this.isUpdatingBatch || reviewDrafts.applyingId) throw new Error('Wait for the current batch changes to finish.');
         this.isExecuting = true;
+        const operation = beginOperation('batch.sort', { count: plan.items.length, kind: plan.mode.startsWith('script_') ? 'script' : plan.mode.includes('copy') ? 'copy' : 'move' });
+        let fileOperationsFinished = false;
         try {
             const saveTxt = await getSetting('saveTxt', true) as boolean;
             if (plan.items.some(planned => { const item = this.items.find(candidate => candidate.id === planned.id); return item && reviewDrafts.get(item); })) {
@@ -1305,11 +1303,14 @@ export class BatchManager {
                 mode,
             };
             const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', { payload });
+            fileOperationsFinished = true;
+            operation.stage('committing', { count: Object.keys(results).length }, 'info');
 
             // Generating a script does not move or copy any files. Leave review
             // status, history and index locations untouched until it is run.
             if (mode.startsWith('script_')) {
                 const generated = Object.values(results).filter(result => result.success).length;
+                operation.complete({ completed: generated, failed: plan.items.length - generated, partial: generated < plan.items.length });
                 return { success: generated, notFound: 0, notWritable: 0, notPermitted: 0,
                     error: plan.items.length - generated, copiedFallback: 0, indexUpdateWarnings: 0, locked: 0, mode };
             }
@@ -1383,6 +1384,7 @@ export class BatchManager {
             // A restart must restore completed moves as pending index repairs,
             // never as review rows that could be sent through file moving again.
             if (changedItems.length > 0) await upsertItemsBulk(changedItems);
+            operation.stage('saved', { saved: true, pending: indexUpdates.length }, 'info');
             for (const { item, oldPath, newPath } of indexUpdates) {
                 try {
                     await invoke('index_update_location_by_path', { oldPath, newPath });
@@ -1394,10 +1396,17 @@ export class BatchManager {
                     item.errorMessage = `INDEX_UPDATE_FAILED: File moved to ${newPath}. Its search index update could not be acknowledged: ${String(error)}. Retry the index update from this entry.`;
                     // The durable pending marker already exists. Failure to save
                     // the more specific diagnostic must not erase that receipt.
-                    try { await upsertItem(item); } catch (saveError) { flog('warn', `Index repair remains pending: ${String(saveError)}`); }
+                    operation.stage('index_pending', { pending: indexUpdateWarnings }, 'warn');
+                    try { await upsertItem(item); } catch { operation.stage('checkpoint_failed', { pending: indexUpdateWarnings }, 'warn'); }
                 }
             }
+            const failed = notFound + notWritable + notPermitted + errorCount + locked;
+            operation.complete({ completed: successCount + copiedFallback, failed, warnings: copiedFallback + indexUpdateWarnings, saved: true, partial: failed + copiedFallback + indexUpdateWarnings > 0 });
             return { success: successCount, notFound, notWritable, notPermitted, error: errorCount, copiedFallback, indexUpdateWarnings, locked, mode };
+        } catch (error) {
+            if (fileOperationsFinished) operation.stage('checkpoint_failed', { saved: false }, 'warn');
+            operation.fail(error, { saved: false, partial: fileOperationsFinished });
+            throw error;
         } finally {
             this.isExecuting = false;
         }
@@ -1412,24 +1421,32 @@ export class BatchManager {
             throw new Error('This entry has no pending index location update.');
         }
         this.isUpdatingBatch = true;
+        const operation = beginOperation('batch.index_repair', { count: 1 });
         try {
             await invoke('index_update_location_by_path', { oldPath: item.originalPath, newPath: item.targetPath, requireUpdate: true });
             const updated = { ...item, errorMessage: undefined, statusDetail: 'moved' };
             await upsertItem(updated);
             this.items = this.items.map(candidate => candidate.id === id ? updated : candidate);
+            operation.complete({ saved: true });
+        } catch (error) {
+            operation.fail(error, { pending: 1 });
+            throw error;
         } finally { this.isUpdatingBatch = false; }
     }
 
     private async commitReplacement(items: BatchItem[], source: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {
+        const operation = beginOperation('batch.replace', { count: items.length });
+        try {
         if (!confirmReplacement) throw new Error('Confirm the batch replacement from History.');
         // A restored batch can still have unread metadata drafts after a settings
         // failure. Read them before describing or discarding the current work.
         if (!reviewDrafts.ready) await reviewDrafts.load();
         if (!reviewDrafts.ready) throw new Error('Saved metadata drafts could not be loaded. Retry before replacing the current batch.');
         if (!await confirmReplacement({ incomingCount: items.length, currentCount: this.items.length,
-            currentDraftCount: this.items.filter(item => reviewDrafts.get(item)).length, source })) return false;
+            currentDraftCount: this.items.filter(item => reviewDrafts.get(item)).length, source })) { operation.cancel(); return false; }
         await replaceBatch(items);
         this.items = items;
+        operation.stage('saved', { saved: true }, 'info');
         // Failed validation/confirmation/SQLite writes must leave every draft intact.
         try {
             reviewDrafts.retainItems(this.items);
@@ -1438,9 +1455,12 @@ export class BatchManager {
             // The database commit has succeeded. Report cleanup separately so a
             // caller cannot mislabel this as a failed/rolled-back replacement.
             reviewDrafts.error = String(error);
-            logDebug(`Replacement committed; metadata draft cleanup failed: ${error}`);
+            operation.stage('cleanup_failed', { saved: true }, 'warn');
+            operation.complete({ saved: true, partial: true, warnings: 1 });
         }
+        operation.complete({ saved: true });
         return true;
+        } catch (error) { operation.fail(error, { saved: false }); throw error; }
     }
 
     async loadSession(id: string, confirmReplacement?: ConfirmBatchReplacement): Promise<boolean> {

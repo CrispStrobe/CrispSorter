@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSearchRecipe } from './recipe';
-import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet } from './summary';
+import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet, isCorpusCancellation } from './summary';
 
 const facet = { values: [{ value: 'reviewed', documents: 633 }], distinctValues: 31, omittedValues: 30, missingDocuments: 0 };
 const response = () => ({ version: 1, scope: 'local_indexed_documents', query: 'needle', effectiveQuery: 'needle',
@@ -8,6 +8,15 @@ const response = () => ({ version: 1, scope: 'local_indexed_documents', query: '
     facets: { extensions: facet, languages: facet, years: facet, tags: facet } });
 
 describe('exhaustive lexical summary contracts', () => {
+    it('classifies only native cancellation receipts, preserving failed paths and backend causes', () => {
+        for (const message of ['The matching-document scan was cancelled', 'The report was cancelled before publication']) {
+            expect(isCorpusCancellation(message)).toBe(true);
+            expect(isCorpusCancellation(new Error(message))).toBe(true);
+        }
+        expect(isCorpusCancellation(new DOMException('Stopped', 'AbortError'))).toBe(true);
+        for (const cause of ['Cannot write cancelled-report.csv', 'Destination: The report was cancelled before publication',
+            new Error('A backend request failed: cancelled connection'), {}, null]) expect(isCorpusCancellation(cause)).toBe(false);
+    });
     it('retains exact counts beyond the returned window and explicit omitted facet values', () => {
         const summary = readLexicalSummary(response(), 'needle');
         expect(summary.matchingDocuments).toBe(633);

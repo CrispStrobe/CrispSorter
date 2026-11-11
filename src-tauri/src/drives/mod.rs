@@ -34,6 +34,9 @@ pub(crate) mod secret;
 pub mod tauri_commands;
 pub mod webdav;
 mod mounted_read;
+pub(crate) mod materialize;
+#[cfg(any(feature = "fuse", test))]
+pub(crate) mod read_cache;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -349,6 +352,39 @@ pub struct WalkEntry {
 /// Maximum provider file size inspected by opt-in bounded content search.
 pub const MAX_CONTENT_SEARCH_BYTES: u64 = 256 * 1024;
 
+/// Maximum payload exposed by the byte-array preview IPC. Disk-bound restores
+/// and indexing use the streaming file-target transfer queue instead.
+pub const MAX_PREVIEW_READ_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read only an intentionally bounded in-memory payload. The writer enforces
+/// the limit even when a mounted file grows after its metadata was inspected.
+pub fn read_file_bounded(drive: &dyn CloudDrive, path: &Path, limit: u64) -> Result<Vec<u8>> {
+    if let Ok(metadata) = drive.stat(path) {
+        anyhow::ensure!(!metadata.is_dir, "cannot preview a directory as a file");
+        anyhow::ensure!(metadata.size <= limit,
+            "file exceeds the in-memory read limit; use a file download");
+    }
+    struct BoundedBytes {
+        data: Vec<u8>,
+        limit: u64,
+    }
+    impl Write for BoundedBytes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if (self.data.len() as u64).saturating_add(bytes.len() as u64) > self.limit {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                    "file exceeds the in-memory read limit; use a file download"));
+            }
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut output = BoundedBytes { data: Vec::new(), limit };
+    let count = drive.read_file_to_writer(path, &mut output)?;
+    anyhow::ensure!(count == output.data.len() as u64, "provider byte count does not match transferred data");
+    Ok(output.data)
+}
+
 /// Recursively walk a drive starting at `root`, returning one entry per
 /// file (folders are descended into but not emitted, by default).
 /// Stops at `max_depth` (counting from `root`), `None` = unbounded.
@@ -492,8 +528,20 @@ impl CloudDrive for LocalDrive {
     }
 
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
-        let p = self.full(path);
-        std::fs::read(&p).with_context(|| format!("read_file: {}", p.display()))
+        let mut bytes = Vec::new();
+        self.read_file_to_writer(path, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
+        let log = crate::operation_log::OperationLog::start("storage.local_read",
+            serde_json::json!({"backend":"local", "mode":"read"}));
+        let result = mounted_read::read_range(&self.full(path), start, end).map_err(anyhow::Error::from);
+        match &result {
+            Ok(bytes) => log.succeed(serde_json::json!({"bytes":bytes.len()})),
+            Err(_) => log.fail("local_read_failed"),
+        }
+        result
     }
 
     fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
@@ -501,17 +549,30 @@ impl CloudDrive for LocalDrive {
         // In particular, SMB/NFS mounts must not buffer the entire remote file
         // before the destination receives anything. io::copy provides bounded
         // buffering and stops immediately when the caller's writer fails.
-        mounted_read::read_to_writer(&p, writer)
-            .with_context(|| format!("read_file_to_writer: {}", p.display()))
+        let log = crate::operation_log::OperationLog::start("storage.local_read",
+            serde_json::json!({"backend":"local", "mode":"stream"}));
+        let result = mounted_read::read_to_writer(&p, writer)
+            .with_context(|| format!("read_file_to_writer: {}", p.display()));
+        match &result {
+            Ok(bytes) => log.succeed(serde_json::json!({"bytes": bytes})),
+            Err(_) => log.fail("local_read_failed"),
+        }
+        result
+    }
+
+    fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
+        let log = crate::operation_log::OperationLog::start("storage.local_write",
+            serde_json::json!({"backend":"local", "mode":"stream", "bytes":size}));
+        let result = materialize::write_from_reader(&self.full(path), reader, size);
+        match &result {
+            Ok(()) => log.succeed(serde_json::json!({"bytes":size})),
+            Err(_) => log.fail("local_write_failed"),
+        }
+        result
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
-        let p = self.full(path);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create_dir_all: {}", parent.display()))?;
-        }
-        std::fs::write(&p, data).with_context(|| format!("write_file: {}", p.display()))
+        self.write_file_from_reader(path, &mut std::io::Cursor::new(data), data.len() as u64)
     }
 
     fn delete(&self, path: &Path) -> Result<()> {

@@ -81,12 +81,34 @@ bound to the resulting image. A build needs the relevant preparation capability
 to perform those steps. The isolated Qwen CPU profile applies only to Qwen2 VL.
 
 Saved application engine/language/model settings feed the general application
-OCR routes and CLI KIE, table and zone commands. Ad-hoc CLI OCR uses its explicit
-flags and defaults through the same policy. Workbench project choices and
-explicit request options take precedence. A job
+OCR routes and CLI OCR, KIE, table and zone commands. CLI parsing defaults do not
+overwrite the saved recipe. All four CLI commands accept `--ocr-config FILE`
+for a complete pipeline JSON snapshot and `--data-dir DIR` for a saved app
+profile. Explicit OCR flags override the selected snapshot; boolean processing
+flags also accept `--flag=false`. Workbench project choices and explicit
+request options take precedence. A job
 captures its policy once, so later Settings edits cannot change engines between
 PDF pages. Explicit engine or model failures propagate; they do not silently
 switch to another recognizer.
+
+For example, `crispsorter ocr scan.png` uses the saved application policy.
+`crispsorter ocr scan.png --ocr-config pipeline.json --engine tesseract
+--language deu --cpu-pixel-budget=false` explicitly selects embedded Tesseract
+and German while retaining compatible settings from the supplied JSON. A
+single-model vision engine accepts `--model` as an alias of `--det-model`;
+incompatible model flags fail instead of being silently ignored. Supplying one
+preparation override to a disabled recipe activates that request without
+reactivating hidden restoration or postprocessing steps.
+
+The snapshot is the serialized `OcrPipelineConfig` object, not an entire app
+settings export. It may contain advanced `stages` with detector thresholds,
+model paths, prompts and cleanup settings. Unknown top-level, stage or cleanup keys, invalid
+engine/processing selections and snapshots larger than 64 KiB are rejected.
+Reading a supplied snapshot does not create or modify an app settings database.
+Source-routed recipes use an enabled Automatic `stages` snapshot. A fixed
+`--source-type` pin that the shared resolver cannot preserve is rejected.
+Flat escalation flags cannot silently override an advanced stage recipe;
+edit its stage JSON or use `--engine` with `--model` for a single vision model.
 
 ### Confidence and source evidence
 
@@ -157,6 +179,13 @@ selection instead of substituting a model. Use ordinary OCR/text-based KIE for
 other engine combinations. See the [audit boundaries](ocr-routing-audit-20261111.md#capability-boundaries).
 
 ## Recent integration
+
+The [remote integration audit](remote-integration-audit-20261111.md) accounts
+for all 74 live branch heads and open PRs reviewed in this continuation. Current
+SMB storage work is merged; the application now connects mounted streaming
+reads to transfer, sync and index-promotion consumers. See the
+[surface and operation-log audit](surface-observability-audit-20261111.md) for
+critical-step events, CLI/GUI consistency and verification boundaries.
 
 Main `2a9a74d` merged PR #42 and has exactly the same source tree as its
 feature head `48bab31`. This follow-up starts from that merged main revision;

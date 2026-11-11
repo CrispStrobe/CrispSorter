@@ -24,6 +24,16 @@ fn already_exists(path: &Path) -> String {
     )
 }
 
+/// Match only the cancellation errors emitted by our export writers. A path
+/// or provider error containing the code is still an ordinary failure.
+pub(super) fn is_export_cancelled(error: &str) -> bool {
+    matches!(error,
+        "OCR_EXPORT_CANCELLED"
+        | "Render OCR PDF: OCR_EXPORT_CANCELLED"
+        | "Write OCR export: OCR_EXPORT_CANCELLED"
+        | "Flush OCR export: OCR_EXPORT_CANCELLED")
+}
+
 /// Write and publish one complete output. The closure must finish and flush any
 /// buffer it creates before returning. An error or panic from that closure drops
 /// staging without replacing the destination. The no-clobber commit also protects a
@@ -33,6 +43,9 @@ pub(super) fn atomic_write_with<T>(
     overwrite: bool,
     write: impl FnOnce(&mut File) -> Result<T, String>,
 ) -> Result<T, String> {
+    let log=crate::operation_log::OperationLog::start("output.publish",serde_json::json!({"overwrite":overwrite}));
+    let result=(|| {
+    log.step("validating",serde_json::Value::Null);
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -49,9 +62,12 @@ pub(super) fn atomic_write_with<T>(
     }
     let mut staging = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| format!("Create output staging file: {error}"))?;
+    log.step("writing",serde_json::Value::Null);
     let result = write(staging.as_file_mut())?;
+    log.step("syncing",serde_json::Value::Null);
     staging.flush().map_err(|error| format!("Flush output: {error}"))?;
     staging.as_file().sync_all().map_err(|error| format!("Sync output: {error}"))?;
+    log.step("committing",serde_json::json!({"bytes":staging.as_file().metadata().map(|metadata|metadata.len()).unwrap_or(0)}));
     let persisted = if overwrite {
         staging.persist(path)
     } else {
@@ -66,6 +82,13 @@ pub(super) fn atomic_write_with<T>(
     })?;
     sync_directory(parent)?;
     Ok(result)
+    })();
+    match &result {
+        Ok(_)=>log.succeed(serde_json::json!({"saved":true})),
+        Err(error) if is_export_cancelled(error)=>log.cancel(),
+        Err(_)=>log.fail("output_publish_failed"),
+    }
+    result
 }
 
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
@@ -78,6 +101,27 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8], overwrite: bool) -> Result
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn cancellation_receipts_require_known_errors_and_never_match_filenames() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("OCR_EXPORT_CANCELLED.txt");
+        fs::write(&path, b"existing output").unwrap();
+        let (result, events) = crate::operation_log::capture(|| atomic_write(&path, b"replacement", false));
+        assert!(result.is_err());
+        assert_eq!(events.last().unwrap().phase, "failed");
+        assert!(!events.iter().any(|event| event.phase == "cancelled"));
+        assert_eq!(fs::read(&path).unwrap(), b"existing output");
+
+        for error in ["OCR_EXPORT_CANCELLED", "Render OCR PDF: OCR_EXPORT_CANCELLED",
+            "Write OCR export: OCR_EXPORT_CANCELLED", "Flush OCR export: OCR_EXPORT_CANCELLED"] {
+            let (result, events) = crate::operation_log::capture(|| atomic_write_with(&path, true,
+                |_| Err::<(), _>(error.to_string())));
+            assert!(result.is_err());
+            assert_eq!(events.last().unwrap().phase, "cancelled");
+            assert_eq!(fs::read(&path).unwrap(), b"existing output");
+        }
+    }
 
     #[test]
     fn byte_output_requires_explicit_replacement() {

@@ -176,19 +176,12 @@ pub async fn backup_job_restore(
     if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
     let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
     let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-    let transfer = state.transfer_queue.clone().submit_drive_download(
-        job.drive_id.clone(), drive, remote, Some(expected),
-    );
-    let data = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-    if data.len() as u64 != expected {
-        return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
-    }
     let destination = std::path::PathBuf::from(destination);
-    if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-    let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
-    std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
-    std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()}))
+    let transfer = state.transfer_queue.clone().submit_drive_download_to_file(
+        job.drive_id.clone(), drive, remote, destination.clone(), Some(expected),
+    );
+    let bytes = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": bytes}))
 }
 
 /// List persisted local-folder ↔ cloud-drive sync pairs.
@@ -422,18 +415,14 @@ pub async fn sync_pair_pull(
     for entry in &remote {
         let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
         let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-        let transfer = state.transfer_queue.clone().submit_drive_download(
-            pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
+        let transfer = state.transfer_queue.clone().submit_drive_download_to_file(
+            pair.drive_id.clone(), drive.clone(), remote_path, local_path, Some(entry.size),
         );
-        let bytes = match transfer.handle.await {
-            Ok(Ok(bytes)) => bytes,
+        match transfer.handle.await {
+            Ok(Ok(_)) => {},
             Ok(Err(error)) => return Err(error.to_string()),
             Err(error) => return Err(format!("sync transfer task failed: {error}")),
-        };
-        if let Some(parent) = local_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
         downloaded += 1;
         if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
     }

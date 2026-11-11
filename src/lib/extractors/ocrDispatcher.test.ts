@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import Tesseract from 'tesseract.js';
 import { getSetting, getStore } from '../store';
+import { flog } from '../log';
 import { createOcrSession, disposeOcrWorkers, MAX_OCR_IMAGE_BYTES, OCR_WORKER_IDLE_MS } from './ocrDispatcher';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 vi.mock('../store', () => ({ getSetting: vi.fn(), getStore: vi.fn() }));
 vi.mock('tesseract.js', () => ({ default: { createWorker: vi.fn() } }));
+vi.mock('../log', () => ({ flog: vi.fn() }));
 
 let saved: Record<string, unknown>;
 let workers: { recognize: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> }[];
@@ -16,6 +18,7 @@ const metadata = (index = 0) => JSON.parse(new TextDecoder().decode(Uint8Array.f
 ), character => character.charCodeAt(0))));
 
 beforeEach(() => {
+    vi.mocked(flog).mockClear();
     saved = {}; workers = [];
     vi.mocked(isTauri).mockReset().mockReturnValue(true);
     vi.mocked(invoke).mockReset().mockResolvedValue({ text: ' Native result ', engine: 'selected-native', warnings: [] });
@@ -40,6 +43,11 @@ describe('native OCR dispatch', () => {
             expect(vi.mocked(invoke).mock.calls[0][0]).toBe('ocr_extract_image');
             expect(vi.mocked(invoke).mock.calls[0][1]).toBe(input);
             expect(metadata()).toMatchObject({ name: 'Überblick 日本語.png', options: { engine, language: 'fra' } });
+            const id = (vi.mocked(invoke).mock.calls[0][2] as { headers: Record<string, string> }).headers['x-operation-id'];
+            expect(id).toMatch(/^fe-[a-z0-9]+-[a-z0-9]+$/);
+            const receipts = vi.mocked(flog).mock.calls.map(([, message]) => message).filter(message => message.includes(`operation_id=${id} `));
+            expect(receipts.at(-1)).toContain('phase=completed');
+            expect(receipts.join('\n')).not.toMatch(/Überblick|Native result/);
             expect(Tesseract.createWorker).not.toHaveBeenCalled();
         },
     );

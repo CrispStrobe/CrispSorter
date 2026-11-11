@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { beginOperation, runOperation } from '../operationLog';
     import { onMount, onDestroy, untrack } from 'svelte';
     // Art 50: the connection test and the provider benchmark both run a prompt
     // through `llmClient.query` and display the model's answer — the benchmark
@@ -551,14 +552,20 @@
     let ocrPersistenceError = $state('');
 
     async function syncBackgroundOcr(): Promise<boolean> {
-        const results = await Promise.allSettled([
-            invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }),
-            invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }),
-        ]);
-        const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
-        ocrPersistenceError = failures.length > 0
-            ? `OCR-Einstellungen konnten für die gespeicherten Hintergrundaufträge nicht übernommen werden: ${failures.join('; ')}` : '';
-        return failures.length === 0;
+        const operation = beginOperation('settings.ocr', { engine: ocrEngine, language: ocrLanguage, cpuBudget: ocrCpuPixelBudget });
+        try {
+            const config = ocrPipelineConfig();
+            const results = await Promise.allSettled([
+                invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }),
+                invoke('bg_ingest_set_ocr_pipeline', { config }),
+            ]);
+            const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
+            ocrPersistenceError = failures.length > 0
+                ? `OCR-Einstellungen konnten für die gespeicherten Hintergrundaufträge nicht übernommen werden: ${failures.join('; ')}` : '';
+            if (failures.length) operation.fail(undefined, { failed: failures.length, completed: results.length - failures.length, partial: failures.length < results.length, saved: false });
+            else operation.complete({ saved: true });
+            return failures.length === 0;
+        } catch (error) { operation.fail(error, { saved: false }); throw error; }
     }
     let customModelInput = $state('');
 
@@ -1696,6 +1703,10 @@
 
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
+        return runOperation('settings.save', {}, () => persistSettings(), () => ({ saved: true }));
+    }
+
+    async function persistSettings() {
         const providerReceipt = await saveProviderSettings();
         await saveSetting('exportPath', exportPath);
         await saveSetting('exportPathMode', exportPathMode);
@@ -1909,13 +1920,14 @@
     }
 
     async function applyIndexConfig() {
-        await saveSettingsSilent();
-        await syncActiveCatalogFromInputs();
+        const operation = beginOperation('settings.save');
         indexStatus       = 'loading';
         indexStatusMsg    = '';
         indexInitProgress = 'Konfiguration wird gespeichert …';
         indexInitPct      = 0;
         try {
+            await saveSettingsSilent();
+            await syncActiveCatalogFromInputs();
             // Push config to backend.
             await invoke('index_set_config', {
                 config: {
@@ -2000,7 +2012,9 @@
             indexStatus       = 'ok';
             indexInitProgress = '';
             indexInitPct      = 100;
+            operation.complete({ saved: true });
         } catch(e: any) {
+            operation.fail(e, { saved: false });
             indexStatus       = 'error';
             indexStatusMsg    = String(e);
             indexInitProgress = '';
@@ -2538,12 +2552,15 @@
     }
 
     async function handleSaveProvider() {
+        const operation = beginOperation('settings.save');
         settingsSaveError = '';
         saveIndicator = false;
         providerSaveNotice = '';
         try {
             showProviderSaveReceipt(await saveProviderSettings());
+            operation.complete({ saved: true });
         } catch (error) {
+            operation.fail(error, { saved: false });
             settingsSaveError = providerErrorMessage(error, 'Provider settings could not be saved. Your edits are still available; retry after checking secret storage.');
         }
     }
@@ -2813,7 +2830,17 @@
     }
 
     // WebLLM Helpers
+    async function saveLoadedModelSelection(): Promise<boolean> {
+        settingsSaveError = '';
+        try { await saveSettingsSilent(); return true; }
+        catch (error) {
+            settingsSaveError = `The model is ready, but its settings were not fully saved. Retry Save. ${String(error)}`;
+            return false;
+        }
+    }
+
     async function handleLoadWebLLM(modelId: string) {
+        const operation = beginOperation('settings.model', { backend: 'browser' });
         webllmStatus = 'downloading';
         webllmProgress = 0;
         webllmProgressText = '';
@@ -2827,10 +2854,13 @@
             webllmStatus = 'ready';
             webllmSelectedModel = modelId;
             selectedProvider.selectedModel = modelId;
-            saveSettingsSilent();
+            operation.stage('ready', {}, 'info');
+            const saved = await saveLoadedModelSelection();
+            if (!saved) operation.stage('settings_failed', { saved: false }, 'warn');
+            operation.complete({ saved, partial: !saved });
         } catch(e) {
+            operation.fail(e);
             webllmStatus = 'error';
-            console.error('[WebLLM] Load failed:', e);
             alert('WebLLM load failed: ' + e);
         }
     }
@@ -2842,14 +2872,15 @@
         webllmProgressText = '';
     }
 
-    function handleUseWebLLM(modelId: string) {
+    async function handleUseWebLLM(modelId: string) {
         webllmSelectedModel = modelId;
         selectedProvider.selectedModel = modelId;
-        saveSettingsSilent();
+        await saveLoadedModelSelection();
     }
 
     // ORT Helpers
     async function handleLoadORT(modelId: string) {
+        const operation = beginOperation('settings.model', { backend: 'browser' });
         ortStatus = 'downloading';
         ortProgress = 0;
         ortProgressText = '';
@@ -2862,10 +2893,13 @@
             ortStatus = 'ready';
             ortSelectedModel = modelId;
             selectedProvider.selectedModel = modelId;
-            saveSettingsSilent();
+            operation.stage('ready', {}, 'info');
+            const saved = await saveLoadedModelSelection();
+            if (!saved) operation.stage('settings_failed', { saved: false }, 'warn');
+            operation.complete({ saved, partial: !saved });
         } catch(e) {
+            operation.fail(e);
             ortStatus = 'error';
-            console.error('[ORT] Load failed:', e);
             alert('ORT load failed: ' + e);
         }
     }
@@ -2877,10 +2911,10 @@
         ortProgressText = '';
     }
 
-    function handleUseORT(modelId: string) {
+    async function handleUseORT(modelId: string) {
         ortSelectedModel = modelId;
         selectedProvider.selectedModel = modelId;
-        saveSettingsSilent();
+        await saveLoadedModelSelection();
     }
 
     async function deleteMlxModelFromDisk(model: MlxModel) {

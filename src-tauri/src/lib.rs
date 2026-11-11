@@ -28,10 +28,12 @@ pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_extract;
+pub(crate) mod ocr_atomic_output;
 mod ocr_photo;
 mod ocr_reading_order;
 mod ocr_text_export;
 pub mod model_provisioning;
+pub mod operation_log;
 pub mod ocr_word_evidence;
 pub mod ocr_document;
 pub mod ocr_office;
@@ -1193,11 +1195,13 @@ static APP_HANDLE: LazyLock<std::sync::Mutex<Option<tauri::AppHandle>>> =
 
 /// Log a message to stderr, the ring buffer, and the frontend (via Tauri event).
 pub fn app_log(level: &str, msg: String) {
+    if !operation_log::enabled(level) { return; }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    eprintln!("[{level}] {msg}");
+    // Logging must not panic when a CLI consumer closes its diagnostic pipe.
+    let _ = writeln!(std::io::stderr().lock(), "[{level}] {msg}");
     let entry = LogEntry {
         ts,
         level: level.to_string(),
@@ -1246,10 +1250,15 @@ fn get_logs() -> Vec<LogEntry> {
 fn frontend_log(level: String, msg: String) {
     // Clamp the level to the small set the LogPanel knows how to colour.
     let level = match level.as_str() {
-        "error" | "warn" | "info" => level,
+        "error" | "warn" | "info" | "debug" => level,
         _ => "info".to_string(),
     };
     app_log(&level, msg);
+}
+
+#[tauri::command]
+fn set_log_verbosity(level: String) -> Result<(), String> {
+    operation_log::set_verbosity(&level)
 }
 
 #[derive(Serialize)]
@@ -3347,6 +3356,7 @@ pub fn run() {
             { tauri::generate_handler![
             get_logs,
             frontend_log,
+            set_log_verbosity,
             execute_batch,
             scan_folder,
             download_file,
@@ -3837,6 +3847,7 @@ pub fn run() {
             ocr_workspace::ocr_workspace_capabilities,
             get_logs,
             frontend_log,
+            set_log_verbosity,
             execute_batch,
             scan_folder,
             download_file,

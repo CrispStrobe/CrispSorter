@@ -52,6 +52,9 @@ fn extract_zones_using(
     mut recognize: impl FnMut(&Path) -> Result<String>,
 ) -> Result<Vec<ZoneResult>> {
     use image::GenericImageView;
+    let log=crate::operation_log::OperationLog::start("ocr.zones",serde_json::json!({"total":template.zones.len()}));
+    let mut skipped=0usize;
+    let result=(|| {
 
     if template.zones.is_empty() {
         return Ok(vec![]);
@@ -68,7 +71,9 @@ fn extract_zones_using(
 
     let mut results = Vec::with_capacity(template.zones.len());
 
-    for zone in &template.zones {
+    for (index,zone) in template.zones.iter().enumerate() {
+        log.step("reading_zone",serde_json::json!({"count":index+1,"total":template.zones.len(),
+            "kind":if zone.zone_type=="checkbox" {"checkbox"} else {"text"}}));
         // Denormalise from 0.0–1.0 to pixel coordinates
         let px_x = (zone.x * img_w as f64).round() as u32;
         let px_y = (zone.y * img_h as f64).round() as u32;
@@ -77,6 +82,8 @@ fn extract_zones_using(
 
         // Bounds check — soft-fail if zone falls outside image
         if px_x >= img_w || px_y >= img_h {
+            skipped+=1;
+            log.warn("zone_out_of_bounds",serde_json::json!({"count":index+1}));
             results.push(ZoneResult {
                 label: zone.label.clone(),
                 text: String::new(),
@@ -125,6 +132,12 @@ fn extract_zones_using(
     }
 
     Ok(results)
+    })();
+    match &result {
+        Ok(zones)=>log.succeed(serde_json::json!({"results":zones.len(),"warnings":skipped,"partial":skipped>0})),
+        Err(_)=>log.fail("zone_extraction_failed"),
+    }
+    result
 }
 
 #[cfg(test)]
@@ -208,10 +221,16 @@ mod tests {
         image::RgbImage::from_pixel(10, 10, image::Rgb([255, 255, 255])).save(&path).unwrap();
         let template = dummy_template(vec![Zone { id:1, label:"invoice".into(), x:0.0, y:0.0,
             w:1.0, h:1.0, zone_type:"text".into() }]);
-        let error = extract_zones_using(&path, &template, |_| anyhow::bail!("selected custom model is missing")).unwrap_err();
+        let (result,events)=crate::operation_log::capture(|| extract_zones_using(&path, &template, |_| anyhow::bail!("selected custom model is missing")));
+        let error = result.unwrap_err();
         let message = format!("{error:#}");
         assert!(message.contains("zone 'invoice'"));
         assert!(message.contains("selected custom model is missing"));
+        assert_eq!(events.last().unwrap().phase,"failed");
+        assert_eq!(events.last().unwrap().stage.as_deref(),Some("reading_zone"));
+        assert!(!events.iter().any(|event|event.phase=="completed"));
+        let logged=serde_json::to_string(&events).unwrap();
+        assert!(!logged.contains("invoice") && !logged.contains("selected custom model"));
     }
 
     #[test]

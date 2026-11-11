@@ -3796,7 +3796,15 @@ pub async fn index_promote_drive_archive(
         .join("drive_retrieve");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("mkdir: {e}"))?;
 
-    // Fetch bytes via the registered drive through the bounded transfer queue.
+    // Keep each transfer private through extraction/indexing and publish only
+    // a complete, bounded provider stream into this per-request directory.
+    let basename = std::path::Path::new(&remote_path).file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("remote path has no basename: {remote_path}"))?;
+    let staging_dir = tempfile::tempdir_in(&out_dir).map_err(|e| format!("create staging directory: {e}"))?;
+    let staged = staging_dir.path().join(&basename);
+
+    // Fetch via the registered drive through the bounded transfer queue.
     // The queue runs the synchronous CloudDrive operation in spawn_blocking,
     // and retries transient provider failures before returning to promotion.
     let data_dir = state.data_dir.lock().await.clone()
@@ -3807,11 +3815,12 @@ pub async fn index_promote_drive_archive(
         drive_id: drive_id.clone(), remote_path: remote_path.clone(),
     }.to_uri();
     let transfer_queue = state.transfer_queue.clone();
-    let transfer = transfer_queue.submit_download(
+    let transfer = transfer_queue.submit_download_to_file(
         drive_id.clone(),
         std::path::PathBuf::from(&remote),
+        staged.clone(),
         None,
-        move |path| {
+        move |path, writer| {
             let reg = crate::drives::DriveRegistry::open(&data_dir)
                 .map_err(|e| anyhow::anyhow!("open registry: {e}"))?;
             let cfg = reg.drives.iter().find(|d| d.id == drive_id)
@@ -3819,31 +3828,15 @@ pub async fn index_promote_drive_archive(
                 .clone();
             let drive = crate::drives::DriveRegistry::instantiate_with_proxy(&cfg, &proxy)
                 .map_err(|e| anyhow::anyhow!("instantiate drive: {e}"))?;
-            drive.read_file(path)
-                .map_err(|e| anyhow::anyhow!("read_file: {e:#}"))
+            drive.read_file_to_writer(path, writer)
+                .map_err(|e| anyhow::anyhow!("read_file_to_writer: {e:#}"))
         },
     );
-    let bytes = match transfer.handle.await {
-        Ok(Ok(bytes)) => bytes,
+    match transfer.handle.await {
+        Ok(Ok(_)) => {},
         Ok(Err(e)) => return Err(format!("drive read: {e:#}")),
         Err(e) => return Err(format!("drive read queue task: {e}")),
     };
-
-    // Use a private per-transfer directory to avoid same-name collisions.
-    // Its lifetime covers extraction and indexing and cleans up afterwards.
-    let basename = std::path::Path::new(&remote_path).file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| format!("remote path has no basename: {remote_path}"))?;
-    let staging_dir = tempfile::tempdir_in(&out_dir).map_err(|e| format!("create staging directory: {e}"))?;
-    let staged = staging_dir.path().join(&basename);
-    tokio::task::spawn_blocking({
-        let p = staged.clone();
-        let b = bytes;
-        move || std::fs::write(&p, &b)
-    })
-    .await
-    .map_err(|e| format!("stage join: {e}"))?
-    .map_err(|e| format!("stage write: {e}"))?;
 
     // Preserve the registered-drive URI so the result remains retrievable.
     promote_path(state, doc_id, staged, owner, remote_path, Some(drive_location)).await
@@ -3929,6 +3922,9 @@ pub async fn tool_ocr_export(
     stamp_text: Option<String>,
 ) -> Result<OcrExportResult, String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
+    let log=crate::operation_log::OperationLog::start("ocr.tool_export",serde_json::json!({"surface":"gui","format":format}));
+    let result: Result<OcrExportResult,String> = async {
+    log.step("validating",serde_json::Value::Null);
 
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
@@ -3956,9 +3952,10 @@ pub async fn tool_ocr_export(
     let out_path = parent.join(format!("{stem}.ocr.{}", fmt.ext()));
 
     let out2 = out_path.clone();
+    log.step("recognizing_and_writing",serde_json::Value::Null);
     let (bytes_written, n_pages) = tokio::task::spawn_blocking(
         move || -> Result<(usize, usize), String> {
-            let (bytes, pages) = if fmt == OcrOutputFormat::Text {
+            let (mut bytes, pages) = if fmt == OcrOutputFormat::Text {
                 let doc = crate::extractors::extract_text_from_path_with_opts(&path, extract_opts)
                     .map_err(|e| format!("OCR failed: {e:#}"))?;
                 (doc.full_text.into_bytes(), 1usize)
@@ -3971,35 +3968,23 @@ pub async fn tool_ocr_export(
                     .map_err(|e| format!("render failed: {e:#}"))?;
                 (bytes, n)
             };
-            std::fs::write(&out2, &bytes)
-                .map_err(|e| format!("writing {}: {e}", out2.display()))?;
+            if let Some(text)=stamp_text.filter(|text|!text.is_empty()) {
+                if fmt==OcrOutputFormat::Pdf {
+                    let staging=tempfile::tempdir().map_err(|error|format!("Stage PDF watermark: {error}"))?;
+                    let original=staging.path().join("source.pdf");
+                    let stamped=staging.path().join("stamped.pdf");
+                    std::fs::write(&original,&bytes).map_err(|error|format!("Stage PDF watermark: {error}"))?;
+                    let config=crate::pdf_ops::WatermarkConfig {text,font_size:10.0,angle:0.0,opacity:0.5,color:[0.3,0.3,0.3]};
+                    crate::pdf_ops::add_watermark(&original,&config,None,&stamped)?;
+                    bytes=std::fs::read(stamped).map_err(|error|format!("Read stamped PDF: {error}"))?;
+                }
+            }
+            crate::ocr_atomic_output::atomic_write(&out2,&bytes,true)?;
             Ok((bytes.len(), pages))
         },
     )
     .await
     .map_err(|e| format!("ocr export join error: {e}"))??;
-
-    // Apply stamp/watermark to exported PDF if requested.
-    if let Some(ref text) = stamp_text {
-        if !text.is_empty() && format == "pdf" {
-            let stamp_path = out_path.clone();
-            let stamp_text = text.clone();
-            tokio::task::spawn_blocking(move || {
-                let config = crate::pdf_ops::WatermarkConfig {
-                    text: stamp_text,
-                    font_size: 10.0,
-                    angle: 0.0,
-                    opacity: 0.5,
-                    color: [0.3, 0.3, 0.3],
-                };
-                crate::pdf_ops::add_watermark(
-                    &stamp_path, &config, None, &stamp_path,
-                )
-            })
-            .await
-            .map_err(|e| format!("stamp join: {e}"))??;
-        }
-    }
 
     Ok(OcrExportResult {
         saved_path: out_path.display().to_string(),
@@ -4011,6 +3996,9 @@ pub async fn tool_ocr_export(
             format
         },
     })
+    }.await;
+    match &result {Ok(export)=>log.succeed(serde_json::json!({"bytes":export.bytes,"pages":export.pages})),Err(_)=>log.fail("export_failed")}
+    result
 }
 
 /// One extracted key-information field.
@@ -4050,6 +4038,9 @@ pub async fn tool_kie_extract(
     lilt_model: Option<String>,
     config: Option<crate::extractors::OcrPipelineConfig>,
 ) -> Result<Vec<KieFieldDto>, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.kie",serde_json::json!({"surface":"gui","kind":"fields"}));
+    let result: Result<Vec<KieFieldDto>,String> = async {
+    log.step("validating",serde_json::Value::Null);
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
             format!("location_uri does not map to a local path: {location_uri} (download cloud files first)")
@@ -4076,7 +4067,8 @@ pub async fn tool_kie_extract(
 
     let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
         let (config, warnings) = crate::extractors::ocr_policy::resolve_lilt_config(&opts)?;
-        for warning in warnings { crate::app_log("warn", format!("LiLT OCR: {warning}")); }
+        log.step("policy_resolved",serde_json::json!({"engine":config.engine,"count":labels.len()}));
+        if !warnings.is_empty() {log.warn("policy_warnings",serde_json::json!({"warnings":warnings.len()}));}
         let path2 = path.clone();
         let labels2 = labels.clone();
         tokio::task::spawn_blocking(move || {
@@ -4116,6 +4108,7 @@ pub async fn tool_kie_extract(
         }
         let handle =
             crate::index::ner::NerHandle::new(model, labels, thr, 0, 200_000, cache_dir);
+        log.step("extracting_fields",serde_json::Value::Null);
         handle.extract_fields(&doc.full_text).await
     };
 
@@ -4123,6 +4116,9 @@ pub async fn tool_kie_extract(
         .into_iter()
         .map(|(label, value, score)| KieFieldDto { label, value, score })
         .collect())
+    }.await;
+    match &result {Ok(fields)=>log.succeed(serde_json::json!({"results":fields.len()})),Err(_)=>log.fail("field_extraction_failed")}
+    result
 }
 
 /// Result of [`tool_table_extract`]: detected grid + HTML, optionally saved.
@@ -4145,6 +4141,8 @@ pub async fn tool_table_extract(
     save: bool,
     config: Option<crate::extractors::OcrPipelineConfig>,
 ) -> Result<TableExtractResult, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.tool_table",serde_json::json!({"surface":"gui","kind":"table"}));
+    let result: Result<TableExtractResult,String> = async {
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
             format!("location_uri does not map to a local path: {location_uri} (download cloud files first)")
@@ -4155,7 +4153,8 @@ pub async fn tool_table_extract(
 
     let options = requested_tool_ocr_options(state.bg_ingest.lock().await.ocr_options(), config);
     let (config, warnings) = crate::extractors::ocr_policy::resolve_table_config(&options)?;
-    for warning in warnings { crate::app_log("warn", format!("Table OCR: {warning}")); }
+    log.step("policy_resolved",serde_json::json!({"engine":config.engine}));
+    if !warnings.is_empty() {log.warn("policy_warnings",serde_json::json!({"warnings":warnings.len()}));}
     let path2 = path.clone();
     let (rows, cols, html) = tokio::task::spawn_blocking(
         move || -> Result<(i32, i32, String), String> {
@@ -4167,6 +4166,7 @@ pub async fn tool_table_extract(
     .map_err(|e| format!("table join error: {e}"))??;
 
     let saved_path = if save {
+        log.step("writing",serde_json::json!({"bytes":html.len()}));
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -4174,14 +4174,16 @@ pub async fn tool_table_extract(
             .to_string();
         let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         let out = parent.join(format!("{stem}.table.html"));
-        std::fs::write(&out, html.as_bytes())
-            .map_err(|e| format!("writing {}: {e}", out.display()))?;
+        crate::ocr_atomic_output::atomic_write(&out,html.as_bytes(),true)?;
         Some(out.display().to_string())
     } else {
         None
     };
 
     Ok(TableExtractResult { rows, cols, html, saved_path })
+    }.await;
+    match &result {Ok(table)=>log.succeed(serde_json::json!({"rows":table.rows,"cols":table.cols,"saved":table.saved_path.is_some()})),Err(_)=>log.fail("table_extraction_failed")}
+    result
 }
 
 /// P26.3 — Convert an HTML table to CSV.
@@ -4312,6 +4314,8 @@ pub async fn tool_batch_kie(
     labels: Vec<String>,
     threshold: Option<f32>,
 ) -> Result<(Vec<BatchKieRow>, String), String> {
+    let log=crate::operation_log::OperationLog::start("ocr.batch_kie",serde_json::json!({"surface":"gui","kind":"fields"}));
+    let result: Result<(Vec<BatchKieRow>,String),String> = async {
     let dir = std::path::PathBuf::from(&folder);
     if !dir.is_dir() {
         return Err(format!("not a directory: {folder}"));
@@ -4353,7 +4357,8 @@ pub async fn tool_batch_kie(
     let mut rows: Vec<BatchKieRow> = Vec::new();
     let extract_opts = state.bg_ingest.lock().await.requested_ocr_options();
 
-    for file in &files {
+    for (index,file) in files.iter().enumerate() {
+        log.step("extracting_file",serde_json::json!({"count":index+1,"total":files.len()}));
         let path2 = file.clone();
         let labels2 = labels.clone();
         let cache2 = cache_dir.clone();
@@ -4414,6 +4419,9 @@ pub async fn tool_batch_kie(
     }
 
     Ok((rows, csv))
+    }.await;
+    match &result {Ok((rows,csv))=>log.succeed(serde_json::json!({"results":rows.len(),"bytes":csv.len()})),Err(_)=>log.fail("batch_field_extraction_failed")}
+    result
 }
 
 fn csv_escape(s: &str) -> String {
@@ -4431,6 +4439,8 @@ pub async fn tool_math_ocr(
     location_uri: String,
     model: Option<String>,
 ) -> Result<Option<String>, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.math",serde_json::json!({"surface":"gui","kind":"formula"}));
+    let result: Result<Option<String>,String> = async {
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| format!("not a local path: {location_uri}"))?;
     if !path.exists() {
@@ -4447,6 +4457,9 @@ pub async fn tool_math_ocr(
     .map_err(|e| format!("join error: {e}"))?
     .map_err(|e| format!("math OCR failed: {e:#}"))?;
     Ok(result)
+    }.await;
+    match &result {Ok(formula)=>log.succeed(serde_json::json!({"characters":formula.as_ref().map_or(0,|s|s.chars().count())})),Err(_)=>log.fail("formula_recognition_failed")}
+    result
 }
 
 // ── OCR Workbench (interactive proofreading screen) ──────────────────────────
@@ -4595,6 +4608,8 @@ pub async fn ocr_page_regions(
     region: Option<OcrCrop>,
     cpu_pixel_budget: Option<bool>,
 ) -> Result<OcrPageResult, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.page_regions",serde_json::json!({"surface":"gui"}));
+    let result: Result<OcrPageResult,String> = async {
     let path = std::path::PathBuf::from(&page_path);
     if !path.exists() {
         return Err(format!("page image not found: {page_path}"));
@@ -4602,6 +4617,7 @@ pub async fn ocr_page_regions(
     let options = state.bg_ingest.lock().await.requested_ocr_options();
     let task = preset.as_deref().unwrap_or("custom");
     let cfg = page_region_config(options, task, cpu_pixel_budget)?;
+    log.step("policy_resolved",serde_json::json!({"engine":cfg.engine,"language":cfg.language,"cpu_budget":cfg.cpu_pixel_budget}));
     validate_page_region_config(&cfg)?;
     crate::extractors::ocr_policy::validate_runtime(&cfg)?;
 
@@ -4658,6 +4674,9 @@ pub async fn ocr_page_regions(
     })
     .await
     .map_err(|e| format!("ocr_page_regions join error: {e}"))?
+    }.await;
+    match &result {Ok(page)=>log.succeed(serde_json::json!({"regions":page.regions.len()})),Err(_)=>log.fail("region_recognition_failed")}
+    result
 }
 
 /// Produce the cleaned (classical-cleanup) image for a page → stable temp PNG
@@ -4722,6 +4741,8 @@ pub async fn ocr_workbench_export(
     pages: Vec<WorkbenchPageInput>,
 ) -> Result<OcrExportResult, String> {
     use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
+    let log=crate::operation_log::OperationLog::start("ocr.review_export",serde_json::json!({"surface":"gui","format":format,"pages":pages.len()}));
+    let result: Result<OcrExportResult,String> = async {
 
     let path = workbench_resolve(&location_uri)?;
     let fmt = OcrOutputFormat::from_name(&format)
@@ -4753,7 +4774,7 @@ pub async fn ocr_workbench_export(
             .collect();
         let bytes = crate::extractors::ocr_render::render(&render_pages, fmt, pdfa)
             .map_err(|e| format!("render failed: {e:#}"))?;
-        std::fs::write(&out2, &bytes).map_err(|e| format!("writing {}: {e}", out2.display()))?;
+        crate::ocr_atomic_output::atomic_write(&out2,&bytes,true)?;
         Ok(bytes.len())
     })
     .await
@@ -4765,6 +4786,9 @@ pub async fn ocr_workbench_export(
         pages: n_pages,
         format: if pdfa && fmt == OcrOutputFormat::Pdf { "pdfa".into() } else { format },
     })
+    }.await;
+    match &result {Ok(export)=>log.succeed(serde_json::json!({"bytes":export.bytes,"pages":export.pages})),Err(_)=>log.fail("review_export_failed")}
+    result
 }
 
 /// Write the workbench's corrected text to a sidecar `<stem>.corrected.txt`.
@@ -4773,12 +4797,17 @@ pub async fn ocr_workbench_sidecar(
     location_uri: String,
     text: String,
 ) -> Result<String, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.sidecar",serde_json::json!({"surface":"gui","bytes":text.len()}));
+    let result: Result<String,String> = async {
     let path = workbench_resolve(&location_uri)?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
     let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let out = parent.join(format!("{stem}.corrected.txt"));
-    std::fs::write(&out, text.as_bytes()).map_err(|e| format!("writing {}: {e}", out.display()))?;
+    crate::ocr_atomic_output::atomic_write(&out,text.as_bytes(),true)?;
     Ok(out.display().to_string())
+    }.await;
+    match &result {Ok(_)=>log.succeed(serde_json::json!({"saved":true})),Err(_)=>log.fail("sidecar_write_failed")}
+    result
 }
 
 /// Re-ingest a document into the local index with the workbench's corrected
@@ -4791,6 +4820,8 @@ pub async fn ocr_workbench_reingest(
     text: String,
     owner_id: Option<String>,
 ) -> Result<IngestStats, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.reingest",serde_json::json!({"surface":"gui","characters":text.chars().count()}));
+    let result: Result<IngestStats,String> = async {
     let owner_id = local_source_owner(&location_uri, owner_id)?;
     let path = workbench_resolve(&location_uri)?;
 
@@ -4854,6 +4885,9 @@ pub async fn ocr_workbench_reingest(
         .ingest_verified_document(raw, path)
         .await
         .map_err(|e| format!("workbench re-ingest failed: {e:#}"))
+    }.await;
+    match &result {Ok(_)=>log.succeed(serde_json::json!({"saved":true})),Err(_)=>log.fail("reingest_failed")}
+    result
 }
 
 // ── Token-level highlighting ──────────────────────────────────────────────────
@@ -5389,6 +5423,8 @@ pub async fn template_apply(
     location_uri: String,
     template_id: i64,
 ) -> Result<Vec<super::zone_ocr::ZoneResult>, String> {
+    let log=crate::operation_log::OperationLog::start("ocr.template",serde_json::json!({"surface":"gui"}));
+    let result: Result<Vec<super::zone_ocr::ZoneResult>,String> = async {
     let store = get_template_store(&state).await?;
     let template = store.get_template(template_id)
         .map_err(|e| e.to_string())?
@@ -5407,6 +5443,9 @@ pub async fn template_apply(
     .await
     .map_err(|e| format!("join: {e}"))?
     .map_err(|e| e.to_string())
+    }.await;
+    match &result {Ok(zones)=>log.succeed(serde_json::json!({"results":zones.len()})),Err(_)=>log.fail("template_extraction_failed")}
+    result
 }
 
 #[tauri::command]

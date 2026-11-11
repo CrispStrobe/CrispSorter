@@ -5,12 +5,13 @@
 //! on `readdir` and cached in a bidirectional `path ↔ ino` map.
 
 use crate::drives::{CloudDrive, DirEntry, FileStat};
+use crate::drives::read_cache::{CachedFile, ContentCache};
 use crate::sync::transfer_queue::TransferQueue;
 use anyhow::Result;
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -19,47 +20,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// TTL for cached attributes (5 seconds).
 const ATTR_TTL: Duration = Duration::from_secs(5);
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-struct ContentCache {
-    max_bytes: u64,
-    bytes: u64,
-    entries: HashMap<PathBuf, Vec<u8>>,
-    lru: VecDeque<PathBuf>,
-}
-
-impl ContentCache {
-    fn new(max_bytes: u64) -> Self {
-        Self { max_bytes, bytes: 0, entries: HashMap::new(), lru: VecDeque::new() }
-    }
-
-    fn get(&mut self, path: &Path) -> Option<Vec<u8>> {
-        let data = self.entries.get(path)?.clone();
-        self.lru.retain(|item| item != path);
-        self.lru.push_back(path.to_owned());
-        Some(data)
-    }
-
-    fn insert(&mut self, path: PathBuf, data: Vec<u8>) {
-        let size = data.len() as u64;
-        if size > self.max_bytes { return; }
-        if let Some(previous) = self.entries.remove(&path) {
-            self.bytes = self.bytes.saturating_sub(previous.len() as u64);
-            self.lru.retain(|item| item != &path);
-        }
-        while self.bytes + size > self.max_bytes {
-            let Some(oldest) = self.lru.pop_front() else { break; };
-            if let Some(previous) = self.entries.remove(&oldest) {
-                self.bytes = self.bytes.saturating_sub(previous.len() as u64);
-            }
-        }
-        self.bytes += size;
-        self.entries.insert(path.clone(), data);
-        self.lru.push_back(path);
-    }
-
-    #[cfg(test)]
-    fn stats(&self) -> (u64, usize) { (self.bytes, self.entries.len()) }
-}
 
 /// FUSE filesystem backed by a `CloudDrive`.
 pub struct FuseDriveFs {
@@ -310,6 +270,14 @@ impl Filesystem for FuseDriveFs {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
+        if offset < 0 {
+            reply.error(libc::EINVAL);
+            return;
+        }
+        if size == 0 {
+            reply.data(&[]);
+            return;
+        }
         let file_path = {
             let state = self.state.lock().unwrap();
             match state.path_for_ino(ino) {
@@ -321,30 +289,41 @@ impl Filesystem for FuseDriveFs {
             }
         };
 
-        // Read the entire file (CloudDrive only supports full reads), but
-        // retain bounded results so repeated FUSE page reads do not redownload.
-        let data = if let Some(cached) = self.content_cache.lock().unwrap().get(&file_path) {
+        // Mounted local/SMB/NFS files support true seek+range reads; a FUSE
+        // page must not allocate or copy the entire mounted file first.
+        if self.drive.drive_type() == crate::drives::DriveType::Local {
+            let drive = Arc::clone(&self.drive);
+            let start = offset as u64;
+            let end = start.saturating_add(size as u64 - 1);
+            match self.queue.download_blocking(drive.label().to_owned(), file_path,
+                None, move |path| drive.read_range(path, start, end)) {
+                Ok(bytes) => reply.data(&bytes),
+                Err(_) => reply.error(libc::EIO),
+            }
+            return;
+        }
+
+        // Other providers materialize once into a private disk-backed LRU.
+        // Each read allocates only the requested slice, including cache hits.
+        let cached = self.content_cache.lock().unwrap().get(&file_path);
+        let file = if let Some(cached) = cached {
             Some(cached)
         } else {
             let drive = Arc::clone(&self.drive);
             let drive_id = drive.label().to_owned();
-            let fetched = self.queue.download_blocking(
-                drive_id,
-                file_path.clone(),
-                None,
-                move |path| drive.read_file(path),
-            ).ok();
-            if let Some(ref bytes) = fetched {
-                self.content_cache.lock().unwrap().insert(file_path.clone(), bytes.clone());
+            let size_hint = drive.stat(&file_path).ok().map(|stat| stat.size);
+            let fetched = CachedFile::create(|destination| {
+                self.queue.download_to_file_blocking(drive_id, file_path.clone(),
+                    destination.to_owned(), size_hint,
+                    move |path, writer| drive.read_file_to_writer(path, writer))
+            }).map(Arc::new).ok();
+            if let Some(ref file) = fetched {
+                self.content_cache.lock().unwrap().insert(file_path.clone(), Arc::clone(file));
             }
             fetched
         };
-        match data {
-            Some(data) => {
-                let start = (offset as usize).min(data.len());
-                let end = (start + size as usize).min(data.len());
-                reply.data(&data[start..end]);
-            }
+        match file.and_then(|file| file.read(offset as u64, size).ok()) {
+            Some(bytes) => reply.data(&bytes),
             None => reply.error(libc::EIO),
         }
     }
@@ -387,32 +366,6 @@ impl Filesystem for FuseDriveFs {
     }
 }
 
-#[cfg(test)]
-mod cache_tests {
-    use super::ContentCache;
-    use std::path::Path;
-
-    #[test]
-    fn cache_evicts_least_recently_used_entries_by_bytes() {
-        let mut cache = ContentCache::new(5);
-        cache.insert("a".into(), b"123".to_vec());
-        cache.insert("b".into(), b"45".to_vec());
-        assert_eq!(cache.stats(), (5, 2));
-        assert_eq!(cache.get(Path::new("a")).unwrap(), b"123");
-        cache.insert("c".into(), b"xy".to_vec());
-        assert!(cache.get(Path::new("b")).is_none());
-        assert_eq!(cache.stats(), (5, 2));
-    }
-
-    #[test]
-    fn oversized_entries_are_not_cached() {
-        let mut cache = ContentCache::new(2);
-        cache.insert("large".into(), b"123".to_vec());
-        assert!(cache.get(Path::new("large")).is_none());
-        assert_eq!(cache.stats(), (0, 0));
-    }
-}
-
 // ── Mount / unmount helpers ──────────────────────────────────────────────
 
 /// Mount a cloud drive as a read-only FUSE filesystem.
@@ -423,7 +376,7 @@ pub fn mount_blocking(drive: Arc<dyn CloudDrive>, mount_point: &Path) -> Result<
     mount_blocking_with_cache(drive, mount_point, DEFAULT_CACHE_MAX_BYTES)
 }
 
-/// Mount with an explicit maximum in-memory content-cache size.
+/// Mount with an explicit maximum on-disk content-cache size.
 pub fn mount_blocking_with_cache(
     drive: Arc<dyn CloudDrive>,
     mount_point: &Path,

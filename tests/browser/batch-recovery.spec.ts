@@ -172,6 +172,31 @@ test('Stop drains its worker and final save before Resume, retaining completed w
     expect(prompts[0]).toContain('Saved extraction from the interrupted document.');
 });
 
+test('final batch checkpoint failure stays visible and releases controls without a completed receipt', async ({ page }) => {
+    await seedRecovery(page, [{ id: 'checkpoint', status: 'review' }]);
+    const messages: string[] = [];
+    page.on('console', message => { if (message.text().includes('batch.processing ')) messages.push(message.text()); });
+    const outcome = await page.evaluate(async () => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any, options: any) => {
+            if (command === 'batch_session_upsert_items_bulk') throw new Error('Fixture final checkpoint failed');
+            return original(command, args, options);
+        };
+        const modulePath = '/src/lib/batch/store.svelte.ts';
+        const { batchManager } = await import(modulePath);
+        try {
+            // An empty selection reaches the real final checkpoint without
+            // invoking an extractor or language model.
+            await batchManager.processAll({ extractionOnly: true }, new Set());
+            return { error: null, processing: batchManager.isProcessing };
+        } catch (error) { return { error: String(error), processing: batchManager.isProcessing }; }
+    });
+    expect(outcome).toEqual({ error: 'Error: Fixture final checkpoint failed', processing: false });
+    expect(messages.some(message => message.includes('phase=failed') && message.includes('saved=false'))).toBe(true);
+    expect(messages.some(message => message.includes('phase=completed'))).toBe(false);
+    await expect(page.getByRole('button', { name: 'Clear All', exact: true })).toBeEnabled();
+});
+
 test('one failing worker does not unlock the batch while another worker is still draining', async ({ page }) => {
     await seedRecovery(page, [{ id: 'broken', status: 'queued' }, { id: 'draining', status: 'queued' }]);
     await page.evaluate(async () => {

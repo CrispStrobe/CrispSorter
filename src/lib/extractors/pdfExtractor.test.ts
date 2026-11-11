@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import { createOcrSession } from './ocrDispatcher';
 import { extractPdf } from './pdfExtractor';
+import { flog } from '../log';
 
 vi.mock('pdfjs-dist/legacy/build/pdf', () => ({
     GlobalWorkerOptions: { workerSrc: '' }, getDocument: vi.fn(),
@@ -10,7 +11,7 @@ vi.mock('pdfjs-dist/legacy/build/pdf', () => ({
 vi.mock('./ocrDispatcher', async importOriginal => ({
     ...await importOriginal<typeof import('./ocrDispatcher')>(), createOcrSession: vi.fn(),
 }));
-vi.mock('../log', () => ({ logInfo: vi.fn() }));
+vi.mock('../log', () => ({ flog: vi.fn() }));
 
 const digital = 'This page already contains useful digital text.';
 const item = (str: string, x = 10, y = 100) => ({ str, transform: [1, 0, 0, 1, x, y] });
@@ -38,6 +39,7 @@ function enableOcr(enabled: boolean) {
 }
 
 beforeEach(() => {
+    vi.mocked(flog).mockClear();
     vi.mocked(pdfjsLib.getDocument).mockReset(); vi.mocked(createOcrSession).mockReset();
     recognize = vi.fn().mockResolvedValue({ text: 'OCR page', engine: 'selected-engine', warnings: [] });
     destroy = vi.fn().mockResolvedValue(undefined); canvases = [];
@@ -171,6 +173,10 @@ describe('PDF failures and resource ownership', () => {
         const current = page(); documentWith([page(digital), current]);
         const failure = new Error('Selected model is unavailable'); recognize.mockRejectedValue(failure);
         await expect(extractPdf(new ArrayBuffer(1))).rejects.toBe(failure);
+        const messages = vi.mocked(flog).mock.calls.map(([, message]) => message).filter(message => message.startsWith('ocr.pdf '));
+        expect(messages.at(-1)).toContain('phase=failed');
+        expect(messages.some(message => message.includes('phase=completed'))).toBe(false);
+        expect(messages.join('\n')).not.toContain('Selected model is unavailable');
         expect(current.cleanup).toHaveBeenCalledOnce(); expect(destroy).toHaveBeenCalledOnce();
         expect([canvases[0].width, canvases[0].height]).toEqual([0, 0]);
     });

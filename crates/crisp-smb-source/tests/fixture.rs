@@ -44,6 +44,25 @@ async fn direct_core_streams_without_flutter_or_whole_file_buffers() {
     assert_eq!(count, 3 * 1024 * 1024 + 17);
     assert_eq!(writer.max_chunk, CHUNK);
     assert_eq!(source.list("").await.unwrap().as_array().unwrap().len(), 1);
+    assert!(source.stat("missing.bin").await.is_err());
+
+    struct FailedWriter(usize);
+    impl Write for FailedWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.0 += 1;
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "consumer stopped"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut failed = FailedWriter(0);
+    assert!(source.read_to_writer("fixture.bin", &mut failed).await.is_err());
+    assert_eq!(failed.0, 1, "a failed consumer must stop the producer immediately");
+    // The failed reader must release its remote handle and leave the session
+    // usable. Empty files still exercise open/close, validation and publication.
+    source.write_from_reader("empty.bin", &mut Cursor::new(Vec::<u8>::new()), 0).await.unwrap();
+    assert_eq!(source.read_to_writer("empty.bin", &mut Vec::new()).await.unwrap(), 0);
+    assert!(source.write_from_reader("short.bin", &mut Cursor::new(vec![1]), 2).await.is_err());
+    assert!(source.write_from_reader("long.bin", &mut Cursor::new(vec![1, 2]), 1).await.is_err());
     let mut bytes = Cursor::new(vec![1, 2, 3, 4]);
     source
         .write_from_reader("uploaded.bin", &mut bytes, 4)

@@ -145,6 +145,10 @@ jobs:
           python3 src-tauri/tests/layout_table_regression.py
           python3 src-tauri/tests/image_indexing_recovery_model_free.py
 
+      - name: Verify isolated OCR qualification generation
+        working-directory: repos/CrispSorter
+        run: python3 tests/test_isolated_ocr_generation.py -v
+
       - name: Regenerate licenses.json
         working-directory: repos/CrispSorter
         run: |
@@ -367,6 +371,10 @@ jobs:
         run: python3 -m pip install --break-system-packages --quiet
              pymupdf pypdf pikepdf python-docx
 
+      - name: Verify CLI results and operation diagnostics remain separate
+        working-directory: repos/CrispSorter
+        run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
+
       - name: Verify the PDF surface against qpdf / poppler / MuPDF / pypdf / pikepdf
         working-directory: repos/CrispSorter
         run: |
@@ -549,6 +557,10 @@ jobs:
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
         run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Verify CLI results and operation diagnostics remain separate
+        working-directory: repos/CrispSorter
+        run: python scripts/verify_cli_operations.py --cli target/debug/crispsorter.exe
 
       - name: CLI smoke test
         working-directory: repos/CrispSorter
@@ -768,6 +780,10 @@ jobs:
         # test below executes this binary, which is exactly why it had to
         # drop them while they aborted in dyld.
         run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render
+
+      - name: Verify CLI results and operation diagnostics remain separate
+        working-directory: repos/CrispSorter
+        run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
 
       - name: Secret-store smoke test
         working-directory: repos/CrispSorter

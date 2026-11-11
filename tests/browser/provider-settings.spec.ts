@@ -125,6 +125,30 @@ async function release(page: Page, key: string) {
     }, key);
 }
 
+test('Index apply reports a settings persistence failure before native initialization and permits retry', async ({ page }) => {
+    await providerFixture(page);
+    const messages: string[] = [];
+    page.on('console', message => { if (message.text().includes('settings.')) messages.push(message.text()); });
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__failIndexSettings = true;
+        root.__indexInitializationCalls = 0;
+        root.__TAURI_INTERNALS__.invoke = async (command: string, args: any, options: any) => {
+            if (command === 'bg_ingest_set_ocr_pipeline' && root.__failIndexSettings) throw new Error('Fixture OCR settings persistence failed');
+            if (command === 'index_set_config' || command === 'index_init') root.__indexInitializationCalls += 1;
+            return original(command, args, options);
+        };
+    });
+    await page.locator('.settings-container').getByRole('button', { name: 'Search Index', exact: true }).click();
+    const apply = page.getByRole('button', { name: 'Apply & Initialize', exact: true });
+    await apply.click();
+    await expect(page.locator('.settings-container')).toContainText('Fixture OCR settings persistence failed');
+    await expect(apply).toBeEnabled();
+    expect(await page.evaluate(() => (window as any).__indexInitializationCalls)).toBe(0);
+    expect(messages.some(message => message.includes('settings.ocr phase=failed'))).toBe(true);
+    expect(messages.join('\n')).not.toMatch(/Fixture OCR|secret|\.example/);
+});
+
 test('switching provider panels during secret resolution preserves credential routing and model lists', async ({ page }) => {
     await providerFixture(page);
     await page.evaluate(() => { (window as any).__providerHoldSecret = 'groq'; });

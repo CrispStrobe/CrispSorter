@@ -1,11 +1,23 @@
 //! Bounded reads for OS-visible files, including SMB/NFS mounts.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 pub(super) fn read_to_writer(path: &Path, writer: &mut dyn Write) -> io::Result<u64> {
     let mut file = std::fs::File::open(path)?;
     io::copy(&mut file, writer)
+}
+
+/// An inclusive, bounded slice for mounted-file FUSE reads. Seeking avoids
+/// reading or caching all bytes before the requested page.
+pub(super) fn read_range(path: &Path, start: u64, end: u64) -> io::Result<Vec<u8>> {
+    let length = end.checked_sub(start).and_then(|value| value.checked_add(1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid mounted byte range"))?;
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(length).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -35,6 +47,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn mounted_range_returns_requested_slice_and_clamps_at_eof() {
+        let fixture = Fixture::new();
+        fs::write(fixture.file(), b"0123456789").unwrap();
+        assert_eq!(read_range(&fixture.file(), 3, 5).unwrap(), b"345");
+        assert_eq!(read_range(&fixture.file(), 8, 50).unwrap(), b"89");
+        assert!(read_range(&fixture.file(), 20, 30).unwrap().is_empty());
+        assert_eq!(read_range(&fixture.file(), 5, 2).unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

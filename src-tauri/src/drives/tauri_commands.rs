@@ -617,7 +617,7 @@ pub async fn drive_search(
             if !content || entry.is_dir || entry.size.unwrap_or(u64::MAX) > super::MAX_CONTENT_SEARCH_BYTES {
                 return false;
             }
-            drive.read_file(&entry.path)
+            super::read_file_bounded(drive.as_ref(), &entry.path, super::MAX_CONTENT_SEARCH_BYTES)
                 .ok()
                 .map(|bytes| super::content_search_matches(&bytes, &query))
                 .unwrap_or(false)
@@ -966,8 +966,8 @@ pub async fn drive_read_file(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive: Arc<dyn super::CloudDrive> = Arc::from(instantiate_registered(&state, cfg).await?);
     let path = std::path::PathBuf::from(path);
-    let transfer = state.transfer_queue.clone().submit_drive_download(
-        drive_id, drive, path, None,
+    let transfer = state.transfer_queue.clone().submit_drive_download_bounded(
+        drive_id, drive, path, super::MAX_PREVIEW_READ_BYTES,
     );
     match transfer.handle.await {
         Ok(Ok(data)) => Ok(data),

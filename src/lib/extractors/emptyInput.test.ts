@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { extractText } from './index';
+import { flog } from '../log';
+vi.mock('../log', () => ({ flog: vi.fn() }));
+beforeEach(() => { vi.mocked(flog).mockClear(); });
 
 /**
  * A zero-byte file used to reach the per-format parsers, and they disagreed
@@ -33,5 +36,24 @@ describe('extractText on an empty file', () => {
         await expect(
             extractText({ name: 'Fauler Zauber.epub', arrayBuffer: empty() })
         ).rejects.toThrow(/Fauler Zauber\.epub/);
+        const logs = vi.mocked(flog).mock.calls.map(([, message]) => message).join('\n');
+        expect(logs).toContain('phase=failed');
+        expect(logs).not.toContain('Fauler Zauber');
+    });
+
+    it('discards text from an asynchronous file read cancelled with a custom reason', async () => {
+        const file = new File(['private text'], 'private-name.txt');
+        let finish!: (value: ArrayBuffer) => void;
+        vi.spyOn(file, 'arrayBuffer').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+        const controller = new AbortController();
+        const failure = new Error('private stop detail');
+        const result = extractText(file, { signal: controller.signal });
+        controller.abort(failure);
+        finish(new TextEncoder().encode('private text').buffer);
+        await expect(result).rejects.toBe(failure);
+        const logs = vi.mocked(flog).mock.calls.map(([, message]) => message).join('\n');
+        expect(logs).toContain('phase=cancelled');
+        expect(logs).not.toContain('phase=completed');
+        expect(logs).not.toContain('private');
     });
 });

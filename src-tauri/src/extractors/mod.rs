@@ -31,7 +31,47 @@
 //! EPUB has an in-process reader; DOCX uses crisp-docx-core.
 
 use anyhow::{Context, Result};
+use crate::operation_log::OperationLog;
+use serde_json::{json, Value};
 use std::path::Path;
+
+#[cfg(test)]
+mod operation_logging_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_engine_emits_a_failure_without_loading_a_fallback_or_logging_input() {
+        let directory=tempfile::tempdir().unwrap();
+        let path=directory.path().join("private-medical-record.png");
+        image::DynamicImage::new_rgb8(2,3).save(&path).unwrap();
+        let mut options=ExtractOptions::default();
+        options.ocr_pipeline.engine=Some("unknown-engine".into());
+        let (result,events)=crate::operation_log::capture(||ocr_image_page(&path,&options));
+        assert!(result.is_err());
+        assert_eq!(events.first().unwrap().operation,"ocr.image");
+        assert_eq!(events.last().unwrap().phase,"failed");
+        assert_eq!(events.last().unwrap().code.as_deref(),Some("image_ocr_failed"));
+        assert!(!events.iter().any(|event|event.operation=="ocr.pipeline" || event.phase=="completed"));
+        let serialized=serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("private-medical-record"));
+        assert!(!serialized.contains("unknown-engine"));
+    }
+
+    #[test]
+    fn disabled_preparation_preserves_pixels_and_logs_no_inactive_stages() {
+        let directory=tempfile::tempdir().unwrap();
+        let path=directory.path().join("source.png");
+        image::DynamicImage::new_rgb8(4,3).save(&path).unwrap();
+        let config:OcrPipelineConfig=serde_json::from_value(json!({"enabled":false,"engine":"tesseract",
+            "restore":true,"sr":true,"dewarp":true,"stages":[{"engine":"tesseract",
+                "cleanup":{"enabled":true,"auto_crop":true,"page_split":true}}]})).unwrap();
+        let (config,_)=ocr_policy::recognition_config(config,None,None).unwrap();
+        let (result,events)=crate::operation_log::capture(||prepare_ocr_page(&path,&config,true));
+        assert_eq!(result.unwrap().path,path);
+        assert_eq!(events.last().unwrap().phase,"completed");
+        assert!(!events.iter().any(|event|[Some("dewarp"),Some("restore"),Some("upscale"),Some("cleanup")].contains(&event.stage.as_deref())));
+    }
+}
 
 pub mod anydoc_conv;
 pub mod archive;
@@ -883,13 +923,26 @@ fn cached_layout_detector(
 /// detected, ordered, and OCR'd individually (column-aware reading order);
 /// otherwise the whole page goes through the smart pipeline / tier ladder.
 pub fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    let log = OperationLog::start("ocr.image", json!({"engine":opts.ocr_pipeline.engine,"kind":"image"}));
+    let result = ocr_image_page_inner(path, opts, &log);
+    match &result {
+        Ok(document) => log.succeed(json!({"characters":document.full_text.chars().count()})),
+        Err(_) => log.fail("image_ocr_failed"),
+    }
+    result
+}
+
+fn ocr_image_page_inner(path: &Path, opts: &ExtractOptions, log: &OperationLog) -> Result<ExtractedDocument> {
+    log.step("validating", Value::Null);
     image_input::validate_file(path).context("Validate OCR image")?;
     let (width, height) = image::image_dimensions(path).context("Read OCR image dimensions")?;
     anyhow::ensure!(width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 100_000_000,
         "OCR page exceeds the supported 100 megapixel limit");
     let (config, warnings) = ocr_policy::resolve_extraction_config(opts).map_err(anyhow::Error::msg)?;
+    log.step("policy_resolved", json!({"engine":config.engine,"language":config.language,"stages":config.stages.len(),
+        "pipeline":config.enabled,"cpu_budget":config.cpu_pixel_budget,"width":width,"height":height}));
     ocr_policy::validate_runtime(&config).map_err(anyhow::Error::msg)?;
-    for warning in warnings { eprintln!("[ocr] {warning}"); }
+    if !warnings.is_empty() { log.warn("policy_warnings", json!({"warnings":warnings.len()})); }
     if config.cpu_pixel_budget {
         return ocr_worker::run_cpu_budget_document(path, &config);
     }
@@ -904,8 +957,10 @@ pub fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDoc
         resolved.ocr_pipeline = ocr_crispembed::review_pipeline_config(&resolved.ocr_pipeline);
     }
     if resolved.ocr_pipeline.enabled && resolved.ocr_pipeline.layout {
+        log.step("layout_recognition", Value::Null);
         return ocr_with_layout(&prepared.path, &resolved).context("Run configured OCR layout pass");
     }
+    log.step("recognizing", Value::Null);
     ocr_one_image(&prepared.path, &resolved)
 }
 
@@ -919,9 +974,12 @@ pub(crate) struct PreparedOcrPage {
 }
 
 pub(crate) fn prepare_ocr_page(source: &Path, config: &OcrPipelineConfig, shared_cleanup: bool) -> Result<PreparedOcrPage> {
+    let log = OperationLog::start("ocr.prepare", json!({"pipeline":config.enabled}));
+    let result = (|| {
     let mut path = source.to_owned();
     let mut files = Vec::new();
     let orientation = page_source::PageImages::single(source).page_orientation(0);
+    log.step("orientation", Value::Null);
     if let Some(file) = page_source::normalized_page(source, orientation)? {
         path = file.path().to_owned(); files.push(file);
     }
@@ -933,15 +991,18 @@ pub(crate) fn prepare_ocr_page(source: &Path, config: &OcrPipelineConfig, shared
     };
     dimensions(&path)?;
     if config.enabled && config.dewarp {
+        log.step("dewarp", Value::Null);
         let (file, output) = ocr_crispembed::dewarp_page_checked(&path, config).map_err(anyhow::Error::msg)?;
         path = output; files.push(file);
     }
     if config.enabled && config.restore {
+        log.step("restore", Value::Null);
         let (file, output) = ocr_crispembed::restore_page_checked(&path, config).map_err(anyhow::Error::msg)?;
         path = output; files.push(file);
     }
     let (width, height) = dimensions(&path)?;
     if config.enabled && config.sr && width.min(height) <= config.sr_max_short_side as u32 {
+        log.step("upscale", json!({"width":width,"height":height}));
         anyhow::ensure!(u64::from(width) * u64::from(height) * 16 <= 100_000_000,
             "A 4× upscale would exceed the 100 megapixel page limit; crop the page or disable super-resolution");
         let (file, output) = ocr_crispembed::super_resolve_page_checked(&path, config).map_err(anyhow::Error::msg)?;
@@ -953,11 +1014,16 @@ pub(crate) fn prepare_ocr_page(source: &Path, config: &OcrPipelineConfig, shared
         config.stages[0].cleanup.enabled || config.stages[0].cleanup.denoise
     } else { config.cleanup_enabled || config.denoise };
     if config.enabled && (legacy || shared_cleanup) && cleanup_requested {
+        log.step("cleanup", Value::Null);
         let (file, output) = ocr_crispembed::cleanup_page_checked(&path, config).map_err(anyhow::Error::msg)?;
         path = output; files.push(file);
     }
     let (after_width, after_height) = dimensions(&path)?;
+    log.succeed(json!({"width":after_width,"height":after_height}));
     Ok(PreparedOcrPage { path, cleanup_scale:(after_width as f32/before_width as f32, after_height as f32/before_height as f32), _files:files })
+    })();
+    if result.is_err() { log.fail("preparation_failed"); }
+    result
 }
 
 pub(crate) fn detect_ocr_layout(path: &Path, cfg: &OcrPipelineConfig) -> Result<Vec<layout::LayoutRegion>> {
@@ -1140,7 +1206,21 @@ pub fn extract_container_from_path(path: &Path, opts: ExtractOptions) -> Result<
 /// CLI thread the user's catalog-level setting through here.
 pub fn extract_text_from_path_with_opts(
     path: &Path,
+    opts: ExtractOptions,
+) -> Result<ExtractedDocument> {
+    let log = OperationLog::start("extract.file", json!({"engine":opts.ocr_pipeline.engine,"forced":opts.try_ocr && opts.ocr_pdf_min_chars==usize::MAX}));
+    let result = extract_text_from_path_with_opts_inner(path, opts, &log);
+    match &result {
+        Ok(document) => log.succeed(json!({"characters":document.full_text.chars().count(),"items":document.members.len()})),
+        Err(_) => log.fail("extraction_failed"),
+    }
+    result
+}
+
+fn extract_text_from_path_with_opts_inner(
+    path: &Path,
     mut opts: ExtractOptions,
+    log: &OperationLog,
 ) -> Result<ExtractedDocument> {
     let ext = path
         .extension()
@@ -1170,10 +1250,12 @@ pub fn extract_text_from_path_with_opts(
             if opts.try_ocr && opts.ocr_pdf_min_chars == usize::MAX {
                 // Forced OCR must not depend on successfully decoding an
                 // existing PDF font/text layer first.
+                log.step("rendering_pages", json!({"kind":"pdf","forced":true}));
                 let images = page_source::rasterize_pdf(path).context("Render PDF for forced OCR")?;
                 anyhow::ensure!(!images.is_empty(), "PDF rendering produced no OCR pages");
                 let mut pages = Vec::with_capacity(images.len());
                 for (index, image) in images.paths().iter().enumerate() {
+                    log.step("recognizing_page", json!({"page":index+1,"pages":images.len()}));
                     pages.push(ocr_image_page(image, &opts)
                         .with_context(|| format!("OCR failed on PDF page {}/{}", index + 1, images.len()))?.full_text);
                 }
@@ -1182,12 +1264,18 @@ pub fn extract_text_from_path_with_opts(
             } else {
             let (mut doc, page_text) = pdf::extract_with_pages(path)?;
             doc.ext = ext.clone();
+            for (index,text) in page_text.iter().enumerate() {
+                log.step("page_decision", json!({"page":index+1,"pages":page_text.len(),
+                    "mode":if opts.try_ocr && pdf::page_needs_ocr(text,opts.ocr_pdf_min_chars) {"ocr"} else {"native_text"}}));
+            }
             if opts.try_ocr && page_text.iter().any(|text| pdf::page_needs_ocr(text, opts.ocr_pdf_min_chars)) {
+                log.step("rendering_pages", json!({"kind":"pdf","pages":page_text.len()}));
                 let images = page_source::rasterize_pdf(path)
                     .context("Render PDF pages for the selected OCR engine")?;
                 anyhow::ensure!(images.len() == page_text.len(),
                     "PDF text and rendered page counts disagree; no partial OCR result was accepted");
                 let pages = pdf::merge_ocr_pages(&page_text, opts.ocr_pdf_min_chars, |index| {
+                    log.step("recognizing_page", json!({"page":index+1,"pages":page_text.len()}));
                     ocr_image_page(&images.paths()[index], &opts).map(|document| document.full_text)
                 })?;
                 doc.full_text = pages.join(page_source::PAGE_SEPARATOR);
@@ -1270,6 +1358,7 @@ pub fn extract_text_from_path_with_opts(
             let image_exif = crate::images::exif::read_exif(path).ok();
 
             if level == "l2" || !opts.try_ocr {
+                log.step("metadata_only", json!({"kind":"image","mode":"metadata"}));
                 // L2 or "L3 but OCR off" — return an empty-text doc
                 // with image_exif populated.  bg_ingest writes the
                 // image_* columns either way.
@@ -1293,12 +1382,14 @@ pub fn extract_text_from_path_with_opts(
             // Decode the file into per-page images (multi-frame TIFF → N pages;
             // single-page formats → the original path), OCR each page through
             // the same pipeline/ladder, and concatenate with page separators.
+            log.step("decoding_pages", json!({"kind":"image"}));
             let pages = page_source::rasterize_pages(path, &ext)
                 .context("Decode all image pages for OCR")?;
             anyhow::ensure!(!pages.is_empty(), "Image decoding produced no OCR pages");
             let mut parts = Vec::with_capacity(pages.len());
             let mut language = None;
             for (i, page_path) in pages.paths().iter().enumerate() {
+                log.step("recognizing_page", json!({"page":i+1,"pages":pages.len()}));
                 let normalized = page_source::normalized_page(page_path, pages.page_orientation(i))?;
                 let page_path = normalized.as_ref().map(|file| file.path()).unwrap_or(page_path);
                 let document = ocr_image_page(page_path, &opts)
@@ -1432,6 +1523,7 @@ pub fn extract_text_from_path_with_opts(
                 .unwrap_or(source_text.len());
             let trimmed = source_text[..byte_end].trim();
             if trimmed.len() >= 20 {
+                log.step("language_detection", Value::Null);
                 match text_lid::detect_language(trimmed, model_path, 2) {
                     Ok(r) => {
                         doc.language = text_lid::normalise_to_iso_639_1(&r.label)
@@ -1444,12 +1536,7 @@ pub fn extract_text_from_path_with_opts(
                                 Some(r.label)
                             });
                     }
-                    Err(e) => {
-                        eprintln!(
-                            "[extractor] text-LID failed for {} (non-fatal): {e:#}",
-                            path.display()
-                        );
-                    }
+                    Err(_) => log.warn("language_detection_failed", Value::Null),
                 }
             }
         }
@@ -1467,6 +1554,7 @@ pub fn extract_text_from_path_with_opts(
             let target = target.trim().to_ascii_lowercase();
             if let Some(source) = doc.language.as_deref() {
                 if !source.is_empty() && !target.is_empty() && source != target {
+                    log.step("translation", Value::Null);
                     let backend = opts
                         .translate_backend
                         .as_deref()
@@ -1484,12 +1572,7 @@ pub fn extract_text_from_path_with_opts(
                             doc.translated_text = Some(translated);
                             doc.translated_to_lang = Some(target);
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "[extractor] batch translation failed for {} (non-fatal): {e:#}",
-                                path.display()
-                            );
-                        }
+                        Err(_) => log.warn("translation_failed", Value::Null),
                     }
                 }
             }

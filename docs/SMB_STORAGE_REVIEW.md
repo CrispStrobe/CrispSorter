@@ -44,3 +44,25 @@ suite, but the full Tauri suite was not run in this environment. No live mounted
 NAS throughput measurement or OS security-policy qualification was performed.
 Full streaming capability remains false because the upload fallback still
 buffers; the read improvement does not claim both directions are bounded.
+
+## Shared integration follow-up
+
+The checkpoint above describes the incoming feature branch. The shared
+integration additionally connects disk-bound GUI/CLI restore, sync pull and
+index promotion to a file-target transfer queue. Each attempt writes to a
+private temporary file beside its destination; byte-count validation and
+cancellation checks precede publication. Failures leave existing destinations
+intact and clean temporary files. Local writes now also use checked staging
+instead of the legacy whole-file reader fallback. Existing capability flags
+remain conservative; the standalone direct-SMB crate is still not registered.
+
+Mounted-file FUSE reads use true seek/range access. Other FUSE providers use a
+disk-backed LRU instead of cloning whole-file memory buffers. GUI byte previews
+are capped at 64 MiB and provider content probes at 256 KiB; the file-target API
+serves larger disk-bound operations. Cloud-backup shard import still uses its
+existing byte-payload transport, and legacy provider internals can still buffer.
+
+The source-bound storage contract and its execution/lock artifacts are wired
+to Linux, macOS and Windows CI. This continuation workspace has no Rust
+toolchain, so those native results must be read from the exact pushed commit's
+CI run; no native success is inferred from the source review.

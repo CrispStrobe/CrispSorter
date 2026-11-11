@@ -7,6 +7,9 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) 
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
 vi.mock('../capabilities', () => ({ loadCapabilities }));
+vi.mock('../log', () => ({ flog: vi.fn() }));
+import { flog } from '../log';
+beforeEach(() => { vi.mocked(flog).mockClear(); });
 
 import { workspaceClient, setDefaultOcrLanguage, importProgressLabel, exportProgressLabel, type ExportRequest, type ExportResult, type ExportProgress, type ModelDownloadProgress, type ImportProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
@@ -579,6 +582,10 @@ describe('OCR workspace platform transport', () => {
         expect(unlisten).not.toHaveBeenCalled();
         native.resolve(exported);
         expect(await result).toBe(exported);
+        const receipts = vi.mocked(flog).mock.calls.map(([, message]) => message).filter(message => message.startsWith('ocr.export '));
+        expect(receipts.at(-1)).toContain('phase=completed');
+        expect(receipts.at(-1)).toContain('saved=true');
+        expect(receipts.some(message => message.includes('phase=cancelled'))).toBe(false);
         expect(controller.signal.aborted).toBe(true);
         expect(unlisten).toHaveBeenCalledOnce();
     });
@@ -625,6 +632,9 @@ describe('OCR workspace platform transport', () => {
         const failed = expect(result).rejects.toBe(failure);
         await nativeStarted.promise; controller.abort(); native.reject(failure);
         await failed; expect(unlisten).toHaveBeenCalledOnce();
+        const receipts = vi.mocked(flog).mock.calls.map(([, message]) => message).filter(message => message.startsWith('ocr.export '));
+        expect(receipts.at(-1)).toContain('phase=failed');
+        expect(receipts.join('\n')).not.toContain(failure.message);
     });
 
     it.each(['before-subscribe', 'during-subscribe'])('cleans mobile staging without starting an export aborted %s', async timing => {

@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type Tesseract from 'tesseract.js';
 import { loadSavedOcrPolicy, ocrPolicyLanguage, type OcrPolicy, type OcrSelection } from './ocrSettings';
+import { beginOperation, type OperationLog } from '../operationLog';
 
 export const MAX_OCR_IMAGE_BYTES = 32 * 1024 * 1024;
 export const MAX_OCR_METADATA_BYTES = 64 * 1024;
@@ -38,8 +39,10 @@ function clearIdleTimer() {
 }
 
 async function retireWorker(worker: BrowserWorker) {
+    const operation = beginOperation('ocr.worker', { backend: 'browser', language: worker.language });
     if (browserWorker === worker) browserWorker = undefined;
-    try { await (await worker.promise).terminate(); } catch { /* Failed initialization/termination leaves no reusable worker. */ }
+    try { await (await worker.promise).terminate(); operation.complete(); }
+    catch (error) { operation.fail(error); /* Failed initialization/termination leaves no reusable worker. */ }
 }
 
 function queueWorker<T>(task: () => Promise<T>): Promise<T> {
@@ -78,8 +81,9 @@ function browserLanguage(policy: OcrPolicy): string {
     return language;
 }
 
-async function recognizeBrowser(image: OcrImage, policy: OcrPolicy, signal?: AbortSignal): Promise<OcrTextResult> {
+async function recognizeBrowser(image: OcrImage, policy: OcrPolicy, signal?: AbortSignal, operation?: OperationLog): Promise<OcrTextResult> {
     const language = browserLanguage(policy);
+    operation?.stage('queued');
     return withExtractionAbort(queueWorker(async () => {
         let owner: BrowserWorker | undefined;
         try {
@@ -87,13 +91,15 @@ async function recognizeBrowser(image: OcrImage, policy: OcrPolicy, signal?: Abo
             let worker = browserWorker;
             if (worker && worker.language !== language) { await retireWorker(worker); worker = undefined; }
             if (!worker) {
+                operation?.stage('loading', { language }, 'info');
                 worker = { language, promise: import('tesseract.js').then(module => module.default.createWorker(language)) };
                 browserWorker = worker;
-            }
+            } else operation?.stage('reused', { reused: true });
             owner = worker;
             const cancel = () => { void retireWorker(worker); };
             const ready = await withExtractionAbort(owner.promise, signal, cancel);
             signal?.throwIfAborted();
+            operation?.stage('recognizing');
             const input = image instanceof Uint8Array ? new Blob([image]) : image;
             const result = await withExtractionAbort(ready.recognize(input, {}, { text: true }), signal, cancel);
             signal?.throwIfAborted();
@@ -124,36 +130,62 @@ function nativeOptions(policy: OcrPolicy) {
 }
 
 export async function createOcrSession(options: OcrSessionOptions = {}): Promise<OcrSession> {
-    options.signal?.throwIfAborted();
     const native = isTauri();
-    const policy = await loadSavedOcrPolicy(options.ocr, native);
-    options.signal?.throwIfAborted();
+    const session = beginOperation('ocr.session', { backend: native ? 'native' : 'browser' });
+    let policy: OcrPolicy;
+    try {
+        options.signal?.throwIfAborted();
+        policy = await loadSavedOcrPolicy(options.ocr, native);
+        options.signal?.throwIfAborted();
+        session.complete({ engine: policy.engine, language: policy.language, cpuBudget: policy.cpuPixelBudget });
+    } catch (error) {
+        if (options.signal?.aborted && error === options.signal.reason) session.cancel(); else session.fail(error);
+        throw error;
+    }
     return {
         policy,
         async recognize(image, name) {
-            options.signal?.throwIfAborted();
-            if ((image instanceof Uint8Array || image instanceof Blob)
-                && (!(image instanceof Blob ? image.size : image.byteLength)
-                    || (image instanceof Blob ? image.size : image.byteLength) > MAX_OCR_IMAGE_BYTES)) {
-                throw new Error('OCR needs a nonempty image no larger than 32 MiB.');
+            const operation = beginOperation('ocr.recognition', { backend: native ? 'native' : 'browser',
+                engine: policy.engine, language: policy.language, cpuBudget: policy.cpuPixelBudget });
+            let dispatched = false;
+            try {
+                options.signal?.throwIfAborted();
+                if ((image instanceof Uint8Array || image instanceof Blob)
+                    && (!(image instanceof Blob ? image.size : image.byteLength)
+                        || (image instanceof Blob ? image.size : image.byteLength) > MAX_OCR_IMAGE_BYTES)) {
+                    throw new Error('OCR needs a nonempty image no larger than 32 MiB.');
+                }
+                if (!native) {
+                    const result = await recognizeBrowser(image, policy, options.signal, operation);
+                    operation.complete({ engine: result.engine, characters: result.text.length, warnings: result.warnings.length });
+                    return result;
+                }
+                const metadata = new TextEncoder().encode(JSON.stringify({ name, options: nativeOptions(policy) }));
+                if (metadata.byteLength > MAX_OCR_METADATA_BYTES) throw new Error('OCR settings and the image name exceed the 64 KiB metadata limit.');
+                // Chunked conversion avoids a spread-argument overflow for advanced settings.
+                let binary = '';
+                for (let i = 0; i < metadata.length; i += 8192) binary += String.fromCharCode(...metadata.subarray(i, i + 8192));
+                const bytes = await withExtractionAbort(imageBytes(image), options.signal);
+                if (!bytes.byteLength || bytes.byteLength > MAX_OCR_IMAGE_BYTES) throw new Error('OCR needs a nonempty image no larger than 32 MiB.');
+                options.signal?.throwIfAborted();
+                operation.stage('dispatching', { bytes: bytes.byteLength });
+                dispatched = true;
+                const result = await withExtractionAbort(invoke<OcrTextResult>('ocr_extract_image', bytes,
+                    { headers: { 'x-ocr-metadata': btoa(binary), 'x-operation-id': operation.id } }), options.signal);
+                options.signal?.throwIfAborted();
+                if (!result || typeof result.text !== 'string' || typeof result.engine !== 'string' || !result.engine.trim()
+                    || !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string')) {
+                    throw new Error('Native OCR returned an invalid result.');
+                }
+                if (result.warnings.length) operation.stage('warning', { warnings: result.warnings.length }, 'warn');
+                const text = result.text.trim();
+                operation.complete({ engine: result.engine, characters: text.length, warnings: result.warnings.length });
+                return { ...result, text };
+            } catch (error) {
+                if (options.signal?.aborted && error === options.signal.reason) operation.cancel({ nativeContinues: native && dispatched });
+                else operation.fail(error);
+                throw error;
             }
-            if (!native) return recognizeBrowser(image, policy, options.signal);
-            const metadata = new TextEncoder().encode(JSON.stringify({ name, options: nativeOptions(policy) }));
-            if (metadata.byteLength > MAX_OCR_METADATA_BYTES) throw new Error('OCR settings and the image name exceed the 64 KiB metadata limit.');
-            // Chunked conversion avoids a spread-argument overflow for advanced settings.
-            let binary = '';
-            for (let i = 0; i < metadata.length; i += 8192) binary += String.fromCharCode(...metadata.subarray(i, i + 8192));
-            const bytes = await withExtractionAbort(imageBytes(image), options.signal);
-            if (!bytes.byteLength || bytes.byteLength > MAX_OCR_IMAGE_BYTES) throw new Error('OCR needs a nonempty image no larger than 32 MiB.');
-            options.signal?.throwIfAborted();
-            const result = await withExtractionAbort(invoke<OcrTextResult>('ocr_extract_image', bytes,
-                { headers: { 'x-ocr-metadata': btoa(binary) } }), options.signal);
-            options.signal?.throwIfAborted();
-            if (!result || typeof result.text !== 'string' || typeof result.engine !== 'string' || !result.engine.trim()
-                || !Array.isArray(result.warnings) || result.warnings.some(value => typeof value !== 'string')) {
-                throw new Error('Native OCR returned an invalid result.');
-            }
-            return { ...result, text: result.text.trim() };
         },
     };
 }

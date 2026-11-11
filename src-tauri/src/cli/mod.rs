@@ -39,6 +39,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod ocr_options;
+
 /// Subcommand names our CLI knows about. main.rs uses this for the
 /// argv sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
@@ -78,6 +80,9 @@ struct Cli {
     /// collided with `catalog scan --out PATH`.
     #[arg(long = "format", short = 'f', value_enum, default_value_t = OutFormat::Json, global = true)]
     format: OutFormat,
+    /// Diagnostic verbosity; structured results always remain on stdout.
+    #[arg(long, global = true, default_value = "info", value_parser = ["silent", "error", "info", "debug"])]
+    log_verbosity: String,
     /// Accept the licenses of non-commercial (CC-BY-NC) and use-restricted
     /// (Gemma) models for downloads/use this run. Required to fetch e.g.
     /// jina-v3 / jina-v5 / jina-reranker-v2 / embeddinggemma.
@@ -192,6 +197,12 @@ enum Command {
     Ocr {
         /// Image (png/jpg/tiff/…) or PDF to OCR.
         file: PathBuf,
+        /// Complete OCR pipeline JSON snapshot; uses saved app settings when omitted.
+        #[arg(long, value_name = "FILE")]
+        ocr_config: Option<PathBuf>,
+        /// Override the app profile containing saved OCR settings.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
         /// Primary OCR engine.
         #[arg(long, default_value = "auto", value_parser = clap::builder::PossibleValuesParser::new(
             std::iter::once("auto")
@@ -202,16 +213,16 @@ enum Command {
         #[arg(long)]
         language: Option<String>,
         /// Use the isolated Qwen2 VL CPU worker with its bounded vision input.
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         cpu_pixel_budget: bool,
-        /// Source-type routing hint. `auto` classifies the image; an explicit
-        /// type pins the cleanup+engine recipe and disables reclassification.
+        /// Enable source classification for a configured Automatic OCR chain.
+        /// Fixed source pins are unsupported; use --ocr-config for stage routing.
         #[arg(long, default_value = "auto",
               value_parser = ["auto", "screenshot", "scanned_doc", "photo"])]
         source_type: String,
-        /// Detection model registry name (dbnet_trocr / surya / tesseract).
-        /// Default per engine (`dbnet-det`).
-        #[arg(long)]
+        /// Detection model, or the single model used by a vision recognizer.
+        /// Accepts a registry name or compatible local model file.
+        #[arg(long, visible_alias = "model")]
         det_model: Option<String>,
         /// Recognition model registry name (dbnet_trocr / surya / tesseract).
         /// Default per engine (`trocr-printed`, or `tesseract-eng` for tesseract).
@@ -221,14 +232,14 @@ enum Command {
         #[arg(long, default_value_t = cfg!(feature = "crispembed"), action = clap::ArgAction::Set)]
         cleanup: bool,
         /// Pre-processor: learned NAFNet denoise (downloads ~30 MB on first use).
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         denoise: bool,
         /// NAFNet model registry name (`None` → `nafnet-denoise`).
         #[arg(long)]
         nafnet_model: Option<String>,
         /// Pre-processor: layout-aware reading order (RT-DETRv2 regions →
         /// column-aware order → per-region OCR; formulas → math OCR).
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         layout: bool,
         /// Layout region source: `rtdetr` (RT-DETRv2 semantic, default) or `cc`
         /// (model-free connected-components text-line detector, zero-download).
@@ -238,7 +249,7 @@ enum Command {
         #[arg(long, default_value_t = 0.25)]
         layout_threshold: f32,
         /// Drop running headers/footers in the layout pass.
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         drop_headers_footers: bool,
         /// Post-processor: punctuation/spacing/truecasing restore model
         /// (FireRedPunc / PCS / fullstop-punc). Empty = off.
@@ -271,7 +282,7 @@ enum Command {
         stamp: Option<String>,
         /// Pre-processor: super-resolve low-resolution pages (PAN 4×) before
         /// OCR — helps small scans / screenshots / faxes. Needs `crispembed`.
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         sr: bool,
         /// Super-resolution model registry name (default `pan-x4`).
         #[arg(long)]
@@ -285,14 +296,14 @@ enum Command {
         sr_engine: String,
         /// Pre-processor: restore (denoise + deblur) the page via Restormer
         /// before OCR — helps noisy / blurred scans. Needs `crispembed`.
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         restore: bool,
         /// Restoration model registry name (default `restormer-denoise`).
         #[arg(long)]
         restore_model: Option<String>,
         /// Pre-processor: dewarp (straighten curved/warped text) the page
         /// before OCR — helps photos of pages / book spines.
-        #[arg(long)]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
         dewarp: bool,
         /// Restoration engine: `restormer` (denoise+deblur, default), `scunet`
         /// (Swin-Conv-UNet denoise), or `instructir` (all-in-one, see
@@ -349,6 +360,9 @@ enum Command {
         /// Override the app data directory (for the model cache + config).
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Complete OCR pipeline JSON snapshot (same options as the app).
+        #[arg(long, value_name = "FILE")]
+        ocr_config: Option<PathBuf>,
     },
     /// Recognize a mathematical formula in an image and output LaTeX.
     MathOcr {
@@ -375,6 +389,9 @@ enum Command {
         /// Override the app data directory (for saved OCR settings).
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Complete OCR pipeline JSON snapshot (same options as the app).
+        #[arg(long, value_name = "FILE")]
+        ocr_config: Option<PathBuf>,
     },
     /// Apply a zoned OCR template to an image — crop + OCR each named zone.
     Zone {
@@ -386,6 +403,9 @@ enum Command {
         /// App data directory (to locate templates.db).
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Complete OCR pipeline JSON snapshot (same options as the app).
+        #[arg(long, value_name = "FILE")]
+        ocr_config: Option<PathBuf>,
     },
     /// Emit shell-completion scripts to stdout.
     Completion {
@@ -2185,8 +2205,9 @@ pub fn run() -> ExitCode {
 }
 
 fn run_on_current_stack() -> ExitCode {
-    let cli = match Cli::try_parse() {
-        Ok(c) => c,
+    use clap::{CommandFactory, FromArgMatches};
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
         Err(e) => {
             // clap prints help / errors to stderr already; exit code
             // matches clap's convention.
@@ -2194,6 +2215,22 @@ fn run_on_current_stack() -> ExitCode {
             return if e.use_stderr() { ExitCode::from(2) } else { ExitCode::SUCCESS };
         }
     };
+    let explicit_ocr = matches.subcommand_matches("ocr").map(ocr_options::explicit_options).unwrap_or_default();
+    let mut command_names = Vec::new();
+    let mut nested = &matches;
+    while let Some((name, child)) = nested.subcommand() {
+        command_names.push(name); nested = child;
+    }
+    let command_mode = command_names.join(".");
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => { error.print().ok(); return ExitCode::from(2); }
+    };
+    if let Err(error) = crate::operation_log::set_verbosity(&cli.log_verbosity) {
+        eprintln!("error: {error}"); return ExitCode::from(2);
+    }
+    let operation = crate::operation_log::OperationLog::start("cli.command",
+        serde_json::json!({"surface":"cli","mode":command_mode}));
 
     // Global `--accept-license`: accept all restrictive model licenses for
     // this process so downloads/use don't hard-error on the consent gate.
@@ -2281,7 +2318,7 @@ fn run_on_current_stack() -> ExitCode {
         }
         Command::Manpage { out } => cmd_manpage(out),
         Command::Ocr {
-            file, engine, language, cpu_pixel_budget, source_type, det_model, rec_model, cleanup, denoise,
+            file, ocr_config, data_dir, engine, language, cpu_pixel_budget, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
@@ -2294,22 +2331,24 @@ fn run_on_current_stack() -> ExitCode {
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
             vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
+            ocr_config, data_dir, explicit_ocr,
         ),
-        Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir } => {
-            cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
+        Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir, ocr_config } => {
+            cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir, ocr_config)
         }
         Command::MathOcr { file, model } => cmd_math_ocr(file, model),
-        Command::Table { file, ocr_model, grid, out, data_dir } => {
-            cmd_table(cli.format, file, ocr_model, grid, out, data_dir)
+        Command::Table { file, ocr_model, grid, out, data_dir, ocr_config } => {
+            cmd_table(cli.format, file, ocr_model, grid, out, data_dir, ocr_config)
         }
-        Command::Zone { file, template, data_dir } => {
-            cmd_zone(cli.format, file, template, data_dir)
+        Command::Zone { file, template, data_dir, ocr_config } => {
+            cmd_zone(cli.format, file, template, data_dir, ocr_config)
         }
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => { operation.succeed(serde_json::json!({})); ExitCode::SUCCESS },
         Err(msg) => {
+            operation.fail("command_failed");
             eprintln!("error: {msg}");
             ExitCode::FAILURE
         }
@@ -2359,9 +2398,12 @@ fn cmd_ocr(
     truecase_model: Option<String>,
     lid_model: Option<String>,
     tess_model_dir: Option<String>,
+    ocr_config: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+    explicit: std::collections::HashSet<String>,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
-    use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
+    use crate::extractors::{OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
 
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
@@ -2436,8 +2478,19 @@ fn cmd_ocr(
         tess_model_dir: tess_model_dir.filter(|s| !s.trim().is_empty()),
     };
 
+    let data_dir = resolve_data_dir(data_dir)?;
+    let saved = ocr_options::load(&data_dir, ocr_config.as_deref())?;
+    let mut options = ocr_options::overlay_options(saved, cfg, &explicit, &source_type)?;
+    let (cfg, warnings) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
+    for warning in warnings { crate::app_log("warn", warning); }
+    let engine = cfg.engine.clone().unwrap_or_else(|| "auto".into());
+    options.ocr_pipeline = cfg.clone();
+
     let fmt = OcrOutputFormat::from_name(&render)
         .ok_or_else(|| format!("unknown --render format: {render}"))?;
+    if fmt.is_binary() && out_path.is_none() {
+        return Err(format!("--render {render} produces binary output; pass --out <FILE>"));
+    }
 
     // Structured / searchable formats (hOCR / ALTO / PDF) go through
     // CrispEmbed's `ocr_render`. Fail fast (before running OCR) when that
@@ -2451,19 +2504,10 @@ fn cmd_ocr(
 
     // Plain text: the existing whole-file path (multi-page aware, punct applied).
     if fmt == OcrOutputFormat::Text {
-        let opts = ExtractOptions {
-            try_ocr: true,
-            // Force OCR even when a PDF already has a text layer — this is an
-            // explicit "OCR this file" request, not the ingest heuristic.
-            ocr_pdf_min_chars: usize::MAX,
-            ocr_pipeline: cfg,
-            ..Default::default()
-        };
-        let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
+        let doc = crate::extractors::extract_text_from_path_with_opts(&file, options)
             .map_err(|e| format!("OCR failed: {e:#}"))?;
         if let Some(p) = &out_path {
-            std::fs::write(p, doc.full_text.as_bytes())
-                .map_err(|e| format!("writing {}: {e}", p.display()))?;
+            write_ocr_output(p, doc.full_text.as_bytes())?;
             return Ok(());
         }
         return match global_fmt {
@@ -2497,11 +2541,23 @@ fn cmd_ocr(
         .unwrap_or("")
         .to_ascii_lowercase();
     let pages = crate::extractors::ocr_render::render_pages_from_file(&file, &ext, &cfg)?;
-    let bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
+    let mut bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
         .map_err(|e| format!("render failed: {e:#}"))?;
+    // Stamp a private temporary document before publication. A failed stamp
+    // must not replace the user's previous complete output with an intermediate.
+    if let Some(text) = stamp.as_ref().filter(|text| !text.is_empty() && fmt == OcrOutputFormat::Pdf) {
+        let staging = tempfile::tempdir().map_err(|e| format!("Stage PDF stamp: {e}"))?;
+        let staged = staging.path().join("stamped.pdf");
+        std::fs::write(&staged, &bytes).map_err(|e| format!("Stage rendered PDF: {e}"))?;
+        let config = crate::pdf_ops::WatermarkConfig {
+            text: text.clone(), font_size: 10.0, angle: 0.0, opacity: 0.5, color: [0.3, 0.3, 0.3],
+        };
+        crate::pdf_ops::add_watermark(&staged, &config, None, &staged)?;
+        bytes = std::fs::read(&staged).map_err(|e| format!("Read stamped PDF: {e}"))?;
+        crate::app_log("info", "OCR PDF stamp applied before publication.".into());
+    }
     match &out_path {
-        Some(p) => std::fs::write(p, &bytes)
-            .map_err(|e| format!("writing {}: {e}", p.display()))?,
+        Some(p) => write_ocr_output(p, &bytes)?,
         None if fmt.is_binary() => {
             return Err(format!(
                 "--render {render} produces binary output; pass --out <FILE>"
@@ -2511,18 +2567,22 @@ fn cmd_ocr(
             print!("{}", String::from_utf8_lossy(&bytes));
         }
     }
-    // Apply stamp to the output PDF if requested.
-    if let (Some(ref text), Some(ref p)) = (&stamp, &out_path) {
-        if !text.is_empty() && fmt == OcrOutputFormat::Pdf {
-            let config = crate::pdf_ops::WatermarkConfig {
-                text: text.clone(), font_size: 10.0, angle: 0.0,
-                opacity: 0.5, color: [0.3, 0.3, 0.3],
-            };
-            crate::pdf_ops::add_watermark(p, &config, None, p)?;
-            eprintln!("Stamp applied: {text}");
-        }
-    }
     Ok(())
+}
+
+fn write_ocr_output(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let operation = crate::operation_log::OperationLog::start("ocr.publish", serde_json::json!({"surface":"cli","bytes":bytes.len()}));
+    let result = (|| {
+        let target = if path.is_absolute() { path.to_owned() }
+            else { std::env::current_dir().map_err(|e| e.to_string())?.join(path) };
+        operation.step("staging", serde_json::json!({"bytes":bytes.len()}));
+        crate::ocr_atomic_output::atomic_write(&target, bytes, true)
+    })();
+    match &result {
+        Ok(()) => operation.succeed(serde_json::json!({"bytes":bytes.len()})),
+        Err(_) => operation.fail("publication_failed"),
+    }
+    result
 }
 
 /// Key-information extraction: OCR a document, then run zero-shot NER for the
@@ -2537,18 +2597,18 @@ fn cmd_kie(
     lilt: bool,
     lilt_model: Option<String>,
     data_dir: Option<PathBuf>,
+    ocr_config: Option<PathBuf>,
 ) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
     }
 
     let data_dir = resolve_data_dir(data_dir)?;
-    let options = crate::bg_ingest::load_ocr_options(&data_dir, true)
-        .map_err(|e| format!("Load OCR settings: {e:#}"))?;
+    let options = ocr_options::load(&data_dir, ocr_config.as_deref())?;
     // Layout-aware path: its native OCR contract is validated explicitly.
     let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
         let (ocr_config, warnings) = crate::extractors::ocr_policy::resolve_lilt_config(&options)?;
-        for warning in warnings { eprintln!("OCR: {warning}"); }
+        for warning in warnings { crate::app_log("warn", warning); }
         crate::extractors::ocr_crispembed::kie_extract_lilt_with_config(
             &file,
             &labels,
@@ -2630,12 +2690,18 @@ fn cmd_table(
     grid: bool,
     out_path: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    ocr_config: Option<PathBuf>,
 ) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
     }
+    let data_dir = resolve_data_dir(data_dir)?;
+    let options = ocr_options::load(&data_dir, ocr_config.as_deref())?;
+    let (config, warnings) = if grid { crate::extractors::ocr_policy::resolve_extraction_config(&options)? }
+        else { crate::extractors::ocr_policy::resolve_table_config(&options)? };
+    for warning in warnings { crate::app_log("warn", warning); }
     if grid {
-        let (rows, cols) = crate::extractors::ocr_crispembed::table_grid(&file)
+        let (rows, cols) = crate::extractors::ocr_crispembed::table_grid_with_config(&file, &config)
             .map_err(|e| format!("grid detection failed: {e:#}"))?;
         match out {
             OutFormat::Json => println!(
@@ -2646,17 +2712,12 @@ fn cmd_table(
         }
         return Ok(());
     }
-    let data_dir = resolve_data_dir(data_dir)?;
-    let options = crate::bg_ingest::load_ocr_options(&data_dir, true)
-        .map_err(|e| format!("Load OCR settings: {e:#}"))?;
-    let (config, warnings) = crate::extractors::ocr_policy::resolve_table_config(&options)?;
-    for warning in warnings { eprintln!("OCR: {warning}"); }
     let (_, _, html) = crate::extractors::ocr_crispembed::table_extract_with_config(
         &file, ocr_model.as_deref(), &config,
     )
         .map_err(|e| format!("table parse failed: {e:#}"))?;
     if let Some(p) = &out_path {
-        std::fs::write(p, html.as_bytes()).map_err(|e| format!("writing {}: {e}", p.display()))?;
+        write_ocr_output(p, html.as_bytes())?;
     } else {
         match out {
             OutFormat::Json => println!(
@@ -2675,6 +2736,7 @@ fn cmd_zone(
     file: PathBuf,
     template_name: String,
     data_dir: Option<PathBuf>,
+    ocr_config: Option<PathBuf>,
 ) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
@@ -2686,8 +2748,7 @@ fn cmd_zone(
         .map_err(|e| format!("looking up template: {e}"))?
         .ok_or_else(|| format!("template '{}' not found", template_name))?;
 
-    let options = crate::bg_ingest::load_ocr_options(&data_dir, true)
-        .map_err(|e| format!("Load OCR settings: {e:#}"))?;
+    let options = ocr_options::load(&data_dir, ocr_config.as_deref())?;
     let results = crate::index::zone_ocr::extract_zones_with_opts(&file, &template, &options)
         .map_err(|e| format!("zone extraction: {e:#}"))?;
 
@@ -6315,21 +6376,14 @@ async fn cmd_sync_backup_job(
             if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
             let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
             let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-            let transfer = TransferQueue::shared().submit_drive_download(
-                job.drive_id.clone(), Arc::clone(&drive), remote, Some(expected),
+            let transfer = TransferQueue::shared().submit_drive_download_to_file(
+                job.drive_id.clone(), Arc::clone(&drive), remote, destination.clone(), Some(expected),
             );
-            let data = transfer.handle.await.map_err(|e| e.to_string())?
+            let bytes = transfer.handle.await.map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
-            if data.len() as u64 != expected {
-                return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
-            }
-            if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
-            std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
-            std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})),
-                OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), data.len(), destination.display()),
+                OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": bytes})),
+                OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), bytes, destination.display()),
             }
         }
         BackupJobCmd::Due => {
@@ -6659,16 +6713,14 @@ async fn cmd_sync_pair(
             for entry in &remote {
                 let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-                let transfer = queue.submit_drive_download(
-                    pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
+                let transfer = queue.submit_drive_download_to_file(
+                    pair.drive_id.clone(), drive.clone(), remote_path, local, Some(entry.size),
                 );
-                let bytes = match transfer.handle.await {
+                match transfer.handle.await {
                     Ok(Ok(bytes)) => bytes,
                     Ok(Err(error)) => return Err(error.to_string()),
                     Err(error) => return Err(format!("sync transfer task failed: {error}")),
                 };
-                if let Some(parent) = local.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-                std::fs::write(local, bytes).map_err(|e| e.to_string())?;
                 downloaded += 1;
                 if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
             }
@@ -13392,7 +13444,7 @@ fn cmd_drives(
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
                 || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= crate::drives::MAX_CONTENT_SEARCH_BYTES
-                    && drive.read_file(&entry.path).ok().map(|bytes|
+                    && crate::drives::read_file_bounded(drive.as_ref(), &entry.path, crate::drives::MAX_CONTENT_SEARCH_BYTES).ok().map(|bytes|
                         crate::drives::content_search_matches(&bytes, &query)).unwrap_or(false)))
                 .take(limit).collect();
             let json = json || matches!(out, OutFormat::Json);
@@ -13516,5 +13568,50 @@ mod ocr_shared_cli_tests {
         assert_eq!(data_dir, Some(std::path::PathBuf::from("app-settings")));
         assert_eq!(ocr_model.as_deref(), Some("custom-language.gguf"));
         assert!(!grid);
+    }
+
+    #[test]
+    fn every_document_ocr_surface_accepts_the_same_pipeline_snapshot() {
+        let commands: &[&[&str]] = &[
+            &["ocr", "scan.png"], &["table", "scan.png"],
+            &["kie", "scan.png", "--labels", "total"],
+            &["zone", "scan.png", "--template", "invoice"],
+        ];
+        for command in commands {
+            let args = std::iter::once("crispsorter").chain(command.iter().copied())
+                .chain(["--ocr-config", "pipeline.json", "--data-dir", "app-profile"]);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let (ocr_config, data_dir) = match cli.command {
+                Command::Ocr { ocr_config, data_dir, .. }
+                | Command::Kie { ocr_config, data_dir, .. }
+                | Command::Table { ocr_config, data_dir, .. }
+                | Command::Zone { ocr_config, data_dir, .. } => (ocr_config, data_dir),
+                _ => panic!("expected document OCR command"),
+            };
+            assert_eq!(ocr_config, Some(std::path::PathBuf::from("pipeline.json")));
+            assert_eq!(data_dir, Some(std::path::PathBuf::from("app-profile")));
+        }
+    }
+
+    #[test]
+    fn cli_overrides_distinguish_false_flags_and_defaults_without_consuming_the_file() {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = Cli::command().try_get_matches_from(["crispsorter", "ocr", "--denoise",
+            "scan.png", "--cpu-pixel-budget=false", "--model", "custom.gguf"]).unwrap();
+        let explicit = super::ocr_options::explicit_options(matches.subcommand_matches("ocr").unwrap());
+        assert!(explicit.contains("denoise") && explicit.contains("cpu_pixel_budget") && explicit.contains("det_model"));
+        assert!(!explicit.contains("engine") && !explicit.contains("cleanup") && !explicit.contains("layout"));
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        let Command::Ocr { file, denoise, cpu_pixel_budget, det_model, .. } = cli.command else { panic!("expected OCR"); };
+        assert_eq!(file, std::path::PathBuf::from("scan.png"));
+        assert!(denoise && !cpu_pixel_budget);
+        assert_eq!(det_model.as_deref(), Some("custom.gguf"));
+    }
+
+    #[test]
+    fn diagnostic_verbosity_is_global_and_invalid_values_are_rejected() {
+        let cli = Cli::try_parse_from(["crispsorter", "--log-verbosity", "silent", "version"]).unwrap();
+        assert_eq!(cli.log_verbosity, "silent");
+        assert!(Cli::try_parse_from(["crispsorter", "version", "--log-verbosity", "everything"]).is_err());
     }
 }

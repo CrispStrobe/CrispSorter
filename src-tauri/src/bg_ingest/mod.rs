@@ -587,7 +587,10 @@ async fn worker_loop(
             }
         };
         let _ = app.emit("bg-ingest:status", snapshot);
+        let log=crate::operation_log::OperationLog::start("background.item",serde_json::json!({"surface":"background"}));
+        log.step("claimed",serde_json::Value::Null);
         let result = ingest_one(&next, &app).await;
+        log.step("saving_receipt",serde_json::Value::Null);
         let acknowledgement = tokio::task::spawn_blocking({
             let state = state.clone();
             let item = next.clone();
@@ -602,12 +605,14 @@ async fn worker_loop(
             Ok(Ok(snapshot)) => { let _ = app.emit("bg-ingest:status", snapshot); }
             error => {
                 let error = match error { Ok(Err(error)) => format!("{error:#}"), Err(error) => error.to_string(), _ => unreachable!() };
+                log.fail("queue_receipt_failed");
                 let mut guard = state.lock().await;
                 guard.last_error = Some(format!("Background result could not be saved; the source remains recoverable: {error}"));
                 guard.status = BgStatus::Stopping;
                 break;
             }
         }
+        if result.is_ok() {log.succeed(serde_json::Value::Null);} else {log.fail("background_item_failed");}
         if result.is_ok() {
             let data_dir = app.state::<AppState>().data_dir.lock().await.clone();
             if let Some(data_dir) = data_dir {
@@ -638,6 +643,17 @@ async fn worker_loop(
 /// P7.4.3 — mtime-skip: stat first, skip if index is already up-to-date.
 /// P10    — extraction timeout + DRM detection + L2 fallback on failure.
 async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String> {
+    let log=crate::operation_log::OperationLog::start("index.background_ingest",serde_json::json!({"surface":"background"}));
+    let result=ingest_one_inner(item,app,&log).await;
+    match &result {
+        Ok(())=>log.succeed(serde_json::Value::Null),
+        Err(error) if crate::index::task_failure::TaskFailureReason::classify(error)==crate::index::task_failure::TaskFailureReason::Timeout=>log.fail("extraction_timeout"),
+        Err(_)=>log.fail("background_ingest_failed"),
+    }
+    result
+}
+
+async fn ingest_one_inner(item: &PendingIngest, app: &AppHandle, log:&crate::operation_log::OperationLog) -> Result<(), String> {
     use crate::index::task_failure::{epub_is_drm_protected, TaskFailureReason};
     use crate::AppState;
     use std::time::Duration;
@@ -760,6 +776,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         .map(|d| d.as_secs() as i64);
     // Content verification catches same-size edits within one timestamp tick
     // and files copied over an existing path with preserved timestamps.
+    log.step("fingerprinting",serde_json::Value::Null);
     let source_hash = tokio::task::spawn_blocking({
         let p = p.clone();
         move || hash_source(&p)
@@ -988,6 +1005,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         anydoc: anydoc_mode,
         ..ocr_options
     };
+    log.step("extracting",serde_json::Value::Null);
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();
         move || crate::extractors::extract_text_from_path_with_opts(&p, extract_opts)
@@ -1001,6 +1019,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     match extract_result {
         // ── Success ─────────────────────────────────────────────────────
         Ok(Ok(Ok(extracted))) => {
+            log.step("extraction_complete",serde_json::json!({"characters":extracted.full_text.chars().count(),"items":extracted.members.len()}));
             let mut raw = crate::index::ingest::RawDocument {
                 container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
                 full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
@@ -1154,6 +1173,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 }
             }
 
+            log.step("verifying_source",serde_json::Value::Null);
             let verified_hash = tokio::task::spawn_blocking({
                 let p = p.clone();
                 move || hash_source(&p)
@@ -1215,6 +1235,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 }
                 Some(row)
             } else { None };
+            log.step("committing_index",serde_json::Value::Null);
             let result = match &item.expected_doc_id {
                 Some(expected)=>pipeline.ingest_verified_document_for_occurrence(raw,p.clone(),expected.clone()).await,
                 None=>pipeline.ingest_verified_document(raw,p.clone()).await,
@@ -1256,6 +1277,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
 
         // ── Extraction error (anyhow) ────────────────────────────────────
         Ok(Ok(Err(extract_err))) => {
+            log.step("saving_failure",serde_json::Value::Null);
             let err_msg = extract_err.to_string();
             let reason = if ext_from_path == "epub" && epub_is_drm_protected(&p) {
                 TaskFailureReason::Drm
@@ -1289,6 +1311,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
 
         // ── spawn_blocking panicked ──────────────────────────────────────
         Ok(Err(join_err)) => {
+            log.step("saving_failure",serde_json::Value::Null);
             let err_msg = join_err.to_string();
             let l2 = crate::index::l2_metadata::read(&p);
             pipeline
@@ -1317,6 +1340,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
 
         // ── Timeout ──────────────────────────────────────────────────────
         Err(_elapsed) => {
+            log.warn("extraction_timeout",serde_json::json!({"nativeContinues":true}));
+            log.step("saving_failure",serde_json::Value::Null);
             let err_msg = format!(
                 "extraction timed out after {}s",
                 EXTRACTION_TIMEOUT_SECS
