@@ -3807,7 +3807,7 @@
                         {#each availableDrives as d (d.id)}
                             <div class="drive-list-row">
                                 <span class="drive-list-label">{d.label}</span>
-                                <span class="drive-list-kind">{d.kind}</span>
+                                <span class="drive-list-kind">{d.kind === 'smb' ? `SMB · ${loadSmbSettings(d.smb).backend}` : d.kind}</span>
                                 <span class="drive-list-path" title={d.path}>{d.path}</span>
                                 <button class="icon-btn" type="button"
                                         title="Bearbeiten"

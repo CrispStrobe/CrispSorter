@@ -70,7 +70,7 @@ fn drive(root: &Path) -> smb::SmbDrive {
     )
     .unwrap()
 }
-fn contract(drive: &dyn CloudDrive) {
+fn contract(drive: &dyn CloudDrive, backend: Backend) {
     assert_eq!(drive.drive_type(), DriveType::Smb);
     assert!(drive.capabilities().streaming);
     assert!(!drive.capabilities().resumable_upload);
@@ -133,6 +133,36 @@ fn contract(drive: &dyn CloudDrive) {
         .read_file(Path::new("contract/empty.bin"))
         .unwrap()
         .is_empty());
+    // Reader size failures must close write handles and permit later operations.
+    assert!(drive
+        .write_file_from_reader(Path::new("contract/short.bin"), &mut Cursor::new([1, 2]), 3)
+        .is_err());
+    assert!(drive
+        .write_file_from_reader(Path::new("contract/long.bin"), &mut Cursor::new([1, 2]), 1)
+        .is_err());
+    drive
+        .write_file(Path::new("contract/after-error.bin"), &[7])
+        .unwrap();
+    assert_eq!(
+        drive
+            .read_file(Path::new("contract/after-error.bin"))
+            .unwrap(),
+        [7]
+    );
+    let remaining = drive.list_dir(Path::new("contract")).unwrap();
+    for name in ["short.bin", "long.bin"] {
+        let published = remaining.iter().any(|entry| entry.name == name);
+        if backend == Backend::Mounted {
+            assert!(!published, "failed mounted upload published {name}");
+        } else if published {
+            // Direct writes are not atomic; clean any partial file only after
+            // proving the same session can still list, write and read.
+            drive
+                .delete(Path::new(&format!("contract/{name}")))
+                .unwrap();
+        }
+    }
+    drive.delete(Path::new("contract/after-error.bin")).unwrap();
     for bad in ["/../escape", "../escape", "//host/share", "C:/escape"] {
         assert!(drive.stat(Path::new(bad)).is_err());
     }
@@ -149,7 +179,7 @@ fn contract(drive: &dyn CloudDrive) {
 #[test]
 fn mounted_adapter_contract_and_logs() {
     let root = tempfile::tempdir().unwrap();
-    let (_, events) = operation_log::capture(|| contract(&drive(root.path())));
+    let (_, events) = operation_log::capture(|| contract(&drive(root.path()), Backend::Mounted));
     let logs = serde_json::to_string(&events).unwrap();
     for token in [
         "private-label",
@@ -263,7 +293,9 @@ fn options(args: &[&str]) -> smb_options::SmbOptions {
 #[test]
 fn cli_and_gui_registry_roundtrip_preserves_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let mut r = DriveRegistry::open(dir.path()).unwrap();
+    let data_dir = dir.path().join("fresh").join("settings");
+    assert!(!data_dir.exists());
+    let mut r = DriveRegistry::open(&data_dir).unwrap();
     let added = options(&[
         "--label",
         "NAS",
@@ -288,14 +320,14 @@ fn cli_and_gui_registry_roundtrip_preserves_credentials() {
     .apply(&mut r, &mut Cursor::new(b"private-password\n"))
     .unwrap();
     assert_eq!(rust.smb.as_ref().unwrap().backend, Backend::Rust);
-    let json = std::fs::read_to_string(dir.path().join("drives.json")).unwrap();
+    let json = std::fs::read_to_string(data_dir.join("drives.json")).unwrap();
     assert!(!json.contains("private-password"));
     assert!(!json.contains("reader"));
     // GUI calls this exact registry method and preserves credentials when blank.
     let mut gui = rust.clone();
     gui.smb.as_mut().unwrap().backend = Backend::Mounted;
     r.save_smb(gui, None, None).unwrap();
-    let mut restored = DriveRegistry::open(dir.path()).unwrap();
+    let mut restored = DriveRegistry::open(&data_dir).unwrap();
     let viewed = options(&["--id", &added.id])
         .apply(&mut restored, &mut Cursor::new([]))
         .unwrap();
@@ -311,7 +343,7 @@ fn cli_and_gui_registry_roundtrip_preserves_credentials() {
             .as_deref(),
         Some("private-password")
     );
-    let before = std::fs::read(dir.path().join("drives.json")).unwrap();
+    let before = std::fs::read(data_dir.join("drives.json")).unwrap();
     assert!(options(&[
         "--id",
         &added.id,
@@ -324,7 +356,7 @@ fn cli_and_gui_registry_roundtrip_preserves_credentials() {
         .apply(&mut restored, &mut Cursor::new(b"first\nsecond"))
         .is_err());
     assert_eq!(
-        std::fs::read(dir.path().join("drives.json")).unwrap(),
+        std::fs::read(data_dir.join("drives.json")).unwrap(),
         before
     );
 }
@@ -386,7 +418,7 @@ async fn actual_rust_app_adapter_works_from_tauri_style_runtime() {
         "fixture-password",
     )
     .unwrap();
-    contract(&d);
+    contract(&d, Backend::Rust);
     let strict = smb::SmbDrive::new(
         "private-label".into(),
         &url,

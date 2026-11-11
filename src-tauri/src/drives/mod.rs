@@ -39,7 +39,9 @@ pub(crate) mod materialize;
 pub(crate) mod read_cache;
 
 use anyhow::{anyhow, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 
 
 /// Split out from the `cfg!` above so the wording is assertable on every

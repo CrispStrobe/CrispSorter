@@ -111,6 +111,7 @@ python scripts/test_smb_source.py /path/to/pinned/CrispCloud
 npx svelte-kit sync
 npm test -- src/lib/drives/smbSettings.test.ts
 npm run check
+npx playwright test tests/browser/smb-settings.spec.ts
 ```
 
 The independent contract test compiles the **production** CloudDrive types,
@@ -126,3 +127,13 @@ real authenticated SMB2 transfers and refusal when SMB3 encryption is required.
 The GUI form's settings mapping has Vitest coverage. Full Tauri builds, successful
 encrypted SMB3/NAS transfers, platform sandboxes and final artifact license notices
 remain rollout gates; these fixture tests do not establish those results.
+
+The browser regression drives the actual Svelte add/edit form and verifies its
+IPC payloads and restored selection. Its IPC backend is a fixture; the Rust
+contract test covers the real persistence path. Local Chromium launch is blocked
+by this environment's socket restrictions, so the browser regression runs in CI.
+
+Local full-app `cargo check` reached the platform dependency build and stopped
+because `glib-2.0` development files are absent. The workflow also includes an
+app type-check job with the GTK/WebKit development packages and pinned sibling
+repositories, so glue code outside the independent contract is checked in CI.
