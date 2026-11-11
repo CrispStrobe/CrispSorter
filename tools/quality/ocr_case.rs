@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.get(1).map(String::as_str) == Some("models") {
         let mut models = Vec::new();
         for name in ["dbnet-det", "trocr-printed", "qwen2vl-3b"] {
-            let path = crispembed::CrispEmbed::resolve_model(name, Some(true))?;
+            let path = crispsorter_ocr_qualification::model_provisioning::resolve_model(name, Some(true))?;
             let mut file = std::fs::File::open(path)?;
             let bytes = file.metadata()?.len();
             let mut hash = Sha256::new();

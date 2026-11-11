@@ -11,20 +11,37 @@
     // pending edits are always part of what gets written.
 
     import { invoke } from '@tauri-apps/api/core';
-    import { untrack } from 'svelte';
+    import { onDestroy, untrack } from 'svelte';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { writeFile } from '@tauri-apps/plugin-fs';
     import { i18n } from '$lib/i18n.svelte';
     import { X } from 'lucide-svelte';
     import type { DocTool, DocToolContext, SessionState } from './types';
     import { parseRange, parseSplitRanges } from './types';
+    import { requireCurrentDocument } from './actionRunner';
+    import type { OperationName } from '$lib/operationLog';
 
-    let { tool, session, selected, ctx }: {
+    let { tool, session, selected, ctx, busy = false }: {
         tool: DocTool;
         session: SessionState;
         selected: number[];
         ctx: DocToolContext;
+        busy?: boolean;
     } = $props();
+
+    let disposed = false;
+    let choosing = $state(false);
+    const initialSessionId = untrack(() => session.id);
+    const current = (expected = session) => !disposed && expected.id === initialSessionId && ctx.isCurrent(expected);
+    onDestroy(() => { disposed = true; });
+
+    async function run<T>(label: string, fn: () => Promise<T>, operation: OperationName = 'pdf.tool', writesOutput = false) {
+        if (!current() || busy) return undefined;
+        return await ctx.run(label, fn, operation, writesOutput);
+    }
+    async function apply(op: Record<string, unknown>, label: string, note: string) {
+        return current() && !busy ? await ctx.apply(op, label, note) : false;
+    }
 
     const t = $derived(i18n.t.pdfeditor);
     const tt = $derived(i18n.t.pdftools);
@@ -37,10 +54,16 @@
     });
 
     async function askPdf(defaultName: string): Promise<string | null> {
-        return (await saveDialog({
-            filters: [{ name: 'PDF', extensions: ['pdf'] }],
-            defaultPath: `${dir}/${defaultName}`,
-        })) as string | null;
+        if (!current() || busy || choosing) return null;
+        const expected = session;
+        choosing = true;
+        try {
+            const out = await saveDialog({
+                filters: [{ name: 'PDF', extensions: ['pdf'] }],
+                defaultPath: `${dir}/${defaultName}`,
+            });
+            return current(expected) && typeof out === 'string' ? out : null;
+        } finally { choosing = false; }
     }
 
     // ── Insert pages from another PDF ───────────────────────────────────
@@ -55,10 +78,12 @@
 
     async function doInsertFrom() {
         if (!insertPath) { ctx.fail(t.insert_pages, t.pick_file_first); return; }
-        const ok = await ctx.apply({
+        const pages = parseRange(insertRange);
+        if (pages === null) { ctx.fail(t.insert_pages, t.split_bad_range); return; }
+        const ok = await apply({
             kind: 'insert_from',
             path: insertPath,
-            pages: parseRange(insertRange),
+            pages,
             position: Math.max(0, Math.min(insertAt, session.origins.length)),
         }, t.insert_pages, t.inserted);
         if (ok) ctx.close();
@@ -78,7 +103,7 @@
         if (mergeFiles.length === 0) { ctx.fail(t.merge_append, tt.add_files_first); return; }
         let appended = 0;
         for (const path of mergeFiles) {
-            const ok = await ctx.apply(
+            const ok = await apply(
                 { kind: 'insert_from', path, pages: [], position: session.origins.length },
                 `${t.merge_append} ${path}`,
                 t.appended.replace('{n}', String(appended + 1)),
@@ -93,12 +118,12 @@
     let splitSpec = $state('');
 
     async function doSplit() {
-        const ranges = parseSplitRanges(splitSpec);
+        const ranges = parseSplitRanges(splitSpec, session.origins.length);
         if (!ranges) { ctx.fail(t.split, t.split_bad_range); return; }
-        const outputs = await ctx.run(t.split, async () => {
+        const outputs = await run(t.split, async () => {
             const tmp = await ctx.exportTemp();
             return await invoke<string[]>('pdf_split', { path: tmp, ranges, outDir: dir, stem });
-        });
+        }, 'pdf.split', true);
         if (outputs) ctx.notify(`${t.split_done.replace('{n}', String(outputs.length))}: ${outputs.join(', ')}`);
     }
 
@@ -110,7 +135,7 @@
     let numSkipFirst = $state(0);
 
     async function doPageNumbers() {
-        const ok = await ctx.apply({
+        const ok = await apply({
             kind: 'page_numbers',
             config: { position: numPosition, font_size: numFontSize, format: numFormat, start_number: numStart, skip_first: numSkipFirst },
         }, t.page_numbers, t.numbers_added);
@@ -126,7 +151,7 @@
 
     async function doWatermark() {
         if (!wmText.trim()) { ctx.fail(t.watermark, t.text_required); return; }
-        const ok = await ctx.apply({
+        const ok = await apply({
             kind: 'watermark',
             config: { text: wmText, font_size: wmFontSize, angle: wmAngle, opacity: wmOpacity, color: [0.5, 0.5, 0.5] },
             pages: wmSelectedOnly && selected.length > 0 ? selected : null,
@@ -141,7 +166,7 @@
     let metaKeywords = $state(untrack(() => session.info.keywords ?? ''));
 
     async function doMetadata() {
-        const ok = await ctx.apply({
+        const ok = await apply({
             kind: 'metadata',
             edits: {
                 title: metaTitle || null, author: metaAuthor || null,
@@ -161,9 +186,10 @@
 
     async function doEncrypt() {
         if (!encOwnerPw) { ctx.fail(t.encrypt, tt.enter_owner_password); return; }
+        const expected = session;
         const out = await askPdf(`${stem}-protected.pdf`);
-        if (!out) return;
-        const ok = await ctx.run(t.encrypt, async () => {
+        if (!out || !current(expected)) return;
+        const ok = await run(t.encrypt, async () => {
             const tmp = await ctx.exportTemp();
             await invoke('pdf_encrypt', {
                 path: tmp,
@@ -176,7 +202,7 @@
                 outPath: out,
             });
             return true;
-        });
+        }, 'pdf.encrypt', true);
         if (ok) {
             encOwnerPw = ''; encUserPw = '';
             ctx.notify(`${tt.encrypted} → ${out}`);
@@ -185,12 +211,13 @@
 
     async function doDecrypt() {
         if (!decryptPassword) { ctx.fail(t.decrypt, tt.enter_password); return; }
+        const expected = session;
         const out = await askPdf(`${stem}-decrypted.pdf`);
-        if (!out) return;
-        const ok = await ctx.run(t.decrypt, async () => {
+        if (!out || !current(expected)) return;
+        const ok = await run(t.decrypt, async () => {
             await invoke('pdf_decrypt', { path: session.source, password: decryptPassword, outPath: out });
             return true;
-        });
+        }, 'pdf.decrypt', true);
         if (ok) { decryptPassword = ''; ctx.notify(`${tt.decrypted} → ${out}`, out); }
     }
 
@@ -201,12 +228,13 @@
     });
 
     async function doSanitise() {
+        const expected = session;
         const out = await askPdf(`${stem}-clean.pdf`);
-        if (!out) return;
-        const stripped = await ctx.run(t.sanitise, async () => {
+        if (!out || !current(expected)) return;
+        const stripped = await run(t.sanitise, async () => {
             const tmp = await ctx.exportTemp();
             return await invoke<string[]>('pdf_sanitise', { path: tmp, options: { ...san }, outPath: out });
-        });
+        }, 'pdf.sanitise', true);
         if (stripped) {
             ctx.notify(stripped.length > 0
                 ? `${tt.sanitised}: ${stripped.join(', ')} → ${out}`
@@ -226,17 +254,18 @@
     }
 
     async function doCompress() {
+        const expected = session;
         const out = await askPdf(`${stem}-compressed.pdf`);
-        if (!out) return;
+        if (!out || !current(expected)) return;
         compressReport = null;
-        const r = await ctx.run(t.compress, async () => {
+        const r = await run(t.compress, async () => {
             const tmp = await ctx.exportTemp();
             return await invoke<CompressReport>('pdf_compress', {
                 path: tmp,
                 options: { compress_streams: true, use_object_streams: compressObjectStreams, max_objects_per_stream: null },
                 outPath: out,
             });
-        });
+        }, 'pdf.compress', true);
         if (r) { compressReport = r; ctx.notify(`${t.compressed} ${out}`, out); }
     }
 
@@ -249,19 +278,26 @@
     let formFields = $state<FormField[]>([]);
     let formEdits = $state<Record<string, string>>({});
     let formLoaded = $state(false);
+    let formAttempted = $state(false);
+    let formLoading = $state(false);
 
     async function loadForm() {
-        const fields = await ctx.run(t.form, async () => {
-            const tmp = await ctx.exportTemp();
-            return await invoke<FormField[]>('pdf_read_form_fields', { path: tmp });
-        });
-        if (!fields) return;
-        formFields = fields;
-        formEdits = Object.fromEntries(fields.map((f) => [f.name, f.value ?? '']));
-        formLoaded = true;
+        if (!current() || busy || formLoading) return;
+        formAttempted = true;
+        formLoading = true;
+        try {
+            const fields = await run(t.form, async () => {
+                const tmp = await ctx.exportTemp();
+                return await invoke<FormField[]>('pdf_read_form_fields', { path: tmp });
+            }, 'pdf.form');
+            if (!fields || !current()) return;
+            formFields = fields;
+            formEdits = Object.fromEntries(fields.map((f) => [f.name, f.value ?? '']));
+            formLoaded = true;
+        } finally { formLoading = false; }
     }
 
-    $effect(() => { if (tool === 'form' && !formLoaded) void loadForm(); });
+    $effect(() => { if (tool === 'form' && !formAttempted) untrack(() => { void loadForm(); }); });
 
     function changedFormValues(): Record<string, string> {
         const out: Record<string, string> = {};
@@ -273,11 +309,12 @@
     }
 
     async function doFillForm(flatten: boolean) {
+        const expected = session;
         const values = changedFormValues();
         if (!flatten && Object.keys(values).length === 0) { ctx.fail(t.form, t.form_no_changes); return; }
         const out = await askPdf(flatten ? `${stem}-filled-flat.pdf` : `${stem}-filled.pdf`);
-        if (!out) return;
-        const msg = await ctx.run(t.form, async () => {
+        if (!out || !current(expected)) return;
+        const msg = await run(t.form, async () => {
             const tmp = await ctx.exportTemp();
             let n = 0;
             if (Object.keys(values).length > 0) n = await invoke<number>('pdf_fill_form', { path: tmp, values, outPath: out });
@@ -287,7 +324,7 @@
                 return t.form_flattened.replace('{n}', String(k)).replace('{path}', out);
             }
             return t.form_filled.replace('{n}', String(n)).replace('{path}', out);
-        });
+        }, 'pdf.form', true);
         if (msg) ctx.notify(msg, out);
     }
 
@@ -304,18 +341,19 @@
         if (!p) return;
         clippingsPath = p as string;
         kindleSummary = null;
-        const books = await ctx.run(t.kindle, () => invoke<string[]>('kindle_list_books', { clippingsPath }));
+        if (!current()) return;
+        const books = await run(t.kindle, () => invoke<string[]>('kindle_list_books', { clippingsPath }), 'pdf.kindle');
         if (books) { kindleBooks = books; kindleTitle = books[0] ?? ''; }
     }
 
     async function doKindleImport() {
         if (!clippingsPath) { ctx.fail(t.kindle, t.kindle_pick_first); return; }
-        const r = await ctx.run(t.kindle, async () => {
+        const r = await run(t.kindle, async () => {
             const documentPath = kindleAnchor ? await ctx.exportTemp() : null;
             return await invoke<ImportSummary>('kindle_import', {
                 clippingsPath, docId: session.source, titleFilter: kindleTitle || null, documentPath, minScore: null,
             });
-        });
+        }, 'pdf.kindle', true);
         if (r) {
             kindleSummary = r;
             ctx.notify(t.kindle_result.replace('{imported}', String(r.imported)).replace('{matched}', String(r.matched)).replace('{dupes}', String(r.duplicates_skipped)));
@@ -326,20 +364,21 @@
     let annotCount = $state<number | null>(null);
 
     async function doImportAnnots() {
-        const n = await ctx.run(t.annots_import, async () => {
+        const n = await run(t.annots_import, async () => {
             const tmp = await ctx.exportTemp();
             return await invoke<number>('pdf_import_annotations', { path: tmp, docId: session.source });
-        });
+        }, 'pdf.annotations', true);
         if (n !== undefined) { annotCount = n; ctx.notify(t.annots_imported.replace('{n}', String(n))); }
     }
 
     async function doStampAnnots() {
+        const expected = session;
         const out = await askPdf(`${stem}-annotated.pdf`);
-        if (!out) return;
-        const n = await ctx.run(t.annots_stamp, async () => {
+        if (!out || !current(expected)) return;
+        const n = await run(t.annots_stamp, async () => {
             const tmp = await ctx.exportTemp();
             return await invoke<number>('pdf_stamp_annotations', { path: tmp, docId: session.source, outPath: out });
-        });
+        }, 'pdf.annotations', true);
         if (n !== undefined) ctx.notify(t.annots_stamped.replace('{n}', String(n)).replace('{path}', out), out);
     }
 
@@ -348,26 +387,32 @@
     let imgScope = $state<'selected' | 'all'>(untrack(() => selected.length > 0) ? 'selected' : 'all');
 
     async function doExportImages() {
+        if (!current() || busy) return;
+        const expected = session;
         const folder = await openDialog({ directory: true, multiple: false });
-        if (!folder || Array.isArray(folder)) return;
+        if (!folder || Array.isArray(folder) || !current(expected)) return;
         const pages = imgScope === 'selected' && selected.length > 0
             ? selected
             : session.origins.map((_, i) => i);
-        const n = await ctx.run(t.export_images, async () => {
+        const dpi = imgDpi;
+        const outputStem = stem;
+        const n = await run(t.export_images, async () => {
             let written = 0;
             for (const i of pages) {
-                const bytes = await ctx.renderPagePng(i, imgDpi);
-                const name = `${stem}-p${String(i + 1).padStart(3, '0')}.png`;
+                requireCurrentDocument(() => current(expected));
+                const bytes = await ctx.renderPagePng(i, dpi);
+                requireCurrentDocument(() => current(expected));
+                const name = `${outputStem}-p${String(i + 1).padStart(3, '0')}.png`;
                 await writeFile(`${folder}/${name}`, bytes);
                 written += 1;
             }
             return written;
-        });
+        }, 'pdf.images', true);
         if (n !== undefined) ctx.notify(t.images_exported.replace('{n}', String(n)).replace('{path}', folder));
     }
 </script>
 
-<div class="dt-bar" role="group" aria-label={tool}>
+<fieldset class="dt-bar" disabled={busy || choosing} aria-label={tool}>
     {#if tool === 'insert'}
         <button class="dt-btn" onclick={pickInsertFile}>{t.choose_pdf}</button>
         <span class="dt-hint dt-path" title={insertPath}>{insertPath || t.no_file}</span>
@@ -470,8 +515,8 @@
 
     {:else if tool === 'form'}
         {#if formFields.length === 0}
-            <span class="dt-hint">{formLoaded ? t.form_none : t.working}</span>
-            <button class="dt-btn" onclick={loadForm}>{t.form_reload}</button>
+            <span class="dt-hint">{formLoading ? t.working : formLoaded ? t.form_none : t.form_reload}</span>
+            <button class="dt-btn" disabled={formLoading} onclick={loadForm}>{t.form_reload}</button>
         {:else}
             <div class="dt-formgrid">
                 {#each formFields as f (f.name)}
@@ -531,10 +576,11 @@
 
     <span class="dt-spacer"></span>
     <button class="dt-close" onclick={() => ctx.close()} aria-label={t.close_tool} title={t.close_tool}><X size={13} /></button>
-</div>
+</fieldset>
 
 <style>
     .dt-bar {
+        margin: 0; min-width: 0; border: 0;
         display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
         padding: 7px 12px; background: #18181b; border-bottom: 1px solid #3f3f46; font-size: 12px;
     }

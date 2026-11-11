@@ -19,12 +19,11 @@
 //!
 //! ## Appearance streams
 //!
-//! We do not synthesise `/AP` appearance streams.  Viewers are required
-//! to generate appearances for the markup subtypes we emit, and every
-//! mainstream one does; hand-rolling `/AP` for each subtype is a large
-//! amount of drawing code for a case that mostly does not arise.  The
-//! exception is `FreeText`, which needs a `/DA` default-appearance string
-//! to render at all, so we always write one.
+//! The editor emits `/AP` appearance streams for highlights, rectangles,
+//! ink, notes and free text so its preview and exported PDF show the same
+//! drawing. Free text also carries `/DA`. Other supported markup subtypes
+//! retain their standard PDF fields for viewers to render. The free-text
+//! appearance uses Helvetica/WinAnsi; its Unicode `/Contents` is preserved.
 
 use lopdf::{Document, Object, ObjectId};
 use serde::{Deserialize, Serialize};
@@ -324,8 +323,13 @@ fn read_ink_list(doc: &Document, dict: &lopdf::Dictionary) -> Vec<Vec<f64>> {
 }
 
 pub fn read_annotations_from_path(path: &Path) -> Result<Vec<PdfAnnotation>, String> {
-    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    Ok(read_annotations(&doc))
+    crate::pdf_ops::with_operation("pdf.annotations.read", |log| {
+        log.step("reading", serde_json::Value::Null);
+        let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        let annotations = read_annotations(&doc);
+        log.step("read", serde_json::json!({"items":annotations.len()}));
+        Ok(annotations)
+    })
 }
 
 // ── Writing ────────────────────────────────────────────────────────────
@@ -620,7 +624,7 @@ pub fn erase_annotation_at(doc: &mut Document, page: usize, x: f64, y: f64) -> R
             Ok(Object::Name(n)) => String::from_utf8_lossy(n).into_owned(),
             _ => continue,
         };
-        if matches!(subtype.as_str(), "Link" | "Widget" | "Popup") {
+        if subtype_to_kind(&subtype).is_none() {
             continue;
         }
         let Some(rect) = dict.get(b"Rect").ok().and_then(|r| as_array(doc, r)) else { continue };
@@ -702,10 +706,33 @@ pub fn write_annotations(
     annots: &[PdfAnnotation],
     out_path: &Path,
 ) -> Result<usize, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let n = write_annotations_doc(&mut doc, annots)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(n)
+    crate::pdf_ops::with_operation("pdf.annotations.write", |log| {
+        log.step("reading", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        log.step("annotating", serde_json::json!({"items":annots.len()}));
+        let n = write_annotations_doc(&mut doc, annots)?;
+        log.step("publishing", serde_json::json!({"items":n}));
+        crate::pdf_ops::save_document(&mut doc, out_path)?;
+        Ok(n)
+    })
+}
+
+pub fn export_annotations(path: &Path, format: &str, out_path: &Path) -> Result<usize, String> {
+    crate::pdf_ops::with_operation("pdf.annotations.export", |log| {
+        log.step("reading", serde_json::json!({"format":format}));
+        let annots = read_annotations_from_path(path)?;
+        let title = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        log.step("rendering", serde_json::json!({"items":annots.len()}));
+        let body = match format {
+            "markdown" | "md" => to_markdown(&annots, &title),
+            "csv" => to_csv(&annots),
+            "json" => serde_json::to_string_pretty(&annots).map_err(|e| format!("serialise: {e}"))?,
+            other => return Err(format!("unknown export format: {other}")),
+        };
+        log.step("publishing", serde_json::json!({"bytes":body.len()}));
+        crate::pdf_ops::publish_bytes(out_path, body.as_bytes())?;
+        Ok(annots.len())
+    })
 }
 
 // ── Export ─────────────────────────────────────────────────────────────
@@ -922,20 +949,7 @@ pub mod tauri_commands {
         out_path: String,
     ) -> Result<usize, String> {
         tokio::task::spawn_blocking(move || {
-            let annots = read_annotations_from_path(Path::new(&path))?;
-            let title = Path::new(&path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let body = match format.as_str() {
-                "markdown" | "md" => to_markdown(&annots, &title),
-                "csv" => to_csv(&annots),
-                "json" => serde_json::to_string_pretty(&annots)
-                    .map_err(|e| format!("serialise: {e}"))?,
-                other => return Err(format!("unknown export format: {other}")),
-            };
-            std::fs::write(&out_path, body).map_err(|e| format!("write: {e}"))?;
-            Ok(annots.len())
+            export_annotations(Path::new(&path), &format, Path::new(&out_path))
         })
         .await
         .map_err(|e| format!("join: {e}"))?
@@ -1094,6 +1108,30 @@ mod tests {
         let back = read_annotations(&doc);
         assert_eq!(back.len(), 1, "only the Highlight is markup");
         assert_eq!(back[0].ann_type, "highlight");
+    }
+
+    #[test]
+    fn eraser_preserves_unsupported_annotations_and_indirect_lists() {
+        let mut doc = blank_doc(1);
+        write_annotations_doc(&mut doc, &[PdfAnnotation::highlight(0, 0.0, 0.0, 20.0, 20.0, "editable", "#facc15")]).unwrap();
+        let page_id = doc.page_iter().next().unwrap();
+        let mut list = doc.get_object(page_id).unwrap().as_dict().unwrap()
+            .get(b"Annots").unwrap().as_array().unwrap().clone();
+        for subtype in ["Link", "Widget", "Popup", "FileAttachment", "Screen"] {
+            let annotation = lopdf::Dictionary::from_iter(vec![
+                ("Type", Object::Name(b"Annot".to_vec())),
+                ("Subtype", Object::Name(subtype.as_bytes().to_vec())),
+                ("Rect", Object::Array(vec![0.into(), 0.into(), 20.into(), 20.into()])),
+            ]);
+            list.push(Object::Reference(doc.add_object(Object::Dictionary(annotation))));
+        }
+        let list_id = doc.add_object(Object::Array(list));
+        doc.get_object_mut(page_id).unwrap().as_dict_mut().unwrap().set("Annots", Object::Reference(list_id));
+        erase_annotation_at(&mut doc, 0, 10.0, 10.0).unwrap();
+        let remaining = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap();
+        assert_eq!(remaining.len(), 5);
+        assert!(read_annotations(&doc).is_empty());
+        assert!(erase_annotation_at(&mut doc, 0, 10.0, 10.0).is_err(), "non-markup attachments and controls are not eraser targets");
     }
 
     #[test]

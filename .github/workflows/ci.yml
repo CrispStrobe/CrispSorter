@@ -145,6 +145,10 @@ jobs:
           python3 src-tauri/tests/layout_table_regression.py
           python3 src-tauri/tests/image_indexing_recovery_model_free.py
 
+      - name: Verify isolated OCR qualification generation
+        working-directory: repos/CrispSorter
+        run: python3 tests/test_isolated_ocr_generation.py -v
+
       - name: Regenerate licenses.json
         working-directory: repos/CrispSorter
         run: |
@@ -248,6 +252,8 @@ jobs:
             patchelf \
             protobuf-compiler \
             libssl-dev \
+            libfuse3-dev \
+            pkg-config \
             libopenblas0 \
             qpdf \
             poppler-utils
@@ -339,7 +345,9 @@ jobs:
         # still young), so without this line the converter arm, the `convert`
         # command and the `--anydoc prefer` path would compile in no job at
         # all — the exact drift this list exists to prevent.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc
+        # `fuse` compiles the actual filesystem, mount command and queue/cache
+        # integration tests. These tests do not need a privileged mount.
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse
 
       - name: Batch sorting script tests
         working-directory: repos/CrispSorter
@@ -358,7 +366,7 @@ jobs:
         # gate on P32.11 Z4 — the claims zpdf is adopted for. The native drive
         # features match the shipped release builds, so the binary CI checks is
         # the binary users get.
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,fuse
 
       - name: Install the independent checkers
         # None of these share code with what they are checking: MuPDF
@@ -366,6 +374,16 @@ jobs:
         # implementations, and they also author the fixtures.
         run: python3 -m pip install --break-system-packages --quiet
              pymupdf pypdf pikepdf python-docx
+
+      - name: Verify CLI results and operation diagnostics remain separate
+        working-directory: repos/CrispSorter
+        run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
+
+      - name: Compile the generated OCR qualification tools against the pinned runtime
+        working-directory: repos/CrispSorter
+        run: |
+          python3 tools/quality/isolated_ocr.py --app . --embed ../CrispEmbed --destination ocr-qualification --panel --worker
+          cargo check --manifest-path ocr-qualification/Cargo.toml --all-targets --target-dir target
 
       - name: Verify the PDF surface against qpdf / poppler / MuPDF / pypdf / pikepdf
         working-directory: repos/CrispSorter
@@ -549,6 +567,10 @@ jobs:
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
         run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,pdf-render
+
+      - name: Verify CLI results and operation diagnostics remain separate
+        working-directory: repos/CrispSorter
+        run: python scripts/verify_cli_operations.py --cli target/debug/crispsorter.exe
 
       - name: CLI smoke test
         working-directory: repos/CrispSorter
@@ -768,6 +790,10 @@ jobs:
         # test below executes this binary, which is exactly why it had to
         # drop them while they aborted in dyld.
         run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render
+
+      - name: Verify CLI results and operation diagnostics remain separate
+        working-directory: repos/CrispSorter
+        run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
 
       - name: Secret-store smoke test
         working-directory: repos/CrispSorter

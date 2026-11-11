@@ -1,8 +1,9 @@
 # OCR engines and the measured path
 
-This inventory describes the application after integration of the OCR/PDF update
-from main `de802fed5d8f7d40525877ad826fd627835394b9` on 2026-11-11. It distinguishes
-workbench choices, advanced pipeline stages and extraction fallbacks. A listed
+This inventory describes the shared OCR routing update on 2026-11-11, after
+integration of main `2a9a74d509c6803e50c15e5284d5c95401f8646d`. Workbench, file
+extraction, ingestion and CLI use one native engine-selection policy. See the
+[routing audit](ocr-routing-audit-20261111.md) for entry points and limits. A listed
 model still needs its matching files, supported runtime and any required model
 licence consent.
 
@@ -35,9 +36,10 @@ engines below.
 
 ## Workbench: Recognize choices
 
-A CrispEmbed-enabled build advertises **18 explicit embedded engine choices**,
-plus **Automatic pipeline**. Installed System Tesseract is added separately when
-its capability probe succeeds. The
+A CrispEmbed-enabled build advertises **20 non-experimental embedded choices**,
+plus **Automatic pipeline**. Two additional experimental choices appear when
+their runtime gates are enabled. Installed System Tesseract, ocrs and PaddleOCR
+are added when their respective runtime capabilities are available. The
 [native capability list](../src-tauri/src/ocr_workspace.rs) governs availability;
 [the workbench](../src/lib/components/OcrWorkbench.svelte) supplies the labels.
 
@@ -51,7 +53,10 @@ its capability probe succeeds. The
 | PP-OCRv6 (CJK lines) | Embedded PP-OCRv6 path with its own model requirements. |
 | EasyOCR | Embedded DBNet/CRNN path. |
 | Document and vision models | GOT OCR, GLM OCR, Qwen2 VL, InternVL2, DeepSeek OCR 2, Pix2Struct, Granite Vision, LightOnOCR, Qwen3 VL, Unlimited OCR, olmOCR 2 (7B), and LFM2.5 VL. These are local model choices. The UI labels GOT as non-commercial; model-specific licence gates remain in force. |
-| Automatic pipeline | A routing policy. In a CrispEmbed build, an empty-stage configuration now selects embedded Tesseract. An explicitly configured pipeline keeps its stages. |
+| Custom-model choices | Surya and Unified are available in the shared catalog; supply their required model files in a matching advanced stage. |
+| Experimental choices | Unlimited-OCR-2 and MiniCPM-OCR-1.0 appear when their runtime enablement flags are set. |
+| Legacy local recognizers | ocrs and PaddleOCR v4 can be selected explicitly when available. Their plain-text review adapter supplies an unscored page block. |
+| Automatic pipeline | A routing policy. Unconfigured embedded OCR selects Tesseract; an enabled configured pipeline retains its stages. Disabled advanced stages do not reactivate implicitly. Explicit legacy tiers remain meaningful. |
 
 The pinned embedded runtime is CrispEmbed 0.17.18; the
 [runtime lock](../scripts/crispembed-runtime-lock.json) records the source and
@@ -71,8 +76,39 @@ Automatic request so native app configuration remains authoritative.
 
 System Tesseract has a separate installed-language selector. Its default is
 English (`eng`), as stated in the UI; it does not detect the page's language
-automatically. Pipeline cleanup, layout and the Qwen CPU profile are not applied
-inside this System Tesseract recognition step. Apply page preparation first.
+automatically. Enabled preparation is applied before recognition, with evidence
+bound to the resulting image. A build needs the relevant preparation capability
+to perform those steps. The isolated Qwen CPU profile applies only to Qwen2 VL.
+
+Saved application engine/language/model settings feed the general application
+OCR routes and CLI OCR, KIE, table and zone commands. CLI parsing defaults do not
+overwrite the saved recipe. All four CLI commands accept `--ocr-config FILE`
+for a complete pipeline JSON snapshot and `--data-dir DIR` for a saved app
+profile. Explicit OCR flags override the selected snapshot; boolean processing
+flags also accept `--flag=false`. Workbench project choices and explicit
+request options take precedence. A job
+captures its policy once, so later Settings edits cannot change engines between
+PDF pages. Explicit engine or model failures propagate; they do not silently
+switch to another recognizer.
+
+For example, `crispsorter ocr scan.png` uses the saved application policy.
+`crispsorter ocr scan.png --ocr-config pipeline.json --engine tesseract
+--language deu --cpu-pixel-budget=false` explicitly selects embedded Tesseract
+and German while retaining compatible settings from the supplied JSON. A
+single-model vision engine accepts `--model` as an alias of `--det-model`;
+incompatible model flags fail instead of being silently ignored. Supplying one
+preparation override to a disabled recipe activates that request without
+reactivating hidden restoration or postprocessing steps.
+
+The snapshot is the serialized `OcrPipelineConfig` object, not an entire app
+settings export. It may contain advanced `stages` with detector thresholds,
+model paths, prompts and cleanup settings. Unknown top-level, stage or cleanup keys, invalid
+engine/processing selections and snapshots larger than 64 KiB are rejected.
+Reading a supplied snapshot does not create or modify an app settings database.
+Source-routed recipes use an enabled Automatic `stages` snapshot. A fixed
+`--source-type` pin that the shared resolver cannot preserve is rejected.
+Flat escalation flags cannot silently override an advanced stage recipe;
+edit its stage JSON or use `--engine` with `--model` for a single vision model.
 
 ### Confidence and source evidence
 
@@ -90,11 +126,18 @@ uniform score provenance; mixed or missing scores cannot become a whole-line
 recognition score. Character evidence requires verified codepoint alignment
 for every contributing region.
 
+Paragraph grouping applies the same score checks after line-level layout
+classification. It preserves line breaks inside an enclosing region box;
+multiline PDF placement uses the pinned renderer's estimates within that box.
+This does not establish verified source line or word coordinates. Regions with
+native word evidence remain separate and retain their evidence.
+
 ## Advanced pipeline settings
 
 The [stage editor](../src/lib/components/Settings.svelte) and
 [native engine mapping](../src-tauri/src/extractors/mod.rs) also expose these
-configurations, which are not all direct Recognize-menu choices:
+configurations. They share the Workbench capability catalog; model and
+experimental prerequisites still apply:
 
 | Advanced stage | Requirement |
 | --- | --- |
@@ -112,17 +155,50 @@ OCR engine. See [the worker](../src-tauri/src/extractors/ocr_worker.rs).
 
 ## Other extraction routes
 
-The native/background ingestion path has the CrispEmbed pipeline and a legacy
-fallback ladder: optional PaddleOCR v4 through `usls`/ONNX when built with
-`paddle-ocr`, `ocrs`/RTen, and installed system Tesseract. These settings are
-separate from the workbench menu.
+Native image/PDF extraction, archive and mail members, background ingestion,
+manual promotion, template text zones and text-based KIE use the shared native
+policy and dispatcher. An explicit legacy tier or engine is a selection, not a
+request to try another recognizer silently if it fails.
+
+The optional preferred document converter can supply a PDF's text before the
+native extractor is needed; forced PDF OCR bypasses that preference. Formula
+recognition is a separate specialist operation that produces LaTeX and uses its
+selected formula model.
 
 The frontend [image extractor](../src/lib/extractors/imageExtractor.ts) and
-[PDF OCR fallback](../src/lib/extractors/pdfExtractor.ts) use Tesseract.js,
-with English/German selections. These plain-text extraction routes were not the
-source of the native six-page word-evidence measurement.
+[PDF OCR fallback](../src/lib/extractors/pdfExtractor.ts) now call the same native
+service in an application runtime. They send bounded raw image bytes and one
+captured engine/language/configuration snapshot. PDF extraction preserves usable
+digital text and sends only pages needing OCR (or all pages for forced OCR).
+
+A browser-only runtime has no CrispEmbed/native execution backend.
+Its Automatic choice uses a reusable Tesseract.js worker. Selecting a native
+engine, native tier, custom native pipeline or CPU profile there produces an
+explicit capability error. The browser worker is serialized, retired on failure
+or active cancellation, and disposed after an idle interval.
+
+Some specialist outputs impose additional contracts. Plain-text ocrs/Paddle
+adapters do not provide verified boxes for structured export. LiLT's pinned
+binding owns a DBNet+TrOCR recognizer, and native table structure extraction owns
+a Tesseract recognizer. Those adapters validate compatibility with an explicit
+selection instead of substituting a model. Use ordinary OCR/text-based KIE for
+other engine combinations. See the [audit boundaries](ocr-routing-audit-20261111.md#capability-boundaries).
 
 ## Recent integration
+
+The [remote integration audit](remote-integration-audit-20261111.md) accounts
+for all 76 live branch heads in the 10:37 UTC snapshot and open PRs #44–46,
+including PDF consolidation, OCR document view and the advanced SMB head. The app
+shares SMB transport settings between GUI and CLI and connects streaming reads
+to transfer, sync and index-promotion consumers. The consolidated PDF editor and
+CLI share native text exports and edit operations. Paragraph editing retains
+the same engine policy and confidence-evidence constraints. See the
+[surface and operation-log audit](surface-observability-audit-20261111.md) for
+critical-step events, CLI/GUI consistency and verification boundaries.
+
+Main `2a9a74d` merged PR #42 and has exactly the same source tree as its
+feature head `48bab31`. This follow-up starts from that merged main revision;
+it does not replay those changes.
 
 The feature branch preserved `1f5d470` (Windows member-copy protection) and
 `b6bc7fa` (provider model-list test), then merged main in `c9b3cfd`. The incoming

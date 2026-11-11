@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { beginOperation, runOperation } from '../operationLog';
     import { onMount, onDestroy, untrack } from 'svelte';
     // Art 50: the connection test and the provider benchmark both run a prompt
     // through `llmClient.query` and display the model's answer — the benchmark
@@ -63,6 +64,8 @@
         return out;
     }
     import { getSetting, saveSetting } from '../store';
+    import { OCR_MODEL_SETTING_KEYS, serializeOcrPipeline } from '../extractors/ocrSettings';
+    import { engineRequirement, isOcrVisionEngine, ocrEngineOptions, ocrLanguageOptions, ocrStageOptions, ocrVisionOptions, usesCpuBudget, type OcrEngineCapabilities } from '../ocr/engineCatalog';
     import { normalizeFileAssociations } from './viewer/associations';
     import { i18n, type Language } from '../i18n.svelte';
     import { getDefaultPrompt, batchManager } from '../batch/store.svelte';
@@ -200,8 +203,22 @@
     let llmContextLimit = $state(4096);
     let llmPrompt = $state(''); 
     let ocrEnabled = $state(false);
-    let ocrTier    = $state<'auto' | 'tier1' | 'tier2' | 'tier3'>('auto');
+    let ocrTier    = $state<'auto' | 'tier1' | 'tier2' | 'tier3' | 'tier4'>('auto');
     let ocrRecLang = $state<'auto' | 'latin' | 'cjk'>('auto');
+    let ocrEngine = $state('auto');
+    let ocrLanguage = $state('auto');
+    let ocrCpuPixelBudget = $state(false);
+    let ocrModelSettings = $state<Record<string, unknown>>({});
+    let ocrCapabilities = $state<OcrEngineCapabilities>({ engines: [] });
+    let ocrCapabilityError = $state('');
+    const ocrEngineChoices = $derived(ocrEngineOptions({
+        ...ocrCapabilities, engines: ['auto', ...ocrCapabilities.engines],
+    }, ocrEngine));
+    const ocrLanguageChoices = $derived(ocrLanguageOptions(ocrEngine, ocrCapabilities, ocrLanguage));
+    function selectOcrEngine(value: string) {
+        ocrEngine = value;
+        if (!usesCpuBudget(value)) ocrCpuPixelBudget = false;
+    }
     // Smart OCR pipeline (C++ orchestrator: source-type routing + per-stage
     // image cleanup [classical + NAFNet denoise] + accept-gate escalation).
     // Off by default → legacy tier ladder. GGUF-only via CrispEmbed.
@@ -422,55 +439,20 @@
         const j = i + dir; if (j < 0 || j >= ocrStages.length) return;
         const a = [...ocrStages]; [a[i], a[j]] = [a[j], a[i]]; ocrStages = a;
     }
-    // Engines whose stage takes a detector + recogniser pair (model_a/model_b).
-    // Must stay in sync with `needs_det_and_rec` in src-tauri/src/extractors/ocr_crispembed.rs.
-    const DET_REC_ENGINES = ['dbnet_trocr', 'surya', 'tesseract', 'parseq', 'tesseract_fraktur', 'ppocrv6', 'easyocr'];
-    function isVlmEngine(e: string) { return !DET_REC_ENGINES.includes(e); }
     /** Build the OcrPipelineConfig payload (snake_case = Rust serde field names). */
     function ocrPipelineConfig() {
-        const stages = (ocrPipelineAdvanced ? ocrStages : []).map((s) => ({
-            source_type: s.source_type, engine: s.engine,
-            det_model: s.det_model.trim() || null, rec_model: s.rec_model.trim() || null,
-            cleanup: { ...s.cleanup },
-            det_prob_threshold: Number(s.det_prob_threshold) || 0.3,
-            det_box_threshold:  Number(s.det_box_threshold) || 0.5,
-            det_target_short:   Number(s.det_target_short) || 736,
-            vlm_max_tokens:     Number(s.vlm_max_tokens) || 0,
-            vlm_prompt:         s.vlm_prompt,
-            min_chars:          Number(s.min_chars) || 0,
-            min_confidence:     Number(s.min_confidence) || 0,
-        }));
-        return {
-            enabled:         ocrPipelineEnabled,
-            router:          ocrPipelineRouter,
-            cleanup_enabled: ocrPipelineCleanup,
-            denoise:         ocrPipelineDenoise,
-            min_chars:       Number(ocrPipelineMinChars) || 8,
-            min_confidence:  Number(ocrPipelineMinConf) || 0.5,
-            det_model:       null,
-            rec_model:       null,
-            nafnet_model:    null,
-            punct_model:     ocrPipelinePunct.trim() || null,
-            stages,
-            sr:                  ocrPipelineSr,
-            sr_engine:           ocrPipelineSrEngine,
-            restore:             ocrPipelineRestore,
-            restore_engine:      ocrPipelineRestoreEngine,
-            restore_task:        ocrPipelineRestoreTask,
-            restore_model:       null,
-            dewarp:              ocrPipelineDewarp,
-            dewarp_engine:       ocrPipelineDewarpEngine,
-            vlm_ocr_model:       ocrPipelineVlmModel.trim() || null,
-            vlm_ocr_engine:      ocrPipelineVlmEngine,
-            truecase_model:      ocrPipelineTruecase.trim() || null,
-            sr_model:            null,
-            sr_max_short_side:   Number(ocrPipelineSrMaxPx) || 1200,
-            layout:              ocrPipelineLayout,
-            layout_engine:       ocrPipelineLayoutEngine,
-            layout_model:        null,
-            layout_threshold:    Number(ocrPipelineLayoutThr) || 0.25,
-            drop_headers_footers: ocrPipelineDropHF,
-        };
+        return serializeOcrPipeline({
+            ...ocrModelSettings,
+            ocrEngine, ocrLanguage, ocrCpuPixelBudget, ocrPipelineEnabled,
+            ocrPipelineRouter, ocrPipelineCleanup, ocrPipelineDenoise,
+            ocrPipelineMinChars, ocrPipelineMinConf, ocrPipelinePunct,
+            ocrPipelineAdvanced, ocrStages: $state.snapshot(ocrStages),
+            ocrPipelineSr, ocrPipelineSrEngine, ocrPipelineSrMaxPx,
+            ocrPipelineRestore, ocrPipelineRestoreEngine, ocrPipelineRestoreTask,
+            ocrPipelineDewarp, ocrPipelineDewarpEngine,
+            ocrPipelineVlmModel, ocrPipelineVlmEngine, ocrPipelineTruecase,
+            ocrPipelineLayout, ocrPipelineLayoutEngine, ocrPipelineLayoutThr, ocrPipelineDropHF,
+        });
     }
     let authorSortEnabled = $state(false);
     let noThinking = $state(true);
@@ -570,14 +552,20 @@
     let ocrPersistenceError = $state('');
 
     async function syncBackgroundOcr(): Promise<boolean> {
-        const results = await Promise.allSettled([
-            invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }),
-            invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }),
-        ]);
-        const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
-        ocrPersistenceError = failures.length > 0
-            ? `OCR-Einstellungen konnten für die gespeicherten Hintergrundaufträge nicht übernommen werden: ${failures.join('; ')}` : '';
-        return failures.length === 0;
+        const operation = beginOperation('settings.ocr', { engine: ocrEngine, language: ocrLanguage, cpuBudget: ocrCpuPixelBudget });
+        try {
+            const config = ocrPipelineConfig();
+            const results = await Promise.allSettled([
+                invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }),
+                invoke('bg_ingest_set_ocr_pipeline', { config }),
+            ]);
+            const failures = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
+            ocrPersistenceError = failures.length > 0
+                ? `OCR-Einstellungen konnten für die gespeicherten Hintergrundaufträge nicht übernommen werden: ${failures.join('; ')}` : '';
+            if (failures.length) operation.fail(undefined, { failed: failures.length, completed: results.length - failures.length, partial: failures.length < results.length, saved: false });
+            else operation.complete({ saved: true });
+            return failures.length === 0;
+        } catch (error) { operation.fail(error, { saved: false }); throw error; }
     }
     let customModelInput = $state('');
 
@@ -1292,8 +1280,11 @@
         llmMaxChars = await getSetting('llmMaxChars', 5000);
         llmContextLimit = await getSetting('llmContextLimit', 4096);
         ocrEnabled = await getSetting('ocrEnabled', false);
-        ocrTier    = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
+        ocrTier    = await getSetting('ocrTier', 'auto') as typeof ocrTier;
         ocrRecLang = await getSetting('ocrRecLang', 'auto') as 'auto' | 'latin' | 'cjk';
+        ocrEngine = await getSetting('ocrEngine', 'auto');
+        ocrLanguage = await getSetting('ocrLanguage', 'auto');
+        ocrCpuPixelBudget = await getSetting('ocrCpuPixelBudget', false);
         ocrPipelineEnabled  = await getSetting('ocrPipelineEnabled', false) as boolean;
         ocrPipelineRouter   = await getSetting('ocrPipelineRouter', true) as boolean;
         ocrPipelineCleanup  = await getSetting('ocrPipelineCleanup', true) as boolean;
@@ -1318,6 +1309,8 @@
         ocrPipelineVlmModel  = await getSetting('ocrPipelineVlmModel', '') as string;
         ocrPipelineVlmEngine = await getSetting('ocrPipelineVlmEngine', 'qwen2vl') as string;
         ocrPipelineTruecase  = await getSetting('ocrPipelineTruecase', '') as string;
+        ocrModelSettings = Object.fromEntries(await Promise.all(OCR_MODEL_SETTING_KEYS.map(async key =>
+            [key, await getSetting(key, null)] as const)));
         await syncBackgroundOcr();
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1451,6 +1444,12 @@
             crispEmbedCompiledIn = !!caps.crispembed;
             crispEmbedGpu = caps.crispembed_gpu ?? null;
         } catch { /* command not available */ }
+        try {
+            ocrCapabilities = await invoke<OcrEngineCapabilities>('ocr_workspace_capabilities');
+            ocrCapabilityError = '';
+        } catch (error) {
+            ocrCapabilityError = `OCR engine availability could not be loaded: ${String(error)}`;
+        }
         // CrispEmbed bundled-registry browse (empty when feature is off).
         try {
             embedderRegistry = await invoke<EmbedderRegistryEntry[]>('embedder_registry_list');
@@ -1704,6 +1703,10 @@
 
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
+        return runOperation('settings.save', {}, () => persistSettings(), () => ({ saved: true }));
+    }
+
+    async function persistSettings() {
         const providerReceipt = await saveProviderSettings();
         await saveSetting('exportPath', exportPath);
         await saveSetting('exportPathMode', exportPathMode);
@@ -1716,6 +1719,9 @@
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('ocrTier', ocrTier);
         await saveSetting('ocrRecLang', ocrRecLang);
+        await saveSetting('ocrEngine', ocrEngine);
+        await saveSetting('ocrLanguage', ocrLanguage);
+        await saveSetting('ocrCpuPixelBudget', ocrCpuPixelBudget);
         await saveSetting('ocrPipelineEnabled',  ocrPipelineEnabled);
         await saveSetting('ocrPipelineRouter',   ocrPipelineRouter);
         await saveSetting('ocrPipelineCleanup',  ocrPipelineCleanup);
@@ -1914,13 +1920,14 @@
     }
 
     async function applyIndexConfig() {
-        await saveSettingsSilent();
-        await syncActiveCatalogFromInputs();
+        const operation = beginOperation('settings.save');
         indexStatus       = 'loading';
         indexStatusMsg    = '';
         indexInitProgress = 'Konfiguration wird gespeichert …';
         indexInitPct      = 0;
         try {
+            await saveSettingsSilent();
+            await syncActiveCatalogFromInputs();
             // Push config to backend.
             await invoke('index_set_config', {
                 config: {
@@ -2005,7 +2012,9 @@
             indexStatus       = 'ok';
             indexInitProgress = '';
             indexInitPct      = 100;
+            operation.complete({ saved: true });
         } catch(e: any) {
+            operation.fail(e, { saved: false });
             indexStatus       = 'error';
             indexStatusMsg    = String(e);
             indexInitProgress = '';
@@ -2543,12 +2552,15 @@
     }
 
     async function handleSaveProvider() {
+        const operation = beginOperation('settings.save');
         settingsSaveError = '';
         saveIndicator = false;
         providerSaveNotice = '';
         try {
             showProviderSaveReceipt(await saveProviderSettings());
+            operation.complete({ saved: true });
         } catch (error) {
+            operation.fail(error, { saved: false });
             settingsSaveError = providerErrorMessage(error, 'Provider settings could not be saved. Your edits are still available; retry after checking secret storage.');
         }
     }
@@ -2818,7 +2830,17 @@
     }
 
     // WebLLM Helpers
+    async function saveLoadedModelSelection(): Promise<boolean> {
+        settingsSaveError = '';
+        try { await saveSettingsSilent(); return true; }
+        catch (error) {
+            settingsSaveError = `The model is ready, but its settings were not fully saved. Retry Save. ${String(error)}`;
+            return false;
+        }
+    }
+
     async function handleLoadWebLLM(modelId: string) {
+        const operation = beginOperation('settings.model', { backend: 'browser' });
         webllmStatus = 'downloading';
         webllmProgress = 0;
         webllmProgressText = '';
@@ -2832,10 +2854,13 @@
             webllmStatus = 'ready';
             webllmSelectedModel = modelId;
             selectedProvider.selectedModel = modelId;
-            saveSettingsSilent();
+            operation.stage('ready', {}, 'info');
+            const saved = await saveLoadedModelSelection();
+            if (!saved) operation.stage('settings_failed', { saved: false }, 'warn');
+            operation.complete({ saved, partial: !saved });
         } catch(e) {
+            operation.fail(e);
             webllmStatus = 'error';
-            console.error('[WebLLM] Load failed:', e);
             alert('WebLLM load failed: ' + e);
         }
     }
@@ -2847,14 +2872,15 @@
         webllmProgressText = '';
     }
 
-    function handleUseWebLLM(modelId: string) {
+    async function handleUseWebLLM(modelId: string) {
         webllmSelectedModel = modelId;
         selectedProvider.selectedModel = modelId;
-        saveSettingsSilent();
+        await saveLoadedModelSelection();
     }
 
     // ORT Helpers
     async function handleLoadORT(modelId: string) {
+        const operation = beginOperation('settings.model', { backend: 'browser' });
         ortStatus = 'downloading';
         ortProgress = 0;
         ortProgressText = '';
@@ -2867,10 +2893,13 @@
             ortStatus = 'ready';
             ortSelectedModel = modelId;
             selectedProvider.selectedModel = modelId;
-            saveSettingsSilent();
+            operation.stage('ready', {}, 'info');
+            const saved = await saveLoadedModelSelection();
+            if (!saved) operation.stage('settings_failed', { saved: false }, 'warn');
+            operation.complete({ saved, partial: !saved });
         } catch(e) {
+            operation.fail(e);
             ortStatus = 'error';
-            console.error('[ORT] Load failed:', e);
             alert('ORT load failed: ' + e);
         }
     }
@@ -2882,10 +2911,10 @@
         ortProgressText = '';
     }
 
-    function handleUseORT(modelId: string) {
+    async function handleUseORT(modelId: string) {
         ortSelectedModel = modelId;
         selectedProvider.selectedModel = modelId;
-        saveSettingsSilent();
+        await saveLoadedModelSelection();
     }
 
     async function deleteMlxModelFromDisk(model: MlxModel) {
@@ -3419,6 +3448,49 @@
                 <p class="hint">{i18n.t.settings.pdf_engine_hint}</p>
             </div>
 
+            <div class="section-card">
+                <h2 style="font-size:1rem;"><Scan size={16} /> OCR recognition</h2>
+                <div class="checkbox-group">
+                    <input id="ocr-enabled-check" type="checkbox" bind:checked={ocrEnabled} />
+                    <label for="ocr-enabled-check">{i18n.t.settings.ocr_enabled}</label>
+                </div>
+                <p class="hint">These saved choices apply to image and PDF extraction, archive and mail attachments, background ingestion, and explicit OCR tools. A workbench project can override them.</p>
+                <div class="field-row" style="margin-top:8px;">
+                    <label for="ocr-engine-select">Recognition engine</label>
+                    <select id="ocr-engine-select" value={ocrEngine} onchange={(event) => selectOcrEngine(event.currentTarget.value)} style="flex:1;">
+                        {#each ocrEngineChoices as option}<option value={option.value} disabled={option.disabled}>{option.label}</option>{/each}
+                    </select>
+                </div>
+                {#if ocrCapabilityError}<p class="hint">{ocrCapabilityError}</p>{/if}
+                {#if engineRequirement(ocrEngine)}<p class="hint">{engineRequirement(ocrEngine)}</p>{/if}
+                <div class="field-row" style="margin-top:8px;">
+                    <label for="ocr-language-select">Document language</label>
+                    <select id="ocr-language-select" bind:value={ocrLanguage} style="flex:1;">
+                        {#each ocrLanguageChoices as option}<option value={option.value}>{option.label}</option>{/each}
+                    </select>
+                </div>
+                {#if ocrEngine === 'paddle'}
+                    <div class="field-row" style="margin-top:8px;">
+                        <label for="ocr-paddle-script-select">Recognition script</label>
+                        <select id="ocr-paddle-script-select" bind:value={ocrRecLang}>
+                            <option value="auto">Automatic (file path hint)</option>
+                            <option value="latin">Latin</option>
+                            <option value="cjk">CJK</option>
+                        </select>
+                    </div>
+                {/if}
+                {#if usesCpuBudget(ocrEngine) || ocrCpuPixelBudget}
+                    <div class="checkbox-group" style="margin-top:8px;">
+                        <input id="ocr-cpu-budget" type="checkbox" bind:checked={ocrCpuPixelBudget}
+                            disabled={(!usesCpuBudget(ocrEngine) || !ocrCapabilities.cpu_budget) && !ocrCpuPixelBudget} />
+                        <label for="ocr-cpu-budget">Low-memory CPU profile for Qwen2 VL</label>
+                    </div>
+                    <p class="hint">Uses an isolated CPU worker with a 262,144-pixel input budget. It still uses several GB of RAM and reloads the model for each run; fine print may be missed.</p>
+                    {#if !ocrCapabilities.cpu_budget}<p class="hint">This build cannot run the isolated CPU worker. Turn off the profile to use its available recognition engines.</p>{/if}
+                {/if}
+                <p class="hint">An explicit engine takes priority over the automatic tier choice. Automatic uses your enabled Smart OCR pipeline; otherwise it uses the selected legacy tier. Model default keeps configured recognizers and their trained languages.</p>
+            </div>
+
             <!-- Smart OCR Pipeline (C++ orchestrator: cleanup + NAFNet + routing) -->
             <div class="section-card">
                 <label for="ocr-pipeline-enabled" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -3556,18 +3628,13 @@
                             <label for="ocr-pipeline-vlm-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
                                 {i18n.t.settings.ocr_pipeline_vlm_engine}
                                 <select id="ocr-pipeline-vlm-engine" bind:value={ocrPipelineVlmEngine} style="margin-left:4px;">
-                                    <option value="qwen2vl">Qwen2-VL / Qwen2.5-VL (3B weights: non-commercial)</option>
-                                    <option value="glm">GLM-OCR</option>
-                                    <option value="got">GOT-OCR2 (non-commercial)</option>
-                                    <option value="internvl2">InternVL2</option>
-                                    <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
-                                    <option value="granite_vision">Granite Vision 3.3-2B</option>
-                                    <option value="lightonocr">LightOnOCR-2-1B</option>
-                                    <option value="pix2struct">Pix2Struct (doc/chart)</option>
-                                    <option value="qwen3vl">Qwen3-VL-2B (DeepStack)</option>
+                                    {#each ocrVisionOptions(ocrCapabilities, ocrPipelineVlmEngine) as option}
+                                        <option value={option.value} disabled={option.disabled}>{option.label}</option>
+                                    {/each}
                                 </select>
                             </label>
                         </div>
+                        {#if engineRequirement(ocrPipelineVlmEngine)}<p class="hint">{engineRequirement(ocrPipelineVlmEngine)}</p>{/if}
                     {/if}
 
                     <label for="ocr-pipeline-truecase" style="margin-top:10px;">{i18n.t.settings.ocr_pipeline_truecase}</label>
@@ -3636,35 +3703,17 @@
                                         </label>
                                         <label style="font-size:0.78rem; color:#a1a1aa;">{i18n.t.settings.ocr_pipeline_engine}
                                             <select bind:value={stage.engine} style="margin-left:4px;">
-                                                <option value="dbnet_trocr">DBNet + TrOCR</option>
-                                                <option value="surya">Surya</option>
-                                                <option value="tesseract">Tesseract LSTM (DBNet + Tesseract)</option>
-                                                <option value="parseq">PARSeq (DBNet + scene-text · per-char confidence)</option>
-                                                <option value="got">GOT-OCR2 (non-commercial)</option>
-                                                <option value="glm">GLM-OCR</option>
-                                                <option value="qwen2vl">Qwen2.5-VL</option>
-                                                <option value="internvl2">InternVL2</option>
-                                                <option value="granite_vision">Granite Vision 3.3-2B</option>
-                                                <option value="lightonocr">LightOnOCR-2-1B</option>
-                                                <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
-                                                <option value="pix2struct">Pix2Struct (doc/chart)</option>
-                                                <option value="qwen3vl">Qwen3-VL-2B (DeepStack)</option>
-                                                <option value="unlimited_ocr">Unlimited-OCR (SAM + CLIP + MoE)</option>
-                                                <option value="unlimited_ocr2">Unlimited-OCR-2 (experimental · CRISPEMBED_UNLIMITED_OCR2=1)</option>
-                                                <option value="minicpm_ocr">MiniCPM-OCR-1.0 (experimental · CRISPEMBED_MINICPM_OCR=1 + CRISPEMBED_QWEN35_OCR=1)</option>
-                                                <option value="ppocrv6">PP-OCRv6 (CJK line boxes)</option>
-                                                <option value="easyocr">EasyOCR (DBNet + CRNN)</option>
-                                                <option value="tesseract_fraktur">Tesseract LSTM · Fraktur</option>
-                                                <option value="olmocr">olmOCR-2-7B</option>
-                                                <option value="lfm2_vl">LFM2.5-VL</option>
-                                                <option value="unified">Unified (metadata-dispatched GGUF)</option>
+                                                {#each ocrStageOptions(ocrCapabilities, stage.engine) as option}
+                                                    <option value={option.value} disabled={option.disabled}>{option.label}</option>
+                                                {/each}
                                             </select>
                                         </label>
                                     </div>
+                                    {#if engineRequirement(stage.engine)}<p class="hint">{engineRequirement(stage.engine)}</p>{/if}
                                     <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
                                         <input type="text" bind:value={stage.det_model} style="flex:1; min-width:140px;"
-                                            placeholder={isVlmEngine(stage.engine) ? i18n.t.settings.ocr_pipeline_model_ph : i18n.t.settings.ocr_pipeline_det_ph} />
-                                        {#if !isVlmEngine(stage.engine)}
+                                            placeholder={isOcrVisionEngine(stage.engine) ? i18n.t.settings.ocr_pipeline_model_ph : i18n.t.settings.ocr_pipeline_det_ph} />
+                                        {#if !isOcrVisionEngine(stage.engine)}
                                             <input type="text" bind:value={stage.rec_model} style="flex:1; min-width:140px;"
                                                 placeholder={i18n.t.settings.ocr_pipeline_rec_ph} />
                                         {/if}
@@ -3677,7 +3726,7 @@
                                         <label><input type="checkbox" bind:checked={stage.cleanup.binarize} /> binarize</label>
                                         <label><input type="checkbox" bind:checked={stage.cleanup.denoise} /> NAFNet</label>
                                     </div>
-                                    {#if isVlmEngine(stage.engine)}
+                                    {#if isOcrVisionEngine(stage.engine)}
                                         <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
                                             <label style="font-size:0.78rem; color:#a1a1aa;">max tokens
                                                 <input type="number" min="0" step="64" bind:value={stage.vlm_max_tokens} style="width:80px; margin-left:4px;" /></label>
@@ -3716,18 +3765,15 @@
                         {i18n.t.settings.refresh_models}
                     </button>
                 </div>
-                <div class="checkbox-group">
-                    <input id="ocr-enabled-check" type="checkbox" bind:checked={ocrEnabled} />
-                    <label for="ocr-enabled-check">{i18n.t.settings.ocr_enabled}</label>
-                </div>
-                {#if ocrEnabled}
+                {#if ocrEngine === 'auto' && !ocrPipelineEnabled}
                     <div class="field-row" style="margin-top: 8px;">
-                        <label for="ocr-tier-select" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">OCR-Engine:</label>
+                        <label for="ocr-tier-select" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">Automatic OCR tier:</label>
                         <select id="ocr-tier-select" bind:value={ocrTier} style="flex:1; max-width:260px;">
                             <option value="auto">Automatisch (beste verfügbare)</option>
-                            <option value="tier3">PaddleOCR — multilingual, schnell (empfohlen)</option>
-                            <option value="tier2">ocrs — Rust, nur lateinische Schrift</option>
-                            <option value="tier1">Tesseract — System-Installation erforderlich</option>
+                            <option value="tier4" disabled={!crispEmbedCompiledIn}>CrispEmbed</option>
+                            <option value="tier3" disabled={!ocrCapabilities.engines.includes('paddle')}>PaddleOCR — Latin/CJK</option>
+                            <option value="tier2" disabled={!ocrCapabilities.engines.includes('ocrs')}>ocrs — Latin text</option>
+                            <option value="tier1" disabled={!ocrCapabilities.engines.includes('system_tesseract')}>System Tesseract</option>
                         </select>
                     </div>
                     {#if ocrTier === 'tier3' || ocrTier === 'auto'}

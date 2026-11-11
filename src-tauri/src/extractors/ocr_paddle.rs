@@ -28,7 +28,6 @@ pub fn is_paddle_ocr_available() -> bool {
 /// Heuristic: does the path contain CJK Unicode characters?
 /// Used when `OcrRecLang::Auto` — if the filename or parent directory
 /// has a significant proportion of CJK codepoints we prefer the CH model.
-#[cfg(any(feature = "paddle-ocr", test))]
 fn path_looks_cjk(path: &Path) -> bool {
     let s = path.to_string_lossy();
     let total = s.chars().count().max(1);
@@ -36,7 +35,6 @@ fn path_looks_cjk(path: &Path) -> bool {
     cjk * 5 > total // >20% CJK codepoints
 }
 
-#[cfg(any(feature = "paddle-ocr", test))]
 fn is_cjk(c: char) -> bool {
     matches!(c as u32,
         0x4E00..=0x9FFF |  // CJK Unified Ideographs
@@ -47,6 +45,12 @@ fn is_cjk(c: char) -> bool {
         0x30A0..=0x30FF |  // Katakana
         0xAC00..=0xD7AF    // Hangul
     )
+}
+
+/// Resolve the automatic script before imports/crops replace the original
+/// filename with an opaque temporary path.
+pub fn paddle_language_for_name(name: &str) -> OcrRecLang {
+    if path_looks_cjk(Path::new(name)) { OcrRecLang::Cjk } else { OcrRecLang::Latin }
 }
 
 /// Run the DB+SVTR PaddleOCR pipeline on a single image file.
@@ -236,6 +240,12 @@ pub fn detect_table_structure(_path: &Path) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_import_name_resolves_script_before_temporary_crop_paths() {
+        assert_eq!(paddle_language_for_name("中文发票.png"), OcrRecLang::Cjk);
+        assert_eq!(paddle_language_for_name("invoice.png"), OcrRecLang::Latin);
+    }
 
     // ── is_cjk ────────────────────────────────────────────────────────────────
 

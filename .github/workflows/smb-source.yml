@@ -1,0 +1,93 @@
+name: Shared Rust SMB source
+on:
+  push:
+    paths: ['crates/crisp-smb-source/**', 'src-tauri/src/drives/**', 'src-tauri/src/sync/transfer_queue.rs', 'src-tauri/src/operation_log.rs', 'src-tauri/src/cli/**', 'src-tauri/Cargo.toml', 'Cargo.lock', 'src/lib/drives/smbSettings*', 'src/lib/components/IndexIngest.svelte', 'tests/browser/smb-settings.spec.ts', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
+  pull_request:
+    paths: ['crates/crisp-smb-source/**', 'src-tauri/src/drives/**', 'src-tauri/src/sync/transfer_queue.rs', 'src-tauri/src/operation_log.rs', 'src-tauri/src/cli/**', 'src-tauri/Cargo.toml', 'Cargo.lock', 'src/lib/drives/smbSettings*', 'src/lib/components/IndexIngest.svelte', 'tests/browser/smb-settings.spec.ts', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
+  workflow_dispatch:
+concurrency:
+  group: smb-source-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  direct-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispCloud
+          ref: 13ca681f0c706cf24e65c7906f8a98e20421c590
+          path: .smb-fixture-source
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install impacket==0.13.0
+      - run: python -m unittest discover -s scripts -p test_smb_fixture_runner.py
+      - run: cargo test --manifest-path crates/crisp-smb-source/Cargo.toml --locked
+      - name: Qualify the pinned direct SMB core
+        run: |
+          set -o pipefail
+          mkdir -p test-results/storage
+          python scripts/test_smb_source.py .smb-fixture-source 2>&1 | tee test-results/storage/direct-smb.log
+      - run: bash scripts/test_mounted_read.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: direct-smb-qualification
+          path: test-results/storage/direct-smb.log
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx svelte-kit sync
+      - run: npm test -- src/lib/drives/smbSettings.test.ts
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/browser/smb-settings.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smb-browser-failure
+          path: test-results/
+
+  app-typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PROTOC: /usr/bin/protoc
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: e14136d3a99572367e68619045943fe77a299caa
+          path: repos/CrispEmbed
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispASR
+          ref: 0c9a4b6d828feffddc24e13e9140fac89c785214
+          path: repos/CrispASR
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-docx
+          ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
+          path: repos/crisp-docx
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libssl-dev libopenblas0
+      - working-directory: repos/CrispSorter
+        run: |
+          mkdir -p src-tauri/bin
+          touch src-tauri/bin/.gitkeep
+          cargo check -p crispsorter --all-targets --no-default-features --locked

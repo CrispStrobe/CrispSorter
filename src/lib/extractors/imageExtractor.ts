@@ -1,22 +1,23 @@
 /**
- * Image OCR extractor for raster formats Tesseract.js can read directly:
+ * Image OCR extractor using the app's shared configured recognition policy:
  * webp, png, jpg/jpeg, bmp, tiff, gif (single-frame).
  *
  * Returns plain text; no markdown structure (OCR output is flat).
  */
 
-import Tesseract from 'tesseract.js';
+import { createOcrSession, type OcrSessionOptions } from './ocrDispatcher';
 
 export interface ImageExtractionResult {
     text: string;
     markdownText: string;
     headings: string[];
+    metadata: { ocr: { engine: string; warnings: string[] } };
 }
 
 export async function extractImage(
     arrayBuffer: ArrayBuffer,
     filename: string,
-    languages: string = 'eng+deu',
+    options: OcrSessionOptions | string = {},
 ): Promise<ImageExtractionResult> {
     const ext = (filename.split('.').pop() || 'png').toLowerCase();
     const mime =
@@ -27,19 +28,9 @@ export async function extractImage(
         ext === 'gif' ? 'image/gif' :
         'image/png';
 
-    const blob = new Blob([arrayBuffer], { type: mime });
-    const url = URL.createObjectURL(blob);
-    try {
-        const { data } = await Tesseract.recognize(url, languages, {
-            logger: m => {
-                if (m.status === 'recognizing text' && Math.round(m.progress * 100) % 25 === 0) {
-                    console.log(`[ImageExtractor] OCR ${m.status}: ${Math.round(m.progress * 100)}%`);
-                }
-            },
-        });
-        const text = (data.text ?? '').trim();
-        return { text, markdownText: text, headings: [] };
-    } finally {
-        URL.revokeObjectURL(url);
-    }
+    // Preserve the former explicit-language call signature for existing users.
+    const session = await createOcrSession(typeof options === 'string' ? { ocr: { language: options } } : options);
+    const result = await session.recognize(new Blob([arrayBuffer], { type: mime }), filename);
+    return { text: result.text, markdownText: result.text, headings: [],
+        metadata: { ocr: { engine: result.engine, warnings: result.warnings } } };
 }

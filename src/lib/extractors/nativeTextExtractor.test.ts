@@ -8,6 +8,7 @@ vi.mock('../log', () => ({ logInfo: vi.fn(), logWarn: vi.fn(), logDebug: vi.fn()
 vi.mock('../store', () => ({ getSetting: vi.fn(), getStore: vi.fn() }));
 
 const extracted = { text: 'Extracted source text.', headings: ['Source'], tags: ['extraction:native-eml', 'extraction:attachment-name-only'] };
+const defaultPipeline = { enabled: false, engine: 'auto', language: 'eng', cpu_pixel_budget: false, stages: [] };
 const input = (extension: string, path = `/documents/source.${extension}`) => ({
     name: `source.${extension}`, path, arrayBuffer: new ArrayBuffer(0),
 });
@@ -15,7 +16,7 @@ const input = (extension: string, path = `/documents/source.${extension}`) => ({
 beforeEach(() => {
     vi.mocked(invoke).mockReset().mockResolvedValue(extracted);
     vi.mocked(getSetting).mockReset().mockImplementation(async (_key, fallback) => fallback);
-    vi.mocked(getStore).mockReset();
+    vi.mocked(getStore).mockReset().mockResolvedValue({ get: async () => undefined } as unknown as Awaited<ReturnType<typeof getStore>>);
 });
 
 describe('direct native mail and presentation extraction', () => {
@@ -24,7 +25,7 @@ describe('direct native mail and presentation extraction', () => {
         expect(usesNativePathExtraction(`source.${extension}`)).toBe(true);
         const result = await extractText(input(extension));
         expect(invoke).toHaveBeenCalledExactlyOnceWith('native_extract_text', { path: `/documents/source.${extension}`,
-            ...(extension.toLowerCase() === 'pptx' ? {} : { options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto' } }) });
+            ...(extension.toLowerCase() === 'pptx' ? {} : { options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto', ocrPipeline: defaultPipeline } }) });
         expect(result).toEqual({ text: extracted.text, headings: extracted.headings, metadata: { tags: extracted.tags } });
         expect(extractionTags(result)).toContain('extraction:attachment-name-only');
     });
@@ -59,7 +60,7 @@ describe('direct native mail and presentation extraction', () => {
         vi.mocked(getSetting).mockImplementation(async (key, fallback) => key === 'ocrTier' ? 'tier3' : fallback);
         await extractText(input('eml'), { forceOCR: true });
         expect(invoke).toHaveBeenCalledExactlyOnceWith('native_extract_text', { path: '/documents/source.eml',
-            options: { tryOcr: true, ocrTier: 'tier3', ocrRecLang: 'auto' } });
+            options: { tryOcr: true, ocrTier: 'tier3', ocrRecLang: 'auto', ocrPipeline: { ...defaultPipeline, language: 'auto' } } });
     });
 
     it('never starts an already cancelled extraction and discards late native results', async () => {

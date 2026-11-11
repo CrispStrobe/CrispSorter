@@ -13,9 +13,10 @@ export function processingOverrides(preset: ProcessingPreset) {
 }
 export type DocumentTool = 'ocr' | 'translate' | 'pdf';
 export const documentToolRequest = writable<{ tool: DocumentTool; locationUri: string; filename: string } | null>(null);
-/** The interactive workbench calls CrispEmbed directly; other OCR tiers are insufficient. */
-export function supportsOcrWorkbench(capabilities: { ocr_tiers?: string[] }): boolean {
-    return capabilities.ocr_tiers?.includes('crispembed') ?? false;
+/** The Workbench can review both embedded engines and supported local adapters. */
+export function supportsOcrWorkbench(capabilities: { ocr?: boolean; ocr_tiers?: string[] }): boolean {
+    return capabilities.ocr !== false && (capabilities.ocr_tiers?.some(tier =>
+        ['crispembed', 'tesseract', 'system_tesseract', 'ocrs', 'paddle', 'paddle-ocr'].includes(tier)) ?? false);
 }
 export function availableDocumentTools(filename: string, capabilities = { ocr: true, pdf_render: true, ocr_tiers: ['crispembed'] }): DocumentTool[] {
     const ext = filename.split('.').pop()?.toLowerCase();

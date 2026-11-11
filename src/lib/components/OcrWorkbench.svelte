@@ -1,5 +1,9 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
+  import { beginOperation, type OperationLog } from "$lib/operationLog";
+  import { loadSavedOcrPolicy, type OcrPolicy } from "$lib/extractors/ocrSettings";
+  import { ocrEngineOptions, ocrLanguageOptions, engineRequirement } from "$lib/ocr/engineCatalog";
+  import { workspaceRecognitionDefaults, updateWorkspaceConfig } from "$lib/ocr/recognitionDefaults";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { message as nativeMessage } from "@tauri-apps/plugin-dialog";
@@ -323,6 +327,7 @@
   let queuePromise = $state<Promise<void> | null>(null);
   let runningProjectId = "", runningBatchId = "";
   let checkpointFailed = false;
+  let batchOperation: OperationLog | null = null;
   let autosave: ProjectAutosave<OcrProject> | null = null;
   let mounted = true;
   const userProofreadingWriter = createProofreadingWriter(async (data) => {
@@ -536,34 +541,20 @@
     : saveStatus.state === "saving" || userProofreadingStatus.state === "saving" ? { state: "saving" }
     : saveStatus.state === "pending" || userProofreadingStatus.state === "pending" ? { state: "pending" }
     : saveStatus);
+  let savedOcrPolicy = $state<OcrPolicy | null>(null);
   const settings = $derived(project.recognitionSettings ?? {});
-  const engine = $derived(
-    typeof settings.engine === "string" ? settings.engine : (capabilities.default_engine ?? "auto"),
-  );
-  const language = $derived(
-    typeof settings.language === "string" ? settings.language : (capabilities.default_language ?? "auto"),
-  );
+  const profile = $derived(PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0]);
+  const effectiveRecognition = $derived(workspaceRecognitionDefaults(profile.config, savedOcrPolicy, settings, capabilities));
+  const engine = $derived(effectiveRecognition.engine);
+  const language = $derived(effectiveRecognition.language);
   const systemLanguages = $derived(capabilities.system_tesseract?.languages ?? []);
-  const recognitionAvailable = $derived(capabilities.ocr && (
-    engine === "system_tesseract"
-      ? (capabilities.system_tesseract?.available ?? capabilities.engines.includes(engine))
-      : capabilities.crispembed
-  ));
-  // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
-  const cpuBudget = $derived(
-    settings.cpuPixelBudget === true &&
-      engine === "qwen2vl" &&
-      !!capabilities.cpu_budget,
-  );
-  const profile = $derived(
-    PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0],
-  );
-  const config = $derived({
-    ...profile.config,
-    ...(settings.config && typeof settings.config === "object"
-      ? (settings.config as Record<string, unknown>)
-      : {}),
-  });
+  const recognitionAvailable = $derived(capabilities.ocr && capabilities.engines.includes(engine));
+  const cpuBudget = $derived(effectiveRecognition.cpuPixelBudget);
+  // Only meaningful for Qwen2-VL where the worker can be spawned; the saved
+  // preference stays for when Qwen2 VL is chosen again.
+  const cpuBudgetActive = $derived(cpuBudget && engine === "qwen2vl" && !!capabilities.cpu_budget);
+  const config = $derived(effectiveRecognition.config);
+  const recognitionControls = $derived(effectiveRecognition.controls);
   const exportIds = $derived(
     exportScope === "current"
       ? activePage
@@ -603,35 +594,6 @@
     docx: "Word document",
     xlsx: "Excel workbook",
   };
-  const engineNames: Record<string, string> = {
-    auto: "Automatic pipeline",
-    dbnet_trocr: "DBNet + TrOCR",
-    parseq: "PARSeq scene text",
-    surya: "Surya multilingual",
-    tesseract: "Tesseract LSTM",
-    system_tesseract: "System Tesseract · word evidence",
-    tesseract_fraktur: "Tesseract LSTM · Fraktur",
-    ppocrv6: "PP-OCRv6 (CJK lines)",
-    easyocr: "EasyOCR",
-    olmocr: "olmOCR 2 (7B)",
-    lfm2_vl: "LFM2.5 VL",
-    got: "GOT OCR (non-commercial)",
-    glm: "GLM OCR",
-    qwen2vl: "Qwen2 VL",
-    qwen3vl: "Qwen3 VL",
-    internvl2: "InternVL2",
-    deepseek_ocr2: "DeepSeek OCR 2",
-    pix2struct: "Pix2Struct",
-    granite_vision: "Granite Vision",
-    lightonocr: "LightOnOCR",
-    unlimited_ocr: "Unlimited OCR",
-  };
-  const languageNames: Record<string, string> = {
-    eng: "English", deu: "German", fra: "French", spa: "Spanish",
-    ita: "Italian", por: "Portuguese", nld: "Dutch", pol: "Polish",
-    rus: "Russian", ara: "Arabic", chi_sim: "Chinese, simplified",
-    chi_tra: "Chinese, traditional", jpn: "Japanese", kor: "Korean",
-  };
   const regionsKinds: RegionKind[] = [
     "text",
     "title",
@@ -649,6 +611,7 @@
       queueState = { ...state, remainingIds: [...state.remainingIds] };
     },
     onStart: async (job) => {
+      batchOperation?.stage("recognizing", { page: project.pages.findIndex(page => page.id === job.id) + 1 });
       change(updateBatchPage(updatePage(project, job.id, { status: "running", error: null }), job.id, "running"), false);
       await autosave?.flush();
     },
@@ -656,14 +619,18 @@
       const next = applyRecognition(project, job.id, result, project.batch?.profileId ?? project.profileId);
       change(updateBatchPage(next, job.id, "completed"), false);
       await autosave?.flush();
+      batchOperation?.stage("page_completed", { regions: result.regions.length, saved: true });
     },
     onError: async (job, failure) => {
+      batchOperation?.stage("warning", { failed: 1 }, "warn");
       const next = updatePage(project, job.id, { status: "failed", error: message(failure), approved: false });
       change(updateBatchPage(next, job.id, "failed", message(failure)), false);
       await autosave?.flush();
     },
     onCheckpointError: (failure, job, stage) => {
       checkpointFailed = true;
+      batchOperation?.stage("checkpoint_failed", {}, "warn");
+      batchOperation?.fail(failure, { saved: false, completed: queueState.completed, failed: queueState.failed });
       let next = project;
       if (stage === "start") next = updateBatchPage(updatePage(next, job.id, { status: "pending" }), job.id, "pending");
       change(updateBatchPhase(next, "stopped"), false);
@@ -705,12 +672,15 @@
     );
   }
   async function flush() {
+    const operation = beginOperation("ocr.checkpoint", { pages: project.pages.length });
     try {
       await autosave?.flush();
       if (!await userProofreadingWriter.flush()) throw new Error(userProofreadingStatus.error ?? "All-project vocabulary could not be saved. Retry saving it before closing.");
       notice = "Project saved";
       error = "";
+      operation.complete({ saved: true });
     } catch (e) {
+      operation.fail(e, { saved: false });
       fail(e);
     }
   }
@@ -902,13 +872,15 @@
   }
   async function importFiles(paths?: string[]) {
     if (locked) return;
+    const operation = beginOperation("ocr.import");
     error = "";
     busy = "Choosing documents";
     try {
       // Resolve an earlier save failure before adding more source documents.
       await autosave?.flush();
       const selected = paths ?? (await client.pickDocuments());
-      if (!selected.length) return;
+      if (!selected.length) { operation.cancel(); return; }
+      operation.stage("ready", { count: selected.length }, "info");
       const controller = new AbortController();
       importController = controller;
       importStopping = false;
@@ -945,6 +917,7 @@
             // The autosaver retains this snapshot for Retry. Stop the import
             // before accepting another document into an unsaved project.
             importSaveFailed = true;
+            operation.stage("checkpoint_failed", { pages: added, saved: false }, "warn");
             errors.push(`${imported.name}: project save failed: ${message(e)}`);
             break;
           }
@@ -957,7 +930,13 @@
         ? ". Import stopped because saving failed. Use Save to retry; keep this workspace open."
         : controller.signal.aborted ? ". Import cancelled; completed documents are saved." : ""}`;
       if (errors.length) error = errors.join("\n");
+      const receipt = { pages: added, warnings: errors.length, saved: !importSaveFailed, partial: errors.length > 0 };
+      if (importSaveFailed) operation.fail(undefined, receipt);
+      else if (controller.signal.aborted) operation.cancel(receipt);
+      else if (errors.length && !added) operation.fail(undefined, receipt);
+      else operation.complete(receipt);
     } catch (e) {
+      operation.fail(e);
       fail(e);
     } finally {
       importController = null;
@@ -973,6 +952,7 @@
     error = "";
     const invalid = captureFileError(file, capabilities.image_import_formats);
     if (invalid) { error = invalid; return; }
+    const operation = beginOperation("ocr.import", { kind: "image", bytes: file.size });
     busy = "Importing photo";
     const controller = new AbortController();
     importController = controller;
@@ -986,6 +966,7 @@
         const first = project.pages.find(page => page.documentId === existing.id);
         if (first) selectPage(first.id);
         notice = "This original photo is already in the project.";
+        operation.complete({ reused: true });
         return;
       }
       const before = project.pages.length;
@@ -996,8 +977,10 @@
       photoOpen = true;
       mobileView = "image";
       await autosave?.flush();
+      operation.complete({ pages: imported.pages.length, saved: true });
       notice = "Photo added. Check its edges, tilt and lighting before recognition.";
     } catch (failure) {
+      operation.fail(failure);
       if (controller.signal.aborted || (failure instanceof DOMException && failure.name === "AbortError")) notice = "Photo import cancelled.";
       else fail(failure);
     }
@@ -1398,6 +1381,11 @@
     selectedRegionId = null;
     editGroup = null;
   }
+  function textEditorHistory(direction: "undo" | "redo") {
+    const selectedId = selectedRegionId;
+    direction === "redo" ? redo() : undo();
+    if (selectedId && activePage?.regions.some((item) => item.id === selectedId)) selectedRegionId = selectedId;
+  }
   function editText(r: OcrRegion, text: string) {
     if (!activePage || locked) return;
     const key = `${activePage.id}:${r.id}`;
@@ -1499,16 +1487,13 @@
     }
   }
   function setConfig(key: string, value: unknown) {
-    setSetting("config", {
-      ...((settings.config as object) ?? {}),
-      [key]: value,
-    });
+    setSetting("config", updateWorkspaceConfig(effectiveRecognition, key, value));
   }
   function chooseProfile(id: string) {
     change({
       ...project,
       profileId: id,
-      recognitionSettings: { ...settings, config: {} },
+      recognitionSettings: { ...settings, engine, language, cpuPixelBudget: cpuBudget, config: {} },
       updatedAt: new Date().toISOString(),
     });
     advancedConfig = "";
@@ -1576,7 +1561,7 @@
     error = "";
     selectedRegionId = null;
     showOriginal = false;
-    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudget };
+    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudgetActive };
     change(beginBatch(project, pages.map(page => page.id), options));
     await runPreparedBatch(pages.map(page => page.id), options);
   }
@@ -1591,16 +1576,23 @@
     change(updateBatchPhase(next, phase), false);
     if (checkpointFailed) return;
     await autosave?.flush();
+    const receipt = { completed: queueState.completed, failed: queueState.failed, pending: queueState.remainingIds.length, saved: true };
+    if (phase === "paused" || phase === "stopped") {
+      batchOperation?.stage(phase === "paused" ? "paused" : "cancel_requested", receipt, "info");
+      batchOperation?.cancel(receipt);
+    } else batchOperation?.complete({ ...receipt, partial: queueState.failed > 0 });
     notice = phase === "paused" ? "Queue paused. Completed pages are saved." : phase === "stopped"
       ? "Queue stopped. Resume the saved batch to finish its original selection."
       : `${queueState.completed} pages recognized${queueState.failed ? `, ${queueState.failed} failed. Use Retry failed.` : ""}`;
   }
   async function runPreparedBatch(pageIds: string[], options: BatchOptions) {
+    batchOperation = beginOperation("ocr.batch", { pages: pageIds.length, engine: options.engine, language: options.language, cpuBudget: options.cpuPixelBudget ?? false });
     busy = "Saving recognition batch";
     checkpointFailed = false;
     try {
       // Persist exact intent and settings before the first native invocation.
       await autosave?.flush();
+      batchOperation.stage("saved", { saved: true }, "info");
       runningProjectId = project.id;
       runningBatchId = project.batch?.id ?? "";
       busy = "";
@@ -1618,6 +1610,7 @@
       await queuePromise;
       await finishQueueSegment();
     } catch (failure) {
+      batchOperation.fail(failure, { saved: false });
       change(updateBatchPhase(project, "stopped"), false);
       fail(failure);
     } finally { busy = ""; queuePromise = null; }
@@ -1635,6 +1628,8 @@
     const paused = queue.state.phase === "paused";
     // The previous segment owns its final checkpoint until it clears this lock.
     if (paused && queuePromise) return;
+    if (paused) batchOperation = beginOperation("ocr.batch", { pending: queueState.remainingIds.length });
+    batchOperation?.stage("cancel_requested", { nativeContinues: queueState.currentId !== null }, "info");
     queue.cancel();
     if (!paused) return; // A running segment saves its stopped phase on settlement.
     const stopped = Promise.resolve().then(() => finishQueueSegment());
@@ -1645,17 +1640,19 @@
   }
   async function resumeQueue() {
     if (busy || queuePromise) return;
+    batchOperation = beginOperation("ocr.batch", { pending: queueState.remainingIds.length });
+    batchOperation.stage("resumed", {}, "info");
     busy = "Saving recognition checkpoint";
     checkpointFailed = false;
     try {
       change(updateBatchPhase(project, "running"), false);
       await autosave?.flush();
       busy = "";
-      if (!queue.resume()) return;
+      if (!queue.resume()) { batchOperation.cancel(); return; }
       queuePromise = queue.whenSettled();
       await queuePromise;
       await finishQueueSegment();
-    } catch (failure) { change(updateBatchPhase(project, "paused"), false); fail(failure); }
+    } catch (failure) { batchOperation.fail(failure, { saved: false }); change(updateBatchPhase(project, "paused"), false); fail(failure); }
     finally { busy = ""; queuePromise = null; }
   }
   function changeExtraction(next: OcrProject, groupKey?: string) {
@@ -1762,6 +1759,7 @@
     }
     busy = "Preparing page";
     error = "";
+    const activity = beginOperation("ocr.transform");
     try {
       const result = await client.transform({
         pagePath: page.imagePath,
@@ -1785,7 +1783,9 @@
       notice = pixelsChanged
         ? "Page updated. Recognize the new pixels before export."
         : "The page pixels are unchanged. Reviewed text and approval were retained.";
+      activity.complete({ pages: result.pages.length });
     } catch (e) {
+      activity.fail(e);
       fail(e);
     } finally {
       busy = "";
@@ -1818,6 +1818,7 @@
     }
     busy = "Preparing the page…";
     error = "";
+    const activity = beginOperation("ocr.prepare");
     const started = Date.now();
     let stage = "Starting";
     const tick = setInterval(() => { busy = `Preparing: ${stage} · ${Math.round((Date.now() - started) / 1000)}s`; }, 1000);
@@ -1842,7 +1843,7 @@
         ? applyPageImage(project, page.id, result, "scan repair")
         : project;
       const updatedPage = next.pages.find((item) => item.id === page.id);
-      if (!updatedPage) return;
+      if (!updatedPage) { activity.stage("discarded"); activity.cancel(); return; }
       change(
         updatePage(next, page.id, {
           provenance: {
@@ -1869,9 +1870,12 @@
           : "Scan repair made no pixel changes. Reviewed text and approval were retained.",
         ...warnings,
       ].join(" · ");
+      activity.complete({ warnings: warnings.length });
     } catch (e) {
       const missing = missingModels(e);
       if (missing && !allowDownloads) {
+        activity.stage("awaiting_models", { count: missing.length }, "info");
+        activity.cancel();
         const list = missing.map((m) => `${m.name} (${m.purpose}${m.license ? `, licence ${m.license}` : ""})`).join(", ");
         busy = "";
         confirmation(
@@ -1882,6 +1886,7 @@
         );
         return;
       }
+      activity.fail(e);
       fail(e);
     } finally {
       clearInterval(tick);
@@ -1890,13 +1895,14 @@
   }
   async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
     if (!pageId || locked || !recognitionAvailable) return;
+    const activity = beginOperation("ocr.recognition", { engine, language, cpuBudget: cpuBudgetActive });
     error = "";
     try {
       const request = captureZoneReview(project, pageId, rect);
       const configSnapshot = JSON.parse(JSON.stringify(config));
       const engineSnapshot = engine;
       const languageSnapshot = language;
-      const cpuBudgetSnapshot = cpuBudget;
+      const cpuBudgetSnapshot = cpuBudgetActive;
       const profileSnapshot = project.profileId;
       const page = request.page;
       busy = "Recognizing selected area";
@@ -1913,6 +1919,7 @@
       });
       const preview = prepareZoneReview(project, request, result, profileSnapshot);
       if (!mounted || !active) {
+        activity.stage("discarded"); activity.cancel();
         notice = "Partial OCR finished without replacing text. Open the OCR workspace and run it again to review the result.";
         return;
       }
@@ -1935,7 +1942,9 @@
         },
       };
       notice = "Partial OCR is ready to compare. Current text has been kept.";
+      activity.complete({ regions: preview.regions.length });
     } catch (e) {
+      activity.fail(e);
       fail(e);
     } finally {
       busy = "";
@@ -2152,6 +2161,7 @@
   }
   async function extract(kind: "fields" | "table" | "formula") {
     if (!activePage || locked) return;
+    const activity = beginOperation("ocr.specialist", { kind });
     const pageId = activePage.id;
     const regionId = region?.id ?? null;
     const layout = useLayoutFields;
@@ -2163,6 +2173,7 @@
     try {
       const request = captureExtractionRequest(project, pageId, regionId, kind === "fields" && !layout ? "text" : "pixels");
       const source = request.capture;
+      const configSnapshot = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
       let output: unknown;
       let labelList: string[] = [];
       if (kind === "fields") {
@@ -2170,17 +2181,18 @@
         if (!labelList.length) throw new Error("Enter at least one field label.");
         if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("Field score must be between zero and one.");
         const result = layout
-          ? await client.layoutFields(await extractionPath(source), labelList, threshold)
+          ? await client.layoutFields(await extractionPath(source), labelList, threshold, configSnapshot)
           : await client.extractFields(source.text ?? "", labelList, threshold);
         output = result;
         notice = result.length + " fields extracted" + (layout ? " from page layout" : " from reviewed text");
       } else if (kind === "table") {
-        const result = await client.table(await extractionPath(source));
+        const result = await client.table(await extractionPath(source), configSnapshot);
         output = result;
         notice = result.rows + " rows × " + result.cols + " columns extracted";
       } else {
         const result = await client.math(await extractionPath(source));
         if (result === null || result === "") {
+          activity.complete({ results: 0 });
           notice = "No formula was recognized. Existing saved formulas are unchanged.";
           return;
         }
@@ -2199,7 +2211,9 @@
         extractionSelection = { ...extractionSelection, [pageId + ":" + kind]: request.objectId };
       } else notice += " · saved to " + page.name;
       if (freshness && !freshness.current) notice += " · Historical source: " + freshness.reasons.join(" ");
+      activity.complete({ results: 1 });
     } catch (failure) {
+      activity.fail(failure);
       fail(failure);
     } finally {
       busy = "";
@@ -2270,21 +2284,19 @@
     }
   }
   function keydown(event: KeyboardEvent) {
-    if (!active || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
+    if (event.defaultPrevented || !active || confirm || helpOpen || passageAction || pageTextDraftOpen || tableRepair || tableJoin) return;
     const target = event.target as HTMLElement;
-    const editing = target?.matches(
-      'input,textarea,select,[contenteditable="true"]',
-    );
+    const editableOwner = target?.closest<HTMLElement>('[contenteditable]');
+    const editing = target?.isContentEditable || target?.matches('input,textarea,select') ||
+      !!(editableOwner && ['', 'true', 'plaintext-only'].includes(editableOwner.getAttribute('contenteditable') ?? ''));
     // Structured text and extraction edits restore their metadata and text
     // together from project history. Full-page drafts keep native textarea undo.
-    const projectEditor = target?.matches('[data-extraction-editor]') ||
-      (activePage?.structure && target?.matches('textarea[data-region-text],textarea[data-passage-text],textarea[data-structure-text]'));
+    const projectEditor = editing && (target?.closest('[data-document-text]') || target?.matches('[data-extraction-editor]') ||
+      (activePage?.structure && target?.matches('textarea[data-region-text],textarea[data-passage-text],textarea[data-structure-text]')));
     if (!event.isComposing && projectEditor &&
       (event.metaKey || event.ctrlKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase())) {
       event.preventDefault();
-      const selectedId = selectedRegionId;
-      event.key.toLowerCase() === "y" || event.shiftKey ? redo() : undo();
-      if (selectedId && activePage?.regions.some((item) => item.id === selectedId)) selectedRegionId = selectedId;
+      textEditorHistory(event.key.toLowerCase() === "y" || event.shiftKey ? "redo" : "undo");
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -2358,8 +2370,11 @@
       const results = await Promise.allSettled([
         client.capabilities(),
         initialProject ? Promise.resolve(null) : client.load(),
+        client === workspaceClient ? loadSavedOcrPolicy() : Promise.resolve(null),
       ]);
       if (!mounted) return;
+      if (results[2].status === "fulfilled") savedOcrPolicy = results[2].value;
+      else fail(results[2].reason);
       if (results[0].status === "fulfilled") {
         capabilities = results[0].value;
         if (!capabilities.formats.includes(exportFormat))
@@ -3350,6 +3365,7 @@
                 onselect={(id) => { currentMatch = null; wordInspection = null; selectedRegionId = id; }}
                 onedit={editText}
                 onblur={() => (editGroup = null)}
+                onhistory={textEditorHistory}
               />
             {:else if textView === "structure"}
               <StructurePanel
@@ -3735,13 +3751,8 @@
                   value={engine}
                   onchange={(e) => setSetting("engine", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto" disabled={!capabilities.crispembed}>Automatic pipeline</option
-                  >{#each capabilities.engines.filter((e) => e !== "auto") as e}<option
-                      value={e}>{engineNames[e] ?? e}</option
-                    >{/each}
-                  {#if engine === "system_tesseract" && !capabilities.engines.includes(engine)}
-                    <option value="system_tesseract" disabled>System Tesseract · unavailable</option>
-                  {/if}</select
+                  >{#each ocrEngineOptions(capabilities, engine) as option}<option
+                    value={option.value} disabled={option.disabled}>{option.label}</option>{/each}</select
                 ></label
               ><label class="field-label"
                 >Document language<select
@@ -3749,24 +3760,15 @@
                   onchange={(e) =>
                     setSetting("language", e.currentTarget.value)}
                   disabled={locked}
-                  >{#if engine === "system_tesseract"}
-                    <option value="auto">English (eng) default</option>
-                    {#if language !== "auto" && !systemLanguages.includes(language)}
-                      <option value={language}>{language} (configured)</option>
-                    {/if}
-                    {#each systemLanguages as code}<option value={code}>{languageNames[code] ?? code} ({code})</option>{/each}
-                  {:else}
-                    <option value="auto">Model default</option>
-                    {#each Object.entries(languageNames) as [code, name]}<option value={code}>{name}</option>{/each}
-                  {/if}</select
+                  >{#each ocrLanguageOptions(engine, capabilities, language) as option}<option
+                    value={option.value}>{option.label}</option>{/each}</select
                 ></label
               >
             </div>
             {#if engine === "system_tesseract"}<p class="field-hint" data-system-tesseract-info>
               System Tesseract{capabilities.system_tesseract?.version ? ` ${capabilities.system_tesseract.version}` : ""}
-              uses the current working image and supplies word scores and source
-              locations. Apply scan preparation first if needed. Pipeline cleanup,
-              layout, and the Qwen2 VL CPU budget are not applied during this step.
+              supplies word scores and source locations. Enabled preparation is
+              applied before recognition; locations refer to the resulting page.
               Choose an installed language; the default is English, without
               automatic language detection.
             </p>
@@ -3782,6 +3784,12 @@
               System Tesseract word evidence is unavailable:
               {capabilities.system_tesseract.reason ?? "Install Tesseract and a recognition language pack to use this engine."}
             </p>{/if}
+            {#if engineRequirement(engine)}<p class="field-hint">{engineRequirement(engine)}</p>{/if}
+            {#if engine === "ocrs" || engine === "paddle"}<p class="field-hint">This engine supplies plain text. Review shows a page-sized block without word confidence.</p>{/if}
+            {#if cpuBudget && (engine !== "qwen2vl" || !capabilities.cpu_budget)}<p class="field-hint">
+              The saved CPU profile requires Qwen2 VL on a supported desktop build.
+              <button type="button" class="btn-text" disabled={locked} onclick={() => setSetting("cpuPixelBudget", false)}>Turn off CPU profile</button>
+            </p>{/if}
             {@render mobileModelSetup()}
             {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
                 class="setting-toggle"
@@ -3794,7 +3802,7 @@
                   ></span
                 ><input
                   type="checkbox"
-                  checked={settings.cpuPixelBudget === true}
+                  checked={effectiveRecognition.cpuPixelBudget}
                   onchange={(e) =>
                     setSetting("cpuPixelBudget", e.currentTarget.checked)}
                   disabled={locked}
@@ -3809,7 +3817,7 @@
                     ></span
                   ><input
                     type="checkbox"
-                    checked={!!config[option.key]}
+                    checked={!!recognitionControls[option.key]}
                     onchange={(e) =>
                       setConfig(option.key, e.currentTarget.checked)}
                     disabled={locked || !capabilities.crispembed}
@@ -3864,7 +3872,7 @@
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
               <p class="field-hint">
-                {#if engine === "system_tesseract"}Prepare the page before running System Tesseract.{:else}Recognition also applies enabled preparation.{/if} The prepared image
+                Recognition also applies enabled preparation. The prepared image
                 becomes the review and export image. Undo restores the previous
                 result.
               </p>
@@ -3940,10 +3948,10 @@
                 Use installed model paths or CrispEmbed registry names. Model
                 availability is checked when the pipeline runs.
               </p>
-              {#each [{ key: "det_model", label: "Detection model" }, { key: "rec_model", label: "Recognition model" }, { key: "vlm_ocr_model", label: "Escalation model" }, { key: "punct_model", label: "Punctuation restoration" }, { key: "truecase_model", label: "Truecase model" }, { key: "lid_model", label: "Language identification model" }] as field}<label
+              {#each effectiveRecognition.modelFields as field}<label
                   class="field-label"
                   >{field.label}<input
-                    value={String(config[field.key] ?? "")}
+                    value={String(recognitionControls[field.key] ?? "")}
                     placeholder="Use engine default"
                     disabled={locked}
                     onchange={(e) =>
@@ -5175,33 +5183,6 @@
     border-bottom-color: #60a5fa;
     background: linear-gradient(transparent, #243b563f);
   }
-  .review-heading {
-    padding: 15px 16px 12px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .review-heading > div { flex: 1; min-width: 120px; }
-  .review-heading h2 {
-    font-size: 14px;
-    font-weight: 650;
-    margin: 0 0 4px;
-    letter-spacing: -0.2px;
-  }
-  .review-heading span {
-    font-size: 10px;
-    color: #a1a1aa;
-  }
-  .review-options {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    padding: 9px 16px;
-    border-top: 1px solid #27272a;
-    font-size: 10px;
-  }
   .check-label {
     display: flex;
     align-items: center;
@@ -5229,11 +5210,6 @@
   .review-view-tabs button.active {
     color: #bfdbfe;
     border-bottom: 1px solid #60a5fa;
-  }
-  .review-view-tabs > span {
-    margin-left: auto;
-    font-size: 9px;
-    color: #71717a;
   }
   .find-panel {
     background: #18181b;
@@ -6288,9 +6264,6 @@
     .work-area.rail-hidden {
       grid-template-columns: minmax(220px, 1fr) 310px;
     }
-    .optional-label {
-      display: none;
-    }
     .workspace-title input {
       font-size: 16px !important;
     }
@@ -6320,10 +6293,6 @@
     .image-toolbar select {
       max-width: 87px;
       font-size: 9px !important;
-    }
-    .image-toolbar .button.small {
-      font-size: 9px;
-      padding: 4px 5px;
     }
     .inspector-tabs {
       padding: 0 3px;
@@ -6370,10 +6339,6 @@
     .header-actions {
       gap: 2px;
     }
-    .header-actions .button {
-      font-size: 10px;
-      padding: 5px 7px;
-    }
     .header-actions > .shortcuts-button {
       display: none;
     }
@@ -6409,9 +6374,6 @@
     }
     .image-toolbar select {
       max-width: 82px;
-    }
-    .work-area .document-pane .image-toolbar > .button {
-      display: none;
     }
     .image-toolbar {
       justify-content: space-between;
@@ -6485,13 +6447,6 @@
     }
     .panel-scroll {
       overflow: visible;
-    }
-    .workspace-header .header-actions .button {
-      padding: 5px;
-      font-size: 9px;
-    }
-    .header-actions .button :global(svg) {
-      width: 13px;
     }
     .workspace-title input {
       font-size: 13px !important;
@@ -6577,8 +6532,6 @@
   }
   .camera-input { display: none; }
   .mobile-workspace-nav { display: none; }
-  .photo-tool-toggle { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #18181b; flex: none; }
-  .photo-tool-toggle > span { font-size: 10px; color: var(--muted); }
   .photo-focus-controls { display: none; }
   .batch-recovery { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: #27272a; border-bottom: 1px solid #52525b; flex: none; }
   .batch-recovery > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -6606,20 +6559,17 @@
     .ocr-workspace .button, .ocr-workspace .icon-button, .ocr-workspace .text-button { min-height: 44px; }
     .ocr-workspace .icon-button { min-width: 44px; padding: 8px; }
     .command-bar .undo-group .icon-button { min-width: 44px; }
-    .workspace-header .header-actions .button, .workspace-header .header-actions .icon-button { min-height: 44px; min-width: 44px; }
+    .workspace-header .header-actions .icon-button { min-height: 44px; min-width: 44px; }
     .command-bar { column-gap: 5px; row-gap: 4px; padding: 5px 8px; }
     .command-bar .button { font-size: 10px; }
     .command-bar .undo-group { margin-left: auto; }
     .command-bar .toolbar-spacer { display: none; }
     .image-toolbar { min-height: 48px; flex: none; overflow-x: auto; justify-content: flex-start; gap: 6px; }
     .image-toolbar .tool-group { flex: none; }
-    .work-area .document-pane .image-toolbar > .button { display: inline-flex; flex: none; }
     .image-toolbar select { max-width: 140px; min-height: 44px; font-size: 12px !important; }
     .image-footer { height: auto; min-height: 48px; flex: none; gap: 2px; padding: 3px 5px; }
     .image-footer .icon-button { min-width: 36px; }
     .image-footer select { max-width: 92px; }
-    .photo-tool-toggle { padding: 3px 10px; }
-    .photo-tool-toggle .button { min-height: 40px; }
     .inspector-tabs > button { min-height: 48px; font-size: 11px; }
     .batch-recovery { flex-wrap: wrap; padding: 8px 10px; gap: 5px; }
     .batch-recovery > div { flex-basis: 100%; }
@@ -6630,12 +6580,10 @@
     .approval-bar .button { font-size: 11px; }
     .ocr-workspace :global(textarea), .ocr-workspace :global(input:not([type="checkbox"]):not([type="range"])), .ocr-workspace :global(select) { font-size: 16px; }
     .workspace-title input { font-size: 14px !important; }
-    .photo-tool-toggle > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ocr-workspace.photo-focusing .workspace-header,
     .ocr-workspace.photo-focusing .command-bar,
     .ocr-workspace.photo-focusing .mobile-workspace-nav,
     .ocr-workspace.photo-focusing .image-toolbar,
-    .ocr-workspace.photo-focusing .photo-tool-toggle,
     .ocr-workspace.photo-focusing .document-pane :global(.photo-preparation) { display: none; }
     .photo-focusing .photo-focus-controls { display: block; flex: none; background: #27272a; border-bottom: 1px solid #52525b; padding: 8px; }
     .photo-focus-actions { display: flex; gap: 8px; }
@@ -6667,10 +6615,7 @@
   .workspace-top > .workspace-header { min-height: 0; padding: 8px 14px; border-bottom: 0; flex: 1 1 auto; }
   .workspace-top > .command-bar { border-bottom: 0; flex: 1 1 auto; padding-top: 6px; padding-bottom: 6px; }
   .workspace-top .workspace-mark, .workspace-top .eyebrow { display: none; }
-  .image-toolbar .photo-tool-toggle { padding: 0; border: 0; background: none; }
-  .image-toolbar .photo-tool-toggle > span { display: none; }
   .queue-bar { position: relative; }
-  .queue-bar-dismiss { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: 0; color: #a1a1aa; font-size: 16px; cursor: pointer; }
   @media (max-width: 780px) {
     .workspace-top { display: contents; }
   }

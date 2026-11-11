@@ -22,5 +22,9 @@ it('preserves advanced settings and only offers tools compatible with a document
     expect(availableDocumentTools('report.pdf', { ocr: false, pdf_render: false, ocr_tiers: [] })).toEqual(['pdf']);
     expect(availableDocumentTools('scan.png', { ocr: false, pdf_render: false, ocr_tiers: [] })).toEqual([]);
     expect(availableDocumentTools('report.pdf', { ocr: true, pdf_render: false, ocr_tiers: ['crispembed'] })).toEqual(['pdf']);
-    expect(availableDocumentTools('scan.png', { ocr: true, pdf_render: true, ocr_tiers: ['ocrs'] })).toEqual([]);
+    for (const tier of ['ocrs', 'tesseract', 'paddle']) {
+        expect(availableDocumentTools('scan.png', { ocr: true, pdf_render: true, ocr_tiers: [tier] })).toEqual(['ocr']);
+        expect(availableDocumentTools('report.pdf', { ocr: true, pdf_render: false, ocr_tiers: [tier] })).toEqual(['pdf']);
+    }
+    expect(availableDocumentTools('scan.png', { ocr: false, pdf_render: true, ocr_tiers: ['ocrs'] })).toEqual([]);
 });

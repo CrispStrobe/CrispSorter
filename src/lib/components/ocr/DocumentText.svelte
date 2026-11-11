@@ -2,6 +2,7 @@
   import { Info } from "lucide-svelte";
   import type { OcrPage, OcrRegion } from "$lib/ocr/model";
   import { getWordEvidence, getWordConfidenceBand, type WordConfidenceBand } from "$lib/ocr/words";
+  import { editableDocumentText, readTextSelection, type EditableTextModel } from "$lib/ocr/documentTextEditing";
 
   /**
    * The page's recognized text as one editable document, in reading order:
@@ -18,6 +19,7 @@
     onselect,
     onedit,
     onblur,
+    onhistory,
   }: {
     page: OcrPage;
     threshold: number;
@@ -28,6 +30,7 @@
     onselect: (regionId: string) => void;
     onedit: (region: OcrRegion, text: string) => void;
     onblur: () => void;
+    onhistory: (direction: "undo" | "redo") => void;
   } = $props();
 
   type Piece = { text: string; band: WordConfidenceBand | null; score: number | null };
@@ -64,7 +67,8 @@
 
   let root = $state<HTMLElement>();
   let editingId = $state<string | null>(null);
-  let caretAt = 0;
+  let editingPageId = $state<string | null>(null);
+  let caretAt = $state(0);
 
   const title = (piece: Piece) =>
     piece.band === "edited" ? "Edited" : piece.score === null ? "No confidence score" : `Confidence ${Math.round(piece.score * 100)}%`;
@@ -91,38 +95,20 @@
   }
 
   function startEditing(region: OcrRegion, offset: number) {
-    onselect(region.id);
     if (disabled) return;
+    onselect(region.id);
     caretAt = Math.max(0, Math.min(offset, region.text.length));
+    editingPageId = page.id;
     editingId = region.id;
   }
 
-  function placeCaret(element: HTMLElement, offset: number) {
-    const selection = element.ownerDocument.getSelection();
-    if (!selection) return;
-    const range = element.ownerDocument.createRange();
-    const text = element.firstChild;
-    if (text && text.nodeType === Node.TEXT_NODE) range.setStart(text, Math.min(offset, text.textContent?.length ?? 0));
-    else range.setStart(element, 0);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
-  function caretOffset(element: HTMLElement): number {
-    const selection = element.ownerDocument.getSelection();
-    if (!selection?.rangeCount) return 0;
-    const range = element.ownerDocument.createRange();
-    range.setStart(element, 0);
-    range.setEnd(selection.getRangeAt(0).startContainer, selection.getRangeAt(0).startOffset);
-    return range.toString().length;
-  }
-
-  /** The editable paragraph owns its DOM while focused; Svelte does not re-render it. */
-  function editable(element: HTMLElement, region: OcrRegion) {
-    element.textContent = region.text;
-    element.focus();
-    placeCaret(element, caretAt);
+  function editableModel(regionId: string): EditableTextModel {
+    const region = page.regions.find((item) => item.id === regionId);
+    return {
+      key: `${page.id}:${regionId}`,
+      text: region?.text ?? "",
+      disabled: disabled || !region || region.excluded || region.kind === "picture" || region.kind === "table" || editingPageId !== page.id || editingId !== regionId,
+    };
   }
 
   function move(index: number, toEnd: boolean) {
@@ -132,26 +118,25 @@
   }
 
   function keydown(event: KeyboardEvent, region: OcrRegion, index: number) {
+    if (event.defaultPrevented || disabled || event.isComposing) return;
     const element = event.currentTarget as HTMLElement;
     if (event.key === "Escape") { event.preventDefault(); element.blur(); return; }
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      // Plain newlines keep the paragraph's text exact (no <br>/<div> markup).
-      event.preventDefault();
-      element.ownerDocument.execCommand("insertText", false, "\n");
-      return;
-    }
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    const selection = readTextSelection(element);
+    if (!selection || selection.anchor !== selection.focus) return;
     const text = element.textContent ?? "";
-    if (event.key === "ArrowDown" && caretOffset(element) >= text.length) { event.preventDefault(); move(index + 1, false); }
-    else if (event.key === "ArrowUp" && caretOffset(element) === 0) { event.preventDefault(); move(index - 1, true); }
+    if (event.key === "ArrowDown" && selection.focus >= text.length) { event.preventDefault(); move(index + 1, false); }
+    else if (event.key === "ArrowUp" && selection.focus === 0) { event.preventDefault(); move(index - 1, true); }
   }
 
-  function input(event: Event, region: OcrRegion) {
-    const text = (event.currentTarget as HTMLElement).textContent ?? "";
-    if (text !== region.text) onedit(region, text);
+  function input(regionId: string, text: string) {
+    if (disabled || editingPageId !== page.id || editingId !== regionId) return;
+    const region = page.regions.find((item) => item.id === regionId);
+    if (region && text !== region.text) onedit(region, text);
   }
 
   function blur(region: OcrRegion) {
-    if (editingId === region.id) editingId = null;
+    if (editingId === region.id) { editingId = null; editingPageId = null; }
     onblur();
   }
 
@@ -171,30 +156,32 @@
     {#if !counts.scored && passages.length}<span class="chip" title="This engine reported no word scores for this page">no word scores</span>{/if}
     {#if engine}<span class="engine" title="Recognition engine for this page">{engine}</span>{/if}
     <span class="spacer"></span>
-    <span
-      class="info"
-      tabindex="0"
-      role="note"
-      aria-label="About the page text"
-      title={"Click anywhere in the text to edit it. Each paragraph stays linked to its region on the page image; Enter adds a line break, arrow keys move between paragraphs, Esc finishes. Red words have low confidence, amber words are uncertain, green words were edited."
-        + (omitted ? ` ${omitted} table or picture region${omitted === 1 ? " is" : "s are"} edited in Regions or Structure.` : "")}
-      ><Info size={14} /></span
-    >
+    <details class="info-help">
+      <summary class="info" aria-label="About the page text" title="About the page text"><Info size={14} /></summary>
+      <p>{"Click anywhere in the text to edit it. Each paragraph stays linked to its region on the page image; Enter adds a line break, arrow keys move between paragraphs, Esc finishes. Red words have low confidence, amber words are uncertain, green words were edited."
+        + (omitted ? ` ${omitted} table or picture region${omitted === 1 ? " is" : "s are"} edited in Regions or Structure.` : "")}</p>
+    </details>
   </div>
   <div class="paper" bind:this={root}>
     {#each passages as region, index (region.id)}
-      {#if editingId === region.id}
+      {#if editingPageId === page.id && editingId === region.id}
         <div
           class="passage editing {region.kind}"
           data-passage-id={region.id}
-          contenteditable="plaintext-only"
+          data-document-text
+          contenteditable={disabled ? "false" : "plaintext-only"}
           role="textbox"
-          tabindex="0"
+          tabindex={disabled ? -1 : 0}
           aria-multiline="true"
           aria-label={`Text of passage ${index + 1}`}
           spellcheck="true"
-          use:editable={region}
-          oninput={(e) => input(e, region)}
+          aria-disabled={disabled}
+          aria-readonly={disabled}
+          use:editableDocumentText={{
+            ...editableModel(region.id), caret: caretAt,
+            readModel: () => editableModel(region.id),
+            oninput: (text) => input(region.id, text), onhistory,
+          }}
           onkeydown={(e) => keydown(e, region, index)}
           onblur={() => blur(region)}
         ></div>
@@ -206,7 +193,8 @@
           class:empty={!region.text}
           data-passage-id={region.id}
           role="button"
-          tabindex="0"
+          tabindex={disabled ? -1 : 0}
+          aria-disabled={disabled}
           aria-label={`Edit passage ${index + 1}: ${region.text.slice(0, 60)}`}
           onclick={(e) => startEditing(region, clickOffset(e.currentTarget as HTMLElement, e) ?? region.text.length)}
           onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); startEditing(region, region.text.length); } }}
@@ -229,8 +217,12 @@
   .chip.low { background: #7f1d1d66; color: #fca5a5; }
   .chip.medium { background: #78350f55; color: #fcd34d; }
   .engine { color: #71717a; }
-  .info { display: inline-flex; color: #71717a; cursor: help; border-radius: 4px; }
+  .info-help { position: relative; }
+  .info { display: inline-flex; color: #71717a; cursor: pointer; border-radius: 4px; list-style: none; }
+  .info::-webkit-details-marker { display: none; }
   .info:hover, .info:focus-visible { color: #d4d4d8; }
+  .info:focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
+  .info-help p { position: absolute; right: 0; top: 100%; z-index: 20; width: min(320px, calc(100vw - 64px)); margin: 6px 0 0; padding: 10px; box-sizing: border-box; border: 1px solid #3f3f46; border-radius: 6px; background: #27272a; color: #e4e4e7; font-size: 12px; line-height: 1.5; box-shadow: 0 6px 20px #0008; }
   .paper {
     flex: 1; min-height: 0; overflow-y: auto; background: #fafafa; color: #18181b;
     border-radius: 6px; padding: 22px 26px; font-size: 14px; line-height: 1.6;

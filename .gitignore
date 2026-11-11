@@ -77,3 +77,7 @@ test-results/
 
 # Generated source-bound OCR qualification crate (never a release artifact).
 /ocr-qualification/
+
+# Independent experimental SMB qualification crate
+/crates/crisp-smb-source/target/
+/.smb-fixture-source/

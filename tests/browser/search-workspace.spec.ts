@@ -458,6 +458,27 @@ test('an index switch during the Save dialog cannot silently export a different 
     await expect(page.locator('.result-card')).toHaveCount(3);
 });
 
+test('a report filename containing cancelled remains an error with a failed lifecycle receipt', async ({ page }) => {
+    await summaryFixture(page);
+    const messages: string[] = [];
+    page.on('console', message => { if (message.text().includes('search.export ')) messages.push(message.text()); });
+    await page.evaluate(() => {
+        const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
+        root.__TAURI_INTERNALS__.invoke = (command: string, args: any, options: any) => {
+            if (command === 'index_export_lexical_report') return Promise.reject(new Error('Cannot write cancelled-report.csv'));
+            return original(command, args, options);
+        };
+    });
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await search(page);
+    await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
+    await expect(page.locator('.corpus-export-feedback')).toHaveAttribute('role', 'alert');
+    await expect(page.locator('.corpus-export-feedback')).toContainText('Cannot write cancelled-report.csv');
+    expect(messages.some(message => message.includes('phase=failed'))).toBe(true);
+    expect(messages.some(message => message.includes('phase=cancelled'))).toBe(false);
+    expect(messages.join('\n')).not.toContain('cancelled-report.csv');
+});
+
 test('accepted cancellation reports no completed full-corpus file', async ({ page }) => {
     await summaryFixture(page);
     await page.evaluate(() => {

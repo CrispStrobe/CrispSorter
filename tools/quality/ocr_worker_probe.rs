@@ -32,7 +32,9 @@ fn main() {
         println!("Real released-model OCR passed in an isolated CPU-budget worker; parent environment unchanged.");
         return;
     }
-    let regions = ocr_worker::run_cpu_budget(std::path::Path::new("fixture.png"), &OcrPipelineConfig::default()).unwrap();
+    let config = crispsorter_ocr_qualification::extractors::ocr_presets::apply(
+        &OcrPipelineConfig::default(), "multilingual").unwrap();
+    let regions = ocr_worker::run_cpu_budget(std::path::Path::new("fixture.png"), &config).unwrap();
     assert_eq!(regions.len(), 1);
     assert_eq!(regions[0].text, "worker response");
     assert_eq!(std::env::var_os("CRISPEMBED_MAX_PIXELS"), before_pixels);

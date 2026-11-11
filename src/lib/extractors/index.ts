@@ -1,8 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 // Extractors are dynamically imported on first use so mammoth, pdfjs,
 // epub-parser, and tesseract.js don't bloat the initial bundle.
-import { logInfo, logWarn, logDebug } from '../log';
+import { beginOperation } from '../operationLog';
 import type { ContainerCoverage, ContainerEntry, ContainerSourceReceipt } from '../containers';
+import type { OcrSelection } from './ocrSettings';
 
 export interface ExtractionResult {
     text: string;
@@ -69,6 +70,8 @@ export interface ExtractionOptions {
     onProgress?: (page: number, total: number) => void;
     maxChars?: number;
     maxPages?: number;
+    /** Explicit recognition choices override the saved extraction policy. */
+    ocr?: OcrSelection;
 }
 
 /** Preserve extraction coverage labels through the foreground indexing boundary. */
@@ -96,6 +99,24 @@ export async function extractText(
     file: File | { name: string, arrayBuffer: ArrayBuffer, path?: string },
     options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
+    const operation = beginOperation('document.extract', { forced: options.forceOCR === true, format: file.name.split('.').pop()?.toLowerCase() });
+    try {
+        options.signal?.throwIfAborted();
+        const result = await extractDocument(file, options);
+        options.signal?.throwIfAborted();
+        operation.complete({ characters: result.text.length, count: result.members?.length ?? 0 });
+        return result;
+    } catch (error) {
+        if (options.signal?.aborted && error === options.signal.reason) operation.cancel();
+        else operation.fail(error);
+        throw error;
+    }
+}
+
+async function extractDocument(
+    file: File | { name: string, arrayBuffer: ArrayBuffer, path?: string },
+    options: ExtractionOptions,
+): Promise<ExtractionResult> {
     const name = file.name;
     const path = file instanceof File ? undefined : file.path;
     const extension = name.split('.').pop()?.toLowerCase();
@@ -121,19 +142,15 @@ export async function extractText(
     // error with a clear message).
     if (extension && AUDIO_EXTS_SET.has(extension)) {
         if (!path) {
-            logWarn(`Audio extraction requires a host path: ${name}`);
             throw new Error(
                 `Audio/video files need a file-system path. The dropped path was not forwarded; please re-open via "Add Files" instead of pasting.`
             );
         }
-        const pickedTool = `crispasr (.${extension})`;
-        logInfo(`Extracting ${name} with ${pickedTool} (path-based)`);
         // Tauri command returns { text, language? } — the second
         // field is the whisper-detected ISO 639-1 source language,
         // surfaced into ExtractionResult.metadata so callers (Stapel
         // language column, IndexIngest snippet routing) can use it.
         const res = await invoke<{ text: string; language: string | null }>('audio_extract_text', { path });
-        logDebug(`Audio extraction finished for ${name}: ${res.text.length.toLocaleString()} chars (via ${pickedTool}, lang=${res.language ?? 'unknown'})`);
         return {
             text: res.text,
             markdownText: undefined,
@@ -158,23 +175,18 @@ export async function extractText(
     // materialised all produce them, and a document library accumulates
     // them silently.
     if (arrayBuffer.byteLength === 0) {
-        logWarn(`Skipping ${name}: the file is empty (0 bytes)`);
         throw new Error(`File is empty (0 bytes): ${name}`);
     }
 
     let text = '';
     let markdownText: string | undefined;
     let headings: string[] | undefined;
-    let pickedTool = '';
+    let metadata: ExtractionResult['metadata'];
 
-    // info-level: which extractor was picked (visible to users by
-    // default). Per-page chatter inside the individual extractors
-    // stays at console.log (browser-devtools only); the milestone
-    // events the user actually wants to see go through flog.
+    // The outer receipt owns completion, including formats that do not use
+    // OCR. Individual OCR pages and native transports have their own stages.
     switch (extension) {
         case 'pdf': {
-            pickedTool = 'pdfjs-dist (JS)';
-            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             const { extractPdf } = await import('./pdfExtractor');
             text = await extractPdf(arrayBuffer, options);
             // PDF: build lightweight markdown with heuristic heading detection.
@@ -182,29 +194,21 @@ export async function extractText(
             break;
         }
         case 'docx': {
-            pickedTool = 'mammoth (DOCX)';
-            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             const { extractDocx } = await import('./docxExtractor');
             ({ text, markdownText, headings } = await extractDocx(arrayBuffer));
             break;
         }
         case 'epub': {
-            pickedTool = '@lingo-reader/epub-parser';
-            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             const { extractEpub } = await import('./epubExtractor');
             ({ text, markdownText, headings } = await extractEpub(arrayBuffer, name, options));
             break;
         }
         case 'txt': {
-            pickedTool = 'TextDecoder utf-8';
-            logDebug(`Extracting ${name} as plain text`);
             const decoder = new TextDecoder('utf-8');
             text = decoder.decode(arrayBuffer);
             break;
         }
         case 'md': {
-            pickedTool = 'TextDecoder utf-8 (md)';
-            logDebug(`Extracting ${name} as markdown`);
             const decoder = new TextDecoder('utf-8');
             text = decoder.decode(arrayBuffer);
             markdownText = text;
@@ -213,8 +217,6 @@ export async function extractText(
         }
         case 'html':
         case 'htm': {
-            pickedTool = 'DOMParser (HTML)';
-            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             const { extractHtml } = await import('./htmlExtractor');
             ({ text, markdownText, headings } = await extractHtml(arrayBuffer));
             break;
@@ -226,26 +228,21 @@ export async function extractText(
         case 'bmp':
         case 'tif':
         case 'tiff': {
-            pickedTool = `tesseract.js OCR (.${extension})`;
-            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             const { extractImage } = await import('./imageExtractor');
-            ({ text, markdownText, headings } = await extractImage(arrayBuffer, name));
+            ({ text, markdownText, headings, metadata } = await extractImage(arrayBuffer, name, options));
             break;
         }
         case 'doc':
             // Legacy MS Word (CFB / OLE2). Browser libraries can't reliably read this.
             // Surface a clear message so the user can convert to .docx.
-            logWarn(`Legacy .doc rejected (no in-app extractor): ${name}`);
             throw new Error(
                 'Legacy .doc files are not supported in-app. Please convert the file to .docx, .pdf, or .txt and try again.'
             );
         default:
-            logWarn(`Unsupported file type rejected: ${name} (.${extension})`);
             throw new Error(`Unsupported file type: ${extension}`);
     }
 
-    logDebug(`Extraction finished for ${name}: ${text.length.toLocaleString()} chars, ${headings?.length ?? 0} headings (via ${pickedTool})`);
-    return { text, markdownText, headings };
+    return { text, markdownText, headings, ...(metadata ? { metadata } : {}) };
 }
 
 /**

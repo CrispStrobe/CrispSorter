@@ -9,8 +9,8 @@
     // what is unreachable rather than offering it and failing.
 
     import { invoke } from '@tauri-apps/api/core';
-    import { untrack } from 'svelte';
-    import { flog } from '$lib/log';
+    import { onDestroy, onMount, untrack } from 'svelte';
+    import { cancelledDocumentAction, createDocumentActions, requireCurrentDocument } from './pdf/actionRunner';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
     import {
@@ -40,13 +40,28 @@
     let filePath = $state('');
     $effect(() => {
         const p = initialPath;
-        if (p) untrack(() => { filePath = p; flog('info', `[convert] opened ${p}`); void refreshCaps(); });
+        if (p) untrack(() => useFile(p));
     });
     let caps = $state<ConvertCapabilities | null>(null);
     let busy = $state(false);
     let error = $state('');
     let success = $state('');
     let result = $state<ConvertOutput | null>(null);
+    let generation = 0;
+    let capabilityRequest = 0;
+    let disposed = false;
+    const actions = createDocumentActions((count) => { busy = count > 0; });
+    onDestroy(() => { disposed = true; generation += 1; });
+
+    function useFile(path: string) {
+        generation += 1;
+        filePath = path;
+        caps = null;
+        result = null;
+        error = '';
+        success = '';
+        void refreshCaps();
+    }
 
     let emit = $state<'md' | 'text' | 'headings' | 'docx' | 'rtf'>('md');
     let engine = $state<'auto' | 'native' | 'anydoc'>('auto');
@@ -64,67 +79,67 @@
     );
 
     async function pickFile() {
+        if (busy) return;
         const exts = caps?.extensions ?? ['pptx'];
         const picked = await openDialog({
             multiple: false,
             filters: [{ name: i18n.t.converttools?.filter_documents ?? 'Documents', extensions: exts }],
         });
         if (typeof picked === 'string') {
-            filePath = picked;
-            await refreshCaps();
+            useFile(picked);
         }
     }
 
     async function refreshCaps() {
-        try {
-            caps = await invoke<ConvertCapabilities>('convert_capabilities', {
-                path: filePath || null,
-            });
+        const requestedPath = filePath;
+        const version = generation;
+        const request = ++capabilityRequest;
+        const current = () => !disposed && generation === version && capabilityRequest === request;
+        const next = await actions.run({
+            operation: 'document.capabilities', concurrent: true, isCurrent: current,
+            onError: (e) => { error = String(e); },
+        }, () => invoke<ConvertCapabilities>('convert_capabilities', { path: requestedPath || null }));
+        if (next && current()) {
+            caps = next;
             // Fall back to an output the file can actually produce, rather
             // than leaving a selection that will only fail on Run.
             if ((emit === 'docx' || emit === 'rtf') && !caps.rich_output) emit = 'md';
-        } catch (e) {
-            error = String(e);
         }
     }
 
     async function run(save: boolean) {
-        if (!filePath) return;
-        error = ''; success = ''; result = null;
-
-        let outPath: string | null = null;
-        if (save || emitIsBinary) {
-            const ext = emit === 'docx' ? 'docx' : emit === 'rtf' ? 'rtf' : emit === 'md' ? 'md' : 'txt';
-            const chosen = await saveDialog({ filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
-            if (typeof chosen !== 'string') return;   // cancelled
-            outPath = chosen;
-        }
-
-        busy = true;
-        try {
-            result = await invoke<ConvertOutput>('convert_document', {
-                path: filePath,
-                emit,
-                engine,
-                wrapText,
-                includeNotes,
-                includeComments,
-                visualOrder,
-                outPath,
+        if (!filePath || busy) return;
+        const version = generation;
+        const current = () => !disposed && generation === version;
+        const snapshot = { path: filePath, emit, engine, wrapText, includeNotes, includeComments, visualOrder };
+        const writesOutput = save || emitIsBinary;
+        const converted = await actions.run({
+            operation: 'document.convert', fields: { format: snapshot.emit }, isCurrent: current, writesOutput,
+            onError: (e) => { error = String(e); },
+        }, async (entry) => {
+            error = ''; success = ''; result = null;
+            let outPath: string | null = null;
+            if (writesOutput) {
+                const ext = snapshot.emit === 'docx' ? 'docx' : snapshot.emit === 'rtf' ? 'rtf' : snapshot.emit === 'md' ? 'md' : 'txt';
+                const chosen = await saveDialog({ filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+                if (typeof chosen !== 'string') throw cancelledDocumentAction();
+                outPath = chosen;
+            }
+            requireCurrentDocument(current);
+            entry.stage('dispatching');
+            return await invoke<ConvertOutput>('convert_document', {
+                ...snapshot, outPath,
             });
-            flog('info', `[convert] ${filePath} -> ${emit} via ${result.engine_used}${result.written_path ? ` -> ${result.written_path}` : ''}`);
+        });
+        if (converted && current()) {
+            result = converted;
             success = result.written_path
                 ? `${i18n.t.converttools?.wrote ?? 'Wrote'} ${result.written_path}`
                 : (i18n.t.converttools?.converted ?? 'Converted');
-        } catch (e) {
-            error = String(e);
-            flog('error', `[convert] ${filePath} -> ${emit} failed: ${error}`);
-        } finally {
-            busy = false;
         }
     }
 
-    $effect(() => { if (!caps) refreshCaps(); });
+    onMount(() => { if (!filePath) void refreshCaps(); });
 </script>
 
 <div class="ct">

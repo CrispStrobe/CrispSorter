@@ -8,6 +8,7 @@
 use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
 use crate::index::tauri_commands::KieFieldDto;
 use crate::AppState;
+use crate::operation_log::OperationLog;
 use crate::ocr_photo::{PhotoAssessment, PhotoPoint};
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,7 @@ use tauri::{Emitter, Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
-#[path = "ocr_atomic_output.rs"]
-mod atomic_output;
+use crate::ocr_atomic_output as atomic_output;
 use atomic_output::{atomic_write, atomic_write_with, sync_directory};
 #[path = "ocr_export_control.rs"]
 mod export_control;
@@ -228,22 +228,35 @@ fn opaque_page(image: &DynamicImage) -> DynamicImage {
     }))
 }
 
-/// Engines the workspace offers and accepts. All exist in the pinned CrispEmbed
-/// runtime and have registry defaults, so a stage needs no explicit model.
-/// `unified` (needs an explicit GGUF) and the env-gated experimental engines
-/// stay in Settings only.
-const WORKSPACE_ENGINES: &[&str] = &[
-    "auto", "dbnet_trocr", "tesseract", "tesseract_fraktur", "parseq", "ppocrv6", "easyocr",
-    "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision",
-    "lightonocr", "qwen3vl", "unlimited_ocr", "olmocr", "lfm2_vl",
-];
+/// Workbench and extraction share the same embedded catalog. Custom-model
+/// engines remain configurable, and experiment gates control availability.
+const WORKSPACE_ENGINES: &[&str] = crate::extractors::ocr_policy::EMBEDDED_ENGINES;
+
+fn offered_engines(native: bool, system: bool, ocrs: bool, paddle: bool) -> Vec<&'static str> {
+    let mut engines = Vec::new();
+    if native || system || ocrs || paddle { engines.push("auto"); }
+    if native {
+        engines.extend(WORKSPACE_ENGINES.iter().copied().filter(|engine| match *engine {
+            "unlimited_ocr2" => std::env::var("CRISPEMBED_UNLIMITED_OCR2").ok().as_deref() == Some("1"),
+            "minicpm_ocr" => ["CRISPEMBED_MINICPM_OCR", "CRISPEMBED_QWEN35_OCR"].iter()
+                .all(|gate| std::env::var(gate).ok().as_deref() == Some("1")),
+            _ => true,
+        }));
+    }
+    if system { engines.push("system_tesseract"); }
+    if ocrs { engines.push("ocrs"); }
+    if paddle { engines.push("paddle"); }
+    engines
+}
 
 #[tauri::command]
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
     let system = crate::ocr_word_evidence::capabilities();
-    let mut engines = if native { WORKSPACE_ENGINES.to_vec() } else { vec![] };
-    if system.available { engines.push("system_tesseract"); }
+    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_available();
+    let paddle = crate::extractors::ocr_paddle::is_paddle_ocr_available();
+    let engines = offered_engines(native, system.available, ocrs, paddle);
+    let available = native || system.available || ocrs || paddle;
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
@@ -253,7 +266,7 @@ pub fn ocr_workspace_capabilities() -> Value {
     else if cfg!(feature = "ocr-text-export") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
-        "ocr": native || system.available, "crispembed": native,
+        "ocr": available, "crispembed": native,
         "system_tesseract": system,
         "camera_import": true, "photo_tools": cfg!(feature = "ocr-photo-tools"),
         "mobile_model_store": crate::model_provisioning::enabled(),
@@ -278,7 +291,7 @@ pub fn ocr_workspace_capabilities() -> Value {
         "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
         "cpu_budget_pixels": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET,
         "engines": engines,
-        "reason": if native || system.available { None } else { Some("Recognition requires CrispEmbed or an installed System Tesseract in a desktop sidecar build. Project editing, image/TIFF import, and text exports remain available.") },
+        "reason": if available { None } else { Some("Recognition requires an available embedded or installed OCR engine. Project editing, image/TIFF import, and text exports remain available.") },
         "pdf_reason": if cfg!(any(feature = "pdf-render", target_os = "android", target_os = "ios")) { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
     })
@@ -288,89 +301,80 @@ fn reviewed_pdf_available() -> bool {
     crate::extractors::ocr_render::reviewed_pdf_render_available()
 }
 
-/// The file name of a path or URI, for log entries.
-fn file_label(location: &str) -> String {
-    let trimmed = location.trim_end_matches('/');
-    trimmed.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).unwrap_or(trimmed).to_string()
-}
-
-/// One log entry per finished workspace step, with its duration or real failure reason.
-fn log_step<T>(what: &str, started: std::time::Instant, result: Result<T, String>) -> Result<T, String> {
-    let seconds = started.elapsed().as_secs_f64();
-    match &result {
-        Ok(_) => crate::app_log("info", format!("{what} finished in {seconds:.1}s")),
-        Err(error) => crate::app_log("error", format!("{what} failed after {seconds:.1}s: {error}")),
-    }
-    result
-}
-
-/// Frequent steps (autosave) log only their failures.
-fn log_failure<T>(what: &str, started: std::time::Instant, result: Result<T, String>) -> Result<T, String> {
-    if let Err(error) = &result {
-        crate::app_log("error", format!("{what} failed after {:.1}s: {error}", started.elapsed().as_secs_f64()));
-    }
-    result
-}
-
 #[tauri::command]
 pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String, request_id: Option<String>) -> Result<ImportedDocument, String> {
-    let started = std::time::Instant::now();
-    let what = format!("OCR import of {}", file_label(&location_uri));
-    log_step(&what, started, async move {
-        let root = workspace_root(&app)?;
-        let path = local_file(&location_uri)?;
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let bytes = tokio::task::spawn_blocking(move || {
-                let file = File::open(path).map_err(|e| format!("Open selected document: {e}"))?;
-                if file.metadata().map_err(|e| e.to_string())?.len() > MAX_CAPTURE_BYTES as u64 { return Err("This document exceeds the 32 MiB mobile import limit.".to_string()); }
-                let mut bytes = Vec::new();
-                file.take(MAX_CAPTURE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-                Ok(bytes)
-            }).await.map_err(|e| format!("Read import worker: {e}"))??;
-            let metadata = ImportMetadata { name, source_uri: None, request_id };
-            let mut document = document_import::from_bytes(app, root, metadata, bytes, true).await?;
-            document.source_uri = location_uri;
-            Ok(document)
-        }
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            let job = document_import::ImportJob::begin(app, request_id)?;
-            tokio::task::spawn_blocking(move || import_document_with_progress(&root, &path, Some(&job))).await
-                .map_err(|e| format!("Import worker: {e}"))?
-        }
-    }.await)
+    let log=OperationLog::start_with_id("ocr.import",json!({"surface":"gui"}),request_id.as_deref());
+    let result: Result<ImportedDocument,String> = async {
+    log.step("validating",Value::Null);
+    let root = workspace_root(&app)?;
+    let path = local_file(&location_uri)?;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let file = File::open(path).map_err(|e| format!("Open selected document: {e}"))?;
+            if file.metadata().map_err(|e| e.to_string())?.len() > MAX_CAPTURE_BYTES as u64 { return Err("This document exceeds the 32 MiB mobile import limit.".to_string()); }
+            let mut bytes = Vec::new();
+            file.take(MAX_CAPTURE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            Ok(bytes)
+        }).await.map_err(|e| format!("Read import worker: {e}"))??;
+        let metadata = ImportMetadata { name, source_uri: None, request_id };
+        let mut document = document_import::from_bytes(app, root, metadata, bytes, true).await?;
+        document.source_uri = location_uri;
+        Ok(document)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let job = document_import::ImportJob::begin(app, request_id)?;
+        tokio::task::spawn_blocking(move || import_document_with_progress(&root, &path, Some(&job))).await
+            .map_err(|e| format!("Import worker: {e}"))?
+    }
+    }.await;
+    finish_import_log(&log,&result);
+    result
 }
 
 /// Camera and provider bytes never become paths supplied by the webview. Keep
 /// their originals by content hash before creating the oriented page assets.
 #[tauri::command]
 pub async fn ocr_workspace_import_image(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
-    let started = std::time::Instant::now();
-    let what = "OCR photo import".to_string();
-    log_step(&what, started, async move {
-        let (mut metadata, bytes) = import_request(&request)?;
-        let root = workspace_root(&app)?;
-        metadata.source_uri = None;
-        document_import::from_bytes(app, root, metadata, bytes, false).await
-    }.await)
+    let log=OperationLog::start("ocr.import_image",json!({"surface":"gui","kind":"image"}));
+    let result: Result<ImportedDocument,String> = async {
+    let (mut metadata, bytes) = import_request(&request)?;
+    let root = workspace_root(&app)?;
+    metadata.source_uri = None;
+    document_import::from_bytes(app, root, metadata, bytes, false).await
+    }.await;
+    finish_import_log(&log,&result);
+    result
 }
 
 #[tauri::command]
 pub async fn ocr_workspace_import_bytes(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
-    let started = std::time::Instant::now();
-    let what = "OCR document import".to_string();
-    log_step(&what, started, async move {
-        let (metadata, bytes) = import_request(&request)?;
-        let root = workspace_root(&app)?;
-        document_import::from_bytes(app, root, metadata, bytes, true).await
-    }.await)
+    let log=OperationLog::start("ocr.import_bytes",json!({"surface":"gui"}));
+    let result: Result<ImportedDocument,String> = async {
+    let (metadata, bytes) = import_request(&request)?;
+    let root = workspace_root(&app)?;
+    document_import::from_bytes(app, root, metadata, bytes, true).await
+    }.await;
+    finish_import_log(&log,&result);
+    result
+}
+
+fn finish_import_log(log:&OperationLog,result:&Result<ImportedDocument,String>) {
+    match result {
+        Ok(document)=>log.succeed(json!({"pages":document.pages.len()})),
+        Err(error) if error == "OCR_IMPORT_CANCELLED"=>log.cancel(),
+        Err(_)=>log.fail("import_failed"),
+    }
 }
 
 #[tauri::command]
 pub fn ocr_workspace_cancel_import(request_id: String) -> Result<(), String> {
-    document_import::cancel(&request_id)
+    let log=OperationLog::start("ocr.import_cancel",json!({"surface":"gui"}));
+    let result=document_import::cancel(&request_id);
+    match &result {Ok(())=>log.succeed(json!({"accepted":true})),Err(_)=>log.fail("cancel_request_failed")}
+    result
 }
 
 #[derive(Deserialize)]
@@ -407,18 +411,14 @@ fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_u
 
 #[tauri::command]
 pub async fn ocr_workspace_assess_photo(app: tauri::AppHandle, page_path: String) -> Result<PhotoAssessment, String> {
-    let started = std::time::Instant::now();
-    let what = format!("OCR photo check of {}", file_label(&page_path));
-    log_step(&what, started, async move {
-        let root = workspace_root(&app)?;
-        let path = managed_page(&root, &page_path)?;
-        tokio::task::spawn_blocking(move || {
-            let image = decode_page(&path)?;
-            if image.color().has_alpha() { crate::ocr_photo::assess(&opaque_page(&image)) }
-            else { crate::ocr_photo::assess(&image) }
-        }).await
-            .map_err(|e| format!("Photo assessment worker: {e}"))?
-    }.await)
+    let root = workspace_root(&app)?;
+    let path = managed_page(&root, &page_path)?;
+    tokio::task::spawn_blocking(move || {
+        let image = decode_page(&path)?;
+        if image.color().has_alpha() { crate::ocr_photo::assess(&opaque_page(&image)) }
+        else { crate::ocr_photo::assess(&image) }
+    }).await
+        .map_err(|e| format!("Photo assessment worker: {e}"))?
 }
 
 fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String> {
@@ -426,6 +426,9 @@ fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String>
 }
 
 fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document_import::ImportJob>) -> Result<ImportedDocument, String> {
+    let log=OperationLog::start("ocr.import_pages",Value::Null);
+    let result=(|| {
+    log.step("rendering_pages",Value::Null);
     if let Some(job) = job { job.check()?; job.progress("rendering", 0, None); }
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
     if !["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"].contains(&ext.as_str()) {
@@ -441,6 +444,7 @@ fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document
     }
     let mut pages = Vec::with_capacity(images.len());
     for (index, page) in images.paths().iter().enumerate() {
+        log.step("verifying_page",json!({"page":index+1,"pages":images.len()}));
         if let Some(job) = job { job.check()?; job.progress("verifying", index, Some(images.len())); }
         let img = decode_page(page).map_err(|e| format!("Page {}: {e}", index + 1))?;
         let orientation = images.page_orientation(index);
@@ -462,6 +466,9 @@ fn import_document_with_progress(root: &Path, path: &Path, job: Option<&document
         name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
         pages,
     })
+    })();
+    finish_import_log(&log,&result);
+    result
 }
 
 fn checked_rect(rect: PixelRect, width: u32, height: u32) -> Result<(u32, u32, u32, u32), String> {
@@ -492,15 +499,16 @@ pub async fn ocr_workspace_transform(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
 ) -> Result<TransformedPages, String> {
-    let started = std::time::Instant::now();
-    let what = format!("OCR page {operation} of {}", file_label(&page_path));
-    log_step(&what, started, async move {
-        let root = workspace_root(&app)?;
-        let path = managed_page(&root, &page_path)?;
-        let size = checked_physical_size(page_width_points, page_height_points)?;
-        tokio::task::spawn_blocking(move || transform_page_with_photo(&root, &path, &operation, degrees, crop, split_x, size, quad, angle)).await
-            .map_err(|e| format!("Page transform worker: {e}"))?
-    }.await)
+    let log=OperationLog::start("ocr.transform",json!({"surface":"gui"}));
+    let result: Result<TransformedPages,String> = async {
+    let root = workspace_root(&app)?;
+    let path = managed_page(&root, &page_path)?;
+    let size = checked_physical_size(page_width_points, page_height_points)?;
+    tokio::task::spawn_blocking(move || transform_page_with_photo(&root, &path, &operation, degrees, crop, split_x, size, quad, angle)).await
+        .map_err(|e| format!("Page transform worker: {e}"))?
+    }.await;
+    match &result {Ok(pages)=>log.succeed(json!({"pages":pages.pages.len()})),Err(_)=>log.fail("transform_failed")}
+    result
 }
 
 fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>, physical_size: Option<(f64, f64)>) -> Result<TransformedPages, String> {
@@ -547,6 +555,13 @@ pub struct PreparedPage {
     pub warnings: Vec<String>,
 }
 
+fn active_preparation_config(mut config: crate::extractors::OcrPipelineConfig) -> crate::extractors::OcrPipelineConfig {
+    if let Some(engine) = config.engine.as_deref().filter(|engine| !engine.is_empty() && *engine != "auto") {
+        config.stages = config.stages.iter().find(|stage| stage.engine == engine).cloned().into_iter().collect();
+    }
+    config
+}
+
 #[tauri::command]
 pub async fn ocr_workspace_prepare(
     app: tauri::AppHandle,
@@ -556,38 +571,43 @@ pub async fn ocr_workspace_prepare(
     page_height_points: Option<f64>,
     allow_downloads: Option<bool>,
 ) -> Result<PreparedPage, String> {
+    let log=std::sync::Arc::new(OperationLog::start("ocr.workspace_prepare",json!({"surface":"gui","engine":config.engine})));
+    let result: Result<PreparedPage,String> = async {
+    log.step("validating",Value::Null);
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
+    let config = active_preparation_config(config);
     validate_config(&config)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let worker_log=log.clone();
     tokio::task::spawn_blocking(move || {
         // Models are downloaded only after the user agreed for this request.
         if !allow_downloads.unwrap_or(false) {
             let missing = missing_preparation_models(&config);
             if !missing.is_empty() {
-                let names = missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
-                crate::app_log("info", format!("OCR preparation of {name}: waiting for consent to download {names}"));
+                worker_log.warn("model_consent_required",json!({"models":missing.len()}));
                 return Err(format!("{MODEL_DOWNLOAD_REQUIRED}{}", serde_json::to_string(&missing).unwrap_or_default()));
             }
         }
-        let started = std::time::Instant::now();
-        crate::app_log("info", format!("OCR preparation of {name} started"));
         let progress = |stage: &str| {
-            crate::app_log("info", format!("OCR preparation of {name}: {stage} ({:.1}s)", started.elapsed().as_secs_f64()));
+            let code = if stage.starts_with("Straightening") {"dewarp"}
+                else if stage.starts_with("Image restoration") {"restore"}
+                else if stage.starts_with("Upscaling") {"upscale"}
+                else if stage.starts_with("Learned denoise") {"denoise"}
+                else if stage.starts_with("Deskew") {"cleanup"} else {"saving_page"};
+            worker_log.step(code,Value::Null);
             let _ = app.emit("ocr-workspace-prepare-stage", json!({ "page": page_path, "stage": stage }));
         };
         let result = prepare_page_with_progress(&root, &path, &config, size, &progress);
-        match &result {
-            Ok(prepared) => {
-                for warning in &prepared.warnings { crate::app_log("warn", format!("OCR preparation of {name}: {warning}")); }
-                crate::app_log("info", format!("OCR preparation of {name} finished in {:.1}s", started.elapsed().as_secs_f64()));
-            }
-            Err(error) => crate::app_log("error", format!("OCR preparation of {name} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
-        }
         result
     }).await
         .map_err(|e| format!("Page preparation worker: {e}"))?
+    }.await;
+    match &result {
+        Ok(prepared) => log.succeed(json!({"warnings":prepared.warnings.len(),"width":prepared.page.width,"height":prepared.page.height})),
+        Err(_) => log.fail("preparation_failed"),
+    }
+    result
 }
 
 /// Error prefix the UI turns into a download confirmation; JSON follows.
@@ -603,7 +623,7 @@ fn missing_preparation_models(config: &crate::extractors::OcrPipelineConfig) -> 
     let mut wanted: Vec<(String, &'static str)> = Vec::new();
     if config.restore { wanted.push((ocr_crispembed::restore_model_name(config), "restoration")); }
     if config.sr { wanted.push((ocr_crispembed::sr_model_name(config), "super-resolution")); }
-    if config.denoise || config.stages.iter().any(|s| s.cleanup.denoise) {
+    if config.stages.first().map(|s| s.cleanup.denoise).unwrap_or(config.denoise) {
         wanted.push((config.nafnet_model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| "nafnet-denoise".into()), "learned denoise"));
     }
     if config.dewarp && config.dewarp_engine == "tps" { wanted.push(("tps-loc".into(), "dewarp")); }
@@ -628,11 +648,8 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     checked_dimensions(&path)?;
     if config.dewarp {
         progress("Straightening curved lines");
-        if let Some((guard, output)) = ocr_crispembed::dewarp_page(&path, config) {
-            path = output; guards.push(guard);
-        } else {
-            warnings.push("Dewarp did not produce an image. The preceding image was retained; inspect curved lines before approving.".into());
-        }
+        let (guard, output) = ocr_crispembed::dewarp_page_checked(&path, config)?;
+        path = output; guards.push(guard);
     }
     if config.restore {
         progress(&format!("Image restoration ({})", if config.restore_engine.is_empty() { "restormer" } else { config.restore_engine.as_str() }));
@@ -655,11 +672,11 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     // physical sheet size. Only the subsequent pixel crop changes the paper.
     let before_cleanup = (image.width(), image.height());
     let recipe = config.stages.first().map(|s| s.cleanup.clone()).unwrap_or_default();
-    if config.stages.iter().any(|s| s.cleanup.page_split) {
+    if config.stages.iter().any(|s| s.cleanup.enabled && s.cleanup.page_split) {
         warnings.push("This profile requests spread splitting. Use Split page to create and review both halves; recognition retains the complete current page.".into());
     }
-    let use_cleanup = config.cleanup_enabled || config.stages.iter().any(|s| s.cleanup.enabled);
-    let denoise = config.denoise || config.stages.iter().any(|s| s.cleanup.denoise);
+    let use_cleanup = config.stages.first().map(|s| s.cleanup.enabled).unwrap_or(config.cleanup_enabled);
+    let denoise = config.stages.first().map(|s| s.cleanup.denoise).unwrap_or(config.denoise);
     if denoise { progress("Learned denoise (NAFNet) — can take a while on large pages"); }
     else if use_cleanup { progress("Deskew and clean"); }
     let image = if use_cleanup || denoise {
@@ -671,7 +688,7 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     physical_size = physical_size.map(|(w, h)| (w * f64::from(image.width()) / f64::from(before_cleanup.0), h * f64::from(image.height()) / f64::from(before_cleanup.1)));
     progress("Saving the prepared page");
     let page = persist_image(root, &image)?;
-    let page = if recipe.auto_crop {
+    let page = if use_cleanup && recipe.auto_crop {
         if let Some((left, top, right, bottom)) = ocr_crispembed::content_bbox(Path::new(&page.image_path)) {
             let rect = PixelRect { x: left as f64, y: top as f64, w: (right - left) as f64, h: (bottom - top) as f64 };
             let (x, y, w, h) = checked_rect(rect, page.width, page.height)
@@ -726,129 +743,11 @@ fn cleanup_image(_image: DynamicImage, _config: &crate::extractors::OcrPipelineC
 }
 
 fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), String> {
-    if !config.min_confidence.is_finite() || !(0.0..=1.0).contains(&config.min_confidence)
-        || !config.layout_threshold.is_finite() || !(0.0..=1.0).contains(&config.layout_threshold)
-        || !(0..=1_000_000).contains(&config.min_chars)
-        || !(1..=10_000).contains(&config.sr_max_short_side) || config.stages.len() > 32 {
-        return Err("Invalid OCR settings: check confidence, character and resolution limits.".into());
-    }
-    if !["basic", "tps"].contains(&config.dewarp_engine.as_str())
-        || !["restormer", "scunet", "instructir"].contains(&config.restore_engine.as_str())
-        || !["pan", "esrgan", "safmn", "hat", "tbsrn", "dat", "swinir"].contains(&config.sr_engine.as_str()) {
-        return Err("Unknown scan restoration engine.".into());
-    }
-    if !["rtdetr", "cc"].contains(&config.layout_engine.as_str())
-        || !["got", "glm", "qwen2vl", "internvl2", "qwen3vl"].contains(&config.vlm_ocr_engine.as_str()) {
-        return Err("Unknown layout or escalation engine.".into());
-    }
-    if config.restore_engine == "instructir"
-        && !["denoise", "deblur", "dehaze", "derain", "super_resolution", "low_light", "enhance"].contains(&config.restore_task.as_str()) {
-        return Err("Unknown restoration task.".into());
-    }
-    for stage in &config.stages {
-        if !["dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract", "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr", "unified", "tesseract_fraktur", "ppocrv6", "easyocr", "olmocr", "lfm2_vl"].contains(&stage.engine.as_str())
-            || !["auto", "screenshot", "scanned_doc", "photo"].contains(&stage.source_type.as_str()) {
-            return Err("Unknown OCR stage engine or source type.".into());
-        }
-        if stage.vlm_prompt.len() > 32_768 || stage.vlm_prompt.contains('\0')
-            || !stage.min_confidence.is_finite() || !(0.0..=1.0).contains(&stage.min_confidence)
-            || !stage.det_prob_threshold.is_finite() || !(0.0..=1.0).contains(&stage.det_prob_threshold)
-            || !stage.det_box_threshold.is_finite() || !(0.0..=1.0).contains(&stage.det_box_threshold)
-            || !(16..=8192).contains(&stage.det_target_short)
-            || !(0..=32768).contains(&stage.vlm_max_tokens)
-            || !(0..=1_000_000).contains(&stage.min_chars) {
-            return Err("Invalid OCR stage settings.".into());
-        }
-        let cleanup = &stage.cleanup;
-        if !(0..=1).contains(&cleanup.binarize_method)
-            || !cleanup.sauvola_k.is_finite() || !(0.0..=1.0).contains(&cleanup.sauvola_k)
-            || !(3..=501).contains(&cleanup.sauvola_window)
-            || !(1..=501).contains(&cleanup.morph_kernel)
-            || !cleanup.border_threshold.is_finite() || !(0.0..=1.0).contains(&cleanup.border_threshold)
-            || !cleanup.deskew_max_angle.is_finite() || !(0.0..=45.0).contains(&cleanup.deskew_max_angle) {
-            return Err("Invalid scan cleanup parameters.".into());
-        }
-    }
-    let as_json = serde_json::to_string(config).map_err(|e| e.to_string())?;
-    if as_json.contains("\\u0000") { return Err("OCR model paths cannot contain null characters.".into()); }
-    Ok(())
+    crate::extractors::ocr_policy::validate_config(config)
 }
 
-pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
-    let mut engine = engine.filter(|s| !s.is_empty()).unwrap_or("auto");
-    // "Automatic" without explicit OCR stages used the native router, which
-    // picks the printed-text TrOCR model for screenshots: English-only and
-    // uppercase (it was fine-tuned on receipts). Tesseract keeps case, umlauts
-    // and other scripts for the selected language.
-    let routed_to_tesseract = engine == "auto" && config.stages.is_empty() && cfg!(feature = "crispembed");
-    if routed_to_tesseract { engine = "tesseract"; }
-    let language = language.filter(|s| !s.is_empty() && *s != "auto");
-    let mut warnings = Vec::new();
-    if let Some(language) = language {
-        if language.len() > 32 || !language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err("Choose a language code, for example en, de, eng or deu.".into());
-        }
-    }
-    if engine != "auto" {
-        if !WORKSPACE_ENGINES.contains(&engine) {
-            return Err(format!("Unsupported OCR engine: {engine}"));
-        }
-        let configured_stage = config.stages.iter().find(|s| s.engine == engine).cloned();
-        let mut stage: crate::extractors::OcrStageSpec = if let Some(stage) = configured_stage {
-            stage
-        } else {
-            let mut stage: crate::extractors::OcrStageSpec = serde_json::from_value(json!({"engine":engine}))
-                .map_err(|e| e.to_string())?;
-            if ["dbnet_trocr", "tesseract", "parseq"].contains(&engine) {
-                stage.det_model = config.det_model.clone();
-                if engine == "dbnet_trocr" { stage.rec_model = config.rec_model.clone(); }
-            } else if config.vlm_ocr_engine == engine {
-                // Flat det/rec model fields describe the DBNet path, never a
-                // newly selected vision engine. Only use its matching VLM slot.
-                stage.det_model = config.vlm_ocr_model.clone();
-            }
-            stage
-        };
-        if routed_to_tesseract {
-            warnings.push(format!("Automatic recognition used Tesseract ({}). Choose another engine in Recognize to compare.",
-                language.unwrap_or("eng")));
-        }
-        stage.source_type = "auto".into();
-        stage.min_confidence = config.min_confidence;
-        stage.min_chars = config.min_chars;
-        if engine == "tesseract" && (language.is_some() || stage.rec_model.is_none()) {
-            let lang = match language.unwrap_or("eng") {
-                "en" => "eng", "de" => "deu", "fr" => "fra", "es" => "spa", "it" => "ita",
-                "pt" => "por", "nl" => "nld", "ru" => "rus", "ar" => "ara", "zh" | "chi_sim" => "chi-sim",
-                "ja" => "jpn", "ko" => "kor", lang => lang,
-            };
-            if !["eng", "deu", "fra", "spa", "ita", "por", "nld", "rus", "ara", "chi-sim", "jpn", "kor"].contains(&lang) {
-                return Err(format!("No registered Tesseract model is available for '{lang}'. Configure a matching custom language model in an OCR stage and use Automatic language, or select a vision engine."));
-            }
-            stage.rec_model = Some(format!("tesseract-{lang}"));
-        } else if stage.rec_model.is_none() {
-            stage.rec_model = match engine {
-                "dbnet_trocr" => Some("trocr-printed".into()), "parseq" => Some("parseq".into()), _ => None,
-            };
-        }
-        if let Some(language) = language {
-            if ["qwen2vl", "internvl2", "granite_vision", "qwen3vl"].contains(&engine) {
-                stage.vlm_prompt = format!("Transcribe the document exactly. The expected language is {language}. Preserve reading order, numbers, punctuation and line breaks. Do not summarize or translate.");
-            } else if engine != "tesseract" {
-                warnings.push("This recognizer uses its model's trained languages; the language selector does not change that model.".into());
-            }
-        }
-        // Page cleanup is explicit and shared, independent of engine choice.
-        stage.cleanup.enabled = config.cleanup_enabled;
-        stage.cleanup.denoise = config.denoise;
-        config.stages = vec![stage];
-        config.router = false;
-    } else if language.is_some() {
-        warnings.push("Automatic routing uses the configured models' languages. Select Tesseract or a vision engine to apply a specific language hint.".into());
-    }
-    config.enabled = true;
-    validate_config(&config)?;
-    Ok((config, warnings))
+pub(crate) fn recognition_config(config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
+    crate::extractors::ocr_policy::recognition_config(config, engine, language)
 }
 
 #[derive(Serialize)]
@@ -875,16 +774,12 @@ pub async fn ocr_workspace_recognize(
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
 ) -> Result<RecognizedPage, String> {
-    let name = Path::new(&page_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let what = format!("OCR recognition of {name} (engine {}, language {}{})", engine.as_deref().unwrap_or("default"),
-        language.as_deref().unwrap_or("default"), if zone.is_some() { ", selected area" } else { "" });
-    let started = std::time::Instant::now();
-    crate::app_log("info", format!("{what} started"));
+    let log=OperationLog::start("ocr.workspace_recognition",json!({"surface":"gui","engine":engine,"language":language}));
     let result = ocr_workspace_recognize_inner(app, state, page_path, config, engine, language, zone,
-        page_width_points, page_height_points, cpu_pixel_budget).await;
+        page_width_points, page_height_points, cpu_pixel_budget,&log).await;
     match &result {
-        Ok(page) => crate::app_log("info", format!("{what} finished in {:.1}s: {} regions", started.elapsed().as_secs_f64(), page.regions.len())),
-        Err(error) => crate::app_log("error", format!("{what} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
+        Ok(page) => log.succeed(json!({"regions":page.regions.len(),"warnings":page.warnings.len()})),
+        Err(_) => log.fail("recognition_failed"),
     }
     result
 }
@@ -901,37 +796,30 @@ async fn ocr_workspace_recognize_inner(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
+    log: &OperationLog,
 ) -> Result<RecognizedPage, String> {
+    log.step("validating",Value::Null);
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
-    if engine.as_deref() == Some("system_tesseract") {
-        if cpu_pixel_budget.unwrap_or(false) {
-            return Err("The low-memory CPU profile applies to Qwen2 VL only. Turn it off for System Tesseract.".into());
-        }
-        let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
-        return tokio::task::spawn_blocking(move || {
-            let mut result = recognize_system_tesseract_page(&root, &path, language.as_deref(), zone, size)?;
-            // This adapter never transforms the current working page. Keep the
-            // caller's exact identity after canonical-path validation for I/O.
-            result.page.image_path = page_path;
-            Ok(result)
-        }).await.map_err(|e| format!("System Tesseract worker: {e}"))?;
-    }
-    if !cfg!(feature = "crispembed") { return Err("This recognition engine requires CrispEmbed. Select System Tesseract if it is available.".into()); }
-    let config = match config {
-        Some(config) => config,
-        None => state.bg_ingest.lock().await.ocr_pipeline.clone(),
-    };
-    let (config, warnings) = recognition_config(config, engine.as_deref(), language.as_deref())?;
-    let cpu_budget = cpu_pixel_budget.unwrap_or(false);
-    if cpu_budget {
-        check_cpu_budget(&config)?;
-    }
+    let provided_config = config.is_some();
+    let mut options = if provided_config { crate::extractors::ExtractOptions::default() }
+        else { state.bg_ingest.lock().await.ocr_options() };
+    let mut config = config.unwrap_or_else(|| options.ocr_pipeline.clone());
+    if let Some(engine) = &engine { config.engine = Some(engine.clone()); }
+    if let Some(language) = &language { config.language = Some(language.clone()); }
+    if let Some(budget) = cpu_pixel_budget { config.cpu_pixel_budget = budget; }
+    options.ocr_pipeline = config;
+    let (config, warnings) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
+    log.step("policy_resolved",json!({"engine":config.engine,"language":config.language,"stages":config.stages.len(),"cpu_budget":config.cpu_pixel_budget}));
+    let legacy_rec_lang = options.ocr_rec_lang;
+    crate::extractors::ocr_policy::validate_runtime(&config)?;
+    let cpu_budget = config.cpu_pixel_budget;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
-    tokio::task::spawn_blocking(move || {
-        let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget)?;
-        if zone.is_some() {
+    log.step("recognizing",Value::Null);
+    let result = tokio::task::spawn_blocking(move || -> Result<RecognizedPage, String> {
+        let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget, legacy_rec_lang)?;
+        if zone.is_some() || !config.enabled {
             // managed_page validated the canonical path used for all I/O.
             // A zone leaves the working image unchanged, so retain its exact
             // project identity even with Windows extended paths or symlinks.
@@ -939,74 +827,40 @@ async fn ocr_workspace_recognize_inner(
         }
         Ok(result)
     }).await
-        .map_err(|e| format!("Recognition worker: {e}"))?
+        .map_err(|e| format!("Recognition worker: {e}"))??;
+    log_review_grouping(log, &result.diagnostics);
+    Ok(result)
+}
+
+fn log_review_grouping(log: &OperationLog, diagnostics: &Value) {
+    for (stage, before, after) in [
+        ("line_grouping", "words", "lines"),
+        ("paragraph_grouping", "lines", "paragraphs"),
+    ] {
+        if let (Some(count), Some(regions)) = (
+            diagnostics[stage][before].as_u64(), diagnostics[stage][after].as_u64(),
+        ) {
+            // Diagnostics can contain document text and source paths. Emit
+            // only these measured counts on the existing recognition scope.
+            log.step(stage, json!({"count": count, "regions": regions}));
+        }
+    }
 }
 
 /// The CPU pixel budget limits the Qwen2-VL vision input; it has no meaning
 /// for other engines, and the worker cannot run in sandboxed/mobile builds.
+#[cfg(test)]
 fn check_cpu_budget(config: &crate::extractors::OcrPipelineConfig) -> Result<(), String> {
-    if !crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE {
-        return Err("The low-memory CPU profile requires a desktop build with sidecars enabled.".into());
-    }
-    if !(config.stages.len() == 1 && config.stages[0].engine == "qwen2vl") {
-        return Err("The low-memory CPU profile applies to the Qwen2 VL engine only. Choose that engine or turn the profile off.".into());
-    }
-    Ok(())
+    crate::extractors::ocr_policy::validate_cpu_budget(config)
 }
 
 /// Recognize in the isolated low-memory worker and present the result with
 /// honest provenance: VLM regions carry no calibrated detector score, so only
 /// per-character recognition evidence is reported as a confidence.
 fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelineConfig) -> Result<crate::extractors::ocr_crispembed::OcrReviewResult, String> {
-    use crate::extractors::ocr_crispembed::{review_pipeline_config, OcrReviewRegion, OcrReviewResult};
-    let (width, height) = image::image_dimensions(path).map_err(|e| format!("Read page dimensions: {e}"))?;
-    let regions = crate::extractors::ocr_worker::run_cpu_budget(path, &review_pipeline_config(config))
-        .map_err(|e| format!("Low-memory CPU recognition: {e:#}"))?;
-    let regions = regions.into_iter().map(|r| {
-        let recognition = !r.char_conf.is_empty();
-        OcrReviewRegion {
-            text: r.text, x: r.x, y: r.y, w: r.w, h: r.h,
-            confidence: recognition.then_some(r.confidence),
-            confidence_basis: if recognition { "recognition" } else { "unknown" }.into(),
-            char_conf: r.char_conf, char_conf_unit: "unknown".into(), char_conf_aligned: false,
-            word_evidence: None,
-            kind: "text".into(),
-        }
-    }).collect();
-    Ok(OcrReviewResult {
-        image_path: path.to_owned(), width, height, regions,
-        warnings: vec![format!("Low-memory CPU profile: the vision input was limited to {} pixels, so fine print may be missed. Review the result.", crate::extractors::ocr_worker::CPU_PIXEL_BUDGET)],
-        diagnostics: json!({"cpu_pixel_budget": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET, "isolated_worker": true}),
-    })
-}
-
-/// Explicit external-engine route: recognize exactly the current pixels and
-/// translate both paragraph and word boxes once after a cropped invocation.
-fn recognize_system_tesseract_page(root: &Path, path: &Path, language: Option<&str>, zone: Option<PixelRect>, physical_size: Option<(f64, f64)>) -> Result<RecognizedPage, String> {
-    let started = std::time::Instant::now();
-    let (width, height) = checked_dimensions(path)?;
-    let (recognition_path, offset) = if let Some(zone) = zone {
-        let (x, y, w, h) = checked_rect(zone, width, height)?;
-        let crop = persist_image(root, &decode_page(path)?.crop_imm(x, y, w, h))?;
-        (PathBuf::from(crop.image_path), (x, y))
-    } else { (path.to_owned(), (0, 0)) };
-    let result = crate::ocr_word_evidence::recognize(&recognition_path, language)?;
-    let mut diagnostics = result.diagnostics;
-    diagnostics["full_text"] = json!(result.full_text);
-    diagnostics["engine"] = json!("system_tesseract");
-    diagnostics["preparation"] = json!("current_working_image");
-    diagnostics["recognition_image_path"] = json!(recognition_path.to_string_lossy());
-    if let Some(zone) = zone {
-        diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?;
-        diagnostics["effective_zone"] = json!({"x":offset.0,"y":offset.1,"w":result.width,"h":result.height});
-        diagnostics["region_offset"] = json!({"x":offset.0,"y":offset.1});
-    }
-    let regions = map_system_tesseract_regions(result.regions, offset, width, height)?;
-    let mut page = PageAsset { image_path:path.to_string_lossy().into_owned(), width, height,
-        page_width_points:None, page_height_points:None, warnings:vec![] };
-    set_physical_size(&mut page, physical_size);
-    Ok(RecognizedPage { page, regions, elapsed_ms:started.elapsed().as_millis() as u64,
-        warnings:result.warnings, diagnostics })
+    crate::extractors::ocr_worker::run_cpu_budget_review(path,
+        &crate::extractors::ocr_crispembed::review_pipeline_config(config))
+        .map_err(|e| format!("Low-memory CPU recognition: {e:#}"))
 }
 
 fn map_system_tesseract_regions(source: Vec<crate::ocr_word_evidence::SystemTesseractRegion>, offset: (u32, u32), width: u32, height: u32) -> Result<Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, String> {
@@ -1031,7 +885,29 @@ fn map_system_tesseract_regions(source: Vec<crate::ocr_word_evidence::SystemTess
     Ok(regions)
 }
 
-fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool) -> Result<RecognizedPage, String> {
+/// Plain-text legacy engines share selection and model handling with file
+/// extraction. They do not supply verified word geometry or confidence.
+fn recognize_plain_engine_for_review(path: &Path, config: &crate::extractors::OcrPipelineConfig, rec_lang: crate::extractors::OcrRecLang) -> Result<crate::extractors::ocr_crispembed::OcrReviewResult, String> {
+    use crate::extractors::ocr_crispembed::{OcrReviewRegion, OcrReviewResult};
+    let (width, height) = checked_dimensions(path)?;
+    let mut recognition = config.clone();
+    // Geometry/preparation was already applied to the reviewed snapshot.
+    recognition.enabled = false;
+    recognition.layout = false;
+    let options = crate::extractors::ExtractOptions { try_ocr: true, ocr_pipeline: recognition, ocr_rec_lang: rec_lang, ..Default::default() };
+    let text = crate::extractors::ocr_image_page(path, &options)
+        .map_err(|e| format!("Recognize page: {e:#}"))?.full_text;
+    let regions = if text.trim().is_empty() { Vec::new() } else {
+        vec![OcrReviewRegion { text, x: 0.0, y: 0.0, w: width as f32, h: height as f32,
+            confidence: None, confidence_basis: "unknown".into(), char_conf: Vec::new(),
+            char_conf_unit: "unknown".into(), char_conf_aligned: false, word_evidence: None, kind: "text".into() }]
+    };
+    Ok(OcrReviewResult { image_path: path.to_owned(), width, height, regions,
+        warnings: vec!["This engine returns plain text. The review block covers the page; word positions and confidence are unavailable.".into()],
+        diagnostics: json!({"engine": config.engine, "geometry": "full_page_text_block", "native_word_evidence": false}) })
+}
+
+fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool, legacy_rec_lang: crate::extractors::OcrRecLang) -> Result<RecognizedPage, String> {
     let started = std::time::Instant::now();
     let (page, recognition_path, offset) = if let Some(zone) = zone {
         // A zone result must align with the current whole page. Geometric
@@ -1042,6 +918,12 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         warnings.push("Zone recognition preserves the current page geometry; scan repair settings are applied only when recognizing a complete page.".into());
         (PageAsset { image_path: path.to_string_lossy().into_owned(), width: image.width(), height: image.height(),
             page_width_points:physical_size.map(|(w, _)| w), page_height_points:physical_size.map(|(_, h)| h), warnings: Vec::new() }, PathBuf::from(crop.image_path), (x, y))
+    } else if !config.enabled {
+        let (width, height) = checked_dimensions(path)?;
+        let mut page = PageAsset { image_path: path.to_string_lossy().into_owned(), width, height,
+            page_width_points: None, page_height_points: None, warnings: Vec::new() };
+        set_physical_size(&mut page, physical_size);
+        (page, path.to_owned(), (0, 0))
     } else {
         let prepared = prepare_page(root, path, config, physical_size)?;
         warnings.extend(prepared.warnings);
@@ -1050,6 +932,18 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     };
     let mut result = if cpu_budget {
         recognize_with_cpu_budget(&recognition_path, config)?
+    } else if config.engine.as_deref() == Some("system_tesseract") {
+        let source = crate::ocr_word_evidence::recognize(&recognition_path, config.language.as_deref())?;
+        let mut diagnostics = source.diagnostics;
+        diagnostics["engine"] = json!("system_tesseract");
+        diagnostics["full_text"] = json!(source.full_text);
+        crate::extractors::ocr_crispembed::OcrReviewResult {
+            image_path: recognition_path.clone(), width: source.width, height: source.height,
+            regions: map_system_tesseract_regions(source.regions, (0, 0), source.width, source.height)?,
+            warnings: source.warnings, diagnostics,
+        }
+    } else if matches!(config.engine.as_deref(), Some("ocrs" | "paddle")) {
+        recognize_plain_engine_for_review(&recognition_path, config, legacy_rec_lang)?
     } else {
         crate::extractors::ocr_crispembed::ocr_regions_for_review(&recognition_path, config)
             .map_err(|e| format!("Recognize page: {e:#}"))?
@@ -1058,22 +952,12 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     if result.regions.is_empty() {
         warnings.push("No text was returned. Verify whether this page is blank, or retry with a different engine. An empty result is not evidence of successful recognition.".into());
     }
-    // Word detectors (DBNet is trained on word boxes) return one region per
-    // word; review, editing and export work on lines.
-    let detected = result.regions.len();
-    result.regions = merge_word_regions_into_lines(std::mem::take(&mut result.regions));
-    if result.regions.len() != detected {
-        result.diagnostics["line_grouping"] = json!({"words": detected, "lines": result.regions.len()});
-    }
-    // Line recognizers return one region per line; review works on paragraphs.
-    let lines = result.regions.len();
-    result.regions = group_lines_into_paragraphs(std::mem::take(&mut result.regions));
-    if result.regions.len() != lines {
-        result.diagnostics["paragraph_grouping"] = json!({"lines": lines, "paragraphs": result.regions.len()});
-    }
-    if config.layout && zone.is_none() {
-        annotate_layout(&recognition_path, config, &mut result.regions, &mut result.diagnostics, &mut warnings);
-    }
+    result.regions = organize_review_regions(std::mem::take(&mut result.regions), &mut result.diagnostics,
+        |regions, diagnostics| {
+            if config.enabled && config.layout && zone.is_none() {
+                annotate_layout(&recognition_path, config, regions, diagnostics, &mut warnings);
+            }
+        });
     for region in &mut result.regions {
         region.x += offset.0 as f32;
         region.y += offset.1 as f32;
@@ -1097,6 +981,35 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     }
     result.diagnostics["requested_config"] = serde_json::to_value(config).map_err(|e| e.to_string())?;
     Ok(RecognizedPage { page, regions: result.regions, elapsed_ms: started.elapsed().as_millis() as u64, warnings, diagnostics: result.diagnostics })
+}
+
+/// Classify and order individual lines before joining them into paragraphs.
+/// A layout heading, table or formula must remain a boundary even when its
+/// geometry resembles adjacent prose.
+fn organize_review_regions(
+    regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>,
+    diagnostics: &mut Value,
+    annotate: impl FnOnce(&mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, &mut Value),
+) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
+    let detected = regions.len();
+    let mut regions = merge_word_regions_into_lines(regions);
+    if regions.len() != detected {
+        diagnostics["line_grouping"] = json!({"words": detected, "lines": regions.len()});
+    }
+    annotate(&mut regions, diagnostics);
+    let lines = regions.len();
+    let regions = group_lines_into_paragraphs(regions);
+    if regions.len() != lines {
+        diagnostics["paragraph_grouping"] = json!({"lines": lines, "paragraphs": regions.len()});
+    }
+    regions
+}
+
+fn has_aligned_character_scores(region: &crate::extractors::ocr_crispembed::OcrReviewRegion) -> bool {
+    region.confidence_basis == "recognition" && region.char_conf_aligned
+        && region.char_conf_unit == "unicode_codepoint" && !region.char_conf.is_empty()
+        && region.char_conf.len() == region.text.chars().count()
+        && region.char_conf.iter().all(|score| score.is_finite() && (0.0..=1.0).contains(score))
 }
 
 /// Join word regions that sit on the same text line into one line region.
@@ -1179,10 +1092,7 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
     let uniform_basis = words.iter().all(|r| r.confidence_basis == first.confidence_basis);
     let complete_scores = uniform_basis && words.iter().all(|r| r.confidence
         .is_some_and(|score| score.is_finite() && (0.0..=1.0).contains(&score)));
-    let aligned = words.iter().all(|r| r.confidence_basis == "recognition"
-        && r.char_conf_aligned && r.char_conf_unit == "unicode_codepoint"
-        && r.char_conf.len() == r.text.chars().count()
-        && r.char_conf.iter().all(|score| score.is_finite() && (0.0..=1.0).contains(score)));
+    let aligned = words.iter().all(has_aligned_character_scores);
     let mut text = String::new();
     let mut char_conf: Vec<f32> = Vec::new();
     let (mut weighted, mut weight) = (0.0f64, 0.0f64);
@@ -1224,7 +1134,7 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
 fn group_lines_into_paragraphs(regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
     use crate::extractors::ocr_crispembed::OcrReviewRegion;
     let joinable = |r: &OcrReviewRegion| r.kind == "text" && r.word_evidence.is_none()
-        && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && r.h > 0.0 && r.w > 0.0;
+        && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && r.x >= 0.0 && r.y >= 0.0 && r.h > 0.0 && r.w > 0.0;
     let continues = |paragraph: &[OcrReviewRegion], next: &OcrReviewRegion| {
         let last = paragraph.last().expect("nonempty paragraph");
         let height = paragraph.iter().map(|r| r.h).sum::<f32>() / paragraph.len() as f32;
@@ -1256,8 +1166,7 @@ fn join_paragraph(mut lines: Vec<crate::extractors::ocr_crispembed::OcrReviewReg
     let uniform_basis = lines.iter().all(|r| r.confidence_basis == first.confidence_basis);
     let complete_scores = uniform_basis && lines.iter().all(|r| r.confidence
         .is_some_and(|score| score.is_finite() && (0.0..=1.0).contains(&score)));
-    let aligned = lines.iter().all(|r| r.char_conf_aligned && r.char_conf_unit == first.char_conf_unit
-        && r.char_conf.len() == r.text.chars().count());
+    let aligned = lines.iter().all(has_aligned_character_scores);
     let x = lines.iter().map(|r| r.x).fold(f32::MAX, f32::min);
     let y = lines.iter().map(|r| r.y).fold(f32::MAX, f32::min);
     let right = lines.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
@@ -1293,7 +1202,7 @@ fn join_paragraph(mut lines: Vec<crate::extractors::ocr_crispembed::OcrReviewReg
 }
 
 fn annotate_layout(path: &Path, config: &crate::extractors::OcrPipelineConfig, regions: &mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, diagnostics: &mut Value, warnings: &mut Vec<String>) {
-    use crate::extractors::layout::{LayoutDetector, RegionKind};
+    use crate::extractors::layout::LayoutDetector;
     let detected = if config.layout_engine == "cc" {
         Ok(crate::extractors::ocr_crispembed::cc_detect_regions(path))
     } else {
@@ -1304,6 +1213,17 @@ fn annotate_layout(path: &Path, config: &crate::extractors::OcrPipelineConfig, r
         Ok(layout) => layout,
         Err(e) => { warnings.push(format!("Layout analysis failed; recognized text was retained: {e:#}")); return; },
     };
+    apply_review_layout(&layout, config, regions, diagnostics, warnings);
+}
+
+fn apply_review_layout(
+    layout: &[crate::extractors::layout::LayoutRegion],
+    config: &crate::extractors::OcrPipelineConfig,
+    regions: &mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>,
+    diagnostics: &mut Value,
+    warnings: &mut Vec<String>,
+) {
+    use crate::extractors::layout::RegionKind;
     diagnostics["layout"] = Value::Array(layout.iter().map(|r| json!({"x":r.x1,"y":r.y1,"w":r.x2-r.x1,"h":r.y2-r.y1,"label":r.label_name,"score":r.score})).collect());
     for region in regions.iter_mut() {
         let best = layout.iter().filter_map(|r| {
@@ -1444,13 +1364,14 @@ fn save_project(root: &Path, project: Value, expected_revision: u64) -> Result<S
 
 #[tauri::command]
 pub async fn ocr_workspace_save(app: tauri::AppHandle, project: Value, expected_revision: Option<u64>) -> Result<SavedProject, String> {
-    let started = std::time::Instant::now();
-    let what = "OCR project save".to_string();
-    log_failure(&what, started, async move {
-        let root = workspace_root(&app)?;
-        tokio::task::spawn_blocking(move || save_project(&root, project, expected_revision.unwrap_or(0))).await
-            .map_err(|e| format!("Project save worker: {e}"))?
-    }.await)
+    let log=OperationLog::start("ocr.project_save",json!({"surface":"gui","revision":expected_revision}));
+    let result: Result<SavedProject,String> = async {
+    let root = workspace_root(&app)?;
+    tokio::task::spawn_blocking(move || save_project(&root, project, expected_revision.unwrap_or(0))).await
+        .map_err(|e| format!("Project save worker: {e}"))?
+    }.await;
+    match &result {Ok(saved)=>log.succeed(json!({"revision":saved.revision,"warnings":saved.warnings.len()})),Err(_)=>log.fail("project_save_failed")}
+    result
 }
 
 #[tauri::command]
@@ -1952,6 +1873,9 @@ fn write_export(
     control: &ExportControl,
     mut progress: impl FnMut(&str, u64),
 ) -> Result<usize, String> {
+    let log=OperationLog::start("ocr.write_export",json!({"format":format,"pages":pages.len(),"overwrite":overwrite}));
+    let result=(|| {
+    log.step("validating",Value::Null);
     control.check().map_err(|error| error.to_string())?;
     validate_shared_sources(pages, format)?;
     validate_export_format(format, pdfa)?;
@@ -1961,6 +1885,7 @@ fn write_export(
     atomic_write_with(path, overwrite, |file| {
         control.check().map_err(|error| error.to_string())?;
         progress("rendering", 0);
+        log.step("rendering",Value::Null);
         let written = {
             let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, &mut *file);
             let mut last_update = std::time::Instant::now();
@@ -1995,14 +1920,25 @@ fn write_export(
         }
         let count = usize::try_from(written).map_err(|_| "The rendered document is too large for this device.")?;
         control.begin_commit().map_err(|error| error.to_string())?;
+        log.step("committing",json!({"bytes":written}));
         progress("committing", written);
         Ok(count)
     })
+    })();
+    match &result {
+        Ok(bytes)=>log.succeed(json!({"bytes":bytes,"saved":true})),
+        Err(error) if atomic_output::is_export_cancelled(error)=>log.cancel(),
+        Err(_)=>log.fail("export_write_failed"),
+    }
+    result
 }
 
 #[tauri::command]
 pub fn ocr_workspace_cancel_export(request_id: String) -> Result<bool, String> {
-    export_control::cancel(&request_id)
+    let log=OperationLog::start("ocr.export_cancel",json!({"surface":"gui"}));
+    let result=export_control::cancel(&request_id);
+    match &result {Ok(accepted)=>log.succeed(json!({"accepted":accepted})),Err(_)=>log.fail("cancel_request_failed")}
+    result
 }
 
 #[derive(Debug, Serialize)]
@@ -2026,62 +1962,75 @@ pub async fn ocr_workspace_export(
     office_options: Option<crate::ocr_office::OfficeOptions>,
     workbook_options: Option<crate::ocr_office::WorkbookOptions>,
 ) -> Result<WorkspaceExportResult, String> {
-    let started = std::time::Instant::now();
-    let what = format!("OCR export ({format}{}) to {}", if pdfa { ", PDF/A" } else { "" }, file_label(&output_path));
-    log_step(&what, started, async move {
-        let job = ExportJob::begin(request_id)?;
-        let root = workspace_root(&app)?;
-        tokio::task::spawn_blocking(move || {
-            if office_options.is_some() && format != "docx" {
-                return Err("Word object placement options are only supported for DOCX export.".into());
+    let log=std::sync::Arc::new(OperationLog::start_with_id("ocr.export",json!({"surface":"gui","format":format,"pages":pages.len()}),request_id.as_deref()));
+    let result: Result<WorkspaceExportResult,String> = async {
+    log.step("validating",Value::Null);
+    let job = ExportJob::begin(request_id)?;
+    let root = workspace_root(&app)?;
+    let worker_log=log.clone();
+    tokio::task::spawn_blocking(move || {
+        if office_options.is_some() && format != "docx" {
+            return Err("Word object placement options are only supported for DOCX export.".into());
+        }
+        if workbook_options.is_some() && format != "xlsx" {
+            return Err("Workbook worksheet choices are only supported for XLSX export.".into());
+        }
+        if format != "xlsx" {
+            for page in &pages { managed_page(&root, &page.image_path)?; }
+            validate_export_pages(&pages)?;
+        } else if pages.is_empty() || pages.len() > MAX_PAGES {
+            return Err("Select saved tables from 1–10,000 source pages for this workbook.".into());
+        }
+        let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
+        #[allow(unused_mut)]
+        let (mut prepared, mut warnings, mut sheets, mut exported_pages) = (None, vec![], None, pages.len());
+        if format == "xlsx" && !pdfa {
+            #[cfg(feature = "ocr-office")]
+            {
+                let options = workbook_options.ok_or("Select at least one saved table for this workbook.")?;
+                let output = export_xlsx(&pages, &options)?;
+                exported_pages = options.sheets.iter().map(|sheet| sheet.page_id.as_str()).collect::<HashSet<_>>().len();
+                sheets = Some(options.sheets.len());
+                warnings = output.warnings;
+                prepared = Some(output.bytes);
             }
-            if workbook_options.is_some() && format != "xlsx" {
-                return Err("Workbook worksheet choices are only supported for XLSX export.".into());
+            #[cfg(not(feature = "ocr-office"))]
+            { let _ = workbook_options; return Err("Workbook export is unavailable in this build. Install a build with Office export support.".into()); }
+        } else if format == "docx" && !pdfa {
+            #[cfg(feature = "ocr-office")]
+            {
+                let output = export_docx(&pages, &office_options.unwrap_or_default())?;
+                warnings = output.warnings;
+                prepared = Some(output.bytes);
             }
-            if format != "xlsx" {
-                for page in &pages { managed_page(&root, &page.image_path)?; }
-                validate_export_pages(&pages)?;
-            } else if pages.is_empty() || pages.len() > MAX_PAGES {
-                return Err("Select saved tables from 1–10,000 source pages for this workbook.".into());
-            }
-            let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-            #[allow(unused_mut)]
-            let (mut prepared, mut warnings, mut sheets, mut exported_pages) = (None, vec![], None, pages.len());
-            if format == "xlsx" && !pdfa {
-                #[cfg(feature = "ocr-office")]
-                {
-                    let options = workbook_options.ok_or("Select at least one saved table for this workbook.")?;
-                    let output = export_xlsx(&pages, &options)?;
-                    exported_pages = options.sheets.iter().map(|sheet| sheet.page_id.as_str()).collect::<HashSet<_>>().len();
-                    sheets = Some(options.sheets.len());
-                    warnings = output.warnings;
-                    prepared = Some(output.bytes);
+            #[cfg(not(feature = "ocr-office"))]
+            { let _ = office_options; }
+        }
+        let mut last_stage="";
+        let mut last_log=std::time::Instant::now();
+        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
+            MAX_STREAMED_PDF_BYTES, prepared, job.control(), |phase, bytes| {
+                let stage=match phase {"rendering"=>"rendering","committing"=>"committing",_=>"writing"};
+                if stage!=last_stage || last_log.elapsed()>=std::time::Duration::from_secs(5) {
+                    worker_log.step(stage,json!({"bytes":bytes})); last_stage=stage;last_log=std::time::Instant::now();
                 }
-                #[cfg(not(feature = "ocr-office"))]
-                { let _ = workbook_options; return Err("Workbook export is unavailable in this build. Install a build with Office export support.".into()); }
-            } else if format == "docx" && !pdfa {
-                #[cfg(feature = "ocr-office")]
-                {
-                    let output = export_docx(&pages, &office_options.unwrap_or_default())?;
-                    warnings = output.warnings;
-                    prepared = Some(output.bytes);
-                }
-                #[cfg(not(feature = "ocr-office"))]
-                { let _ = office_options; }
-            }
-            let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
-                MAX_STREAMED_PDF_BYTES, prepared, job.control(), |phase, bytes| {
-                    let _ = app.emit("ocr-workspace-export", json!({
-                        "request_id": job.id(), "phase": phase, "bytes": bytes,
-                    }));
-                })?;
-            Ok(WorkspaceExportResult {
-                saved_path: path.to_string_lossy().into_owned(), bytes, pages: exported_pages,
-                format: if pdfa { "pdfa".into() } else { format },
-                warnings, sheets,
-            })
-        }).await.map_err(|e| format!("Export worker: {e}"))?
-    }.await)
+                let _ = app.emit("ocr-workspace-export", json!({
+                    "request_id": job.id(), "phase": phase, "bytes": bytes,
+                }));
+            })?;
+        Ok(WorkspaceExportResult {
+            saved_path: path.to_string_lossy().into_owned(), bytes, pages: exported_pages,
+            format: if pdfa { "pdfa".into() } else { format },
+            warnings, sheets,
+        })
+    }).await.map_err(|e| format!("Export worker: {e}"))?
+    }.await;
+    match &result {
+        Ok(export)=>log.succeed(json!({"bytes":export.bytes,"pages":export.pages,"format":export.format,"warnings":export.warnings.len()})),
+        Err(error) if atomic_output::is_export_cancelled(error)=>log.cancel(),
+        Err(_)=>log.fail("export_failed"),
+    }
+    result
 }
 
 /// Create a private render destination before showing the mobile save picker.
@@ -2207,6 +2156,148 @@ mod tests {
         assert_eq!(joined.char_conf.len(), joined.text.chars().count());
         let expected = (0.9 * 11.0 + 0.5 * 12.0) / 23.0;
         assert!((joined.confidence.unwrap() - expected as f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn paragraph_confidence_preserves_only_matching_valid_character_evidence() {
+        let first = word("A💡é", 0.0, 0.0, 100.0, 20.0, 0.9);
+        let second = word("次行", 0.0, 24.0, 100.0, 20.0, 0.6);
+        let joined = group_lines_into_paragraphs(vec![first.clone(), second.clone()]);
+        assert_eq!(joined[0].text, "A💡é\n次行");
+        assert_eq!(joined[0].char_conf, [0.9, 0.9, 0.9, 0.6, 0.6, 0.6]);
+        assert!(joined[0].char_conf_aligned);
+        assert_eq!(joined[0].char_conf_unit, "unicode_codepoint");
+
+        for basis in ["detection", "unknown"] {
+            let mut other = second.clone();
+            other.confidence_basis = basis.into();
+            let joined = group_lines_into_paragraphs(vec![first.clone(), other]);
+            assert_eq!(joined.len(), 1);
+            assert_eq!(joined[0].confidence_basis, "unknown");
+            assert!(joined[0].confidence.is_none());
+            assert!(!joined[0].char_conf_aligned);
+            assert!(joined[0].char_conf.is_empty());
+        }
+        // Equal lengths and matching units do not make token/unknown scores
+        // codepoint evidence, even if every line reports the same unit.
+        for unit in ["token", "unknown"] {
+            let mut a = first.clone();
+            let mut b = second.clone();
+            a.char_conf_unit = unit.into();
+            b.char_conf_unit = unit.into();
+            let joined = group_lines_into_paragraphs(vec![a, b]);
+            assert!(joined[0].confidence.is_some());
+            assert_eq!(joined[0].confidence_basis, "recognition");
+            assert!(!joined[0].char_conf_aligned);
+            assert!(joined[0].char_conf.is_empty());
+            assert_eq!(joined[0].char_conf_unit, "unknown");
+        }
+        for score in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let mut other = second.clone();
+            other.char_conf[0] = score;
+            let joined = group_lines_into_paragraphs(vec![first.clone(), other]);
+            assert!(!joined[0].char_conf_aligned);
+            assert!(joined[0].char_conf.is_empty());
+        }
+        for score in [None, Some(f32::NAN), Some(1.1)] {
+            let mut other = second.clone();
+            other.confidence = score;
+            let joined = group_lines_into_paragraphs(vec![first.clone(), other]);
+            assert!(joined[0].confidence.is_none(), "a partial mean cannot describe the whole paragraph");
+            // Independent, valid codepoint evidence stays usable.
+            assert!(joined[0].char_conf_aligned);
+        }
+        let joined = group_lines_into_paragraphs(vec![
+            word("", 0.0, 0.0, 100.0, 20.0, 0.9),
+            word("", 0.0, 24.0, 100.0, 20.0, 0.9),
+        ]);
+        assert!(!joined[0].char_conf_aligned);
+        assert!(joined[0].char_conf.is_empty(), "an inserted newline must not invent character evidence");
+    }
+
+    #[test]
+    fn paragraph_grouping_keeps_native_evidence_nontext_and_invalid_boxes_untouched() {
+        use crate::ocr_word_evidence::{NativeWordEvidence, WordEvidenceEnvelope};
+        let mut native = word("native", 0.0, 24.0, 100.0, 20.0, 0.8);
+        native.word_evidence = Some(WordEvidenceEnvelope {
+            version: 1, offset_unit: "utf16".into(), source: "tesseract_tsv".into(),
+            words: vec![NativeWordEvidence {
+                text: "native".into(), start: 0, end: 6, x: 0.0, y: 24.0, w: 100.0, h: 20.0,
+                confidence: Some(0.8), confidence_basis: "recognition".into(), alternatives: None,
+            }],
+        });
+        let mut table = word("table", 0.0, 72.0, 100.0, 20.0, 0.8);
+        table.kind = "table".into();
+        let invalid = word("outside", -1.0, 120.0, 100.0, 20.0, 0.8);
+        let expected = [&native, &table, &invalid].map(|r| serde_json::to_value(r).unwrap());
+        let grouped = group_lines_into_paragraphs(vec![
+            word("before", 0.0, 0.0, 100.0, 20.0, 0.9), native,
+            word("between", 0.0, 48.0, 100.0, 20.0, 0.9), table,
+            word("after", 0.0, 96.0, 100.0, 20.0, 0.9), invalid,
+            word("last", 0.0, 144.0, 100.0, 20.0, 0.9),
+        ]);
+        assert_eq!(grouped.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["before", "native", "between", "table", "after", "outside", "last"]);
+        for (index, expected) in [1, 3, 5].into_iter().zip(expected) {
+            assert_eq!(serde_json::to_value(&grouped[index]).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn review_layout_classifies_lines_before_paragraphs_are_joined() {
+        use crate::extractors::layout::{LayoutRegion, RegionKind};
+        let layout = vec![
+            LayoutRegion { x1: 0.0, y1: 0.0, x2: 300.0, y2: 20.0, score: 0.9, kind: RegionKind::Title, label_name: "title".into() },
+            LayoutRegion { x1: 0.0, y1: 24.0, x2: 300.0, y2: 68.0, score: 0.9, kind: RegionKind::Text, label_name: "text".into() },
+            LayoutRegion { x1: 0.0, y1: 72.0, x2: 300.0, y2: 92.0, score: 0.9, kind: RegionKind::Formula, label_name: "formula".into() },
+            LayoutRegion { x1: 0.0, y1: 96.0, x2: 300.0, y2: 116.0, score: 0.9, kind: RegionKind::Text, label_name: "text".into() },
+        ];
+        let config = crate::extractors::OcrPipelineConfig::default();
+        let mut diagnostics = json!({});
+        let mut warnings = vec![];
+        // Every recognizer line starts as ordinary text with identical size
+        // and spacing. Only the real layout classifier provides boundaries.
+        let regions = organize_review_regions(vec![
+            word("heading", 0.0, 0.0, 300.0, 20.0, 0.9),
+            word("body first", 0.0, 24.0, 300.0, 20.0, 0.9),
+            word("body second", 0.0, 48.0, 300.0, 20.0, 0.9),
+            word("x = y", 0.0, 72.0, 300.0, 20.0, 0.9),
+            word("after formula", 0.0, 96.0, 300.0, 20.0, 0.9),
+        ], &mut diagnostics, |regions, diagnostics| {
+            apply_review_layout(&layout, &config, regions, diagnostics, &mut warnings);
+        });
+        assert_eq!(regions.iter().map(|r| (r.kind.as_str(), r.text.as_str())).collect::<Vec<_>>(),
+            [("title", "heading"), ("text", "body first\nbody second"), ("formula", "x = y"), ("text", "after formula")]);
+        assert_eq!(diagnostics["paragraph_grouping"], json!({"lines": 5, "paragraphs": 4}));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn grouping_receipts_share_recognition_scope_without_source_content() {
+        let (_, events) = crate::operation_log::capture(|| {
+            let log = OperationLog::start("ocr.workspace_recognition", json!({"surface":"gui"}));
+            let mut diagnostics = json!({"full_text":"private document text", "recognition_image_path":"/private/source.png"});
+            let regions = organize_review_regions(vec![
+                word("private", 0.0, 0.0, 100.0, 20.0, 0.9),
+                word("document", 110.0, 0.0, 100.0, 20.0, 0.9),
+                word("text", 0.0, 24.0, 200.0, 20.0, 0.9),
+            ], &mut diagnostics, |_, _| {});
+            log_review_grouping(&log, &diagnostics);
+            log.succeed(json!({"regions": regions.len()}));
+        });
+        assert_eq!(events.iter().map(|event| event.phase.as_str()).collect::<Vec<_>>(),
+            ["started", "stage", "stage", "completed"]);
+        assert!(events.iter().all(|event| event.operation_id == events[0].operation_id));
+        assert_eq!(events[1].stage.as_deref(), Some("line_grouping"));
+        assert_eq!(events[1].context["count"], json!(3));
+        assert_eq!(events[1].context["regions"], json!(2));
+        assert_eq!(events[2].stage.as_deref(), Some("paragraph_grouping"));
+        assert_eq!(events[2].context["count"], json!(2));
+        assert_eq!(events[2].context["regions"], json!(1));
+        let logged = serde_json::to_string(&events).unwrap();
+        assert!(!logged.contains("private"));
+        assert!(!logged.contains("source.png"));
+        assert!(!logged.contains("full_text"));
     }
 
     #[test]
@@ -2527,6 +2618,27 @@ mod tests {
     }
 
     #[test]
+    fn export_receipts_follow_publication_and_never_log_reviewed_content() {
+        let root=tempfile::tempdir().unwrap();
+        let pages=vec![export_page(root.path(),"Private patient content")];
+        let path=root.path().join("private-patient.txt");
+        let (result,events)=crate::operation_log::capture(|| write_export(&path,&pages,"text",false,false,
+            MAX_STREAMED_PDF_BYTES,None,&ExportControl::default(),|_,_|{}));
+        assert_eq!(result.unwrap(),fs::metadata(&path).unwrap().len() as usize);
+        assert_eq!(events.last().unwrap().phase,"completed");
+        assert!(events.iter().any(|event|event.stage.as_deref()==Some("committing")));
+        let original=fs::read(&path).unwrap();
+        let (result,failed)=crate::operation_log::capture(|| write_export(&path,&pages,"text",false,false,
+            MAX_STREAMED_PDF_BYTES,None,&ExportControl::default(),|_,_|{}));
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(),original);
+        assert_eq!(failed.last().unwrap().phase,"failed");
+        assert!(!failed.iter().any(|event|event.phase=="completed"));
+        let logged=serde_json::to_string(&[events,failed]).unwrap();
+        assert!(!logged.contains("Private patient") && !logged.contains("private-patient"));
+    }
+
+    #[test]
     fn identical_page_snapshots_are_deduplicated_and_readable() {
         let root = tempfile::tempdir().unwrap();
         let first = persist_image(root.path(), &image()).unwrap();
@@ -2723,6 +2835,24 @@ mod tests {
         assert!(checked_physical_size(Some(80.0), None).is_err());
         assert!(checked_physical_size(Some(f64::NAN), Some(40.0)).is_err());
         assert!(checked_physical_size(Some(20_000.0), Some(40.0)).is_err());
+    }
+
+    #[test]
+    fn inactive_stage_crop_and_split_preserve_review_pixels_and_paper_size() {
+        let root = tempfile::tempdir().unwrap();
+        let input = image();
+        let source = persist_image(root.path(), &input).unwrap();
+        let config = serde_json::from_value(json!({
+            "enabled": true, "cleanup_enabled": true,
+            "stages": [{"engine":"tesseract", "rec_model":"custom-language.gguf",
+                "cleanup":{"enabled":false,"auto_crop":true,"page_split":true}}],
+        })).unwrap();
+        let prepared = prepare_page(root.path(), Path::new(&source.image_path), &config, Some((80.0,40.0))).unwrap();
+        assert_eq!((prepared.page.width, prepared.page.height), (input.width(), input.height()));
+        assert_eq!(decode_page(Path::new(&prepared.page.image_path)).unwrap().to_rgb8(), input.to_rgb8());
+        assert_eq!(prepared.page.page_width_points, Some(80.0));
+        assert_eq!(prepared.page.page_height_points, Some(40.0));
+        assert!(prepared.warnings.is_empty(), "inactive crop/split options must not run or request review");
     }
 
     #[test]
@@ -3061,6 +3191,55 @@ mod tests {
         for format in ["text", "html", "docx"] { assert!(validate_export_text(&pages, format).is_ok()); }
     }
 
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    #[test]
+    fn grouped_paragraph_survives_workspace_spatial_and_text_exports() {
+        let root = tempfile::tempdir().unwrap();
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(320, 200, image::Rgb([255, 255, 255])));
+        let asset = persist_image(root.path(), &image).unwrap();
+        let grouped = group_lines_into_paragraphs(vec![
+            word("First résumé", 20.0, 20.0, 280.0, 20.0, 0.9),
+            word("Second 東京", 20.0, 44.0, 280.0, 20.0, 0.8),
+        ]);
+        assert_eq!(grouped.len(), 1);
+        let source = &grouped[0];
+        let mut page = export_page(root.path(), &source.text);
+        page.image_path = asset.image_path;
+        page.width = 320;
+        page.height = 200;
+        page.page_width_points = Some(320.0);
+        page.page_height_points = Some(200.0);
+        let region = &mut page.regions[0];
+        (region.x, region.y, region.w, region.h) = (source.x, source.y, source.w, source.h);
+        region.original_text = Some(source.text.clone());
+        region.confidence = source.confidence;
+        region.confidence_basis = Some(source.confidence_basis.clone());
+        region.char_conf = source.char_conf.clone();
+        region.char_conf_unit = Some(source.char_conf_unit.clone());
+        region.char_conf_aligned = Some(source.char_conf_aligned);
+        let pages = vec![page];
+        assert_eq!(export_bytes(&pages, "text", false).unwrap(), source.text.as_bytes());
+        let mapped = reviewed_render_pages(&pages);
+        assert_eq!(mapped[0].regions[0].text, source.text);
+        assert_eq!((mapped[0].regions[0].x, mapped[0].regions[0].y, mapped[0].regions[0].w, mapped[0].regions[0].h),
+            (20.0, 20.0, 280.0, 44.0));
+        for format in ["hocr", "alto"] {
+            let xml = String::from_utf8(export_bytes(&pages, format, false).unwrap()).unwrap();
+            assert!(xml.contains("First résumé&#xA;Second 東京"), "{format} must retain the complete multiline region text");
+        }
+        let pdf = export_bytes(&pages, "pdf", false).unwrap();
+        let document = lopdf::Document::load_mem(&pdf).unwrap();
+        let extracted = document.extract_text(&[1]).unwrap();
+        assert!(extracted.contains("First résumé"));
+        assert!(extracted.contains("Second 東京"));
+        let page_id = document.get_pages()[&1];
+        let content = lopdf::content::Content::decode(&document.get_page_content(page_id).unwrap()).unwrap();
+        let baselines: Vec<_> = content.operations.iter().filter(|op| op.operator == "Tm")
+            .map(|op| op.operands[5].as_float().unwrap()).collect();
+        assert_eq!(baselines.len(), 2, "the paired renderer must lay out both explicit lines");
+        assert!(baselines[0] > baselines[1]);
+    }
+
     #[test]
     fn export_never_overwrites_sources_or_internal_assets() {
         let root = tempfile::tempdir().unwrap();
@@ -3190,6 +3369,37 @@ mod tests {
     }
 
     #[test]
+    fn preparation_selects_the_requested_recipe_without_requiring_recognition_weights() {
+        let mut config = crate::extractors::OcrPipelineConfig::default();
+        config.engine = Some("qwen2vl".into());
+        config.stages = vec![
+            serde_json::from_value(json!({"engine":"surya","cleanup":{"enabled":true,"denoise":true}})).unwrap(),
+            serde_json::from_value(json!({"engine":"qwen2vl","cleanup":{"enabled":false,"denoise":false},"vlm_prompt":"Keep columns"})).unwrap(),
+        ];
+        let active = active_preparation_config(config.clone());
+        assert_eq!(active.stages.len(), 1);
+        assert_eq!(active.stages[0].engine, "qwen2vl");
+        assert!(!active.stages[0].cleanup.enabled);
+        assert!(!active.stages[0].cleanup.denoise);
+        assert_eq!(active.stages[0].vlm_prompt, "Keep columns");
+        config.engine = Some("auto".into());
+        assert_eq!(active_preparation_config(config.clone()).stages.len(), 2);
+        config.engine = Some("system_tesseract".into());
+        assert!(active_preparation_config(config).stages.is_empty());
+    }
+
+    #[test]
+    fn capability_catalog_offers_available_legacy_engines_and_custom_embedded_choices() {
+        assert!(offered_engines(false, false, false, false).is_empty());
+        assert_eq!(offered_engines(false, true, true, false), ["auto", "system_tesseract", "ocrs"]);
+        let all = offered_engines(true, true, true, true);
+        for engine in ["auto", "surya", "unified", "tesseract_fraktur", "olmocr", "lfm2_vl", "system_tesseract", "ocrs", "paddle"] {
+            assert!(all.contains(&engine), "missing {engine}");
+        }
+        assert_eq!(all.iter().filter(|engine| **engine == "auto").count(), 1);
+    }
+
+    #[test]
     fn engine_and_language_choices_produce_explicit_config() {
         let (config, warnings) = recognition_config(Default::default(), Some("tesseract"), Some("de")).unwrap();
         assert!(!config.router);
@@ -3209,17 +3419,17 @@ mod tests {
     fn cpu_budget_is_limited_to_qwen2vl_in_spawn_capable_builds() {
         let (qwen, _) = recognition_config(Default::default(), Some("qwen2vl"), None).unwrap();
         let (trocr, _) = recognition_config(Default::default(), Some("dbnet_trocr"), None).unwrap();
-        if crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE {
+        if crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE && cfg!(feature = "crispembed") {
             assert!(check_cpu_budget(&qwen).is_ok());
             assert!(check_cpu_budget(&trocr).unwrap_err().contains("Qwen2 VL engine only"));
             assert!(check_cpu_budget(&Default::default()).is_err(), "automatic routing is not a single Qwen stage");
         } else {
-            assert!(check_cpu_budget(&qwen).unwrap_err().contains("sidecars"));
+            assert!(check_cpu_budget(&qwen).is_err());
         }
     }
 
     #[test]
-    fn every_offered_engine_builds_a_single_stage_with_registry_defaults() {
+    fn every_embedded_choice_builds_a_stage_and_custom_models_remain_configurable() {
         for engine in WORKSPACE_ENGINES.iter().filter(|e| **e != "auto") {
             let (config, _) = recognition_config(Default::default(), Some(engine), None)
                 .unwrap_or_else(|e| panic!("{engine}: {e}"));
@@ -3232,7 +3442,7 @@ mod tests {
             let (config, _) = recognition_config(Default::default(), Some(engine), None).unwrap();
             assert_eq!(config.stages[0].rec_model, None, "{engine}");
         }
-        assert!(!WORKSPACE_ENGINES.contains(&"unified"), "unified needs an explicit GGUF");
+        assert!(WORKSPACE_ENGINES.contains(&"unified"), "custom-model engines share the same catalog");
         // Every engine Settings can put in a pipeline stage must also pass the
         // workspace's stored-config validation, or recognition fails for users
         // who configured it there.

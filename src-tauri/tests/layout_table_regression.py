@@ -7,13 +7,14 @@ outputs make the layout routing deterministic without downloading models.
 """
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 
 source = (Path(__file__).resolve().parents[1] / 'src/extractors/mod.rs').read_text()
 start = source.index('fn ocr_with_layout(')
-end = source.index('/// OCR a single image through the smart pipeline', start)
-production = source[start:end]
+end = source.index('fn ocr_one_image(', start)
+production = re.sub(r'(?m)(?:^///[^\n]*\n)+\s*\Z', '', source[start:end])
 
 harness = r'''
 #![allow(dead_code)]
@@ -30,7 +31,7 @@ impl<T, E: std::fmt::Display> Context<T> for std::result::Result<T,E> {
 }
 thread_local! { static Y: Cell<u32> = const { Cell::new(0) }; static MODE: Cell<u32> = const { Cell::new(0) }; static CALLS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; }
 #[derive(Default)] struct ExtractedDocument { full_text:String, headings:Vec<String>, ext:String, language:Option<String>, translated_text:Option<String>, translated_to_lang:Option<String>, audio:Option<()>, image_exif:Option<()>, source_url:Option<String>, tags:Vec<String>, audio_pcm:Option<()> }
-struct Config { layout_engine:String, layout_model:Option<String>, layout_threshold:f32, drop_headers_footers:bool, rec_model:Option<String> }
+struct Config { engine:Option<String>, layout_engine:String, layout_model:Option<String>, layout_threshold:f32, drop_headers_footers:bool, rec_model:Option<String> }
 struct ExtractOptions { ocr_pipeline:Config }
 mod layout {
  #[derive(Debug, PartialEq)] pub enum RegionKind { Text, Table, Formula, Header, Footer, Figure, Other(String) }
@@ -38,6 +39,10 @@ mod layout {
  pub struct LayoutRegion { pub x1:f32, pub y1:f32, pub x2:f32, pub y2:f32, pub kind:RegionKind }
  pub struct Detector;
  impl Detector { pub fn detect(&self, _: &std::path::Path, _: f32)->crate::Result<Vec<LayoutRegion>> { unreachable!() } }
+}
+fn detect_ocr_layout(path: &Path, _: &Config)->Result<Vec<layout::LayoutRegion>> {
+ let mut regions=ocr_crispembed::cc_detect_regions(path);
+ regions.sort_by(|a,b| a.y1.partial_cmp(&b.y1).unwrap()); Ok(regions)
 }
 fn cached_layout_detector(_: &str)->Result<&'static std::sync::Mutex<layout::Detector>> { unreachable!() }
 mod ocr_crispembed {
@@ -73,50 +78,57 @@ mod tempfile { use super::*; pub struct Builder; pub struct Temp;
 mod math_ocr { use super::*; pub fn is_math_ocr_available()->bool{false} pub fn recognize_formula_from_pixels(_: &[u8],_:i32,_:i32)->Result<Option<String>>{Ok(None)} }
 fn ocr_one_image(_: &Path, _: &ExtractOptions)->Result<ExtractedDocument> {
  let y=Y.with(|v|v.get()); CALLS.with(|c|c.borrow_mut().push(format!("ocr:{y}")));
+ if y == 0 && MODE.with(|m|m.get()) == 8 { return Err("text OCR failed".into()); }
  if y == 10 && MODE.with(|m|m.get()) == 4 { return Err("crop OCR failed".into()); }
  if y == 10 && MODE.with(|m|m.get()) == 6 { return Ok(ExtractedDocument::default()); }
  Ok(ExtractedDocument{full_text:match y {0=>"before",10=>"fallback table text",20=>"after",_=>panic!("bad crop")}.into(),..Default::default()})
 }
-fn options()->ExtractOptions {ExtractOptions{ocr_pipeline:Config{layout_engine:"cc".into(),layout_model:None,layout_threshold:0.25,drop_headers_footers:false,rec_model:Some("custom-rec".into())}}}
+fn options()->ExtractOptions {ExtractOptions{ocr_pipeline:Config{engine:Some("auto".into()),layout_engine:"cc".into(),layout_model:None,layout_threshold:0.25,drop_headers_footers:false,rec_model:Some("custom-rec".into())}}}
 '''
 
 tests = r'''
-#[test] fn invalid_table_crop_requests_whole_page_fallback() {
+#[test] fn configured_automatic_pipeline_remains_authoritative_for_tables() {
+ MODE.with(|m|m.set(0)); CALLS.with(|c|c.borrow_mut().clear());
+ let opts=options();
+ assert_eq!(opts.ocr_pipeline.engine.as_deref(),Some("auto"));
+ assert_eq!(opts.ocr_pipeline.rec_model.as_deref(),Some("custom-rec"));
+ let doc=ocr_with_layout(Path::new("page.png"),&opts).unwrap();
+ assert_eq!(doc.full_text,"before\n\nfallback table text\n\nafter");
+ assert_eq!(CALLS.with(|c|c.borrow().clone()),vec!["ocr:0","ocr:10","ocr:20"]);
+}
+#[test] fn selected_engine_remains_selected_for_table_regions() {
+ MODE.with(|m|m.set(0)); CALLS.with(|c|c.borrow_mut().clear());
+ let mut opts=options(); opts.ocr_pipeline.engine=Some("qwen2vl".into());
+ assert_eq!(ocr_with_layout(Path::new("page.png"),&opts).unwrap().full_text,"before\n\nfallback table text\n\nafter");
+ assert_eq!(CALLS.with(|c|c.borrow().clone()),vec!["ocr:0","ocr:10","ocr:20"]);
+}
+#[test] fn invalid_table_crop_fails_the_layout_request() {
  MODE.with(|m|m.set(7)); CALLS.with(|c|c.borrow_mut().clear());
  assert!(ocr_with_layout(Path::new("page.png"),&options()).is_err());
 }
-#[test] fn table_parser_failure_falls_back_in_reading_order() {
- MODE.with(|m|m.set(1)); CALLS.with(|c|c.borrow_mut().clear());
- let doc=ocr_with_layout(Path::new("page.png"),&options()).unwrap();
- assert_eq!(doc.full_text,"before\n\nfallback table text\n\nafter");
- assert_eq!(CALLS.with(|c|c.borrow().clone()),vec!["ocr:0","table:10:custom-rec","ocr:10","ocr:20"]);
-}
-#[test] fn empty_table_parser_output_falls_back() {
- MODE.with(|m|m.set(2)); CALLS.with(|c|c.borrow_mut().clear());
- assert_eq!(ocr_with_layout(Path::new("page.png"),&options()).unwrap().full_text,"before\n\nfallback table text\n\nafter");
-}
-#[test] fn malformed_table_parser_output_falls_back() {
- MODE.with(|m|m.set(3)); CALLS.with(|c|c.borrow_mut().clear());
- assert_eq!(ocr_with_layout(Path::new("page.png"),&options()).unwrap().full_text,"before\n\nfallback table text\n\nafter");
-}
-#[test] fn table_cells_keep_rows_columns_and_decode_entities_once() {
- MODE.with(|m|m.set(5)); CALLS.with(|c|c.borrow_mut().clear());
- assert_eq!(ocr_with_layout(Path::new("page.png"),&options()).unwrap().full_text,"before\n\nR&D\t<cost>\n50\t&lt;\n\nafter");
-}
-#[test] fn empty_table_ocr_requests_whole_page_fallback() {
+#[test] fn empty_table_text_is_not_accepted_as_complete_extraction() {
  MODE.with(|m|m.set(6)); CALLS.with(|c|c.borrow_mut().clear());
  assert!(ocr_with_layout(Path::new("page.png"),&options()).is_err());
 }
-#[test] fn failed_table_ocr_requests_whole_page_fallback() {
+#[test] fn failed_table_ocr_fails_the_layout_request() {
  MODE.with(|m|m.set(4)); CALLS.with(|c|c.borrow_mut().clear());
  assert!(ocr_with_layout(Path::new("page.png"),&options()).is_err());
+ assert_eq!(CALLS.with(|c|c.borrow().clone()),vec!["ocr:0","ocr:10"]);
 }
-#[test] fn table_success_retains_indexable_words_in_reading_order() {
- MODE.with(|m|m.set(0)); CALLS.with(|c|c.borrow_mut().clear());
- let doc=ocr_with_layout(Path::new("page.png"),&options()).unwrap();
- assert_eq!(doc.full_text,"before\n\nRevenue\t42\n\nafter");
- assert_eq!(CALLS.with(|c|c.borrow().clone()),vec!["ocr:0","table:10:custom-rec","ocr:20"]);
+#[test] fn failed_text_region_is_not_silently_omitted() {
+ MODE.with(|m|m.set(8)); CALLS.with(|c|c.borrow_mut().clear());
+ assert!(ocr_with_layout(Path::new("page.png"),&options()).is_err());
+ assert_eq!(CALLS.with(|c|c.borrow().clone()),vec!["ocr:0"]);
 }
+#[test] fn explicit_table_html_keeps_grid_delimiters_and_decodes_entities_once() {
+ let html="<table>\n<tr><th>R&amp;D</th><th>&lt;cost&gt;</th></tr>\n<tr><td>50</td><td>&amp;lt;</td></tr>\n</table>";
+ assert_eq!(layout_table_text(html).as_deref(),Some("R&D\t<cost>\n50\t&lt;"));
+}
+#[test] fn empty_or_malformed_table_html_is_rejected() {
+ assert!(layout_table_text("<table><tr><td></td></tr></table>").is_none());
+ assert!(layout_table_text("<table><tr><td>broken</tr></table>").is_none());
+}
+
 '''
 
 with tempfile.TemporaryDirectory(prefix='layout-table-', dir=os.environ.get('TMPDIR')) as d:

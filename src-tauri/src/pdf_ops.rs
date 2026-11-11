@@ -10,6 +10,60 @@ use std::path::Path;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+/// Run the same native operation receipt for CLI and GUI callers. Detailed
+/// errors remain in the Result; only fixed names, stages and counts reach logs.
+pub(crate) fn with_operation<T>(
+    name: &'static str,
+    work: impl FnOnce(&crate::operation_log::OperationLog) -> Result<T, String>,
+) -> Result<T, String> {
+    let log = crate::operation_log::OperationLog::start(
+        name, serde_json::json!({"kind":"pdf","surface":"native"}),
+    );
+    let result = work(&log);
+    match &result {
+        Ok(_) => log.succeed(serde_json::Value::Null),
+        Err(_) => log.fail("pdf_operation_failed"),
+    }
+    result
+}
+
+fn output_target(path: &Path) -> Result<std::path::PathBuf, String> {
+    if path.is_absolute() { return Ok(path.to_path_buf()); }
+    std::env::current_dir().map(|dir| dir.join(path)).map_err(|e| format!("output directory: {e}"))
+}
+
+/// PDF commands already authorize replacement of their selected output. The
+/// shared writer publishes it only after serialization, flush and sync succeed.
+pub(crate) fn save_document(doc: &mut Document, path: &Path) -> Result<(), String> {
+    crate::ocr_atomic_output::atomic_write_with(&output_target(path)?, true, |file| {
+        doc.save_to(file).map_err(|e| format!("save: {e}"))
+    })
+}
+
+pub(crate) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    crate::ocr_atomic_output::atomic_write(&output_target(path)?, bytes, true)
+}
+
+/// Some backends validate by reopening their output with another parser. Keep
+/// that entire write/verify/discard cycle private before replacing any user file.
+fn publish_checked<T>(
+    path: &Path,
+    write_and_check: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let target = output_target(path)?;
+    let parent = target.parent().ok_or("Choose an output file in an existing directory.")?;
+    let staging = tempfile::Builder::new().prefix(".pdf-check-").tempdir_in(parent)
+        .map_err(|e| format!("create PDF verification staging: {e}"))?;
+    let temporary = staging.path().join("document.pdf");
+    let result = write_and_check(&temporary)?;
+    crate::ocr_atomic_output::atomic_write_with(&target, true, |file| {
+        let mut input = std::fs::File::open(&temporary).map_err(|e| format!("open verified PDF: {e}"))?;
+        std::io::copy(&mut input, file).map_err(|e| format!("publish verified PDF: {e}"))?;
+        Ok(())
+    })?;
+    Ok(result)
+}
+
 /// Return the ordered list of page ObjectIds from the page tree.
 fn page_ids(doc: &Document) -> Vec<ObjectId> {
     doc.page_iter().collect()
@@ -208,8 +262,11 @@ pub struct PdfInfo {
 }
 
 pub fn pdf_info(path: &Path) -> Result<PdfInfo, String> {
-    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    Ok(pdf_info_from_doc(&doc))
+    with_operation("pdf.info", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        Ok(pdf_info_from_doc(&doc))
+    })
 }
 
 /// Same as [`pdf_info`] against an already-loaded document — used by the
@@ -288,10 +345,14 @@ pub fn reorder_pages_doc(doc: &mut Document, new_order: &[usize]) -> Result<(), 
 }
 
 pub fn reorder_pages(path: &Path, new_order: &[usize], out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    reorder_pages_doc(&mut doc, new_order)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.reorder_pages", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        reorder_pages_doc(&mut doc, new_order)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Extract pages ──────────────────────────────────────────────────────
@@ -312,10 +373,14 @@ pub fn extract_pages_doc(doc: &mut Document, page_indices: &[usize]) -> Result<(
 }
 
 pub fn extract_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    extract_pages_doc(&mut doc, page_indices)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.extract_pages", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        extract_pages_doc(&mut doc, page_indices)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Remove pages ───────────────────────────────────────────────────────
@@ -330,10 +395,14 @@ pub fn remove_pages_doc(doc: &mut Document, page_indices: &[usize]) -> Result<()
 }
 
 pub fn remove_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    remove_pages_doc(&mut doc, page_indices)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.remove_pages", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        remove_pages_doc(&mut doc, page_indices)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Rotate pages ───────────────────────────────────────────────────────
@@ -362,10 +431,14 @@ pub fn rotate_pages_doc(doc: &mut Document, page_indices: &[usize], degrees: i64
 }
 
 pub fn rotate_pages(path: &Path, page_indices: &[usize], degrees: i64, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    rotate_pages_doc(&mut doc, page_indices, degrees)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.rotate_pages", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        rotate_pages_doc(&mut doc, page_indices, degrees)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Crop pages ─────────────────────────────────────────────────────────
@@ -387,10 +460,14 @@ pub fn crop_pages_doc(doc: &mut Document, page_indices: &[usize], x: f64, y: f64
 }
 
 pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h: f64, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    crop_pages_doc(&mut doc, page_indices, x, y, w, h)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.crop_pages", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        crop_pages_doc(&mut doc, page_indices, x, y, w, h)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Merge PDFs ─────────────────────────────────────────────────────────
@@ -399,66 +476,70 @@ pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h
 /// into the first, remapping ObjectIds to avoid collisions, then
 /// appending page references to the base /Pages /Kids array.
 pub fn merge_pdfs(paths: &[&Path], out_path: &Path) -> Result<usize, String> {
-    if paths.is_empty() { return Err("no input files".into()); }
-    let mut base = Document::load(paths[0]).map_err(|e| format!("load {}: {e}", paths[0].display()))?;
-    let mut total = page_ids(&base).len();
-    let pid = pages_ref(&base)?;
+    with_operation("pdf.merge", |log| {
+        log.step("processing", serde_json::Value::Null);
+        if paths.is_empty() { return Err("no input files".into()); }
+        let mut base = Document::load(paths[0]).map_err(|e| format!("load {}: {e}", paths[0].display()))?;
+        let mut total = page_ids(&base).len();
+        let pid = pages_ref(&base)?;
 
-    for p in &paths[1..] {
-        let other = Document::load(p).map_err(|e| format!("load {}: {e}", p.display()))?;
-        let other_page_ids = page_ids(&other);
+        for p in &paths[1..] {
+            let other = Document::load(p).map_err(|e| format!("load {}: {e}", p.display()))?;
+            let other_page_ids = page_ids(&other);
 
-        // Find the max object ID in base to offset the other doc's IDs.
-        let max_id = base.max_id;
-        let mut id_map = std::collections::HashMap::<ObjectId, ObjectId>::new();
+            // Find the max object ID in base to offset the other doc's IDs.
+            let max_id = base.max_id;
+            let mut id_map = std::collections::HashMap::<ObjectId, ObjectId>::new();
 
-        // Copy all objects from `other` into `base` with remapped IDs.
-        for (&old_id, obj) in &other.objects {
-            let new_id = (old_id.0 + max_id, old_id.1);
-            id_map.insert(old_id, new_id);
-            base.objects.insert(new_id, obj.clone());
-        }
-        base.max_id = max_id + other.max_id;
+            // Copy all objects from `other` into `base` with remapped IDs.
+            for (&old_id, obj) in &other.objects {
+                let new_id = (old_id.0 + max_id, old_id.1);
+                id_map.insert(old_id, new_id);
+                base.objects.insert(new_id, obj.clone());
+            }
+            base.max_id = max_id + other.max_id;
 
-        // Remap all references within the copied objects.
-        let new_ids: Vec<ObjectId> = id_map.values().copied().collect();
-        for &nid in &new_ids {
-            if let Some(obj) = base.objects.get_mut(&nid) {
-                remap_refs(obj, &id_map);
+            // Remap all references within the copied objects.
+            let new_ids: Vec<ObjectId> = id_map.values().copied().collect();
+            for &nid in &new_ids {
+                if let Some(obj) = base.objects.get_mut(&nid) {
+                    remap_refs(obj, &id_map);
+                }
+            }
+
+            // Collect remapped page IDs.
+            let mut new_page_refs = Vec::new();
+            for old_pid in &other_page_ids {
+                if let Some(&new_pid) = id_map.get(old_pid) {
+                    new_page_refs.push(new_pid);
+                }
+            }
+
+            // Re-parent the new pages to point to our /Pages node.
+            for &npid in &new_page_refs {
+                if let Some(Object::Dictionary(ref mut pg)) = base.objects.get_mut(&npid) {
+                    pg.set("Parent", Object::Reference(pid));
+                }
+            }
+
+            // Append to /Kids.
+            if let Ok(Object::Dictionary(ref mut pages_dict)) = base.get_object_mut(pid) {
+                let mut kids = match pages_dict.get(b"Kids") {
+                    Ok(Object::Array(a)) => a.clone(),
+                    _ => vec![],
+                };
+                for npid in &new_page_refs {
+                    kids.push(Object::Reference(*npid));
+                    total += 1;
+                }
+                pages_dict.set("Kids", Object::Array(kids));
+                pages_dict.set("Count", Object::Integer(total as i64));
             }
         }
-
-        // Collect remapped page IDs.
-        let mut new_page_refs = Vec::new();
-        for old_pid in &other_page_ids {
-            if let Some(&new_pid) = id_map.get(old_pid) {
-                new_page_refs.push(new_pid);
-            }
-        }
-
-        // Re-parent the new pages to point to our /Pages node.
-        for &npid in &new_page_refs {
-            if let Some(Object::Dictionary(ref mut pg)) = base.objects.get_mut(&npid) {
-                pg.set("Parent", Object::Reference(pid));
-            }
-        }
-
-        // Append to /Kids.
-        if let Ok(Object::Dictionary(ref mut pages_dict)) = base.get_object_mut(pid) {
-            let mut kids = match pages_dict.get(b"Kids") {
-                Ok(Object::Array(a)) => a.clone(),
-                _ => vec![],
-            };
-            for npid in &new_page_refs {
-                kids.push(Object::Reference(*npid));
-                total += 1;
-            }
-            pages_dict.set("Kids", Object::Array(kids));
-            pages_dict.set("Count", Object::Integer(total as i64));
-        }
-    }
-    base.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(total)
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut base, out_path)?;
+        Ok(total)
+    })
 }
 
 /// Recursively remap all Object::Reference values using the given map.
@@ -483,15 +564,18 @@ fn remap_refs(obj: &mut Object, map: &std::collections::HashMap<ObjectId, Object
 // ── Split PDF ──────────────────────────────────────────────────────────
 
 pub fn split_pdf(path: &Path, ranges: &[(usize, usize)], out_dir: &Path, stem: &str) -> Result<Vec<String>, String> {
-    let mut outputs = Vec::new();
-    for (i, &(start, end)) in ranges.iter().enumerate() {
-        let indices: Vec<usize> = (start..end).collect();
-        let name = format!("{stem}_part{}.pdf", i + 1);
-        let out = out_dir.join(&name);
-        extract_pages(path, &indices, &out)?;
-        outputs.push(out.to_string_lossy().into_owned());
-    }
-    Ok(outputs)
+    with_operation("pdf.split", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut outputs = Vec::new();
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            let indices: Vec<usize> = (start..end).collect();
+            let name = format!("{stem}_part{}.pdf", i + 1);
+            let out = out_dir.join(&name);
+            extract_pages(path, &indices, &out)?;
+            outputs.push(out.to_string_lossy().into_owned());
+        }
+        Ok(outputs)
+    })
 }
 
 // ── Add page numbers ───────────────────────────────────────────────────
@@ -561,10 +645,14 @@ pub fn add_page_numbers_doc(doc: &mut Document, config: &PageNumberConfig) -> Re
 }
 
 pub fn add_page_numbers(path: &Path, config: &PageNumberConfig, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    add_page_numbers_doc(&mut doc, config)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.add_page_numbers", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        add_page_numbers_doc(&mut doc, config)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Watermark / stamp ──────────────────────────────────────────────────
@@ -625,10 +713,14 @@ pub fn add_watermark_doc(doc: &mut Document, config: &WatermarkConfig, page_indi
 }
 
 pub fn add_watermark(path: &Path, config: &WatermarkConfig, page_indices: Option<&[usize]>, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    add_watermark_doc(&mut doc, config, page_indices)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.add_watermark", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        add_watermark_doc(&mut doc, config, page_indices)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Insert blank pages ─────────────────────────────────────────────────
@@ -660,10 +752,14 @@ pub fn insert_blank_page_doc(doc: &mut Document, position: usize, width: f64, he
 }
 
 pub fn insert_blank_page(path: &Path, position: usize, width: f64, height: f64, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    insert_blank_page_doc(&mut doc, position, width, height)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.insert_blank_page", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        insert_blank_page_doc(&mut doc, position, width, height)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Insert pages from another document ─────────────────────────────────
@@ -783,10 +879,14 @@ pub fn add_text_box_doc(doc: &mut Document, config: &TextBoxConfig) -> Result<()
 }
 
 pub fn add_text_box(path: &Path, config: &TextBoxConfig, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    add_text_box_doc(&mut doc, config)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.add_text_box", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        add_text_box_doc(&mut doc, config)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Edit metadata ──────────────────────────────────────────────────────
@@ -818,10 +918,14 @@ pub fn edit_metadata_doc(doc: &mut Document, edits: &MetadataEdit) -> Result<(),
 }
 
 pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    edit_metadata_doc(&mut doc, edits)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+    with_operation("pdf.edit_metadata", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        edit_metadata_doc(&mut doc, edits)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Decrypt (password-protected PDFs) ───────────────────────────────
@@ -847,49 +951,57 @@ pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Resu
 /// by verifying output with qpdf rather than by trusting the return
 /// value.
 pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    if !doc.is_encrypted() {
-        // Not encrypted — just copy as-is
-        doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-        return Ok(());
-    }
+    with_operation("pdf.decrypt", |log| {
+        log.step("processing", serde_json::Value::Null);
+        publish_checked(out_path, |out_path| {
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            if !doc.is_encrypted() {
+                // Not encrypted — just copy as-is
+                log.step("publishing", serde_json::Value::Null);
+                save_document(&mut doc, out_path)?;
+                return Ok(());
+            }
 
-    // Did the loader already manage it? A document with a real object
-    // graph and a reachable catalog is decrypted; anything else is the
-    // stub the loader produces when it could not.
-    let loaded_ok = doc.catalog().is_ok() && doc.objects.len() > 1;
+            // Did the loader already manage it? A document with a real object
+            // graph and a reachable catalog is decrypted; anything else is the
+            // stub the loader produces when it could not.
+            let loaded_ok = doc.catalog().is_ok() && doc.objects.len() > 1;
 
-    if loaded_ok {
-        // Already plaintext in memory. Calling decrypt() here would
-        // double-decrypt; just drop the security handler and save.
-        doc.trailer.remove(b"Encrypt");
-        doc.encryption_state = None;
-        doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-        return verify_decrypted(path, out_path);
-    }
+            if loaded_ok {
+                // Already plaintext in memory. Calling decrypt() here would
+                // double-decrypt; just drop the security handler and save.
+                doc.trailer.remove(b"Encrypt");
+                doc.encryption_state = None;
+                log.step("publishing", serde_json::Value::Null);
+                save_document(&mut doc, out_path)?;
+                return verify_decrypted(path, out_path);
+            }
 
-    doc.decrypt(password).map_err(|e| format!("decrypt: {e}"))?;
-    if doc.catalog().is_err() || doc.objects.len() <= 1 {
-        // lopdf could not do it. zpdf both reads *and* writes the decrypted
-        // result, which is the combination that matters — see
-        // `decrypt_via_zpdf`.
-        #[cfg(feature = "pdf-zpdf")]
-        {
-            return decrypt_via_zpdf(path, password, out_path);
-        }
-        #[cfg(not(feature = "pdf-zpdf"))]
-        return Err(format!(
-            "cannot decrypt {}: it is protected with a non-empty user password, \
-             which lopdf cannot supply at load time. The file was left \
-             untouched. Rebuild with `--features pdf-zpdf` to handle this \
-             case, or use `qpdf --decrypt --password=…`.",
-            path.display()
-        ));
-    }
-    doc.trailer.remove(b"Encrypt");
-    doc.encryption_state = None;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    verify_decrypted(path, out_path)
+            doc.decrypt(password).map_err(|e| format!("decrypt: {e}"))?;
+            if doc.catalog().is_err() || doc.objects.len() <= 1 {
+                // lopdf could not do it. zpdf both reads *and* writes the decrypted
+                // result, which is the combination that matters — see
+                // `decrypt_via_zpdf`.
+                #[cfg(feature = "pdf-zpdf")]
+                {
+                    return decrypt_via_zpdf(path, password, out_path);
+                }
+                #[cfg(not(feature = "pdf-zpdf"))]
+                return Err(format!(
+                    "cannot decrypt {}: it is protected with a non-empty user password, \
+                     which lopdf cannot supply at load time. The file was left \
+                     untouched. Rebuild with `--features pdf-zpdf` to handle this \
+                     case, or use `qpdf --decrypt --password=…`.",
+                    path.display()
+                ));
+            }
+            doc.trailer.remove(b"Encrypt");
+            doc.encryption_state = None;
+            log.step("publishing", serde_json::Value::Null);
+            save_document(&mut doc, out_path)?;
+            verify_decrypted(path, out_path)
+        })
+    })
 }
 
 /// Decrypt via `zpdf`, which authenticates after load *and* writes the
@@ -984,57 +1096,62 @@ fn decrypt_via_zpdf(path: &Path, password: &str, out_path: &Path) -> Result<(), 
 /// confirming each input really was damaged.
 #[cfg(feature = "pdf-zpdf")]
 pub fn repair_pdf(path: &Path, out_path: &Path) -> Result<usize, String> {
-    let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let doc = zpdf::PdfDocument::open(data)
-        .map_err(|e| format!("zpdf could not recover anything from this file: {e}"))?;
-    let pages = doc.page_count();
-    if pages == 0 {
-        return Err("recovered no pages; the file is beyond repair".into());
-    }
-    // Reference text from the recovered document, before writing — the same
-    // discipline as the decrypt path, and for the same reason: the source is
-    // damaged, so it cannot serve as the "before" value.
-    let idx: Vec<usize> = (0..pages).collect();
-    let reference: String = match zpdf::convert_pdf(&doc, &idx, zpdf::ConversionOptions::default()) {
-        Ok(c) => c.pages.iter().map(|p| p.text.as_str()).collect(),
-        Err(_) => String::new(),
-    };
-
-    let bytes = zpdf_writer::rewrite_pdf(doc.file(), &Default::default())
-        .map_err(|e| format!("zpdf rewrite: {e}"))?;
-    std::fs::write(out_path, &bytes)
-        .map_err(|e| format!("write {}: {e}", out_path.display()))?;
-
-    let discard = |msg: String| -> Result<usize, String> {
-        let _ = std::fs::remove_file(out_path);
-        Err(msg)
-    };
-    // Read back with lopdf — a different parser than the one that recovered
-    // it. A "repair" only counts if something else can now read the file.
-    match Document::load(out_path) {
-        Ok(check) => {
-            let after = check.page_iter().count();
-            if after != pages {
-                return discard(format!(
-                    "repair recovered {pages} page(s) but the output has {after}; discarded"
-                ));
+    with_operation("pdf.repair", |log| {
+        log.step("processing", serde_json::Value::Null);
+        publish_checked(out_path, |out_path| {
+            let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+            let doc = zpdf::PdfDocument::open(data)
+                .map_err(|e| format!("zpdf could not recover anything from this file: {e}"))?;
+            let pages = doc.page_count();
+            if pages == 0 {
+                return Err("recovered no pages; the file is beyond repair".into());
             }
-            if check.catalog().is_err() {
-                return discard("repaired output has no reachable catalog; discarded".into());
+            // Reference text from the recovered document, before writing — the same
+            // discipline as the decrypt path, and for the same reason: the source is
+            // damaged, so it cannot serve as the "before" value.
+            let idx: Vec<usize> = (0..pages).collect();
+            let reference: String = match zpdf::convert_pdf(&doc, &idx, zpdf::ConversionOptions::default()) {
+                Ok(c) => c.pages.iter().map(|p| p.text.as_str()).collect(),
+                Err(_) => String::new(),
+            };
+
+            let bytes = zpdf_writer::rewrite_pdf(doc.file(), &Default::default())
+                .map_err(|e| format!("zpdf rewrite: {e}"))?;
+            std::fs::write(out_path, &bytes)
+                .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+
+            let discard = |msg: String| -> Result<usize, String> {
+                let _ = std::fs::remove_file(out_path);
+                Err(msg)
+            };
+            // Read back with lopdf — a different parser than the one that recovered
+            // it. A "repair" only counts if something else can now read the file.
+            match Document::load(out_path) {
+                Ok(check) => {
+                    let after = check.page_iter().count();
+                    if after != pages {
+                        return discard(format!(
+                            "repair recovered {pages} page(s) but the output has {after}; discarded"
+                        ));
+                    }
+                    if check.catalog().is_err() {
+                        return discard("repaired output has no reachable catalog; discarded".into());
+                    }
+                }
+                Err(e) => return discard(format!("repaired output does not parse ({e}); discarded")),
             }
-        }
-        Err(e) => return discard(format!("repaired output does not parse ({e}); discarded")),
-    }
-    if !reference.trim().is_empty()
-        && pdf_extract::extract_text(out_path).unwrap_or_default().trim().is_empty()
-    {
-        return discard(
-            "repair recovered text but the written file yields none — the structure \
-             survived and the content did not. Output discarded."
-                .into(),
-        );
-    }
-    Ok(pages)
+            if !reference.trim().is_empty()
+                && pdf_extract::extract_text(out_path).unwrap_or_default().trim().is_empty()
+            {
+                return discard(
+                    "repair recovered text but the written file yields none — the structure \
+                     survived and the content did not. Output discarded."
+                        .into(),
+                );
+            }
+            Ok(pages)
+        })
+    })
 }
 
 /// Rewrite a PDF in linearized ("fast web view") form.
@@ -1068,45 +1185,50 @@ pub fn repair_pdf(path: &Path, out_path: &Path) -> Result<usize, String> {
 /// section is already written.
 #[cfg(feature = "pdf-zpdf")]
 pub fn linearize_pdf(path: &Path, out_path: &Path) -> Result<(), String> {
-    let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let doc = zpdf::PdfDocument::open(data).map_err(|e| format!("zpdf open: {e}"))?;
-    let pages_before = doc.page_count();
+    with_operation("pdf.linearize", |log| {
+        log.step("processing", serde_json::Value::Null);
+        publish_checked(out_path, |out_path| {
+            let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+            let doc = zpdf::PdfDocument::open(data).map_err(|e| format!("zpdf open: {e}"))?;
+            let pages_before = doc.page_count();
 
-    let bytes = zpdf_writer::linearize_pdf(doc.file())
-        .map_err(|e| format!("zpdf linearize: {e}"))?;
-    std::fs::write(out_path, &bytes)
-        .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+            let bytes = zpdf_writer::linearize_pdf(doc.file())
+                .map_err(|e| format!("zpdf linearize: {e}"))?;
+            std::fs::write(out_path, &bytes)
+                .map_err(|e| format!("write {}: {e}", out_path.display()))?;
 
-    // Same discipline as compression: verify with another library before
-    // reporting success, and discard rather than hand back a smaller file
-    // that no longer works.
-    match Document::load(out_path) {
-        Ok(check) => {
-            let pages_after = check.page_iter().count();
-            if pages_after != pages_before {
-                let _ = std::fs::remove_file(out_path);
-                return Err(format!(
-                    "linearization changed the page count ({pages_before} → {pages_after}); \
-                     output discarded"
-                ));
+            // Same discipline as compression: verify with another library before
+            // reporting success, and discard rather than hand back a smaller file
+            // that no longer works.
+            match Document::load(out_path) {
+                Ok(check) => {
+                    let pages_after = check.page_iter().count();
+                    if pages_after != pages_before {
+                        let _ = std::fs::remove_file(out_path);
+                        return Err(format!(
+                            "linearization changed the page count ({pages_before} → {pages_after}); \
+                             output discarded"
+                        ));
+                    }
+                    if check.catalog().is_err() {
+                        let _ = std::fs::remove_file(out_path);
+                        return Err("linearized output has no reachable catalog; discarded".into());
+                    }
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(out_path);
+                    return Err(format!(
+                        "linearized output does not parse ({e}); discarded. This is a known \
+                         defect in zpdf 0.11.0's linearizer, not in the input: it writes a \
+                         cross-reference table that omits objects the page tree references, \
+                         and a /N that disagrees with the page count (both confirmed with \
+                         qpdf --check-linearization). Nothing was written."
+                    ));
+                }
             }
-            if check.catalog().is_err() {
-                let _ = std::fs::remove_file(out_path);
-                return Err("linearized output has no reachable catalog; discarded".into());
-            }
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(out_path);
-            return Err(format!(
-                "linearized output does not parse ({e}); discarded. This is a known \
-                 defect in zpdf 0.11.0's linearizer, not in the input: it writes a \
-                 cross-reference table that omits objects the page tree references, \
-                 and a /N that disagrees with the page count (both confirmed with \
-                 qpdf --check-linearization). Nothing was written."
-            ));
-        }
-    }
-    Ok(())
+            Ok(())
+        })
+    })
 }
 
 /// Re-open what we just wrote and confirm it is genuinely usable.
@@ -1150,8 +1272,11 @@ fn verify_decrypted(src_path: &Path, out_path: &Path) -> Result<(), String> {
 
 /// Check whether a PDF is encrypted.
 pub fn is_encrypted(path: &Path) -> Result<bool, String> {
-    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    Ok(doc.is_encrypted())
+    with_operation("pdf.is_encrypted", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        Ok(doc.is_encrypted())
+    })
 }
 
 // ── Encrypt (set password + permissions) ────────────────────────────
@@ -1209,71 +1334,75 @@ impl Default for EncryptConfig {
 }
 
 pub fn encrypt_pdf(path: &Path, config: &EncryptConfig, out_path: &Path) -> Result<(), String> {
-    use lopdf::encryption::{EncryptionVersion, Permissions};
+    with_operation("pdf.encrypt", |log| {
+        log.step("processing", serde_json::Value::Null);
+        use lopdf::encryption::{EncryptionVersion, Permissions};
 
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
 
-    if doc.is_encrypted() {
-        return Err("PDF is already encrypted; decrypt first".into());
-    }
-
-    let mut perms = Permissions::empty();
-    if config.allow_print              { perms |= Permissions::PRINTABLE; }
-    if config.allow_copy               { perms |= Permissions::COPYABLE | Permissions::COPYABLE_FOR_ACCESSIBILITY; }
-    if config.allow_modify             { perms |= Permissions::MODIFIABLE; }
-    if config.allow_annotate           { perms |= Permissions::ANNOTABLE; }
-    if config.allow_fill_forms         { perms |= Permissions::FILLABLE; }
-    if config.allow_assemble           { perms |= Permissions::ASSEMBLABLE; }
-    if config.allow_high_quality_print { perms |= Permissions::PRINTABLE_IN_HIGH_QUALITY; }
-
-    let state = match config.algorithm {
-        EncryptionAlgorithm::Aes256 => {
-            // PDF 2.0 / AESV3. The file encryption key is ours to choose;
-            // V5 derives the password hashes from it rather than the other
-            // way round, so it must come from a CSPRNG — a predictable key
-            // defeats the whole scheme regardless of password strength.
-            let mut file_key = [0u8; 32];
-            getrandom::getrandom(&mut file_key)
-                .map_err(|e| format!("could not obtain a random encryption key: {e}"))?;
-
-            let mut crypt_filters: std::collections::BTreeMap<
-                Vec<u8>,
-                std::sync::Arc<dyn lopdf::encryption::crypt_filters::CryptFilter>,
-            > = std::collections::BTreeMap::new();
-            crypt_filters.insert(
-                b"StdCF".to_vec(),
-                std::sync::Arc::new(lopdf::encryption::crypt_filters::Aes256CryptFilter),
-            );
-
-            let version = EncryptionVersion::V5 {
-                encrypt_metadata: true,
-                crypt_filters,
-                file_encryption_key: &file_key,
-                stream_filter: b"StdCF".to_vec(),
-                string_filter: b"StdCF".to_vec(),
-                owner_password: &config.owner_password,
-                user_password: &config.user_password,
-                permissions: perms,
-            };
-            lopdf::encryption::EncryptionState::try_from(version)
-                .map_err(|e| format!("encryption setup: {e}"))?
+        if doc.is_encrypted() {
+            return Err("PDF is already encrypted; decrypt first".into());
         }
-        EncryptionAlgorithm::Rc4_128 => {
-            let version = EncryptionVersion::V2 {
-                document: &doc,
-                owner_password: &config.owner_password,
-                user_password: &config.user_password,
-                key_length: 128,
-                permissions: perms,
-            };
-            lopdf::encryption::EncryptionState::try_from(version)
-                .map_err(|e| format!("encryption setup: {e}"))?
-        }
-    };
 
-    doc.encrypt(&state).map_err(|e| format!("encrypt: {e}"))?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+        let mut perms = Permissions::empty();
+        if config.allow_print              { perms |= Permissions::PRINTABLE; }
+        if config.allow_copy               { perms |= Permissions::COPYABLE | Permissions::COPYABLE_FOR_ACCESSIBILITY; }
+        if config.allow_modify             { perms |= Permissions::MODIFIABLE; }
+        if config.allow_annotate           { perms |= Permissions::ANNOTABLE; }
+        if config.allow_fill_forms         { perms |= Permissions::FILLABLE; }
+        if config.allow_assemble           { perms |= Permissions::ASSEMBLABLE; }
+        if config.allow_high_quality_print { perms |= Permissions::PRINTABLE_IN_HIGH_QUALITY; }
+
+        let state = match config.algorithm {
+            EncryptionAlgorithm::Aes256 => {
+                // PDF 2.0 / AESV3. The file encryption key is ours to choose;
+                // V5 derives the password hashes from it rather than the other
+                // way round, so it must come from a CSPRNG — a predictable key
+                // defeats the whole scheme regardless of password strength.
+                let mut file_key = [0u8; 32];
+                getrandom::getrandom(&mut file_key)
+                    .map_err(|e| format!("could not obtain a random encryption key: {e}"))?;
+
+                let mut crypt_filters: std::collections::BTreeMap<
+                    Vec<u8>,
+                    std::sync::Arc<dyn lopdf::encryption::crypt_filters::CryptFilter>,
+                > = std::collections::BTreeMap::new();
+                crypt_filters.insert(
+                    b"StdCF".to_vec(),
+                    std::sync::Arc::new(lopdf::encryption::crypt_filters::Aes256CryptFilter),
+                );
+
+                let version = EncryptionVersion::V5 {
+                    encrypt_metadata: true,
+                    crypt_filters,
+                    file_encryption_key: &file_key,
+                    stream_filter: b"StdCF".to_vec(),
+                    string_filter: b"StdCF".to_vec(),
+                    owner_password: &config.owner_password,
+                    user_password: &config.user_password,
+                    permissions: perms,
+                };
+                lopdf::encryption::EncryptionState::try_from(version)
+                    .map_err(|e| format!("encryption setup: {e}"))?
+            }
+            EncryptionAlgorithm::Rc4_128 => {
+                let version = EncryptionVersion::V2 {
+                    document: &doc,
+                    owner_password: &config.owner_password,
+                    user_password: &config.user_password,
+                    key_length: 128,
+                    permissions: perms,
+                };
+                lopdf::encryption::EncryptionState::try_from(version)
+                    .map_err(|e| format!("encryption setup: {e}"))?
+            }
+        };
+
+        doc.encrypt(&state).map_err(|e| format!("encrypt: {e}"))?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Sanitise (strip hidden metadata) ────────────────────────────────
@@ -1311,100 +1440,105 @@ pub fn sanitise_pdf(path: &Path, out_path: &Path) -> Result<Vec<String>, String>
 }
 
 pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: &Path) -> Result<Vec<String>, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let mut stripped = Vec::new();
+    with_operation("pdf.sanitise", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        let mut stripped = Vec::new();
 
-    // 1. Remove /Info dictionary
-    if opts.strip_info {
-        if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
-            let info_id = *info_id;
-            doc.objects.remove(&info_id);
-            doc.trailer.remove(b"Info");
-            stripped.push("Info dictionary".into());
-        }
-    }
-
-    // Collect catalog-level IDs to remove (avoids borrow conflicts).
-    let mut remove_from_catalog: Vec<&'static [u8]> = Vec::new();
-    let mut meta_obj_id: Option<ObjectId> = None;
-    let mut names_id: Option<ObjectId> = None;
-    let mut names_remove: Vec<Vec<u8>> = Vec::new();
-
-    if let Ok(cat) = doc.catalog() {
-        // 2. XMP metadata
-        if opts.strip_xmp {
-            if let Ok(Object::Reference(mid)) = cat.get(b"Metadata") {
-                meta_obj_id = Some(*mid);
-                remove_from_catalog.push(b"Metadata");
+        // 1. Remove /Info dictionary
+        if opts.strip_info {
+            if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
+                let info_id = *info_id;
+                doc.objects.remove(&info_id);
+                doc.trailer.remove(b"Info");
+                stripped.push("Info dictionary".into());
             }
         }
-        // 4. OpenAction
-        if opts.strip_open_action && cat.has(b"OpenAction") {
-            remove_from_catalog.push(b"OpenAction");
-        }
-        // 3. Names dict
-        if opts.strip_javascript || opts.strip_embedded_files {
-            if let Ok(Object::Reference(nid)) = cat.get(b"Names") {
-                names_id = Some(*nid);
-            }
-        }
-    }
 
-    // Check what to remove from Names dict
-    if let Some(nid) = names_id {
-        if let Ok(Object::Dictionary(nd)) = doc.get_object(nid) {
-            if opts.strip_javascript && nd.has(b"JavaScript")    { names_remove.push(b"JavaScript".to_vec()); }
-            if opts.strip_embedded_files && nd.has(b"EmbeddedFiles") { names_remove.push(b"EmbeddedFiles".to_vec()); }
-        }
-    }
+        // Collect catalog-level IDs to remove (avoids borrow conflicts).
+        let mut remove_from_catalog: Vec<&'static [u8]> = Vec::new();
+        let mut meta_obj_id: Option<ObjectId> = None;
+        let mut names_id: Option<ObjectId> = None;
+        let mut names_remove: Vec<Vec<u8>> = Vec::new();
 
-    // Now mutate: remove XMP object
-    if let Some(mid) = meta_obj_id {
-        doc.objects.remove(&mid);
-        stripped.push("XMP metadata".into());
-    }
-
-    // Remove catalog keys
-    if !remove_from_catalog.is_empty() {
-        if let Ok(cm) = doc.catalog_mut() {
-            for key in &remove_from_catalog {
-                if *key == b"OpenAction" { stripped.push("OpenAction".into()); }
-                cm.remove(*key);
-            }
-        }
-    }
-
-    // Remove from Names dict
-    if let Some(nid) = names_id {
-        for key in &names_remove {
-            if let Ok(Object::Dictionary(ref mut nd)) = doc.get_object_mut(nid) {
-                nd.remove(key);
-                stripped.push(String::from_utf8_lossy(key).into_owned());
-            }
-        }
-    }
-
-    // 5. Strip per-page thumbnails and annotations
-    if opts.strip_thumbnails || opts.strip_annotations {
-        let ids = page_ids(&doc);
-        for &id in &ids {
-            if let Ok(Object::Dictionary(ref mut pg)) = doc.get_object_mut(id) {
-                if opts.strip_thumbnails && pg.has(b"Thumb") {
-                    pg.remove(b"Thumb");
-                    stripped.push("Page thumbnail".into());
+        if let Ok(cat) = doc.catalog() {
+            // 2. XMP metadata
+            if opts.strip_xmp {
+                if let Ok(Object::Reference(mid)) = cat.get(b"Metadata") {
+                    meta_obj_id = Some(*mid);
+                    remove_from_catalog.push(b"Metadata");
                 }
-                if opts.strip_annotations && pg.has(b"Annots") {
-                    pg.remove(b"Annots");
-                    stripped.push("Annotations".into());
+            }
+            // 4. OpenAction
+            if opts.strip_open_action && cat.has(b"OpenAction") {
+                remove_from_catalog.push(b"OpenAction");
+            }
+            // 3. Names dict
+            if opts.strip_javascript || opts.strip_embedded_files {
+                if let Ok(Object::Reference(nid)) = cat.get(b"Names") {
+                    names_id = Some(*nid);
                 }
             }
         }
-    }
-    stripped.sort();
-    stripped.dedup();
 
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(stripped)
+        // Check what to remove from Names dict
+        if let Some(nid) = names_id {
+            if let Ok(Object::Dictionary(nd)) = doc.get_object(nid) {
+                if opts.strip_javascript && nd.has(b"JavaScript")    { names_remove.push(b"JavaScript".to_vec()); }
+                if opts.strip_embedded_files && nd.has(b"EmbeddedFiles") { names_remove.push(b"EmbeddedFiles".to_vec()); }
+            }
+        }
+
+        // Now mutate: remove XMP object
+        if let Some(mid) = meta_obj_id {
+            doc.objects.remove(&mid);
+            stripped.push("XMP metadata".into());
+        }
+
+        // Remove catalog keys
+        if !remove_from_catalog.is_empty() {
+            if let Ok(cm) = doc.catalog_mut() {
+                for key in &remove_from_catalog {
+                    if *key == b"OpenAction" { stripped.push("OpenAction".into()); }
+                    cm.remove(*key);
+                }
+            }
+        }
+
+        // Remove from Names dict
+        if let Some(nid) = names_id {
+            for key in &names_remove {
+                if let Ok(Object::Dictionary(ref mut nd)) = doc.get_object_mut(nid) {
+                    nd.remove(key);
+                    stripped.push(String::from_utf8_lossy(key).into_owned());
+                }
+            }
+        }
+
+        // 5. Strip per-page thumbnails and annotations
+        if opts.strip_thumbnails || opts.strip_annotations {
+            let ids = page_ids(&doc);
+            for &id in &ids {
+                if let Ok(Object::Dictionary(ref mut pg)) = doc.get_object_mut(id) {
+                    if opts.strip_thumbnails && pg.has(b"Thumb") {
+                        pg.remove(b"Thumb");
+                        stripped.push("Page thumbnail".into());
+                    }
+                    if opts.strip_annotations && pg.has(b"Annots") {
+                        pg.remove(b"Annots");
+                        stripped.push("Annotations".into());
+                    }
+                }
+            }
+        }
+        stripped.sort();
+        stripped.dedup();
+
+        log.step("publishing", serde_json::Value::Null);
+
+        save_document(&mut doc, out_path)?;
+        Ok(stripped)
+    })
 }
 
 // ── PDF/A conformance metadata (P26.5) ──────────────────────────────
@@ -1414,55 +1548,60 @@ pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: 
 /// and adds an sRGB OutputIntent.  Does NOT re-encode fonts or images
 /// — the caller is responsible for ensuring the content is conformant.
 pub fn convert_to_pdfa(path: &Path, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    with_operation("pdf.convert_to_pdfa", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
 
-    // 1. Create XMP metadata stream with PDF/A-2b conformance
-    let xmp = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/">
-  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-    <rdf:Description rdf:about=""
-      xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
-      xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <pdfaid:part>2</pdfaid:part>
-      <pdfaid:conformance>B</pdfaid:conformance>
-    </rdf:Description>
-  </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>"#;
+        // 1. Create XMP metadata stream with PDF/A-2b conformance
+        let xmp = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+    <x:xmpmeta xmlns:x="adobe:ns:meta/">
+      <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about=""
+          xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+          xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <pdfaid:part>2</pdfaid:part>
+          <pdfaid:conformance>B</pdfaid:conformance>
+        </rdf:Description>
+      </rdf:RDF>
+    </x:xmpmeta>
+    <?xpacket end="w"?>"#;
 
-    let xmp_stream = lopdf::Stream::new(
-        lopdf::Dictionary::from_iter(vec![
-            ("Type", Object::Name(b"Metadata".to_vec())),
-            ("Subtype", Object::Name(b"XML".to_vec())),
-        ]),
-        xmp.as_bytes().to_vec(),
-    );
-    let xmp_id = doc.add_object(Object::Stream(xmp_stream));
+        let xmp_stream = lopdf::Stream::new(
+            lopdf::Dictionary::from_iter(vec![
+                ("Type", Object::Name(b"Metadata".to_vec())),
+                ("Subtype", Object::Name(b"XML".to_vec())),
+            ]),
+            xmp.as_bytes().to_vec(),
+        );
+        let xmp_id = doc.add_object(Object::Stream(xmp_stream));
 
-    // 2. Set /Metadata on catalog
-    if let Ok(cm) = doc.catalog_mut() {
-        cm.set("Metadata", Object::Reference(xmp_id));
-    }
+        // 2. Set /Metadata on catalog
+        if let Ok(cm) = doc.catalog_mut() {
+            cm.set("Metadata", Object::Reference(xmp_id));
+        }
 
-    // 3. Add sRGB OutputIntent
-    let output_intent = lopdf::Dictionary::from_iter(vec![
-        ("Type", Object::Name(b"OutputIntent".to_vec())),
-        ("S", Object::Name(b"GTS_PDFA1".to_vec())),
-        ("OutputConditionIdentifier", Object::String(b"sRGB IEC61966-2.1".to_vec(), lopdf::StringFormat::Literal)),
-        ("RegistryName", Object::String(b"http://www.color.org".to_vec(), lopdf::StringFormat::Literal)),
-        ("Info", Object::String(b"sRGB IEC61966-2.1".to_vec(), lopdf::StringFormat::Literal)),
-    ]);
-    let intent_id = doc.add_object(Object::Dictionary(output_intent));
+        // 3. Add sRGB OutputIntent
+        let output_intent = lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"OutputIntent".to_vec())),
+            ("S", Object::Name(b"GTS_PDFA1".to_vec())),
+            ("OutputConditionIdentifier", Object::String(b"sRGB IEC61966-2.1".to_vec(), lopdf::StringFormat::Literal)),
+            ("RegistryName", Object::String(b"http://www.color.org".to_vec(), lopdf::StringFormat::Literal)),
+            ("Info", Object::String(b"sRGB IEC61966-2.1".to_vec(), lopdf::StringFormat::Literal)),
+        ]);
+        let intent_id = doc.add_object(Object::Dictionary(output_intent));
 
-    if let Ok(cm) = doc.catalog_mut() {
-        cm.set("OutputIntents", Object::Array(vec![Object::Reference(intent_id)]));
-    }
+        if let Ok(cm) = doc.catalog_mut() {
+            cm.set("OutputIntents", Object::Array(vec![Object::Reference(intent_id)]));
+        }
 
-    // 4. Set PDF version to 1.7 (minimum for PDF/A-2)
-    doc.version = "1.7".to_string();
+        // 4. Set PDF version to 1.7 (minimum for PDF/A-2)
+        doc.version = "1.7".to_string();
 
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+        log.step("publishing", serde_json::Value::Null);
+
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Digital signature detection (P26.6) ─────────────────────────────
@@ -1491,97 +1630,100 @@ pub struct PdfSignatureInfo {
 /// validity (would need a PKCS#7/CMS library); reports what signatures
 /// exist and their metadata.
 pub fn detect_signatures(path: &Path) -> Result<Vec<PdfSignatureInfo>, String> {
-    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let mut sigs = Vec::new();
+    with_operation("pdf.detect_signatures", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        let mut sigs = Vec::new();
 
-    // Walk all pages looking for /Annots with /Subtype /Widget and /FT /Sig
-    let page_list = page_ids(&doc);
-    for (page_idx, &pid) in page_list.iter().enumerate() {
-        let annot_refs = match doc.get_object(pid) {
-            Ok(Object::Dictionary(pg)) => {
-                match pg.get(b"Annots") {
-                    Ok(Object::Array(arr)) => arr.clone(),
-                    _ => continue,
-                }
-            }
-            _ => continue,
-        };
-
-        for annot_ref in &annot_refs {
-            let annot_id = match annot_ref {
-                Object::Reference(r) => *r,
-                _ => continue,
-            };
-            let annot = match doc.get_object(annot_id) {
-                Ok(Object::Dictionary(d)) => d,
-                _ => continue,
-            };
-
-            // Check if this is a signature widget
-            let is_sig = matches!(annot.get(b"FT"), Ok(Object::Name(n)) if n == b"Sig");
-            if !is_sig { continue; }
-
-            // Get the /V (value) dict which contains the actual signature
-            let sig_dict = match annot.get(b"V") {
-                Ok(Object::Reference(r)) => {
-                    match doc.get_object(*r) {
-                        Ok(Object::Dictionary(d)) => Some(d),
-                        _ => None,
+        // Walk all pages looking for /Annots with /Subtype /Widget and /FT /Sig
+        let page_list = page_ids(&doc);
+        for (page_idx, &pid) in page_list.iter().enumerate() {
+            let annot_refs = match doc.get_object(pid) {
+                Ok(Object::Dictionary(pg)) => {
+                    match pg.get(b"Annots") {
+                        Ok(Object::Array(arr)) => arr.clone(),
+                        _ => continue,
                     }
                 }
-                Ok(Object::Dictionary(d)) => Some(d),
-                _ => None,
+                _ => continue,
             };
 
-            let (name, reason, location, date, filter, sub_filter, has_byte_range) =
-                if let Some(sd) = sig_dict {
-                    (
-                        dict_string(sd, b"Name"),
-                        dict_string(sd, b"Reason"),
-                        dict_string(sd, b"Location"),
-                        dict_string(sd, b"M"),
-                        dict_string(sd, b"Filter"),
-                        dict_string(sd, b"SubFilter"),
-                        sd.has(b"ByteRange"),
-                    )
-                } else {
-                    (None, None, None, None, None, None, false)
+            for annot_ref in &annot_refs {
+                let annot_id = match annot_ref {
+                    Object::Reference(r) => *r,
+                    _ => continue,
+                };
+                let annot = match doc.get_object(annot_id) {
+                    Ok(Object::Dictionary(d)) => d,
+                    _ => continue,
                 };
 
-            sigs.push(PdfSignatureInfo {
-                name,
-                reason,
-                location,
-                date,
-                filter,
-                sub_filter,
-                has_byte_range,
-                page: Some(page_idx + 1),
-            });
-        }
-    }
+                // Check if this is a signature widget
+                let is_sig = matches!(annot.get(b"FT"), Ok(Object::Name(n)) if n == b"Sig");
+                if !is_sig { continue; }
 
-    // Also check the AcroForm /SigFlags for document-level signature fields
-    if sigs.is_empty() {
-        if let Ok(cat) = doc.catalog() {
-            if let Ok(Object::Reference(form_ref)) = cat.get(b"AcroForm") {
-                if let Ok(Object::Dictionary(form)) = doc.get_object(*form_ref) {
-                    if let Ok(Object::Integer(flags)) = form.get(b"SigFlags") {
-                        if *flags & 1 != 0 {
-                            // SignaturesExist flag is set but we couldn't find the widget
-                            sigs.push(PdfSignatureInfo {
-                                name: None, reason: None, location: None, date: None,
-                                filter: None, sub_filter: None,
-                                has_byte_range: false, page: None,
-                            });
+                // Get the /V (value) dict which contains the actual signature
+                let sig_dict = match annot.get(b"V") {
+                    Ok(Object::Reference(r)) => {
+                        match doc.get_object(*r) {
+                            Ok(Object::Dictionary(d)) => Some(d),
+                            _ => None,
+                        }
+                    }
+                    Ok(Object::Dictionary(d)) => Some(d),
+                    _ => None,
+                };
+
+                let (name, reason, location, date, filter, sub_filter, has_byte_range) =
+                    if let Some(sd) = sig_dict {
+                        (
+                            dict_string(sd, b"Name"),
+                            dict_string(sd, b"Reason"),
+                            dict_string(sd, b"Location"),
+                            dict_string(sd, b"M"),
+                            dict_string(sd, b"Filter"),
+                            dict_string(sd, b"SubFilter"),
+                            sd.has(b"ByteRange"),
+                        )
+                    } else {
+                        (None, None, None, None, None, None, false)
+                    };
+
+                sigs.push(PdfSignatureInfo {
+                    name,
+                    reason,
+                    location,
+                    date,
+                    filter,
+                    sub_filter,
+                    has_byte_range,
+                    page: Some(page_idx + 1),
+                });
+            }
+        }
+
+        // Also check the AcroForm /SigFlags for document-level signature fields
+        if sigs.is_empty() {
+            if let Ok(cat) = doc.catalog() {
+                if let Ok(Object::Reference(form_ref)) = cat.get(b"AcroForm") {
+                    if let Ok(Object::Dictionary(form)) = doc.get_object(*form_ref) {
+                        if let Ok(Object::Integer(flags)) = form.get(b"SigFlags") {
+                            if *flags & 1 != 0 {
+                                // SignaturesExist flag is set but we couldn't find the widget
+                                sigs.push(PdfSignatureInfo {
+                                    name: None, reason: None, location: None, date: None,
+                                    filter: None, sub_filter: None,
+                                    has_byte_range: false, page: None,
+                                });
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    Ok(sigs)
+        Ok(sigs)
+    })
 }
 
 // ── PII redaction (P26.7) ────────────────────────────────────────────
@@ -1660,10 +1802,14 @@ pub fn black_out_regions(
     regions: &[RedactionSpec],
     out_path: &Path,
 ) -> Result<usize, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let count = black_out_regions_doc(&mut doc, regions)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(count)
+    with_operation("pdf.black_out_regions", |log| {
+        log.step("processing", serde_json::Value::Null);
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        let count = black_out_regions_doc(&mut doc, regions)?;
+        log.step("publishing", serde_json::Value::Null);
+        save_document(&mut doc, out_path)?;
+        Ok(count)
+    })
 }
 
 /// Deprecated alias kept so existing callers keep compiling.
@@ -1693,33 +1839,38 @@ pub fn redact_text_patterns(
     patterns: &[String],
     out_path: &Path,
 ) -> Result<usize, String> {
-    // For text-level redaction without bounding boxes, we strip matching
-    // text from the /Info dictionary and add visual redaction boxes as a
-    // best-effort measure.  True content-stream text removal requires
-    // parsing the content stream operators, which is a much larger effort.
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    with_operation("pdf.redact_text_patterns", |log| {
+        log.step("processing", serde_json::Value::Null);
+        // For text-level redaction without bounding boxes, we strip matching
+        // text from the /Info dictionary and add visual redaction boxes as a
+        // best-effort measure.  True content-stream text removal requires
+        // parsing the content stream operators, which is a much larger effort.
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
 
-    // Strip patterns from /Info dict (metadata redaction)
-    if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
-        let info_id = *info_id;
-        if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(info_id) {
-            for key in &[b"Title" as &[u8], b"Author", b"Subject", b"Keywords"] {
-                if let Ok(Object::String(val, fmt)) = d.get(key) {
-                    let text = decode_pdf_str(val);
-                    let mut redacted = text.clone();
-                    for pattern in patterns {
-                        redacted = redacted.replace(pattern.as_str(), "█".repeat(pattern.len()).as_str());
-                    }
-                    if redacted != text {
-                        d.set(*key, Object::String(redacted.into_bytes(), *fmt));
+        // Strip patterns from /Info dict (metadata redaction)
+        if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
+            let info_id = *info_id;
+            if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(info_id) {
+                for key in &[b"Title" as &[u8], b"Author", b"Subject", b"Keywords"] {
+                    if let Ok(Object::String(val, fmt)) = d.get(key) {
+                        let text = decode_pdf_str(val);
+                        let mut redacted = text.clone();
+                        for pattern in patterns {
+                            redacted = redacted.replace(pattern.as_str(), "█".repeat(pattern.len()).as_str());
+                        }
+                        if redacted != text {
+                            d.set(*key, Object::String(redacted.into_bytes(), *fmt));
+                        }
                     }
                 }
             }
         }
-    }
 
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(patterns.len())
+        log.step("publishing", serde_json::Value::Null);
+
+        save_document(&mut doc, out_path)?;
+        Ok(patterns.len())
+    })
 }
 
 // ── Digital signature creation (P27.12) ─────────────────────────────
@@ -1746,231 +1897,174 @@ pub fn sign_pdf(
     config: &SignConfig,
     out_path: &Path,
 ) -> Result<(), String> {
-    use openssl::pkcs12::Pkcs12;
-    use openssl::sign::Signer;
-    use openssl::hash::MessageDigest;
+    with_operation("pdf.sign", |log| {
+        log.step("processing", serde_json::Value::Null);
+        use openssl::pkcs12::Pkcs12;
+        use openssl::sign::Signer;
+        use openssl::hash::MessageDigest;
 
-    // 1. Load the PFX certificate
-    let pfx_bytes = std::fs::read(&config.cert_path)
-        .map_err(|e| format!("read cert: {e}"))?;
-    let pkcs12 = Pkcs12::from_der(&pfx_bytes)
-        .map_err(|e| format!("parse PFX: {e}"))?;
-    let identity = pkcs12.parse2(&config.cert_password)
-        .map_err(|e| format!("unlock PFX: {e}"))?;
-    let pkey = identity.pkey.ok_or("PFX has no private key")?;
-    let cert = identity.cert.ok_or("PFX has no certificate")?;
+        // 1. Load the PFX certificate
+        let pfx_bytes = std::fs::read(&config.cert_path)
+            .map_err(|e| format!("read cert: {e}"))?;
+        let pkcs12 = Pkcs12::from_der(&pfx_bytes)
+            .map_err(|e| format!("parse PFX: {e}"))?;
+        let identity = pkcs12.parse2(&config.cert_password)
+            .map_err(|e| format!("unlock PFX: {e}"))?;
+        let pkey = identity.pkey.ok_or("PFX has no private key")?;
+        let cert = identity.cert.ok_or("PFX has no certificate")?;
 
-    // 2. Load the PDF
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        // 2. Load the PDF
+        let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
 
-    // 3. Compute a SHA-256 digest of the PDF content
-    let pdf_bytes = std::fs::read(path).map_err(|e| format!("read pdf: {e}"))?;
-    let mut signer = Signer::new(MessageDigest::sha256(), &pkey)
-        .map_err(|e| format!("signer init: {e}"))?;
-    signer.update(&pdf_bytes).map_err(|e| format!("sign update: {e}"))?;
-    let signature = signer.sign_to_vec().map_err(|e| format!("sign: {e}"))?;
+        // 3. Compute a SHA-256 digest of the PDF content
+        let pdf_bytes = std::fs::read(path).map_err(|e| format!("read pdf: {e}"))?;
+        let mut signer = Signer::new(MessageDigest::sha256(), &pkey)
+            .map_err(|e| format!("signer init: {e}"))?;
+        signer.update(&pdf_bytes).map_err(|e| format!("sign update: {e}"))?;
+        let signature = signer.sign_to_vec().map_err(|e| format!("sign: {e}"))?;
 
-    // 4. Build the /Sig dictionary
-    let signer_name = cert.subject_name()
-        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
-        .next()
-        .map(|e| e.data().to_string().unwrap_or_default())
-        .unwrap_or_default();
+        // 4. Build the /Sig dictionary
+        let signer_name = cert.subject_name()
+            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+            .next()
+            .map(|e| e.data().to_string().unwrap_or_default())
+            .unwrap_or_default();
 
-    let mut sig_dict = lopdf::Dictionary::new();
-    sig_dict.set("Type", Object::Name(b"Sig".to_vec()));
-    sig_dict.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
-    sig_dict.set("SubFilter", Object::Name(b"adbe.pkcs7.detached".to_vec()));
-    sig_dict.set("Name", Object::String(signer_name.into_bytes(), lopdf::StringFormat::Literal));
-    if let Some(ref r) = config.reason {
-        sig_dict.set("Reason", Object::String(r.as_bytes().to_vec(), lopdf::StringFormat::Literal));
-    }
-    if let Some(ref l) = config.location {
-        sig_dict.set("Location", Object::String(l.as_bytes().to_vec(), lopdf::StringFormat::Literal));
-    }
-    if let Some(ref c) = config.contact {
-        sig_dict.set("ContactInfo", Object::String(c.as_bytes().to_vec(), lopdf::StringFormat::Literal));
-    }
-    sig_dict.set("Contents", Object::String(signature, lopdf::StringFormat::Hexadecimal));
-
-    let sig_id = doc.add_object(Object::Dictionary(sig_dict));
-
-    // 5. Add a widget annotation on page 1 pointing to the /Sig value
-    let ids = page_ids(&doc);
-    if let Some(&page_id) = ids.first() {
-        let widget = lopdf::Dictionary::from_iter(vec![
-            ("Type", Object::Name(b"Annot".to_vec())),
-            ("Subtype", Object::Name(b"Widget".to_vec())),
-            ("FT", Object::Name(b"Sig".to_vec())),
-            ("V", Object::Reference(sig_id)),
-            ("T", Object::String(b"Signature1".to_vec(), lopdf::StringFormat::Literal)),
-            ("Rect", Object::Array(vec![
-                Object::Integer(0), Object::Integer(0),
-                Object::Integer(0), Object::Integer(0), // invisible signature
-            ])),
-            ("P", Object::Reference(page_id)),
-        ]);
-        let widget_id = doc.add_object(Object::Dictionary(widget));
-
-        if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(page_id) {
-            let mut annots = match page.get(b"Annots") {
-                Ok(Object::Array(a)) => a.clone(),
-                _ => vec![],
-            };
-            annots.push(Object::Reference(widget_id));
-            page.set("Annots", Object::Array(annots));
+        let mut sig_dict = lopdf::Dictionary::new();
+        sig_dict.set("Type", Object::Name(b"Sig".to_vec()));
+        sig_dict.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+        sig_dict.set("SubFilter", Object::Name(b"adbe.pkcs7.detached".to_vec()));
+        sig_dict.set("Name", Object::String(signer_name.into_bytes(), lopdf::StringFormat::Literal));
+        if let Some(ref r) = config.reason {
+            sig_dict.set("Reason", Object::String(r.as_bytes().to_vec(), lopdf::StringFormat::Literal));
         }
-    }
+        if let Some(ref l) = config.location {
+            sig_dict.set("Location", Object::String(l.as_bytes().to_vec(), lopdf::StringFormat::Literal));
+        }
+        if let Some(ref c) = config.contact {
+            sig_dict.set("ContactInfo", Object::String(c.as_bytes().to_vec(), lopdf::StringFormat::Literal));
+        }
+        sig_dict.set("Contents", Object::String(signature, lopdf::StringFormat::Hexadecimal));
 
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(())
+        let sig_id = doc.add_object(Object::Dictionary(sig_dict));
+
+        // 5. Add a widget annotation on page 1 pointing to the /Sig value
+        let ids = page_ids(&doc);
+        if let Some(&page_id) = ids.first() {
+            let widget = lopdf::Dictionary::from_iter(vec![
+                ("Type", Object::Name(b"Annot".to_vec())),
+                ("Subtype", Object::Name(b"Widget".to_vec())),
+                ("FT", Object::Name(b"Sig".to_vec())),
+                ("V", Object::Reference(sig_id)),
+                ("T", Object::String(b"Signature1".to_vec(), lopdf::StringFormat::Literal)),
+                ("Rect", Object::Array(vec![
+                    Object::Integer(0), Object::Integer(0),
+                    Object::Integer(0), Object::Integer(0), // invisible signature
+                ])),
+                ("P", Object::Reference(page_id)),
+            ]);
+            let widget_id = doc.add_object(Object::Dictionary(widget));
+
+            if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(page_id) {
+                let mut annots = match page.get(b"Annots") {
+                    Ok(Object::Array(a)) => a.clone(),
+                    _ => vec![],
+                };
+                annots.push(Object::Reference(widget_id));
+                page.set("Annots", Object::Array(annots));
+            }
+        }
+
+        log.step("publishing", serde_json::Value::Null);
+
+        save_document(&mut doc, out_path)?;
+        Ok(())
+    })
 }
 
 // ── Tauri commands ─────────────────────────────────────────────────────
-
-/// Route a PDF command's outcome into the in-app log, so every critical
-/// step (and every failure, with its real reason) shows in the Logs panel.
-pub(crate) fn logged<T>(op: &str, detail: &str, result: Result<T, String>) -> Result<T, String> {
-    match &result {
-        Ok(_) => crate::app_log!("info", "[pdf] {op}: ok - {detail}"),
-        Err(e) => crate::app_log!("error", "[pdf] {op} failed - {detail}: {e}"),
-    }
-    result
-}
 
 pub mod tauri_commands {
     use super::*;
 
     #[tauri::command]
     pub async fn pdf_info(path: String) -> Result<PdfInfo, String> {
-        let detail = path.clone();
-        let result: Result<PdfInfo, String> = async move {
-            tokio::task::spawn_blocking(move || super::pdf_info(Path::new(&path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("info", &detail, result)
+        tokio::task::spawn_blocking(move || super::pdf_info(Path::new(&path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_reorder_pages(path: String, new_order: Vec<usize>, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::reorder_pages(Path::new(&path), &new_order, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("reorder_pages", &detail, result)
+        tokio::task::spawn_blocking(move || super::reorder_pages(Path::new(&path), &new_order, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_extract_pages(path: String, page_indices: Vec<usize>, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::extract_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("extract_pages", &detail, result)
+        tokio::task::spawn_blocking(move || super::extract_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_remove_pages(path: String, page_indices: Vec<usize>, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::remove_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("remove_pages", &detail, result)
+        tokio::task::spawn_blocking(move || super::remove_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_rotate_pages(path: String, page_indices: Vec<usize>, degrees: i64, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::rotate_pages(Path::new(&path), &page_indices, degrees, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("rotate_pages", &detail, result)
+        tokio::task::spawn_blocking(move || super::rotate_pages(Path::new(&path), &page_indices, degrees, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_crop_pages(path: String, page_indices: Vec<usize>, x: f64, y: f64, w: f64, h: f64, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::crop_pages(Path::new(&path), &page_indices, x, y, w, h, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("crop_pages", &detail, result)
+        tokio::task::spawn_blocking(move || super::crop_pages(Path::new(&path), &page_indices, x, y, w, h, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_merge(paths: Vec<String>, out_path: String) -> Result<usize, String> {
-        let detail = format!("{} file(s) -> {out_path}", paths.len());
-        let result: Result<usize, String> = async move {
-            tokio::task::spawn_blocking(move || {
-                let p: Vec<&Path> = paths.iter().map(|s| Path::new(s.as_str())).collect();
-                super::merge_pdfs(&p, Path::new(&out_path))
-            }).await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("merge", &detail, result)
+        tokio::task::spawn_blocking(move || {
+            let p: Vec<&Path> = paths.iter().map(|s| Path::new(s.as_str())).collect();
+            super::merge_pdfs(&p, Path::new(&out_path))
+        }).await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_split(path: String, ranges: Vec<(usize, usize)>, out_dir: String, stem: String) -> Result<Vec<String>, String> {
-        let detail = format!("{path} ranges={ranges:?} -> {out_dir}");
-        let result: Result<Vec<String>, String> = async move {
-            tokio::task::spawn_blocking(move || super::split_pdf(Path::new(&path), &ranges, Path::new(&out_dir), &stem))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("split", &detail, result)
+        tokio::task::spawn_blocking(move || super::split_pdf(Path::new(&path), &ranges, Path::new(&out_dir), &stem))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_add_page_numbers(path: String, config: PageNumberConfig, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::add_page_numbers(Path::new(&path), &config, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("add_page_numbers", &detail, result)
+        tokio::task::spawn_blocking(move || super::add_page_numbers(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_add_watermark(path: String, config: WatermarkConfig, page_indices: Option<Vec<usize>>, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::add_watermark(Path::new(&path), &config, page_indices.as_deref(), Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("add_watermark", &detail, result)
+        tokio::task::spawn_blocking(move || super::add_watermark(Path::new(&path), &config, page_indices.as_deref(), Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_insert_blank_page(path: String, position: usize, width: Option<f64>, height: Option<f64>, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::insert_blank_page(Path::new(&path), position, width.unwrap_or(612.0), height.unwrap_or(792.0), Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("insert_blank_page", &detail, result)
+        tokio::task::spawn_blocking(move || super::insert_blank_page(Path::new(&path), position, width.unwrap_or(612.0), height.unwrap_or(792.0), Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_edit_metadata(path: String, edits: MetadataEdit, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::edit_metadata(Path::new(&path), &edits, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("edit_metadata", &detail, result)
+        tokio::task::spawn_blocking(move || super::edit_metadata(Path::new(&path), &edits, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_decrypt(path: String, password: String, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::decrypt_pdf(Path::new(&path), &password, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("decrypt", &detail, result)
+        tokio::task::spawn_blocking(move || super::decrypt_pdf(Path::new(&path), &password, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     /// Rewrite for fast web view. P32.11 Z5.
@@ -1981,25 +2075,22 @@ pub mod tauri_commands {
     /// a worse message than the one below.
     #[tauri::command]
     pub async fn pdf_linearize(path: String, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            #[cfg(feature = "pdf-zpdf")]
-            {
-                tokio::task::spawn_blocking(move || {
-                    super::linearize_pdf(Path::new(&path), Path::new(&out_path))
-                })
-                .await
-                .map_err(|e| format!("join: {e}"))?
-            }
-            #[cfg(not(feature = "pdf-zpdf"))]
-            {
-                let _ = (path, out_path);
-                Err("Fast web view needs a build with --features pdf-zpdf. \
-                     Nothing was written."
-                    .to_string())
-            }
-        }.await;
-        super::logged("linearize", &detail, result)
+        #[cfg(feature = "pdf-zpdf")]
+        {
+            tokio::task::spawn_blocking(move || {
+                super::linearize_pdf(Path::new(&path), Path::new(&out_path))
+            })
+            .await
+            .map_err(|e| format!("join: {e}"))?
+        }
+        #[cfg(not(feature = "pdf-zpdf"))]
+        {
+            let _ = (path, out_path);
+            super::with_operation("pdf.linearize", |log| {
+                log.step("validating_capability", serde_json::Value::Null);
+                Err("Fast web view needs a build with --features pdf-zpdf. Nothing was written.".to_string())
+            })
+        }
     }
 
     /// Recover a PDF with damaged cross-reference data. P32.11 Z7.
@@ -2008,116 +2099,77 @@ pub mod tauri_commands {
     /// against what they expected rather than trusting the word "repaired".
     #[tauri::command]
     pub async fn pdf_repair(path: String, out_path: String) -> Result<usize, String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<usize, String> = async move {
-            #[cfg(feature = "pdf-zpdf")]
-            {
-                tokio::task::spawn_blocking(move || {
-                    super::repair_pdf(Path::new(&path), Path::new(&out_path))
-                })
-                .await
-                .map_err(|e| format!("join: {e}"))?
-            }
-            #[cfg(not(feature = "pdf-zpdf"))]
-            {
-                let _ = (path, out_path);
-                Err("Repairing a damaged PDF needs a build with --features \
-                     pdf-zpdf. Nothing was written."
-                    .to_string())
-            }
-        }.await;
-        super::logged("repair", &detail, result)
+        #[cfg(feature = "pdf-zpdf")]
+        {
+            tokio::task::spawn_blocking(move || {
+                super::repair_pdf(Path::new(&path), Path::new(&out_path))
+            })
+            .await
+            .map_err(|e| format!("join: {e}"))?
+        }
+        #[cfg(not(feature = "pdf-zpdf"))]
+        {
+            let _ = (path, out_path);
+            super::with_operation("pdf.repair", |log| {
+                log.step("validating_capability", serde_json::Value::Null);
+                Err("Repairing a damaged PDF needs a build with --features pdf-zpdf. Nothing was written.".to_string())
+            })
+        }
     }
 
     #[tauri::command]
     pub async fn pdf_is_encrypted(path: String) -> Result<bool, String> {
-        let detail = path.clone();
-        let result: Result<bool, String> = async move {
-            tokio::task::spawn_blocking(move || super::is_encrypted(Path::new(&path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("is_encrypted", &detail, result)
+        tokio::task::spawn_blocking(move || super::is_encrypted(Path::new(&path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("encrypt", &detail, result)
+        tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_sign(path: String, config: SignConfig, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::sign_pdf(Path::new(&path), &config, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("sign", &detail, result)
+        tokio::task::spawn_blocking(move || super::sign_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_redact_regions(path: String, regions: Vec<RedactionSpec>, out_path: String) -> Result<usize, String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<usize, String> = async move {
-            tokio::task::spawn_blocking(move || super::black_out_regions(Path::new(&path), &regions, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("redact_regions", &detail, result)
+        tokio::task::spawn_blocking(move || super::black_out_regions(Path::new(&path), &regions, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_redact_text(path: String, patterns: Vec<String>, out_path: String) -> Result<usize, String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<usize, String> = async move {
-            tokio::task::spawn_blocking(move || super::redact_text_patterns(Path::new(&path), &patterns, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("redact_text", &detail, result)
+        tokio::task::spawn_blocking(move || super::redact_text_patterns(Path::new(&path), &patterns, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_convert_pdfa(path: String, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::convert_to_pdfa(Path::new(&path), Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("convert_pdfa", &detail, result)
+        tokio::task::spawn_blocking(move || super::convert_to_pdfa(Path::new(&path), Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_detect_signatures(path: String) -> Result<Vec<PdfSignatureInfo>, String> {
-        let detail = path.clone();
-        let result: Result<Vec<PdfSignatureInfo>, String> = async move {
-            tokio::task::spawn_blocking(move || super::detect_signatures(Path::new(&path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("detect_signatures", &detail, result)
+        tokio::task::spawn_blocking(move || super::detect_signatures(Path::new(&path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_sanitise(path: String, options: Option<SanitiseOptions>, out_path: String) -> Result<Vec<String>, String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<Vec<String>, String> = async move {
-            let opts = options.unwrap_or_default();
-            tokio::task::spawn_blocking(move || super::sanitise_pdf_with_options(Path::new(&path), &opts, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("sanitise", &detail, result)
+        let opts = options.unwrap_or_default();
+        tokio::task::spawn_blocking(move || super::sanitise_pdf_with_options(Path::new(&path), &opts, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 
     #[tauri::command]
     pub async fn pdf_add_text_box(path: String, config: TextBoxConfig, out_path: String) -> Result<(), String> {
-        let detail = format!("{path} -> {out_path}");
-        let result: Result<(), String> = async move {
-            tokio::task::spawn_blocking(move || super::add_text_box(Path::new(&path), &config, Path::new(&out_path)))
-                .await.map_err(|e| format!("join: {e}"))?
-        }.await;
-        super::logged("add_text_box", &detail, result)
+        tokio::task::spawn_blocking(move || super::add_text_box(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
     }
 }
 
@@ -2125,6 +2177,47 @@ pub mod tauri_commands {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn verification_failure_preserves_existing_output_and_cleans_private_files() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("existing.pdf");
+        std::fs::write(&target, b"previous complete document").unwrap();
+        let result = publish_checked(&target, |temporary| {
+            std::fs::write(temporary, b"unverified document").unwrap();
+            // Verification backends discard failed output. It must be private.
+            std::fs::remove_file(temporary).unwrap();
+            Err::<(), _>("verification rejected the generated PDF".to_string())
+        });
+        assert!(result.unwrap_err().contains("verification rejected"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"previous complete document");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn same_file_edit_is_atomic_and_receipts_hide_paths_and_error_details() {
+        let dir = TempDir::new().unwrap();
+        let source = create_test_pdf(dir.path());
+        let (result, events) = crate::operation_log::capture(|| rotate_pages(&source, &[0], 90, &source));
+        result.unwrap();
+        assert_eq!(pdf_info(&source).unwrap().pages[0].rotation, 90);
+        let receipts: Vec<_> = events.iter().filter(|e| e.operation == "pdf.rotate_pages").collect();
+        assert_eq!(receipts.first().unwrap().phase, "started");
+        assert_eq!(receipts.last().unwrap().phase, "completed");
+        assert!(receipts.iter().all(|e| e.operation_id == receipts[0].operation_id));
+        assert!(receipts.iter().any(|e| e.stage.as_deref() == Some("publishing")));
+
+        let before = std::fs::read(&source).unwrap();
+        let (result, events) = crate::operation_log::capture(|| rotate_pages(&source, &[0], 45, &source));
+        let error = result.unwrap_err();
+        assert!(error.contains("degrees"));
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+        assert_eq!(events.last().unwrap().phase, "failed");
+        assert_eq!(events.last().unwrap().code.as_deref(), Some("pdf_operation_failed"));
+        let recorded = serde_json::to_string(&events).unwrap();
+        assert!(!recorded.contains(source.to_str().unwrap()));
+        assert!(!recorded.contains(&error));
+    }
 
     /// Create a minimal valid 2-page PDF for testing.
     fn create_test_pdf(dir: &Path) -> std::path::PathBuf {

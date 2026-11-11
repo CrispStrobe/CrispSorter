@@ -1,4 +1,5 @@
 <script module lang="ts">
+    import { loadSmbSettings, smbSettingsPayload, type SmbSettings } from '$lib/drives/smbSettings';
     // A view remount must wait for the previous worker to acknowledge its writes
     // before reclaiming that worker's in-progress rows.
     const queueRunDrains = new Map<string, Promise<void>>();
@@ -129,6 +130,7 @@
         kind:  string;
         path:  string;
         insecure_tls?: boolean | null;
+        smb?: SmbSettings | null;
     }
     let driveDialogOpen   = $state(false);
     let availableDrives   = $state<RegisteredDrive[]>([]);
@@ -162,8 +164,9 @@
     // null/empty we're creating a new one (calls drive_create).
     let driveCreateOpen   = $state(false);
     let driveEditId       = $state<string | null>(null);
+    let driveEditSnapshot = $state<RegisteredDrive | null>(null);
     let driveCreateLabel  = $state<string>('');
-    let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'webdav' | 'onedrive' | 'google_drive'>('webdav');
+    let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'smb' | 'webdav' | 'onedrive' | 'google_drive'>('webdav');
     /// Which drive kinds have a native client compiled into this build. Decides
     /// both the picker labels and whether the kind is offered on mobile, where
     /// the Python-CLI fallback cannot run. Defaults to false so a failed probe
@@ -174,6 +177,9 @@
     let driveCreateUser   = $state<string>('');
     let driveCreatePass   = $state<string>('');
     let driveCreateInsecure = $state(false);
+    let driveSmbBackend = $state<'mounted' | 'rust'>('mounted');
+    let driveSmbMount = $state('');
+    let driveSmbEncryption = $state(true);
     let driveCreateBusy   = $state(false);
     let driveCreateError  = $state<string>('');
     let driveDeletingId   = $state<string | null>(null);
@@ -939,12 +945,17 @@
     /** Begin editing an existing drive — prefills the form. */
     function startDriveEdit(d: RegisteredDrive & { insecure_tls?: boolean | null }) {
         driveEditId       = d.id;
+        driveEditSnapshot = JSON.parse(JSON.stringify(d));
         driveCreateLabel  = d.label;
         driveCreateKind   = d.kind as any;
         driveCreatePath   = d.path;
         driveCreateUser   = '';
         driveCreatePass   = '';
         driveCreateInsecure = !!d.insecure_tls;
+        const smb = loadSmbSettings(d.smb);
+        driveSmbBackend = smb.backend;
+        driveSmbMount = smb.mount_path ?? '';
+        driveSmbEncryption = smb.require_encryption;
         driveCreateError  = '';
         driveCredentialStatus = null;
         driveCreateOpen   = true;
@@ -964,11 +975,15 @@
 
     function resetDriveForm() {
         driveEditId       = null;
+        driveEditSnapshot = null;
         driveCreateLabel  = '';
         driveCreatePath   = '';
         driveCreateUser   = '';
         driveCreatePass   = '';
         driveCreateInsecure = false;
+        driveSmbBackend = 'mounted';
+        driveSmbMount = '';
+        driveSmbEncryption = true;
         driveCreateError  = '';
         driveAuthEmail = '';
         driveAuthPassword = '';
@@ -992,13 +1007,14 @@
                 label:    driveCreateLabel.trim(),
                 kind:     driveCreateKind,
                 path:     driveCreatePath.trim(),
-                username: driveCreateKind === 'webdav' && driveCreateUser ? driveCreateUser : null,
-                password: driveCreateKind === 'webdav' && driveCreatePass ? driveCreatePass : null,
+                username: (driveCreateKind === 'webdav' || driveCreateKind === 'smb') && driveCreateUser ? driveCreateUser : null,
+                password: (driveCreateKind === 'webdav' || driveCreateKind === 'smb') && driveCreatePass ? driveCreatePass : null,
                 insecureTls: driveCreateKind === 'webdav' && driveCreateInsecure ? true : null,
+                smb: driveCreateKind === 'smb' ? smbSettingsPayload(driveSmbBackend, driveSmbMount, driveSmbEncryption) : null,
             };
             let cfg: RegisteredDrive;
             if (driveEditId) {
-                cfg = await invoke<RegisteredDrive>('drive_update', { id: driveEditId, ...args });
+                cfg = await invoke<RegisteredDrive>('drive_update', { id: driveEditId, expected: driveEditSnapshot, ...args });
                 logInfo(`Laufwerk aktualisiert: ${cfg.label} (${cfg.kind})`);
             } else {
                 cfg = await invoke<RegisteredDrive>('drive_create', args);
@@ -3794,7 +3810,7 @@
                         {#each availableDrives as d (d.id)}
                             <div class="drive-list-row">
                                 <span class="drive-list-label">{d.label}</span>
-                                <span class="drive-list-kind">{d.kind}</span>
+                                <span class="drive-list-kind">{d.kind === 'smb' ? `SMB · ${loadSmbSettings(d.smb).backend}` : d.kind}</span>
                                 <span class="drive-list-path" title={d.path}>{d.path}</span>
                                 <button class="icon-btn" type="button"
                                         title="Bearbeiten"
@@ -3886,6 +3902,7 @@
                                 {/if}
                                 <option value="local">Lokal / OS-Mount (SMB / NFS / SFTP via FUSE)</option>
                                 <option value="sftp">SFTP (über OS-Mount)</option>
+                                <option value="smb">SMB (OS-Mount / Rust)</option>
                             </select>
                         </label>
                         {#if !nativeDriveSupport.filen && !nativeDriveSupport.internxt}
@@ -3896,13 +3913,13 @@
                         {/if}
                         <label class="drive-dialog-row">
                             <span class="drive-dialog-label">
-                                {driveCreateKind === 'webdav' ? 'URL' :
+                                {driveCreateKind === 'smb' ? 'SMB URL' : driveCreateKind === 'webdav' ? 'URL' :
                                  driveCreateKind === 'filen' || driveCreateKind === 'internxt' ? 'Remote-Wurzel' :
                                  'Pfad'}
                             </span>
                             <input type="text" bind:value={driveCreatePath}
                                    class="drive-dialog-input" disabled={driveCreateBusy}
-                                   placeholder={driveCreateKind === 'webdav'
+                                   placeholder={driveCreateKind === 'smb' ? 'smb://host/share/root' : driveCreateKind === 'webdav'
                                        ? 'https://host/remote.php/dav/files/<user>/'
                                        : driveCreateKind === 'filen' || driveCreateKind === 'internxt'
                                            ? '/ (Anmeldung über den Schlüsselbund)'
@@ -3910,7 +3927,28 @@
                                                ? '/ (remote root)'
                                                : '/Volumes/...'} />
                         </label>
-                        {#if driveCreateKind === 'webdav'}
+                        {#if driveCreateKind === 'smb'}
+                            <label class="drive-dialog-row">
+                                <span class="drive-dialog-label">SMB-Transport</span>
+                                <select bind:value={driveSmbBackend} disabled={driveCreateBusy} class="drive-dialog-input">
+                                    <option value="mounted">OS-Mount (Standard)</option>
+                                    <option value="rust">Rust (experimentell, direkte Verbindung)</option>
+                                </select>
+                            </label>
+                            <label class="drive-dialog-row">
+                                <span class="drive-dialog-label">SMB-Mount-Ordner</span>
+                                <input bind:value={driveSmbMount} disabled={driveCreateBusy} class="drive-dialog-input" placeholder="/Volumes/Books" />
+                            </label>
+                            <label class="drive-dialog-row">
+                                <span class="drive-dialog-label">SMB-Verschlüsselung erforderlich (Rust)</span>
+                                <input type="checkbox" bind:checked={driveSmbEncryption} disabled={driveCreateBusy || driveSmbBackend === 'mounted'} />
+                            </label>
+                            <p class="drive-dialog-hint">
+                                OS-Mount: vorhandenen Ordner derselben Freigabe/Wurzel wählen; Anmeldung und Verschlüsselung verwaltet das Betriebssystem.
+                                Rust: direkte Anmeldung; Fehler wechseln niemals automatisch zum Mount. Änderungen gelten für neue Vorgänge.
+                            </p>
+                        {/if}
+                        {#if driveCreateKind === 'webdav' || driveCreateKind === 'smb'}
                             <label class="drive-dialog-row">
                                 <span class="drive-dialog-label">Benutzer</span>
                                 <input type="text" bind:value={driveCreateUser}
@@ -3923,6 +3961,7 @@
                                        class="drive-dialog-input" disabled={driveCreateBusy}
                                        autocomplete="new-password" />
                             </label>
+                            {#if driveCreateKind === 'webdav'}
                             <label class="drive-dialog-row">
                                 <span class="drive-dialog-label">Selbstsigniertes Zertifikat akzeptieren</span>
                                 <input type="checkbox" bind:checked={driveCreateInsecure}
@@ -3931,13 +3970,16 @@
                                     Für lokale WebDAV-Server (z.B. internxt-cli) mit selbstsigniertem TLS.
                                 </span>
                             </label>
+                            {/if}
                             <div class="drive-dialog-hint">
-                                Benutzername und Passwort werden ausschließlich im OS-Schlüsselbund gespeichert;
+                                Benutzername und Passwort werden im gewählten sicheren Speicher gespeichert (bei SMB nur für Rust);
+                                leere Felder behalten beim Bearbeiten die vorhandenen Zugangsdaten.
+
                                 <code>drives.json</code> enthält keine Zugangsdaten.
                             </div>
                             {#if driveEditId && driveCredentialStatus}
                                 <div class="drive-dialog-status">
-                                    {driveCredentialStatus.has_password ? 'WebDAV-Anmeldung gespeichert.' : 'Keine WebDAV-Anmeldung gespeichert.'}
+                                    {driveCredentialStatus.has_password ? 'Anmeldung gespeichert.' : 'Keine Anmeldung gespeichert.'}
                                     {#if driveCredentialStatus.has_password}
                                         <button class="tb-btn" type="button" onclick={async () => { await invoke('drive_disconnect', { driveId: driveEditId }); await loadDriveCredentialStatus(driveEditId!); }}>
                                             Trennen / neu anmelden

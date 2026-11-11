@@ -272,6 +272,14 @@ pub struct PdfEditSession {
     temp_dir: Option<PathBuf>,
 }
 
+fn same_path(left: &Path, right: &Path) -> bool {
+    let normalize = |path: &Path| path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() { path.to_path_buf() }
+        else { std::env::current_dir().unwrap_or_default().join(path) }
+    });
+    normalize(left) == normalize(right)
+}
+
 impl Drop for PdfEditSession {
     fn drop(&mut self) {
         if let Some(dir) = self.temp_dir.take() {
@@ -283,20 +291,17 @@ impl Drop for PdfEditSession {
 
 impl PdfEditSession {
     pub fn open(path: &Path) -> Result<Self, String> {
-        let base = Document::load(path).map_err(|e| format!("load: {e}"))?;
-        let src = path.to_string_lossy().to_string();
-        let base_origins = (0..base.page_iter().count())
-            .map(|i| PageOrigin::from_file(&src, i))
-            .collect();
-        Ok(Self {
-            source: path.to_path_buf(),
-            base,
-            base_origins,
-            ops: Vec::new(),
-            cursor: 0,
-            cache: None,
-            saved_at: 0,
-            temp_dir: None,
+        pdf_ops::with_operation("pdf.session.open", |log| {
+            log.step("loading", serde_json::Value::Null);
+            let base = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let src = path.to_string_lossy().to_string();
+            let pages = base.page_iter().count();
+            let base_origins = (0..pages).map(|i| PageOrigin::from_file(&src, i)).collect();
+            log.step("loaded", serde_json::json!({"pages":pages}));
+            Ok(Self {
+                source: path.to_path_buf(), base, base_origins, ops: Vec::new(),
+                cursor: 0, cache: None, saved_at: 0, temp_dir: None,
+            })
         })
     }
 
@@ -317,52 +322,93 @@ impl PdfEditSession {
 
     /// Apply a new op.  Anything previously undone is discarded, which is
     /// the conventional linear-history behaviour.
-    pub fn apply(&mut self, op: EditOp) -> Result<(), String> {
-        // Validate against a throwaway replay before committing, so a
-        // rejected op leaves the session exactly as it was.
-        let (doc, origins) = self.materialise()?;
-        let mut probe_doc = doc.clone();
-        let mut probe_origins = origins.clone();
-        op.apply(&mut probe_doc)?;
-        op.apply_origins(&mut probe_origins)?;
+    pub fn apply(&mut self, mut op: EditOp) -> Result<(), String> {
+        pdf_ops::with_operation("pdf.session.edit", |log| {
+            log.step("validating", serde_json::Value::Null);
+            // Imported pages must remain the same when undo/redo replays this op,
+            // even if their original file is replaced by a later Save As.
+            if let EditOp::InsertFrom { path, .. } = &mut op {
+                let source = Path::new(path.as_str());
+                let filename = source.file_name().and_then(|name| name.to_str()).unwrap_or("inserted.pdf");
+                let snapshot = self.snapshot_path(filename)?;
+                std::fs::copy(source, &snapshot).map_err(|e| format!("snapshot inserted PDF: {e}"))?;
+                *path = snapshot.to_string_lossy().to_string();
+            }
+            // Validate against a throwaway replay before committing, so a
+            // rejected op leaves the session exactly as it was.
+            let (doc, origins) = self.materialise()?;
+            let mut probe_doc = doc.clone();
+            let mut probe_origins = origins.clone();
+            op.apply(&mut probe_doc)?;
+            op.apply_origins(&mut probe_origins)?;
 
-        self.ops.truncate(self.cursor);
-        self.ops.push(op);
-        self.cursor += 1;
-        if self.saved_at > self.cursor { self.saved_at = usize::MAX; }
-        self.cache = Some((probe_doc, probe_origins));
-        Ok(())
+            log.step("committing", serde_json::Value::Null);
+            // Invalidate the saved history identity before replacing the redo tail.
+            // A different operation at the same cursor is not the saved document.
+            if self.saved_at > self.cursor { self.saved_at = usize::MAX; }
+            self.ops.truncate(self.cursor);
+            self.ops.push(op);
+            self.cursor += 1;
+            self.cache = Some((probe_doc, probe_origins));
+            Ok(())
+        })
     }
 
     pub fn undo(&mut self) -> Result<(), String> {
-        if self.cursor == 0 { return Err("nothing to undo".into()); }
-        self.cursor -= 1;
-        self.cache = None;
-        Ok(())
+        pdf_ops::with_operation("pdf.session.undo", |log| {
+            log.step("updating_history", serde_json::Value::Null);
+            if self.cursor == 0 { return Err("nothing to undo".into()); }
+            self.cursor -= 1;
+            self.cache = None;
+            Ok(())
+        })
     }
 
     pub fn redo(&mut self) -> Result<(), String> {
-        if self.cursor >= self.ops.len() { return Err("nothing to redo".into()); }
-        self.cursor += 1;
-        self.cache = None;
-        Ok(())
+        pdf_ops::with_operation("pdf.session.redo", |log| {
+            log.step("updating_history", serde_json::Value::Null);
+            if self.cursor >= self.ops.len() { return Err("nothing to redo".into()); }
+            self.cursor += 1;
+            self.cache = None;
+            Ok(())
+        })
     }
 
     pub fn modified(&self) -> bool {
         self.saved_at != self.cursor
     }
 
-    /// Serialise the edited document to `out_path`.  `None` overwrites the
-    /// file the session was opened from.
+    /// Serialise the edited document to `out_path`. A successful Save As
+    /// becomes the target of later saves; `None` uses that current target.
     pub fn save(&mut self, out_path: Option<&Path>) -> Result<PathBuf, String> {
-        let target = out_path.map(|p| p.to_path_buf()).unwrap_or_else(|| self.source.clone());
-        {
-            let (doc, _) = self.materialise()?;
-            let mut doc = doc.clone();
-            doc.save(&target).map_err(|e| format!("save: {e}"))?;
-        }
-        self.saved_at = self.cursor;
-        Ok(target)
+        pdf_ops::with_operation("pdf.session.save", |log| {
+            let target = out_path.map(|p| p.to_path_buf()).unwrap_or_else(|| self.source.clone());
+            log.step("materializing", serde_json::Value::Null);
+            let mut invalidated: Vec<String> = self.base_origins.iter()
+                .filter_map(|origin| origin.source.as_ref())
+                .filter(|source| same_path(Path::new(source), &target)).cloned().collect();
+            {
+                let (doc, origins) = self.materialise()?;
+                invalidated.extend(origins.iter().filter_map(|origin| origin.source.as_ref())
+                    .filter(|source| same_path(Path::new(source), &target)).cloned());
+                let mut doc = doc.clone();
+                log.step("publishing", serde_json::json!({"pages":origins.len()}));
+                pdf_ops::save_document(&mut doc, &target)?;
+            }
+            // Cached thumbnails from a replaced source no longer describe its old
+            // page indices. The editor must render these pages from this session.
+            for origin in &mut self.base_origins {
+                if origin.source.as_ref().is_some_and(|source| invalidated.contains(source)) { origin.dirty = true; }
+            }
+            if let Some((_, origins)) = &mut self.cache {
+                for origin in origins {
+                    if origin.source.as_ref().is_some_and(|source| invalidated.contains(source)) { origin.dirty = true; }
+                }
+            }
+            self.source = target.clone();
+            self.saved_at = self.cursor;
+            Ok(target)
+        })
     }
 
     /// Write a throwaway copy of the edited document.
@@ -371,14 +417,23 @@ impl PdfEditSession {
     /// state: a temp copy backs print, share and extract-selection, none
     /// of which persist the user's document.
     pub fn save_temp_copy(&mut self, out_path: &Path) -> Result<PathBuf, String> {
-        let prev_saved_at = self.saved_at;
-        let result = self.save(Some(out_path));
-        self.saved_at = prev_saved_at;
-        result
+        pdf_ops::with_operation("pdf.session.copy", |log| {
+            log.step("materializing", serde_json::Value::Null);
+            let (doc, origins) = self.materialise()?;
+            let mut doc = doc.clone();
+            log.step("publishing", serde_json::json!({"pages":origins.len()}));
+            pdf_ops::save_document(&mut doc, out_path)?;
+            Ok(out_path.to_path_buf())
+        })
     }
 
-    /// Write a temp copy named `filename` into this session's scratch dir.
-    pub fn temp_copy(&mut self, filename: &str) -> Result<PathBuf, String> {
+    fn snapshot_path(&mut self, filename: &str) -> Result<PathBuf, String> {
+        let mut components = Path::new(filename).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some() || filename.contains(['/', '\\'])
+        {
+            return Err("A PDF snapshot name must be a single filename.".into());
+        }
         if self.temp_dir.is_none() {
             let dir = tempfile::Builder::new()
                 .prefix("crispsorter-pdf-")
@@ -388,8 +443,20 @@ impl PdfEditSession {
             // path stays valid for as long as the session does.
             self.temp_dir = Some(dir.keep());
         }
-        let out = self.temp_dir.as_ref().unwrap().join(filename);
-        self.save_temp_copy(&out)
+        let dir = tempfile::Builder::new().prefix("snapshot-")
+            .tempdir_in(self.temp_dir.as_ref().unwrap())
+            .map_err(|e| format!("snapshot directory: {e}"))?;
+        Ok(dir.keep().join(filename))
+    }
+
+    /// Write an immutable snapshot. Each request gets its own path under the
+    /// session root, preserving the basename and preventing preview/export races.
+    pub fn temp_copy(&mut self, filename: &str) -> Result<PathBuf, String> {
+        pdf_ops::with_operation("pdf.session.snapshot", |log| {
+            log.step("allocating", serde_json::Value::Null);
+            let out = self.snapshot_path(filename)?;
+            self.save_temp_copy(&out)
+        })
     }
 
     /// Serialise to a byte buffer — for print, share, and rendering the
@@ -430,29 +497,6 @@ impl PdfEditSession {
 #[derive(Default)]
 pub struct PdfSessions(pub Mutex<HashMap<String, PdfEditSession>>);
 
-/// One-line description of an op for the app log: the kind plus the
-/// parameters that matter when diagnosing a failure.
-pub fn describe_op(op: &EditOp) -> String {
-    match op {
-        EditOp::Reorder { order } => format!("reorder {order:?}"),
-        EditOp::RemovePages { pages } => format!("remove pages {pages:?}"),
-        EditOp::KeepPages { pages } => format!("keep pages {pages:?}"),
-        EditOp::Rotate { pages, degrees } => format!("rotate pages {pages:?} by {degrees}"),
-        EditOp::Crop { pages, x, y, w, h } => format!("crop pages {pages:?} to x={x:.1} y={y:.1} w={w:.1} h={h:.1}"),
-        EditOp::InsertBlank { position, .. } => format!("insert blank page at {position}"),
-        EditOp::InsertFrom { path, pages, position } => format!("insert {} page(s) from {path} at {position}", if pages.is_empty() { "all".to_string() } else { pages.len().to_string() }),
-        EditOp::PageNumbers { .. } => "add page numbers".into(),
-        EditOp::Watermark { pages, .. } => format!("watermark {}", pages.as_ref().map(|p| format!("pages {p:?}")).unwrap_or_else(|| "all pages".into())),
-        EditOp::TextBox { config } => format!("text box on page {}", config.page),
-        EditOp::Metadata { .. } => "edit metadata".into(),
-        EditOp::Annotate { annotations } => format!(
-            "annotate {}",
-            annotations.iter().map(|a| format!("{} on page {}", a.ann_type, a.page)).collect::<Vec<_>>().join(", ")
-        ),
-        EditOp::EraseAnnotation { page, x, y } => format!("erase annotation on page {page} at ({x:.1}, {y:.1})"),
-    }
-}
-
 pub mod tauri_commands {
     use super::*;
     use tauri::State;
@@ -462,9 +506,13 @@ pub mod tauri_commands {
         id: &str,
         f: impl FnOnce(&mut PdfEditSession) -> Result<T, String>,
     ) -> Result<T, String> {
-        let mut map = sessions.0.lock().map_err(|_| "session store poisoned".to_string())?;
-        let s = map.get_mut(id).ok_or_else(|| format!("no such PDF session: {id}"))?;
-        f(s)
+        pdf_ops::with_operation("pdf.session.access", |log| {
+            log.step("locking", serde_json::Value::Null);
+            let mut map = sessions.0.lock().map_err(|_| "session store poisoned".to_string())?;
+            let s = map.get_mut(id).ok_or_else(|| format!("no such PDF session: {id}"))?;
+            log.step("dispatching", serde_json::Value::Null);
+            f(s)
+        })
     }
 
     #[tauri::command]
@@ -472,11 +520,9 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         path: String,
     ) -> Result<SessionState, String> {
-        let opened = PdfEditSession::open(Path::new(&path));
-        let mut session = pdf_ops::logged("session_open", &path, opened)?;
+        let mut session = PdfEditSession::open(Path::new(&path))?;
         let id = uuid::Uuid::new_v4().to_string();
         let state = session.state(&id)?;
-        crate::app_log!("info", "[pdf] session {id} opened: {} page(s)", state.info.page_count);
         sessions
             .0
             .lock()
@@ -491,12 +537,10 @@ pub mod tauri_commands {
         id: String,
         op: EditOp,
     ) -> Result<SessionState, String> {
-        let detail = format!("session {id}: {}", describe_op(&op));
-        let result = with_session(&sessions, &id, |s| {
+        with_session(&sessions, &id, |s| {
             s.apply(op)?;
             s.state(&id)
-        });
-        pdf_ops::logged("edit", &detail, result)
+        })
     }
 
     #[tauri::command]
@@ -504,11 +548,10 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         id: String,
     ) -> Result<SessionState, String> {
-        let result = with_session(&sessions, &id, |s| {
+        with_session(&sessions, &id, |s| {
             s.undo()?;
             s.state(&id)
-        });
-        pdf_ops::logged("undo", &format!("session {id}"), result)
+        })
     }
 
     #[tauri::command]
@@ -516,11 +559,10 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         id: String,
     ) -> Result<SessionState, String> {
-        let result = with_session(&sessions, &id, |s| {
+        with_session(&sessions, &id, |s| {
             s.redo()?;
             s.state(&id)
-        });
-        pdf_ops::logged("redo", &format!("session {id}"), result)
+        })
     }
 
     #[tauri::command]
@@ -537,15 +579,10 @@ pub mod tauri_commands {
         id: String,
         out_path: Option<String>,
     ) -> Result<String, String> {
-        let result = with_session(&sessions, &id, |s| {
+        with_session(&sessions, &id, |s| {
             let p = s.save(out_path.as_deref().map(Path::new))?;
             Ok(p.to_string_lossy().to_string())
-        });
-        let detail = match &result {
-            Ok(p) => format!("session {id} -> {p}"),
-            Err(_) => format!("session {id} -> {}", out_path.as_deref().unwrap_or("(source file)")),
-        };
-        pdf_ops::logged("save", &detail, result)
+        })
     }
 
     /// Serialise the edited document to a temp file and return its path.
@@ -556,7 +593,7 @@ pub mod tauri_commands {
         id: String,
         filename: Option<String>,
     ) -> Result<String, String> {
-        let result = with_session(&sessions, &id, |s| {
+        with_session(&sessions, &id, |s| {
             let stem = filename.unwrap_or_else(|| {
                 s.source
                     .file_name()
@@ -569,12 +606,7 @@ pub mod tauri_commands {
             // saved (or unsaved) and the close guard would be wrong.
             let out = s.temp_copy(&stem)?;
             Ok(out.to_string_lossy().to_string())
-        });
-        // Called for every preview refresh, so only failures are logged.
-        if let Err(e) = &result {
-            crate::app_log!("error", "[pdf] export temp copy failed - session {id}: {e}");
-        }
-        result
+        })
     }
 
     #[tauri::command]
@@ -582,12 +614,11 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         id: String,
     ) -> Result<(), String> {
-        sessions
-            .0
-            .lock()
-            .map_err(|_| "session store poisoned".to_string())?
-            .remove(&id);
-        Ok(())
+        pdf_ops::with_operation("pdf.session.close", |log| {
+            log.step("releasing", serde_json::Value::Null);
+            sessions.0.lock().map_err(|_| "session store poisoned".to_string())?.remove(&id);
+            Ok(())
+        })
     }
 }
 
@@ -740,9 +771,9 @@ mod tests {
             let mut s = session_with(2);
             let a = s.temp_copy("one.pdf").unwrap();
             let b = s.temp_copy("two.pdf").unwrap();
-            assert_eq!(a.parent(), b.parent(), "repeated exports must reuse one scratch dir");
+            assert_eq!(a.parent().unwrap().parent(), b.parent().unwrap().parent(), "snapshots share one session root");
             assert!(a.exists() && b.exists());
-            dir_path = a.parent().unwrap().to_path_buf();
+            dir_path = a.parent().unwrap().parent().unwrap().to_path_buf();
         }
         assert!(!dir_path.exists(), "closing the session must reclaim its scratch dir");
     }
@@ -776,6 +807,106 @@ mod tests {
         assert!(!s.modified());
         s.undo().unwrap();
         assert!(s.modified(), "undoing past the save point is a modification");
+    }
+
+    #[test]
+    fn replacing_a_saved_history_branch_remains_modified_at_the_same_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_with(1);
+        s.apply(EditOp::Rotate { pages: vec![0], degrees: 90 }).unwrap();
+        s.save(Some(&dir.path().join("saved.pdf"))).unwrap();
+        s.undo().unwrap();
+        s.apply(EditOp::Rotate { pages: vec![0], degrees: 180 }).unwrap();
+        assert!(s.modified(), "a new edit at the saved cursor has a different identity");
+        assert_eq!(s.state("test").unwrap().info.pages[0].rotation, 180);
+    }
+
+    #[test]
+    fn save_as_retargets_future_saves_but_preview_copies_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.pdf");
+        let target = dir.path().join("saved-as.pdf");
+        make_pdf(2).save(&source).unwrap();
+        let original = std::fs::read(&source).unwrap();
+        let mut s = PdfEditSession::open(&source).unwrap();
+        s.apply(EditOp::Rotate { pages: vec![0], degrees: 90 }).unwrap();
+        s.save(Some(&target)).unwrap();
+        s.temp_copy("preview.pdf").unwrap();
+        assert_eq!(s.source, target);
+        assert!(!s.modified());
+        s.apply(EditOp::Rotate { pages: vec![1], degrees: 180 }).unwrap();
+        assert_eq!(s.save(None).unwrap(), target);
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert_eq!(pdf_ops::pdf_info(&target).unwrap().pages[1].rotation, 180);
+    }
+
+    #[test]
+    fn snapshots_with_the_same_basename_are_immutable_and_cannot_escape() {
+        let mut s = session_with(1);
+        for name in ["", ".", "..", "../escape.pdf", "/escape.pdf", "nested/file.pdf", "..\\escape.pdf"] {
+            assert!(s.temp_copy(name).is_err(), "reject {name:?}");
+        }
+        assert!(s.temp_dir.is_none(), "invalid names must not allocate a snapshot");
+        let first = s.temp_copy("preview.pdf").unwrap();
+        s.apply(EditOp::Rotate { pages: vec![0], degrees: 90 }).unwrap();
+        let second = s.temp_copy("preview.pdf").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.file_name(), second.file_name());
+        assert_eq!(pdf_ops::pdf_info(&first).unwrap().pages[0].rotation, 0);
+        assert_eq!(pdf_ops::pdf_info(&second).unwrap().pages[0].rotation, 90);
+        assert!(s.modified());
+    }
+
+    #[test]
+    fn failed_save_preserves_target_session_identity_and_dirty_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("private-target.pdf");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("preserve"), b"existing data").unwrap();
+        let mut s = session_with(1);
+        s.apply(EditOp::Rotate { pages: vec![0], degrees: 90 }).unwrap();
+        let source = s.source.clone();
+        let (result, events) = crate::operation_log::capture(|| s.save(Some(&target)));
+        assert!(result.is_err());
+        assert!(s.modified());
+        assert_eq!(s.source, source);
+        assert_eq!(std::fs::read(target.join("preserve")).unwrap(), b"existing data");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        let receipts: Vec<_> = events.iter().filter(|e| e.operation == "pdf.session.save").collect();
+        assert_eq!(receipts.first().unwrap().phase, "started");
+        assert_eq!(receipts.last().unwrap().phase, "failed");
+        assert_eq!(receipts.iter().filter(|e| e.phase == "failed").count(), 1);
+        assert!(!serde_json::to_string(&events).unwrap().contains("private-target"));
+    }
+
+    #[test]
+    fn saving_over_a_source_invalidates_its_thumbnail_provenance_even_after_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.pdf");
+        make_pdf(2).save(&source).unwrap();
+        let mut s = PdfEditSession::open(&source).unwrap();
+        s.apply(EditOp::RemovePages { pages: vec![0] }).unwrap();
+        s.save(None).unwrap();
+        assert!(s.state("test").unwrap().origins.iter().all(|o| o.dirty));
+        s.undo().unwrap();
+        let state = s.state("test").unwrap();
+        assert_eq!(state.origins.len(), 2);
+        assert!(state.origins.iter().all(|o| o.dirty));
+    }
+
+    #[test]
+    fn inserted_pages_replay_from_an_immutable_source_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("inserted.pdf");
+        let mut doc = make_pdf(1);
+        pdf_ops::rotate_pages_doc(&mut doc, &[0], 270).unwrap();
+        doc.save(&source).unwrap();
+        let mut s = session_with(1);
+        s.apply(EditOp::InsertFrom { path: source.to_string_lossy().into_owned(), pages: vec![], position: 1 }).unwrap();
+        make_pdf(1).save(&source).unwrap();
+        s.undo().unwrap();
+        s.redo().unwrap();
+        assert_eq!(s.state("test").unwrap().info.pages[1].rotation, 270);
     }
 
     fn annot_count(s: &mut PdfEditSession, page: usize) -> usize {

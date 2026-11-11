@@ -19,6 +19,8 @@ use anyhow::Result;
 #[cfg(feature = "crispembed")]
 use anyhow::Context;
 use std::path::Path;
+use crate::operation_log::OperationLog;
+use serde_json::{json, Value};
 #[cfg(feature = "crispembed")]
 use std::sync::Mutex;
 
@@ -57,6 +59,16 @@ pub fn is_math_ocr_available() -> bool {
     cfg!(feature = "crispembed")
 }
 
+fn logged_formula(model_kind:&'static str, run:impl FnOnce(&OperationLog)->Result<Option<String>>) -> Result<Option<String>> {
+    let log=OperationLog::start("ocr.formula",json!({"kind":"formula","model_kind":model_kind}));
+    let result=run(&log);
+    match &result {
+        Ok(formula)=>log.succeed(json!({"characters":formula.as_ref().map_or(0,|text|text.chars().count())})),
+        Err(_)=>log.fail("formula_recognition_failed"),
+    }
+    result
+}
+
 /// Recognize a math formula from an image file, returning LaTeX.
 ///
 /// Loads the image, converts to RGB, and passes to the MathOcr engine.
@@ -64,15 +76,20 @@ pub fn is_math_ocr_available() -> bool {
 /// — some images just don't contain math).
 #[cfg(feature = "crispembed")]
 pub fn recognize_formula(image_path: &Path) -> Result<Option<String>> {
+    logged_formula("default",|log| {
+    log.step("decoding",Value::Null);
     let img = image::open(image_path)
         .with_context(|| format!("failed to open image: {}", image_path.display()))?
         .to_rgb8();
     let (w, h) = img.dimensions();
     let pixels = img.into_raw();
 
+    log.step("loading_model",Value::Null);
     let mut guard = math_engine()?;
 
+    log.step("recognizing",json!({"width":w,"height":h}));
     Ok(guard.recognize(&pixels, w as i32, h as i32))
+    })
 }
 
 /// Recognize a math formula from a raw RGB pixel buffer.
@@ -82,9 +99,12 @@ pub fn recognize_formula_from_pixels(
     width: i32,
     height: i32,
 ) -> Result<Option<String>> {
+    logged_formula("default", |log| {
+    log.step("loading_model", Value::Null);
     let mut guard = math_engine()?;
-
+    log.step("recognizing", json!({"width":width,"height":height}));
     Ok(guard.recognize(pixels, width, height))
+    })
 }
 
 /// Recognize math formulas with a custom model path.
@@ -93,6 +113,8 @@ pub fn recognize_formula_with_model(
     image_path: &Path,
     model_path: &str,
 ) -> Result<Option<String>> {
+    logged_formula("custom",|log| {
+    log.step("decoding",Value::Null);
     let img = image::open(image_path)
         .with_context(|| format!("failed to open image: {}", image_path.display()))?
         .to_rgb8();
@@ -103,12 +125,15 @@ pub fn recognize_formula_with_model(
     // CC-BY-NC-SA `posformer-crohme`), so refuse the implicit download without
     // consent instead of fetching it silently.
     crate::index::license_consent::ensure_registry_download_allowed(model_path)?;
+    log.step("loading_model",Value::Null);
     let resolved = crate::model_provisioning::resolve_model(model_path, Some(true))
         .map_err(anyhow::Error::msg)?;
     let mut ocr = crispembed::MathOcr::new(&resolved, 0)
         .map_err(|e| anyhow::anyhow!("MathOcr init failed: {e}"))?;
 
+    log.step("recognizing",json!({"width":w,"height":h}));
     Ok(ocr.recognize(&pixels, w as i32, h as i32))
+    })
 }
 
 /// Given layout regions from P17.1, crop formula regions from the page
@@ -157,9 +182,9 @@ pub fn recognize_formulas_in_layout(
 
 #[cfg(not(feature = "crispembed"))]
 pub fn recognize_formula(_image_path: &Path) -> Result<Option<String>> {
-    Err(anyhow::anyhow!(
+    logged_formula("default", |_| Err(anyhow::anyhow!(
         "math OCR requires --features crispembed"
-    ))
+    )))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -168,9 +193,9 @@ pub fn recognize_formula_from_pixels(
     _width: i32,
     _height: i32,
 ) -> Result<Option<String>> {
-    Err(anyhow::anyhow!(
+    logged_formula("default", |_| Err(anyhow::anyhow!(
         "math OCR requires --features crispembed"
-    ))
+    )))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -178,9 +203,9 @@ pub fn recognize_formula_with_model(
     _image_path: &Path,
     _model_path: &str,
 ) -> Result<Option<String>> {
-    Err(anyhow::anyhow!(
+    logged_formula("custom", |_| Err(anyhow::anyhow!(
         "math OCR requires --features crispembed"
-    ))
+    )))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -215,7 +240,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = tmp.path().join("formula.png");
         std::fs::write(&p, b"\x89PNG").unwrap();
-        assert!(recognize_formula(&p).is_err());
+        let (result, events) = crate::operation_log::capture(|| recognize_formula(&p));
+        assert!(result.is_err());
+        assert_eq!(events.last().unwrap().phase, "failed");
+        assert!(!events.iter().any(|event| event.phase == "completed"));
     }
 
     #[cfg(not(feature = "crispembed"))]

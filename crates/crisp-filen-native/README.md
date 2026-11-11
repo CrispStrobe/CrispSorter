@@ -131,3 +131,18 @@ crate is licensed under MPL-2.0. It is an unofficial community client and is
 not affiliated with or endorsed by Filen.
 See the repository's issue tracker for protocol changes and compatibility
 reports.
+
+## Cross-app reuse
+
+This library is already consumed by CrispSorter's native adapter and its own
+CLI. Exposing the same versioned Rust source to CrispCloud and CrisperPlayer
+through Dart adapters is proposed work; no Filen/Internxt Flutter bridge is
+implemented here. Keep protocol/session/crypto code in this crate and host
+credentials, job scheduling and UI integration in the application.
+
+The client uses blocking HTTP and needs a storage worker when called from
+async/UI code. Cross-engine sessions/checkpoints need explicit version and
+identity checks; started mutations must not be replayed through another engine.
+MPL-2.0 remains the declared license. See
+[the storage-engine design](../../docs/STORAGE_ENGINE_ARCHITECTURE.md) for the
+Dart transition, constrained fallback, platform limits and compatibility tests.

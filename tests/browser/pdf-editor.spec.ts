@@ -1,377 +1,292 @@
-// The unified PDF editor: one surface for page editing, tools, annotation
-// and export. The edit-session backend is mocked here (its behaviour is
-// covered by the Rust tests in pdf_session.rs); pdf.js renders a real
-// generated PDF so thumbnails, zoom and coordinates are exercised for real.
+// Browser integration exercises the shipped editor with explicit native IPC
+// fixtures. It does not claim native PDF transformation or OCR qualification.
 import { expect, test, type Page } from '@playwright/test';
 import { fixtures } from './fixtures';
 
-const SHOTS = process.env.PDF_SHOTS_DIR;
-
-/** A small, valid PDF with one labelled page per entry (sizes in points). */
-function buildPdf(sizes: [number, number][]): number[] {
-    const objs: string[] = [];
-    const n = sizes.length;
-    // 1 catalog, 2 pages, 3 font, then per page: page obj + content obj
-    objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
-    const kids = sizes.map((_, i) => `${4 + i * 2} 0 R`).join(' ');
-    objs[2] = `<< /Type /Pages /Kids [${kids}] /Count ${n} >>`;
-    objs[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
-    sizes.forEach(([w, h], i) => {
-        const content = `BT /F1 36 Tf 40 ${h - 80} Td (Page ${i + 1}) Tj ET 0 0 1 RG 4 w 20 20 ${w - 40} ${h - 40} re S`;
-        objs[4 + i * 2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + i * 2} 0 R >>`;
-        objs[5 + i * 2] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
-    });
-    let out = '%PDF-1.4\n';
-    const offsets: number[] = [];
-    for (let k = 1; k < objs.length; k++) {
-        offsets[k] = out.length;
-        out += `${k} 0 obj\n${objs[k]}\nendobj\n`;
-    }
-    const xref = out.length;
-    out += `xref\n0 ${objs.length}\n0000000000 65535 f \n`;
-    for (let k = 1; k < objs.length; k++) out += `${String(offsets[k]).padStart(10, '0')} 00000 n \n`;
-    out += `trailer\n<< /Size ${objs.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-    return Array.from(out, (c) => c.charCodeAt(0));
-}
-
-async function pdfFixtures(page: Page) {
+async function pdfFixture(page: Page) {
     await fixtures(page);
-    const bytes = buildPdf([[300, 400], [300, 400], [400, 300]]);
-    await page.addInitScript((pdfBytes: number[]) => {
+    await page.addInitScript(() => {
         const root = window as any;
-        const internals = root.__TAURI_INTERNALS__;
+        root.__pdfCalls = [];
+        root.__pdfReleases = {};
+        root.__pdfHold = {};
+        root.__pdfOpenPath = '/fixtures/first.pdf';
+        root.__pdfSavePath = '/fixtures/saved.pdf';
+        root.__pdfFormFailure = false;
+        root.__pdfSnapshots = [];
+        const sessions = new Map<string, any>();
         const callbacks = new Map<number, Function>();
-        const transform = internals.transformCallback;
-        internals.transformCallback = (fn: Function, once?: boolean) => {
-            const id = transform(fn, once);
-            callbacks.set(id, fn);
-            return id;
+        const listeners: any[] = [];
+        let nextSession = 1, nextSnapshot = 1;
+        const wait = async (key: string) => {
+            if (!root.__pdfHold[key]) return;
+            delete root.__pdfHold[key];
+            await new Promise<void>(resolve => { root.__pdfReleases[key] = resolve; });
         };
-        root.__cbs = callbacks;
-        root.__listeners = [] as { event: string; handler: number }[];
-        root.__pdfFail = {} as Record<string, string>;
-
-        // Minimal edit session: a stack of page-origin snapshots.
-        let history: any[][] = [];
-        let cursor = 0;
-        let source = '';
-        const page = (o: any) => ({ width_pt: 300, height_pt: 400, rotation: o.rotation });
-        const state = () => {
-            const origins = history[cursor];
+        const clone = (value: any) => JSON.parse(JSON.stringify(value));
+        const session = (path: string) => {
+            const count = path.includes('second') ? 1 : 2;
             return {
-                id: 'session-1', source,
-                info: { page_count: origins.length, pages: origins.map((o, i) => ({ page_number: i + 1, ...page(o) })) },
-                origins, can_undo: cursor > 0, can_redo: cursor < history.length - 1,
-                undo_label: null, modified: cursor > 0, ops: [],
+                id: `pdf-${nextSession++}`, source: path,
+                info: { page_count: count, pages: Array.from({ length: count }, (_, i) => ({ page_number: i + 1, width_pt: 200, height_pt: 300, rotation: 0 })) },
+                origins: Array.from({ length: count }, (_, index) => ({ source: path, index, rotation: 0, dirty: false })),
+                can_undo: false, can_redo: false, undo_label: null, modified: false, ops: [],
             };
         };
-        const apply = (op: any) => {
-            const cur = history[cursor].map((o) => ({ ...o }));
-            let next = cur;
-            switch (op.kind) {
-                case 'reorder': next = op.order.map((i: number) => cur[i]); break;
-                case 'remove_pages': next = cur.filter((_, i) => !op.pages.includes(i)); break;
-                case 'rotate':
-                    // The pre-fix backend's exact rule: a raw -90 used to fail here.
-                    if (![0, 90, 180, 270].includes(op.degrees)) throw new Error(`degrees must be 0/90/180/270, got ${op.degrees}`);
-                    for (const i of op.pages) cur[i].rotation = (cur[i].rotation + op.degrees) % 360;
-                    break;
-                case 'insert_blank': next.splice(op.position, 0, { source: null, index: null, rotation: 0, dirty: false }); break;
-                case 'crop': for (const i of op.pages) cur[i].dirty = true; break;
-                case 'annotate': for (const a of op.annotations) cur[a.page].dirty = true; break;
-                case 'erase_annotation': cur[op.page].dirty = true; break;
-                default: for (const o of cur) o.dirty = true;
-            }
-            history = [...history.slice(0, cursor + 1), next];
-            cursor += 1;
-        };
 
-        const original = internals.invoke;
-        internals.invoke = async (command: string, args: any = {}) => {
-            if (root.__pdfFail[command]) {
-                root.__fixtureCalls.push({ command, args });
-                throw new Error(root.__pdfFail[command]);
-            }
-            if (command === 'plugin:event|listen') {
-                root.__listeners.push({ event: args.event, handler: args.handler });
-                return original(command, args);
-            }
-            if ((command === 'plugin:fs|read_file') && /\.pdf$/i.test(args.path ?? '')) {
-                root.__fixtureCalls.push({ command, args });
-                return pdfBytes;
-            }
-            if (!command.startsWith('pdf_') && command !== 'platform_capabilities') return original(command, args);
-            root.__fixtureCalls.push({ command, args });
-            switch (command) {
-                case 'platform_capabilities': return { system_share_sheet: false, direct_print: false, platform: 'linux' };
-                case 'pdf_session_open':
-                    source = args.path;
-                    history = [[0, 1, 2].map((i) => ({ source, index: i, rotation: 0, dirty: false }))];
-                    cursor = 0;
-                    return state();
-                case 'pdf_session_apply': apply(args.op); return state();
-                case 'pdf_session_undo': cursor = Math.max(0, cursor - 1); return state();
-                case 'pdf_session_redo': cursor = Math.min(history.length - 1, cursor + 1); return state();
-                case 'pdf_session_state': return state();
-                case 'pdf_session_save': return args.outPath ?? source;
-                case 'pdf_session_export_temp': return '/fixtures/edited.pdf';
-                case 'pdf_session_close': return null;
-                case 'pdf_is_encrypted': return false;
-                case 'pdf_measure_text_region': return { lines: 1, lines_dropped: 0, overflow: false, unsupported_chars: [] };
-                default: return null;
+        // A real tiny two-page PDF lets pdf.js exercise source/edited preview
+        // sharing instead of replacing its render calls with test doubles.
+        const stream = 'BT /F1 14 Tf 20 260 Td (PDF fixture) Tj ET';
+        const objects = [
+            '<< /Type /Catalog /Pages 2 0 R >>',
+            '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>',
+            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>',
+            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>',
+            `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+            '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+        ];
+        let pdf = '%PDF-1.4\n';
+        const offsets = [0];
+        objects.forEach((body, index) => { offsets.push(pdf.length); pdf += `${index + 1} 0 obj\n${body}\nendobj\n`; });
+        const xref = pdf.length;
+        pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+        for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+        pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+        const bytes = Array.from(new TextEncoder().encode(pdf));
+
+        root.__pdfDrop = (paths: string[]) => {
+            for (const listener of listeners) {
+                if (listener.event === 'tauri://drag-drop' && listener.target?.kind === 'Webview') {
+                    callbacks.get(listener.handler)?.({ event: listener.event, id: 1, payload: { paths, position: { x: 20, y: 20 } } });
+                }
             }
         };
-    }, bytes);
-}
-
-const calls = (page: Page, command: string) =>
-    page.evaluate((c) => (window as any).__fixtureCalls.filter((x: any) => x.command === c).map((x: any) => x.args), command);
-
-async function openEditor(page: Page) {
+        const wrapped = new WeakSet<object>();
+        const wrap = (bridge: any) => {
+            if (!bridge || wrapped.has(bridge)) return bridge;
+            wrapped.add(bridge);
+            const original = bridge.invoke;
+            const originalTransform = bridge.transformCallback;
+            bridge.transformCallback = (fn: Function, once?: boolean) => {
+                const id = originalTransform(fn, once);
+                callbacks.set(id, fn);
+                return id;
+            };
+            bridge.invoke = async (command: string, args: any = {}, options?: any) => {
+                root.__pdfCalls.push({ command, args: clone(args) });
+                if (command === 'plugin:event|listen') listeners.push(args);
+                if (command === 'plugin:dialog|open') return root.__pdfOpenPath;
+                if (command === 'plugin:dialog|save') { await wait('save-dialog'); return root.__pdfSavePath; }
+                if (command === 'plugin:dialog|message') return 'Yes';
+                if (command === 'plugin:fs|read_file' && String(args.path).endsWith('.pdf')) return bytes;
+                if (command === 'pdf_session_open') {
+                    const value = session(args.path);
+                    await wait(`open:${args.path}`);
+                    sessions.set(value.id, value);
+                    return clone(value);
+                }
+                if (command === 'pdf_session_close') { sessions.delete(args.id); return; }
+                if (command === 'pdf_is_encrypted') return false;
+                if (command === 'pdf_session_apply') {
+                    const value = sessions.get(args.id);
+                    await wait('apply');
+                    value.ops.push(args.op.kind);
+                    value.can_undo = true; value.modified = true;
+                    value.origins = value.origins.map((origin: any) => args.op.kind === 'rotate'
+                        ? { ...origin, rotation: (origin.rotation + args.op.degrees) % 360 }
+                        : { ...origin, dirty: true });
+                    return clone(value);
+                }
+                if (command === 'pdf_session_save') {
+                    const value = sessions.get(args.id);
+                    value.source = args.outPath ?? value.source;
+                    value.modified = false;
+                    value.origins = value.origins.map((origin: any) => ({ ...origin, dirty: true }));
+                    return value.source;
+                }
+                if (command === 'pdf_session_state') return clone(sessions.get(args.id));
+                if (command === 'pdf_session_export_temp') {
+                    const value = sessions.get(args.id);
+                    const path = `/fixtures/snapshots/${nextSnapshot++}/${value.source.split('/').pop()}`;
+                    root.__pdfSnapshots.push({ path, session: clone(value) });
+                    await wait('preview');
+                    return path;
+                }
+                if (command === 'pdf_read_form_fields') {
+                    if (root.__pdfFormFailure) throw new Error('Private form /private/password=secret could not be read');
+                    return [];
+                }
+                if (command === 'pdf_export_text' || command === 'pdf_export_docx') return 2;
+                if (command === 'platform_capabilities') return { system_share_sheet: false, direct_print: false, platform: 'linux' };
+                if (command === 'convert_capabilities') {
+                    await wait(`caps:${args.path}`);
+                    const ext = String(args.path ?? '').split('.').pop();
+                    return { ext, native_reader: ext === 'pptx', anydoc_available: true, convertible: true, rich_output: ext === 'pptx', slide_options: ext === 'pptx', extensions: ['pptx', 'doc'] };
+                }
+                if (command === 'convert_document') {
+                    await wait('convert');
+                    return { content: 'OLD CONVERSION CONTENT', headings: [], slides: 1, engine_used: 'native', written_path: args.outPath };
+                }
+                if (command === 'docx_check') {
+                    await wait('docx');
+                    return { ok: [], issues: ['OLD DOCUMENT ISSUE'], valid: false };
+                }
+                return original(command, args, options);
+            };
+            return bridge;
+        };
+        let bridge = wrap(root.__TAURI_INTERNALS__);
+        Object.defineProperty(root, '__TAURI_INTERNALS__', { configurable: true, get: () => bridge, set: value => { bridge = wrap(value); } });
+    });
     await page.goto('/');
-    await page.locator('.main-nav').getByRole('button', { name: 'PDF Tools', exact: true }).click();
-    await page.getByRole('toolbar', { name: 'PDF' }).getByRole('button', { name: 'Open PDF', exact: true }).click();
-    await expect(page.locator('.pe-tile')).toHaveCount(3);
-    await expect(page.locator('.pe-tile img')).toHaveCount(3);
-    await expect(page.getByTestId('pdf-zoom')).not.toHaveText('100%');
+    await page.locator('nav.main-nav').getByRole('button', { name: 'PDF Tools', exact: true }).click();
+    await expect(page.locator('.pe')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as any).__pdfCalls.some((c: any) => c.command === 'plugin:event|listen' && c.args.event === 'tauri://drag-drop' && c.args.target?.kind === 'Webview'))).toBe(true);
 }
 
-const tile = (page: Page, i: number) => page.locator(`.pe-tile[data-index="${i}"]`);
+async function calls(page: Page, command: string) {
+    return page.evaluate(name => (window as any).__pdfCalls.filter((entry: any) => entry.command === name), command);
+}
+async function openPdf(page: Page) {
+    await page.locator('.pe-toolbar').getByRole('button', { name: 'Open PDF', exact: true }).click();
+    await expect(page.locator('.pe-tile')).toHaveCount(2);
+    await expect(page.locator('.pe-busy-chip')).toHaveCount(0);
+}
+async function drop(page: Page, path: string) {
+    await page.evaluate(value => (window as any).__pdfDrop([value]), path);
+}
+async function release(page: Page, key: string) {
+    await expect.poll(() => page.evaluate(value => typeof (window as any).__pdfReleases[value], key)).toBe('function');
+    await page.evaluate(value => (window as any).__pdfReleases[value](), key);
+}
 
-test.describe('PDF editor', () => {
-    test.beforeEach(async ({ page }) => {
-        await page.setViewportSize({ width: 1440, height: 900 });
-        await pdfFixtures(page);
+test('consolidated PDF ownership disposes superseded opens and ignores hidden-view shortcuts/drop', async ({ page }) => {
+    await pdfFixture(page);
+    await page.evaluate(() => { (window as any).__pdfHold['open:/fixtures/first.pdf'] = true; });
+    await drop(page, '/fixtures/first.pdf');
+    await expect.poll(() => calls(page, 'pdf_session_open')).toHaveLength(1);
+    await drop(page, '/fixtures/second.pdf');
+    await release(page, 'open:/fixtures/first.pdf');
+    await expect(page.locator('.pe-tile')).toHaveCount(1);
+    expect((await calls(page, 'pdf_session_close')).map((entry: any) => entry.args.id)).toContain('pdf-1');
+    expect((await calls(page, 'pdf_session_open')).map((entry: any) => entry.args.path)).toEqual(['/fixtures/first.pdf', '/fixtures/second.pdf']);
+    await page.locator('nav.main-nav').getByRole('button', { name: 'Inbox', exact: true }).click();
+    await page.keyboard.press('Delete');
+    await drop(page, '/fixtures/hidden.pdf');
+    await page.locator('nav.main-nav').getByRole('button', { name: 'PDF Tools', exact: true }).click();
+    await expect(page.locator('.pe-tile')).toHaveCount(1);
+    expect(await calls(page, 'pdf_session_apply')).toHaveLength(0);
+    expect(await calls(page, 'pdf_session_open')).toHaveLength(2);
+});
+
+test('a queued document handoff waits for edits and busy shortcuts cannot issue another mutation', async ({ page }) => {
+    await pdfFixture(page); await openPdf(page);
+    await page.evaluate(() => { (window as any).__pdfHold.apply = true; });
+    await page.getByRole('button', { name: 'Rotate right', exact: true }).click();
+    await expect.poll(() => calls(page, 'pdf_session_apply')).toHaveLength(1);
+    await page.keyboard.press('Control+s');
+    await page.keyboard.press('Delete');
+    await drop(page, '/fixtures/second.pdf');
+    expect(await calls(page, 'pdf_session_save')).toHaveLength(0);
+    expect(await calls(page, 'pdf_session_apply')).toHaveLength(1);
+    expect(await calls(page, 'pdf_session_open')).toHaveLength(1);
+    await release(page, 'apply');
+    await expect(page.locator('.pe-tile')).toHaveCount(1);
+    expect(await calls(page, 'plugin:dialog|message')).toHaveLength(1);
+});
+
+test('form failure makes one attempt, permits an explicit retry, and logs safely at silent verbosity', async ({ page }) => {
+    const logs: string[] = [];
+    page.on('console', message => logs.push(message.text()));
+    await pdfFixture(page); await openPdf(page);
+    await page.evaluate(async () => {
+        (window as any).__pdfFormFailure = true;
+        const path = '/src/lib/log.ts';
+        const { setLogVerbosity } = await import(/* @vite-ignore */ path);
+        setLogVerbosity('silent');
     });
+    await page.locator('.pe-toolbar').getByRole('button', { name: 'Tools', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Form fields', exact: true }).click();
+    await expect(page.locator('.pe-err')).toContainText('could not be read');
+    await expect(page.getByRole('button', { name: 'Check again', exact: true })).toBeEnabled();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(await calls(page, 'pdf_read_form_fields')).toHaveLength(1);
+    await page.getByRole('button', { name: 'Check again', exact: true }).click();
+    await expect.poll(() => calls(page, 'pdf_read_form_fields')).toHaveLength(2);
+    await expect(page.getByRole('button', { name: 'Check again', exact: true })).toBeEnabled();
+    const failures = logs.filter(message => message.includes('pdf.form phase=failed'));
+    expect(failures).toHaveLength(2);
+    expect(failures.join('\n')).not.toMatch(/Private|\/private|password|secret/);
+});
 
-    test('one editor: pages panel, page view, toolbar, and every former mode reachable', async ({ page }) => {
-        await openEditor(page);
-        // No more mode tabs.
-        await expect(page.getByRole('button', { name: 'Edit pages' })).toHaveCount(0);
-        await expect(page.locator('.pw-modes')).toHaveCount(0);
-        await expect(page.locator('.pe-side')).toBeVisible();
-        await expect(page.locator('.pe-view canvas')).toBeVisible();
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/editor-layout.png` });
+test('edited previews are shared and Save refreshes them before text-layer export', async ({ page }) => {
+    await pdfFixture(page); await openPdf(page);
+    await expect(page.locator('.pe-tile img')).toHaveCount(2);
+    await page.evaluate(() => { (window as any).__pdfHold.preview = true; });
+    await page.locator('.pe-toolbar').getByRole('button', { name: 'Tools', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Watermark', exact: true }).click();
+    await page.locator('.dt-bar').getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect.poll(() => calls(page, 'pdf_session_export_temp')).toHaveLength(1);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(await calls(page, 'pdf_session_export_temp')).toHaveLength(1);
+    await release(page, 'preview');
+    await expect.poll(() => page.evaluate(() => (window as any).__pdfCalls.filter((entry: any) => entry.command === 'plugin:fs|read_file' && entry.args.path.includes('/snapshots/')).length)).toBe(1);
+    await page.locator('.pe-toolbar').getByRole('button', { name: 'Save as…', exact: true }).click();
+    await expect.poll(() => calls(page, 'pdf_session_state')).toHaveLength(1);
+    await expect.poll(() => calls(page, 'pdf_session_export_temp')).toHaveLength(2);
+    const saved = await page.evaluate(() => (window as any).__pdfSnapshots.at(-1));
+    expect(saved.session.source).toBe('/fixtures/saved.pdf');
+    expect(saved.session.modified).toBe(false);
+    expect(saved.session.ops).toEqual(['watermark']);
+    await page.evaluate(() => { (window as any).__pdfSavePath = '/fixtures/export.txt'; });
+    await page.locator('.pe-toolbar').getByRole('button', { name: 'Export', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Plain text (.txt)…', exact: true }).click();
+    await expect.poll(() => calls(page, 'pdf_export_text')).toHaveLength(1);
+    const exported = (await calls(page, 'pdf_export_text'))[0].args;
+    expect(exported).toMatchObject({ outPath: '/fixtures/export.txt', format: 'text' });
+    expect(exported.path).toMatch(/^\/fixtures\/snapshots\/\d+\/saved\.pdf$/);
+    expect(await calls(page, 'ocr_extract_image')).toHaveLength(0);
+});
 
-        // Former "Werkzeuge": in the Tools menu.
-        const toolbar = page.getByRole('toolbar', { name: 'PDF' });
-        await toolbar.getByRole('button', { name: 'Tools' }).click();
-        const tools = page.getByRole('menu', { name: 'Tools' });
-        for (const name of ['Merge — append PDFs…', 'Split into files', 'Watermark', 'Document properties', 'Protect with a password…', 'Remove hidden data…', 'Reduce file size']) {
-            await expect(tools.getByRole('menuitem', { name })).toBeVisible();
-        }
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/tools-menu.png` });
-        await tools.getByRole('menuitem', { name: 'Split into files' }).click();
-        await expect(page.getByPlaceholder('1-5,6-10')).toBeVisible();
+test('malformed insertion ranges cannot silently turn into all-pages insertion', async ({ page }) => {
+    await pdfFixture(page); await openPdf(page);
+    await page.getByRole('button', { name: 'Insert pages from another PDF', exact: true }).click();
+    await page.locator('.dt-bar').getByRole('button', { name: 'Choose PDF…', exact: true }).click();
+    await page.locator('.dt-bar input[type=text]').fill('1junk');
+    await page.locator('.dt-bar').getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('.pe-err')).toContainText('Enter ranges');
+    expect(await calls(page, 'pdf_session_apply')).toHaveLength(0);
+});
 
-        // Former "DOCX" and "Konvertieren": in the Export menu.
-        await toolbar.getByRole('button', { name: 'Export' }).click();
-        const exp = page.getByRole('menu', { name: 'Export' });
-        await expect(exp.getByRole('menuitem', { name: 'Word document (.docx)…' })).toBeVisible();
-        await expect(exp.getByRole('menuitem', { name: 'Pages as PNG images…' })).toBeVisible();
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/export-menu.png` });
-        await exp.getByRole('menuitem', { name: 'Word document tools…' }).click();
-        const drawer = page.getByRole('dialog', { name: 'Word document tools…' });
-        await expect(drawer).toBeVisible();
-        await expect(drawer.locator('.dt-toolbar')).toBeVisible();
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/docx-drawer.png` });
-        await toolbar.getByRole('button', { name: 'Export' }).click();
-        await page.getByRole('menu', { name: 'Export' }).getByRole('menuitem', { name: 'Convert another document (Office, e-book)…' }).click();
-        const conv = page.getByRole('dialog', { name: 'Convert another document (Office, e-book)…' });
-        await expect(conv.getByRole('button', { name: 'Choose document…' })).toBeVisible();
-    });
-
-    test('rotating counter-clockwise sends a valid quarter turn and succeeds', async ({ page }) => {
-        const logs: string[] = [];
-        page.on('console', (m) => logs.push(m.text()));
-        await openEditor(page);
-        await tile(page, 1).click();
-        await page.getByRole('toolbar', { name: 'PDF' }).getByRole('button', { name: 'Rotate left', exact: true }).click();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(1);
-        const [{ op }] = await calls(page, 'pdf_session_apply');
-        expect(op).toEqual({ kind: 'rotate', pages: [1], degrees: 270 });
-        await expect(page.getByRole('alert')).toHaveCount(0);
-        // Every step lands in the app log.
-        await expect.poll(() => logs.some((l) => l.includes('[pdf] Rotate left 2: ok'))).toBe(true);
-        expect(logs.some((l) => l.includes('[pdf] opened /fixtures/scan.pdf: 3 page(s)'))).toBe(true);
-    });
-
-    test('an error can be dismissed and clears on the next successful action', async ({ page }) => {
-        const logs: string[] = [];
-        page.on('console', (m) => logs.push(m.text()));
-        await openEditor(page);
-        await page.evaluate(() => { (window as any).__pdfFail.pdf_session_apply = 'backend said no'; });
-        const rotate = page.getByRole('toolbar', { name: 'PDF' }).getByRole('button', { name: 'Rotate right', exact: true });
-        await rotate.click();
-        const alert = page.getByRole('alert');
-        await expect(alert).toContainText('backend said no');
-        expect(logs.some((l) => l.includes('failed: backend said no'))).toBe(true);
-        await alert.getByRole('button', { name: 'Dismiss' }).click();
-        await expect(alert).toHaveCount(0);
-
-        await rotate.click();
-        await expect(page.getByRole('alert')).toContainText('backend said no');
-        await page.evaluate(() => { delete (window as any).__pdfFail.pdf_session_apply; });
-        await rotate.click();
-        await expect(page.getByRole('alert')).toHaveCount(0);
-    });
-
-    test('select all and deselect', async ({ page }) => {
-        await openEditor(page);
-        const selectedTiles = page.locator('.pe-tile[aria-selected="true"]');
-        await page.getByRole('button', { name: 'Select all' }).click();
-        await expect(selectedTiles).toHaveCount(3);
-        await page.getByRole('button', { name: 'Select none' }).click();
-        await expect(selectedTiles).toHaveCount(0);
-        await tile(page, 2).click();
-        await expect(selectedTiles).toHaveCount(1);
-        await page.keyboard.press('Escape');
-        await expect(selectedTiles).toHaveCount(0);
-    });
-
-    test('pages reorder with the per-tile < > buttons and by dragging', async ({ page }) => {
-        await openEditor(page);
-        await tile(page, 0).hover();
-        await tile(page, 0).getByRole('button', { name: 'Move later (Page 1)' }).click();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(1);
-        expect((await calls(page, 'pdf_session_apply'))[0].op).toEqual({ kind: 'reorder', order: [1, 0, 2] });
-
-        await tile(page, 2).hover();
-        await tile(page, 2).getByRole('button', { name: 'Move earlier (Page 3)' }).click();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(2);
-        expect((await calls(page, 'pdf_session_apply'))[1].op).toEqual({ kind: 'reorder', order: [0, 2, 1] });
-
-        // Pointer drag: drop the last page onto the top half of the first.
-        const from = await tile(page, 2).boundingBox();
-        const to = await tile(page, 0).boundingBox();
-        await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-        await page.mouse.down();
-        await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2 - 20, { steps: 3 });
-        await page.mouse.move(to!.x + to!.width / 2, to!.y + 10, { steps: 8 });
-        await expect(tile(page, 0)).toHaveClass(/drop-before/);
-        await page.mouse.up();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(3);
-        expect((await calls(page, 'pdf_session_apply'))[2].op).toEqual({ kind: 'reorder', order: [2, 0, 1] });
-    });
-
-    test('thumbnail size and page panel width are adjustable and remembered', async ({ page }) => {
-        await openEditor(page);
-        const before = (await tile(page, 0).boundingBox())!.width;
-        await page.getByRole('slider', { name: 'Thumbnail size' }).fill('260');
-        await expect.poll(async () => (await tile(page, 0).boundingBox())!.width).toBeGreaterThan(before + 60);
-        const divider = page.getByRole('separator', { name: 'Resize the page panel' });
-        const d = (await divider.boundingBox())!;
-        await page.mouse.move(d.x + 3, d.y + 100);
-        await page.mouse.down();
-        await page.mouse.move(d.x + 300, d.y + 100, { steps: 5 });
-        await page.mouse.up();
-        const width = (await page.locator('.pe-side').boundingBox())!.width;
-        expect(width).toBeGreaterThan(400);
-        const stored = await page.evaluate(() => [localStorage.getItem('crispsorter.pdfEditor.thumbSize'), localStorage.getItem('crispsorter.pdfEditor.sidebarWidth')]);
-        expect(stored[0]).toBe('260');
-        expect(Number(stored[1])).toBeGreaterThan(400);
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/wide-page-panel.png` });
-    });
-
-    test('a file dropped on the editor opens', async ({ page }) => {
-        await page.goto('/');
-        await page.locator('.main-nav').getByRole('button', { name: 'PDF Tools', exact: true }).click();
-        await expect(page.getByText('Drop a PDF here to open it')).toBeVisible();
-        await expect.poll(() => page.evaluate(() => (window as any).__listeners.some((l: any) => l.event === 'tauri://drag-drop'))).toBe(true);
-        await page.evaluate(() => {
-            const root = window as any;
-            for (const l of root.__listeners.filter((x: any) => x.event === 'tauri://drag-drop')) {
-                root.__cbs.get(l.handler)?.({ event: l.event, id: 1, payload: { paths: ['/fixtures/dropped.pdf'], position: { x: 400, y: 300 } } });
-            }
-        });
-        await expect(page.locator('.pe-tile')).toHaveCount(3);
-        expect((await calls(page, 'pdf_session_open'))[0]).toEqual({ path: '/fixtures/dropped.pdf' });
-    });
-
-    test('crop opens with the whole page in view and the page view zooms', async ({ page }) => {
-        await openEditor(page);
-        const toolbar = page.getByRole('toolbar', { name: 'PDF' });
-        await page.getByRole('toolbar', { name: 'View' }).getByRole('button', { name: 'Zoom in (Ctrl +)' }).click();
-        await page.getByRole('toolbar', { name: 'View' }).getByRole('button', { name: 'Zoom in (Ctrl +)' }).click();
-        await page.getByRole('toolbar', { name: 'View' }).getByRole('button', { name: 'Zoom in (Ctrl +)' }).click();
-        await page.getByRole('toolbar', { name: 'View' }).getByRole('button', { name: 'Zoom in (Ctrl +)' }).click();
-        await page.getByRole('toolbar', { name: 'View' }).getByRole('button', { name: 'Zoom in (Ctrl +)' }).click();
-        const zoomed = parseInt(await page.getByTestId('pdf-zoom').innerText(), 10);
-
-        await toolbar.getByRole('button', { name: 'Crop', exact: true }).click();
-        await expect.poll(async () => parseInt(await page.getByTestId('pdf-zoom').innerText(), 10)).toBeLessThan(zoomed);
-        const view = (await page.locator('.pe-view').boundingBox())!;
-        const pg = (await page.locator('.pe-page').boundingBox())!;
-        expect(pg.y).toBeGreaterThanOrEqual(view.y);
-        expect(pg.y + pg.height).toBeLessThanOrEqual(view.y + view.height + 1);
-        // Drag a crop rectangle inside the page; the numbers follow it.
-        await page.mouse.move(pg.x + pg.width * 0.25, pg.y + pg.height * 0.25);
-        await page.mouse.down();
-        await page.mouse.move(pg.x + pg.width * 0.75, pg.y + pg.height * 0.75, { steps: 5 });
-        await page.mouse.up();
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/crop-fit-page.png` });
-        await page.getByRole('button', { name: 'Apply', exact: true }).click();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(1);
-        const { op } = (await calls(page, 'pdf_session_apply'))[0];
-        expect(op.kind).toBe('crop');
-        expect(op.pages).toEqual([0]);
-        expect(op.x).toBeGreaterThan(60); expect(op.x).toBeLessThan(90);
-        expect(op.w).toBeGreaterThan(135); expect(op.w).toBeLessThan(165);
-        expect(op.y).toBeGreaterThan(85); expect(op.y).toBeLessThan(115);
-        // The cropped page is re-rendered from the edited document.
-        await expect.poll(async () => (await calls(page, 'pdf_session_export_temp')).length).toBeGreaterThan(0);
-
-        await page.keyboard.press('Control+0');
-        await page.locator('.pe-view').hover();
-        const fit = parseInt(await page.getByTestId('pdf-zoom').innerText(), 10);
-        await page.mouse.wheel(0, -200);
-        await page.keyboard.down('Control');
-        await page.mouse.wheel(0, -100);
-        await page.keyboard.up('Control');
-        await expect.poll(async () => parseInt(await page.getByTestId('pdf-zoom').innerText(), 10)).toBeGreaterThan(fit);
-    });
-
-    test('annotation tools draw into the edit session', async ({ page }) => {
-        await openEditor(page);
-        const toolbar = page.getByRole('toolbar', { name: 'PDF' });
-        const pg = async () => (await page.locator('.pe-page').boundingBox())!;
-
-        await toolbar.getByRole('button', { name: 'Highlight', exact: true }).click();
-        let b = await pg();
-        await page.mouse.move(b.x + 40, b.y + 40);
-        await page.mouse.down();
-        await page.mouse.move(b.x + 160, b.y + 70, { steps: 4 });
-        await page.mouse.up();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(1);
-        let a = (await calls(page, 'pdf_session_apply'))[0].op.annotations[0];
-        expect(a).toMatchObject({ page: 0, ann_type: 'highlight', color: '#facc15' });
-        expect(a.w).toBeGreaterThan(10);
-
-        await toolbar.getByRole('button', { name: 'Freehand ink', exact: true }).click();
-        b = await pg();
-        await page.mouse.move(b.x + 50, b.y + 150);
-        await page.mouse.down();
-        for (let k = 1; k <= 6; k++) await page.mouse.move(b.x + 50 + k * 15, b.y + 150 + (k % 2) * 20);
-        await page.mouse.up();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(2);
-        a = (await calls(page, 'pdf_session_apply'))[1].op.annotations[0];
-        expect(a.ann_type).toBe('ink');
-        expect(a.ink[0].length).toBeGreaterThanOrEqual(8);
-
-        await toolbar.getByRole('button', { name: 'Sticky note', exact: true }).click();
-        b = await pg();
-        await page.mouse.click(b.x + 100, b.y + 100);
-        await page.getByPlaceholder('Annotation text…').fill('Check this');
-        await page.getByRole('button', { name: 'Add', exact: true }).click();
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(3);
-        a = (await calls(page, 'pdf_session_apply'))[2].op.annotations[0];
-        expect(a).toMatchObject({ ann_type: 'note', text: 'Check this', w: 20, h: 20 });
-
-        await toolbar.getByRole('button', { name: 'Eraser — click an annotation to remove it', exact: true }).click();
-        b = await pg();
-        await page.mouse.click(b.x + 60, b.y + 50);
-        await expect.poll(async () => (await calls(page, 'pdf_session_apply')).length).toBe(4);
-        expect((await calls(page, 'pdf_session_apply'))[3].op.kind).toBe('erase_annotation');
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/annotate.png` });
-    });
+test('DOCX and converter handoffs cannot publish results from the previous file', async ({ page }) => {
+    await pdfFixture(page);
+    await drop(page, '/fixtures/old.docx');
+    await page.evaluate(() => { (window as any).__pdfHold.docx = true; });
+    await page.locator('.pe-drawer').getByRole('button', { name: 'Validate', exact: true }).click();
+    await expect.poll(() => calls(page, 'docx_check')).toHaveLength(1);
+    await drop(page, '/fixtures/new.docx');
+    await release(page, 'docx');
+    await expect(page.locator('.pe-drawer .dt-file')).toContainText('new.docx');
+    await expect(page.locator('.pe-drawer')).not.toContainText('OLD DOCUMENT ISSUE');
+    await page.evaluate(() => { (window as any).__pdfHold['save-dialog'] = true; });
+    await page.locator('.pe-drawer').getByRole('button', { name: 'Strip revision IDs', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__pdfReleases['save-dialog'])).toBe('function');
+    await drop(page, '/fixtures/replacement.docx');
+    await release(page, 'save-dialog');
+    await expect(page.locator('.pe-drawer .dt-file')).toContainText('replacement.docx');
+    expect(await calls(page, 'docx_strip_rsids')).toHaveLength(0);
+    await page.evaluate(() => { (window as any).__pdfHold['caps:/fixtures/old.doc'] = true; });
+    await drop(page, '/fixtures/old.doc');
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__pdfReleases['caps:/fixtures/old.doc'])).toBe('function');
+    await drop(page, '/fixtures/new.pptx');
+    await release(page, 'caps:/fixtures/old.doc');
+    await expect(page.locator('.pe-drawer .ct-path')).toContainText('new.pptx');
+    await expect(page.locator('.pe-drawer option[value=docx]')).toBeEnabled();
+    await page.evaluate(() => { (window as any).__pdfHold.convert = true; });
+    await page.locator('.pe-drawer').getByRole('button', { name: 'Preview', exact: true }).click();
+    await expect.poll(() => calls(page, 'convert_document')).toHaveLength(1);
+    await drop(page, '/fixtures/final.pptx');
+    await release(page, 'convert');
+    await expect(page.locator('.pe-drawer .ct-path')).toContainText('final.pptx');
+    await expect(page.locator('.pe-drawer')).not.toContainText('OLD CONVERSION CONTENT');
 });

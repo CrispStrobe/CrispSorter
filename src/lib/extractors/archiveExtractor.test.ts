@@ -9,11 +9,12 @@ vi.mock('../log', () => ({ logInfo: vi.fn(), logWarn: vi.fn(), logDebug: vi.fn()
 
 const archive = { name: 'research.ZIP', path: '/research/source.zip', arrayBuffer: new ArrayBuffer(0) };
 const extracted = { text: 'Member: notes.txt\nWarranty source.', headings: ['notes.txt'], tags: ['archive:zip', 'coverage:partial'] };
+const defaultPipeline = { enabled: false, engine: 'auto', language: 'eng', cpu_pixel_budget: false, stages: [] };
 
 beforeEach(() => {
     vi.mocked(invoke).mockReset().mockResolvedValue(extracted);
     vi.mocked(getSetting).mockReset().mockImplementation(async (_key, fallback) => fallback);
-    vi.mocked(getStore).mockReset();
+    vi.mocked(getStore).mockReset().mockResolvedValue({ get: async () => undefined } as unknown as Awaited<ReturnType<typeof getStore>>);
 });
 
 describe('ZIP extraction bridge', () => {
@@ -22,13 +23,13 @@ describe('ZIP extraction bridge', () => {
         expect(usesNativePathExtraction(`source.${extension}`)).toBe(true);
         await extractText({ name: `source.${extension}`, path: `/records/source.${extension}`, arrayBuffer: new ArrayBuffer(0) });
         expect(invoke).toHaveBeenCalledExactlyOnceWith('archive_extract_text', { path: `/records/source.${extension}`,
-            options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto' } });
+            options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto', ocrPipeline: defaultPipeline } });
     });
     it('accepts ZIP and uses a bounded native path request while preserving provenance and coverage tags', async () => {
         expect(MULTIMODAL_EXTENSIONS).toContain('zip');
         const result = await extractText(archive);
         expect(invoke).toHaveBeenCalledExactlyOnceWith('archive_extract_text', {
-            path: '/research/source.zip', options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto' },
+            path: '/research/source.zip', options: { tryOcr: false, ocrTier: 'auto', ocrRecLang: 'auto', ocrPipeline: defaultPipeline },
         });
         expect(result).toEqual({ text: extracted.text, headings: ['notes.txt'], metadata: { tags: extracted.tags } });
         expect(extractionTags(result)).toEqual(['archive:zip', 'coverage:partial']);
@@ -50,14 +51,15 @@ describe('ZIP extraction bridge', () => {
         vi.mocked(getSetting).mockImplementation(async (key, fallback) => settings[key] ?? fallback);
         await extractText(archive);
         expect(invoke).toHaveBeenLastCalledWith('archive_extract_text', {
-            path: archive.path, options: { tryOcr: true, ocrTier: 'tier3', ocrRecLang: 'cjk' },
+            path: archive.path, options: { tryOcr: true, ocrTier: 'tier3', ocrRecLang: 'cjk', ocrPipeline: { ...defaultPipeline, language: 'auto' } },
         });
         settings.ocrEnabled = false;
-        settings.ocrTier = 'invalid'; settings.ocrRecLang = 'invalid';
         await extractText(archive, { forceOCR: true });
         expect(invoke).toHaveBeenLastCalledWith('archive_extract_text', {
-            path: archive.path, options: { tryOcr: true, ocrTier: 'auto', ocrRecLang: 'auto' },
+            path: archive.path, options: { tryOcr: true, ocrTier: 'tier3', ocrRecLang: 'cjk', ocrPipeline: { ...defaultPipeline, language: 'auto' } },
         });
+        settings.ocrTier = 'invalid';
+        await expect(extractText(archive, { forceOCR: true })).rejects.toThrow('Unknown OCR tier');
     });
 
     it('never starts a native extraction for an already cancelled request', async () => {
@@ -86,13 +88,15 @@ describe('ZIP extraction bridge', () => {
         await extractText(archive);
         expect(invoke).toHaveBeenLastCalledWith('archive_extract_text', {
             path: archive.path, options: { tryOcr: true, ocrTier: 'auto', ocrRecLang: 'auto', ocrPipeline: {
-                enabled: true, router: false, cleanup_enabled: false, denoise: true, min_chars: 14, min_confidence: .7,
+                enabled: true, engine: 'auto', language: 'auto', cpu_pixel_budget: false,
+                router: false, cleanup_enabled: false, denoise: true, min_chars: 14, min_confidence: .7,
                 layout: true, layout_engine: 'custom-layout', layout_threshold: .4, drop_headers_footers: true,
                 sr: true, sr_engine: 'custom-sr', sr_max_short_side: 1800,
                 restore: true, restore_engine: 'custom-restore', restore_task: 'deblur',
                 dewarp: true, dewarp_engine: 'custom-dewarp', punct_model: '/models/punctuation.gguf',
                 vlm_ocr_model: '/models/vision.gguf', vlm_ocr_engine: 'custom-vlm', truecase_model: '/models/truecase.gguf',
                 det_model: null, rec_model: null, nafnet_model: null, restore_model: null, sr_model: null, layout_model: null,
+                lid_model: null, tess_model_dir: null,
                 stages: [{ source_type: 'scan', engine: 'tesseract', det_model: null, rec_model: '/models/recognizer.gguf',
                     cleanup: { enabled: false, denoise: true }, det_prob_threshold: .2, det_box_threshold: .6,
                     det_target_short: 900, vlm_max_tokens: 256, vlm_prompt: 'Read every line', min_chars: 0, min_confidence: 0 }],

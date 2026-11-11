@@ -1,0 +1,71 @@
+name: Mounted storage reads
+on:
+  push:
+    paths:
+      - 'src-tauri/src/drives/mod.rs'
+      - 'src-tauri/src/drives/filesystem.rs'
+      - 'src-tauri/src/drives/tauri_commands.rs'
+      - 'src-tauri/src/drives/mounted_read.rs'
+      - 'src-tauri/src/drives/materialize.rs'
+      - 'src-tauri/src/drives/read_cache.rs'
+      - 'src-tauri/src/drives/fuse_mount/**'
+      - 'src-tauri/src/sync/transfer_queue.rs'
+      - 'src-tauri/src/sync/tauri_commands.rs'
+      - 'src-tauri/src/index/tauri_commands.rs'
+      - 'src-tauri/src/cli/mod.rs'
+      - 'src-tauri/src/operation_log.rs'
+      - 'tests/storage-contract/**'
+      - 'scripts/test_mounted_read.sh'
+      - '.github/workflows/mounted-storage.yml'
+  pull_request:
+    paths:
+      - 'src-tauri/src/drives/mod.rs'
+      - 'src-tauri/src/drives/filesystem.rs'
+      - 'src-tauri/src/drives/tauri_commands.rs'
+      - 'src-tauri/src/drives/mounted_read.rs'
+      - 'src-tauri/src/drives/materialize.rs'
+      - 'src-tauri/src/drives/read_cache.rs'
+      - 'src-tauri/src/drives/fuse_mount/**'
+      - 'src-tauri/src/sync/transfer_queue.rs'
+      - 'src-tauri/src/sync/tauri_commands.rs'
+      - 'src-tauri/src/index/tauri_commands.rs'
+      - 'src-tauri/src/cli/mod.rs'
+      - 'src-tauri/src/operation_log.rs'
+      - 'tests/storage-contract/**'
+      - 'scripts/test_mounted_read.sh'
+      - '.github/workflows/mounted-storage.yml'
+concurrency:
+  group: mounted-storage-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  reader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test production reader without Tauri or model dependencies
+        run: bash scripts/test_mounted_read.sh
+  storage-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test actual storage queue, mounted provider, publication and receipts
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p test-results/storage
+          cargo test --locked --manifest-path tests/storage-contract/Cargo.toml -- --test-threads=2 2>&1 | tee test-results/storage/native-contract.log
+      - name: Retain tested dependency graph and execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-contract-${{ matrix.os }}
+          path: |
+            tests/storage-contract/Cargo.lock
+            test-results/storage/native-contract.log

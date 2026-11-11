@@ -176,19 +176,12 @@ pub async fn backup_job_restore(
     if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
     let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
     let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-    let transfer = state.transfer_queue.clone().submit_drive_download(
-        job.drive_id.clone(), drive, remote, Some(expected),
-    );
-    let data = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-    if data.len() as u64 != expected {
-        return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
-    }
     let destination = std::path::PathBuf::from(destination);
-    if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-    let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
-    std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
-    std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()}))
+    let transfer = state.transfer_queue.clone().submit_drive_download_to_file(
+        job.drive_id.clone(), drive, remote, destination.clone(), Some(expected),
+    );
+    let bytes = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": bytes}))
 }
 
 /// List persisted local-folder ↔ cloud-drive sync pairs.
@@ -422,18 +415,14 @@ pub async fn sync_pair_pull(
     for entry in &remote {
         let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
         let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-        let transfer = state.transfer_queue.clone().submit_drive_download(
-            pair.drive_id.clone(), drive.clone(), remote_path, Some(entry.size),
+        let transfer = state.transfer_queue.clone().submit_drive_download_to_file(
+            pair.drive_id.clone(), drive.clone(), remote_path, local_path, Some(entry.size),
         );
-        let bytes = match transfer.handle.await {
-            Ok(Ok(bytes)) => bytes,
+        match transfer.handle.await {
+            Ok(Ok(_)) => {},
             Ok(Err(error)) => return Err(error.to_string()),
             Err(error) => return Err(format!("sync transfer task failed: {error}")),
-        };
-        if let Some(parent) = local_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
         downloaded += 1;
         if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
     }
@@ -968,6 +957,23 @@ pub(crate) fn queue_failed_drive_upload(
     data: &[u8],
     error: &anyhow::Error,
 ) -> anyhow::Result<i64> {
+    // Direct SMB can fail after server-side publication. Preserve the failure
+    // for review without creating a replay descriptor or staging its bytes.
+    let marked_non_replayable = error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some();
+    let direct_smb = if marked_non_replayable {
+        false
+    } else {
+        crate::drives::DriveRegistry::open(data_dir)?.drives.iter().any(|drive| {
+            drive.id == drive_id && drive.kind == crate::drives::DriveType::Smb
+                && drive.smb.as_ref().is_some_and(|settings| settings.backend == crisp_smb_source::Backend::Rust)
+        })
+    };
+    if marked_non_replayable || direct_smb {
+        let log = crate::operation_log::OperationLog::start("storage.offline_queue",
+            serde_json::json!({"mode":"upload"}));
+        log.fail("write_replay_disabled");
+        return Err(anyhow::anyhow!("upload may already be published; automatic replay is disabled"));
+    }
     let staging = data_dir.join("offline_transfers");
     std::fs::create_dir_all(&staging)?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -984,6 +990,89 @@ pub(crate) fn queue_failed_drive_upload(
         &payload.to_string(),
         drive_id,
     )
+}
+
+/// A saved mounted target may have been switched to direct Rust while offline.
+/// Reject it before constructing a provider or touching the remote destination.
+fn refuse_direct_smb_replay(
+    queue: &super::offline_queue::OfflineQueue,
+    entry: &super::offline_queue::QueuedOp,
+    registry: &crate::drives::DriveRegistry,
+) -> Result<bool, String> {
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&entry.payload) else { return Ok(false); };
+    let Some(drive_id) = payload["drive_id"].as_str() else { return Ok(false); };
+    let direct_smb = registry.drives.iter().any(|drive| drive.id == drive_id
+        && drive.kind == crate::drives::DriveType::Smb
+        && drive.smb.as_ref().is_some_and(|settings| settings.backend == crisp_smb_source::Backend::Rust));
+    if !direct_smb { return Ok(false); }
+    queue.mark_terminal_failed(entry.id, "Direct Rust SMB writes require review; automatic replay is disabled")
+        .map_err(|error| error.to_string())?;
+    let log = crate::operation_log::OperationLog::start("storage.offline_queue",
+        serde_json::json!({"mode":"upload"}));
+    log.fail("write_replay_disabled");
+    Ok(true)
+}
+
+#[cfg(test)]
+mod unsafe_upload_replay_tests {
+    use super::queue_failed_drive_upload;
+
+    #[test]
+    fn failed_direct_writes_never_create_durable_replay_payloads() {
+        for (backend, marked) in [("rust", false), ("mounted", true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let registry = serde_json::json!([{
+                "id":"direct-drive", "label":"private-label", "kind":"smb",
+                "path":"smb://private-host/share", "smb":{"backend":backend,
+                    "mount_path":directory.path(), "require_encryption":true}
+            }]);
+            std::fs::write(directory.path().join("drives.json"), serde_json::to_vec(&registry).unwrap()).unwrap();
+            let error = anyhow::anyhow!("connection timeout after publication");
+            let error = if marked { crate::drives::NonReplayableWrite::mark(error) } else { error };
+            let (result, events) = crate::operation_log::capture(|| queue_failed_drive_upload(
+                directory.path(), "direct-drive", std::path::Path::new("private-file"), b"private-content", &error,
+            ));
+            assert!(result.unwrap_err().to_string().contains("automatic replay is disabled"));
+            assert!(!directory.path().join("offline_transfers").exists());
+            // Only the registry (and its lock file) remain: no staged payload.
+            let entries: Vec<String> = std::fs::read_dir(directory.path()).unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name != "drives.lock").collect();
+            assert_eq!(entries, ["drives.json"]);
+            assert_eq!(events.iter().filter(|event| event.phase == "failed"
+                && event.code.as_deref() == Some("write_replay_disabled")).count(), 1);
+            assert!(!serde_json::to_string(&events).unwrap().contains("private-"));
+        }
+    }
+
+    #[test]
+    fn switching_a_queued_mount_to_rust_stops_replay_and_preserves_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut registry = crate::drives::DriveRegistry::open(directory.path()).unwrap();
+        let config = serde_json::from_value(serde_json::json!({
+            "id":"changed-drive", "label":"private-label", "kind":"smb", "path":"smb://private-host/share",
+            "smb":{"backend":"mounted", "mount_path":directory.path(), "require_encryption":true}
+        })).unwrap();
+        registry.add(config).unwrap();
+        let id = queue_failed_drive_upload(directory.path(), "changed-drive", std::path::Path::new("remote.bin"),
+            b"preserved bytes", &anyhow::anyhow!("connection timeout")).unwrap();
+        registry.drives[0].smb.as_mut().unwrap().backend = crisp_smb_source::Backend::Rust;
+        registry.save().unwrap();
+        let registry = crate::drives::DriveRegistry::open(directory.path()).unwrap();
+        let queue = crate::sync::offline_queue::OfflineQueue::open(directory.path()).unwrap();
+        let entry = queue.dequeue_batch(1).unwrap().pop().unwrap();
+        assert_eq!(entry.id, id);
+        let (refused, events) = crate::operation_log::capture(|| super::refuse_direct_smb_replay(&queue, &entry, &registry));
+        assert!(refused.unwrap());
+        assert!(queue.dequeue_batch(10).unwrap().is_empty());
+        let retained = queue.list().unwrap().pop().unwrap();
+        assert_eq!(retained.status, "failed");
+        assert_eq!(retained.payload, entry.payload);
+        assert!(retained.last_error.unwrap().contains("automatic replay is disabled"));
+        let payload: serde_json::Value = serde_json::from_str(&retained.payload).unwrap();
+        assert_eq!(std::fs::read(payload["local_path"].as_str().unwrap()).unwrap(), b"preserved bytes");
+        assert!(events.iter().any(|event| event.phase == "failed" && event.code.as_deref() == Some("write_replay_disabled")));
+    }
 }
 
 /// Replay pending staged drive uploads through the shared transfer queue.
@@ -1021,10 +1110,15 @@ pub async fn replay_offline_queue(
             // payload for inspection and lets the user retry after upgrading
             // to a build that understands the operation.
             let error = format!("unsupported offline operation type: {}", entry.op_type);
-            queue.mark_failed(entry.id, &error).map_err(|e| e.to_string())?;
+            queue.mark_terminal_failed(entry.id, &error).map_err(|e| e.to_string())?;
             failed += 1;
             continue;
         }
+        if refuse_direct_smb_replay(&queue, &entry, &registry)? {
+            failed += 1;
+            continue;
+        }
+        let mut non_replayable = false;
         let result: Result<(), String> = async {
             let payload: serde_json::Value = serde_json::from_str(&entry.payload)
                 .map_err(|e| format!("invalid offline payload: {e}"))?;
@@ -1050,7 +1144,10 @@ pub async fn replay_offline_queue(
             );
             match transfer.handle.await {
                 Ok(Ok(_)) => Ok(()),
-                Ok(Err(e)) => Err(e.to_string()),
+                Ok(Err(e)) => {
+                    non_replayable = e.downcast_ref::<crate::drives::NonReplayableWrite>().is_some();
+                    Err(e.to_string())
+                }
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1066,7 +1163,11 @@ pub async fn replay_offline_queue(
                 replayed += 1;
             }
             Err(error) => {
-                queue.mark_failed(entry.id, &error).map_err(|e| e.to_string())?;
+                if non_replayable {
+                    queue.mark_terminal_failed(entry.id, &error).map_err(|e| e.to_string())?;
+                } else {
+                    queue.mark_failed(entry.id, &error).map_err(|e| e.to_string())?;
+                }
                 failed += 1;
             }
         }

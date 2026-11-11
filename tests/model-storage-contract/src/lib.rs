@@ -10,3 +10,10 @@ mod storage;
 mod atomic_output;
 #[path = "../../../src-tauri/src/ocr_export_control.rs"]
 mod export_control;
+
+#[path = "../../../src-tauri/src/operation_log.rs"]
+pub mod operation_log;
+
+// The real logger's injectable/capture tests exercise receipts; this contract
+// deliberately has no application event bus or diagnostic console.
+pub fn app_log(_level: &str, _message: String) {}

@@ -1,5 +1,6 @@
 // Wire types shared by the PDF editor and its tool panels.
 // They mirror src-tauri/src/pdf_session.rs and pdf_annots.rs.
+import type { OperationName } from '../../operationLog';
 
 export interface PdfPageInfo { page_number: number; width_pt: number; height_pt: number; rotation: number; }
 export interface PdfInfo {
@@ -47,7 +48,7 @@ export type DocTool =
 /** What the editor lends a tool panel: shared busy/error/log plumbing. */
 export interface DocToolContext {
     /** Run an action with busy state, error banner and app-log entries. */
-    run<T>(label: string, fn: () => Promise<T>): Promise<T | undefined>;
+    run<T>(label: string, fn: () => Promise<T>, operation?: OperationName, writesOutput?: boolean): Promise<T | undefined>;
     /** Apply an undoable edit-session op. Resolves true on success. */
     apply(op: Record<string, unknown>, label: string, note: string): Promise<boolean>;
     /** Temp copy of the edited document, for one-shot file tools. */
@@ -60,6 +61,7 @@ export interface DocToolContext {
     renderPagePng(index: number, dpi: number): Promise<Uint8Array>;
     /** Open another PDF in the editor (replaces the session). */
     openPath(path: string): Promise<void>;
+    isCurrent(expected: SessionState): boolean;
     close(): void;
 }
 
@@ -74,7 +76,8 @@ export function normaliseRotation(degrees: number): number {
  * nothing would change.
  */
 export function moveOrder(count: number, moving: number[], to: number): number[] | null {
-    const block = [...new Set(moving)].filter((i) => i >= 0 && i < count).sort((a, b) => a - b);
+    if (!Number.isSafeInteger(count) || count < 1 || !Number.isFinite(to)) return null;
+    const block = [...new Set(moving)].filter((i) => Number.isSafeInteger(i) && i >= 0 && i < count).sort((a, b) => a - b);
     if (block.length === 0) return null;
     const rest = Array.from({ length: count }, (_, i) => i).filter((i) => !block.includes(i));
     const before = rest.filter((i) => i < Math.max(0, Math.min(count, to))).length;
@@ -82,35 +85,38 @@ export function moveOrder(count: number, moving: number[], to: number): number[]
     return order.every((v, i) => v === i) ? null : order;
 }
 
-/** Parse "1-3,7,10-12" (1-based, inclusive) into 0-based indices. */
-export function parseRange(spec: string): number[] {
+/** Bound eager expansion so a mistyped range cannot freeze the editor. */
+export const MAX_RANGE_PAGES = 100_000;
+
+/** Parse "1-3,7,10-12" (1-based, inclusive) into 0-based indices.
+ * Only an actually empty input means all pages. Invalid input is distinct. */
+export function parseRange(spec: string): number[] | null {
+    if (!spec.trim()) return [];
     const out: number[] = [];
     for (const part of spec.split(',')) {
         const t = part.trim();
-        if (!t) continue;
-        const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
-        if (m) {
-            const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
-            for (let k = Math.min(a, b); k <= Math.max(a, b); k++) out.push(k - 1);
-        } else {
-            const n = parseInt(t, 10);
-            if (!Number.isNaN(n)) out.push(n - 1);
-        }
+        const m = t.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
+        if (!m) return null;
+        const a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+        if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || a < 1 || b < a) return null;
+        const start = a, end = b;
+        if (end - start + 1 > MAX_RANGE_PAGES - out.length) return null;
+        for (let k = start; k <= end; k++) out.push(k - 1);
     }
-    return out.filter((n) => n >= 0);
+    return out;
 }
 
 /** Split ranges for `pdf_split`: 0-based start, exclusive end. */
-export function parseSplitRanges(spec: string): [number, number][] | null {
+export function parseSplitRanges(spec: string, pageCount = Number.MAX_SAFE_INTEGER): [number, number][] | null {
     const out: [number, number][] = [];
     for (const part of spec.split(',')) {
         const t = part.trim();
-        if (!t) continue;
         const m = t.match(/^(\d+)\s*(?:-\s*(\d+))?$/);
         if (!m) return null;
-        const a = parseInt(m[1], 10);
-        const b = m[2] ? parseInt(m[2], 10) : a;
-        if (a < 1 || b < a) return null;
+        const a = Number(m[1]);
+        const b = m[2] ? Number(m[2]) : a;
+        if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || a < 1 || b < a || b > pageCount) return null;
+        if (out.length >= MAX_RANGE_PAGES) return null;
         out.push([a - 1, b]);
     }
     return out.length ? out : null;

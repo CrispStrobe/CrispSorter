@@ -236,7 +236,7 @@ pub fn v2_master_key(raw: &[u8]) -> [u8; 32] {
 
 pub fn v2_decrypt_metadata(encoded: &str, raw_key: &[u8]) -> Result<String> {
     anyhow::ensure!(
-        encoded.starts_with("002") && encoded.len() >= 15,
+        encoded.starts_with("002") && encoded.len() >= 15 && encoded.is_ascii(),
         "invalid v2 metadata"
     );
     let key = v2_master_key(raw_key);
@@ -258,7 +258,7 @@ pub fn v2_encrypt_metadata(plain: &str, raw_key: &[u8], nonce: [u8; 12]) -> Resu
 
 pub fn v3_decrypt_metadata(encoded: &str, key: &[u8; 32]) -> Result<String> {
     anyhow::ensure!(
-        encoded.starts_with("003") && encoded.len() >= 27,
+        encoded.starts_with("003") && encoded.len() >= 27 && encoded.is_ascii(),
         "invalid v3 metadata"
     );
     let nonce: [u8; 12] = hex::decode(&encoded[3..27])?
@@ -3206,6 +3206,14 @@ fn is_literal_glob_component(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_unicode_metadata_is_rejected_without_panicking() {
+        for payload in ["002aéééééééééééAAAA", "003aéééééééééééééAAAA"] {
+            assert!(v2_decrypt_metadata(payload, b"synthetic-key").is_err());
+            assert!(v3_decrypt_metadata(payload, &[0; 32]).is_err());
+        }
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;

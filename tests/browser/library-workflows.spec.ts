@@ -59,7 +59,8 @@ test('mobile keeps the three workflow destinations and capability-gated tools', 
 });
 
 for (const platform of ['ios', 'android']) {
-    test(`${platform} mobile client hides unavailable native OCR while retaining navigation`, async ({ page }) => {
+    // iOS has no OCR engine; Android's bundled ocrs adapter can drive the workbench.
+    test(`${platform} mobile client offers OCR only with a usable engine while retaining navigation`, async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`/?fixturePlatform=${platform}`);
         const nav = page.locator('nav.mobile-nav');
@@ -68,7 +69,7 @@ for (const platform of ['ios', 'android']) {
         await expect(nav.getByRole('button', { name: 'Library', exact: true })).toBeVisible();
         await nav.getByRole('button', { name: 'Tools', exact: true }).click();
         const tools = page.locator('#mobile-tools-menu');
-        await expect(tools.getByRole('button', { name: 'OCR', exact: true })).toHaveCount(0);
+        await expect(tools.getByRole('button', { name: 'OCR', exact: true })).toHaveCount(platform === 'android' ? 1 : 0);
         await tools.getByRole('button', { name: 'Translate', exact: true }).click();
         await expect(page.locator('#mobile-tools-menu')).not.toBeVisible();
         await nav.getByRole('button', { name: 'Chat', exact: true }).click();

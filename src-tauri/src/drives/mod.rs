@@ -33,11 +33,15 @@ pub mod onedrive;
 pub(crate) mod secret;
 pub mod tauri_commands;
 pub mod webdav;
+mod mounted_read;
+pub(crate) mod materialize;
+#[cfg(any(feature = "fuse", test))]
+pub(crate) mod read_cache;
 
-use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use anyhow::{anyhow, Result};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 
 
 /// Split out from the `cfg!` above so the wording is assertable on every
@@ -54,682 +58,14 @@ fn unsupported_drive_message(kind: &str) -> String {
     )
 }
 
-// ── Trait ──────────────────────────────────────────────────────────────────
+mod filesystem;
+pub use filesystem::*;
+pub mod smb;
 
-/// Operations a drive can safely perform without probing it first.
-///
-/// The capability set is intentionally explicit: a provider may implement
-/// listing and byte transfers while not supporting server-side rename, copy,
-/// or streaming.  Callers must check this before rendering destructive UI.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DriveCapabilities {
-    pub list: bool,
-    pub read: bool,
-    pub write: bool,
-    pub delete: bool,
-    pub stat: bool,
-    pub create_dir: bool,
-    pub rename: bool,
-    pub move_path: bool,
-    pub copy: bool,
-    pub streaming: bool,
-    pub resumable_upload: bool,
-    pub resumable_download: bool,
-    pub share_links: bool,
-    pub versions: bool,
-    /// The backend can restore an item previously removed by `delete`.
-    /// This is separate from `delete`: WebDAV DELETE and local filesystem
-    /// removal are not recoverable operations.
-    pub reversible_trash: bool,
-}
-
-impl DriveCapabilities {
-    fn basic() -> Self {
-        Self {
-            list: true,
-            read: true,
-            write: true,
-            delete: true,
-            stat: true,
-            create_dir: false,
-            rename: false,
-            move_path: false,
-            copy: false,
-            streaming: false,
-            resumable_upload: false,
-            resumable_download: false,
-            share_links: false,
-            versions: false,
-            reversible_trash: false,
-        }
-    }
-}
-
-/// A file-system-like storage backend.
-pub trait CloudDrive: Send + Sync {
-    /// Human-readable label for the drive.
-    fn label(&self) -> &str;
-
-    /// List directory entries.  Returns relative names (not full paths).
-    fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>>;
-
-    /// Read a file's bytes.
-    fn read_file(&self, path: &Path) -> Result<Vec<u8>>;
-
-    /// Read an inclusive byte range when the provider can guarantee partial
-    /// content semantics. Providers that cannot do this fail explicitly.
-    fn read_range(&self, _path: &Path, _start: u64, _end: u64) -> Result<Vec<u8>> {
-        Err(anyhow!("{} does not support range reads", self.drive_type().label()))
-    }
-
-    /// Write bytes to a path (creates parent directories if needed).
-    fn write_file(&self, path: &Path, data: &[u8]) -> Result<()>;
-
-    /// Resume a native-provider upload from a durable provider-owned state
-    /// file. Legacy providers deliberately reject this instead of silently
-    /// restarting with new encryption/session material.
-    fn upload_file_resumable(
-        &self,
-        local_path: &Path,
-        remote_path: &Path,
-        state_path: &Path,
-        workers: usize,
-    ) -> Result<()> {
-        let _ = (local_path, remote_path, state_path, workers);
-        Err(anyhow!(
-            "{} does not support durable resumable uploads",
-            self.drive_type().label()
-        ))
-    }
-
-    /// Resume a native-provider download into a durable local checkpoint.
-    fn download_file_resumable(
-        &self,
-        remote_path: &Path,
-        local_path: &Path,
-        state_path: &Path,
-    ) -> Result<()> {
-        let _ = (remote_path, local_path, state_path);
-        Err(anyhow!(
-            "{} does not support durable resumable downloads",
-            self.drive_type().label()
-        ))
-    }
-
-    /// Stream a remote file into a caller-provided writer. Legacy providers
-    /// fall back to their whole-buffer API; native streaming providers
-    /// override this without changing the object-safe trait boundary.
-    fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
-        let data = self.read_file(path)?;
-        writer.write_all(&data)?;
-        Ok(data.len() as u64)
-    }
-
-    /// Upload from a caller-provided reader. The exact plaintext size is
-    /// required by encrypted gateways. Legacy providers use a checked,
-    /// bounded-by-size fallback buffer; native providers stream directly.
-    fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
-        let mut data = Vec::new();
-        reader.take(size).read_to_end(&mut data)?;
-        anyhow::ensure!(
-            data.len() as u64 == size,
-            "reader ended before declared size"
-        );
-        let mut extra = [0u8; 1];
-        anyhow::ensure!(
-            reader.read(&mut extra)? == 0,
-            "reader has data beyond declared size"
-        );
-        self.write_file(path, &data)
-    }
-
-    /// Delete a file or empty directory.
-    fn delete(&self, path: &Path) -> Result<()>;
-
-    /// Restore an item from the provider's recoverable trash. Backends
-    /// without a real restore API fail explicitly instead of pretending that
-    /// DELETE can be undone.
-    fn restore_deleted(&self, _trash_path: &Path, _destination: Option<&Path>) -> Result<()> {
-        Err(anyhow!(
-            "{} does not support restoring deleted items",
-            self.drive_type().label()
-        ))
-    }
-
-    /// File/directory metadata.
-    fn stat(&self, path: &Path) -> Result<FileStat>;
-
-    /// Underlying type for display.
-    fn drive_type(&self) -> DriveType;
-
-    /// Return the operations this backend implements.
-    fn capabilities(&self) -> DriveCapabilities {
-        let mut capabilities = DriveCapabilities::basic();
-        capabilities.share_links = matches!(
-            self.drive_type(),
-            DriveType::OneDrive | DriveType::GoogleDrive
-        );
-        capabilities.versions = capabilities.share_links;
-        capabilities
-    }
-
-    /// Probe provider-advertised capabilities when a backend has a safe,
-    /// provider-specific discovery endpoint. The default is deliberately
-    /// side-effect free and preserves the static capability set.
-    fn probed_capabilities(&self) -> DriveCapabilities {
-        self.capabilities()
-    }
-
-    /// Create a directory, including missing parents where the provider
-    /// supports it.
-    fn create_dir(&self, _path: &Path) -> Result<()> {
-        Err(anyhow!(
-            "{} does not support create_dir",
-            self.drive_type().label()
-        ))
-    }
-
-    /// Rename/move a path within the same provider.
-    fn move_path(&self, _source: &Path, _destination: &Path) -> Result<()> {
-        Err(anyhow!(
-            "{} does not support move_path",
-            self.drive_type().label()
-        ))
-    }
-
-    /// Copy a path within the same provider.
-    fn copy_path(&self, _source: &Path, _destination: &Path) -> Result<()> {
-        Err(anyhow!(
-            "{} does not support copy",
-            self.drive_type().label()
-        ))
-    }
-
-    // ── P29.5: Share links ───────────────────────────────────────────
-
-    /// Generate a public share link for a file.  Returns `None` when the
-    /// provider does not support sharing.  Default: not supported.
-    fn share_link(&self, _path: &Path) -> Result<Option<String>> {
-        Ok(None)
-    }
-
-    // ── P29.6: Version history ───────────────────────────────────────
-
-    /// List version history for a file.  Returns empty when the provider
-    /// does not support versioning.  Default: empty.
-    fn list_versions(&self, _path: &Path) -> Result<Vec<FileVersion>> {
-        Ok(Vec::new())
-    }
-
-    /// Restore a previous version of a file.  Default: not supported.
-    fn restore_version(&self, _path: &Path, _version_id: &str) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "{} does not support version restore",
-            self.drive_type().label()
-        ))
-    }
-}
-
-// ── Types ──────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DriveType {
-    /// OS-visible path (local disk, NFS, SMB mount, SFTP-fuse).
-    Local,
-    /// Filen cloud storage (via filen-cli subprocess).
-    Filen,
-    /// Internxt cloud storage (via internxt-cli subprocess).
-    Internxt,
-    /// Raw SFTP (future — via russh or OS mount).
-    Sftp,
-    /// Generic WebDAV server (Nextcloud, ownCloud, mailbox.org,
-    /// `filen webdav-start`, `internxt webdav-enable`, Synology DSM, …).
-    WebDav,
-    /// Microsoft OneDrive / SharePoint via Microsoft Graph API.
-    OneDrive,
-    /// Google Drive via Drive API v3.
-    GoogleDrive,
-}
-
-impl DriveType {
-    /// Human-readable label for error messages.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Local => "Local",
-            Self::Filen => "Filen",
-            Self::Internxt => "Internxt",
-            Self::Sftp => "SFTP",
-            Self::WebDav => "WebDAV",
-            Self::OneDrive => "OneDrive",
-            Self::GoogleDrive => "Google Drive",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirEntry {
-    pub name: String,
-    pub is_dir: bool,
-    pub size: Option<u64>,
-}
-
-/// A single version of a file (P29.6).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileVersion {
-    /// Provider-specific version identifier.
-    pub id: String,
-    /// When this version was last modified (epoch seconds).
-    pub modified_at: Option<i64>,
-    /// Size of this version in bytes.
-    pub size: Option<u64>,
-    /// Name of the person who modified this version (if available).
-    pub modifier_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileStat {
-    pub size: u64,
-    pub is_dir: bool,
-    pub mtime_unix: Option<i64>,
-}
-
-/// A flat row produced by `walk` — one per file (or per dir, if requested).
-/// `path` is the full path relative to the drive root, so callers can pass
-/// it back to `read_file` / `stat` directly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalkEntry {
-    pub path: PathBuf,
-    pub is_dir: bool,
-    pub size: Option<u64>,
-    pub mtime_unix: Option<i64>,
-}
-
-/// Maximum provider file size inspected by opt-in bounded content search.
-pub const MAX_CONTENT_SEARCH_BYTES: u64 = 256 * 1024;
-
-/// Recursively walk a drive starting at `root`, returning one entry per
-/// file (folders are descended into but not emitted, by default).
-/// Stops at `max_depth` (counting from `root`), `None` = unbounded.
-///
-/// This is a free function rather than a default trait method so we can
-/// keep the trait object-safe (associated functions with `Self: Sized`
-/// would prevent `Box<dyn CloudDrive>` from being usable as the receiver).
-pub fn walk(
-    drive: &dyn CloudDrive,
-    root: &Path,
-    max_depth: Option<usize>,
-    on_error: &mut dyn FnMut(&Path, anyhow::Error),
-) -> Vec<WalkEntry> {
-    walk_limited(drive, root, max_depth, None, on_error)
-}
-
-/// Recursive walk with an optional file-entry scan budget. The budget is
-/// useful for interactive provider search, where a result limit must also
-/// prevent enumerating an unbounded remote tree.
-pub fn walk_limited(
-    drive: &dyn CloudDrive,
-    root: &Path,
-    max_depth: Option<usize>,
-    max_files: Option<usize>,
-    on_error: &mut dyn FnMut(&Path, anyhow::Error),
-) -> Vec<WalkEntry> {
-    let mut out = Vec::new();
-    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
-
-    while let Some((dir, depth)) = stack.pop() {
-        if max_files.is_some_and(|limit| out.len() >= limit) {
-            break;
-        }
-        if let Some(max) = max_depth {
-            if depth > max {
-                continue;
-            }
-        }
-        let entries = match drive.list_dir(&dir) {
-            Ok(e) => e,
-            Err(e) => {
-                on_error(&dir, e);
-                continue;
-            }
-        };
-        for ent in entries {
-            if max_files.is_some_and(|limit| out.len() >= limit) {
-                break;
-            }
-            // Build the full path relative to the drive root.
-            let full = if dir.as_os_str().is_empty() {
-                PathBuf::from(&ent.name)
-            } else {
-                dir.join(&ent.name)
-            };
-            if ent.is_dir {
-                stack.push((full, depth + 1));
-            } else {
-                // Stat for mtime; tolerate failure (some drives are flaky
-                // about modificationTime on individual files).
-                let mtime = drive.stat(&full).ok().and_then(|s| s.mtime_unix);
-                out.push(WalkEntry {
-                    path: full,
-                    is_dir: false,
-                    size: ent.size,
-                    mtime_unix: mtime,
-                });
-            }
-        }
-    }
-    out
-}
-
-/// Case-insensitive text probe used by bounded provider content search.
-/// Invalid UTF-8 is treated lossily; empty queries never match.
-pub fn content_search_matches(bytes: &[u8], query: &str) -> bool {
-    !query.is_empty()
-        && String::from_utf8_lossy(bytes)
-            .to_lowercase()
-            .contains(query)
-}
-
-// ── LocalDrive ──────────────────────────────────────────────────────────────
-
-/// Delegates all operations to `std::fs`.  Covers any path the OS can see:
-/// local disks, NFS/SMB/SFTP mounts.
-pub struct LocalDrive {
-    label: String,
-    root: PathBuf,
-}
-
-impl LocalDrive {
-    pub fn new(label: impl Into<String>, root: impl Into<PathBuf>) -> Self {
-        Self {
-            label: label.into(),
-            root: root.into(),
-        }
-    }
-
-    fn full(&self, rel: &Path) -> PathBuf {
-        if rel.is_absolute() {
-            rel.to_owned()
-        } else {
-            self.root.join(rel)
-        }
-    }
-}
-
-impl CloudDrive for LocalDrive {
-    fn label(&self) -> &str {
-        &self.label
-    }
-    fn drive_type(&self) -> DriveType {
-        DriveType::Local
-    }
-
-    fn capabilities(&self) -> DriveCapabilities {
-        DriveCapabilities {
-            create_dir: true,
-            rename: true,
-            move_path: true,
-            copy: true,
-            ..DriveCapabilities::basic()
-        }
-    }
-
-    fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
-        let p = self.full(path);
-        let rd = std::fs::read_dir(&p).with_context(|| format!("list_dir: {}", p.display()))?;
-        let mut entries = Vec::new();
-        for e in rd.filter_map(|e| e.ok()) {
-            let meta = e.metadata().ok();
-            entries.push(DirEntry {
-                name: e.file_name().to_string_lossy().into_owned(),
-                is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                size: meta.as_ref().filter(|m| !m.is_dir()).map(|m| m.len()),
-            });
-        }
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
-    }
-
-    fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
-        let p = self.full(path);
-        std::fs::read(&p).with_context(|| format!("read_file: {}", p.display()))
-    }
-
-    fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
-        let p = self.full(path);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create_dir_all: {}", parent.display()))?;
-        }
-        std::fs::write(&p, data).with_context(|| format!("write_file: {}", p.display()))
-    }
-
-    fn delete(&self, path: &Path) -> Result<()> {
-        let p = self.full(path);
-        if p.is_dir() {
-            std::fs::remove_dir(&p).with_context(|| format!("remove_dir: {}", p.display()))
-        } else {
-            std::fs::remove_file(&p).with_context(|| format!("remove_file: {}", p.display()))
-        }
-    }
-
-    fn create_dir(&self, path: &Path) -> Result<()> {
-        let p = self.full(path);
-        std::fs::create_dir_all(&p).with_context(|| format!("create_dir: {}", p.display()))
-    }
-
-    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
-        let from = self.full(source);
-        let to = self.full(destination);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create_dir_all: {}", parent.display()))?;
-        }
-        std::fs::rename(&from, &to)
-            .with_context(|| format!("move {} -> {}", from.display(), to.display()))
-    }
-
-    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
-        fn copy_recursive(source: &Path, destination: &Path) -> Result<()> {
-            let metadata = std::fs::metadata(source)
-                .with_context(|| format!("copy stat: {}", source.display()))?;
-            if metadata.is_dir() {
-                std::fs::create_dir_all(destination)
-                    .with_context(|| format!("copy mkdir: {}", destination.display()))?;
-                for entry in std::fs::read_dir(source)
-                    .with_context(|| format!("copy list: {}", source.display()))?
-                {
-                    let entry =
-                        entry.with_context(|| format!("copy entry: {}", source.display()))?;
-                    copy_recursive(&entry.path(), &destination.join(entry.file_name()))?;
-                }
-            } else {
-                if let Some(parent) = destination.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("copy mkdir: {}", parent.display()))?;
-                }
-                std::fs::copy(source, destination).with_context(|| {
-                    format!("copy {} -> {}", source.display(), destination.display())
-                })?;
-            }
-            Ok(())
-        }
-
-        copy_recursive(&self.full(source), &self.full(destination))
-    }
-
-    fn stat(&self, path: &Path) -> Result<FileStat> {
-        let p = self.full(path);
-        let meta = std::fs::metadata(&p).with_context(|| format!("stat: {}", p.display()))?;
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64);
-        Ok(FileStat {
-            size: meta.len(),
-            is_dir: meta.is_dir(),
-            mtime_unix: mtime,
-        })
-    }
-}
-
-// ── DriveConfig + Registry ────────────────────────────────────────────────
-
-/// Serialisable config for one drive entry in the registry.
-///
-/// For backwards compatibility, the auth fields are `#[serde(default)]` so
-/// Auth is never serialized.  Provider credentials and OAuth tokens live in
-/// the OS keychain, keyed by `id`; this struct only contains non-secret drive
-/// metadata and the in-memory compatibility fields used by constructors and
-/// tests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DriveConfig {
-    pub id: String,
-    pub label: String,
-    pub kind: DriveType,
-    /// For `Local` drives: the root path.
-    /// For CLI-based drives: the mount-point path (if OS-mounted) or the
-    /// base path used by the CLI tool.
-    /// For `WebDav`: the base URL ending in `/` (e.g.
-    /// `https://webdav.example.com/dav/`).
-    pub path: String,
-    /// In-memory compatibility field; never read from or written to JSON.
-    #[serde(skip)]
-    pub username: Option<String>,
-    /// In-memory compatibility field; never read from or written to JSON.
-    #[serde(skip)]
-    pub password: Option<String>,
-    /// WebDAV-only: skip TLS certificate verification.  Off by default;
-    /// flip on for self-signed servers like the local one started by
-    /// `internxt-cli webdav-start` (HTTPS to 127.0.0.1 with a generated
-    /// cert).  Has no effect on non-WebDAV drives.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub insecure_tls: Option<bool>,
-    /// In-memory compatibility field; never read from or written to JSON.
-    #[serde(skip)]
-    pub access_token: Option<String>,
-    /// In-memory compatibility field; never read from or written to JSON.
-    #[serde(skip)]
-    pub refresh_token: Option<String>,
-    /// Public OAuth2 client ID; retained in memory only until keychain-backed
-    /// OAuth setup is complete.
-    #[serde(skip)]
-    pub client_id: Option<String>,
-    /// Deprecated and intentionally never accepted or persisted.  Public
-    /// desktop OAuth clients must use PKCE instead of a bundled secret.
-    #[serde(skip)]
-    pub client_secret: Option<String>,
-}
-
-/// Loads and saves the list of configured drives.
-pub struct DriveRegistry {
-    path: PathBuf,
-    pub drives: Vec<DriveConfig>,
-}
+mod registry;
+pub use registry::{DriveConfig, DriveRegistry};
 
 impl DriveRegistry {
-    pub fn open(data_dir: &Path) -> Result<Self> {
-        let path = data_dir.join("drives.json");
-        let drives = if path.exists() {
-            let json = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let mut raw: serde_json::Value = serde_json::from_str(&json)
-                .with_context(|| format!("parsing {}", path.display()))?;
-            // One-time migration for pre-keychain files.  Read legacy fields
-            // only to move them into the OS keychain, then rewrite the file
-            // through the redacted DriveConfig serializer.
-            let mut migrated = false;
-            if let Some(items) = raw.as_array_mut() {
-                for item in items {
-                    let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    let credentials = crate::drives::secret::DriveCredentials {
-                        username: item
-                            .get("username")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_owned),
-                        password: item
-                            .get("password")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_owned),
-                        access_token: item
-                            .get("access_token")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_owned),
-                        refresh_token: item
-                            .get("refresh_token")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_owned),
-                        client_id: item
-                            .get("client_id")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_owned),
-                    };
-                    let had_legacy = credentials.username.is_some()
-                        || credentials.password.is_some()
-                        || credentials.access_token.is_some()
-                        || credentials.refresh_token.is_some()
-                        || credentials.client_id.is_some()
-                        || item.get("client_secret").is_some();
-                    if had_legacy {
-                        crate::drives::secret::set_credentials(id, &credentials)
-                            .context("migrating drive credentials to the OS keychain")?;
-                        for key in [
-                            "username",
-                            "password",
-                            "access_token",
-                            "refresh_token",
-                            "client_id",
-                            "client_secret",
-                        ] {
-                            if let Some(object) = item.as_object_mut() {
-                                object.remove(key);
-                            }
-                        }
-                        migrated = true;
-                    }
-                }
-            }
-            let drives = serde_json::from_value::<Vec<DriveConfig>>(raw)
-                .with_context(|| format!("parsing {}", path.display()))?;
-            if migrated {
-                let redacted = serde_json::to_string_pretty(&drives)
-                    .context("redacting legacy drive credentials")?;
-                std::fs::write(&path, redacted)
-                    .with_context(|| format!("rewriting {} without secrets", path.display()))?;
-            }
-            drives
-        } else {
-            Vec::new()
-        };
-        Ok(Self { path, drives })
-    }
-
-    pub fn save(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.drives).context("serialising drives")?;
-        std::fs::write(&self.path, json).with_context(|| format!("writing {}", self.path.display()))
-    }
-
-    pub fn add(&mut self, config: DriveConfig) -> Result<()> {
-        // Deduplicate by id.
-        self.drives.retain(|d| d.id != config.id);
-        self.drives.push(config);
-        self.save()
-    }
-
-    pub fn remove(&mut self, id: &str) -> Result<bool> {
-        let before = self.drives.len();
-        self.drives.retain(|d| d.id != id);
-        if self.drives.len() < before {
-            self.save()?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     /// Instantiate a drive from its config using the default network policy.
     pub fn instantiate(config: &DriveConfig) -> Box<dyn CloudDrive> {
         Self::instantiate_with_proxy(config, &crate::sync::proxy::ProxyConfig::default())
@@ -752,6 +88,18 @@ impl DriveRegistry {
                     PathBuf::from(&config.path),
                 )))
             }
+            DriveType::Smb => {
+                let settings = config.smb.clone().unwrap_or_default();
+                settings.validate(&config.path)?;
+                let credentials = if settings.backend == crisp_smb_source::Backend::Rust {
+                    secret::get_credentials(&config.id)?.unwrap_or_default()
+                } else { secret::DriveCredentials::default() };
+                Ok(Box::new(smb::SmbDrive::new(
+                    config.label.clone(), &config.path, settings,
+                    credentials.username.as_deref().or(config.username.as_deref()).unwrap_or(""),
+                    credentials.password.as_deref().or(config.password.as_deref()).unwrap_or(""),
+                )?))
+            },
             DriveType::Filen => {
                 #[cfg(feature = "drive-filen-native")]
                 {
@@ -918,7 +266,7 @@ mod tests {
         let config = DriveConfig {
             id: "redaction".into(), label: "Redaction".into(), kind: DriveType::WebDav,
             path: "https://example.invalid/dav/".into(), username: Some("alice".into()),
-            password: Some("password".into()), insecure_tls: Some(false),
+            password: Some("password".into()), insecure_tls: Some(false), smb: None,
             access_token: Some("access-token".into()), refresh_token: Some("refresh-token".into()),
             client_id: Some("public-client".into()), client_secret: Some("must-not-ship".into()),
         };
@@ -935,6 +283,17 @@ mod tests {
         drive.write_file(Path::new("hello.txt"), b"world").unwrap();
         let bytes = drive.read_file(Path::new("hello.txt")).unwrap();
         assert_eq!(bytes, b"world");
+    }
+
+    #[test]
+    fn local_drive_streams_relative_and_absolute_paths() {
+        let (tmp, drive) = fixture();
+        drive.write_file(Path::new("mounted.bin"), b"share bytes").unwrap();
+        for path in [PathBuf::from("mounted.bin"), tmp.path().join("mounted.bin")] {
+            let mut output = Vec::new();
+            assert_eq!(drive.read_file_to_writer(&path, &mut output).unwrap(), 11);
+            assert_eq!(output, b"share bytes");
+        }
     }
 
     #[test]
@@ -1195,7 +554,7 @@ mod tests {
                 path: "https://example.invalid/drive/".to_owned(),
                 username: None,
                 password: None,
-                insecure_tls: None,
+                insecure_tls: None, smb: None,
                 access_token: Some("unit-test-token".to_owned()),
                 refresh_token: None,
                 client_id: None,
@@ -1263,7 +622,7 @@ mod tests {
             path: "/Volumes/Backup".to_owned(),
             username: None,
             password: None,
-            insecure_tls: None,
+            insecure_tls: None, smb: None,
             access_token: None,
             refresh_token: None,
             client_id: None,
@@ -1293,7 +652,7 @@ mod tests {
             path: "/a".into(),
             username: None,
             password: None,
-            insecure_tls: None,
+            insecure_tls: None, smb: None,
             access_token: None,
             refresh_token: None,
             client_id: None,
@@ -1308,7 +667,7 @@ mod tests {
             path: "/b".into(),
             username: None,
             password: None,
-            insecure_tls: None,
+            insecure_tls: None, smb: None,
             access_token: None,
             refresh_token: None,
             client_id: None,
@@ -1331,7 +690,7 @@ mod tests {
             path: "/a".into(),
             username: None,
             password: None,
-            insecure_tls: None,
+            insecure_tls: None, smb: None,
             access_token: None,
             refresh_token: None,
             client_id: None,
@@ -1402,7 +761,7 @@ mod tests {
                 path,
                 username: None,
                 password: None,
-                insecure_tls: None,
+                insecure_tls: None, smb: None,
                 access_token: None,
                 refresh_token: None,
                 client_id: None,

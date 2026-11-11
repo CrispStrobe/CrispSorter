@@ -44,11 +44,13 @@
     $effect(() => { if ($documentToolRequest && ($documentToolRequest.tool !== 'ocr' || supportsOcrWorkbench($caps))) activeTab = $documentToolRequest.tool; });
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
     let ocrInitialized = $state(false);
+    let pdfInitialized = $state(false);
 
     // Preserve the queue, review history, and autosave revision across tab changes.
     // Opening another tab must not start a second workspace for the same project.
     $effect(() => {
         if (activeTab === 'ocr') ocrInitialized = true;
+        if (activeTab === 'pdf') pdfInitialized = true;
     });
 
     /**
@@ -834,8 +836,6 @@
                 <IndexIngest />
             {:else if activeTab === 'translate'}
                 <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
-            {:else if activeTab === 'pdf'}
-                <PdfEditor initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that
                  asked for them. The nav already hides these tabs, so this
                  second check is for the state the nav cannot reach: an
@@ -847,6 +847,14 @@
                 <AIToolkitView />
             {:else if activeTab.startsWith('ai:') && $caps.aitoolkit}
                 <AIToolkitCapability capability={activeTab.slice(3)} />
+            {/if}
+            {#if pdfInitialized || activeTab === 'pdf'}
+                <!-- Kept mounted like OCR, so an open PDF and its unsaved edits
+                     survive switching tabs; the editor ignores shortcuts and
+                     drops while hidden. -->
+                <div class="persistent-pdf" hidden={activeTab !== 'pdf'} inert={activeTab !== 'pdf'}>
+                    <PdfEditor initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
+                </div>
             {/if}
             {#if ocrInitialized || activeTab === 'ocr'}
                 <div class="persistent-ocr" hidden={activeTab !== 'ocr'} inert={activeTab !== 'ocr'}>
@@ -1143,6 +1151,8 @@
     }
 
     .persistent-ocr[hidden] { display: none; }
+    .persistent-pdf { height: 100%; min-width: 0; min-height: 0; }
+    .persistent-pdf[hidden] { display: none; }
 
     .nav-separator { height: 1px; background: #27272a; margin: 8px 16px; }
     .batch-stats { padding: 8px 16px; margin-bottom: 8px; border-top: 1px solid #27272a; }

@@ -6,6 +6,17 @@ remain intentionally incomplete. It is a design and handover document, not a
 credential store. Never put tokens, passwords, TOTP codes, client secrets, or
 contents of a local `.env` file here.
 
+## Cross-app engine boundary
+
+Sorter already calls the native Rust Filen/Internxt libraries. Cloud and Player
+currently use Dart clients; sharing these Rust libraries through their Dart
+bridge is proposed work. The `desktop` feature includes both native provider
+features; there is no Python subprocess fallback. Engine selection, host-owned
+queues/secrets, browser limits, source/license evidence and cross-engine test
+requirements are in
+[STORAGE_ENGINE_ARCHITECTURE.md](STORAGE_ENGINE_ARCHITECTURE.md). Existing queue
+retry/replay behavior must not be repurposed to switch engines after a mutation.
+
 ## Authority and comparison method
 
 The authoritative behavioral blueprint is the MIT-licensed Internxt Go source

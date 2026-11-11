@@ -7,6 +7,9 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) 
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
 vi.mock('../capabilities', () => ({ loadCapabilities }));
+vi.mock('../log', () => ({ flog: vi.fn() }));
+import { flog } from '../log';
+beforeEach(() => { vi.mocked(flog).mockClear(); });
 
 import { workspaceClient, setDefaultOcrLanguage, importProgressLabel, exportProgressLabel, type ExportRequest, type ExportResult, type ExportProgress, type ModelDownloadProgress, type ImportProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
@@ -100,6 +103,66 @@ function deferred<T>() {
     const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
     return { promise, resolve, reject };
 }
+
+describe('specialist OCR project snapshots', () => {
+    beforeEach(() => { invoke.mockReset().mockResolvedValue([]); setDefaultOcrLanguage('deu'); });
+    afterEach(() => setDefaultOcrLanguage('eng'));
+
+    it('forwards an independent full snapshot to table extraction', async () => {
+        const config = { engine: 'qwen2vl', language: 'fra', cpu_pixel_budget: true,
+            stages: [{ engine: 'qwen2vl', det_model: 'selected-model', cleanup: { enabled: false } }] };
+        const pending = workspaceClient.table('/pages/source.png', config);
+        config.language = 'eng'; config.stages[0].det_model = 'later-model'; config.stages[0].cleanup.enabled = true;
+        await pending;
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('tool_table_extract', {
+            locationUri: '/pages/source.png', ocrModel: null, save: false,
+            config: { engine: 'qwen2vl', language: 'fra', cpu_pixel_budget: true,
+                stages: [{ engine: 'qwen2vl', det_model: 'selected-model', cleanup: { enabled: false } }] },
+        });
+    });
+
+    it('preserves configured model language for layout fields', async () => {
+        const config = Object.freeze({ engine: 'tesseract', language: 'auto', cpu_pixel_budget: false,
+            stages: Object.freeze([Object.freeze({ engine: 'tesseract', rec_model: 'custom-language' })]) });
+        await workspaceClient.layoutFields('/pages/source.png', ['invoice'], .6, config);
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('tool_kie_extract', {
+            locationUri: '/pages/source.png', labels: ['invoice'], threshold: .6, lilt: true, liltModel: null, config,
+        });
+        expect(invoke.mock.calls[0][1].config).not.toBe(config);
+    });
+
+    it('resolves an unconfigured embedded language without mutating its project settings', async () => {
+        const config = { engine: 'tesseract', language: 'auto', stages: [] };
+        await workspaceClient.table('/pages/source.png', config);
+        expect(invoke).toHaveBeenCalledWith('tool_table_extract', expect.objectContaining({ config: { ...config, language: 'deu' } }));
+        expect(config.language).toBe('auto');
+    });
+
+    it('retains native app defaults when existing callers omit config', async () => {
+        await workspaceClient.layoutFields('/pages/source.png', ['invoice'], .5);
+        expect(invoke).toHaveBeenLastCalledWith('tool_kie_extract', {
+            locationUri: '/pages/source.png', labels: ['invoice'], threshold: .5, lilt: true, liltModel: null,
+        });
+        await workspaceClient.table('/pages/source.png');
+        expect(invoke).toHaveBeenLastCalledWith('tool_table_extract', { locationUri: '/pages/source.png', ocrModel: null, save: false });
+    });
+
+    it('keeps System Tesseract and flat custom-model Automatic semantics', async () => {
+        for (const config of [
+            { engine: 'system_tesseract', language: 'auto' },
+            { engine: 'auto', language: 'auto', rec_model: 'custom-trocr', stages: [] },
+        ]) {
+            await workspaceClient.table('/pages/source.png', config);
+            expect(invoke).toHaveBeenLastCalledWith('tool_table_extract', expect.objectContaining({ config }));
+        }
+    });
+
+    it('surfaces native capability rejection without changing the selected configuration', async () => {
+        const failure = new Error('The selected engine cannot run this specialist tool'); invoke.mockRejectedValue(failure);
+        await expect(workspaceClient.table('/pages/source.png', { engine: 'qwen2vl', language: 'fra', cpu_pixel_budget: true })).rejects.toBe(failure);
+        expect(invoke).toHaveBeenCalledOnce();
+    });
+});
 
 describe('OCR workspace platform transport', () => {
     beforeEach(() => {
@@ -519,6 +582,10 @@ describe('OCR workspace platform transport', () => {
         expect(unlisten).not.toHaveBeenCalled();
         native.resolve(exported);
         expect(await result).toBe(exported);
+        const receipts = vi.mocked(flog).mock.calls.map(([, message]) => message).filter(message => message.startsWith('ocr.export '));
+        expect(receipts.at(-1)).toContain('phase=completed');
+        expect(receipts.at(-1)).toContain('saved=true');
+        expect(receipts.some(message => message.includes('phase=cancelled'))).toBe(false);
         expect(controller.signal.aborted).toBe(true);
         expect(unlisten).toHaveBeenCalledOnce();
     });
@@ -565,6 +632,9 @@ describe('OCR workspace platform transport', () => {
         const failed = expect(result).rejects.toBe(failure);
         await nativeStarted.promise; controller.abort(); native.reject(failure);
         await failed; expect(unlisten).toHaveBeenCalledOnce();
+        const receipts = vi.mocked(flog).mock.calls.map(([, message]) => message).filter(message => message.startsWith('ocr.export '));
+        expect(receipts.at(-1)).toContain('phase=failed');
+        expect(receipts.join('\n')).not.toContain(failure.message);
     });
 
     it.each(['before-subscribe', 'during-subscribe'])('cleans mobile staging without starting an export aborted %s', async timing => {

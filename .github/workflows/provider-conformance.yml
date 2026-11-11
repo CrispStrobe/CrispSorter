@@ -1,0 +1,71 @@
+name: Dart and Rust provider compatibility
+on:
+  push:
+    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
+  pull_request:
+    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
+  workflow_dispatch:
+concurrency:
+  group: provider-conformance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-cloud-rs
+          ref: 6c1f351dbe0cb9efe2ecf19b009603907bf5cf2e
+          path: _provider_conformance
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.13.7'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: _provider_conformance/conformance/rust -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==50.0.0
+      - name: Check golden vectors, HTTP mocks and cross-decryption
+        run: python _provider_conformance/conformance/run.py --pointycastle 4.0.0 --dart-pg 2.1.0 --rust-filen crates/crisp-filen-native --rust-internxt crates/crisp-internxt-native
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-conformance
+          path: |
+            _provider_conformance/conformance/results/
+            _provider_conformance/conformance/dart/pubspec.lock
+            _provider_conformance/conformance/rust/Cargo.lock
+          retention-days: 14
+  native-unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Isolate provider unit tests from desktop build dependencies
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('_provider_units')
+          root.mkdir()
+          for package in ['crisp-filen-native','crisp-internxt-native','internxt-core']:
+              shutil.copytree(Path('crates',package),root/'crates'/package)
+          (root/'Cargo.toml').write_text('[workspace]\nresolver="2"\nmembers=["crates/crisp-filen-native","crates/crisp-internxt-native","crates/internxt-core"]\n')
+          PY
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: _provider_units -> target
+      - name: Native provider unit and mock tests
+        working-directory: _provider_units
+        run: cargo test -p crisp-filen -p crisp-internxt --lib
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-provider-unit-lockfile
+          path: _provider_units/Cargo.lock

@@ -185,6 +185,17 @@ impl OfflineQueue {
         Ok(())
     }
 
+    /// Stop automatic replay without deleting the payload or diagnostic record.
+    /// Used when a write may already be committed or the target policy changed.
+    pub fn mark_terminal_failed(&self, id: i64, error: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE queued_ops SET status = 'failed', last_error = ?2 WHERE id = ?1",
+            params![id, error],
+        )?;
+        Ok(())
+    }
+
     /// Cancel a pending operation while retaining its diagnostic record.
     pub fn cancel(&self, id: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap();

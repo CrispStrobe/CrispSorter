@@ -1,17 +1,12 @@
-// src/lib/extractors/pdfExtractor.ts:
-
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
-import Tesseract from 'tesseract.js';
-import { getSetting } from '../store';
+import type { ExtractionOptions } from './index';
+import { createOcrSession, withExtractionAbort } from './ocrDispatcher';
+import { beginOperation, type OperationLog } from '../operationLog';
 
-// Set worker to the local legacy file we just copied to static/
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
 
-// Robust polyfill for async iteration on ReadableStream
 if (typeof ReadableStream !== 'undefined' && !(ReadableStream.prototype as any)[Symbol.asyncIterator]) {
-    console.log("[PDFExtractor] Polyfilling ReadableStream.prototype[Symbol.asyncIterator]");
-    // @ts-ignore
-    ReadableStream.prototype[Symbol.asyncIterator] = async function* () {
+    (ReadableStream.prototype as any)[Symbol.asyncIterator] = async function* () {
         const reader = this.getReader();
         try {
             while (true) {
@@ -19,135 +14,147 @@ if (typeof ReadableStream !== 'undefined' && !(ReadableStream.prototype as any)[
                 if (done) return;
                 yield value;
             }
-        } finally {
-            reader.releaseLock();
-        }
+        } finally { reader.releaseLock(); }
     };
 }
-
-// Polyfill for values() specifically if that's what's failing
 if (typeof ReadableStream !== 'undefined' && !(ReadableStream.prototype as any).values) {
-    console.log("[PDFExtractor] Polyfilling ReadableStream.prototype.values");
-    // @ts-ignore
-    ReadableStream.prototype.values = ReadableStream.prototype[Symbol.asyncIterator];
+    (ReadableStream.prototype as any).values = (ReadableStream.prototype as any)[Symbol.asyncIterator];
 }
 
-export async function extractPdf(arrayBuffer: ArrayBuffer, options: { forceOCR?: boolean; signal?: AbortSignal; onProgress?: (page: number, total: number) => void; maxChars?: number; maxPages?: number } = {}): Promise<string> {
-    console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}, forceOCR: ${options.forceOCR ?? false}`);
-    const ocrEnabled = (options.forceOCR ?? false) || await getSetting('ocrEnabled', false);
-    
+const MIN_DIGITAL_TEXT = 20;
+const MAX_OCR_PIXELS = 12_000_000;
+const MAX_OCR_SIDE = 8192;
+const IMAGE_OPS = new Set([
+    pdfjsLib.OPS.paintImageXObject, pdfjsLib.OPS.paintInlineImageXObject,
+    pdfjsLib.OPS.paintImageMaskXObject, pdfjsLib.OPS.paintImageMaskXObjectGroup,
+    pdfjsLib.OPS.paintImageXObjectRepeat, pdfjsLib.OPS.paintInlineImageXObjectGroup,
+    pdfjsLib.OPS.paintImageMaskXObjectRepeat, pdfjsLib.OPS.paintSolidColorImageMask,
+].filter(value => typeof value === 'number'));
+const VISIBLE_OPS = new Set([
+    ...IMAGE_OPS, pdfjsLib.OPS.stroke, pdfjsLib.OPS.closeStroke, pdfjsLib.OPS.fill,
+    pdfjsLib.OPS.eoFill, pdfjsLib.OPS.fillStroke, pdfjsLib.OPS.eoFillStroke,
+    pdfjsLib.OPS.closeFillStroke, pdfjsLib.OPS.closeEOFillStroke,
+    pdfjsLib.OPS.shadingFill, pdfjsLib.OPS.showText, pdfjsLib.OPS.showSpacedText,
+    pdfjsLib.OPS.nextLineShowText, pdfjsLib.OPS.nextLineSetSpacingShowText,
+].filter(value => typeof value === 'number'));
+
+type PdfPage = Awaited<ReturnType<Awaited<ReturnType<typeof pdfjsLib.getDocument>['promise']>['getPage']>>;
+
+function textFromItems(items: unknown[]): string {
+    const text = items.filter((item): item is { str: string; transform: number[] } => {
+        if (!item || typeof item !== 'object') return false;
+        const value = item as Record<string, unknown>;
+        return typeof value.str === 'string' && Array.isArray(value.transform)
+            && Number.isFinite(value.transform[4]) && Number.isFinite(value.transform[5]);
+    }).sort((a, b) => {
+        const yDiff = b.transform[5] - a.transform[5];
+        return Math.abs(yDiff) > 5 ? yDiff : a.transform[4] - b.transform[4];
+    });
+    return text.map((item, index) => index === 0 ? item.str
+        : `${Math.abs(text[index - 1].transform[5] - item.transform[5]) > 5 ? '\n' : ' '}${item.str}`).join('');
+}
+
+/** Short digital titles need no OCR; scan images and outlined text still do. */
+async function needsOcr(page: PdfPage, text: string, signal?: AbortSignal, operation?: OperationLog): Promise<boolean> {
+    if (text.trim().length >= MIN_DIGITAL_TEXT) return false;
     try {
-        const data = new Uint8Array(arrayBuffer);
-        
-        const loadingTask = pdfjsLib.getDocument({ 
-            data: data,
-            useSystemFonts: true,
-            disableFontFace: true,
-            disableRange: true,
-            disableStream: true,
-            disableAutoFetch: true
-        });
-        
-        const pdfDocument = await loadingTask.promise;
-        let fullText = '';
-        const numPages = pdfDocument.numPages;
-        console.log(`[PDFExtractor] Document loaded successfully, pages: ${numPages}`);
+        const operators = await withExtractionAbort(page.getOperatorList(), signal);
+        return operators.fnArray.some(op => (text.trim() ? IMAGE_OPS : VISIBLE_OPS).has(op));
+    } catch (error) {
+        signal?.throwIfAborted();
+        // An unavailable operator list must not silently skip a scanned page.
+        operation?.stage('warning', { warnings: 1 }, 'warn');
+        return true;
+    }
+}
 
-        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-            // Abort signal check — throw so the caller can distinguish abort from success
-            if (options.signal?.aborted) {
-                console.log(`[PDFExtractor] Aborted at page ${pageNum}/${numPages}`);
-                await pdfDocument.destroy();
-                throw new Error('EXTRACTION_ABORTED');
-            }
-            // Progress callback
-            options.onProgress?.(pageNum, numPages);
-            // Early stop: enough text already
-            if (options.maxChars && fullText.length >= options.maxChars) {
-                console.log(`[PDFExtractor] Reached maxChars (${options.maxChars}) at page ${pageNum}/${numPages}, stopping early.`);
-                break;
-            }
-            // Page limit
-            if (options.maxPages && pageNum > options.maxPages) {
-                console.log(`[PDFExtractor] Reached maxPages (${options.maxPages}), stopping early.`);
-                break;
-            }
-            console.log(`[PDFExtractor] Processing page ${pageNum}/${numPages}...`);
-            const page = await pdfDocument.getPage(pageNum);
+function pageLimit(value: number | undefined, name: string): number {
+    if (value === undefined) return Infinity;
+    if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a nonnegative finite number.`);
+    return Math.floor(value);
+}
 
-            let pageText = '';
+export async function extractPdf(arrayBuffer: ArrayBuffer, options: ExtractionOptions = {}): Promise<string> {
+    const operation = beginOperation('ocr.pdf', { bytes: arrayBuffer.byteLength, forced: options.forceOCR === true });
+    try {
+        const result = await extractPdfPages(arrayBuffer, options, operation);
+        operation.complete({ completed: result.completed, characters: result.text.length });
+        return result.text;
+    } catch (error) {
+        if (options.signal?.aborted && error === options.signal.reason) operation.cancel(); else operation.fail(error);
+        throw error;
+    }
+}
 
-            // If NOT forcing OCR, try to get digital text first
-            if (!(options.forceOCR ?? false)) {
-                try {
-                    const textContent = await page.getTextContent();
-                    const items = textContent.items as any[];
-                    
-                    items.sort((a, b) => {
-                        const yDiff = b.transform[5] - a.transform[5];
-                        if (Math.abs(yDiff) > 5) return yDiff;
-                        return a.transform[4] - b.transform[4];
-                    });
-
-                    let lastY = -1;
-                    for (const item of items) {
-                        const currentY = item.transform[5];
-                        if (lastY !== -1 && Math.abs(currentY - lastY) > 5) {
-                            pageText += '\n';
-                        } else if (lastY !== -1) {
-                            pageText += ' ';
-                        }
-                        pageText += item.str || '';
-                        lastY = currentY;
+async function extractPdfPages(arrayBuffer: ArrayBuffer, options: ExtractionOptions, operation: OperationLog): Promise<{ text: string; completed: number }> {
+    options.signal?.throwIfAborted();
+    const maxPages = pageLimit(options.maxPages, 'maxPages');
+    const maxChars = pageLimit(options.maxChars, 'maxChars');
+    if (maxPages === 0 || maxChars === 0) return { text: '', completed: 0 };
+    const ocr = await createOcrSession(options);
+    options.signal?.throwIfAborted();
+    const ocrEnabled = options.forceOCR === true || ocr.policy.enabled;
+    const loadingTask = pdfjsLib.getDocument({
+        data: new Uint8Array(arrayBuffer), useSystemFonts: true, disableFontFace: true,
+        disableRange: true, disableStream: true, disableAutoFetch: true,
+    });
+    try {
+        const pdf = await withExtractionAbort(loadingTask.promise, options.signal);
+        operation.stage('ready', { pages: pdf.numPages }, 'info');
+        const chunks: string[] = [];
+        let length = 0;
+        for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, maxPages) && length < maxChars; pageNumber++) {
+            options.signal?.throwIfAborted();
+            options.onProgress?.(pageNumber, pdf.numPages);
+            const page = await withExtractionAbort(pdf.getPage(pageNumber), options.signal);
+            try {
+                let pageText = '';
+                let textFailed = false;
+                if (!options.forceOCR) {
+                    try {
+                        const content = await withExtractionAbort(page.getTextContent(), options.signal);
+                        pageText = textFromItems(content.items);
+                    } catch (error) {
+                        options.signal?.throwIfAborted();
+                        if (!ocrEnabled) throw error;
+                        textFailed = true;
                     }
-                } catch (textErr) {
-                    console.warn(`[PDFExtractor] Text extraction failed for page ${pageNum}:`, textErr);
                 }
-            } else {
-                console.log(`[PDFExtractor] Skipping digital text extraction for page ${pageNum} (forceOCR enabled)`);
-            }
-
-            // If text is still empty (or we are forcing OCR) and OCR is enabled, run OCR
-            if ((pageText.trim().length < 20 || (options.forceOCR ?? false)) && ocrEnabled) {
-                console.log(`[PDFExtractor] Page ${pageNum} triggering OCR (forceOCR=${options.forceOCR ?? false}, length=${pageText.trim().length})...`);
-                try {
+                if (ocrEnabled && (options.forceOCR || textFailed || await needsOcr(page, pageText, options.signal, operation))) {
+                    operation.stage('rendering', { page: pageNumber });
+                    const base = page.getViewport({ scale: 1 });
+                    if (!Number.isFinite(base.width) || !Number.isFinite(base.height) || base.width <= 0 || base.height <= 0) {
+                        throw new Error(`PDF page ${pageNumber} has invalid dimensions.`);
+                    }
+                    const scale = Math.min(2, Math.sqrt(MAX_OCR_PIXELS / (base.width * base.height)), MAX_OCR_SIDE / Math.max(base.width, base.height));
+                    const viewport = page.getViewport({ scale });
                     const canvas = document.createElement('canvas');
-                    const viewport = page.getViewport({ scale: 2.0 }); 
-                    canvas.height = viewport.height;
-                    canvas.width = viewport.width;
-                    
-                    const renderContext = {
-                        canvasContext: canvas.getContext('2d')!,
-                        viewport: viewport
-                    };
-                    
-                    await page.render(renderContext).promise;
-                    const imageData = canvas.toDataURL('image/png');
-                    
-                    const { data: { text } } = await Tesseract.recognize(imageData, 'deu+eng', {
-                        logger: m => {
-                            if (m.status === 'recognizing text' && Math.round(m.progress * 100) % 25 === 0) {
-                                console.log(`[OCR] Page ${pageNum} - ${m.status}: ${Math.round(m.progress * 100)}%`);
-                            }
-                        }
-                    });
-                    pageText = text;
-                    console.log(`[PDFExtractor] OCR Success for page ${pageNum}, length: ${pageText.length}`);
-                } catch (ocrErr) {
-                    console.error(`[PDFExtractor] OCR Failed for page ${pageNum}:`, ocrErr);
+                    try {
+                        canvas.width = Math.max(1, Math.floor(viewport.width));
+                        canvas.height = Math.max(1, Math.floor(viewport.height));
+                        const context = canvas.getContext('2d');
+                        if (!context) throw new Error('A canvas context is unavailable for PDF OCR.');
+                        const render = page.render({ canvasContext: context, viewport });
+                        await withExtractionAbort(render.promise, options.signal, () => render.cancel());
+                        options.signal?.throwIfAborted();
+                        const result = await ocr.recognize(canvas, `page-${pageNumber}.png`);
+                        if (result.warnings.length) operation.stage('warning', { page: pageNumber, warnings: result.warnings.length }, 'warn');
+                        // A sparse existing text layer remains useful if OCR finds no text.
+                        if (result.text.trim() || options.forceOCR) pageText = result.text;
+                    } finally { canvas.width = 0; canvas.height = 0; }
                 }
+                const chunk = `${chunks.length ? '\n' : ''}${pageText}`.slice(0, maxChars - length);
+                chunks.push(chunk);
+                length += chunk.length;
+                operation.stage('page_completed', { page: pageNumber, characters: pageText.length });
+            } finally {
+                try { page.cleanup(); } catch { operation.stage('cleanup_failed', { page: pageNumber }, 'warn'); }
             }
-            
-            fullText += pageText + '\n';
         }
-
-        console.log(`[PDFExtractor] Extraction complete, total text length: ${fullText.length}`);
-        // Release pdf.js internal resources and any OS file handles
-        await pdfDocument.destroy();
-        return fullText.trim();
-    } catch (error: any) {
-        if (error?.message === 'EXTRACTION_ABORTED') throw error;
-        console.error("[PDFExtractor] CRITICAL ERROR:", error);
-        throw new Error(`Failed to extract PDF: ${error.message || String(error)}`);
+        options.signal?.throwIfAborted();
+        return { text: chunks.join('').trim(), completed: chunks.length };
+    } finally {
+        // Covers parse, text, render, recognition, cancellation and early-stop paths.
+        try { await loadingTask.destroy(); } catch { operation.stage('cleanup_failed', {}, 'warn'); }
     }
 }
