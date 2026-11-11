@@ -164,6 +164,7 @@
     // null/empty we're creating a new one (calls drive_create).
     let driveCreateOpen   = $state(false);
     let driveEditId       = $state<string | null>(null);
+    let driveEditSnapshot = $state<RegisteredDrive | null>(null);
     let driveCreateLabel  = $state<string>('');
     let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'smb' | 'webdav' | 'onedrive' | 'google_drive'>('webdav');
     /// Which drive kinds have a native client compiled into this build. Decides
@@ -944,6 +945,7 @@
     /** Begin editing an existing drive — prefills the form. */
     function startDriveEdit(d: RegisteredDrive & { insecure_tls?: boolean | null }) {
         driveEditId       = d.id;
+        driveEditSnapshot = JSON.parse(JSON.stringify(d));
         driveCreateLabel  = d.label;
         driveCreateKind   = d.kind as any;
         driveCreatePath   = d.path;
@@ -973,6 +975,7 @@
 
     function resetDriveForm() {
         driveEditId       = null;
+        driveEditSnapshot = null;
         driveCreateLabel  = '';
         driveCreatePath   = '';
         driveCreateUser   = '';
@@ -1011,7 +1014,7 @@
             };
             let cfg: RegisteredDrive;
             if (driveEditId) {
-                cfg = await invoke<RegisteredDrive>('drive_update', { id: driveEditId, ...args });
+                cfg = await invoke<RegisteredDrive>('drive_update', { id: driveEditId, expected: driveEditSnapshot, ...args });
                 logInfo(`Laufwerk aktualisiert: ${cfg.label} (${cfg.kind})`);
             } else {
                 cfg = await invoke<RegisteredDrive>('drive_create', args);

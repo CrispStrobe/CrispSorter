@@ -43,8 +43,19 @@ pub mod drives {
         pub fn get_credentials(id: &str) -> Result<Option<DriveCredentials>> {
             Ok(VAULT.lock().unwrap().get(id).cloned())
         }
+        static FAIL_PUBLISH: LazyLock<Mutex<HashMap<String, std::path::PathBuf>>> =
+            LazyLock::new(|| Mutex::new(HashMap::new()));
+        pub fn fail_next_publish(id: &str, path: std::path::PathBuf) {
+            FAIL_PUBLISH.lock().unwrap().insert(id.into(), path);
+        }
         pub fn set_credentials(id: &str, value: &DriveCredentials) -> Result<()> {
             VAULT.lock().unwrap().insert(id.into(), value.clone());
+            // Fail metadata publication only after the new vault value was
+            // stored, so the test actually exercises credential rollback.
+            if let Some(path) = FAIL_PUBLISH.lock().unwrap().remove(id) {
+                std::fs::remove_file(&path)?;
+                std::fs::create_dir(&path)?;
+            }
             Ok(())
         }
         pub fn delete_credentials(id: &str) -> Result<()> {
@@ -324,8 +335,7 @@ fn settings_save_failure_restores_vault_and_registry() {
     ])
     .apply(&mut r, &mut Cursor::new(b"old\n"))
     .unwrap();
-    std::fs::remove_file(dir.path().join("drives.json")).unwrap();
-    std::fs::create_dir(dir.path().join("drives.json")).unwrap();
+    drives::secret::fail_next_publish(&added.id, dir.path().join("drives.json"));
     assert!(options(&["--id", &added.id, "--password-stdin"])
         .apply(&mut r, &mut Cursor::new(b"new\n"))
         .is_err());
@@ -410,6 +420,11 @@ fn stale_registry_merges_unrelated_drives_and_refuses_conflicting_edits() {
     let mut changed = first.clone();
     changed.label = "updated".into();
     cli.save_smb(changed, None, None).unwrap();
+    // The GUI command reopens the registry at submit time. Its original form
+    // snapshot must still be checked against this freshly opened registry.
+    let reopened = DriveRegistry::open(dir.path()).unwrap();
+    assert!(reopened.require_snapshot(&first).is_err());
+    assert!(reopened.require_snapshot(&second).is_ok());
     assert!(gui
         .save_smb(first.clone(), None, Some("must-not-save".into()))
         .is_err());
@@ -459,4 +474,31 @@ fn registry_lock_contention_fails_promptly_and_releases_on_close() {
     assert!(registry.drives.is_empty());
     drop(lock);
     assert!(DriveRegistry::open(dir.path()).unwrap().drives.is_empty());
+}
+
+#[test]
+fn legacy_credentials_are_migrated_under_the_registry_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let legacy = serde_json::json!([{
+        "id": id, "label": "Legacy", "kind": "smb", "path": "smb://nas/books",
+        "username": "legacy-reader", "password": "legacy-secret",
+        "smb": {"backend": "rust", "require_encryption": true}
+    }]);
+    let path = dir.path().join("drives.json");
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let registry = DriveRegistry::open(dir.path()).unwrap();
+    assert_eq!(registry.drives.len(), 1);
+    let json = std::fs::read_to_string(&path).unwrap();
+    assert!(!json.contains("legacy-secret"));
+    assert!(!json.contains("legacy-reader"));
+    assert_eq!(
+        drives::secret::get_credentials(&id)
+            .unwrap()
+            .unwrap()
+            .password
+            .as_deref(),
+        Some("legacy-secret")
+    );
+    assert_eq!(DriveRegistry::open(dir.path()).unwrap().drives.len(), 1);
 }

@@ -7,7 +7,7 @@ publish = false
 # Keep qualification independent of the app's unrelated sibling checkouts.
 [workspace]
 [dependencies]
-crisp_smb = { git = "https://github.com/CrispStrobe/CrispCloud", rev = "445c20bfc9d15b40ed65fde07bd0f0198963ff30" }
+crisp_smb = { git = "https://github.com/CrispStrobe/CrispCloud", rev = "13ca681f0c706cf24e65c7906f8a98e20421c590" }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 url = "2"

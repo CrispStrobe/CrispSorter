@@ -15,6 +15,9 @@ test('SMB drive form saves and reloads mounted and Rust choices through IPC', as
             if (command === 'drive_list') return structuredClone(root.__smbDrives);
             if (command === 'drive_credentials_status') return {has_username: true, has_password: true};
             if (command === 'drive_create' || command === 'drive_update') {
+                if (command === 'drive_update' && JSON.stringify(args.expected) !== JSON.stringify(root.__smbDrives[0])) {
+                    throw new Error('Drive settings changed; reload before saving');
+                }
                 root.__smbWrites.push(structuredClone(args));
                 const saved = {id: args.id ?? 'nas', label: args.label, kind: args.kind, path: args.path, smb: args.smb};
                 root.__smbDrives = [saved];
@@ -51,4 +54,10 @@ test('SMB drive form saves and reloads mounted and Rust choices through IPC', as
     await dialog.getByTitle('Bearbeiten', {exact: true}).click();
     await expect(dialog.getByRole('combobox', {name: 'SMB-Transport', exact: true})).toHaveValue('rust');
     await expect(dialog.getByRole('textbox', {name: 'SMB-Mount-Ordner', exact: true})).toHaveValue('/Volumes/Books');
+    // A CLI edit while the form is open must survive the stale GUI submit.
+    await page.evaluate(() => { (window as any).__smbDrives[0].label = 'Changed by CLI'; });
+    await dialog.getByRole('button', {name: 'Speichern', exact: true}).click();
+    await expect(dialog).toContainText('Drive settings changed; reload before saving');
+    expect(await page.evaluate(() => (window as any).__smbWrites.length)).toBe(2);
+    expect(await page.evaluate(() => (window as any).__smbDrives[0].label)).toBe('Changed by CLI');
 });

@@ -141,3 +141,8 @@ application adapter. The shared source/fixture pin is the same commit used by
 CrispCloud and CrisperPlayer. The Rust path remains explicit; mounted SMB remains
 the default. GUI backend controls and `drives smb --backend` retain their existing
 behavior and app logs never include credentials or raw remote paths.
+
+The GUI includes the original non-secret drive snapshot with an edit. The command
+checks it against freshly loaded metadata, and the locked save checks again for
+a race during submission. A drive changed by the CLI while the form was open
+is therefore rejected without overwriting settings or credentials.

@@ -184,6 +184,20 @@ impl DriveRegistry {
         Ok(())
     }
 
+    /// Check the metadata snapshot displayed by a GUI before accepting its edit.
+    /// Credentials are excluded by DriveConfig's serializer.
+    pub fn require_snapshot(&self, expected: &DriveConfig) -> Result<()> {
+        let current = self.drives.iter().find(|d| d.id == expected.id);
+        if serde_json::to_value(current)? != serde_json::to_value(Some(expected))? {
+            crate::app_log(
+                "warn",
+                "Drive settings conflict: reload before saving".into(),
+            );
+            anyhow::bail!("Drive settings changed; reload before saving");
+        }
+        Ok(())
+    }
+
     // Merge unrelated changes from other GUI/CLI instances, but refuse a
     // stale edit of this same drive. Never silently overwrite a newer setting.
     fn refreshed_locked(&self, id: &str) -> Result<Self> {
