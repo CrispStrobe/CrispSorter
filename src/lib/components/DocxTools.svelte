@@ -9,6 +9,8 @@
     // file. Nothing here overwrites the input.
 
     import { invoke } from '@tauri-apps/api/core';
+    import { untrack } from 'svelte';
+    import { flog } from '$lib/log';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
     import {
@@ -71,9 +73,18 @@
         return (p as string) ?? null;
     }
 
+    /** A .docx handed over by the PDF editor (dropped or opened there). */
+    let { initialPath = '' }: { initialPath?: string } = $props();
+    $effect(() => { const p = initialPath; if (p) untrack(() => useFile(p)); });
+
     async function openFile() {
         const p = await pickDocx();
         if (!p) return;
+        useFile(p);
+    }
+
+    function useFile(p: string) {
+        flog('info', `[docx] opened ${p}`);
         filePath = p;
         // Everything on screen described the previous file.
         checkResult = null;
@@ -101,9 +112,12 @@
         error = '';
         success = '';
         try {
-            return await fn();
+            const r = await fn();
+            flog('info', `[docx] ${activeOp ?? 'operation'} ok: ${filePath}`);
+            return r;
         } catch (e: any) {
             error = e?.message ?? String(e);
+            flog('error', `[docx] ${filePath}: ${error}`);
             return null;
         } finally {
             busy = false;

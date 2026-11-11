@@ -9,6 +9,8 @@
     // what is unreachable rather than offering it and failing.
 
     import { invoke } from '@tauri-apps/api/core';
+    import { untrack } from 'svelte';
+    import { flog } from '$lib/log';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
     import {
@@ -33,7 +35,13 @@
         written_path: string | null;
     }
 
+    /** A document handed over by the PDF editor (dropped or opened there). */
+    let { initialPath = '' }: { initialPath?: string } = $props();
     let filePath = $state('');
+    $effect(() => {
+        const p = initialPath;
+        if (p) untrack(() => { filePath = p; flog('info', `[convert] opened ${p}`); void refreshCaps(); });
+    });
     let caps = $state<ConvertCapabilities | null>(null);
     let busy = $state(false);
     let error = $state('');
@@ -104,11 +112,13 @@
                 visualOrder,
                 outPath,
             });
+            flog('info', `[convert] ${filePath} -> ${emit} via ${result.engine_used}${result.written_path ? ` -> ${result.written_path}` : ''}`);
             success = result.written_path
                 ? `${i18n.t.converttools?.wrote ?? 'Wrote'} ${result.written_path}`
                 : (i18n.t.converttools?.converted ?? 'Converted');
         } catch (e) {
             error = String(e);
+            flog('error', `[convert] ${filePath} -> ${emit} failed: ${error}`);
         } finally {
             busy = false;
         }

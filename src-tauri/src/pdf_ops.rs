@@ -339,9 +339,13 @@ pub fn remove_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Res
 // ── Rotate pages ───────────────────────────────────────────────────────
 
 pub fn rotate_pages_doc(doc: &mut Document, page_indices: &[usize], degrees: i64) -> Result<(), String> {
-    if ![0, 90, 180, 270].contains(&degrees) {
-        return Err(format!("degrees must be 0/90/180/270, got {degrees}"));
+    // Counter-clockwise rotation arrives as -90 (or -270, 450, ...). Any
+    // multiple of 90 names a valid quarter turn, so normalise it rather
+    // than rejecting what is a perfectly clear request.
+    if degrees % 90 != 0 {
+        return Err(format!("degrees must be a multiple of 90, got {degrees}"));
     }
+    let degrees = degrees.rem_euclid(360);
     let ids = page_ids(doc);
     let n = ids.len();
     for &idx in page_indices {
@@ -1824,87 +1828,149 @@ pub fn sign_pdf(
 
 // ── Tauri commands ─────────────────────────────────────────────────────
 
+/// Route a PDF command's outcome into the in-app log, so every critical
+/// step (and every failure, with its real reason) shows in the Logs panel.
+pub(crate) fn logged<T>(op: &str, detail: &str, result: Result<T, String>) -> Result<T, String> {
+    match &result {
+        Ok(_) => crate::app_log!("info", "[pdf] {op}: ok - {detail}"),
+        Err(e) => crate::app_log!("error", "[pdf] {op} failed - {detail}: {e}"),
+    }
+    result
+}
+
 pub mod tauri_commands {
     use super::*;
 
     #[tauri::command]
     pub async fn pdf_info(path: String) -> Result<PdfInfo, String> {
-        tokio::task::spawn_blocking(move || super::pdf_info(Path::new(&path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = path.clone();
+        let result: Result<PdfInfo, String> = async move {
+            tokio::task::spawn_blocking(move || super::pdf_info(Path::new(&path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("info", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_reorder_pages(path: String, new_order: Vec<usize>, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::reorder_pages(Path::new(&path), &new_order, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::reorder_pages(Path::new(&path), &new_order, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("reorder_pages", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_extract_pages(path: String, page_indices: Vec<usize>, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::extract_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::extract_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("extract_pages", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_remove_pages(path: String, page_indices: Vec<usize>, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::remove_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::remove_pages(Path::new(&path), &page_indices, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("remove_pages", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_rotate_pages(path: String, page_indices: Vec<usize>, degrees: i64, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::rotate_pages(Path::new(&path), &page_indices, degrees, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::rotate_pages(Path::new(&path), &page_indices, degrees, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("rotate_pages", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_crop_pages(path: String, page_indices: Vec<usize>, x: f64, y: f64, w: f64, h: f64, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::crop_pages(Path::new(&path), &page_indices, x, y, w, h, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::crop_pages(Path::new(&path), &page_indices, x, y, w, h, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("crop_pages", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_merge(paths: Vec<String>, out_path: String) -> Result<usize, String> {
-        tokio::task::spawn_blocking(move || {
-            let p: Vec<&Path> = paths.iter().map(|s| Path::new(s.as_str())).collect();
-            super::merge_pdfs(&p, Path::new(&out_path))
-        }).await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{} file(s) -> {out_path}", paths.len());
+        let result: Result<usize, String> = async move {
+            tokio::task::spawn_blocking(move || {
+                let p: Vec<&Path> = paths.iter().map(|s| Path::new(s.as_str())).collect();
+                super::merge_pdfs(&p, Path::new(&out_path))
+            }).await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("merge", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_split(path: String, ranges: Vec<(usize, usize)>, out_dir: String, stem: String) -> Result<Vec<String>, String> {
-        tokio::task::spawn_blocking(move || super::split_pdf(Path::new(&path), &ranges, Path::new(&out_dir), &stem))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} ranges={ranges:?} -> {out_dir}");
+        let result: Result<Vec<String>, String> = async move {
+            tokio::task::spawn_blocking(move || super::split_pdf(Path::new(&path), &ranges, Path::new(&out_dir), &stem))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("split", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_add_page_numbers(path: String, config: PageNumberConfig, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::add_page_numbers(Path::new(&path), &config, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::add_page_numbers(Path::new(&path), &config, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("add_page_numbers", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_add_watermark(path: String, config: WatermarkConfig, page_indices: Option<Vec<usize>>, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::add_watermark(Path::new(&path), &config, page_indices.as_deref(), Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::add_watermark(Path::new(&path), &config, page_indices.as_deref(), Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("add_watermark", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_insert_blank_page(path: String, position: usize, width: Option<f64>, height: Option<f64>, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::insert_blank_page(Path::new(&path), position, width.unwrap_or(612.0), height.unwrap_or(792.0), Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::insert_blank_page(Path::new(&path), position, width.unwrap_or(612.0), height.unwrap_or(792.0), Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("insert_blank_page", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_edit_metadata(path: String, edits: MetadataEdit, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::edit_metadata(Path::new(&path), &edits, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::edit_metadata(Path::new(&path), &edits, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("edit_metadata", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_decrypt(path: String, password: String, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::decrypt_pdf(Path::new(&path), &password, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::decrypt_pdf(Path::new(&path), &password, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("decrypt", &detail, result)
     }
 
     /// Rewrite for fast web view. P32.11 Z5.
@@ -1915,21 +1981,25 @@ pub mod tauri_commands {
     /// a worse message than the one below.
     #[tauri::command]
     pub async fn pdf_linearize(path: String, out_path: String) -> Result<(), String> {
-        #[cfg(feature = "pdf-zpdf")]
-        {
-            tokio::task::spawn_blocking(move || {
-                super::linearize_pdf(Path::new(&path), Path::new(&out_path))
-            })
-            .await
-            .map_err(|e| format!("join: {e}"))?
-        }
-        #[cfg(not(feature = "pdf-zpdf"))]
-        {
-            let _ = (path, out_path);
-            Err("Fast web view needs a build with --features pdf-zpdf. \
-                 Nothing was written."
-                .to_string())
-        }
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            #[cfg(feature = "pdf-zpdf")]
+            {
+                tokio::task::spawn_blocking(move || {
+                    super::linearize_pdf(Path::new(&path), Path::new(&out_path))
+                })
+                .await
+                .map_err(|e| format!("join: {e}"))?
+            }
+            #[cfg(not(feature = "pdf-zpdf"))]
+            {
+                let _ = (path, out_path);
+                Err("Fast web view needs a build with --features pdf-zpdf. \
+                     Nothing was written."
+                    .to_string())
+            }
+        }.await;
+        super::logged("linearize", &detail, result)
     }
 
     /// Recover a PDF with damaged cross-reference data. P32.11 Z7.
@@ -1938,76 +2008,116 @@ pub mod tauri_commands {
     /// against what they expected rather than trusting the word "repaired".
     #[tauri::command]
     pub async fn pdf_repair(path: String, out_path: String) -> Result<usize, String> {
-        #[cfg(feature = "pdf-zpdf")]
-        {
-            tokio::task::spawn_blocking(move || {
-                super::repair_pdf(Path::new(&path), Path::new(&out_path))
-            })
-            .await
-            .map_err(|e| format!("join: {e}"))?
-        }
-        #[cfg(not(feature = "pdf-zpdf"))]
-        {
-            let _ = (path, out_path);
-            Err("Repairing a damaged PDF needs a build with --features \
-                 pdf-zpdf. Nothing was written."
-                .to_string())
-        }
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<usize, String> = async move {
+            #[cfg(feature = "pdf-zpdf")]
+            {
+                tokio::task::spawn_blocking(move || {
+                    super::repair_pdf(Path::new(&path), Path::new(&out_path))
+                })
+                .await
+                .map_err(|e| format!("join: {e}"))?
+            }
+            #[cfg(not(feature = "pdf-zpdf"))]
+            {
+                let _ = (path, out_path);
+                Err("Repairing a damaged PDF needs a build with --features \
+                     pdf-zpdf. Nothing was written."
+                    .to_string())
+            }
+        }.await;
+        super::logged("repair", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_is_encrypted(path: String) -> Result<bool, String> {
-        tokio::task::spawn_blocking(move || super::is_encrypted(Path::new(&path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = path.clone();
+        let result: Result<bool, String> = async move {
+            tokio::task::spawn_blocking(move || super::is_encrypted(Path::new(&path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("is_encrypted", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("encrypt", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_sign(path: String, config: SignConfig, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::sign_pdf(Path::new(&path), &config, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::sign_pdf(Path::new(&path), &config, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("sign", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_redact_regions(path: String, regions: Vec<RedactionSpec>, out_path: String) -> Result<usize, String> {
-        tokio::task::spawn_blocking(move || super::black_out_regions(Path::new(&path), &regions, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<usize, String> = async move {
+            tokio::task::spawn_blocking(move || super::black_out_regions(Path::new(&path), &regions, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("redact_regions", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_redact_text(path: String, patterns: Vec<String>, out_path: String) -> Result<usize, String> {
-        tokio::task::spawn_blocking(move || super::redact_text_patterns(Path::new(&path), &patterns, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<usize, String> = async move {
+            tokio::task::spawn_blocking(move || super::redact_text_patterns(Path::new(&path), &patterns, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("redact_text", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_convert_pdfa(path: String, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::convert_to_pdfa(Path::new(&path), Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::convert_to_pdfa(Path::new(&path), Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("convert_pdfa", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_detect_signatures(path: String) -> Result<Vec<PdfSignatureInfo>, String> {
-        tokio::task::spawn_blocking(move || super::detect_signatures(Path::new(&path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = path.clone();
+        let result: Result<Vec<PdfSignatureInfo>, String> = async move {
+            tokio::task::spawn_blocking(move || super::detect_signatures(Path::new(&path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("detect_signatures", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_sanitise(path: String, options: Option<SanitiseOptions>, out_path: String) -> Result<Vec<String>, String> {
-        let opts = options.unwrap_or_default();
-        tokio::task::spawn_blocking(move || super::sanitise_pdf_with_options(Path::new(&path), &opts, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<Vec<String>, String> = async move {
+            let opts = options.unwrap_or_default();
+            tokio::task::spawn_blocking(move || super::sanitise_pdf_with_options(Path::new(&path), &opts, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("sanitise", &detail, result)
     }
 
     #[tauri::command]
     pub async fn pdf_add_text_box(path: String, config: TextBoxConfig, out_path: String) -> Result<(), String> {
-        tokio::task::spawn_blocking(move || super::add_text_box(Path::new(&path), &config, Path::new(&out_path)))
-            .await.map_err(|e| format!("join: {e}"))?
+        let detail = format!("{path} -> {out_path}");
+        let result: Result<(), String> = async move {
+            tokio::task::spawn_blocking(move || super::add_text_box(Path::new(&path), &config, Path::new(&out_path)))
+                .await.map_err(|e| format!("join: {e}"))?
+        }.await;
+        super::logged("add_text_box", &detail, result)
     }
 }
 
@@ -2190,6 +2300,23 @@ mod tests {
         let out = dir.path().join("bad.pdf");
         let err = rotate_pages(&pdf, &[0], 45, &out);
         assert!(err.is_err());
+    }
+
+    /// Counter-clockwise rotation used to fail with "degrees must be
+    /// 0/90/180/270, got -90". Negative quarter turns must normalise.
+    #[test]
+    fn rotate_counter_clockwise_normalises() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("ccw.pdf");
+        rotate_pages(&pdf, &[0], -90, &out).unwrap();
+        assert_eq!(pdf_info(&out).unwrap().pages[0].rotation, 270);
+        let out2 = dir.path().join("ccw2.pdf");
+        rotate_pages(&out, &[0], -270, &out2).unwrap();
+        assert_eq!(pdf_info(&out2).unwrap().pages[0].rotation, 0);
+        let out3 = dir.path().join("ccw3.pdf");
+        rotate_pages(&pdf, &[1], 450, &out3).unwrap();
+        assert_eq!(pdf_info(&out3).unwrap().pages[1].rotation, 90);
     }
 
     #[test]
