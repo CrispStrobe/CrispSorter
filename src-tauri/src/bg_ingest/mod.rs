@@ -138,7 +138,7 @@ pub struct BackgroundIngest {
     /// Whether to attempt OCR on scanned images / empty-text PDFs.
     pub ocr_enabled: bool,
     /// Which OCR tier to use when `ocr_enabled` is true.
-    /// "auto" | "tier1" | "tier2" | "tier3"
+    /// "auto" | "tier1" | "tier2" | "tier3" | "tier4"
     pub ocr_tier: String,
     /// PaddleOCR recognition language model.
     /// "auto" | "latin" | "cjk"
@@ -178,6 +178,39 @@ impl Default for BackgroundIngest {
 impl BackgroundIngest {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// One immutable OCR policy snapshot for background and foreground readers.
+    pub fn ocr_options(&self) -> crate::extractors::ExtractOptions {
+        use crate::extractors::{ExtractOptions, OcrRecLang, OcrTier};
+        ExtractOptions {
+            try_ocr: self.ocr_enabled,
+            ocr_pdf_min_chars: 50,
+            ocr_tier: match self.ocr_tier.as_str() {
+                "tier1" => OcrTier::Tier1,
+                "tier2" => OcrTier::Tier2,
+                "tier3" => OcrTier::Tier3,
+                "tier4" => OcrTier::Tier4,
+                _ => OcrTier::Auto,
+            },
+            ocr_rec_lang: match self.ocr_rec_lang.as_str() {
+                "latin" => OcrRecLang::Latin,
+                "cjk" => OcrRecLang::Cjk,
+                _ => OcrRecLang::Auto,
+            },
+            ocr_pipeline: self.ocr_pipeline.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// An explicit OCR action overrides the off switch, keeping the selected
+    /// engine, language, model stages and CPU profile intact.
+    pub fn requested_ocr_options(&self) -> crate::extractors::ExtractOptions {
+        crate::extractors::ExtractOptions {
+            try_ocr: true,
+            ocr_pdf_min_chars: usize::MAX,
+            ..self.ocr_options()
+        }
     }
 
     pub fn snapshot(&self) -> BgStatusSnapshot {
@@ -406,6 +439,24 @@ struct BackgroundOptions {
     ocr_pipeline: crate::extractors::OcrPipelineConfig,
 }
 
+/// Read the app's saved OCR policy for a CLI operation. This deliberately does
+/// not attach a scheduler: recovery would alter the live GUI's queue receipts.
+pub fn load_ocr_options(data_dir: &std::path::Path, force: bool) -> anyhow::Result<crate::extractors::ExtractOptions> {
+    let mut snapshot = BackgroundIngest::new();
+    if let Some(payload) = queue::QueueStore::read_settings(data_dir)? {
+        let saved: BackgroundOptions = serde_json::from_str(&payload)
+            .map_err(|error| anyhow::anyhow!("Invalid saved OCR policy: {error}"))?;
+        anyhow::ensure!(["auto", "tier1", "tier2", "tier3", "tier4"].contains(&saved.ocr_tier.as_str()), "Unknown saved OCR tier: {}", saved.ocr_tier);
+        anyhow::ensure!(["auto", "latin", "cjk"].contains(&saved.ocr_rec_lang.as_str()), "Unknown saved OCR recognition script: {}", saved.ocr_rec_lang);
+        crate::extractors::ocr_policy::validate_config(&saved.ocr_pipeline).map_err(anyhow::Error::msg)?;
+        snapshot.ocr_enabled = saved.ocr_enabled;
+        snapshot.ocr_tier = saved.ocr_tier;
+        snapshot.ocr_rec_lang = saved.ocr_rec_lang;
+        snapshot.ocr_pipeline = saved.ocr_pipeline;
+    }
+    Ok(if force { snapshot.requested_ocr_options() } else { snapshot.ocr_options() })
+}
+
 fn source_key(item: &PendingIngest) -> anyhow::Result<String> {
     // JSON separates the owner and path unambiguously; SHA-256 keeps large
     // source paths out of the primary-key index. No source file must exist.
@@ -610,7 +661,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let thin = !g.config.local_extraction_enabled;
         (push, thin, g.config.local_skeleton_only)
     };
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, image_indexing_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode) = {
+    let (pipeline, local, ocr_options, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, image_indexing_enabled, ingest_image_level, anydoc_mode) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -653,22 +704,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let anydoc_mode = g.config.anydoc_mode;
         drop(g);
         let bg = app_state.bg_ingest.lock().await;
-        let ocr_enabled = bg.ocr_enabled;
-        let ocr_tier_str = bg.ocr_tier.clone();
-        let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
-        let ocr_pipeline_cfg = bg.ocr_pipeline.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, image_indexing_enabled, ingest_image_level, ocr_pipeline_cfg, anydoc_mode)
-    };
-    let ocr_tier = match ocr_tier_str.as_str() {
-        "tier1" => crate::extractors::OcrTier::Tier1,
-        "tier2" => crate::extractors::OcrTier::Tier2,
-        "tier3" => crate::extractors::OcrTier::Tier3,
-        _       => crate::extractors::OcrTier::Auto,
-    };
-    let ocr_rec_lang = match ocr_rec_lang_str.as_str() {
-        "latin" => crate::extractors::OcrRecLang::Latin,
-        "cjk"   => crate::extractors::OcrRecLang::Cjk,
-        _       => crate::extractors::OcrRecLang::Auto,
+        (pipe, local, bg.ocr_options(), translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, image_indexing_enabled, ingest_image_level, anydoc_mode)
     };
 
     // P13.5 follow-up — when index-time translation is on, auto-resolve
@@ -923,10 +959,6 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
 
     // ── Extract with timeout (P10) ──────────────────────────────────────
     let extract_opts = crate::extractors::ExtractOptions {
-        try_ocr: ocr_enabled,
-        ocr_pdf_min_chars: 50,
-        ocr_tier,
-        ocr_rec_lang,
         // P13.5 Phase 7 + follow-up: text-LID auto-fires when
         // IndexConfig.translate_to is set (translation needs to know
         // the source language).  Resolved to CLD3 above; None
@@ -953,8 +985,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         ingest_audio_level: ingest_audio_level.clone(),
         image_extraction_enabled,
         ingest_image_level: ingest_image_level.clone(),
-        ocr_pipeline: ocr_pipeline_cfg.clone(),
         anydoc: anydoc_mode,
+        ..ocr_options
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();
@@ -1414,6 +1446,86 @@ mod tests {
         assert!(!s.ocr_enabled);
         assert_eq!(s.ocr_tier,     "auto");
         assert_eq!(s.ocr_rec_lang, "auto");
+        assert!(!s.ocr_options().try_ocr);
+    }
+
+    #[test]
+    fn ocr_policy_snapshot_preserves_every_tier_and_script_selection() {
+        use crate::extractors::{OcrRecLang, OcrTier};
+        let mut scheduler = BackgroundIngest::new();
+        scheduler.ocr_enabled = true;
+        for (saved, expected) in [("auto", OcrTier::Auto), ("tier1", OcrTier::Tier1),
+            ("tier2", OcrTier::Tier2), ("tier3", OcrTier::Tier3), ("tier4", OcrTier::Tier4)] {
+            scheduler.ocr_tier = saved.into();
+            let options = scheduler.ocr_options();
+            assert!(options.try_ocr);
+            assert_eq!(options.ocr_tier, expected, "lost saved OCR tier {saved}");
+        }
+        for (saved, expected) in [("auto", OcrRecLang::Auto), ("latin", OcrRecLang::Latin), ("cjk", OcrRecLang::Cjk)] {
+            scheduler.ocr_rec_lang = saved.into();
+            assert_eq!(scheduler.ocr_options().ocr_rec_lang, expected);
+        }
+    }
+
+    #[test]
+    fn explicit_ocr_action_keeps_disabled_pipeline_models_language_and_cpu_profile() {
+        let mut scheduler = BackgroundIngest::new();
+        scheduler.ocr_pipeline = serde_json::from_value(serde_json::json!({
+            "enabled": false, "engine": "qwen2vl", "language": "deu", "cpu_pixel_budget": true,
+            "min_chars": 0, "min_confidence": 0.0,
+            "stages": [{"engine":"qwen2vl", "det_model":"/models/custom.gguf", "vlm_prompt":"Keep all numbers"}],
+        })).unwrap();
+        let saved = scheduler.ocr_options();
+        let explicit = scheduler.requested_ocr_options();
+        assert!(!saved.try_ocr, "normal extraction still obeys the off switch");
+        assert!(explicit.try_ocr);
+        assert_eq!(explicit.ocr_pdf_min_chars, usize::MAX);
+        assert_eq!(serde_json::to_value(&explicit.ocr_pipeline).unwrap(), serde_json::to_value(&saved.ocr_pipeline).unwrap());
+        scheduler.ocr_pipeline.stages[0].det_model = Some("/models/replacement.gguf".into());
+        assert_eq!(explicit.ocr_pipeline.stages[0].det_model.as_deref(), Some("/models/custom.gguf"));
+        assert_eq!(explicit.ocr_pipeline.language.as_deref(), Some("deu"));
+        assert!(explicit.ocr_pipeline.cpu_pixel_budget);
+        assert_eq!(explicit.ocr_pipeline.min_chars, 0);
+        assert_eq!(explicit.ocr_pipeline.min_confidence, 0.0);
+    }
+
+    #[test]
+    fn cli_policy_reader_uses_saved_selection_without_attaching_a_scheduler() {
+        let (mut scheduler, directory) = stored_scheduler();
+        scheduler.ocr_tier = "tier4".into();
+        scheduler.ocr_rec_lang = "cjk".into();
+        scheduler.ocr_pipeline.engine = Some("qwen2vl".into());
+        scheduler.ocr_pipeline.language = Some("jpn".into());
+        scheduler.ocr_pipeline.cpu_pixel_budget = true;
+        scheduler.persist_settings().unwrap();
+        scheduler.enqueue(vec![source("/running")]).unwrap();
+        scheduler.claim_next().unwrap().unwrap();
+
+        let options = load_ocr_options(directory.path(), false).unwrap();
+        assert!(!options.try_ocr);
+        assert_eq!(options.ocr_tier, crate::extractors::OcrTier::Tier4);
+        assert_eq!(options.ocr_rec_lang, crate::extractors::OcrRecLang::Cjk);
+        assert_eq!(options.ocr_pipeline.language.as_deref(), Some("jpn"));
+        assert!(options.ocr_pipeline.cpu_pixel_budget);
+        let requested = load_ocr_options(directory.path(), true).unwrap();
+        assert!(requested.try_ocr);
+        assert_eq!(requested.ocr_pdf_min_chars, usize::MAX);
+        assert_eq!(serde_json::to_value(options.ocr_pipeline).unwrap(), serde_json::to_value(requested.ocr_pipeline).unwrap());
+        assert_eq!(scheduler.in_flight.len(), 1);
+        assert!(scheduler.queue.is_empty());
+    }
+
+    #[test]
+    fn cli_policy_reader_defaults_only_when_settings_are_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let absent = directory.path().join("not-created");
+        assert!(!load_ocr_options(&absent, false).unwrap().try_ocr);
+        assert!(load_ocr_options(&absent, true).unwrap().try_ocr);
+        assert!(!absent.exists());
+
+        let (scheduler, directory) = stored_scheduler();
+        scheduler.store().unwrap().save_settings("not valid settings").unwrap();
+        assert!(load_ocr_options(directory.path(), true).unwrap_err().to_string().contains("Invalid saved OCR policy"));
     }
 
     #[test]
@@ -1484,8 +1596,11 @@ mod tests {
     fn scheduler_reopens_pending_active_and_failed_sources_with_saved_options() {
         let (mut scheduler, dir) = stored_scheduler();
         scheduler.ocr_enabled = true;
-        scheduler.ocr_tier = "tier2".into();
+        scheduler.ocr_tier = "tier4".into();
         scheduler.ocr_pipeline.layout = true;
+        scheduler.ocr_pipeline.engine = Some("qwen2vl".into());
+        scheduler.ocr_pipeline.language = Some("deu".into());
+        scheduler.ocr_pipeline.cpu_pixel_budget = true;
         scheduler.persist_settings().unwrap();
         scheduler.enqueue(vec![source("/done"), source("/error"), source("/active"), source("/pending")]).unwrap();
         let done = scheduler.claim_next().unwrap().unwrap();
@@ -1501,8 +1616,13 @@ mod tests {
         assert_eq!(state.status, BgStatus::Paused);
         assert_eq!((state.pending, state.done, state.errored), (2, 1, 1));
         assert!(reopened.ocr_enabled);
-        assert_eq!(reopened.ocr_tier, "tier2");
+        assert_eq!(reopened.ocr_tier, "tier4");
         assert!(reopened.ocr_pipeline.layout);
+        let restored = reopened.ocr_options();
+        assert_eq!(restored.ocr_tier, crate::extractors::OcrTier::Tier4);
+        assert_eq!(restored.ocr_pipeline.engine.as_deref(), Some("qwen2vl"));
+        assert_eq!(restored.ocr_pipeline.language.as_deref(), Some("deu"));
+        assert!(restored.ocr_pipeline.cpu_pixel_budget);
         reopened.resume().unwrap();
         assert_eq!(reopened.snapshot().pending, 3);
         assert_eq!(reopened.snapshot().errored, 0);

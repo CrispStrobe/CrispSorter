@@ -187,15 +187,23 @@ enum Command {
     /// PDF and print the recognized text. Picks a primary engine + optional
     /// pre-processors (cleanup / NAFNet denoise / layout reading-order) +
     /// optional post-processor (punctuation/spacing/truecasing restore).
-    /// Requires the `crispembed` feature; without it the legacy Rust tier
-    /// ladder (ocrs / Paddle / Tesseract) handles the file instead.
+    /// Uses the shared OCR engine policy. Unavailable explicit engines fail
+    /// with an actionable error instead of substituting another recognizer.
     Ocr {
         /// Image (png/jpg/tiff/…) or PDF to OCR.
         file: PathBuf,
         /// Primary OCR engine.
-        #[arg(long, default_value = "dbnet_trocr",
-              value_parser = ["dbnet_trocr", "surya", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr"])]
+        #[arg(long, default_value = "auto", value_parser = clap::builder::PossibleValuesParser::new(
+            std::iter::once("auto")
+                .chain(crate::extractors::ocr_policy::EMBEDDED_ENGINES.iter().copied())
+                .chain(crate::extractors::ocr_policy::LEGACY_ENGINES.iter().copied())))]
         engine: String,
+        /// Document language/model hint; System Tesseract also accepts eng+deu.
+        #[arg(long)]
+        language: Option<String>,
+        /// Use the isolated Qwen2 VL CPU worker with its bounded vision input.
+        #[arg(long)]
+        cpu_pixel_budget: bool,
         /// Source-type routing hint. `auto` classifies the image; an explicit
         /// type pins the cleanup+engine recipe and disables reclassification.
         #[arg(long, default_value = "auto",
@@ -210,7 +218,7 @@ enum Command {
         #[arg(long)]
         rec_model: Option<String>,
         /// Pre-processor: classical scan cleanup (deskew / crop / whiten).
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[arg(long, default_value_t = cfg!(feature = "crispembed"), action = clap::ArgAction::Set)]
         cleanup: bool,
         /// Pre-processor: learned NAFNet denoise (downloads ~30 MB on first use).
         #[arg(long)]
@@ -320,7 +328,7 @@ enum Command {
     /// OCRs the file, then runs zero-shot NER for the given field labels →
     /// `(label, value, score)`. GLiNER-backed (flat text); the same labels,
     /// configured under `Settings → NER`, also tag documents at ingest time so
-    /// the fields become searchable. (Layout-aware LiLT is a future upgrade.)
+    /// the fields become searchable. LiLT also uses page layout information.
     Kie {
         /// Image or PDF to extract fields from.
         file: PathBuf,
@@ -364,6 +372,9 @@ enum Command {
         /// Write the HTML to this file instead of stdout.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
+        /// Override the app data directory (for saved OCR settings).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
     },
     /// Apply a zoned OCR template to an image — crop + OCR each named zone.
     Zone {
@@ -2270,14 +2281,14 @@ fn run_on_current_stack() -> ExitCode {
         }
         Command::Manpage { out } => cmd_manpage(out),
         Command::Ocr {
-            file, engine, source_type, det_model, rec_model, cleanup, denoise,
+            file, engine, language, cpu_pixel_budget, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
             vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
         } => cmd_ocr(
-            cli.format, file, engine, source_type, det_model, rec_model, cleanup,
+            cli.format, file, engine, language, cpu_pixel_budget, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
@@ -2288,8 +2299,8 @@ fn run_on_current_stack() -> ExitCode {
             cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
         }
         Command::MathOcr { file, model } => cmd_math_ocr(file, model),
-        Command::Table { file, ocr_model, grid, out } => {
-            cmd_table(cli.format, file, ocr_model, grid, out)
+        Command::Table { file, ocr_model, grid, out, data_dir } => {
+            cmd_table(cli.format, file, ocr_model, grid, out, data_dir)
         }
         Command::Zone { file, template, data_dir } => {
             cmd_zone(cli.format, file, template, data_dir)
@@ -2314,6 +2325,8 @@ fn cmd_ocr(
     global_fmt: OutFormat,
     file: PathBuf,
     engine: String,
+    language: Option<String>,
+    cpu_pixel_budget: bool,
     source_type: String,
     det_model: Option<String>,
     rec_model: Option<String>,
@@ -2354,9 +2367,15 @@ fn cmd_ocr(
         return Err(format!("file not found: {}", file.display()));
     }
 
-    // dbnet_trocr (the default engine) uses the well-trodden simple mode; any
-    // other engine needs an explicit single stage so its choice takes effect.
-    let stages = if engine == "dbnet_trocr" {
+    if crate::extractors::ocr_policy::LEGACY_ENGINES.contains(&engine.as_str())
+        && [det_model.as_deref(), rec_model.as_deref(), vlm_ocr_model.as_deref()]
+            .iter().any(|model| model.is_some_and(|m| !m.trim().is_empty())) {
+        return Err("Custom detection, recognition and vision model flags require an embedded OCR engine; the selected legacy adapter cannot apply these weights.".into());
+    }
+    // Automatic and DBNet/TrOCR can use flat settings; other embedded engines
+    // need an explicit stage so their models and engine parameters take effect.
+    let stages = if engine == "auto" || engine == "dbnet_trocr"
+        || crate::extractors::ocr_policy::LEGACY_ENGINES.contains(&engine.as_str()) {
         Vec::new()
     } else {
         vec![OcrStageSpec {
@@ -2375,8 +2394,15 @@ fn cmd_ocr(
         }]
     };
 
+    let advanced_requested = cleanup || denoise || layout || restore || sr || dewarp
+        || [&det_model, &rec_model, &nafnet_model, &punct_model, &sr_model,
+            &restore_model, &vlm_ocr_model, &truecase_model, &lid_model, &tess_model_dir]
+            .iter().any(|model| model.as_deref().is_some_and(|m| !m.trim().is_empty()));
     let cfg = OcrPipelineConfig {
-        enabled: true,
+        enabled: cfg!(feature = "crispembed") || advanced_requested,
+        engine: Some(engine.clone()),
+        language,
+        cpu_pixel_budget,
         // Pin the requested source type (no reclassification) unless `auto`.
         router: source_type == "auto",
         cleanup_enabled: cleanup,
@@ -2516,27 +2542,27 @@ fn cmd_kie(
         return Err(format!("file not found: {}", file.display()));
     }
 
-    // Layout-aware path: OCR + LiLT token classification on the image directly.
+    let data_dir = resolve_data_dir(data_dir)?;
+    let options = crate::bg_ingest::load_ocr_options(&data_dir, true)
+        .map_err(|e| format!("Load OCR settings: {e:#}"))?;
+    // Layout-aware path: its native OCR contract is validated explicitly.
     let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
-        crate::extractors::ocr_crispembed::kie_extract_lilt(
+        let (ocr_config, warnings) = crate::extractors::ocr_policy::resolve_lilt_config(&options)?;
+        for warning in warnings { eprintln!("OCR: {warning}"); }
+        crate::extractors::ocr_crispembed::kie_extract_lilt_with_config(
             &file,
             &labels,
             threshold,
             lilt_model.as_deref(),
+            &ocr_config,
         )
         .map_err(|e| format!("LiLT KIE failed: {e:#}"))?
     } else {
         // Flat-text GLiNER path: OCR → NER over the extracted text.
-        let data_dir = resolve_data_dir(data_dir)?;
         let cfg = crate::index::config_persist::load(&data_dir);
         let cache_dir = crate::index::resolve_model_cache_dir(&cfg, &data_dir);
         let model = cfg.ner_model.unwrap_or_default();
-        let opts = crate::extractors::ExtractOptions {
-            try_ocr: true,
-            ocr_pdf_min_chars: usize::MAX,
-            ..Default::default()
-        };
-        let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
+        let doc = crate::extractors::extract_text_from_path_with_opts(&file, options)
             .map_err(|e| format!("extract failed: {e:#}"))?;
         if doc.full_text.trim().is_empty() {
             return Err("no text extracted from document".into());
@@ -2603,6 +2629,7 @@ fn cmd_table(
     ocr_model: Option<String>,
     grid: bool,
     out_path: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
 ) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
@@ -2619,7 +2646,14 @@ fn cmd_table(
         }
         return Ok(());
     }
-    let html = crate::extractors::ocr_crispembed::table_to_html(&file, ocr_model.as_deref())
+    let data_dir = resolve_data_dir(data_dir)?;
+    let options = crate::bg_ingest::load_ocr_options(&data_dir, true)
+        .map_err(|e| format!("Load OCR settings: {e:#}"))?;
+    let (config, warnings) = crate::extractors::ocr_policy::resolve_table_config(&options)?;
+    for warning in warnings { eprintln!("OCR: {warning}"); }
+    let (_, _, html) = crate::extractors::ocr_crispembed::table_extract_with_config(
+        &file, ocr_model.as_deref(), &config,
+    )
         .map_err(|e| format!("table parse failed: {e:#}"))?;
     if let Some(p) = &out_path {
         std::fs::write(p, html.as_bytes()).map_err(|e| format!("writing {}: {e}", p.display()))?;
@@ -2667,7 +2701,9 @@ fn cmd_zone(
         .map_err(|e| format!("looking up template: {e}"))?
         .ok_or_else(|| format!("template '{}' not found", template_name))?;
 
-    let results = crate::index::zone_ocr::extract_zones(&file, &template)
+    let options = crate::bg_ingest::load_ocr_options(&data_dir, true)
+        .map_err(|e| format!("Load OCR settings: {e:#}"))?;
+    let results = crate::index::zone_ocr::extract_zones_with_opts(&file, &template, &options)
         .map_err(|e| format!("zone extraction: {e:#}"))?;
 
     match out {
@@ -13455,5 +13491,45 @@ fn cmd_intended_purpose(out: OutFormat, cmd: IntendedPurposeCmd) -> Result<(), S
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod ocr_shared_cli_tests {
+    use super::{Cli, Command};
+    use clap::Parser;
+
+    #[test]
+    fn every_shared_ocr_engine_accepts_language_and_cpu_options() {
+        for engine in std::iter::once("auto")
+            .chain(crate::extractors::ocr_policy::EMBEDDED_ENGINES.iter().copied())
+            .chain(crate::extractors::ocr_policy::LEGACY_ENGINES.iter().copied()) {
+            let parsed = Cli::try_parse_from(["crispsorter", "ocr", "scan.png", "--engine", engine,
+                "--language", "deu", "--cpu-pixel-budget"]).unwrap();
+            let Command::Ocr { engine: selected, language, cpu_pixel_budget, .. } = parsed.command else { panic!("expected OCR"); };
+            assert_eq!(selected, engine);
+            assert_eq!(language.as_deref(), Some("deu"));
+            assert!(cpu_pixel_budget);
+        }
+    }
+
+    #[test]
+    fn ocr_defaults_to_shared_automatic_and_rejects_unknown_engines() {
+        let parsed = Cli::try_parse_from(["crispsorter", "ocr", "scan.png"]).unwrap();
+        let Command::Ocr { engine, language, cpu_pixel_budget, .. } = parsed.command else { panic!("expected OCR"); };
+        assert_eq!(engine, "auto");
+        assert!(language.is_none());
+        assert!(!cpu_pixel_budget);
+        assert!(Cli::try_parse_from(["crispsorter", "ocr", "scan.png", "--engine", "missing-engine"]).is_err());
+    }
+
+    #[test]
+    fn table_accepts_saved_policy_directory_and_custom_recognizer() {
+        let parsed = Cli::try_parse_from(["crispsorter", "table", "scan.png", "--data-dir", "app-settings",
+            "--ocr-model", "custom-language.gguf"]).unwrap();
+        let Command::Table { data_dir, ocr_model, grid, .. } = parsed.command else { panic!("expected table"); };
+        assert_eq!(data_dir, Some(std::path::PathBuf::from("app-settings")));
+        assert_eq!(ocr_model.as_deref(), Some("custom-language.gguf"));
+        assert!(!grid);
     }
 }

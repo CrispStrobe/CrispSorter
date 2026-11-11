@@ -26,11 +26,41 @@ pub fn extract_zones(
     image_path: &Path,
     template: &Template,
 ) -> Result<Vec<ZoneResult>> {
+    extract_zones_with_opts(image_path, template, &crate::extractors::ExtractOptions::default())
+}
+
+/// Template text zones use the same engine, language and pipeline as file OCR.
+/// A missing model is an error with its zone label, not an empty success.
+pub fn extract_zones_with_opts(
+    image_path: &Path,
+    template: &Template,
+    opts: &crate::extractors::ExtractOptions,
+) -> Result<Vec<ZoneResult>> {
+    let mut opts = opts.clone();
+    if opts.ocr_rec_lang == crate::extractors::OcrRecLang::Auto {
+        opts.ocr_rec_lang = crate::extractors::ocr_paddle::paddle_language_for_name(
+            &image_path.file_name().unwrap_or_default().to_string_lossy());
+    }
+    extract_zones_using(image_path, template, |path| {
+        crate::extractors::ocr_image_page(path, &opts).map(|document| document.full_text)
+    })
+}
+
+fn extract_zones_using(
+    image_path: &Path,
+    template: &Template,
+    mut recognize: impl FnMut(&Path) -> Result<String>,
+) -> Result<Vec<ZoneResult>> {
     use image::GenericImageView;
 
     if template.zones.is_empty() {
         return Ok(vec![]);
     }
+
+    crate::extractors::image_input::validate_file(image_path).context("Validate template image")?;
+    let (width, height) = image::image_dimensions(image_path).context("Read template image dimensions")?;
+    anyhow::ensure!(width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 100_000_000,
+        "Template image exceeds the supported 100 megapixel limit");
 
     let img = image::open(image_path)
         .with_context(|| format!("opening image {}", image_path.display()))?;
@@ -59,6 +89,21 @@ pub fn extract_zones(
         let clamped_w = px_w.min(img_w - px_x);
         let clamped_h = px_h.min(img_h - px_y);
 
+        // Dispatch by zone type: "checkbox" → OMR, else → OCR
+        if zone.zone_type == "checkbox" {
+            let omr = super::omr::detect_checkmark(
+                image_path, &zone.label,
+                zone.x, zone.y, zone.w, zone.h,
+                super::omr::DEFAULT_THRESHOLD,
+            ).with_context(|| format!("Read checkbox zone '{}'", zone.label))?;
+            results.push(ZoneResult {
+                label: omr.label,
+                text: if omr.filled { "true".into() } else { "false".into() },
+                confidence: omr.confidence as f32,
+            });
+            continue;
+        }
+
         // Crop and save to temp file
         let crop = img.crop_imm(px_x, px_y, clamped_w, clamped_h);
         let tmp = tempfile::Builder::new()
@@ -69,52 +114,17 @@ pub fn extract_zones(
         crop.save(&tmp_path)
             .with_context(|| format!("saving zone crop for '{}'", zone.label))?;
 
-        // Dispatch by zone type: "checkbox" → OMR, else → OCR
-        if zone.zone_type == "checkbox" {
-            let omr = super::omr::detect_checkmark(
-                image_path, &zone.label,
-                zone.x, zone.y, zone.w, zone.h,
-                super::omr::DEFAULT_THRESHOLD,
-            ).unwrap_or_else(|_| super::omr::CheckmarkResult {
-                label: zone.label.clone(),
-                filled: false,
-                fill_ratio: 0.0,
-                confidence: 0.0,
-            });
-            results.push(ZoneResult {
-                label: omr.label,
-                text: if omr.filled { "true".into() } else { "false".into() },
-                confidence: omr.confidence as f32,
-            });
-            continue;
-        }
-
-        // OCR the crop
-        let text = ocr_crop(&tmp_path);
+        let text = recognize(&tmp_path)
+            .with_context(|| format!("OCR failed for zone '{}'", zone.label))?;
 
         results.push(ZoneResult {
             label: zone.label.clone(),
             text,
-            confidence: -1.0, // individual zone confidence not available from tier-1 OCR
+            confidence: -1.0, // plain-text dispatch does not invent a zone confidence
         });
     }
 
     Ok(results)
-}
-
-/// OCR a single cropped image file. Returns the extracted text.
-/// Uses the existing extractor dispatch (tesseract shell-out as
-/// tier 1, CrispEmbed pipeline when available via the standard
-/// ocr_one_image path). Returns empty string on failure.
-fn ocr_crop(path: &Path) -> String {
-    // Use tesseract shell-out — the simplest always-available OCR.
-    // CrispEmbed pipeline integration is a follow-up (requires
-    // threading the OcrPipelineConfig through, which is wired at
-    // the bg_ingest level but not exposed as a standalone call).
-    match crate::extractors::ocr::ocr_via_tesseract(path) {
-        Ok(doc) if !doc.full_text.trim().is_empty() => doc.full_text,
-        _ => String::new(),
-    }
 }
 
 #[cfg(test)]
@@ -174,9 +184,13 @@ mod tests {
             Zone { id: 1, label: "edge".into(), x: 0.8, y: 0.0, w: 0.5, h: 0.1, zone_type: "text".into() },
         ]);
         // Should not panic — zone is clamped
-        let results = extract_zones(&img_path, &t).unwrap();
+        let results = extract_zones_using(&img_path, &t, |crop| {
+            assert_eq!(image::image_dimensions(crop).unwrap(), (20, 10));
+            Ok("right-edge text".into())
+        }).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].label, "edge");
+        assert_eq!(results[0].text, "right-edge text");
     }
 
     #[test]
@@ -185,6 +199,32 @@ mod tests {
             Zone { id: 1, label: "x".into(), x: 0.0, y: 0.0, w: 1.0, h: 1.0, zone_type: "text".into() },
         ]);
         assert!(extract_zones(Path::new("/nonexistent/img.png"), &t).is_err());
+    }
+
+    #[test]
+    fn text_zone_errors_keep_the_zone_and_model_failure_visible() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("scan.png");
+        image::RgbImage::from_pixel(10, 10, image::Rgb([255, 255, 255])).save(&path).unwrap();
+        let template = dummy_template(vec![Zone { id:1, label:"invoice".into(), x:0.0, y:0.0,
+            w:1.0, h:1.0, zone_type:"text".into() }]);
+        let error = extract_zones_using(&path, &template, |_| anyhow::bail!("selected custom model is missing")).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("zone 'invoice'"));
+        assert!(message.contains("selected custom model is missing"));
+    }
+
+    #[test]
+    fn text_zones_reject_an_unknown_configured_engine_instead_of_using_tesseract() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("scan.png");
+        image::RgbImage::from_pixel(10, 10, image::Rgb([255, 255, 255])).save(&path).unwrap();
+        let template = dummy_template(vec![Zone { id:1, label:"invoice".into(), x:0.0, y:0.0,
+            w:1.0, h:1.0, zone_type:"text".into() }]);
+        let mut opts = crate::extractors::ExtractOptions::default();
+        opts.ocr_pipeline.engine = Some("missing-engine".into());
+        let error = extract_zones_with_opts(&path, &template, &opts).unwrap_err();
+        assert!(format!("{error:#}").contains("Unsupported OCR engine: missing-engine"));
     }
 
     // ── The zone→result path with actual content ──────────────────────

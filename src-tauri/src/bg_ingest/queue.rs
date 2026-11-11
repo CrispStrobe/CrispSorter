@@ -2,7 +2,7 @@
 //! configuration only; credentials and service connections stay in app state.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::Path;
 
 pub(super) struct QueueStore {
@@ -27,6 +27,18 @@ pub(super) struct RecoveredQueue {
 }
 
 impl QueueStore {
+    /// Inspect persisted policy without acquiring the scheduler lease, creating
+    /// storage, migrating schemas or recovering another process's active work.
+    pub fn read_settings(data_dir: &Path) -> Result<Option<String>> {
+        let path = data_dir.join("background-ingest.sqlite");
+        if !path.try_exists().context("Check saved OCR settings")? { return Ok(None); }
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .context("Open saved OCR settings read-only")?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.query_row("SELECT value FROM background_queue_meta WHERE key = 'settings'", [], |row| row.get(0))
+            .optional().context("Read saved OCR settings")
+    }
+
     pub fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let lease = Connection::open(data_dir.join("background-ingest-lock.sqlite"))?;
@@ -146,6 +158,35 @@ impl QueueStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_read_does_not_create_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let absent = directory.path().join("unused-data-directory");
+        assert!(QueueStore::read_settings(&absent).unwrap().is_none());
+        assert!(!absent.exists());
+        assert!(std::fs::read_dir(directory.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn policy_read_preserves_live_claims_followups_and_scheduler_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = QueueStore::open(directory.path()).unwrap();
+        let settings = r#"{"ocr_enabled":true,"ocr_tier":"tier4"}"#;
+        store.save_settings(settings).unwrap();
+        store.enqueue(&[("active".into(), "original request".into())]).unwrap();
+        store.claim("active").unwrap();
+        store.enqueue(&[("active".into(), "follow-up request".into())]).unwrap();
+
+        assert_eq!(QueueStore::read_settings(directory.path()).unwrap().as_deref(), Some(settings));
+        let (status, payload, followup): (String, String, Option<String>) = store.connection.query_row(
+            "SELECT status,payload,followup_payload FROM background_queue WHERE source_key='active'", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(status, "in_progress");
+        assert_eq!(payload, "original request");
+        assert_eq!(followup.as_deref(), Some("follow-up request"));
+        assert!(QueueStore::open(directory.path()).is_err(), "read-only inspection released the live lease");
+    }
 
     #[test]
     fn reopening_recovers_inflight_and_latest_followup_without_replaying_success() {

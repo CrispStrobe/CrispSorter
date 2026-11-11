@@ -32,7 +32,16 @@ pub mod jobs { include!(concat!(env!("OUT_DIR"), "/jobs.rs")); }
 pub mod extractors {
     include!(concat!(env!("OUT_DIR"), "/extractor_options.rs"));
     pub mod container { include!(concat!(env!("OUT_DIR"), "/extracted_member.rs")); }
+    pub use crate::ocr_policy_production as ocr_policy;
 }
+// Exercise the production selection/validation policy while making native
+// model capabilities explicitly unavailable in this model-free contract.
+pub use extractors::{ExtractOptions, OcrPipelineConfig, OcrRecLang, OcrStageSpec, OcrTier};
+#[path = "../../src-tauri/src/extractors/ocr_policy.rs"] pub mod ocr_policy_production;
+mod ocr_paddle { pub fn is_paddle_ocr_available() -> bool { false } }
+mod ocr_ocrs { pub fn is_ocrs_available() -> bool { false } }
+mod ocr_worker { pub const CPU_BUDGET_AVAILABLE: bool = false; }
+mod ocr_word_evidence { pub const SYSTEM_TESSERACT_AVAILABLE: bool = false; }
 pub mod audio {pub mod probe {include!(concat!(env!("OUT_DIR"),"/audio_metadata.rs"));}}
 pub mod bg_ingest { pub use crate::bg_queue_production as queue; include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
 

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 // epub-parser, and tesseract.js don't bloat the initial bundle.
 import { logInfo, logWarn, logDebug } from '../log';
 import type { ContainerCoverage, ContainerEntry, ContainerSourceReceipt } from '../containers';
+import type { OcrSelection } from './ocrSettings';
 
 export interface ExtractionResult {
     text: string;
@@ -69,6 +70,8 @@ export interface ExtractionOptions {
     onProgress?: (page: number, total: number) => void;
     maxChars?: number;
     maxPages?: number;
+    /** Explicit recognition choices override the saved extraction policy. */
+    ocr?: OcrSelection;
 }
 
 /** Preserve extraction coverage labels through the foreground indexing boundary. */
@@ -166,6 +169,7 @@ export async function extractText(
     let markdownText: string | undefined;
     let headings: string[] | undefined;
     let pickedTool = '';
+    let metadata: ExtractionResult['metadata'];
 
     // info-level: which extractor was picked (visible to users by
     // default). Per-page chatter inside the individual extractors
@@ -226,10 +230,10 @@ export async function extractText(
         case 'bmp':
         case 'tif':
         case 'tiff': {
-            pickedTool = `tesseract.js OCR (.${extension})`;
+            pickedTool = `configured OCR (.${extension})`;
             logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             const { extractImage } = await import('./imageExtractor');
-            ({ text, markdownText, headings } = await extractImage(arrayBuffer, name));
+            ({ text, markdownText, headings, metadata } = await extractImage(arrayBuffer, name, options));
             break;
         }
         case 'doc':
@@ -245,7 +249,7 @@ export async function extractText(
     }
 
     logDebug(`Extraction finished for ${name}: ${text.length.toLocaleString()} chars, ${headings?.length ?? 0} headings (via ${pickedTool})`);
-    return { text, markdownText, headings };
+    return { text, markdownText, headings, ...(metadata ? { metadata } : {}) };
 }
 
 /**

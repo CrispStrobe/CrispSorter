@@ -54,6 +54,26 @@ impl PageImages {
     }
 }
 
+/// Bake a remaining EXIF orientation into a temporary PNG once, so every OCR
+/// engine sees the same upright pixels. TIFF/PDF frames already carry `1`.
+pub fn normalized_page(path: &Path, orientation: u32) -> Result<Option<tempfile::NamedTempFile>> {
+    anyhow::ensure!((1..=8).contains(&orientation), "Invalid OCR page orientation {orientation}");
+    if orientation == 1 { return Ok(None); }
+    super::image_input::validate_file(path).context("Validate oriented OCR page")?;
+    let (width, height) = image::image_dimensions(path).context("Read oriented OCR page dimensions")?;
+    anyhow::ensure!(width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 100_000_000,
+        "OCR page exceeds the supported 100 megapixel limit");
+    let image = image::open(path).context("Decode oriented OCR page")?;
+    let image = match orientation {
+        2 => image.fliph(), 3 => image.rotate180(), 4 => image.flipv(),
+        5 => image.rotate90().fliph(), 6 => image.rotate90(),
+        7 => image.rotate90().flipv(), 8 => image.rotate270(), _ => image,
+    };
+    let file = tempfile::Builder::new().prefix("ocr_oriented_").suffix(".png").tempfile()?;
+    image.save(file.path()).context("Save oriented OCR page")?;
+    Ok(Some(file))
+}
+
 const MAX_RASTER_METADATA_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
@@ -442,6 +462,22 @@ pub const PAGE_SEPARATOR: &str = "\u{000C}";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exif_rotation_changes_ocr_pixels_once_and_retains_the_temp_image() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("oriented.png");
+        let mut image = image::RgbImage::from_pixel(3, 2, image::Rgb([255u8,255,255]));
+        image.put_pixel(0,0,image::Rgb([255,0,0]));
+        image.save(&path).unwrap();
+        let prepared = normalized_page(&path, 6).unwrap().unwrap();
+        let rotated = image::open(prepared.path()).unwrap().to_rgb8();
+        assert_eq!(rotated.dimensions(), (2,3));
+        assert_eq!(rotated.get_pixel(1,0), &image::Rgb([255,0,0]));
+        assert_eq!(PageImages::single(prepared.path()).page_orientation(0), 1);
+        assert!(normalized_page(prepared.path(), 1).unwrap().is_none());
+        assert_eq!(image::image_dimensions(&path).unwrap(), (3,2), "source stays unchanged");
+    }
 
     fn assert_points(actual: Option<(f64, f64)>, expected: (f64, f64)) {
         let actual = actual.expect("source resolution must be retained");

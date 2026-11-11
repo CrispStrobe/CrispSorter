@@ -228,22 +228,35 @@ fn opaque_page(image: &DynamicImage) -> DynamicImage {
     }))
 }
 
-/// Engines the workspace offers and accepts. All exist in the pinned CrispEmbed
-/// runtime and have registry defaults, so a stage needs no explicit model.
-/// `unified` (needs an explicit GGUF) and the env-gated experimental engines
-/// stay in Settings only.
-const WORKSPACE_ENGINES: &[&str] = &[
-    "auto", "dbnet_trocr", "tesseract", "tesseract_fraktur", "parseq", "ppocrv6", "easyocr",
-    "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision",
-    "lightonocr", "qwen3vl", "unlimited_ocr", "olmocr", "lfm2_vl",
-];
+/// Workbench and extraction share the same embedded catalog. Custom-model
+/// engines remain configurable, and experiment gates control availability.
+const WORKSPACE_ENGINES: &[&str] = crate::extractors::ocr_policy::EMBEDDED_ENGINES;
+
+fn offered_engines(native: bool, system: bool, ocrs: bool, paddle: bool) -> Vec<&'static str> {
+    let mut engines = Vec::new();
+    if native || system || ocrs || paddle { engines.push("auto"); }
+    if native {
+        engines.extend(WORKSPACE_ENGINES.iter().copied().filter(|engine| match *engine {
+            "unlimited_ocr2" => std::env::var("CRISPEMBED_UNLIMITED_OCR2").ok().as_deref() == Some("1"),
+            "minicpm_ocr" => ["CRISPEMBED_MINICPM_OCR", "CRISPEMBED_QWEN35_OCR"].iter()
+                .all(|gate| std::env::var(gate).ok().as_deref() == Some("1")),
+            _ => true,
+        }));
+    }
+    if system { engines.push("system_tesseract"); }
+    if ocrs { engines.push("ocrs"); }
+    if paddle { engines.push("paddle"); }
+    engines
+}
 
 #[tauri::command]
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
     let system = crate::ocr_word_evidence::capabilities();
-    let mut engines = if native { WORKSPACE_ENGINES.to_vec() } else { vec![] };
-    if system.available { engines.push("system_tesseract"); }
+    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_available();
+    let paddle = crate::extractors::ocr_paddle::is_paddle_ocr_available();
+    let engines = offered_engines(native, system.available, ocrs, paddle);
+    let available = native || system.available || ocrs || paddle;
     let mut formats = vec!["text", "markdown", "html", "json"];
     if native { formats.extend(["hocr", "alto"]); }
     if reviewed_pdf_available() { formats.push("pdf"); }
@@ -253,7 +266,7 @@ pub fn ocr_workspace_capabilities() -> Value {
     else if cfg!(feature = "ocr-text-export") { formats.push("docx"); }
     json!({
         "schema_version": PROJECT_VERSION,
-        "ocr": native || system.available, "crispembed": native,
+        "ocr": available, "crispembed": native,
         "system_tesseract": system,
         "camera_import": true, "photo_tools": cfg!(feature = "ocr-photo-tools"),
         "mobile_model_store": crate::model_provisioning::enabled(),
@@ -278,7 +291,7 @@ pub fn ocr_workspace_capabilities() -> Value {
         "cpu_budget": native && crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE,
         "cpu_budget_pixels": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET,
         "engines": engines,
-        "reason": if native || system.available { None } else { Some("Recognition requires CrispEmbed or an installed System Tesseract in a desktop sidecar build. Project editing, image/TIFF import, and text exports remain available.") },
+        "reason": if available { None } else { Some("Recognition requires an available embedded or installed OCR engine. Project editing, image/TIFF import, and text exports remain available.") },
         "pdf_reason": if cfg!(any(feature = "pdf-render", target_os = "android", target_os = "ios")) { None } else { Some("PDF import requires a build with PDF rendering enabled. Import page images or a TIFF instead.") },
         "max_page_pixels": MAX_PAGE_PIXELS,
     })
@@ -503,6 +516,13 @@ pub struct PreparedPage {
     pub warnings: Vec<String>,
 }
 
+fn active_preparation_config(mut config: crate::extractors::OcrPipelineConfig) -> crate::extractors::OcrPipelineConfig {
+    if let Some(engine) = config.engine.as_deref().filter(|engine| !engine.is_empty() && *engine != "auto") {
+        config.stages = config.stages.iter().find(|stage| stage.engine == engine).cloned().into_iter().collect();
+    }
+    config
+}
+
 #[tauri::command]
 pub async fn ocr_workspace_prepare(
     app: tauri::AppHandle,
@@ -514,6 +534,7 @@ pub async fn ocr_workspace_prepare(
 ) -> Result<PreparedPage, String> {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
+    let config = active_preparation_config(config);
     validate_config(&config)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -559,7 +580,7 @@ fn missing_preparation_models(config: &crate::extractors::OcrPipelineConfig) -> 
     let mut wanted: Vec<(String, &'static str)> = Vec::new();
     if config.restore { wanted.push((ocr_crispembed::restore_model_name(config), "restoration")); }
     if config.sr { wanted.push((ocr_crispembed::sr_model_name(config), "super-resolution")); }
-    if config.denoise || config.stages.iter().any(|s| s.cleanup.denoise) {
+    if config.stages.first().map(|s| s.cleanup.denoise).unwrap_or(config.denoise) {
         wanted.push((config.nafnet_model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| "nafnet-denoise".into()), "learned denoise"));
     }
     if config.dewarp && config.dewarp_engine == "tps" { wanted.push(("tps-loc".into(), "dewarp")); }
@@ -584,11 +605,8 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     checked_dimensions(&path)?;
     if config.dewarp {
         progress("Straightening curved lines");
-        if let Some((guard, output)) = ocr_crispembed::dewarp_page(&path, config) {
-            path = output; guards.push(guard);
-        } else {
-            warnings.push("Dewarp did not produce an image. The preceding image was retained; inspect curved lines before approving.".into());
-        }
+        let (guard, output) = ocr_crispembed::dewarp_page_checked(&path, config)?;
+        path = output; guards.push(guard);
     }
     if config.restore {
         progress(&format!("Image restoration ({})", if config.restore_engine.is_empty() { "restormer" } else { config.restore_engine.as_str() }));
@@ -614,8 +632,8 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     if config.stages.iter().any(|s| s.cleanup.page_split) {
         warnings.push("This profile requests spread splitting. Use Split page to create and review both halves; recognition retains the complete current page.".into());
     }
-    let use_cleanup = config.cleanup_enabled || config.stages.iter().any(|s| s.cleanup.enabled);
-    let denoise = config.denoise || config.stages.iter().any(|s| s.cleanup.denoise);
+    let use_cleanup = config.stages.first().map(|s| s.cleanup.enabled).unwrap_or(config.cleanup_enabled);
+    let denoise = config.stages.first().map(|s| s.cleanup.denoise).unwrap_or(config.denoise);
     if denoise { progress("Learned denoise (NAFNet) — can take a while on large pages"); }
     else if use_cleanup { progress("Deskew and clean"); }
     let image = if use_cleanup || denoise {
@@ -682,129 +700,11 @@ fn cleanup_image(_image: DynamicImage, _config: &crate::extractors::OcrPipelineC
 }
 
 fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), String> {
-    if !config.min_confidence.is_finite() || !(0.0..=1.0).contains(&config.min_confidence)
-        || !config.layout_threshold.is_finite() || !(0.0..=1.0).contains(&config.layout_threshold)
-        || !(0..=1_000_000).contains(&config.min_chars)
-        || !(1..=10_000).contains(&config.sr_max_short_side) || config.stages.len() > 32 {
-        return Err("Invalid OCR settings: check confidence, character and resolution limits.".into());
-    }
-    if !["basic", "tps"].contains(&config.dewarp_engine.as_str())
-        || !["restormer", "scunet", "instructir"].contains(&config.restore_engine.as_str())
-        || !["pan", "esrgan", "safmn", "hat", "tbsrn", "dat", "swinir"].contains(&config.sr_engine.as_str()) {
-        return Err("Unknown scan restoration engine.".into());
-    }
-    if !["rtdetr", "cc"].contains(&config.layout_engine.as_str())
-        || !["got", "glm", "qwen2vl", "internvl2", "qwen3vl"].contains(&config.vlm_ocr_engine.as_str()) {
-        return Err("Unknown layout or escalation engine.".into());
-    }
-    if config.restore_engine == "instructir"
-        && !["denoise", "deblur", "dehaze", "derain", "super_resolution", "low_light", "enhance"].contains(&config.restore_task.as_str()) {
-        return Err("Unknown restoration task.".into());
-    }
-    for stage in &config.stages {
-        if !["dbnet_trocr", "surya", "got", "glm", "qwen2vl", "internvl2", "tesseract", "parseq", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl", "unlimited_ocr", "unlimited_ocr2", "minicpm_ocr", "unified", "tesseract_fraktur", "ppocrv6", "easyocr", "olmocr", "lfm2_vl"].contains(&stage.engine.as_str())
-            || !["auto", "screenshot", "scanned_doc", "photo"].contains(&stage.source_type.as_str()) {
-            return Err("Unknown OCR stage engine or source type.".into());
-        }
-        if stage.vlm_prompt.len() > 32_768 || stage.vlm_prompt.contains('\0')
-            || !stage.min_confidence.is_finite() || !(0.0..=1.0).contains(&stage.min_confidence)
-            || !stage.det_prob_threshold.is_finite() || !(0.0..=1.0).contains(&stage.det_prob_threshold)
-            || !stage.det_box_threshold.is_finite() || !(0.0..=1.0).contains(&stage.det_box_threshold)
-            || !(16..=8192).contains(&stage.det_target_short)
-            || !(0..=32768).contains(&stage.vlm_max_tokens)
-            || !(0..=1_000_000).contains(&stage.min_chars) {
-            return Err("Invalid OCR stage settings.".into());
-        }
-        let cleanup = &stage.cleanup;
-        if !(0..=1).contains(&cleanup.binarize_method)
-            || !cleanup.sauvola_k.is_finite() || !(0.0..=1.0).contains(&cleanup.sauvola_k)
-            || !(3..=501).contains(&cleanup.sauvola_window)
-            || !(1..=501).contains(&cleanup.morph_kernel)
-            || !cleanup.border_threshold.is_finite() || !(0.0..=1.0).contains(&cleanup.border_threshold)
-            || !cleanup.deskew_max_angle.is_finite() || !(0.0..=45.0).contains(&cleanup.deskew_max_angle) {
-            return Err("Invalid scan cleanup parameters.".into());
-        }
-    }
-    let as_json = serde_json::to_string(config).map_err(|e| e.to_string())?;
-    if as_json.contains("\\u0000") { return Err("OCR model paths cannot contain null characters.".into()); }
-    Ok(())
+    crate::extractors::ocr_policy::validate_config(config)
 }
 
-pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
-    let mut engine = engine.filter(|s| !s.is_empty()).unwrap_or("auto");
-    // "Automatic" without explicit OCR stages used the native router, which
-    // picks the printed-text TrOCR model for screenshots: English-only and
-    // uppercase (it was fine-tuned on receipts). Tesseract keeps case, umlauts
-    // and other scripts for the selected language.
-    let routed_to_tesseract = engine == "auto" && config.stages.is_empty() && cfg!(feature = "crispembed");
-    if routed_to_tesseract { engine = "tesseract"; }
-    let language = language.filter(|s| !s.is_empty() && *s != "auto");
-    let mut warnings = Vec::new();
-    if let Some(language) = language {
-        if language.len() > 32 || !language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err("Choose a language code, for example en, de, eng or deu.".into());
-        }
-    }
-    if engine != "auto" {
-        if !WORKSPACE_ENGINES.contains(&engine) {
-            return Err(format!("Unsupported OCR engine: {engine}"));
-        }
-        let configured_stage = config.stages.iter().find(|s| s.engine == engine).cloned();
-        let mut stage: crate::extractors::OcrStageSpec = if let Some(stage) = configured_stage {
-            stage
-        } else {
-            let mut stage: crate::extractors::OcrStageSpec = serde_json::from_value(json!({"engine":engine}))
-                .map_err(|e| e.to_string())?;
-            if ["dbnet_trocr", "tesseract", "parseq"].contains(&engine) {
-                stage.det_model = config.det_model.clone();
-                if engine == "dbnet_trocr" { stage.rec_model = config.rec_model.clone(); }
-            } else if config.vlm_ocr_engine == engine {
-                // Flat det/rec model fields describe the DBNet path, never a
-                // newly selected vision engine. Only use its matching VLM slot.
-                stage.det_model = config.vlm_ocr_model.clone();
-            }
-            stage
-        };
-        if routed_to_tesseract {
-            warnings.push(format!("Automatic recognition used Tesseract ({}). Choose another engine in Recognize to compare.",
-                language.unwrap_or("eng")));
-        }
-        stage.source_type = "auto".into();
-        stage.min_confidence = config.min_confidence;
-        stage.min_chars = config.min_chars;
-        if engine == "tesseract" && (language.is_some() || stage.rec_model.is_none()) {
-            let lang = match language.unwrap_or("eng") {
-                "en" => "eng", "de" => "deu", "fr" => "fra", "es" => "spa", "it" => "ita",
-                "pt" => "por", "nl" => "nld", "ru" => "rus", "ar" => "ara", "zh" | "chi_sim" => "chi-sim",
-                "ja" => "jpn", "ko" => "kor", lang => lang,
-            };
-            if !["eng", "deu", "fra", "spa", "ita", "por", "nld", "rus", "ara", "chi-sim", "jpn", "kor"].contains(&lang) {
-                return Err(format!("No registered Tesseract model is available for '{lang}'. Configure a matching custom language model in an OCR stage and use Automatic language, or select a vision engine."));
-            }
-            stage.rec_model = Some(format!("tesseract-{lang}"));
-        } else if stage.rec_model.is_none() {
-            stage.rec_model = match engine {
-                "dbnet_trocr" => Some("trocr-printed".into()), "parseq" => Some("parseq".into()), _ => None,
-            };
-        }
-        if let Some(language) = language {
-            if ["qwen2vl", "internvl2", "granite_vision", "qwen3vl"].contains(&engine) {
-                stage.vlm_prompt = format!("Transcribe the document exactly. The expected language is {language}. Preserve reading order, numbers, punctuation and line breaks. Do not summarize or translate.");
-            } else if engine != "tesseract" {
-                warnings.push("This recognizer uses its model's trained languages; the language selector does not change that model.".into());
-            }
-        }
-        // Page cleanup is explicit and shared, independent of engine choice.
-        stage.cleanup.enabled = config.cleanup_enabled;
-        stage.cleanup.denoise = config.denoise;
-        config.stages = vec![stage];
-        config.router = false;
-    } else if language.is_some() {
-        warnings.push("Automatic routing uses the configured models' languages. Select Tesseract or a vision engine to apply a specific language hint.".into());
-    }
-    config.enabled = true;
-    validate_config(&config)?;
-    Ok((config, warnings))
+pub(crate) fn recognition_config(config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
+    crate::extractors::ocr_policy::recognition_config(config, engine, language)
 }
 
 #[derive(Serialize)]
@@ -861,33 +761,22 @@ async fn ocr_workspace_recognize_inner(
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
-    if engine.as_deref() == Some("system_tesseract") {
-        if cpu_pixel_budget.unwrap_or(false) {
-            return Err("The low-memory CPU profile applies to Qwen2 VL only. Turn it off for System Tesseract.".into());
-        }
-        let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
-        return tokio::task::spawn_blocking(move || {
-            let mut result = recognize_system_tesseract_page(&root, &path, language.as_deref(), zone, size)?;
-            // This adapter never transforms the current working page. Keep the
-            // caller's exact identity after canonical-path validation for I/O.
-            result.page.image_path = page_path;
-            Ok(result)
-        }).await.map_err(|e| format!("System Tesseract worker: {e}"))?;
-    }
-    if !cfg!(feature = "crispembed") { return Err("This recognition engine requires CrispEmbed. Select System Tesseract if it is available.".into()); }
-    let config = match config {
-        Some(config) => config,
-        None => state.bg_ingest.lock().await.ocr_pipeline.clone(),
-    };
-    let (config, warnings) = recognition_config(config, engine.as_deref(), language.as_deref())?;
-    let cpu_budget = cpu_pixel_budget.unwrap_or(false);
-    if cpu_budget {
-        check_cpu_budget(&config)?;
-    }
+    let provided_config = config.is_some();
+    let mut options = if provided_config { crate::extractors::ExtractOptions::default() }
+        else { state.bg_ingest.lock().await.ocr_options() };
+    let mut config = config.unwrap_or_else(|| options.ocr_pipeline.clone());
+    if let Some(engine) = &engine { config.engine = Some(engine.clone()); }
+    if let Some(language) = &language { config.language = Some(language.clone()); }
+    if let Some(budget) = cpu_pixel_budget { config.cpu_pixel_budget = budget; }
+    options.ocr_pipeline = config;
+    let (config, warnings) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
+    let legacy_rec_lang = options.ocr_rec_lang;
+    crate::extractors::ocr_policy::validate_runtime(&config)?;
+    let cpu_budget = config.cpu_pixel_budget;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     tokio::task::spawn_blocking(move || {
-        let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget)?;
-        if zone.is_some() {
+        let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget, legacy_rec_lang)?;
+        if zone.is_some() || !config.enabled {
             // managed_page validated the canonical path used for all I/O.
             // A zone leaves the working image unchanged, so retain its exact
             // project identity even with Windows extended paths or symlinks.
@@ -900,69 +789,18 @@ async fn ocr_workspace_recognize_inner(
 
 /// The CPU pixel budget limits the Qwen2-VL vision input; it has no meaning
 /// for other engines, and the worker cannot run in sandboxed/mobile builds.
+#[cfg(test)]
 fn check_cpu_budget(config: &crate::extractors::OcrPipelineConfig) -> Result<(), String> {
-    if !crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE {
-        return Err("The low-memory CPU profile requires a desktop build with sidecars enabled.".into());
-    }
-    if !(config.stages.len() == 1 && config.stages[0].engine == "qwen2vl") {
-        return Err("The low-memory CPU profile applies to the Qwen2 VL engine only. Choose that engine or turn the profile off.".into());
-    }
-    Ok(())
+    crate::extractors::ocr_policy::validate_cpu_budget(config)
 }
 
 /// Recognize in the isolated low-memory worker and present the result with
 /// honest provenance: VLM regions carry no calibrated detector score, so only
 /// per-character recognition evidence is reported as a confidence.
 fn recognize_with_cpu_budget(path: &Path, config: &crate::extractors::OcrPipelineConfig) -> Result<crate::extractors::ocr_crispembed::OcrReviewResult, String> {
-    use crate::extractors::ocr_crispembed::{review_pipeline_config, OcrReviewRegion, OcrReviewResult};
-    let (width, height) = image::image_dimensions(path).map_err(|e| format!("Read page dimensions: {e}"))?;
-    let regions = crate::extractors::ocr_worker::run_cpu_budget(path, &review_pipeline_config(config))
-        .map_err(|e| format!("Low-memory CPU recognition: {e:#}"))?;
-    let regions = regions.into_iter().map(|r| {
-        let recognition = !r.char_conf.is_empty();
-        OcrReviewRegion {
-            text: r.text, x: r.x, y: r.y, w: r.w, h: r.h,
-            confidence: recognition.then_some(r.confidence),
-            confidence_basis: if recognition { "recognition" } else { "unknown" }.into(),
-            char_conf: r.char_conf, char_conf_unit: "unknown".into(), char_conf_aligned: false,
-            word_evidence: None,
-            kind: "text".into(),
-        }
-    }).collect();
-    Ok(OcrReviewResult {
-        image_path: path.to_owned(), width, height, regions,
-        warnings: vec![format!("Low-memory CPU profile: the vision input was limited to {} pixels, so fine print may be missed. Review the result.", crate::extractors::ocr_worker::CPU_PIXEL_BUDGET)],
-        diagnostics: json!({"cpu_pixel_budget": crate::extractors::ocr_worker::CPU_PIXEL_BUDGET, "isolated_worker": true}),
-    })
-}
-
-/// Explicit external-engine route: recognize exactly the current pixels and
-/// translate both paragraph and word boxes once after a cropped invocation.
-fn recognize_system_tesseract_page(root: &Path, path: &Path, language: Option<&str>, zone: Option<PixelRect>, physical_size: Option<(f64, f64)>) -> Result<RecognizedPage, String> {
-    let started = std::time::Instant::now();
-    let (width, height) = checked_dimensions(path)?;
-    let (recognition_path, offset) = if let Some(zone) = zone {
-        let (x, y, w, h) = checked_rect(zone, width, height)?;
-        let crop = persist_image(root, &decode_page(path)?.crop_imm(x, y, w, h))?;
-        (PathBuf::from(crop.image_path), (x, y))
-    } else { (path.to_owned(), (0, 0)) };
-    let result = crate::ocr_word_evidence::recognize(&recognition_path, language)?;
-    let mut diagnostics = result.diagnostics;
-    diagnostics["full_text"] = json!(result.full_text);
-    diagnostics["engine"] = json!("system_tesseract");
-    diagnostics["preparation"] = json!("current_working_image");
-    diagnostics["recognition_image_path"] = json!(recognition_path.to_string_lossy());
-    if let Some(zone) = zone {
-        diagnostics["zone"] = serde_json::to_value(zone).map_err(|e| e.to_string())?;
-        diagnostics["effective_zone"] = json!({"x":offset.0,"y":offset.1,"w":result.width,"h":result.height});
-        diagnostics["region_offset"] = json!({"x":offset.0,"y":offset.1});
-    }
-    let regions = map_system_tesseract_regions(result.regions, offset, width, height)?;
-    let mut page = PageAsset { image_path:path.to_string_lossy().into_owned(), width, height,
-        page_width_points:None, page_height_points:None, warnings:vec![] };
-    set_physical_size(&mut page, physical_size);
-    Ok(RecognizedPage { page, regions, elapsed_ms:started.elapsed().as_millis() as u64,
-        warnings:result.warnings, diagnostics })
+    crate::extractors::ocr_worker::run_cpu_budget_review(path,
+        &crate::extractors::ocr_crispembed::review_pipeline_config(config))
+        .map_err(|e| format!("Low-memory CPU recognition: {e:#}"))
 }
 
 fn map_system_tesseract_regions(source: Vec<crate::ocr_word_evidence::SystemTesseractRegion>, offset: (u32, u32), width: u32, height: u32) -> Result<Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, String> {
@@ -987,7 +825,29 @@ fn map_system_tesseract_regions(source: Vec<crate::ocr_word_evidence::SystemTess
     Ok(regions)
 }
 
-fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool) -> Result<RecognizedPage, String> {
+/// Plain-text legacy engines share selection and model handling with file
+/// extraction. They do not supply verified word geometry or confidence.
+fn recognize_plain_engine_for_review(path: &Path, config: &crate::extractors::OcrPipelineConfig, rec_lang: crate::extractors::OcrRecLang) -> Result<crate::extractors::ocr_crispembed::OcrReviewResult, String> {
+    use crate::extractors::ocr_crispembed::{OcrReviewRegion, OcrReviewResult};
+    let (width, height) = checked_dimensions(path)?;
+    let mut recognition = config.clone();
+    // Geometry/preparation was already applied to the reviewed snapshot.
+    recognition.enabled = false;
+    recognition.layout = false;
+    let options = crate::extractors::ExtractOptions { try_ocr: true, ocr_pipeline: recognition, ocr_rec_lang: rec_lang, ..Default::default() };
+    let text = crate::extractors::ocr_image_page(path, &options)
+        .map_err(|e| format!("Recognize page: {e:#}"))?.full_text;
+    let regions = if text.trim().is_empty() { Vec::new() } else {
+        vec![OcrReviewRegion { text, x: 0.0, y: 0.0, w: width as f32, h: height as f32,
+            confidence: None, confidence_basis: "unknown".into(), char_conf: Vec::new(),
+            char_conf_unit: "unknown".into(), char_conf_aligned: false, word_evidence: None, kind: "text".into() }]
+    };
+    Ok(OcrReviewResult { image_path: path.to_owned(), width, height, regions,
+        warnings: vec!["This engine returns plain text. The review block covers the page; word positions and confidence are unavailable.".into()],
+        diagnostics: json!({"engine": config.engine, "geometry": "full_page_text_block", "native_word_evidence": false}) })
+}
+
+fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool, legacy_rec_lang: crate::extractors::OcrRecLang) -> Result<RecognizedPage, String> {
     let started = std::time::Instant::now();
     let (page, recognition_path, offset) = if let Some(zone) = zone {
         // A zone result must align with the current whole page. Geometric
@@ -998,6 +858,12 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         warnings.push("Zone recognition preserves the current page geometry; scan repair settings are applied only when recognizing a complete page.".into());
         (PageAsset { image_path: path.to_string_lossy().into_owned(), width: image.width(), height: image.height(),
             page_width_points:physical_size.map(|(w, _)| w), page_height_points:physical_size.map(|(_, h)| h), warnings: Vec::new() }, PathBuf::from(crop.image_path), (x, y))
+    } else if !config.enabled {
+        let (width, height) = checked_dimensions(path)?;
+        let mut page = PageAsset { image_path: path.to_string_lossy().into_owned(), width, height,
+            page_width_points: None, page_height_points: None, warnings: Vec::new() };
+        set_physical_size(&mut page, physical_size);
+        (page, path.to_owned(), (0, 0))
     } else {
         let prepared = prepare_page(root, path, config, physical_size)?;
         warnings.extend(prepared.warnings);
@@ -1006,6 +872,18 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     };
     let mut result = if cpu_budget {
         recognize_with_cpu_budget(&recognition_path, config)?
+    } else if config.engine.as_deref() == Some("system_tesseract") {
+        let source = crate::ocr_word_evidence::recognize(&recognition_path, config.language.as_deref())?;
+        let mut diagnostics = source.diagnostics;
+        diagnostics["engine"] = json!("system_tesseract");
+        diagnostics["full_text"] = json!(source.full_text);
+        crate::extractors::ocr_crispembed::OcrReviewResult {
+            image_path: recognition_path.clone(), width: source.width, height: source.height,
+            regions: map_system_tesseract_regions(source.regions, (0, 0), source.width, source.height)?,
+            warnings: source.warnings, diagnostics,
+        }
+    } else if matches!(config.engine.as_deref(), Some("ocrs" | "paddle")) {
+        recognize_plain_engine_for_review(&recognition_path, config, legacy_rec_lang)?
     } else {
         crate::extractors::ocr_crispembed::ocr_regions_for_review(&recognition_path, config)
             .map_err(|e| format!("Recognize page: {e:#}"))?
@@ -1021,7 +899,7 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     if result.regions.len() != detected {
         result.diagnostics["line_grouping"] = json!({"words": detected, "lines": result.regions.len()});
     }
-    if config.layout && zone.is_none() {
+    if config.enabled && config.layout && zone.is_none() {
         annotate_layout(&recognition_path, config, &mut result.regions, &mut result.diagnostics, &mut warnings);
     }
     for region in &mut result.regions {
@@ -3033,6 +2911,37 @@ mod tests {
     }
 
     #[test]
+    fn preparation_selects_the_requested_recipe_without_requiring_recognition_weights() {
+        let mut config = crate::extractors::OcrPipelineConfig::default();
+        config.engine = Some("qwen2vl".into());
+        config.stages = vec![
+            serde_json::from_value(json!({"engine":"surya","cleanup":{"enabled":true,"denoise":true}})).unwrap(),
+            serde_json::from_value(json!({"engine":"qwen2vl","cleanup":{"enabled":false,"denoise":false},"vlm_prompt":"Keep columns"})).unwrap(),
+        ];
+        let active = active_preparation_config(config.clone());
+        assert_eq!(active.stages.len(), 1);
+        assert_eq!(active.stages[0].engine, "qwen2vl");
+        assert!(!active.stages[0].cleanup.enabled);
+        assert!(!active.stages[0].cleanup.denoise);
+        assert_eq!(active.stages[0].vlm_prompt, "Keep columns");
+        config.engine = Some("auto".into());
+        assert_eq!(active_preparation_config(config.clone()).stages.len(), 2);
+        config.engine = Some("system_tesseract".into());
+        assert!(active_preparation_config(config).stages.is_empty());
+    }
+
+    #[test]
+    fn capability_catalog_offers_available_legacy_engines_and_custom_embedded_choices() {
+        assert!(offered_engines(false, false, false, false).is_empty());
+        assert_eq!(offered_engines(false, true, true, false), ["auto", "system_tesseract", "ocrs"]);
+        let all = offered_engines(true, true, true, true);
+        for engine in ["auto", "surya", "unified", "tesseract_fraktur", "olmocr", "lfm2_vl", "system_tesseract", "ocrs", "paddle"] {
+            assert!(all.contains(&engine), "missing {engine}");
+        }
+        assert_eq!(all.iter().filter(|engine| **engine == "auto").count(), 1);
+    }
+
+    #[test]
     fn engine_and_language_choices_produce_explicit_config() {
         let (config, warnings) = recognition_config(Default::default(), Some("tesseract"), Some("de")).unwrap();
         assert!(!config.router);
@@ -3052,17 +2961,17 @@ mod tests {
     fn cpu_budget_is_limited_to_qwen2vl_in_spawn_capable_builds() {
         let (qwen, _) = recognition_config(Default::default(), Some("qwen2vl"), None).unwrap();
         let (trocr, _) = recognition_config(Default::default(), Some("dbnet_trocr"), None).unwrap();
-        if crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE {
+        if crate::extractors::ocr_worker::CPU_BUDGET_AVAILABLE && cfg!(feature = "crispembed") {
             assert!(check_cpu_budget(&qwen).is_ok());
             assert!(check_cpu_budget(&trocr).unwrap_err().contains("Qwen2 VL engine only"));
             assert!(check_cpu_budget(&Default::default()).is_err(), "automatic routing is not a single Qwen stage");
         } else {
-            assert!(check_cpu_budget(&qwen).unwrap_err().contains("sidecars"));
+            assert!(check_cpu_budget(&qwen).is_err());
         }
     }
 
     #[test]
-    fn every_offered_engine_builds_a_single_stage_with_registry_defaults() {
+    fn every_embedded_choice_builds_a_stage_and_custom_models_remain_configurable() {
         for engine in WORKSPACE_ENGINES.iter().filter(|e| **e != "auto") {
             let (config, _) = recognition_config(Default::default(), Some(engine), None)
                 .unwrap_or_else(|e| panic!("{engine}: {e}"));
@@ -3075,7 +2984,7 @@ mod tests {
             let (config, _) = recognition_config(Default::default(), Some(engine), None).unwrap();
             assert_eq!(config.stages[0].rec_model, None, "{engine}");
         }
-        assert!(!WORKSPACE_ENGINES.contains(&"unified"), "unified needs an explicit GGUF");
+        assert!(WORKSPACE_ENGINES.contains(&"unified"), "custom-model engines share the same catalog");
         // Every engine Settings can put in a pipeline stage must also pass the
         // workspace's stored-config validation, or recognition fails for users
         // who configured it there.

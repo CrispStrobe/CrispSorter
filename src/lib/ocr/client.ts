@@ -16,6 +16,7 @@ import { getSetting, saveSetting } from "../store";
 import { readProofreadingData, type ProofreadingData } from "./proofreadingData";
 import type { OfficeExportOptions } from "./officeExport";
 import type { WorkbookOptions } from "./workbookExport";
+import { resolveRecognitionLanguage } from "./recognitionLanguage";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -210,23 +211,7 @@ export function recognitionLanguage(
   language?: string | null,
   config?: Record<string, unknown> | null,
 ): string | null {
-  const automatic = !language || language === "auto";
-  const tesseract = !engine || engine === "auto" || engine === "tesseract";
-  // Omitted config is loaded from native app state. Its stages may select a
-  // custom language model, so the client cannot safely invent a language hint.
-  if (!automatic || !tesseract || !config) return language ?? null;
-  const stages = config.stages;
-  if (stages !== undefined && !Array.isArray(stages)) return language ?? null;
-  if (!engine || engine === "auto") {
-    if (stages?.length) return language ?? null;
-  } else {
-    // Match native selection: the first stage for the explicitly chosen engine
-    // supplies its recognizer, even if another later stage uses another model.
-    const configured = stages?.find(stage => stage && typeof stage === "object"
-      && !Array.isArray(stage) && stage.engine === "tesseract");
-    if (configured && typeof configured.rec_model === "string") return language ?? null;
-  }
-  return defaultOcrLanguage;
+  return resolveRecognitionLanguage(engine, language, config, defaultOcrLanguage);
 }
 
 export interface PrepareOptions {
@@ -280,9 +265,11 @@ export interface WorkspaceClient {
     pagePath: string,
     labels: string[],
     threshold: number,
+    config?: Record<string, unknown>,
   ): Promise<ExtractionField[]>;
   table(
     pagePath: string,
+    config?: Record<string, unknown>,
   ): Promise<{ html: string; rows: number; cols: number }>;
   math(pagePath: string): Promise<string | null>;
   writeText(
@@ -299,6 +286,18 @@ export interface WorkspaceClient {
 }
 
 const providerNames = new Map<string, string>();
+
+/** Specialist tools receive the same immutable project selection as OCR.
+ * Omitting config intentionally leaves existing search callers on app defaults. */
+function specialistConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const snapshot = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+  snapshot.language = recognitionLanguage(
+    typeof snapshot.engine === "string" ? snapshot.engine : null,
+    typeof snapshot.language === "string" ? snapshot.language : null,
+    snapshot,
+  );
+  return snapshot;
+}
 const mobileExports = new Map<string, string>();
 const documentExtensions = new Set(["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"]);
 let nativeImageFormats = new Set<string>();
@@ -526,19 +525,21 @@ export const workspaceClient: WorkspaceClient = {
   },
   extractFields: (text, labels, threshold) =>
     invoke("ocr_workspace_extract_fields", { text, labels, threshold }),
-  layoutFields: (pagePath, labels, threshold) =>
+  layoutFields: (pagePath, labels, threshold, config) =>
     invoke("tool_kie_extract", {
       locationUri: pagePath,
       labels,
       threshold,
       lilt: true,
       liltModel: null,
+      ...(config === undefined ? {} : { config: specialistConfig(config) }),
     }),
-  table: (pagePath) =>
+  table: (pagePath, config) =>
     invoke("tool_table_extract", {
       locationUri: pagePath,
       ocrModel: null,
       save: false,
+      ...(config === undefined ? {} : { config: specialistConfig(config) }),
     }),
   math: (pagePath) =>
     invoke("tool_math_ocr", { locationUri: pagePath, model: null }),

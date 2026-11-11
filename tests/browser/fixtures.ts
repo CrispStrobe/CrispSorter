@@ -6,6 +6,8 @@ import type { ImportedDocument, OcrProject, RecognitionResult } from '../../src/
 export async function fixtures(page: Page) {
     await page.addInitScript(() => {
         const root = window as any;
+        // The official API's runtime check is separate from the IPC bridge.
+        root.isTauri = true;
         const body = 'Unrelated opening. '.repeat(350) + 'The cobalt warranty expires in November 2031. ' + 'Unrelated appendix. '.repeat(350);
         const items = [
             { id: 'pending', originalPath: '/fixtures/scan.png', originalName: 'Pending scan.png', extension: 'png', size: 1024, modifiedAt: 1, status: 'queued', isAccepted: false },
@@ -25,6 +27,7 @@ export async function fixtures(page: Page) {
         root.__fixtureEmptyEvidence = false;
         root.__fixtureOcrPageFailures = {};
         root.__fixtureOcrZoneOutcome = 'success';
+        root.__fixtureOcrImageRequests = [];
         const ocrProjects = new Map<string, ProjectEnvelope>();
         let latestOcrProjectId: string | null = null;
         const result = { doc_id: 'warranty', filename: 'Warranty.txt', location_uri: '/fixtures/warranty.txt', chunk_index: 4, score: 0.8, source_hash: 'a'.repeat(64), snippet: 'Cobalt warranty' };
@@ -65,8 +68,8 @@ export async function fixtures(page: Page) {
             transformCallback: (fn: Function) => { const id = rid++; callbacks.set(id, fn); return id; },
             unregisterCallback: (id: number) => callbacks.delete(id),
             convertFileSrc: () => 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="500" height="700"><rect width="500" height="700" fill="white"/><text x="20" y="40">Warranty expires in November 2031.</text></svg>'),
-            invoke: async (command: string, args: any = {}) => {
-                root.__fixtureCalls.push({ command, args });
+            invoke: async (command: string, args: any = {}, options?: { headers?: Record<string, string> }) => {
+                root.__fixtureCalls.push({ command, args, ...(options ? { options } : {}) });
                 if (command === 'plugin:store|load') return 1;
                 if (command === 'plugin:store|get') return [settings[args.key], args.key in settings];
                 if (command === 'plugin:store|set') { settings[args.key] = args.value; return; }
@@ -92,6 +95,22 @@ export async function fixtures(page: Page) {
                 if (command === 'plugin:fs|read_file' || command === 'plugin:fs|read_text_file') return Array.from(new TextEncoder().encode(body));
                 if (command === 'plugin:fs|stat') return { size: body.length, isFile: true, isDirectory: false, isSymlink: false };
                 if (command === 'build_capabilities') return capabilities;
+                if (command === 'ocr_extract_image') {
+                    if (!(args instanceof Uint8Array) || !args.byteLength) throw new Error('Fixture OCR requires raw image bytes');
+                    const encoded = options?.headers?.['x-ocr-metadata'];
+                    if (!encoded) throw new Error('Fixture OCR metadata is missing');
+                    const metadata = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(encoded), character => character.charCodeAt(0))));
+                    root.__fixtureOcrImageRequests.push({ ...metadata, bytes: args.byteLength });
+                    if (root.__fixtureOcrImageError) throw new Error(root.__fixtureOcrImageError);
+                    const request = metadata.options ?? {};
+                    let engine = request.engine ?? request.config?.engine ?? 'auto';
+                    if (engine === 'auto') {
+                        const legacy: Record<string, string> = { tier1: 'system_tesseract', tier2: 'ocrs', tier3: 'paddle', tier4: 'dbnet_trocr' };
+                        engine = request.config?.enabled === false && legacy[request.ocrTier]
+                            ? legacy[request.ocrTier] : request.config?.stages?.[0]?.engine ?? 'tesseract';
+                    }
+                    return { text: root.__fixtureOcrImageText ?? 'The cobalt warranty expires in November 2031.', engine, warnings: [] };
+                }
                 if (command === 'intended_purpose_status') return { acknowledged: true, version: 1, statement: '', accepted_at_unix: 1 };
                 if (command === 'batch_session_is_migrated') return true;
                 if (command === 'batch_session_load') return items;

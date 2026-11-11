@@ -102,6 +102,7 @@ pub struct RenderPage {
     // Split TIFF/PDF frame files must outlive the rendering call. The legacy
     // importer used to drop its temporary directory before returning pages.
     _source_images: Option<std::sync::Arc<super::page_source::PageImages>>,
+    _prepared_image: Option<std::sync::Arc<super::PreparedOcrPage>>,
 }
 
 impl RenderPage {
@@ -114,7 +115,7 @@ impl RenderPage {
         image_path: impl Into<String>,
     ) -> Self {
         Self { regions, page_width, page_height, image_path: image_path.into(),
-            physical_size_points: None, _source_images: None }
+            physical_size_points: None, _source_images: None, _prepared_image: None }
     }
 
     pub fn with_physical_size(mut self, width_points: f32, height_points: f32) -> Self {
@@ -235,7 +236,16 @@ pub fn render_pages_from_file(
     ext: &str,
     cfg: &crate::extractors::OcrPipelineConfig,
 ) -> std::result::Result<Vec<RenderPage>, String> {
-    use crate::extractors::{ocr_crispembed, page_source};
+    use crate::extractors::{ocr_crispembed, ocr_policy, page_source};
+
+    let (cfg, _) = ocr_policy::recognition_config(cfg.clone(), None, None)?;
+    ocr_policy::validate_runtime(&cfg)?;
+    if [Some("ocrs"), Some("paddle")].contains(&cfg.engine.as_deref()) {
+        return Err("Structured OCR export needs an engine with region coordinates. Use System Tesseract or an embedded engine, or export plain text with the selected engine.".into());
+    }
+    if cfg.enabled && cfg.stages.iter().any(|s| s.cleanup.enabled && s.cleanup.page_split) {
+        return Err("This profile requests spread splitting. Split the source pages in OCR Workbench before structured export so both page images and their physical dimensions are retained.".into());
+    }
 
     let images = std::sync::Arc::new(if ext == "pdf" {
         page_source::rasterize_pdf(file).map_err(|e| format!("rasterize PDF: {e:#}"))?
@@ -245,9 +255,15 @@ pub fn render_pages_from_file(
 
     let mut pages = Vec::with_capacity(images.len());
     for (i, page_path) in images.paths().iter().enumerate() {
-        let regions = ocr_crispembed::ocr_regions_via_pipeline(page_path, cfg)
+        let prepared = std::sync::Arc::new(super::prepare_ocr_page(page_path, &cfg, true)
+            .map_err(|e| format!("Prepare OCR page {}: {e:#}", i + 1))?);
+        let working = &prepared.path;
+        let review = ocr_crispembed::review_pipeline_config(&cfg);
+        let regions = if cfg.enabled && cfg.layout {
+            render_layout_regions(working, &review, &cfg)
+        } else { recognize_render_regions(working, &review) }
             .map_err(|e| format!("OCR failed on page {}: {e:#}", i + 1))?;
-        let (w, h) = image::image_dimensions(page_path).map_err(|e| format!("Read page {} dimensions: {e}", i + 1))?;
+        let (w, h) = image::image_dimensions(working).map_err(|e| format!("Read page {} dimensions: {e}", i + 1))?;
         if w == 0 || h == 0 || w > i32::MAX as u32 || h > i32::MAX as u32 {
             return Err(format!("Page {} has invalid output dimensions", i + 1));
         }
@@ -255,13 +271,56 @@ pub fn render_pages_from_file(
             regions,
             w as i32,
             h as i32,
-            page_path.display().to_string(),
+            working.display().to_string(),
         );
-        page.physical_size_points = images.page_size_points(i).map(|(w, h)| (w as f32, h as f32));
+        page.physical_size_points = images.page_size_points(i)
+            .map(|(w,h)| if images.page_orientation(i) >= 5 { (h,w) } else { (w,h) })
+            .map(|(w, h)| (w as f32 * prepared.cleanup_scale.0, h as f32 * prepared.cleanup_scale.1));
         page._source_images = Some(images.clone());
+        page._prepared_image = Some(prepared);
         pages.push(page);
     }
     Ok(pages)
+}
+
+fn recognize_render_regions(path: &std::path::Path, config: &super::OcrPipelineConfig) -> Result<Vec<OcrRegion>> {
+    if config.engine.as_deref() == Some("system_tesseract") {
+        let result = crate::ocr_word_evidence::recognize(path, config.language.as_deref()).map_err(anyhow::Error::msg)?;
+        return Ok(result.regions.into_iter().map(|r| OcrRegion { text:r.text, x:r.x, y:r.y, w:r.w, h:r.h, confidence:-1.0 }).collect());
+    }
+    let result = if config.cpu_pixel_budget {
+        super::ocr_worker::run_cpu_budget_review(path, config)?
+    } else { super::ocr_crispembed::ocr_regions_for_review(path, config)? };
+    Ok(result.regions.into_iter().map(|r| OcrRegion { text:r.text, x:r.x, y:r.y, w:r.w, h:r.h,
+        confidence: if r.confidence_basis == "recognition" { r.confidence.unwrap_or(-1.0) } else { -1.0 } }).collect())
+}
+
+fn render_layout_regions(path: &std::path::Path, recognition: &super::OcrPipelineConfig, config: &super::OcrPipelineConfig) -> Result<Vec<OcrRegion>> {
+    use super::layout::RegionKind;
+    let layout = super::detect_ocr_layout(path, config)?;
+    anyhow::ensure!(!layout.is_empty(), "layout pass found no regions");
+    let image = image::open(path)?;
+    let mut output = Vec::new();
+    for region in layout {
+        match region.kind {
+            RegionKind::Header | RegionKind::Footer if config.drop_headers_footers => continue,
+            RegionKind::Figure | RegionKind::Other(_) => continue,
+            _ => {},
+        }
+        let x = region.x1.max(0.0).min(image.width() as f32) as u32;
+        let y = region.y1.max(0.0).min(image.height() as f32) as u32;
+        let right = region.x2.max(0.0).min(image.width() as f32) as u32;
+        let bottom = region.y2.max(0.0).min(image.height() as f32) as u32;
+        if right <= x || bottom <= y { continue; }
+        let crop = tempfile::Builder::new().prefix("ocr_render_region_").suffix(".png").tempfile()?;
+        image.crop_imm(x,y,right-x,bottom-y).save(crop.path())?;
+        for mut recognized in recognize_render_regions(crop.path(), recognition)? {
+            recognized.x += x as f32;
+            recognized.y += y as f32;
+            output.push(recognized);
+        }
+    }
+    Ok(output)
 }
 
 /// Plain-text rendering: regions joined by newlines, pages by form-feed.

@@ -411,40 +411,49 @@ pub fn cc_detect_regions(_path: &Path) -> Vec<super::layout::LayoutRegion> {
 /// into "parse, get nothing, throw the crop away, fall back to plain OCR".
 const TABLE_REC_MODEL: &str = "tesseract-eng";
 
-/// True for a Tesseract recogniser, given either a registry name
-/// (`tesseract-eng`, `tesseract-fraktur`) or a resolved path
-/// (`…/tesseract-eng.gguf`).
-fn is_tesseract_model(name: &str) -> bool {
-    let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    leaf.to_ascii_lowercase().starts_with("tesseract")
-}
-
-/// Pick the cell recogniser for [`table_to_html`]: honour an explicitly
-/// requested Tesseract model, otherwise use the known-good default. Any other
-/// recogniser is replaced rather than silently accepted, because the parser
-/// would accept the path and then emit empty cells.
+/// Preserve an explicitly requested model exactly. Custom Tesseract GGUF files
+/// need not be named `tesseract-*`; failures are surfaced without replacement.
 fn table_rec_model(ocr_model: Option<&str>) -> &str {
-    match ocr_model {
-        Some(m) if is_tesseract_model(m) => m,
-        _ => TABLE_REC_MODEL,
-    }
+    ocr_model.unwrap_or(TABLE_REC_MODEL)
 }
 
 /// Parse a table image into an HTML `<table>` (rule-based structure + per-cell
-/// OCR). `ocr_model` must be a Tesseract recogniser; anything else falls back to
-/// [`TABLE_REC_MODEL`] — see [`table_rec_model`].
+/// OCR). `ocr_model` must be a Tesseract recogniser. Explicit choices are never
+/// replaced with another model.
 #[cfg(feature = "crispembed")]
 pub fn table_to_html(path: &Path, ocr_model: Option<&str>) -> Result<String> {
     let gray = image::open(path)
         .with_context(|| format!("opening {}", path.display()))?
         .to_luma8();
     let (w, h) = (gray.width(), gray.height());
-    let model = resolve(table_rec_model(ocr_model));
+    let model = resolve_checked(table_rec_model(ocr_model))?;
     let parser = crispembed::CrispTableParse::new(&model, 0)
         .map_err(|e| anyhow::anyhow!("table parser init: {e}"))?;
-    parser
+    let html = parser
         .to_html(gray.as_raw(), w as i32, h as i32)
-        .ok_or_else(|| anyhow::anyhow!("table parse produced no HTML"))
+        .ok_or_else(|| anyhow::anyhow!("table parse produced no HTML"))?;
+    anyhow::ensure!(super::layout_table_text(&html).is_some(),
+        "No cell text was recognized by the requested table model; verify that it is a compatible Tesseract GGUF. The model was not replaced");
+    Ok(html)
+}
+
+/// One prepared image for both the grid receipt and cell recognition.
+pub fn table_extract_with_config(
+    path: &Path,
+    ocr_model: Option<&str>,
+    config: &super::OcrPipelineConfig,
+) -> Result<(i32, i32, String)> {
+    super::ocr_policy::validate_config(config).map_err(anyhow::Error::msg)?;
+    super::ocr_policy::validate_runtime(config).map_err(anyhow::Error::msg)?;
+    super::ocr_policy::validate_table_config(config).map_err(anyhow::Error::msg)?;
+    let prepared = super::prepare_ocr_page(path, config, true)?;
+    let stage = &config.stages[0];
+    let model = ocr_model.or(stage.rec_model.as_deref()).unwrap_or_else(|| {
+        if stage.engine == "tesseract_fraktur" { "tesseract-fraktur" } else { TABLE_REC_MODEL }
+    });
+    let (rows, cols) = table_grid(&prepared.path)?;
+    let html = table_to_html(&prepared.path, Some(model))?;
+    Ok((rows, cols, html))
 }
 
 /// Detect a table's grid dimensions (rows, cols) without OCR.
@@ -461,17 +470,36 @@ pub fn table_grid(path: &Path) -> Result<(i32, i32)> {
 /// Layout-aware KIE via LiLT: OCR the image + run LiLT token classification to
 /// extract `labels` → `(label, value, score)`. Uses the high-level CrispKie
 /// pipeline (OCR det+rec done internally).
-#[cfg(feature = "crispembed")]
 pub fn kie_extract_lilt(
     image_path: &Path,
     labels: &[String],
     threshold: f32,
     lilt_model: Option<&str>,
 ) -> Result<Vec<(String, String, f32)>> {
+    let mut config = super::OcrPipelineConfig::default();
+    config.cleanup_enabled = false;
+    let (config, _) = super::ocr_policy::recognition_config(config, Some("dbnet_trocr"), None).map_err(anyhow::Error::msg)?;
+    kie_extract_lilt_with_config(image_path, labels, threshold, lilt_model, &config)
+}
+
+#[cfg(feature = "crispembed")]
+pub fn kie_extract_lilt_with_config(
+    image_path: &Path,
+    labels: &[String],
+    threshold: f32,
+    lilt_model: Option<&str>,
+    config: &super::OcrPipelineConfig,
+) -> Result<Vec<(String, String, f32)>> {
+    super::ocr_policy::validate_config(config).map_err(anyhow::Error::msg)?;
+    super::ocr_policy::validate_runtime(config).map_err(anyhow::Error::msg)?;
+    super::ocr_policy::validate_lilt_config(config).map_err(anyhow::Error::msg)?;
+    let prepared = super::prepare_ocr_page(image_path, config, true)?;
+    let image_path = &prepared.path;
     let img = image_path.to_str().context("image path not UTF-8")?;
-    let det = resolve(DEFAULT_DET_MODEL);
-    let rec = resolve(DEFAULT_REC_MODEL);
-    let lilt = resolve(lilt_model.unwrap_or("lilt-funsd"));
+    let stage = &config.stages[0];
+    let det = resolve_checked(stage.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL))?;
+    let rec = resolve_checked(stage.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL))?;
+    let lilt = resolve_checked(lilt_model.unwrap_or("lilt-funsd"))?;
     let kie = crispembed::CrispKie::new_lilt(&det, &rec, "", &lilt, 0)
         .map_err(|e| anyhow::anyhow!("LiLT KIE init: {e}"))?;
     let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
@@ -482,11 +510,12 @@ pub fn kie_extract_lilt(
 }
 
 #[cfg(not(feature = "crispembed"))]
-pub fn kie_extract_lilt(
+pub fn kie_extract_lilt_with_config(
     _image_path: &Path,
     _labels: &[String],
     _threshold: f32,
     _lilt_model: Option<&str>,
+    _config: &super::OcrPipelineConfig,
 ) -> Result<Vec<(String, String, f32)>> {
     anyhow::bail!("LiLT KIE requires the `crispembed` cargo feature")
 }
@@ -975,7 +1004,7 @@ pub fn ocr_regions_detailed(
 /// Review regions distinguish detector scores from recognition evidence. The
 /// native confidence array may contain tokenizer scores; equality with the text
 /// length alone is not proof of character alignment.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OcrReviewRegion {
     pub text: String,
     pub x: f32,
@@ -992,7 +1021,7 @@ pub struct OcrReviewRegion {
     pub kind: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct OcrReviewResult {
     pub image_path: std::path::PathBuf,
     pub width: u32,
@@ -1098,7 +1127,7 @@ pub fn ocr_regions_for_review(_path: &Path, _cfg: &super::OcrPipelineConfig) -> 
 
 /// Map a VLM escalation engine name to the C `vlm_engine` id used by
 /// `CrispOcrPipeline::new` (0=GOT 1=GLM 2=Qwen2-VL 3=InternVL2). Note this
-/// numbering differs from the per-stage `engine_id`. Unknown → Qwen2-VL.
+/// numbering differs from the per-stage `engine_id`. Unknown is rejected.
 #[cfg(feature = "crispembed")]
 fn vlm_engine_id(engine: &str) -> i32 {
     match engine {
@@ -1107,13 +1136,7 @@ fn vlm_engine_id(engine: &str) -> i32 {
         "internvl2" => 3,
         "qwen3vl" => 4,
         "qwen2vl" => 2,
-        other => {
-            // The single-shot API only understands 0..4. Document VLMs that
-            // only exist as pipeline stages (olmocr, lfm2_vl, unified …) used
-            // to land on qwen2vl without a word; say so instead.
-            eprintln!("[ocr] VLM engine {other:?} is not available in single-shot mode; using qwen2vl");
-            2
-        }
+        _ => -1,
     }
 }
 
@@ -1250,6 +1273,73 @@ fn resolve_checked(name: &str) -> Result<String> {
     Ok(resolved)
 }
 
+/// A requested dewarp operation reports failures instead of silently using the
+/// curved source image. Basic dewarp may refuse a page with too few baselines.
+pub fn dewarp_page_checked(path: &Path, cfg: &super::OcrPipelineConfig) -> std::result::Result<(tempfile::NamedTempFile, std::path::PathBuf), String> {
+    #[cfg(feature = "crispembed")]
+    {
+        if cfg.dewarp_engine == "tps" { resolve_checked("tps-loc").map_err(|e| format!("Dewarp: {e:#}"))?; }
+        dewarp_page(path, cfg).ok_or_else(|| format!("Dewarp ({}) could not process this page. Disable dewarp or choose another engine.", cfg.dewarp_engine))
+    }
+    #[cfg(not(feature = "crispembed"))]
+    {
+        let _ = (path, cfg);
+        Err("Dewarp requires a build with CrispEmbed.".into())
+    }
+}
+
+/// Apply the simple cleanup controls before a legacy engine that has no native
+/// pipeline stages. The advanced embedded path retains its per-stage recipes.
+pub fn cleanup_page_checked(path: &Path, cfg: &super::OcrPipelineConfig) -> std::result::Result<(tempfile::NamedTempFile, std::path::PathBuf), String> {
+    #[cfg(feature = "crispembed")]
+    {
+        let legacy = super::ocr_policy::LEGACY_ENGINES.contains(&cfg.engine.as_deref().unwrap_or("auto"));
+        let recipe = if legacy { super::OcrCleanupSpec::default() }
+            else { cfg.stages.first().map(|stage| stage.cleanup.clone()).unwrap_or_default() };
+        let classical = if !legacy && !cfg.stages.is_empty() { recipe.enabled } else { cfg.cleanup_enabled };
+        let denoise = if !legacy && !cfg.stages.is_empty() { recipe.denoise } else { cfg.denoise };
+        let nafnet = if denoise {
+            Some(resolve_checked(cfg.nafnet_model.as_deref().unwrap_or("nafnet-denoise")).map_err(|e| format!("Denoising: {e:#}"))?)
+        } else { None };
+        let cleanup = crispembed::CrispScanCleanup::new(nafnet.as_deref(), 0)
+            .map_err(|e| format!("Initialize scan cleanup: {e}"))?;
+        let mut params = unsafe { crispembed_sys::crispembed_scan_cleanup_defaults() };
+        params.deskew = i32::from(classical && recipe.deskew);
+        params.crop_borders = i32::from(classical && recipe.crop_borders);
+        params.whiten_background = i32::from(classical && recipe.whiten_background);
+        params.binarize = i32::from(classical && recipe.binarize);
+        params.binarize_method = recipe.binarize_method;
+        params.sauvola_k = recipe.sauvola_k;
+        params.sauvola_window = recipe.sauvola_window;
+        params.morph_kernel = recipe.morph_kernel;
+        params.border_threshold = recipe.border_threshold;
+        params.deskew_max_angle = recipe.deskew_max_angle;
+        params.despeckle = i32::from(classical && recipe.despeckle);
+        params.blackfilter = i32::from(classical && recipe.blackfilter);
+        let rgb = image::open(path).map_err(|e| format!("Read scan for cleanup: {e}"))?.to_rgb8();
+        let (pixels, width, height) = cleanup.process_with_params(rgb.as_raw(), rgb.width() as i32, rgb.height() as i32, 3, params)
+            .map_err(|e| format!("Clean scan: {e}"))?;
+        if width <= 0 || height <= 0 { return Err("Cleanup returned invalid image dimensions.".into()); }
+        let (file, output) = save_rgb_temp("ocr_cleaned_", width as u32, height as u32, pixels)
+            .ok_or_else(|| "Could not save the cleaned OCR image.".to_string())?;
+        if classical && recipe.auto_crop {
+            if let Some((x0,y0,x1,y1)) = content_bbox(&output) {
+                if x0 >= 0 && y0 >= 0 && x1 > x0 && y1 > y0 && x1 <= width && y1 <= height {
+                    let image = image::open(&output).map_err(|e| e.to_string())?;
+                    image.crop_imm(x0 as u32, y0 as u32, (x1-x0) as u32, (y1-y0) as u32)
+                        .save(&output).map_err(|e| format!("Save cropped OCR page: {e}"))?;
+                }
+            }
+        }
+        Ok((file, output))
+    }
+    #[cfg(not(feature = "crispembed"))]
+    {
+        let _ = (path, cfg);
+        Err("Scan cleanup requires a build with CrispEmbed.".into())
+    }
+}
+
 /// Engine ids whose C stage takes a detector in `model_a` and a recogniser in
 /// `model_b`; every other engine is a single-model VLM/document model.
 #[cfg(any(feature = "crispembed", test))]
@@ -1275,11 +1365,67 @@ fn stage_model_defaults(eid: i32) -> (&'static str, &'static str) {
     }
 }
 
+#[cfg(any(feature = "crispembed", test))]
+fn automatic_tesseract_recognizer(eid: i32, name: &str) -> bool {
+    matches!(eid, 6 | 15) && name == "auto"
+}
+
+#[cfg(feature = "crispembed")]
+fn resolve_rec_model(eid: i32, name: &str) -> Result<String> {
+    if automatic_tesseract_recognizer(eid, name) {
+        Ok(name.into()) // Native LID sentinel, not a registry download.
+    } else {
+        resolve_checked(name)
+    }
+}
+
+/// The flat native constructor supports only five vision engine IDs. Stage
+/// expansion lets the remaining supported vision engines use the requested
+/// weights without silently being remapped to Qwen2-VL.
+#[cfg(any(feature = "crispembed", test))]
+fn expand_flat_escalation(cfg: &super::OcrPipelineConfig) -> Result<Option<super::OcrPipelineConfig>> {
+    if !cfg.stages.is_empty() || cfg.vlm_ocr_model.as_deref().is_none_or(|m| m.trim().is_empty())
+        || ["got", "glm", "qwen2vl", "internvl2", "qwen3vl"].contains(&cfg.vlm_ocr_engine.as_str()) {
+        return Ok(None);
+    }
+    anyhow::ensure!(super::ocr_policy::VISION_ENGINES.contains(&cfg.vlm_ocr_engine.as_str()),
+        "Unsupported OCR escalation engine: {}", cfg.vlm_ocr_engine);
+    let stage = |engine: &str| -> Result<super::OcrStageSpec> {
+        let mut stage: super::OcrStageSpec = serde_json::from_value(serde_json::json!({"engine":engine}))?;
+        stage.min_chars = cfg.min_chars;
+        stage.min_confidence = cfg.min_confidence;
+        stage.cleanup.enabled = cfg.cleanup_enabled;
+        stage.cleanup.denoise = cfg.denoise;
+        Ok(stage)
+    };
+    let mut fast = stage("dbnet_trocr")?;
+    fast.det_model = cfg.det_model.clone();
+    fast.rec_model = cfg.rec_model.clone();
+    let mut vision = stage(&cfg.vlm_ocr_engine)?;
+    vision.det_model = cfg.vlm_ocr_model.clone();
+    let mut expanded = cfg.clone();
+    expanded.stages = vec![fast, vision];
+    Ok(Some(expanded))
+}
+
 /// Build the orchestrator: the explicit per-stage builder when `cfg.stages` is
 /// non-empty (full tweakability), else the flat simple-mode pipeline.
 #[cfg(feature = "crispembed")]
 fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcrPipeline> {
     use super::{engine_id, source_type_id};
+    super::ocr_policy::validate_config(cfg).map_err(anyhow::Error::msg)?;
+    super::ocr_policy::validate_runtime(cfg).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(!super::ocr_policy::LEGACY_ENGINES.contains(&cfg.engine.as_deref().unwrap_or("auto")),
+        "The selected legacy OCR engine must run through the shared image dispatcher");
+    let expanded = expand_flat_escalation(cfg)?;
+    let cfg = expanded.as_ref().unwrap_or(cfg);
+    super::ocr_policy::validate_runtime(cfg).map_err(anyhow::Error::msg)?;
+    for stage in &cfg.stages {
+        anyhow::ensure!(!stage.cleanup.enabled || !stage.cleanup.page_split,
+            "This OCR stage requests spread splitting. Split the pages in OCR Workbench before recognition; no page was silently omitted");
+        anyhow::ensure!(!stage.cleanup.enabled || !(stage.cleanup.despeckle || stage.cleanup.blackfilter || stage.cleanup.auto_crop),
+            "This OCR stage requires shared despeckle/blackfilter/auto-crop preparation. Use the shared image OCR dispatcher or prepare the page in OCR Workbench first");
+    }
     // Optional post-OCR punctuation/spacing restorer (resolved once).
     let punct: Option<String> = cfg
         .punct_model
@@ -1315,6 +1461,8 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcr
             .as_deref()
             .filter(|s| !s.is_empty())
             .map(resolve_checked).transpose()?;
+        let escalation_engine = vlm_engine_id(&cfg.vlm_ocr_engine);
+        anyhow::ensure!(vlm.is_none() || escalation_engine >= 0, "Unsupported OCR escalation engine: {}", cfg.vlm_ocr_engine);
         return crispembed::CrispOcrPipeline::new(
             &det,
             &rec,
@@ -1324,7 +1472,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcr
             cfg.min_chars,
             cfg.min_confidence,
             vlm.as_deref(),
-            vlm_engine_id(&cfg.vlm_ocr_engine),
+            escalation_engine.max(0),
             punct.as_deref(),
             lid.as_deref(),
             truecase.as_deref(),
@@ -1343,11 +1491,12 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcr
         .iter()
         .map(|s| -> Result<crispembed::OcrStageSpec> {
             let eid = engine_id(&s.engine);
+            anyhow::ensure!(eid >= 0, "Unsupported OCR stage engine: {}", s.engine);
             let (model_a, model_b) = if needs_det_and_rec(eid) {
                 let (det_default, rec_default) = stage_model_defaults(eid);
                 (
                     resolve_checked(s.det_model.as_deref().unwrap_or(det_default))?,
-                    resolve_checked(s.rec_model.as_deref().unwrap_or(rec_default))?,
+                    resolve_rec_model(eid, s.rec_model.as_deref().unwrap_or(rec_default))?,
                 )
             } else {
                 let m = s
@@ -1422,6 +1571,32 @@ pub fn ocr_via_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_only_vision_escalation_keeps_its_engine_and_custom_weights() {
+        let config = super::super::OcrPipelineConfig {
+            enabled:true, det_model:Some("custom-det.gguf".into()), rec_model:Some("custom-rec.gguf".into()),
+            vlm_ocr_engine:"lfm2_vl".into(), vlm_ocr_model:Some("custom-lfm.gguf".into()),
+            min_chars:0, min_confidence:0.0, cleanup_enabled:false, ..Default::default()
+        };
+        let expanded = expand_flat_escalation(&config).unwrap().unwrap();
+        assert_eq!(expanded.stages.len(), 2);
+        assert_eq!(expanded.stages[0].engine, "dbnet_trocr");
+        assert_eq!(expanded.stages[0].rec_model.as_deref(), Some("custom-rec.gguf"));
+        assert_eq!(expanded.stages[1].engine, "lfm2_vl");
+        assert_eq!(expanded.stages[1].det_model.as_deref(), Some("custom-lfm.gguf"));
+        assert_eq!(expanded.stages[1].min_chars, 0);
+        assert_eq!(expanded.stages[1].min_confidence, 0.0);
+        assert!(!expanded.stages[1].cleanup.enabled);
+    }
+
+    #[test]
+    fn tesseract_auto_recognition_is_a_native_sentinel_only_for_tesseract() {
+        assert!(automatic_tesseract_recognizer(15, "auto"));
+        assert!(automatic_tesseract_recognizer(6, "auto"));
+        assert!(!automatic_tesseract_recognizer(0, "auto"));
+        assert!(!automatic_tesseract_recognizer(6, "custom-tesseract.gguf"));
+    }
 
     #[test]
     fn review_diagnostics_accept_only_the_versioned_contract() {
@@ -1535,13 +1710,10 @@ mod tests {
     }
 
     #[test]
-    fn table_parser_never_receives_a_vlm_recogniser() {
-        // The parser loads its cell model as a Tesseract LSTM and treats a load
-        // failure as non-fatal, so a VLM GGUF would silently yield empty cells
-        // and lose the table. The pipeline default must never leak through.
-        assert_eq!(super::table_rec_model(Some("qwen2vl-ocr")), "tesseract-eng");
+    fn table_parser_never_replaces_an_explicit_model_request() {
         assert_eq!(super::table_rec_model(None), "tesseract-eng");
-        assert_eq!(super::table_rec_model(Some("got-ocr2")), "tesseract-eng");
+        assert_eq!(super::table_rec_model(Some("/models/custom-deu.gguf")), "/models/custom-deu.gguf");
+        assert_eq!(super::table_rec_model(Some("qwen2vl-ocr")), "qwen2vl-ocr");
     }
 
     #[test]

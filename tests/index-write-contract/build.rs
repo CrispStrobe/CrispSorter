@@ -193,11 +193,13 @@ const TABLE_NAME: &str = "documents";
     let file = root.join("../extractors/mod.rs");
     println!("cargo:rerun-if-changed={}", file.display());
     let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
-    let config_types = ["OcrPipelineConfig", "OcrStageSpec", "OcrCleanupSpec", "ExtractedDocument"];
+    let config_types = ["OcrPipelineConfig", "OcrStageSpec", "OcrCleanupSpec", "ExtractedDocument",
+        "ExtractOptions", "OcrTier", "OcrRecLang", "AnydocMode"];
     let mut generated = String::new();
     for item in parsed.items {
         match item {
             syn::Item::Struct(s) if config_types.contains(&s.ident.to_string().as_str()) => generated.push_str(&s.into_token_stream().to_string()),
+            syn::Item::Enum(e) if config_types.contains(&e.ident.to_string().as_str()) => generated.push_str(&e.into_token_stream().to_string()),
             syn::Item::Impl(imp) if config_types.contains(&imp.self_ty.to_token_stream().to_string().as_str()) => generated.push_str(&imp.into_token_stream().to_string()),
             syn::Item::Fn(f) if f.sig.ident.to_string().starts_with("default_") => generated.push_str(&f.into_token_stream().to_string()),
             _ => {}
@@ -237,7 +239,7 @@ const TABLE_NAME: &str = "documents";
     let state_types = ["ForegroundGuard", "PendingIngest", "BgStatus", "BgStatusSnapshot", "BackgroundIngest", "BackgroundOptions", "WorkerLease"];
     for item in parsed.items {
         match item {
-            syn::Item::Fn(f) if ["skip_unchanged", "hash_source", "source_key"].contains(&f.sig.ident.to_string().as_str()) => generated.push_str(&f.into_token_stream().to_string()),
+            syn::Item::Fn(f) if ["skip_unchanged", "hash_source", "source_key", "load_ocr_options"].contains(&f.sig.ident.to_string().as_str()) => generated.push_str(&f.into_token_stream().to_string()),
             syn::Item::Struct(s) if state_types.contains(&s.ident.to_string().as_str()) => generated.push_str(&s.into_token_stream().to_string()),
             syn::Item::Enum(e) if state_types.contains(&e.ident.to_string().as_str()) => generated.push_str(&e.into_token_stream().to_string()),
             syn::Item::Impl(imp) if state_types.contains(&imp.self_ty.to_token_stream().to_string().as_str()) => generated.push_str(&imp.into_token_stream().to_string()),

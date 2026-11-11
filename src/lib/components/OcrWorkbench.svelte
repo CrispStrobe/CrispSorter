@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
+  import { loadSavedOcrPolicy, type OcrPolicy } from "$lib/extractors/ocrSettings";
+  import { ocrEngineOptions, ocrLanguageOptions, engineRequirement } from "$lib/ocr/engineCatalog";
+  import { workspaceRecognitionDefaults, updateWorkspaceConfig } from "$lib/ocr/recognitionDefaults";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { message as nativeMessage } from "@tauri-apps/plugin-dialog";
@@ -510,34 +513,17 @@
     : saveStatus.state === "saving" || userProofreadingStatus.state === "saving" ? { state: "saving" }
     : saveStatus.state === "pending" || userProofreadingStatus.state === "pending" ? { state: "pending" }
     : saveStatus);
+  let savedOcrPolicy = $state<OcrPolicy | null>(null);
   const settings = $derived(project.recognitionSettings ?? {});
-  const engine = $derived(
-    typeof settings.engine === "string" ? settings.engine : (capabilities.default_engine ?? "auto"),
-  );
-  const language = $derived(
-    typeof settings.language === "string" ? settings.language : (capabilities.default_language ?? "auto"),
-  );
+  const profile = $derived(PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0]);
+  const effectiveRecognition = $derived(workspaceRecognitionDefaults(profile.config, savedOcrPolicy, settings, capabilities));
+  const engine = $derived(effectiveRecognition.engine);
+  const language = $derived(effectiveRecognition.language);
   const systemLanguages = $derived(capabilities.system_tesseract?.languages ?? []);
-  const recognitionAvailable = $derived(capabilities.ocr && (
-    engine === "system_tesseract"
-      ? (capabilities.system_tesseract?.available ?? capabilities.engines.includes(engine))
-      : capabilities.crispembed
-  ));
-  // Only meaningful for Qwen2-VL, and only where the worker can be spawned.
-  const cpuBudget = $derived(
-    settings.cpuPixelBudget === true &&
-      engine === "qwen2vl" &&
-      !!capabilities.cpu_budget,
-  );
-  const profile = $derived(
-    PROFILES.find((p) => p.id === project.profileId) ?? PROFILES[0],
-  );
-  const config = $derived({
-    ...profile.config,
-    ...(settings.config && typeof settings.config === "object"
-      ? (settings.config as Record<string, unknown>)
-      : {}),
-  });
+  const recognitionAvailable = $derived(capabilities.ocr && capabilities.engines.includes(engine));
+  const cpuBudget = $derived(effectiveRecognition.cpuPixelBudget);
+  const config = $derived(effectiveRecognition.config);
+  const recognitionControls = $derived(effectiveRecognition.controls);
   const exportIds = $derived(
     exportScope === "current"
       ? activePage
@@ -576,35 +562,6 @@
     markdown: "Markdown",
     docx: "Word document",
     xlsx: "Excel workbook",
-  };
-  const engineNames: Record<string, string> = {
-    auto: "Automatic pipeline",
-    dbnet_trocr: "DBNet + TrOCR",
-    parseq: "PARSeq scene text",
-    surya: "Surya multilingual",
-    tesseract: "Tesseract LSTM",
-    system_tesseract: "System Tesseract · word evidence",
-    tesseract_fraktur: "Tesseract LSTM · Fraktur",
-    ppocrv6: "PP-OCRv6 (CJK lines)",
-    easyocr: "EasyOCR",
-    olmocr: "olmOCR 2 (7B)",
-    lfm2_vl: "LFM2.5 VL",
-    got: "GOT OCR (non-commercial)",
-    glm: "GLM OCR",
-    qwen2vl: "Qwen2 VL",
-    qwen3vl: "Qwen3 VL",
-    internvl2: "InternVL2",
-    deepseek_ocr2: "DeepSeek OCR 2",
-    pix2struct: "Pix2Struct",
-    granite_vision: "Granite Vision",
-    lightonocr: "LightOnOCR",
-    unlimited_ocr: "Unlimited OCR",
-  };
-  const languageNames: Record<string, string> = {
-    eng: "English", deu: "German", fra: "French", spa: "Spanish",
-    ita: "Italian", por: "Portuguese", nld: "Dutch", pol: "Polish",
-    rus: "Russian", ara: "Arabic", chi_sim: "Chinese, simplified",
-    chi_tra: "Chinese, traditional", jpn: "Japanese", kor: "Korean",
   };
   const regionsKinds: RegionKind[] = [
     "text",
@@ -1473,16 +1430,13 @@
     }
   }
   function setConfig(key: string, value: unknown) {
-    setSetting("config", {
-      ...((settings.config as object) ?? {}),
-      [key]: value,
-    });
+    setSetting("config", updateWorkspaceConfig(effectiveRecognition, key, value));
   }
   function chooseProfile(id: string) {
     change({
       ...project,
       profileId: id,
-      recognitionSettings: { ...settings, config: {} },
+      recognitionSettings: { ...settings, engine, language, cpuPixelBudget: cpuBudget, config: {} },
       updatedAt: new Date().toISOString(),
     });
     advancedConfig = "";
@@ -2137,6 +2091,7 @@
     try {
       const request = captureExtractionRequest(project, pageId, regionId, kind === "fields" && !layout ? "text" : "pixels");
       const source = request.capture;
+      const configSnapshot = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
       let output: unknown;
       let labelList: string[] = [];
       if (kind === "fields") {
@@ -2144,12 +2099,12 @@
         if (!labelList.length) throw new Error("Enter at least one field label.");
         if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("Field score must be between zero and one.");
         const result = layout
-          ? await client.layoutFields(await extractionPath(source), labelList, threshold)
+          ? await client.layoutFields(await extractionPath(source), labelList, threshold, configSnapshot)
           : await client.extractFields(source.text ?? "", labelList, threshold);
         output = result;
         notice = result.length + " fields extracted" + (layout ? " from page layout" : " from reviewed text");
       } else if (kind === "table") {
-        const result = await client.table(await extractionPath(source));
+        const result = await client.table(await extractionPath(source), configSnapshot);
         output = result;
         notice = result.rows + " rows × " + result.cols + " columns extracted";
       } else {
@@ -2332,8 +2287,11 @@
       const results = await Promise.allSettled([
         client.capabilities(),
         initialProject ? Promise.resolve(null) : client.load(),
+        client === workspaceClient ? loadSavedOcrPolicy() : Promise.resolve(null),
       ]);
       if (!mounted) return;
+      if (results[2].status === "fulfilled") savedOcrPolicy = results[2].value;
+      else fail(results[2].reason);
       if (results[0].status === "fulfilled") {
         capabilities = results[0].value;
         if (!capabilities.formats.includes(exportFormat))
@@ -3779,13 +3737,8 @@
                   value={engine}
                   onchange={(e) => setSetting("engine", e.currentTarget.value)}
                   disabled={locked}
-                  ><option value="auto" disabled={!capabilities.crispembed}>Automatic pipeline</option
-                  >{#each capabilities.engines.filter((e) => e !== "auto") as e}<option
-                      value={e}>{engineNames[e] ?? e}</option
-                    >{/each}
-                  {#if engine === "system_tesseract" && !capabilities.engines.includes(engine)}
-                    <option value="system_tesseract" disabled>System Tesseract · unavailable</option>
-                  {/if}</select
+                  >{#each ocrEngineOptions(capabilities, engine) as option}<option
+                    value={option.value} disabled={option.disabled}>{option.label}</option>{/each}</select
                 ></label
               ><label class="field-label"
                 >Document language<select
@@ -3793,24 +3746,15 @@
                   onchange={(e) =>
                     setSetting("language", e.currentTarget.value)}
                   disabled={locked}
-                  >{#if engine === "system_tesseract"}
-                    <option value="auto">English (eng) default</option>
-                    {#if language !== "auto" && !systemLanguages.includes(language)}
-                      <option value={language}>{language} (configured)</option>
-                    {/if}
-                    {#each systemLanguages as code}<option value={code}>{languageNames[code] ?? code} ({code})</option>{/each}
-                  {:else}
-                    <option value="auto">Model default</option>
-                    {#each Object.entries(languageNames) as [code, name]}<option value={code}>{name}</option>{/each}
-                  {/if}</select
+                  >{#each ocrLanguageOptions(engine, capabilities, language) as option}<option
+                    value={option.value}>{option.label}</option>{/each}</select
                 ></label
               >
             </div>
             {#if engine === "system_tesseract"}<p class="field-hint" data-system-tesseract-info>
               System Tesseract{capabilities.system_tesseract?.version ? ` ${capabilities.system_tesseract.version}` : ""}
-              uses the current working image and supplies word scores and source
-              locations. Apply scan preparation first if needed. Pipeline cleanup,
-              layout, and the Qwen2 VL CPU budget are not applied during this step.
+              supplies word scores and source locations. Enabled preparation is
+              applied before recognition; locations refer to the resulting page.
               Choose an installed language; the default is English, without
               automatic language detection.
             </p>
@@ -3826,6 +3770,12 @@
               System Tesseract word evidence is unavailable:
               {capabilities.system_tesseract.reason ?? "Install Tesseract and a recognition language pack to use this engine."}
             </p>{/if}
+            {#if engineRequirement(engine)}<p class="field-hint">{engineRequirement(engine)}</p>{/if}
+            {#if engine === "ocrs" || engine === "paddle"}<p class="field-hint">This engine supplies plain text. Review shows a page-sized block without word confidence.</p>{/if}
+            {#if cpuBudget && (engine !== "qwen2vl" || !capabilities.cpu_budget)}<p class="field-hint">
+              The saved CPU profile requires Qwen2 VL on a supported desktop build.
+              <button type="button" class="btn-text" disabled={locked} onclick={() => setSetting("cpuPixelBudget", false)}>Turn off CPU profile</button>
+            </p>{/if}
             {@render mobileModelSetup()}
             {#if engine === "qwen2vl" && capabilities.cpu_budget}<label
                 class="setting-toggle"
@@ -3838,7 +3788,7 @@
                   ></span
                 ><input
                   type="checkbox"
-                  checked={settings.cpuPixelBudget === true}
+                  checked={effectiveRecognition.cpuPixelBudget}
                   onchange={(e) =>
                     setSetting("cpuPixelBudget", e.currentTarget.checked)}
                   disabled={locked}
@@ -3853,7 +3803,7 @@
                     ></span
                   ><input
                     type="checkbox"
-                    checked={!!config[option.key]}
+                    checked={!!recognitionControls[option.key]}
                     onchange={(e) =>
                       setConfig(option.key, e.currentTarget.checked)}
                     disabled={locked || !capabilities.crispembed}
@@ -3908,7 +3858,7 @@
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
               <p class="field-hint">
-                {#if engine === "system_tesseract"}Prepare the page before running System Tesseract.{:else}Recognition also applies enabled preparation.{/if} The prepared image
+                Recognition also applies enabled preparation. The prepared image
                 becomes the review and export image. Undo restores the previous
                 result.
               </p>
@@ -3984,10 +3934,10 @@
                 Use installed model paths or CrispEmbed registry names. Model
                 availability is checked when the pipeline runs.
               </p>
-              {#each [{ key: "det_model", label: "Detection model" }, { key: "rec_model", label: "Recognition model" }, { key: "vlm_ocr_model", label: "Escalation model" }, { key: "punct_model", label: "Punctuation restoration" }, { key: "truecase_model", label: "Truecase model" }, { key: "lid_model", label: "Language identification model" }] as field}<label
+              {#each effectiveRecognition.modelFields as field}<label
                   class="field-label"
                   >{field.label}<input
-                    value={String(config[field.key] ?? "")}
+                    value={String(recognitionControls[field.key] ?? "")}
                     placeholder="Use engine default"
                     disabled={locked}
                     onchange={(e) =>

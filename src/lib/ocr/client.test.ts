@@ -101,6 +101,66 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
+describe('specialist OCR project snapshots', () => {
+    beforeEach(() => { invoke.mockReset().mockResolvedValue([]); setDefaultOcrLanguage('deu'); });
+    afterEach(() => setDefaultOcrLanguage('eng'));
+
+    it('forwards an independent full snapshot to table extraction', async () => {
+        const config = { engine: 'qwen2vl', language: 'fra', cpu_pixel_budget: true,
+            stages: [{ engine: 'qwen2vl', det_model: 'selected-model', cleanup: { enabled: false } }] };
+        const pending = workspaceClient.table('/pages/source.png', config);
+        config.language = 'eng'; config.stages[0].det_model = 'later-model'; config.stages[0].cleanup.enabled = true;
+        await pending;
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('tool_table_extract', {
+            locationUri: '/pages/source.png', ocrModel: null, save: false,
+            config: { engine: 'qwen2vl', language: 'fra', cpu_pixel_budget: true,
+                stages: [{ engine: 'qwen2vl', det_model: 'selected-model', cleanup: { enabled: false } }] },
+        });
+    });
+
+    it('preserves configured model language for layout fields', async () => {
+        const config = Object.freeze({ engine: 'tesseract', language: 'auto', cpu_pixel_budget: false,
+            stages: Object.freeze([Object.freeze({ engine: 'tesseract', rec_model: 'custom-language' })]) });
+        await workspaceClient.layoutFields('/pages/source.png', ['invoice'], .6, config);
+        expect(invoke).toHaveBeenCalledExactlyOnceWith('tool_kie_extract', {
+            locationUri: '/pages/source.png', labels: ['invoice'], threshold: .6, lilt: true, liltModel: null, config,
+        });
+        expect(invoke.mock.calls[0][1].config).not.toBe(config);
+    });
+
+    it('resolves an unconfigured embedded language without mutating its project settings', async () => {
+        const config = { engine: 'tesseract', language: 'auto', stages: [] };
+        await workspaceClient.table('/pages/source.png', config);
+        expect(invoke).toHaveBeenCalledWith('tool_table_extract', expect.objectContaining({ config: { ...config, language: 'deu' } }));
+        expect(config.language).toBe('auto');
+    });
+
+    it('retains native app defaults when existing callers omit config', async () => {
+        await workspaceClient.layoutFields('/pages/source.png', ['invoice'], .5);
+        expect(invoke).toHaveBeenLastCalledWith('tool_kie_extract', {
+            locationUri: '/pages/source.png', labels: ['invoice'], threshold: .5, lilt: true, liltModel: null,
+        });
+        await workspaceClient.table('/pages/source.png');
+        expect(invoke).toHaveBeenLastCalledWith('tool_table_extract', { locationUri: '/pages/source.png', ocrModel: null, save: false });
+    });
+
+    it('keeps System Tesseract and flat custom-model Automatic semantics', async () => {
+        for (const config of [
+            { engine: 'system_tesseract', language: 'auto' },
+            { engine: 'auto', language: 'auto', rec_model: 'custom-trocr', stages: [] },
+        ]) {
+            await workspaceClient.table('/pages/source.png', config);
+            expect(invoke).toHaveBeenLastCalledWith('tool_table_extract', expect.objectContaining({ config }));
+        }
+    });
+
+    it('surfaces native capability rejection without changing the selected configuration', async () => {
+        const failure = new Error('The selected engine cannot run this specialist tool'); invoke.mockRejectedValue(failure);
+        await expect(workspaceClient.table('/pages/source.png', { engine: 'qwen2vl', language: 'fra', cpu_pixel_budget: true })).rejects.toBe(failure);
+        expect(invoke).toHaveBeenCalledOnce();
+    });
+});
+
 describe('OCR workspace platform transport', () => {
     beforeEach(() => {
         invoke.mockReset(); open.mockReset(); save.mockReset(); loadCapabilities.mockReset(); listen.mockReset();

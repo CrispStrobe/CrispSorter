@@ -27,6 +27,7 @@ pub mod kindle_import;
 pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
+mod ocr_extract;
 mod ocr_photo;
 mod ocr_reading_order;
 mod ocr_text_export;
@@ -825,6 +826,7 @@ async fn bg_ingest_set_ocr_pipeline(
     state: tauri::State<'_, AppState>,
     config: crate::extractors::OcrPipelineConfig,
 ) -> Result<(), String> {
+    crate::extractors::ocr_policy::validate_config(&config)?;
     with_background_storage(app, state.bg_ingest.clone(), move |bg| {
         let previous = bg.ocr_pipeline.clone();
         bg.ocr_pipeline = config;
@@ -3587,6 +3589,7 @@ pub fn run() {
             index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
+            ocr_extract::ocr_extract_image,
             model_provisioning::ocr_workspace_install_mobile_models,
             model_provisioning::ocr_workspace_model_storage,
             model_provisioning::ocr_workspace_clean_model_storage,
@@ -3830,6 +3833,8 @@ pub fn run() {
             // doesn't support Android/iOS).
             #[cfg(not(feature = "desktop"))]
             { tauri::generate_handler![
+            ocr_extract::ocr_extract_image,
+            ocr_workspace::ocr_workspace_capabilities,
             get_logs,
             frontend_log,
             execute_batch,

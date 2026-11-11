@@ -61,6 +61,7 @@ pub mod ocr_ocrs;
 pub mod ocr_paddle;
 pub mod ocr_render;
 pub mod ocr_presets;
+pub mod ocr_policy;
 pub mod page_source;
 pub mod pdf;
 pub mod pptx;
@@ -196,11 +197,10 @@ pub fn supported(ext: &str) -> bool {
     )
 }
 
-/// Which OCR tier to try, in descending quality order.
+/// Compatibility OCR tier selection, superseded by an explicit engine.
 ///
-/// `Auto` = try the best available tier at runtime:
-///   Tier 4 (CrispEmbed) if compiled in → Tier 3 (PaddleOCR) →
-///   Tier 2 (ocrs) → Tier 1 (Tesseract) → nothing.
+/// `Auto` chooses the embedded default when available, then a supported legacy
+/// backend. Explicit tiers never fall through to a different recognizer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OcrTier {
     /// Pick the best available tier automatically.
@@ -232,12 +232,22 @@ pub enum OcrRecLang {
 /// Configuration for the C++ OCR pipeline orchestrator (CrispEmbed
 /// `CrispOcrPipeline`): source-type routing + per-stage image cleanup
 /// (classical + NAFNet) + accept-gate escalation. When
-/// [`Self::enabled`] is false the extractor uses the legacy Rust tier
-/// ladder unchanged. Mirrors the flat `crispembed_ocr_pipeline_params`
-/// C struct so it threads straight through.
+/// [`Self::enabled`] activates the advanced recipe. An explicit engine can
+/// reuse its matching configured stage; disabled Automatic uses the selected
+/// legacy tier or the shared default. Native fields mirror the pipeline ABI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OcrPipelineConfig {
-    /// Master switch. `false` (default) → legacy Rust tier ladder.
+    /// Shared selection for interactive, file, container and background OCR.
+    /// `None` / `auto` retain configured stages before choosing a default.
+    #[serde(default)]
+    pub engine: Option<String>,
+    /// Language hint; `None` / `auto` preserve configured model choices.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Isolate supported OCR in a CPU worker with the app's pixel budget.
+    #[serde(default)]
+    pub cpu_pixel_budget: bool,
+    /// Advanced recipe switch; disabled Automatic does not run stored stages.
     #[serde(default)]
     pub enabled: bool,
     /// Classify the image (screenshot / scanned-doc / photo) and route to
@@ -278,9 +288,9 @@ pub struct OcrPipelineConfig {
     /// P20 slice 3 — run a **layout-aware** reading-order pass before OCR.
     /// Detects semantic regions (text/title/caption/formula/figure/table/
     /// header/footer) with CrispEmbed's RT-DETRv2 (`layout.rs`), orders them
-    /// top-to-bottom / left-to-right (column-aware), then OCRs each region in
-    /// reading order: text→engine, formula→math OCR, table→table parser with
-    /// plain OCR fallback, and figures skipped.
+    /// top-to-bottom / left-to-right (column-aware), then OCRs every text,
+    /// formula and table region with the selected engine/chain in that order.
+    /// Figures are skipped; specialist table/math recognition is a separate action.
     /// Fixes multi-column reading order the bare line detector can't. Off by
     /// default (extra model load + per-region OCR). Needs `crispembed`.
     #[serde(default)]
@@ -518,6 +528,9 @@ fn default_sr_max_short_side() -> i32 {
 impl Default for OcrPipelineConfig {
     fn default() -> Self {
         Self {
+            engine: None,
+            language: None,
+            cpu_pixel_budget: false,
             enabled: false,
             router: true,
             cleanup_enabled: true,
@@ -584,11 +597,8 @@ fn engine_id(name: &str) -> i32 {
         "olmocr" => 18,        // olmOCR-2-7B (single-shot document VLM)
         "lfm2_vl" => 19,       // LFM2.5-VL (SigLIP2 NaFlex multi-tile VLM)
         other => {
-            // Falling back to DBNet+TrOCR used to be silent, so a typo (or a
-            // stale persisted config) quietly ran a different engine than the
-            // one the user picked. Keep the fallback for robustness but say so.
-            eprintln!("[ocr] unknown OCR engine {other:?}; falling back to dbnet_trocr");
-            0
+            eprintln!("[ocr] unsupported OCR engine {other:?}");
+            -1
         }
     }
 }
@@ -857,57 +867,100 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
 /// multi-page loop can call it per page.
 /// Process-wide cached layout detector. The RT-DETRv2 model load is heavy, so
 /// it's loaded once on first use and reused across pages (mirrors `OCR_ORCH` in
-/// `ocr_crispembed`). First-config wins, like the OCR orchestrator cache.
-static LAYOUT_DET: std::sync::OnceLock<std::sync::Mutex<layout::LayoutDetector>> =
+/// `ocr_crispembed`). Replaced when the configured model changes.
+static LAYOUT_DET: std::sync::OnceLock<std::sync::Mutex<Option<context_cache::CachedContext<layout::LayoutDetector>>>> =
     std::sync::OnceLock::new();
 
 fn cached_layout_detector(
     model: &str,
-) -> Result<&'static std::sync::Mutex<layout::LayoutDetector>> {
-    if let Some(m) = LAYOUT_DET.get() {
-        return Ok(m);
-    }
-    let det = layout::LayoutDetector::load(model, 0)?;
-    // A racing thread may have initialised it first; either way return the live one.
-    let _ = LAYOUT_DET.set(std::sync::Mutex::new(det));
-    Ok(LAYOUT_DET.get().expect("layout detector just set"))
+) -> Result<std::sync::MutexGuard<'static, Option<context_cache::CachedContext<layout::LayoutDetector>>>> {
+    context_cache::acquire(&LAYOUT_DET, model.to_owned(), || {
+        layout::LayoutDetector::load(model, 0).map_err(|e| format!("{e:#}"))
+    }).map_err(anyhow::Error::msg)
 }
 
 /// OCR a single page image. When the layout pass is enabled, regions are
 /// detected, ordered, and OCR'd individually (column-aware reading order);
 /// otherwise the whole page goes through the smart pipeline / tier ladder.
-fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
-    // Optional pre-OCR image-restoration chain (each step writes a temp image
-    // the next reads): dewarp (straighten) → restore (denoise+deblur) →
-    // super-resolve (upscale low-res). The temp files are held in the guards
-    // for the rest of this call; `path` walks forward to the latest output.
-    let en = opts.ocr_pipeline.enabled;
-    let _dw = if en { ocr_crispembed::dewarp_page(path, &opts.ocr_pipeline) } else { None };
-    let path: &Path = _dw.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
-    let _rs = if en { ocr_crispembed::restore_page(path, &opts.ocr_pipeline) } else { None };
-    let path: &Path = _rs.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
-    let _sr = if en { ocr_crispembed::super_resolve_page(path, &opts.ocr_pipeline) } else { None };
-    let path: &Path = _sr.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
-
-    if opts.ocr_pipeline.enabled && opts.ocr_pipeline.layout && layout::is_layout_available() {
-        match ocr_with_layout(path, opts) {
-            Ok(doc) => return Ok(doc),
-            Err(e) => eprintln!(
-                "[ocr] layout pass failed ({e:#}); falling back to whole-page OCR"
-            ),
-        }
+pub fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    image_input::validate_file(path).context("Validate OCR image")?;
+    let (width, height) = image::image_dimensions(path).context("Read OCR image dimensions")?;
+    anyhow::ensure!(width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 100_000_000,
+        "OCR page exceeds the supported 100 megapixel limit");
+    let (config, warnings) = ocr_policy::resolve_extraction_config(opts).map_err(anyhow::Error::msg)?;
+    ocr_policy::validate_runtime(&config).map_err(anyhow::Error::msg)?;
+    for warning in warnings { eprintln!("[ocr] {warning}"); }
+    if config.cpu_pixel_budget {
+        return ocr_worker::run_cpu_budget_document(path, &config);
     }
-    ocr_one_image(path, opts)
+    let mut resolved = opts.clone();
+    resolved.ocr_pipeline = config;
+    let shared_cleanup = resolved.ocr_pipeline.stages.iter().any(|s| s.cleanup.enabled
+        && (s.cleanup.despeckle || s.cleanup.blackfilter || s.cleanup.auto_crop));
+    anyhow::ensure!(!shared_cleanup || resolved.ocr_pipeline.stages.len() == 1,
+        "Stage-specific despeckle, blackfilter and auto-crop need one shared preparation recipe; prepare the page in OCR Workbench before running a multi-stage chain");
+    let prepared = prepare_ocr_page(path, &resolved.ocr_pipeline, shared_cleanup)?;
+    if shared_cleanup {
+        resolved.ocr_pipeline = ocr_crispembed::review_pipeline_config(&resolved.ocr_pipeline);
+    }
+    if resolved.ocr_pipeline.enabled && resolved.ocr_pipeline.layout {
+        return ocr_with_layout(&prepared.path, &resolved).context("Run configured OCR layout pass");
+    }
+    ocr_one_image(&prepared.path, &resolved)
 }
 
-/// Layout-aware OCR: detect semantic regions, order them in reading order, OCR
-/// each region by type (text→engine, formula→math OCR, table→table parser,
-/// figures skipped, header/footer optionally dropped), and concatenate. Falls
-/// back (via the caller) to whole-page OCR when no regions are found.
-fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
-    use layout::RegionKind;
+/// Own every transformed image until recognition/rendering finishes. A render
+/// page retains this guard so its searchable image layer cannot disappear.
+#[derive(Debug)]
+pub(crate) struct PreparedOcrPage {
+    pub path: std::path::PathBuf,
+    pub cleanup_scale: (f32, f32),
+    _files: Vec<tempfile::NamedTempFile>,
+}
 
-    let cfg = &opts.ocr_pipeline;
+pub(crate) fn prepare_ocr_page(source: &Path, config: &OcrPipelineConfig, shared_cleanup: bool) -> Result<PreparedOcrPage> {
+    let mut path = source.to_owned();
+    let mut files = Vec::new();
+    let orientation = page_source::PageImages::single(source).page_orientation(0);
+    if let Some(file) = page_source::normalized_page(source, orientation)? {
+        path = file.path().to_owned(); files.push(file);
+    }
+    let dimensions = |path: &Path| -> Result<(u32,u32)> {
+        let (width, height) = image::image_dimensions(path).context("Read prepared OCR page dimensions")?;
+        anyhow::ensure!(width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 100_000_000,
+            "Prepared OCR page exceeds the supported 100 megapixel limit");
+        Ok((width,height))
+    };
+    dimensions(&path)?;
+    if config.enabled && config.dewarp {
+        let (file, output) = ocr_crispembed::dewarp_page_checked(&path, config).map_err(anyhow::Error::msg)?;
+        path = output; files.push(file);
+    }
+    if config.enabled && config.restore {
+        let (file, output) = ocr_crispembed::restore_page_checked(&path, config).map_err(anyhow::Error::msg)?;
+        path = output; files.push(file);
+    }
+    let (width, height) = dimensions(&path)?;
+    if config.enabled && config.sr && width.min(height) <= config.sr_max_short_side as u32 {
+        anyhow::ensure!(u64::from(width) * u64::from(height) * 16 <= 100_000_000,
+            "A 4× upscale would exceed the 100 megapixel page limit; crop the page or disable super-resolution");
+        let (file, output) = ocr_crispembed::super_resolve_page_checked(&path, config).map_err(anyhow::Error::msg)?;
+        path = output; files.push(file);
+    }
+    let (before_width, before_height) = dimensions(&path)?;
+    let legacy = ocr_policy::LEGACY_ENGINES.contains(&config.engine.as_deref().unwrap_or("auto"));
+    let cleanup_requested = if !legacy && !config.stages.is_empty() {
+        config.stages[0].cleanup.enabled || config.stages[0].cleanup.denoise
+    } else { config.cleanup_enabled || config.denoise };
+    if config.enabled && (legacy || shared_cleanup) && cleanup_requested {
+        let (file, output) = ocr_crispembed::cleanup_page_checked(&path, config).map_err(anyhow::Error::msg)?;
+        path = output; files.push(file);
+    }
+    let (after_width, after_height) = dimensions(&path)?;
+    Ok(PreparedOcrPage { path, cleanup_scale:(after_width as f32/before_width as f32, after_height as f32/before_height as f32), _files:files })
+}
+
+pub(crate) fn detect_ocr_layout(path: &Path, cfg: &OcrPipelineConfig) -> Result<Vec<layout::LayoutRegion>> {
     // Region source: model-free connected-components detector (`cc`) or the
     // RT-DETRv2 semantic layout model (default).
     let regions = if cfg.layout_engine == "cc" {
@@ -921,12 +974,22 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         r
     } else {
         let model = cfg.layout_model.as_deref().unwrap_or("layout-heron");
-        let det_guard = cached_layout_detector(model)?;
-        let det = det_guard
-            .lock()
-            .map_err(|_| anyhow::anyhow!("layout detector mutex poisoned"))?;
-        det.detect(path, cfg.layout_threshold)? // already in reading order
+        let cache = cached_layout_detector(model)?;
+        cache.as_ref().context("layout detector was not initialized")?.context
+            .detect(path, cfg.layout_threshold)? // already in reading order
     };
+    Ok(regions)
+}
+
+/// Layout-aware OCR: detect semantic regions, order them in reading order, OCR
+/// every retained text/table/formula region with the selected policy, and
+/// concatenate. Layout never substitutes a specialist recognizer for a configured
+/// engine or chain. Specialist table/math extraction is an explicit app action.
+fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    use layout::RegionKind;
+
+    let cfg = &opts.ocr_pipeline;
+    let regions = detect_ocr_layout(path, cfg)?;
     if regions.is_empty() {
         anyhow::bail!("layout pass found no regions");
     }
@@ -960,24 +1023,6 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         }
         let crop = image::imageops::crop_imm(&page, x1, y1, x2 - x1, y2 - y1).to_image();
 
-        if r.kind.is_formula() {
-            // Route formulas to math OCR (LaTeX) when available; else fall
-            // through to plain text OCR so nothing is silently dropped.
-            if math_ocr::is_math_ocr_available() {
-                match math_ocr::recognize_formula_from_pixels(
-                    crop.as_raw(),
-                    crop.width() as i32,
-                    crop.height() as i32,
-                ) {
-                    Ok(Some(tex)) if !tex.trim().is_empty() => {
-                        parts.push(tex.trim().to_string());
-                        continue;
-                    }
-                    _ => {} // fall through to text OCR
-                }
-            }
-        }
-
         // Write the crop to a temp PNG and OCR it as a normal page (no layout
         // recursion — the engine does its own line detection within the region).
         let tmp = tempfile::Builder::new()
@@ -988,17 +1033,6 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         image::DynamicImage::ImageRgb8(crop)
             .save(tmp.path())
             .context("saving layout region crop")?;
-        if r.kind == RegionKind::Table {
-            match ocr_crispembed::table_to_html(tmp.path(), cfg.rec_model.as_deref()) {
-                Ok(html) => {
-                    if let Some(text) = layout_table_text(&html) {
-                        parts.push(text);
-                        continue;
-                    }
-                }
-                Err(e) => eprintln!("[ocr] table parser failed ({e:#}); falling back to text OCR"),
-            }
-        }
         match ocr_one_image(tmp.path(), opts) {
             Ok(d) => {
                 let t = d.full_text.trim();
@@ -1008,13 +1042,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
                     anyhow::bail!("table parser and region OCR produced no text");
                 }
             }
-            Err(e) if r.kind == RegionKind::Table => {
-                anyhow::bail!("table region OCR failed: {e:#}");
-            }
-            Err(e) => eprintln!(
-                "[ocr] layout region {:?} OCR failed: {e:#}",
-                r.kind
-            ),
+            Err(e) => return Err(e).with_context(|| format!("OCR failed for layout region {:?}", r.kind)),
         }
     }
 
@@ -1083,57 +1111,22 @@ fn layout_table_text(html: &str) -> Option<String> {
     has_text.then(|| rows.join("\n"))
 }
 
-/// OCR a single image through the smart pipeline (when enabled) then the legacy
-/// tier ladder. This is the whole-page / per-region engine path with **no**
-/// layout pass (so `ocr_with_layout` can call it per region without recursion).
+/// Recognize a prepared page with the resolved engine. A failed selection is
+/// reported to the caller; it never runs another engine behind the user's back.
 fn ocr_one_image(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
-    // Smart pipeline first (source-type cleanup + denoise + accept-gate).
-    if opts.ocr_pipeline.enabled && ocr_crispembed::is_crispembed_ocr_available() {
-        match ocr_crispembed::ocr_via_pipeline(path, &opts.ocr_pipeline) {
-            Ok(doc) => return Ok(doc),
-            Err(e) => eprintln!("[ocr] smart pipeline failed ({e:#}); falling back to tier ladder"),
+    let config = &opts.ocr_pipeline;
+    match config.engine.as_deref().unwrap_or("auto") {
+        "system_tesseract" => {
+            let result = crate::ocr_word_evidence::recognize(path, config.language.as_deref())
+                .map_err(anyhow::Error::msg)?;
+            Ok(ExtractedDocument { full_text: result.full_text, ..Default::default() })
         }
+        "ocrs" => ocr_ocrs::ocr_via_ocrs(path),
+        "paddle" => ocr_paddle::ocr_via_paddle(path, ocr_policy::paddle_language(config, opts.ocr_rec_lang)),
+        engine if engine == "auto" || ocr_policy::EMBEDDED_ENGINES.contains(&engine) =>
+            ocr_crispembed::ocr_via_pipeline(path, config),
+        engine => anyhow::bail!("Unsupported OCR engine: {engine}"),
     }
-    // Legacy tier ladder — CrispEmbed Tier 4 at the top when compiled in.
-    let want_tier4 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier4);
-    let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
-    let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
-    let doc = if want_tier4 && ocr_crispembed::is_crispembed_ocr_available() {
-        match ocr_crispembed::ocr_via_crispembed(path) {
-            Ok(d) => d,
-            Err(_) => {
-                if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
-                    ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang).or_else(|_| {
-                        if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                            ocr_ocrs::ocr_via_ocrs(path)
-                        } else {
-                            ocr::ocr_via_tesseract(path)
-                        }
-                    })?
-                } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                    ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
-                } else {
-                    ocr::ocr_via_tesseract(path)?
-                }
-            }
-        }
-    } else if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
-        match ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
-            Ok(d) => d,
-            Err(_) => {
-                if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                    ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
-                } else {
-                    ocr::ocr_via_tesseract(path)?
-                }
-            }
-        }
-    } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
-        ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
-    } else {
-        ocr::ocr_via_tesseract(path)?
-    };
-    Ok(doc)
 }
 
 /// One shared budget and typed member receipts across archives and email.
@@ -1147,13 +1140,16 @@ pub fn extract_container_from_path(path: &Path, opts: ExtractOptions) -> Result<
 /// CLI thread the user's catalog-level setting through here.
 pub fn extract_text_from_path_with_opts(
     path: &Path,
-    opts: ExtractOptions,
+    mut opts: ExtractOptions,
 ) -> Result<ExtractedDocument> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    if opts.ocr_rec_lang == OcrRecLang::Auto && (ext == "pdf" || OCR_IMAGE_EXTS.contains(&ext.as_str())) {
+        opts.ocr_rec_lang = ocr_paddle::paddle_language_for_name(&path.file_name().unwrap_or_default().to_string_lossy());
+    }
     // `AnydocMode::Prefer` puts the converter ahead of the native
     // extractor for the formats both can read (pdf / docx / csv).
     // Evaluated once, here, so the arm below is a cheap `is_some()` test
@@ -1163,59 +1159,40 @@ pub fn extract_text_from_path_with_opts(
     // what keeps scanned PDFs on the OCR ladder instead of indexing a
     // blank document.
     // Archive expansion must always pass the shared resource/provenance guards.
-    let mut preferred = if container::kind_for_extension(&ext).is_some() { None } else { anydoc_conv::try_preferred(path, &ext, opts.anydoc) };
+    let force_pdf_ocr = ext == "pdf" && opts.try_ocr && opts.ocr_pdf_min_chars == usize::MAX;
+    let mut preferred = if container::kind_for_extension(&ext).is_some() || force_pdf_ocr { None } else { anydoc_conv::try_preferred(path, &ext, opts.anydoc) };
 
     let result: Result<ExtractedDocument> = match ext.as_str() {
         _ if preferred.is_some() => Ok(preferred
             .take()
             .expect("guarded by is_some() on the line above")),
         "pdf" => {
-            let mut doc = pdf::extract(path)?;
-            doc.ext = ext.clone();
-            // PLAN P7.8 — fall through to OCR if the PDF's text layer
-            // is empty / near-empty (typical for scanned documents).
-            if opts.try_ocr
-                && doc.full_text.trim().chars().count() < opts.ocr_pdf_min_chars
-            {
-                // Rasterize each page (pdf-render / PDFium) and OCR it through
-                // the same pipeline/ladder as images, concatenating with page
-                // separators. Falls back to the legacy whole-file tesseract
-                // shell-out when no rasterizer is available.
-                match page_source::rasterize_pdf(path) {
-                    Ok(pages) if !pages.is_empty() => {
-                        let mut full_text = String::new();
-                        let mut any_ok = false;
-                        for (i, page_path) in pages.paths().iter().enumerate() {
-                            match ocr_image_page(page_path, &opts) {
-                                Ok(d) => {
-                                    if any_ok {
-                                        full_text.push_str(page_source::PAGE_SEPARATOR);
-                                    }
-                                    full_text.push_str(d.full_text.trim_end_matches('\n'));
-                                    any_ok = true;
-                                }
-                                Err(e) => eprintln!(
-                                    "[ocr] PDF page {}/{} failed: {e:#}", i + 1, pages.len()
-                                ),
-                            }
-                        }
-                        if any_ok {
-                            doc.full_text = full_text;
-                        }
-                        Ok(doc)
-                    }
-                    _ => {
-                        // No rasterizer (feature off / no libpdfium) → legacy.
-                        if let Ok(mut ocr) = ocr::ocr_via_tesseract(path) {
-                            ocr.ext = ext.clone();
-                            Ok(ocr)
-                        } else {
-                            Ok(doc)
-                        }
-                    }
+            if opts.try_ocr && opts.ocr_pdf_min_chars == usize::MAX {
+                // Forced OCR must not depend on successfully decoding an
+                // existing PDF font/text layer first.
+                let images = page_source::rasterize_pdf(path).context("Render PDF for forced OCR")?;
+                anyhow::ensure!(!images.is_empty(), "PDF rendering produced no OCR pages");
+                let mut pages = Vec::with_capacity(images.len());
+                for (index, image) in images.paths().iter().enumerate() {
+                    pages.push(ocr_image_page(image, &opts)
+                        .with_context(|| format!("OCR failed on PDF page {}/{}", index + 1, images.len()))?.full_text);
                 }
+                Ok(ExtractedDocument { full_text:pages.join(page_source::PAGE_SEPARATOR), ext:ext.clone(),
+                    source_url:pdf::extract_source_url(path), ..Default::default() })
             } else {
-                Ok(doc)
+            let (mut doc, page_text) = pdf::extract_with_pages(path)?;
+            doc.ext = ext.clone();
+            if opts.try_ocr && page_text.iter().any(|text| pdf::page_needs_ocr(text, opts.ocr_pdf_min_chars)) {
+                let images = page_source::rasterize_pdf(path)
+                    .context("Render PDF pages for the selected OCR engine")?;
+                anyhow::ensure!(images.len() == page_text.len(),
+                    "PDF text and rendered page counts disagree; no partial OCR result was accepted");
+                let pages = pdf::merge_ocr_pages(&page_text, opts.ocr_pdf_min_chars, |index| {
+                    ocr_image_page(&images.paths()[index], &opts).map(|document| document.full_text)
+                })?;
+                doc.full_text = pages.join(page_source::PAGE_SEPARATOR);
+            }
+            Ok(doc)
             }
         }
         "html" | "htm" => html::extract(path).map(|mut doc| {
@@ -1316,43 +1293,25 @@ pub fn extract_text_from_path_with_opts(
             // Decode the file into per-page images (multi-frame TIFF → N pages;
             // single-page formats → the original path), OCR each page through
             // the same pipeline/ladder, and concatenate with page separators.
-            let pages = match page_source::rasterize_pages(path, &ext) {
-                Ok(pages) => pages,
-                Err(error) => {
-                    // A tolerant OCR fallback must not accept a photo whose
-                    // source validation already found an incomplete transfer.
-                    image_input::validate_file(path).context("Validate OCR source image")?;
-                    eprintln!("[ocr] page-source failed ({error:#}); treating as single page");
-                    page_source::PageImages::single(path)
-                },
-            };
-            let mut full_text = String::new();
-            let mut any_ok = false;
-            let mut last_err: Option<anyhow::Error> = None;
+            let pages = page_source::rasterize_pages(path, &ext)
+                .context("Decode all image pages for OCR")?;
+            anyhow::ensure!(!pages.is_empty(), "Image decoding produced no OCR pages");
+            let mut parts = Vec::with_capacity(pages.len());
+            let mut language = None;
             for (i, page_path) in pages.paths().iter().enumerate() {
-                match ocr_image_page(page_path, &opts) {
-                    Ok(d) => {
-                        if any_ok {
-                            full_text.push_str(page_source::PAGE_SEPARATOR);
-                        }
-                        full_text.push_str(d.full_text.trim_end_matches('\n'));
-                        any_ok = true;
-                    }
-                    Err(e) => {
-                        eprintln!("[ocr] page {}/{} failed: {e:#}", i + 1, pages.len());
-                        last_err = Some(e);
-                    }
-                }
+                let normalized = page_source::normalized_page(page_path, pages.page_orientation(i))?;
+                let page_path = normalized.as_ref().map(|file| file.path()).unwrap_or(page_path);
+                let document = ocr_image_page(page_path, &opts)
+                    .with_context(|| format!("OCR failed on image page {}/{}", i + 1, pages.len()))?;
+                if language.is_none() { language = document.language; }
+                parts.push(document.full_text.trim_end_matches('\n').to_string());
             }
-            if !any_ok {
-                return Err(last_err
-                    .unwrap_or_else(|| anyhow::anyhow!("OCR produced no pages for {}", path.display())));
-            }
+            let full_text = parts.join(page_source::PAGE_SEPARATOR);
             Ok(ExtractedDocument {
                 full_text,
                 headings: Vec::new(),
                 ext: ext.clone(),
-                language: None,
+                language,
                 translated_text: None,
                 translated_to_lang: None,
                 audio: None,
@@ -1652,8 +1611,7 @@ mod ocr_pipeline_tests {
         assert_eq!(engine_id("easyocr"), 17);
         assert_eq!(engine_id("olmocr"), 18);
         assert_eq!(engine_id("lfm2_vl"), 19);
-        // Unknown still falls back to dbnet_trocr, but now says so on stderr.
-        assert_eq!(engine_id("nonsense"), 0);
+        assert_eq!(engine_id("nonsense"), -1, "unknown engines must never become DBNet/TrOCR");
     }
 
     #[test]

@@ -52,15 +52,9 @@ use std::sync::OnceLock;
 use super::ExtractedDocument;
 
 /// Lazy-loaded `OcrEngine` keyed by the model dir we resolved to.
-/// First successful load wins for the lifetime of the process; if a
-/// later call would resolve to a different path (env var changed at
-/// runtime) we ignore it — restart to pick up the change. Keeps the
-/// per-call cost down to "Mutex lock + invoke pipeline".
-static ENGINE: OnceLock<std::sync::Mutex<Option<ocrs::OcrEngine>>> = OnceLock::new();
-
-fn engine_slot() -> &'static std::sync::Mutex<Option<ocrs::OcrEngine>> {
-    ENGINE.get_or_init(|| std::sync::Mutex::new(None))
-}
+/// Model-directory changes replace the old weights before loading the new
+/// engine. A failed load remains retryable after models are installed.
+static ENGINE: OnceLock<std::sync::Mutex<Option<super::context_cache::CachedContext<ocrs::OcrEngine>>>> = OnceLock::new();
 
 /// Resolve the directory containing `text-detection.rten` and
 /// `text-recognition.rten`. Env var beats default; default is
@@ -124,13 +118,10 @@ fn load_engine(dir: &Path) -> Result<ocrs::OcrEngine> {
 pub fn ocr_via_ocrs(path: &Path) -> Result<ExtractedDocument> {
     // Load + cache the engine on first successful call.
     let dir = resolve_model_dir();
-    let mut slot = engine_slot()
-        .lock()
-        .map_err(|e| anyhow!("ocrs engine mutex poisoned: {e}"))?;
-    if slot.is_none() {
-        *slot = Some(load_engine(&dir)?);
-    }
-    let engine = slot.as_ref().unwrap();
+    let slot = super::context_cache::acquire(&ENGINE, dir.to_string_lossy().into_owned(), || {
+        load_engine(&dir).map_err(|e| format!("{e:#}"))
+    }).map_err(anyhow::Error::msg)?;
+    let engine = &slot.as_ref().context("ocrs engine was not initialized")?.context;
 
     // Load image to RGB8.
     let img = image::open(path)

@@ -654,9 +654,10 @@ pub async fn index_ingest_path(
 
     // Run the dispatcher off the runtime — pdf_extract is sync and CPU-
     // heavy, the others are quick but still blocking I/O.
+    let extract_opts = state.bg_ingest.lock().await.ocr_options();
     let extracted = tokio::task::spawn_blocking({
         let p = p.clone();
-        move || crate::extractors::extract_text_from_path(&p)
+        move || crate::extractors::extract_text_from_path_with_opts(&p, extract_opts)
     })
     .await
     .map_err(|e| format!("extract join: {e}"))?
@@ -1774,30 +1775,9 @@ pub async fn index_image_promote_l3(
 
     let source_hash = fingerprint_local_source(&path).await?;
 
-    // Force L3 + OCR + master-switch on for this single row.  Mirrors
-    // the audio promote — the user explicitly asked, so per-row
-    // overrides win.  ocr_tier stays Auto so the tier ladder picks
-    // whatever's installed.
-    let extract_opts = crate::extractors::ExtractOptions {
-        try_ocr: true,
-        ocr_pdf_min_chars: 50,
-        ocr_tier: crate::extractors::OcrTier::Auto,
-        ocr_rec_lang: crate::extractors::OcrRecLang::Auto,
-        text_lid_model: None,
-        translate_to: None,
-        translate_backend: None,
-        translate_model: None,
-        audio_extraction_enabled: true,
-        ingest_audio_level: "l3".to_string(),
-        image_extraction_enabled: true,
-        ingest_image_level: "l3".to_string(),
-        // Manual re-OCR uses the legacy ladder; the smart pipeline applies in
-        // bg_ingest where the persisted config is available.
-        ocr_pipeline: crate::extractors::OcrPipelineConfig::default(),
-        // This is the image re-OCR path; anydoc handles no image format,
-        // so the mode is irrelevant here. Default keeps it uniform.
-        anydoc: crate::extractors::AnydocMode::default(),
-    };
+    // Force L3 + OCR for this explicit action, retaining the saved recognizer,
+    // model stages, language and CPU profile.
+    let extract_opts = state.bg_ingest.lock().await.requested_ocr_options();
     let extracted = {
         let p = path.clone();
         tokio::task::spawn_blocking(move || {
@@ -3436,9 +3416,10 @@ async fn promote_path(
     }
     let source_hash = fingerprint_local_source(&restored_path).await?;
 
+    let extract_opts = state.bg_ingest.lock().await.ocr_options();
     let extracted = tokio::task::spawn_blocking({
         let p = restored_path.clone();
-        move || crate::extractors::extract_text_from_path(&p)
+        move || crate::extractors::extract_text_from_path_with_opts(&p, extract_opts)
     }).await
     .map_err(|e| format!("extract join: {e}"))?
     .map_err(|e| format!("extract: {e}"))?;
@@ -3959,9 +3940,7 @@ pub async fn tool_ocr_export(
     let fmt = OcrOutputFormat::from_name(&format)
         .ok_or_else(|| format!("unknown render format: {format}"))?;
 
-    // Reuse the persisted Smart-OCR-pipeline config; force it on for this run.
-    let mut cfg = state.bg_ingest.lock().await.ocr_pipeline.clone();
-    cfg.enabled = true;
+    let extract_opts = state.bg_ingest.lock().await.requested_ocr_options();
 
     let ext = path
         .extension()
@@ -3980,16 +3959,12 @@ pub async fn tool_ocr_export(
     let (bytes_written, n_pages) = tokio::task::spawn_blocking(
         move || -> Result<(usize, usize), String> {
             let (bytes, pages) = if fmt == OcrOutputFormat::Text {
-                let opts = crate::extractors::ExtractOptions {
-                    try_ocr: true,
-                    ocr_pdf_min_chars: usize::MAX,
-                    ocr_pipeline: cfg,
-                    ..Default::default()
-                };
-                let doc = crate::extractors::extract_text_from_path_with_opts(&path, opts)
+                let doc = crate::extractors::extract_text_from_path_with_opts(&path, extract_opts)
                     .map_err(|e| format!("OCR failed: {e:#}"))?;
                 (doc.full_text.into_bytes(), 1usize)
             } else {
+                let (cfg, _) = crate::extractors::ocr_policy::resolve_extraction_config(&extract_opts)
+                    .map_err(|e| e.to_string())?;
                 let pages = crate::extractors::ocr_render::render_pages_from_file(&path, &ext, &cfg)?;
                 let n = pages.len();
                 let bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
@@ -4046,6 +4021,21 @@ pub struct KieFieldDto {
     pub score: f32,
 }
 
+fn requested_tool_ocr_options(
+    saved: crate::extractors::ExtractOptions,
+    config: Option<crate::extractors::OcrPipelineConfig>,
+) -> crate::extractors::ExtractOptions {
+    // A Workbench request carries its complete project policy. Do not mix a
+    // later global tier/script into that snapshot; omitted configs inherit it.
+    let mut options = match config {
+        Some(config) => crate::extractors::ExtractOptions { ocr_pipeline: config, ..Default::default() },
+        None => saved,
+    };
+    options.try_ocr = true;
+    options.ocr_pdf_min_chars = usize::MAX;
+    options
+}
+
 /// Key-information extraction over a single file. With `lilt`, runs layout-aware
 /// LiLT token classification directly on the image; otherwise OCRs the document
 /// and runs zero-shot GLiNER NER over the text. Empty `labels` falls back to the
@@ -4058,6 +4048,7 @@ pub async fn tool_kie_extract(
     threshold: Option<f32>,
     lilt: bool,
     lilt_model: Option<String>,
+    config: Option<crate::extractors::OcrPipelineConfig>,
 ) -> Result<Vec<KieFieldDto>, String> {
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
@@ -4081,16 +4072,20 @@ pub async fn tool_kie_extract(
         return Err("no KIE labels given and Settings → NER has none configured".to_string());
     }
     let thr = threshold.unwrap_or(ner_threshold);
+    let opts = requested_tool_ocr_options(state.bg_ingest.lock().await.ocr_options(), config);
 
     let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
+        let (config, warnings) = crate::extractors::ocr_policy::resolve_lilt_config(&opts)?;
+        for warning in warnings { crate::app_log("warn", format!("LiLT OCR: {warning}")); }
         let path2 = path.clone();
         let labels2 = labels.clone();
         tokio::task::spawn_blocking(move || {
-            crate::extractors::ocr_crispembed::kie_extract_lilt(
+            crate::extractors::ocr_crispembed::kie_extract_lilt_with_config(
                 &path2,
                 &labels2,
                 thr,
                 lilt_model.as_deref(),
+                &config,
             )
         })
         .await
@@ -4111,11 +4106,6 @@ pub async fn tool_kie_extract(
         let model = ner_model.unwrap_or_default();
         let path2 = path.clone();
         let doc = tokio::task::spawn_blocking(move || {
-            let opts = crate::extractors::ExtractOptions {
-                try_ocr: true,
-                ocr_pdf_min_chars: usize::MAX,
-                ..Default::default()
-            };
             crate::extractors::extract_text_from_path_with_opts(&path2, opts)
         })
         .await
@@ -4153,8 +4143,8 @@ pub async fn tool_table_extract(
     location_uri: String,
     ocr_model: Option<String>,
     save: bool,
+    config: Option<crate::extractors::OcrPipelineConfig>,
 ) -> Result<TableExtractResult, String> {
-    let _ = &state; // resolved purely from the URI; state kept for signature parity
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
             format!("location_uri does not map to a local path: {location_uri} (download cloud files first)")
@@ -4163,14 +4153,14 @@ pub async fn tool_table_extract(
         return Err(format!("file not present on disk: {}", path.display()));
     }
 
+    let options = requested_tool_ocr_options(state.bg_ingest.lock().await.ocr_options(), config);
+    let (config, warnings) = crate::extractors::ocr_policy::resolve_table_config(&options)?;
+    for warning in warnings { crate::app_log("warn", format!("Table OCR: {warning}")); }
     let path2 = path.clone();
     let (rows, cols, html) = tokio::task::spawn_blocking(
         move || -> Result<(i32, i32, String), String> {
-            let (rows, cols) = crate::extractors::ocr_crispembed::table_grid(&path2)
-                .map_err(|e| format!("grid detection failed: {e:#}"))?;
-            let html = crate::extractors::ocr_crispembed::table_to_html(&path2, ocr_model.as_deref())
-                .map_err(|e| format!("table parse failed: {e:#}"))?;
-            Ok((rows, cols, html))
+            crate::extractors::ocr_crispembed::table_extract_with_config(&path2, ocr_model.as_deref(), &config)
+                .map_err(|e| format!("table parse failed: {e:#}"))
         },
     )
     .await
@@ -4305,6 +4295,13 @@ pub struct BatchKieRow {
     pub fields: Vec<KieFieldDto>,
 }
 
+fn batch_kie_supports_path(path: &std::path::Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+        let ext = ext.to_ascii_lowercase();
+        crate::extractors::supported(&ext) || crate::images::is_image_ext(&ext)
+    })
+}
+
 /// Run KIE (key-information extraction) across all supported files in a folder.
 /// Returns one row per file with the extracted field values, plus a CSV string
 /// that can be saved to disk.
@@ -4345,50 +4342,39 @@ pub async fn tool_batch_kie(
 
     // Collect supported files
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if crate::extractors::supported(ext) {
-                        files.push(path);
-                    }
-                }
-            }
+    for entry in std::fs::read_dir(&dir).map_err(|error| format!("Reading KIE folder: {error}"))? {
+        let path = entry.map_err(|error| format!("Reading KIE folder entry: {error}"))?.path();
+        if path.is_file() && batch_kie_supports_path(&path) {
+            files.push(path);
         }
     }
     files.sort();
 
     let mut rows: Vec<BatchKieRow> = Vec::new();
+    let extract_opts = state.bg_ingest.lock().await.requested_ocr_options();
 
     for file in &files {
         let path2 = file.clone();
         let labels2 = labels.clone();
         let cache2 = cache_dir.clone();
         let model2 = model.clone();
+        let opts = extract_opts.clone();
 
-        let fields = tokio::task::spawn_blocking(move || -> Vec<(String, String, f32)> {
-            let opts = crate::extractors::ExtractOptions {
-                try_ocr: true,
-                ocr_pdf_min_chars: usize::MAX,
-                ..Default::default()
-            };
-            let doc = match crate::extractors::extract_text_from_path_with_opts(&path2, opts) {
-                Ok(d) => d,
-                Err(_) => return vec![],
-            };
+        let fields = tokio::task::spawn_blocking(move || -> Result<Vec<(String, String, f32)>, String> {
+            let doc = crate::extractors::extract_text_from_path_with_opts(&path2, opts)
+                .map_err(|error| format!("Extracting {} for KIE: {error:#}", path2.display()))?;
             if doc.full_text.trim().is_empty() {
-                return vec![];
+                return Ok(vec![]);
             }
             let handle = crate::index::ner::NerHandle::new(
                 model2.unwrap_or_default(), labels2, thr, 0, 200_000, cache2,
             );
             // Block on the async extract_fields from a sync context
-            tokio::runtime::Handle::current()
-                .block_on(handle.extract_fields(&doc.full_text))
+            Ok(tokio::runtime::Handle::current()
+                .block_on(handle.extract_fields(&doc.full_text)))
         })
         .await
-        .map_err(|e| format!("kie join error: {e}"))?;
+        .map_err(|e| format!("kie join error: {e}"))??;
 
         let filename = file.file_name()
             .and_then(|f| f.to_str())
@@ -4560,6 +4546,47 @@ pub struct OcrPageResult {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct OcrCrop { pub x: u32, pub y: u32, pub w: u32, pub h: u32 }
 
+fn page_region_config(
+    mut options: crate::extractors::ExtractOptions,
+    preset: &str,
+    cpu_pixel_budget: Option<bool>,
+) -> Result<crate::extractors::OcrPipelineConfig, String> {
+    if preset != "custom" {
+        options.ocr_pipeline = crate::extractors::ocr_presets::apply(&options.ocr_pipeline, preset)?;
+        // A named task is an explicit recipe. A saved global engine must not
+        // replace its recognizer or inherit an unrelated CPU profile.
+        options.ocr_pipeline.engine = options.ocr_pipeline.stages.first().map(|stage| stage.engine.clone());
+        options.ocr_pipeline.cpu_pixel_budget = false;
+    }
+    if let Some(enabled) = cpu_pixel_budget { options.ocr_pipeline.cpu_pixel_budget = enabled; }
+    crate::extractors::ocr_policy::resolve_extraction_config(&options).map(|(config, _)| config)
+}
+
+/// This compatibility DTO describes the caller's existing pixels and has no
+/// prepared-image asset. Reject transformations it cannot represent instead of
+/// returning boxes from a different image or ignoring requested preparation.
+fn validate_page_region_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), String> {
+    if matches!(config.engine.as_deref(), Some("ocrs" | "paddle")) {
+        return Err("This region endpoint requires an engine with page coordinates. Use the OCR Workbench or plain-text extraction for the selected text-only engine.".into());
+    }
+    if !config.enabled { return Ok(()); }
+    let unsupported_preparation = config.dewarp || config.restore || config.sr || config.layout
+        || if config.engine.as_deref() == Some("system_tesseract") {
+            config.cleanup_enabled || config.denoise
+        } else if config.stages.is_empty() {
+            config.cleanup_enabled
+        } else {
+            config.stages.iter().any(|stage| stage.cleanup.enabled && (
+                stage.cleanup.deskew || stage.cleanup.crop_borders || stage.cleanup.page_split
+                || stage.cleanup.auto_crop || stage.cleanup.despeckle || stage.cleanup.blackfilter
+            ))
+        };
+    if unsupported_preparation {
+        return Err("This region endpoint returns coordinates for the current image and cannot apply the selected cleanup, restoration or layout recipe. Use the OCR Workbench to prepare and recognize the page, or disable these options for current-image recognition.".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ocr_page_regions(
     state: State<'_, AppState>,
@@ -4572,13 +4599,11 @@ pub async fn ocr_page_regions(
     if !path.exists() {
         return Err(format!("page image not found: {page_path}"));
     }
-    let base = state.bg_ingest.lock().await.ocr_pipeline.clone();
+    let options = state.bg_ingest.lock().await.requested_ocr_options();
     let task = preset.as_deref().unwrap_or("custom");
-    let use_budget = cpu_pixel_budget.unwrap_or(false);
-    if use_budget && !matches!(task, "multilingual" | "tables" | "difficult") {
-        return Err("The CPU pixel budget is available for Qwen task presets only".into());
-    }
-    let cfg = crate::extractors::ocr_presets::apply(&base, task)?;
+    let cfg = page_region_config(options, task, cpu_pixel_budget)?;
+    validate_page_region_config(&cfg)?;
+    crate::extractors::ocr_policy::validate_runtime(&cfg)?;
 
     tokio::task::spawn_blocking(move || -> Result<OcrPageResult, String> {
         let (w, h) = image::image_dimensions(&path).map_err(|e| e.to_string())?;
@@ -4594,7 +4619,21 @@ pub async fn ocr_page_regions(
             (Some(file), (rect.x as i32, rect.y as i32))
         } else { (None, (0, 0)) };
         let input = cropped.as_ref().map(|f| f.path()).unwrap_or(&path);
-        let regions = if use_budget {
+        if cfg.engine.as_deref() == Some("system_tesseract") {
+            let result = crate::ocr_word_evidence::recognize(input, cfg.language.as_deref())
+                .map_err(|error| format!("OCR failed: {error:#}"))?;
+            return Ok(OcrPageResult {
+                width: w as i32, height: h as i32,
+                regions: result.regions.into_iter().map(|region| OcrRegionDto {
+                    text: region.text, x: region.x + offset.0 as f32, y: region.y + offset.1 as f32,
+                    w: region.w, h: region.h,
+                    // This legacy DTO has no native word-evidence envelope.
+                    // Do not relabel native word scores as region confidence.
+                    confidence: -1.0, char_conf: Vec::new(),
+                }).collect(),
+            });
+        }
+        let regions = if cfg.cpu_pixel_budget {
             crate::extractors::ocr_worker::run_cpu_budget(input, &cfg)
         } else {
             crate::extractors::ocr_crispembed::ocr_regions_detailed(input, &cfg)
@@ -5152,7 +5191,106 @@ pub async fn index_entity_graph(
 
 #[cfg(test)]
 mod workbench_tests {
-    use super::{OcrRegionDto, ocr_doc_open};
+    use super::{batch_kie_supports_path, page_region_config, requested_tool_ocr_options, validate_page_region_config, OcrRegionDto, ocr_doc_open};
+
+    #[test]
+    fn specialist_tools_inherit_global_policy_or_use_a_complete_project_snapshot() {
+        use crate::extractors::{ExtractOptions, OcrPipelineConfig, OcrRecLang, OcrTier};
+        let mut saved = ExtractOptions::default();
+        saved.ocr_tier = OcrTier::Tier3;
+        saved.ocr_rec_lang = OcrRecLang::Cjk;
+        saved.ocr_pipeline.engine = Some("qwen2vl".into());
+        saved.ocr_pipeline.cpu_pixel_budget = true;
+        let inherited = requested_tool_ocr_options(saved.clone(), None);
+        assert!(inherited.try_ocr);
+        assert_eq!(inherited.ocr_pdf_min_chars, usize::MAX);
+        assert_eq!(inherited.ocr_tier, OcrTier::Tier3);
+        assert_eq!(inherited.ocr_rec_lang, OcrRecLang::Cjk);
+        assert!(inherited.ocr_pipeline.cpu_pixel_budget);
+
+        let project: OcrPipelineConfig = serde_json::from_value(serde_json::json!({
+            "enabled":true,"engine":"auto","stages":[{"engine":"dbnet_trocr","rec_model":"project-model.gguf"}],
+            "min_chars":0,"min_confidence":0
+        })).unwrap();
+        let requested = requested_tool_ocr_options(saved, Some(project));
+        assert!(requested.try_ocr);
+        assert_eq!(requested.ocr_tier, OcrTier::Auto);
+        assert_eq!(requested.ocr_rec_lang, OcrRecLang::Auto);
+        assert!(!requested.ocr_pipeline.cpu_pixel_budget);
+        assert_eq!(requested.ocr_pipeline.stages[0].rec_model.as_deref(), Some("project-model.gguf"));
+        assert_eq!(requested.ocr_pipeline.min_chars, 0);
+        assert_eq!(requested.ocr_pipeline.min_confidence, 0.0);
+    }
+
+    #[test]
+    fn legacy_region_contract_rejects_unrepresentable_preparation() {
+        use crate::extractors::OcrPipelineConfig;
+        let current_pixels: OcrPipelineConfig = serde_json::from_value(serde_json::json!({
+            "enabled":true,"engine":"tesseract","stages":[{"engine":"tesseract",
+                "cleanup":{"enabled":true,"deskew":false,"crop_borders":false,"whiten_background":true}}]
+        })).unwrap();
+        assert!(validate_page_region_config(&current_pixels).is_ok());
+        for field in ["dewarp", "restore", "sr", "layout"] {
+            let mut value = serde_json::to_value(&current_pixels).unwrap();
+            value[field] = true.into();
+            let config = serde_json::from_value(value).unwrap();
+            assert!(validate_page_region_config(&config).unwrap_err().contains("OCR Workbench"), "ignored {field}");
+        }
+        for field in ["deskew", "crop_borders", "page_split", "auto_crop", "despeckle", "blackfilter"] {
+            let mut value = serde_json::to_value(&current_pixels).unwrap();
+            value["stages"][0]["cleanup"][field] = true.into();
+            let config = serde_json::from_value(value).unwrap();
+            assert!(validate_page_region_config(&config).is_err(), "ignored or misrepresented {field}");
+        }
+        let mut system = OcrPipelineConfig { engine:Some("system_tesseract".into()), ..Default::default() };
+        assert!(validate_page_region_config(&system).is_ok(), "disabled preparation must remain inactive");
+        system.enabled = true;
+        assert!(validate_page_region_config(&system).is_err(), "System Tesseract must not ignore cleanup");
+        system.cleanup_enabled = false;
+        assert!(validate_page_region_config(&system).is_ok());
+    }
+
+    #[test]
+    fn legacy_region_custom_request_retains_the_saved_engine_and_language() {
+        let mut options = crate::extractors::ExtractOptions::default();
+        options.ocr_pipeline.engine = Some("system_tesseract".into());
+        options.ocr_pipeline.language = Some("eng+deu".into());
+        let config = page_region_config(options, "custom", None).unwrap();
+        assert_eq!(config.engine.as_deref(), Some("system_tesseract"));
+        assert_eq!(config.language.as_deref(), Some("eng+deu"));
+        assert!(!config.enabled, "an explicit engine does not enable hidden preprocessing");
+
+        let options = crate::extractors::ExtractOptions { ocr_tier: crate::extractors::OcrTier::Tier2, ..Default::default() };
+        assert_eq!(page_region_config(options, "custom", None).unwrap().engine.as_deref(), Some("ocrs"));
+    }
+
+    #[test]
+    fn region_task_preset_overrides_global_engine_and_keeps_its_prompt() {
+        let mut options = crate::extractors::ExtractOptions::default();
+        options.ocr_pipeline.engine = Some("tesseract".into());
+        options.ocr_pipeline.language = Some("deu".into());
+        options.ocr_pipeline.cpu_pixel_budget = true;
+        let quick = page_region_config(options.clone(), "quick", None).unwrap();
+        assert_eq!(quick.engine.as_deref(), Some("dbnet_trocr"));
+        assert!(!quick.cpu_pixel_budget, "a quick task must not inherit Qwen-only isolation");
+        let table = page_region_config(options, "tables", Some(true)).unwrap();
+        assert_eq!(table.engine.as_deref(), Some("qwen2vl"));
+        assert!(table.cpu_pixel_budget);
+        assert!(table.stages[0].vlm_prompt.contains("all table rows and columns"));
+        assert!(table.stages[0].vlm_prompt.contains("deu"));
+        assert_eq!(table.stages[0].det_model.as_deref(), Some("qwen2vl-3b"));
+    }
+
+    #[test]
+    fn batch_kie_includes_scanned_images_and_case_insensitive_documents() {
+        use std::path::Path;
+        for name in ["invoice.PNG", "photo.JpEg", "scan.tiff", "invoice.PDF", "letter.docx"] {
+            assert!(batch_kie_supports_path(Path::new(name)), "omitted {name}");
+        }
+        for name in ["no-extension", "program.exe", "cache.unknown"] {
+            assert!(!batch_kie_supports_path(Path::new(name)), "accepted {name}");
+        }
+    }
 
     #[test]
     fn ocr_region_dto_char_conf_defaults_empty() {
@@ -5262,8 +5400,9 @@ pub async fn template_apply(
         return Err(format!("File not found: {}", path.display()));
     }
 
+    let opts = state.bg_ingest.lock().await.requested_ocr_options();
     tokio::task::spawn_blocking(move || {
-        super::zone_ocr::extract_zones(&path, &template)
+        super::zone_ocr::extract_zones_with_opts(&path, &template, &opts)
     })
     .await
     .map_err(|e| format!("join: {e}"))?
