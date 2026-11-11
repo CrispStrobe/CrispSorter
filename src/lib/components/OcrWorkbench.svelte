@@ -550,6 +550,9 @@
   const systemLanguages = $derived(capabilities.system_tesseract?.languages ?? []);
   const recognitionAvailable = $derived(capabilities.ocr && capabilities.engines.includes(engine));
   const cpuBudget = $derived(effectiveRecognition.cpuPixelBudget);
+  // Only meaningful for Qwen2-VL where the worker can be spawned; the saved
+  // preference stays for when Qwen2 VL is chosen again.
+  const cpuBudgetActive = $derived(cpuBudget && engine === "qwen2vl" && !!capabilities.cpu_budget);
   const config = $derived(effectiveRecognition.config);
   const recognitionControls = $derived(effectiveRecognition.controls);
   const exportIds = $derived(
@@ -1558,7 +1561,7 @@
     error = "";
     selectedRegionId = null;
     showOriginal = false;
-    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudget };
+    const options: BatchOptions = { profileId: project.profileId, config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudgetActive };
     change(beginBatch(project, pages.map(page => page.id), options));
     await runPreparedBatch(pages.map(page => page.id), options);
   }
@@ -1892,14 +1895,14 @@
   }
   async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
     if (!pageId || locked || !recognitionAvailable) return;
-    const activity = beginOperation("ocr.recognition", { engine, language, cpuBudget });
+    const activity = beginOperation("ocr.recognition", { engine, language, cpuBudget: cpuBudgetActive });
     error = "";
     try {
       const request = captureZoneReview(project, pageId, rect);
       const configSnapshot = JSON.parse(JSON.stringify(config));
       const engineSnapshot = engine;
       const languageSnapshot = language;
-      const cpuBudgetSnapshot = cpuBudget;
+      const cpuBudgetSnapshot = cpuBudgetActive;
       const profileSnapshot = project.profileId;
       const page = request.page;
       busy = "Recognizing selected area";

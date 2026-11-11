@@ -184,6 +184,13 @@ impl DriveRegistry {
         Ok(())
     }
 
+    /// Test helper: persist the in-memory registry as-is, bypassing the stale-edit check.
+    #[cfg(test)]
+    pub(crate) fn save(&self) -> Result<()> {
+        let _lock = Self::lock(&self.path)?;
+        self.save_locked()
+    }
+
     /// Check the metadata snapshot displayed by a GUI before accepting its edit.
     /// Credentials are excluded by DriveConfig's serializer.
     pub fn require_snapshot(&self, expected: &DriveConfig) -> Result<()> {
