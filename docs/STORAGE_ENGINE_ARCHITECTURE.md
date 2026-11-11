@@ -5,7 +5,7 @@ SMB paths are implemented. Reusing the Filen/Internxt Rust clients from Flutter
 is proposed work, not an existing Dart bridge or a new Sorter engine setting.
 
 The cross-app contract, fallback policy and migration sequence are recorded in
-[CrispCloud's shared design](https://github.com/CrispStrobe/CrispCloud/blob/6c4fbabe712c99ce0cb75a9fdabefa5e11f8ac1d/docs/STORAGE_ENGINE_ARCHITECTURE.md).
+[CrispCloud's shared design](https://github.com/CrispStrobe/CrispCloud/blob/95f4574e58cd69881532603eb48689d43dfe8ead/docs/STORAGE_ENGINE_ARCHITECTURE.md).
 This pins a documentation revision; runtime sources remain pinned separately.
 
 ## Current implementation
@@ -154,8 +154,14 @@ proxy, capability and opt-in live-test boundaries, follow
 [cloud-provider-parity.md](cloud-provider-parity.md). Live accounts must be
 explicitly configured; hermetic tests must not read real credentials.
 
-Share versioned Rust sources first, preserve the Flutter defaults during
-qualification, expose optional engine settings there, then consider promotion
-only after cross-engine, native packaging, device and performance gates pass.
-Retain a transition plan for the cost of maintaining/shipping two engines rather
-than promising permanent duplicate implementations on every platform.
+Keep both existing language packages supported and tested. Flutter consumers
+should offer a per-provider app default plus per-account App default/Dart/Rust/Auto
+choices. Initially use Dart; a qualified default flip to Auto prefers Rust with
+pre-session Dart fallback. Explicit overrides and active transfers keep their
+engine. Test default changes and checkpoint compatibility through GUI and CLI.
+
+Sorter continues to call Rust directly. A Dart choice here would need an explicit
+Dart worker/runtime, with desktop packaging and platform tests; keeping the Dart
+package does not automatically add that runtime. That is a separate compatibility
+feature if needed. Removing either existing engine would be a separate decision,
+not an assumed outcome of sharing the Rust sources.
