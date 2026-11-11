@@ -339,3 +339,36 @@ test('a moved file retains an index warning until a retried update is durably ac
     expect(await callsFor(page, 'index_update_location_by_path')).toHaveLength(3);
     expect((await callsFor(page, 'index_update_location_by_path')).at(-1).args.requireUpdate).toBe(true);
 });
+
+test('metadata stays editable while analysis runs and hand-set fields survive the finished analysis', async ({ page }) => {
+    await seedRecovery(page, [
+        { id: 'reviewed', status: 'review', extractedText: 'Already reviewed text.' },
+        { id: 'pending', status: 'unfinished' },
+    ]);
+    await page.evaluate(() => { (window as any).__recoveryExtractGate = true; });
+    await page.getByRole('button', { name: 'Resume', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseRecoveryExtraction)).toBe('function');
+    expect((await snapshot(page)).processing).toBe(true);
+
+    // List view: the row of the document being analysed is editable.
+    const table = page.locator('.batch-container table.dense-table');
+    const pending = table.getByRole('row').filter({ hasText: 'pending.pdf' });
+    const author = pending.getByRole('textbox', { name: 'Suggested Author', exact: true });
+    await expect(author).toBeEnabled();
+    await author.fill('Hand Author');
+    await author.press('Tab');
+
+    // Detail view in Review: another document's fields can be edited and saved too.
+    await page.locator('nav.main-nav').getByRole('button', { name: 'Review', exact: true }).click();
+    await page.locator('.batch-container table.dense-table').getByRole('row').filter({ hasText: 'reviewed.pdf' }).locator('.file-name').click();
+    const title = page.getByRole('textbox', { name: 'Edit Title', exact: true });
+    await expect(title).toBeEnabled();
+    await title.fill('Hand Title');
+    await title.press('Enter');
+    await expect.poll(async () => (await snapshot(page)).items.find((item: any) => item.id === 'reviewed').suggestedTitle).toBe('Hand Title');
+
+    await page.evaluate(() => (window as any).__releaseRecoveryExtraction());
+    await expect.poll(async () => (await snapshot(page)).processing).toBe(false);
+    const analysed = (await snapshot(page)).items.find((item: any) => item.id === 'pending');
+    expect(analysed).toMatchObject({ status: 'review', suggestedAuthor: 'Hand Author', suggestedTitle: 'Recovered title', suggestedYear: '2026' });
+});

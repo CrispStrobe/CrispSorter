@@ -77,10 +77,32 @@ export function getDefaultPrompt(format: 'xml' | 'json', lang: string = 'en') {
         : 'You are a metadata extraction assistant. Extract bibliographic metadata from the provided document text and filename.\nOutput the result STRICTLY in this XML format:\n<METADATA>\n  <TITLE>Document Title</TITLE>\n  <AUTHOR>Lastname, Firstname</AUTHOR>\n  <YEAR>YYYY</YEAR>\n  <LANGUAGE>en/de/...</LANGUAGE>\n</METADATA>\nUse "Unknown Title" if indeterminable.';
 }
 
+export type MetadataField = 'title' | 'author' | 'year';
+
 export class BatchManager {
     items = $state<BatchItem[]>([]);
     isProcessing = $state(false);
     isStopping = $state(false);
+    /** Fields the user set by hand while (or before) analysis ran. Analysis
+     * fills only the others, so a correction made during a running queue is
+     * not overwritten when that item finishes. An explicit re-analysis of the
+     * item clears it. In-memory: it covers the running session's queue. */
+    private manualFields = new Map<string, Set<MetadataField>>();
+    markManual(itemId: string, fields: MetadataField[]) {
+        if (!fields.length) return;
+        const set = this.manualFields.get(itemId) ?? new Set<MetadataField>();
+        for (const field of fields) set.add(field);
+        this.manualFields.set(itemId, set);
+    }
+    isManual(itemId: string, field: MetadataField): boolean {
+        return this.manualFields.get(itemId)?.has(field) ?? false;
+    }
+    /** Write analysis results, keeping fields the user overrode by hand. */
+    private applyAnalyzed(item: BatchItem, values: { title?: string; author?: string; year?: string }) {
+        if (values.title !== undefined && !this.isManual(item.id, 'title')) item.suggestedTitle = values.title;
+        if (values.author !== undefined && !this.isManual(item.id, 'author')) item.suggestedAuthor = values.author;
+        if (values.year !== undefined && !this.isManual(item.id, 'year')) item.suggestedYear = values.year;
+    }
     isExecuting = $state(false);
     isCleaningDuplicates = $state(false);
     isUpdatingBatch = $state(false);
@@ -209,6 +231,7 @@ export class BatchManager {
             await clearBatch();
             reviewDrafts.discard(this.items.map(item => item.id));
             this.items = [];
+            this.manualFields.clear();
             flog('info', 'Batch cleared in SQLite.');
         } catch (e: any) {
             flog('error', 'Failed to clear batch in SQLite: ' + (e.message || e));
@@ -243,6 +266,7 @@ export class BatchManager {
         const changed: BatchItem[] = [];
         for (const item of targets) {
             if (['review', 'error', 'unfinished', 'ready'].includes(item.status)) {
+                this.manualFields.delete(item.id);
                 item.status = 'queued';
                 item.errorMessage = undefined;
                 item.statusDetail = undefined;
@@ -311,6 +335,7 @@ export class BatchManager {
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
             if (item && item.status !== 'done') {
+                this.manualFields.delete(item.id);
                 item.status = 'queued';
                 item.errorMessage = undefined;
                 item.statusDetail = undefined;
@@ -573,9 +598,11 @@ export class BatchManager {
                                 targetPath:      hist.targetPath,
                                 processedAt:     hist.processedAt,
                             };
-                            item.suggestedTitle  = hist.suggestedTitle  ?? item.suggestedTitle;
-                            item.suggestedAuthor = hist.suggestedAuthor ?? item.suggestedAuthor;
-                            item.suggestedYear   = hist.suggestedYear   ?? item.suggestedYear;
+                            this.applyAnalyzed(item, {
+                                title: hist.suggestedTitle ?? item.suggestedTitle,
+                                author: hist.suggestedAuthor ?? item.suggestedAuthor,
+                                year: hist.suggestedYear ?? item.suggestedYear,
+                            });
                             item.status = 'review';
                             if (overrides?.extractionOnly) await this.calculateTargetPath(item);
                             await upsertItem(item);
@@ -1021,17 +1048,19 @@ export class BatchManager {
                     if (this.stopRequested || runLlmAbort.signal.aborted) { item.status = 'unfinished'; item.statusDetail = 'interrupted'; break; }
                     const metadata = this.parseLLMResponse(response, parsingFormat);
 
-                    item.suggestedTitle = metadata.title || 'Unknown Title';
-                    item.suggestedAuthor = metadata.author || 'Unknown Author';
-                    item.suggestedYear = metadata.year || 'Unknown Year';
+                    this.applyAnalyzed(item, {
+                        title: metadata.title || 'Unknown Title',
+                        author: metadata.author || 'Unknown Author',
+                        year: metadata.year || 'Unknown Year',
+                    });
                     operation.stage('analyzed', { characters: response.length }, 'info');
 
-                    if (authorSortEnabled && item.suggestedAuthor && !isUnknownSentinel(item.suggestedAuthor)) {
+                    if (authorSortEnabled && !this.isManual(item.id, 'author') && item.suggestedAuthor && !isUnknownSentinel(item.suggestedAuthor)) {
                         const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
                         const sortRes = await queryRR(sortPrompt);
                         if (this.stopRequested || runLlmAbort.signal.aborted) { item.status = 'unfinished'; item.statusDetail = 'interrupted'; break; }
                         const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
-                        if (match) item.suggestedAuthor = match[1].trim();
+                        if (match) this.applyAnalyzed(item, { author: match[1].trim() });
                     }
 
                     item.status = 'review';
