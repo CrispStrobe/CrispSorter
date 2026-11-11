@@ -170,7 +170,7 @@ not an assumed outcome of sharing the Rust sources.
 ## Executable Dart / Rust package conformance
 
 `.github/workflows/provider-conformance.yml` runs the shared, pinned
-[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/f6add1b13c8a2f8ae3f0c74b4b4d83204197152f/conformance).
+[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/6c1f351dbe0cb9efe2ecf19b009603907bf5cf2e/conformance).
 It tests this repository’s actual native Filen/Internxt crate sources against
 the retained Dart SDKs, without replacing the Sorter crates.
 
@@ -205,3 +205,14 @@ python ../crisp-cloud-rs/conformance/run.py --pointycastle 4.0.0 --dart-pg 2.1.0
 
 Keep this harness commit pinned and advance it deliberately with the compatibility
 report. Retain both language implementations and explicit engine choices.
+
+
+The first completed shared run exercised 131 cases and 363 cross-decryptions
+with zero unexpected failures. Ten exact diagnostic cases remain promotion
+blockers: empty CBC encryption, CBC envelope validation, two legacy secret
+encoding directions, two negative CTR offsets, odd-length password salt hex,
+unreadable Filen metadata, missing Internxt listing collections and listing
+GET retry behavior. These are SDK compatibility findings, not live-account or
+GUI qualification. Dart retries an Internxt listing 503; Rust currently returns
+the error. Rejection is compared at the API boundary; exception classes/messages
+are language-specific. See each CI run’s report for its actual source results.

@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/crisp-cloud-rs
-          ref: f6add1b13c8a2f8ae3f0c74b4b4d83204197152f
+          ref: 6c1f351dbe0cb9efe2ecf19b009603907bf5cf2e
           path: _provider_conformance
       - uses: dart-lang/setup-dart@v1
         with:
