@@ -137,6 +137,11 @@ async fn main() -> anyhow::Result<()> {
             image_iso:              None,
             multivec_packed:        None,
             multivec_n_tokens:      None,
+            url:                   None,
+            embedding_omni:        None,
+            embedding_vit:         None,
+            summary:               None,
+            doc_status:            None,
         }
     };
 
