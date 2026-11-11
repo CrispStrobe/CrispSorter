@@ -216,3 +216,8 @@ GET retry behavior. These are SDK compatibility findings, not live-account or
 GUI qualification. Dart retries an Internxt listing 503; Rust currently returns
 the error. Rejection is compared at the API boundary; exception classes/messages
 are language-specific. See each CI run’s report for its actual source results.
+
+The provider conformance workflow also runs native unit/mock tests in an isolated
+workspace containing the unchanged provider crate sources and their existing
+MIT reference dependency. Its resolved test lockfile is uploaded separately;
+this avoids pulling unrelated desktop build dependencies into a protocol test.

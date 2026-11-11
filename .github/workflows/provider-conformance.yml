@@ -41,3 +41,31 @@ jobs:
             _provider_conformance/conformance/dart/pubspec.lock
             _provider_conformance/conformance/rust/Cargo.lock
           retention-days: 14
+  native-unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Isolate provider unit tests from desktop build dependencies
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('_provider_units')
+          root.mkdir()
+          for package in ['crisp-filen-native','crisp-internxt-native','internxt-core']:
+              shutil.copytree(Path('crates',package),root/'crates'/package)
+          (root/'Cargo.toml').write_text('[workspace]\nresolver="2"\nmembers=["crates/crisp-filen-native","crates/crisp-internxt-native","crates/internxt-core"]\n')
+          PY
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: _provider_units -> target
+      - name: Native provider unit and mock tests
+        working-directory: _provider_units
+        run: cargo test -p crisp-filen -p crisp-internxt --lib
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-provider-unit-lockfile
+          path: _provider_units/Cargo.lock
