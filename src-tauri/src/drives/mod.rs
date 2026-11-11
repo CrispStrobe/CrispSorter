@@ -33,6 +33,7 @@ pub mod onedrive;
 pub(crate) mod secret;
 pub mod tauri_commands;
 pub mod webdav;
+mod mounted_read;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -495,6 +496,15 @@ impl CloudDrive for LocalDrive {
         std::fs::read(&p).with_context(|| format!("read_file: {}", p.display()))
     }
 
+    fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
+        let p = self.full(path);
+        // In particular, SMB/NFS mounts must not buffer the entire remote file
+        // before the destination receives anything. io::copy provides bounded
+        // buffering and stops immediately when the caller's writer fails.
+        mounted_read::read_to_writer(&p, writer)
+            .with_context(|| format!("read_file_to_writer: {}", p.display()))
+    }
+
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
         let p = self.full(path);
         if let Some(parent) = p.parent() {
@@ -935,6 +945,17 @@ mod tests {
         drive.write_file(Path::new("hello.txt"), b"world").unwrap();
         let bytes = drive.read_file(Path::new("hello.txt")).unwrap();
         assert_eq!(bytes, b"world");
+    }
+
+    #[test]
+    fn local_drive_streams_relative_and_absolute_paths() {
+        let (tmp, drive) = fixture();
+        drive.write_file(Path::new("mounted.bin"), b"share bytes").unwrap();
+        for path in [PathBuf::from("mounted.bin"), tmp.path().join("mounted.bin")] {
+            let mut output = Vec::new();
+            assert_eq!(drive.read_file_to_writer(&path, &mut output).unwrap(), 11);
+            assert_eq!(output, b"share bytes");
+        }
     }
 
     #[test]
