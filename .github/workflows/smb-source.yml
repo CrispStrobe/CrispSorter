@@ -1,0 +1,25 @@
+name: Shared Rust SMB source
+on:
+  push:
+    paths: ['crates/crisp-smb-source/**', 'scripts/test_smb_source.py', '.github/workflows/smb-source.yml']
+  pull_request:
+    paths: ['crates/crisp-smb-source/**', 'scripts/test_smb_source.py', '.github/workflows/smb-source.yml']
+  workflow_dispatch:
+jobs:
+  direct-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispCloud
+          ref: ffeae11d53054190cf6f3a6fbcec2eb44b32dfb2
+          path: .smb-fixture-source
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install impacket==0.13.0
+      - run: cargo test --manifest-path crates/crisp-smb-source/Cargo.toml --locked
+      - run: python scripts/test_smb_source.py .smb-fixture-source
+      - run: bash scripts/test_mounted_read.sh

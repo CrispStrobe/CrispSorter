@@ -1,0 +1,22 @@
+name: Mounted storage reads
+on:
+  push:
+    paths:
+      - 'src-tauri/src/drives/mod.rs'
+      - 'src-tauri/src/drives/mounted_read.rs'
+      - 'scripts/test_mounted_read.sh'
+      - '.github/workflows/mounted-storage.yml'
+  pull_request:
+    paths:
+      - 'src-tauri/src/drives/mod.rs'
+      - 'src-tauri/src/drives/mounted_read.rs'
+      - 'scripts/test_mounted_read.sh'
+      - '.github/workflows/mounted-storage.yml'
+jobs:
+  reader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test production reader without Tauri or model dependencies
+        run: bash scripts/test_mounted_read.sh
