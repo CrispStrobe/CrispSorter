@@ -2,9 +2,11 @@
 
 The recovered feature branch is `feat/search-workspace-completion-20261110`,
 tracked by [pull request 42](https://github.com/CrispStrobe/CrispSorter/pull/42).
-The PR now targets `main`. Main revision
-`537764811dc415a544ecd4be513a9599370a31c5`, including the completed OCR controls,
-is integrated. A fresh review found 71 remote branch heads and one open PR.
+The PR targets `main`. Main revision
+`de802fed5d8f7d40525877ad826fd627835394b9`, including the recent OCR review and
+PDF editor changes, is integrated. The earlier recovery reviewed 71 remote
+branch heads and one open PR; the follow-up reviewed the newly advanced main
+and feature heads before integrating them.
 
 ## Remote checkpoints
 
@@ -13,9 +15,52 @@ is integrated. A fresh review found 71 remote branch heads and one open PR.
 | `8117c42214ff11cce0c1b7e65aee49b025ff7083` | Integrate current main and its OCR controls. |
 | `aea2bc800bcf908611510bc1f016d8b03c83820f` | Correct portable source-path tests and browser interactions for provider controls, field review, query accessibility and narrow result titles. |
 | `57bd68c3a6c0311c3ed2d5b2184d7490f2d6877e` | Add explicit query interpretation, shared local/remote planning, verified query evidence, and six-mode native measurements. |
+| `e4e55ab0dd39b9ea0994b5e7a98e811530b9ceb3` | Save the independently audited six-mode retrieval result and continuation report. |
+| `c9b3cfd3200e6840f2ce05844bf61cea7cddb49a` | Merge main's OCR review/PDF update while preserving the feature branch's Windows member-copy and provider-list fixes. |
 
 Each checkpoint was published to the feature branch and the local checkout was
 verified against its exact remote tree.
+
+## OCR/PDF integration follow-up
+
+The incoming OCR/PDF source commit `73c6070` adds the empty-pipeline embedded
+Tesseract default, grouped line review, a continuous confidence view, compact
+controls and badges, the PDF editor reopen-loop fix and progressive thumbnails.
+The older OCR engine/CPU-budget branch is already an ancestor of main and did
+not need replaying. Feature fixes `1f5d470` and `b6bc7fa` remain in history.
+
+Focused integration fixes preserve a configured recognizer when language is
+Automatic, retain native line/column order and untouched word-evidence regions,
+and prevent incomplete or mixed-provenance scores from qualifying a complete
+line. Thumbnail runs capture session/refresh identity before asynchronous work
+and discard stale document loads and tile publication after close or refresh.
+Stage and thumbnail callers share one preview load for the same session
+snapshot; caller cancellation does not cancel that shared owner.
+The thumbnail guard does not serialize the separate native open/edit/save
+lifecycle or the stage renderer.
+
+The [OCR engine inventory](ocr-engine-options.md) documents all workbench
+choices, advanced stages, extraction fallbacks, language/model rules and the
+exact measured System Tesseract path. No new cross-engine accuracy comparison
+or OCR execution is claimed by this follow-up.
+
+### Follow-up verification
+
+| Check | Observed result |
+| --- | --- |
+| Full frontend unit suite | 753 passed across 74 files, including 11 new language-routing regression cases. |
+| Svelte and TypeScript | 0 errors; 54 existing warnings in 8 files. |
+| Production Vite build | Passed. |
+| Focused PDF asynchronous replay | Six controlled scenarios passed against the actual extracted component functions: shared stage/thumbnail loading, caller cancellation, close during export or parse, pending-owner replacement, and a new snapshot with the same native ID. This is not a browser or native-rendering result. |
+| Diff formatting | Passed. |
+| Native grouping regressions | Four new cases cover column order, untouched-region barriers, score provenance and complete score coverage. Local execution was unavailable because this replacement environment has no Rust toolchain. |
+
+The preceding feature head `b6bc7fa` completed 28 hosted checks successfully,
+with one intentionally gated cloud-live check skipped. The integrated main
+checkpoint `c9b3cfd` has a successful hosted browser run; native application and
+paired checks were still in progress at inspection. Those earlier successes
+do not qualify the later follow-up source. The follow-up's own hosted results
+must be read from its commit checks before release.
 
 ## Closed implementation gaps
 
@@ -92,7 +137,7 @@ Unsupported or encrypted content remains explicit coverage, not implied success.
 See [extraction contracts](../tests/extraction-contract/README.md) and the
 [capability review](search-workspace-completion.md).
 
-## Executed local verification
+## Executed local verification at the retrieval checkpoint
 
 These are results observed during this continuation, not inferred from the
 existence of a regression test or a pending hosted job.

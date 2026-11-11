@@ -126,6 +126,9 @@
     // proxied by Svelte's reactivity.
     const sourceDocs = new Map<string, any>();
     let previewDoc: any = null;
+    let previewSession: SessionState | null = null;
+    let previewLoad: { session: SessionState; generation: number; promise: Promise<any> } | null = null;
+    let previewGeneration = 0;
     const thumbCache = new Map<string, string>();
     let thumbRun = 0;
 
@@ -157,6 +160,10 @@
     }
 
     async function closeSession() {
+        thumbRun += 1;
+        previewGeneration += 1;
+        previewLoad = null;
+        previewSession = null;
         if (session) {
             try { await invoke('pdf_session_close', { id: session.id }); } catch { /* already gone */ }
         }
@@ -717,41 +724,72 @@
     }
 
     // ── Thumbnails ──────────────────────────────────────────────────────
-    async function sourceDocFor(path: string) {
+    async function sourceDocFor(path: string, isCurrent: () => boolean = () => true) {
+        if (!isCurrent()) return null;
         let doc = sourceDocs.get(path);
         if (!doc) {
             const bytes = await readFile(path);
+            if (!isCurrent()) return null;
             doc = await pdfjsLib.getDocument({
                 data: new Uint8Array(bytes),
                 useSystemFonts: true,
                 disableFontFace: true,
             }).promise;
+            if (!isCurrent()) {
+                try { await doc.destroy(); } catch { /* ignore */ }
+                return null;
+            }
             sourceDocs.set(path, doc);
         }
         return doc;
     }
 
     /** Rasterise the edited document — only needed for stamped/blank pages. */
-    async function refreshPreviewDoc() {
-        if (!session) return null;
-        const tmp = await invoke<string>('pdf_session_export_temp', { id: session.id });
-        const bytes = await readFile(tmp);
-        if (previewDoc) { try { previewDoc.destroy(); } catch { /* ignore */ } }
-        previewDoc = await pdfjsLib.getDocument({
-            data: new Uint8Array(bytes),
-            useSystemFonts: true,
-            disableFontFace: true,
-        }).promise;
-        previewEpoch += 1;
-        // Preview-derived thumbnails are keyed by epoch, so the previous
-        // epoch's entries are unreachable — drop them rather than let the
-        // cache grow with every content edit. Source-derived entries stay:
-        // those pages are unchanged and re-rendering them is the cost this
-        // cache exists to avoid.
-        for (const key of [...thumbCache.keys()]) {
-            if (key.startsWith('edit:')) thumbCache.delete(key);
+    async function refreshPreviewDoc(isCurrent: () => boolean = () => true) {
+        const requestedSession = session;
+        const generation = previewGeneration;
+        const current = () => session === requestedSession && generation === previewGeneration;
+        if (!requestedSession || !isCurrent()) return null;
+        if (previewDoc && previewSession === requestedSession) return previewDoc;
+
+        // The stage and thumbnail refresh can request the same edited snapshot
+        // together. Share its load so neither replaces a document in use by the
+        // other. A caller's cancellation must not cancel the shared owner.
+        let pending = previewLoad;
+        if (!pending || pending.session !== requestedSession || pending.generation !== generation) {
+            const promise = (async () => {
+                const tmp = await invoke<string>('pdf_session_export_temp', { id: requestedSession.id });
+                if (!current()) return null;
+                const bytes = await readFile(tmp);
+                if (!current()) return null;
+                const nextPreview = await pdfjsLib.getDocument({
+                    data: new Uint8Array(bytes),
+                    useSystemFonts: true,
+                    disableFontFace: true,
+                }).promise;
+                if (!current()) {
+                    try { await nextPreview.destroy(); } catch { /* ignore */ }
+                    return null;
+                }
+                if (previewDoc) { try { previewDoc.destroy(); } catch { /* ignore */ } }
+                previewDoc = nextPreview;
+                previewSession = requestedSession;
+                previewEpoch += 1;
+                // Drop prior edited thumbnails; source pages remain reusable.
+                for (const key of [...thumbCache.keys()]) {
+                    if (key.startsWith('edit:')) thumbCache.delete(key);
+                }
+                return nextPreview;
+            })();
+            pending = { session: requestedSession, generation, promise };
+            previewLoad = pending;
         }
-        return previewDoc;
+        try {
+            const doc = await pending.promise;
+            return current() && isCurrent() ? doc : null;
+        } finally {
+            if (previewLoad === pending) previewLoad = null;
+        }
     }
 
     /**
@@ -766,7 +804,7 @@
         if (o.source && o.index !== null && !o.dirty) {
             return { doc: await sourceDocFor(o.source), pageNo: o.index + 1, rotation: o.rotation };
         }
-        const preview = previewDoc ?? (await refreshPreviewDoc());
+        const preview = await refreshPreviewDoc();
         return preview ? { doc: preview, pageNo: i + 1, rotation: 0 } : null;
     }
 
@@ -787,42 +825,47 @@
     }
 
     async function refreshThumbs() {
-        if (!session) return;
-        const origins = session.origins;
+        const requestedSession = session;
+        if (!requestedSession) return;
+        const epoch = ++thumbRun;
+        const isCurrent = () => epoch === thumbRun && session === requestedSession;
+        const origins = requestedSession.origins;
 
         // Pages that can't be served from a source file need the edited doc.
         const needsPreview = origins.some((o) => o.dirty || !o.source);
         let preview: any = null;
-        if (needsPreview) preview = await refreshPreviewDoc();
+        if (needsPreview) preview = await refreshPreviewDoc(isCurrent);
+        if (!isCurrent()) return;
+        const editedEpoch = previewEpoch;
 
         const next: Record<number, string> = {};
         // Show each tile as soon as it renders: large documents (hundreds of
         // pages) otherwise stay on spinners until the last page is done.
-        const epoch = ++thumbRun;
         for (let i = 0; i < origins.length; i++) {
-            if (epoch !== thumbRun || !session) return; // superseded by a newer refresh
+            if (!isCurrent()) return;
             const o = origins[i];
             const fromSource = !!o.source && o.index !== null && !o.dirty;
             const key = fromSource
                 ? `src:${o.source}#${o.index}#${o.rotation}`
-                : `edit:${i}#${previewEpoch}`;
+                : `edit:${i}#${editedEpoch}`;
 
             const cached = thumbCache.get(key);
             if (cached) { next[i] = cached; continue; }
 
             try {
-                const url = fromSource
-                    ? await renderThumb(await sourceDocFor(o.source!), o.index! + 1, o.rotation)
-                    : preview
-                        ? await renderThumb(preview, i + 1, 0)
-                        : '';
+                const doc = fromSource ? await sourceDocFor(o.source!, isCurrent) : preview;
+                if (!isCurrent()) return;
+                const url = doc
+                    ? await renderThumb(doc, fromSource ? o.index! + 1 : i + 1, fromSource ? o.rotation : 0)
+                    : '';
+                if (!isCurrent()) return;
                 if (url) { thumbCache.set(key, url); next[i] = url; thumbs[i] = url; }
             } catch {
                 // A page that fails to rasterise still gets a tile — the
                 // placeholder is better than dropping it from the grid.
             }
         }
-        thumbs = next;
+        if (isCurrent()) thumbs = next;
     }
 
     /**

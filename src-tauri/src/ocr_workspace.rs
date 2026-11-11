@@ -1054,31 +1054,42 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
 /// aligned: the inserted space takes the lower neighbouring score, so a word's
 /// own scores (and its minimum) are unchanged. Regions with native word
 /// evidence (already line-level, with word offsets) and non-text regions are
-/// left exactly as they are.
+/// left exactly as they are and separate grouping runs. The native reading
+/// order determines the order of the resulting lines, including across columns.
 fn merge_word_regions_into_lines(regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
     use crate::extractors::ocr_crispembed::OcrReviewRegion;
-    let mergeable = |r: &OcrReviewRegion| r.kind == "text" && r.word_evidence.is_none() && r.h > 0.0 && r.w > 0.0;
+    let mergeable = |r: &OcrReviewRegion| r.kind == "text" && r.word_evidence.is_none()
+        && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite())
+        && r.x >= 0.0 && r.y >= 0.0 && r.h > 0.0 && r.w > 0.0;
     if regions.iter().filter(|r| mergeable(r)).count() < 2 { return regions; }
-    // Native order is kept for non-mergeable regions; text words are grouped.
     let mut out: Vec<OcrReviewRegion> = Vec::with_capacity(regions.len());
-    let mut words: Vec<OcrReviewRegion> = Vec::new();
-    let mut slot: Option<usize> = None; // where the grouped lines go in `out`
-    for region in regions {
+    let mut words = Vec::new();
+    for (index, region) in regions.into_iter().enumerate() {
         if mergeable(&region) {
-            if slot.is_none() { slot = Some(out.len()); }
-            words.push(region);
-        } else { out.push(region); }
+            words.push((index, region));
+        } else {
+            // Never move or merge words across an untouched region. Invalid
+            // geometry also stays untouched so the caller can reject it.
+            out.extend(group_word_run(std::mem::take(&mut words)));
+            out.push(region);
+        }
     }
+    out.extend(group_word_run(words));
+    out
+}
+
+fn group_word_run(mut words: Vec<(usize, crate::extractors::ocr_crispembed::OcrReviewRegion)>) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
+    use crate::extractors::ocr_crispembed::OcrReviewRegion;
     // Lines by vertical overlap, then words left-to-right within a line.
-    words.sort_by(|a, b| (a.y + a.h / 2.0).total_cmp(&(b.y + b.h / 2.0)));
-    let mut lines: Vec<Vec<OcrReviewRegion>> = Vec::new();
+    words.sort_by(|(_, a), (_, b)| (a.y + a.h / 2.0).total_cmp(&(b.y + b.h / 2.0)));
+    let mut lines: Vec<Vec<(usize, OcrReviewRegion)>> = Vec::new();
     for word in words {
-        let fits = |line: &Vec<OcrReviewRegion>| {
-            let top = line.iter().map(|r| r.y).fold(f32::MAX, f32::min);
-            let bottom = line.iter().map(|r| r.y + r.h).fold(f32::MIN, f32::max);
-            let height = line.iter().map(|r| r.h).sum::<f32>() / line.len() as f32;
-            let overlap = (bottom.min(word.y + word.h) - top.max(word.y)).max(0.0);
-            overlap >= 0.5 * height.min(word.h)
+        let fits = |line: &Vec<(usize, OcrReviewRegion)>| {
+            let top = line.iter().map(|(_, r)| r.y).fold(f32::MAX, f32::min);
+            let bottom = line.iter().map(|(_, r)| r.y + r.h).fold(f32::MIN, f32::max);
+            let height = line.iter().map(|(_, r)| r.h).sum::<f32>() / line.len() as f32;
+            let overlap = (bottom.min(word.1.y + word.1.h) - top.max(word.1.y)).max(0.0);
+            overlap >= 0.5 * height.min(word.1.h)
         };
         match lines.iter_mut().rev().take(3).find(|line| fits(line)) {
             Some(line) => line.push(word),
@@ -1087,22 +1098,25 @@ fn merge_word_regions_into_lines(regions: Vec<crate::extractors::ocr_crispembed:
     }
     let mut merged = Vec::new();
     for mut line in lines {
-        line.sort_by(|a, b| a.x.total_cmp(&b.x));
+        line.sort_by(|(_, a), (_, b)| a.x.total_cmp(&b.x));
         // Split a line where the horizontal gap is a column gutter, not a space.
-        let height = line.iter().map(|r| r.h).sum::<f32>() / line.len() as f32;
-        let mut segments: Vec<Vec<OcrReviewRegion>> = vec![];
+        let height = line.iter().map(|(_, r)| r.h).sum::<f32>() / line.len() as f32;
+        let mut segments: Vec<Vec<(usize, OcrReviewRegion)>> = vec![];
         for word in line {
             match segments.last_mut() {
-                Some(segment) if word.x - segment.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max) <= 2.5 * height => segment.push(word),
+                Some(segment) if word.1.x - segment.iter().map(|(_, r)| r.x + r.w).fold(f32::MIN, f32::max) <= 2.5 * height => segment.push(word),
                 _ => segments.push(vec![word]),
             }
         }
-        for segment in segments { merged.push(join_line(segment)); }
+        for segment in segments {
+            let anchor = segment.iter().map(|(index, _)| *index).min().expect("nonempty line segment");
+            merged.push((anchor, join_line(segment.into_iter().map(|(_, region)| region).collect())));
+        }
     }
-    merged.sort_by(|a, b| (a.y + a.h / 2.0).total_cmp(&(b.y + b.h / 2.0)).then(a.x.total_cmp(&b.x)));
-    let at = slot.unwrap_or(out.len()).min(out.len());
-    out.splice(at..at, merged);
-    out
+    // Geometry groups words; it must not replace the provider's reading order
+    // with a row-first traversal of a multi-column page.
+    merged.sort_by_key(|(anchor, _)| *anchor);
+    merged.into_iter().map(|(_, region)| region).collect()
 }
 
 fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> crate::extractors::ocr_crispembed::OcrReviewRegion {
@@ -1111,11 +1125,17 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
     let y = words.iter().map(|r| r.y).fold(f32::MAX, f32::min);
     let right = words.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
     let bottom = words.iter().map(|r| r.y + r.h).fold(f32::MIN, f32::max);
-    let aligned = words.iter().all(|r| r.char_conf_aligned && r.char_conf.len() == r.text.chars().count());
+    let first = &words[0];
+    let uniform_basis = words.iter().all(|r| r.confidence_basis == first.confidence_basis);
+    let complete_scores = uniform_basis && words.iter().all(|r| r.confidence
+        .is_some_and(|score| score.is_finite() && (0.0..=1.0).contains(&score)));
+    let aligned = words.iter().all(|r| r.confidence_basis == "recognition"
+        && r.char_conf_aligned && r.char_conf_unit == "unicode_codepoint"
+        && r.char_conf.len() == r.text.chars().count()
+        && r.char_conf.iter().all(|score| score.is_finite() && (0.0..=1.0).contains(score)));
     let mut text = String::new();
     let mut char_conf: Vec<f32> = Vec::new();
     let (mut weighted, mut weight) = (0.0f64, 0.0f64);
-    let mut any_score = false;
     for (index, word) in words.iter().enumerate() {
         if index > 0 {
             text.push(' ');
@@ -1127,16 +1147,17 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
         }
         text.push_str(&word.text);
         if aligned { char_conf.extend_from_slice(&word.char_conf); }
-        if let Some(score) = word.confidence.filter(|s| s.is_finite()) {
+        if let Some(score) = word.confidence.filter(|s| s.is_finite() && (0.0..=1.0).contains(s)) {
             let n = word.text.chars().count().max(1) as f64;
-            weighted += f64::from(score) * n; weight += n; any_score = true;
+            weighted += f64::from(score) * n; weight += n;
         }
     }
-    let first = &words[0];
     crate::extractors::ocr_crispembed::OcrReviewRegion {
         text, x, y, w: right - x, h: bottom - y,
-        confidence: any_score.then(|| (weighted / weight) as f32),
-        confidence_basis: first.confidence_basis.clone(),
+        // A partial mean cannot describe the complete line, and a detector
+        // score must never acquire the first word's recognition provenance.
+        confidence: complete_scores.then(|| (weighted / weight) as f32),
+        confidence_basis: if uniform_basis { first.confidence_basis.clone() } else { "unknown".into() },
         char_conf: if aligned { char_conf } else { Vec::new() },
         char_conf_unit: if aligned { first.char_conf_unit.clone() } else { "unknown".into() },
         char_conf_aligned: aligned,
@@ -2054,6 +2075,87 @@ mod tests {
             evidence, word("links", 0.0, 40.0, 50.0, 20.0, 0.9), word("rechts", 400.0, 40.0, 60.0, 20.0, 0.9),
         ]);
         assert_eq!(lines.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Kopf", "links", "rechts"]);
+    }
+
+    #[test]
+    fn word_line_grouping_preserves_native_column_reading_order() {
+        let lines = merge_word_regions_into_lines(vec![
+            word("left-top", 0.0, 0.0, 50.0, 20.0, 0.9),
+            word("left-bottom", 0.0, 50.0, 50.0, 20.0, 0.9),
+            word("right-top", 400.0, 0.0, 60.0, 20.0, 0.9),
+            word("right-bottom", 400.0, 50.0, 60.0, 20.0, 0.9),
+        ]);
+        assert_eq!(lines.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["left-top", "left-bottom", "right-top", "right-bottom"]);
+    }
+
+    #[test]
+    fn word_line_grouping_keeps_native_evidence_and_nontext_as_ordered_barriers() {
+        use crate::ocr_word_evidence::{NativeWordEvidence, WordEvidenceEnvelope};
+        let mut native = word("native", 50.0, 20.0, 40.0, 20.0, 0.9);
+        native.word_evidence = Some(WordEvidenceEnvelope {
+            version: 1, offset_unit: "utf16".into(), source: "tesseract_tsv".into(),
+            words: vec![NativeWordEvidence {
+                text: "native".into(), start: 0, end: 6, x: 50.0, y: 20.0, w: 40.0, h: 20.0,
+                confidence: Some(0.7), confidence_basis: "recognition".into(), alternatives: None,
+            }],
+        });
+        let mut picture = word("[image]", 0.0, 50.0, 100.0, 100.0, 0.8);
+        picture.kind = "picture".into();
+        let expected_native = serde_json::to_value(&native).unwrap();
+        let expected_picture = serde_json::to_value(&picture).unwrap();
+        let lines = merge_word_regions_into_lines(vec![
+            word("before", 0.0, 20.0, 40.0, 20.0, 0.9), native,
+            word("between", 100.0, 20.0, 50.0, 20.0, 0.9), picture,
+            word("after", 160.0, 20.0, 40.0, 20.0, 0.9),
+        ]);
+        assert_eq!(lines.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["before", "native", "between", "[image]", "after"]);
+        assert_eq!(serde_json::to_value(&lines[1]).unwrap(), expected_native);
+        assert_eq!(serde_json::to_value(&lines[3]).unwrap(), expected_picture);
+    }
+
+    #[test]
+    fn word_line_confidence_does_not_promote_mixed_bases_or_token_units() {
+        for basis in ["detection", "unknown"] {
+            let mut other = word("maybe", 50.0, 0.0, 40.0, 20.0, 0.99);
+            other.confidence_basis = basis.into();
+            let lines = merge_word_regions_into_lines(vec![word("seen", 0.0, 0.0, 40.0, 20.0, 0.9), other]);
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].text, "seen maybe");
+            assert_eq!(lines[0].confidence_basis, "unknown");
+            assert!(lines[0].confidence.is_none());
+            assert!(!lines[0].char_conf_aligned);
+            assert!(lines[0].char_conf.is_empty());
+        }
+        for unit in ["token", "unknown"] {
+            let mut other = word("maybe", 50.0, 0.0, 40.0, 20.0, 0.9);
+            other.char_conf_unit = unit.into();
+            let lines = merge_word_regions_into_lines(vec![word("seen", 0.0, 0.0, 40.0, 20.0, 0.9), other]);
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].confidence_basis, "recognition");
+            assert!(lines[0].confidence.is_some());
+            assert!(!lines[0].char_conf_aligned);
+            assert!(lines[0].char_conf.is_empty());
+            assert_eq!(lines[0].char_conf_unit, "unknown");
+        }
+    }
+
+    #[test]
+    fn word_line_confidence_requires_scores_for_every_word() {
+        for score in [None, Some(f32::NAN), Some(1.1)] {
+            let mut unscored = word("unknown", 50.0, 0.0, 60.0, 20.0, 0.99);
+            unscored.confidence = score;
+            unscored.char_conf.clear();
+            unscored.char_conf_aligned = false;
+            let lines = merge_word_regions_into_lines(vec![word("known", 0.0, 0.0, 40.0, 20.0, 1.0), unscored]);
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].text, "known unknown");
+            assert_eq!(lines[0].confidence_basis, "recognition");
+            assert!(lines[0].confidence.is_none(), "a partial score cannot qualify the whole line");
+            assert!(!lines[0].char_conf_aligned);
+            assert!(lines[0].char_conf.is_empty());
+        }
     }
 
     use super::*;

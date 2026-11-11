@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { invoke, open, save, loadCapabilities, listen } = vi.hoisted(() => ({
     invoke: vi.fn(), open: vi.fn(), save: vi.fn(), loadCapabilities: vi.fn(), listen: vi.fn(),
@@ -8,7 +8,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
 vi.mock('../capabilities', () => ({ loadCapabilities }));
 
-import { workspaceClient, importProgressLabel, exportProgressLabel, type ExportRequest, type ExportResult, type ExportProgress, type ModelDownloadProgress, type ImportProgress } from './client';
+import { workspaceClient, setDefaultOcrLanguage, importProgressLabel, exportProgressLabel, type ExportRequest, type ExportResult, type ExportProgress, type ModelDownloadProgress, type ImportProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
 
 const stagedPath = '/app/cache/ocr-exports/inspection.txt';
@@ -20,6 +20,80 @@ const exportRequest = (outputPath: string): ExportRequest => ({
 const decodeMetadata = (options: { headers: Record<string, string> }) => JSON.parse(
     new TextDecoder().decode(Uint8Array.from(atob(options.headers['x-ocr-metadata']), char => char.charCodeAt(0))),
 );
+
+describe('OCR recognition language routing', () => {
+    beforeEach(() => {
+        invoke.mockReset();
+        invoke.mockResolvedValue({ image_path: '/scans/page.png', regions: [] });
+        setDefaultOcrLanguage('deu');
+    });
+    afterEach(() => setDefaultOcrLanguage('eng'));
+
+    it.each([undefined, 'auto', 'tesseract'])('uses the interface language for unconfigured embedded OCR (%s)', async engine => {
+        await workspaceClient.recognize({ pagePath: '/scans/page.png', engine, language: 'auto', config: {} });
+        expect(invoke).toHaveBeenCalledOnce();
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_recognize', expect.objectContaining({
+            engine: engine ?? null, language: 'deu', config: {},
+        }));
+    });
+
+    it.each(['/models/custom-language.gguf', 'tesseract-fra'])('keeps configured Tesseract model %s when language is Automatic', async recModel => {
+        const stage = Object.freeze({ engine: 'tesseract', rec_model: recModel });
+        const config = Object.freeze({ stages: Object.freeze([stage]) });
+        await workspaceClient.recognize({ pagePath: '/scans/page.png', engine: 'tesseract', language: 'auto', config });
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_recognize', expect.objectContaining({
+            engine: 'tesseract', language: 'auto', config,
+        }));
+        expect(config.stages[0].rec_model).toBe(recModel);
+    });
+
+    it('keeps a configured Automatic pipeline instead of supplying an interface-language override', async () => {
+        const config = { stages: [{ engine: 'tesseract', rec_model: '/models/custom-language.gguf' }, { engine: 'qwen2vl' }], router: true };
+        await workspaceClient.recognize({ pagePath: '/scans/page.png', engine: 'auto', language: 'auto', config });
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_recognize', expect.objectContaining({
+            engine: 'auto', language: 'auto', config,
+        }));
+    });
+
+    it('leaves an omitted configuration to native app state without inventing a language', async () => {
+        for (const engine of [undefined, 'auto', 'tesseract']) {
+            for (const language of [undefined, 'auto']) {
+                await workspaceClient.recognize({ pagePath: '/scans/page.png', engine, language });
+                expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_recognize', expect.objectContaining({
+                    engine: engine ?? null, language: language ?? null, config: null,
+                }));
+            }
+        }
+    });
+
+    it('preserves an explicitly selected language even when a different model is configured', async () => {
+        const config = { stages: [{ engine: 'tesseract', rec_model: '/models/custom-language.gguf' }] };
+        await workspaceClient.recognize({ pagePath: '/scans/page.png', engine: 'tesseract', language: 'fra', config });
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_recognize', expect.objectContaining({
+            engine: 'tesseract', language: 'fra', config,
+        }));
+    });
+
+    it('uses the first selected Tesseract stage when another stage configures a recognizer', async () => {
+        const config = { stages: [
+            { engine: 'dbnet_trocr', rec_model: 'trocr-printed' },
+            { engine: 'tesseract', rec_model: null },
+            { engine: 'tesseract', rec_model: '/models/later-language.gguf' },
+        ] };
+        await workspaceClient.recognize({ pagePath: '/scans/page.png', engine: 'tesseract', language: 'auto', config });
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_recognize', expect.objectContaining({
+            engine: 'tesseract', language: 'deu', config,
+        }));
+    });
+
+    it.each(['system_tesseract', 'qwen2vl'])('preserves Automatic language semantics for %s', async engine => {
+        await workspaceClient.recognize({ pagePath: '/scans/page.png', engine, language: 'auto', config: {} });
+        expect(invoke).toHaveBeenCalledWith('ocr_workspace_recognize', expect.objectContaining({
+            engine, language: 'auto', config: {},
+        }));
+    });
+});
+
 function deferred<T>() {
     let resolve!: (value: T) => void;
     let reject!: (reason: unknown) => void;
