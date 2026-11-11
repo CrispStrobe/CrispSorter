@@ -116,12 +116,22 @@ impl FuseDriveFs {
 
         // Mounted local/SMB/NFS files support true seek+range reads; a FUSE
         // page must not allocate or copy the entire mounted file first.
-        if self.drive.drive_type() == crate::drives::DriveType::Local {
+        if matches!(self.drive.drive_type(), crate::drives::DriveType::Local | crate::drives::DriveType::Smb) {
             let drive = Arc::clone(&self.drive);
             let end = offset.saturating_add(size as u64 - 1);
             return self.queue.download_blocking(
                 drive.label().to_owned(), file_path.to_owned(), None,
-                move |path| drive.read_range(path, offset, end),
+                move |path| {
+                    // SMB's explicit range API rejects ranges beyond EOF;
+                    // FUSE routinely requests a full final page. Keep that
+                    // API contract while returning the available bytes here.
+                    let end = if drive.drive_type() == crate::drives::DriveType::Smb {
+                        let length = drive.stat(path)?.size;
+                        if offset >= length { return Ok(Vec::new()); }
+                        end.min(length - 1)
+                    } else { end };
+                    drive.read_range(path, offset, end)
+                },
             );
         }
 
@@ -539,6 +549,29 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].bytes_done, 10);
         assert!(matches!(&jobs[0].state, TransferState::Done));
+    }
+
+    #[test]
+    fn smb_fuse_ranges_clamp_the_last_page_and_eof_without_caching() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Path::new("document");
+        std::fs::write(directory.path().join(path), b"abcdefghij").unwrap();
+        let drive = Arc::new(crate::drives::smb::SmbDrive::new(
+            "fuse-smb".into(), "smb://unused.invalid/share",
+            crisp_smb_source::Settings {
+                mount_path: Some(directory.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            }, "", "",
+        ).unwrap());
+        let queue = TransferQueue::with_concurrency(1);
+        let fs = FuseDriveFs::with_queue_and_cache(drive, queue.clone(), 64);
+        assert_eq!(fs.read_file_slice(path, 8, 4096).unwrap(), b"ij");
+        assert!(fs.read_file_slice(path, 10, 4096).unwrap().is_empty());
+        assert!(fs.read_file_slice(path, 100, 4096).unwrap().is_empty());
+        std::fs::write(directory.path().join(path), b"0123456789").unwrap();
+        assert_eq!(fs.read_file_slice(path, 8, 4096).unwrap(), b"89");
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (0, 0));
+        assert!(queue.snapshot().iter().all(|job| matches!(&job.state, TransferState::Done)));
     }
 
     #[test]

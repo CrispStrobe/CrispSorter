@@ -2,18 +2,22 @@
 
 ## Integration boundary
 
-The [remote ledger](remote-integration-audit-20261111.md) records all 74 live
+The [remote ledger](remote-integration-audit-20261111.md) records all 75 live
 branch heads and current PR dispositions. Merge `07548c56` incorporates the
-five current SMB/storage commits on top of the shared OCR branch. Older
+initial five SMB/storage commits on top of the shared OCR branch. The later
+SMB app-provider head `5c8e84b3` and PDF consolidation `1bdf4dbe` are also included.
+The latter entered through merge `fe274b06`. Older
 feature and PR work is already present through main. The historical July MAS
 prototype is retained as an alternate branch; its remaining local dependency
 workarounds would remove current supported functionality.
 
 This follow-up connects the incoming code to production consumers and makes
 operation outcomes observable across the CLI, GUI, browser extraction,
-background ingestion and native workers. The direct-Rust SMB qualification
-crate remains experimental; it is not advertised as a registered app drive.
-OS-mounted SMB and other filesystem mounts use the existing LocalDrive route.
+background ingestion and native workers. The registered SMB provider shares
+mounted/Rust settings and secret storage between CLI and GUI. Direct Rust
+transport remains explicit and experimental. Existing local filesystem mounts
+continue to use LocalDrive. The PDF editor and CLI share native exports and
+serializable edit operations, with the same publication and logging boundaries.
 
 ## Shared behavior and critical steps
 
@@ -29,6 +33,9 @@ OS-mounted SMB and other filesystem mounts use the existing LocalDrive route.
 | Search and reports | UI errors are retained; cancellation is recognized by the exact error contract. | Search/count, summary generation, report publication and cancellation/failure. A filename containing `cancelled` is an ordinary filename. |
 | Batch processing | Final persistence is part of completion; a failed checkpoint cannot emit success. | Processing, final checkpoint, successful completion/partial result, failure/cancellation and lock release. |
 | Settings | Success is displayed only after the requested save finishes. | Apply/save boundary, persistence success or failure. |
+| PDF editor and CLI | One native edit/export implementation; GUI state updates require current session ownership; CLI recipes publish only after all edits succeed. | Session open/edit/undo/redo/save/snapshot, text extraction/rendering, validation and atomic publication. |
+| PDF DOCX/conversion handoffs | Capture the selected file and suppress stale UI results after replacement. | Start, capability/probe/conversion stages and exactly one completion, failure or cancellation. |
+| SMB configuration and transport | GUI and CLI persist the same mounted/Rust settings; credentials use the shared vault. | Configuration validation/persistence, connection and storage operations, with fixed codes and safe counts. |
 | Drive download, sync pull, backup restore, archive promotion | Download to private staging through the transfer queue, validate counts, check cancellation and then publish. | Queue/attempt/progress, retry, publication and terminal result. CLI and GUI call the same file-target API. |
 | Mounted/FUSE reads | Seek/range reads for local mounts; bounded disk-backed cache for other providers. | Queued reads and transfer/cache outcomes without full-document log content. |
 | Output files | Shared atomic output helper for project/output publication. Watermarking finishes before publication. | Staging, writing, flush/sync, commit, completion/failure; a failed renderer leaves the previous complete output intact. |
@@ -81,7 +88,9 @@ returns a byte count after publication. Consumers no longer build a full
 `Vec<u8>` and then write the same content again. Each attempt has its own
 same-directory temporary file; partial errors and cancellation remove it.
 Verified size changes or a false provider byte count fail before publication.
-Local streaming uploads use the same staging and size checks.
+Local and mounted-SMB streaming uploads use the same staging and size checks.
+Direct Rust SMB uploads have create/truncate semantics; failures that may have
+committed are excluded from both immediate retries and durable upload replay.
 If a provider confirms a successful upload after cancellation was requested,
 the queue reports the completed write. Cancellation before invocation prevents
 the upload; a failed provider write remains a failure or cancelled retry with
@@ -105,11 +114,16 @@ Frontend unit regressions exercise policy/transport, logger filtering and
 metadata, exactly one terminal result, cancellation/error classification,
 worker ownership, page cleanup, Workbench capability gating and final batch
 persistence. Browser regressions cover the user-visible batch checkpoint,
-report cancellation classification and Settings persistence failures.
+report cancellation classification, Settings persistence failures, PDF session
+ownership and action exclusivity. PDF range parsing rejects malformed and
+oversized input before any native insertion can interpret an empty selection
+as all pages.
 
 Native unit regressions exercise policy/CLI precedence, explicit false flags,
 snapshot validation, model preservation, worker transport, event ordering,
-redaction and atomic output outcomes. The storage contract compiles actual
+redaction and atomic output outcomes. PDF tests exercise saved-state identity,
+unique private snapshots, preserved outputs, actual CLI recipe operations and
+text export. The storage contract compiles actual
 production LocalDrive, queue, staging, cache and logger code in isolation;
 it covers bounded reads, retries, partial errors, size mismatch, cancellation,
 publication and concurrent requests. CI runs it on Linux, macOS and Windows.
@@ -135,7 +149,9 @@ the pinned runtime; real-model execution remains a separate qualification.
 `scripts/verify_cli_operations.py` launches the actual built executable on
 all three desktop platforms. It checks a complete JSON result, stderr-only
 correlated receipts, global verbosity, failed input/configuration behavior,
-redaction and absence of app-settings writes for a supplied snapshot. It
+redaction and absence of app-settings writes for a supplied snapshot. PDF
+checks also read back rotated output, exported text and preserved destinations
+after a failed recipe. It
 does not download a model or pretend to benchmark recognition quality.
 
 Execution results, exact revision and any pending hosted checks are recorded

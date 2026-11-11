@@ -1,9 +1,9 @@
 name: Shared Rust SMB source
 on:
   push:
-    paths: ['crates/crisp-smb-source/**', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
+    paths: ['crates/crisp-smb-source/**', 'src-tauri/src/drives/**', 'src-tauri/src/sync/transfer_queue.rs', 'src-tauri/src/operation_log.rs', 'src-tauri/src/cli/**', 'src-tauri/Cargo.toml', 'Cargo.lock', 'src/lib/drives/smbSettings*', 'src/lib/components/IndexIngest.svelte', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
   pull_request:
-    paths: ['crates/crisp-smb-source/**', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
+    paths: ['crates/crisp-smb-source/**', 'src-tauri/src/drives/**', 'src-tauri/src/sync/transfer_queue.rs', 'src-tauri/src/operation_log.rs', 'src-tauri/src/cli/**', 'src-tauri/Cargo.toml', 'Cargo.lock', 'src/lib/drives/smbSettings*', 'src/lib/components/IndexIngest.svelte', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
   workflow_dispatch:
 concurrency:
   group: smb-source-${{ github.event.pull_request.head.ref || github.ref_name }}
@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispCloud
-          ref: ffeae11d53054190cf6f3a6fbcec2eb44b32dfb2
+          ref: 4b44dc4d44ef05a18d2da2579d2e3b866b245643
           path: .smb-fixture-source
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
@@ -37,3 +37,11 @@ jobs:
         with:
           name: direct-smb-qualification
           path: test-results/storage/direct-smb.log
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx svelte-kit sync
+      - run: npm test -- src/lib/drives/smbSettings.test.ts
+      - run: npm run check

@@ -1,6 +1,6 @@
 # SMB and mounted-storage review — 11 November 2026
 
-## Current implementation
+## Original review baseline
 CrispSorter is Rust/Tauri, not Flutter. SMB/NFS/SFTP mounts are exposed as
 `DriveType::Local` and `LocalDrive` in `src-tauri/src/drives/mod.rs`.
 The reviewed Cargo manifests/lockfile and provider sources do not contain
@@ -53,8 +53,8 @@ index promotion to a file-target transfer queue. Each attempt writes to a
 private temporary file beside its destination; byte-count validation and
 cancellation checks precede publication. Failures leave existing destinations
 intact and clean temporary files. Local writes now also use checked staging
-instead of the legacy whole-file reader fallback. Existing capability flags
-remain conservative; the standalone direct-SMB crate is still not registered.
+instead of the legacy whole-file reader fallback. Existing LocalDrive capability flags remain conservative. The SMB registration
+follow-up below adds an explicit provider and preserves these transfer protections.
 
 Mounted-file FUSE reads use true seek/range access. Other FUSE providers use a
 disk-backed LRU instead of cloning whole-file memory buffers. GUI byte previews
@@ -66,3 +66,24 @@ The source-bound storage contract and its execution/lock artifacts are wired
 to Linux, macOS and Windows CI. This continuation workspace has no Rust
 toolchain, so those native results must be read from the exact pushed commit's
 CI run; no native success is inferred from the source review.
+
+## Explicit SMB provider integration
+
+Commit `5c8e84b36e55e4e82653caaaf5654426670db16e` adds shared GUI/CLI
+settings and an app provider with mounted and experimental direct Rust transports.
+The shared core is pinned to `4b44dc4d44ef05a18d2da2579d2e3b866b245643`.
+The former inlined filesystem types now live in `drives/filesystem.rs`; the
+bounded preview reader, staged LocalDrive writes and operation receipts move
+with them. Registry settings and credential rollback live in `drives/registry.rs`.
+
+Mounted SMB uploads use the same checked publication helper as LocalDrive.
+Direct Rust uploads remain non-atomic; a failed write may have reached the
+server and is not automatically replayed by the transfer or offline queue.
+Both transports support bounded FUSE range reads, including final partial pages
+and EOF, without full-file cache materialization. Detailed failures stay in
+results, while app logs use content-free operation IDs, fixed stages and codes.
+
+The standalone SMB contract and source-bound storage contract import the actual
+production modules after the split. The live fixture runner retains bounded
+readiness, termination and diagnostic capture. See [SMB paths and tests](SMB_RUST_ROLLOUT.md)
+for the current settings, explicit fallback and remaining rollout gates.

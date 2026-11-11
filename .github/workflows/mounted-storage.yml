@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - 'src-tauri/src/drives/mod.rs'
+      - 'src-tauri/src/drives/filesystem.rs'
       - 'src-tauri/src/drives/tauri_commands.rs'
       - 'src-tauri/src/drives/mounted_read.rs'
       - 'src-tauri/src/drives/materialize.rs'
@@ -19,6 +20,7 @@ on:
   pull_request:
     paths:
       - 'src-tauri/src/drives/mod.rs'
+      - 'src-tauri/src/drives/filesystem.rs'
       - 'src-tauri/src/drives/tauri_commands.rs'
       - 'src-tauri/src/drives/mounted_read.rs'
       - 'src-tauri/src/drives/materialize.rs'
@@ -53,12 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Establish the first native dependency snapshot when absent
-        shell: bash
-        run: |
-          if [ ! -f tests/storage-contract/Cargo.lock ]; then
-            cargo generate-lockfile --manifest-path tests/storage-contract/Cargo.toml
-          fi
       - name: Test actual storage queue, mounted provider, publication and receipts
         shell: bash
         run: |

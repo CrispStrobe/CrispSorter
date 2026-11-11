@@ -8,7 +8,7 @@ import sys
 import tempfile
 import threading
 
-EXPECTED_REVISION = 'ffeae11d53054190cf6f3a6fbcec2eb44b32dfb2'
+EXPECTED_REVISION = '4b44dc4d44ef05a18d2da2579d2e3b866b245643'
 
 
 def read_fixture_ready(fixture, timeout=30):

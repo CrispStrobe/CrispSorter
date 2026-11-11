@@ -22,10 +22,11 @@
     import { getCurrentWebview } from '@tauri-apps/api/webview';
     import { open as openDialog, save as saveDialog, ask } from '@tauri-apps/plugin-dialog';
     import { readFile } from '@tauri-apps/plugin-fs';
-    import { onDestroy, onMount, untrack } from 'svelte';
+    import { onDestroy, onMount, tick, untrack } from 'svelte';
     import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
     import { i18n } from '$lib/i18n.svelte';
-    import { flog } from '$lib/log';
+    import { beginOperation, type OperationLog, type OperationName } from '$lib/operationLog';
+    import { cancelledDocumentAction, createDocumentActions, requireCurrentDocument } from './pdf/actionRunner';
     import PdfDocTools from './pdf/PdfDocTools.svelte';
     import ConvertTools from './ConvertTools.svelte';
     import DocxTools from './DocxTools.svelte';
@@ -68,7 +69,10 @@
     /** Bumped on every session change, so renders key off identity, not op count. */
     let docVersion = $state(0);
     let busyCount = $state(0);
-    const busy = $derived(busyCount > 0);
+    let dialogPending = $state(false);
+    const busy = $derived(busyCount > 0 || dialogPending);
+    const actions = createDocumentActions((count) => { busyCount = count; });
+    let openRequest = 0;
     let error = $state('');
     let notice = $state<{ msg: string; openPath?: string } | null>(null);
     let encryptedPath = $state('');
@@ -120,34 +124,48 @@
     const fileName = (p: string) => p.split(/[/\\]/).pop() ?? p;
 
     /** Run one user action: busy state, error banner, app-log entries. */
-    async function run<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
-        busyCount += 1;
-        error = '';
-        notice = null;
-        const started = performance.now();
-        try {
-            const r = await fn();
-            flog('info', `[pdf] ${label}: ok (${Math.round(performance.now() - started)} ms)`);
-            return r;
-        } catch (e) {
-            const msg = errorMessage(e);
-            error = `${label}: ${msg}`;
-            flog('error', `[pdf] ${label} failed: ${msg}`);
-            return undefined;
-        } finally {
-            busyCount -= 1;
-        }
+    async function run<T>(label: string, fn: (operation: OperationLog) => Promise<T>,
+        operation: OperationName = 'pdf.tool', writesOutput = false,
+        options: { isCurrent?: () => boolean; concurrent?: boolean } = {}): Promise<T | undefined> {
+        const expected = session;
+        return actions.run({
+            operation, fields: { kind: 'pdf' }, writesOutput,
+            isCurrent: options.isCurrent ?? (() => !destroyed && session === expected),
+            concurrent: options.concurrent,
+            onError: (e) => { error = `${label}: ${errorMessage(e)}`; },
+        }, async (entry) => {
+            error = '';
+            notice = null;
+            entry.stage('dispatching');
+            return await fn(entry);
+        });
     }
 
     function fail(label: string, msg: string) {
         error = `${label}: ${msg}`;
-        flog('warn', `[pdf] ${label}: ${msg}`);
+        beginOperation('pdf.validation', { kind: 'pdf' }).fail();
     }
 
     function notify(msg: string, openPath?: string) { notice = { msg, openPath }; }
 
+    async function chooseOutput(options: Parameters<typeof saveDialog>[0]): Promise<string | null> {
+        if (busy) return null;
+        const expected = session;
+        const request = openRequest;
+        dialogPending = true;
+        try {
+            const path = await saveDialog(options);
+            return !destroyed && session === expected && request === openRequest && typeof path === 'string' ? path : null;
+        } catch (e) {
+            beginOperation('pdf.export').fail(e);
+            if (!destroyed && session === expected && request === openRequest) error = errorMessage(e);
+            return null;
+        } finally { dialogPending = false; }
+    }
+
     // ── Session lifecycle ───────────────────────────────────────────────
     async function openFile() {
+        if (busy) return;
         const path = await openDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], multiple: false });
         if (path) await openSession(path as string);
     }
@@ -162,43 +180,65 @@
     }
 
     export async function openSession(path: string) {
-        if (!(await confirmDiscard())) return;
-        flog('info', `[pdf] opening ${path}`);
-        await closeSession();
-        encryptedPath = '';
-        activeTool = null;
-        const opened = await run(`${t.open} ${fileName(path)}`, () => invoke<SessionState>('pdf_session_open', { path }));
-        if (!opened) {
+        const request = ++openRequest;
+        const current = () => !destroyed && request === openRequest;
+        // Let an in-flight edit publish its dirty state before asking whether
+        // to discard it. Newer open requests supersede this queued request.
+        await actions.whenIdle();
+        await tick();
+        if (!current()) return;
+        await run(t.open, async (entry) => {
+            if (!(await confirmDiscard())) throw cancelledDocumentAction();
+            requireCurrentDocument(current);
+            await closeSession(false);
+            requireCurrentDocument(current);
+            encryptedPath = '';
+            activeTool = null;
+            let opened: SessionState;
             try {
-                if (await invoke<boolean>('pdf_is_encrypted', { path })) {
-                    encryptedPath = path;
-                    flog('warn', `[pdf] ${path} is password-protected`);
+                opened = await invoke<SessionState>('pdf_session_open', { path });
+            } catch (e) {
+                if (current()) {
+                    try {
+                        const encrypted = await invoke<boolean>('pdf_is_encrypted', { path });
+                        if (current() && encrypted) encryptedPath = path;
+                    } catch { /* The original open error remains actionable. */ }
                 }
-            } catch { /* the open error above already says what went wrong */ }
-            return;
-        }
-        setSession(opened);
-        selected = new Set();
-        lastAnchor = null;
-        viewPage = 0;
-        flog('info', `[pdf] opened ${path}: ${opened.info.page_count} page(s)`);
-        invoke<boolean>('pdf_is_encrypted', { path }).then((v) => (isEncrypted = !!v)).catch(() => (isEncrypted = false));
-        void refreshThumbs();
+                throw e;
+            }
+            if (!current()) {
+                // The native open succeeded after replacement. Release that
+                // session without ever publishing it into the newer view.
+                try { await invoke('pdf_session_close', { id: opened.id }); }
+                catch { entry.stage('cleanup_failed', {}, 'error'); }
+                throw cancelledDocumentAction();
+            }
+            setSession(opened);
+            selected = new Set();
+            lastAnchor = null;
+            viewPage = 0;
+            isEncrypted = false;
+            invoke<boolean>('pdf_is_encrypted', { path }).then((v) => { if (current() && session?.id === opened.id) isEncrypted = !!v; }).catch(() => {});
+            entry.stage('ready', { pages: opened.info.page_count });
+            void refreshThumbs();
+        }, 'pdf.open', false, { isCurrent: current, concurrent: true });
     }
 
     async function unlockEncrypted() {
-        if (!encryptedPath) return;
+        if (!encryptedPath || busy) return;
         if (!unlockPassword) { fail(t.decrypt, i18n.t.pdftools.enter_password); return; }
-        const out = await saveDialog({
+        const src = encryptedPath;
+        const password = unlockPassword;
+        const request = openRequest;
+        const out = await chooseOutput({
             filters: [{ name: 'PDF', extensions: ['pdf'] }],
             defaultPath: encryptedPath.replace(/\.pdf$/i, '') + '-decrypted.pdf',
         }) as string | null;
-        if (!out) return;
-        const src = encryptedPath;
+        if (!out || request !== openRequest || destroyed) return;
         const ok = await run(t.decrypt, async () => {
-            await invoke('pdf_decrypt', { path: src, password: unlockPassword, outPath: out });
+            await invoke('pdf_decrypt', { path: src, password, outPath: out });
             return true;
-        });
+        }, 'pdf.decrypt', true);
         if (ok) { unlockPassword = ''; await openSession(out); }
     }
 
@@ -210,29 +250,38 @@
         if ([...selected].some((i) => i >= n)) selected = new Set([...selected].filter((i) => i < n));
     }
 
-    async function closeSession() {
+    async function closeSession(invalidateOpen = true) {
+        if (invalidateOpen) openRequest += 1;
         thumbRun += 1;
         previewGeneration += 1;
         previewLoad = null;
         previewSession = null;
         const old = session;
         session = null;
+        renderSeq += 1;
+        if (renderTask) { try { renderTask.cancel(); } catch { /* already finished */ } renderTask = null; }
+        viewRendering = false;
+        curViewport = null;
+        isEncrypted = false;
         thumbs = {};
         thumbCache.clear();
         for (const d of sourceDocs.values()) { try { d.destroy(); } catch { /* ignore */ } }
         sourceDocs.clear();
         if (previewDoc) { try { previewDoc.destroy(); } catch { /* ignore */ } previewDoc = null; }
         if (old) {
-            try { await invoke('pdf_session_close', { id: old.id }); flog('info', `[pdf] closed ${old.source}`); } catch { /* already gone */ }
+            const entry = beginOperation('pdf.close', { kind: 'pdf' });
+            try { await invoke('pdf_session_close', { id: old.id }); entry.complete(); }
+            catch (e) { entry.fail(e); }
         }
     }
 
     /** Apply an edit op and re-sync state + thumbnails. */
     async function applyOp(op: Record<string, unknown>, label: string, note?: string): Promise<boolean> {
+        if (busy) return false;
         const s = session;
         if (!s) { fail(label, t.no_session); return false; }
-        const next = await run(label, () => invoke<SessionState>('pdf_session_apply', { id: s.id, op }));
-        if (!next) return false;
+        const next = await run(label, () => invoke<SessionState>('pdf_session_apply', { id: s.id, op }), 'pdf.edit');
+        if (!next || session !== s) return false;
         setSession(next);
         if (note) notify(note);
         void refreshThumbs();
@@ -240,33 +289,48 @@
     }
 
     async function undo() {
+        if (busy) return;
         const s = session;
         if (!s?.can_undo) return;
-        const next = await run(t.undo, () => invoke<SessionState>('pdf_session_undo', { id: s.id }));
-        if (next) { setSession(next); void refreshThumbs(); }
+        const next = await run(t.undo, () => invoke<SessionState>('pdf_session_undo', { id: s.id }), 'pdf.undo');
+        if (next && session === s) { setSession(next); void refreshThumbs(); }
     }
 
     async function redo() {
+        if (busy) return;
         const s = session;
         if (!s?.can_redo) return;
-        const next = await run(t.redo, () => invoke<SessionState>('pdf_session_redo', { id: s.id }));
-        if (next) { setSession(next); void refreshThumbs(); }
+        const next = await run(t.redo, () => invoke<SessionState>('pdf_session_redo', { id: s.id }), 'pdf.redo');
+        if (next && session === s) { setSession(next); void refreshThumbs(); }
     }
 
     async function save(saveAs: boolean) {
+        if (busy) return;
         const s = session;
         if (!s) return;
-        let outPath: string | null = null;
-        if (saveAs) {
-            outPath = await saveDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: s.source }) as string | null;
-            if (!outPath) return;
-        }
-        const written = await run(saveAs ? t.save_as : t.save, () => invoke<string>('pdf_session_save', { id: s.id, outPath }));
-        if (!written) return;
-        flog('info', `[pdf] saved ${written}`);
-        const next = await run(t.save, () => invoke<SessionState>('pdf_session_state', { id: s.id }));
-        if (next) setSession(next);
-        notify(`${t.saved} ${written}`);
+        const current = () => !destroyed && session === s;
+        const receipt = await run(saveAs ? t.save_as : t.save, async (entry) => {
+            let outPath: string | null = null;
+            if (saveAs) {
+                outPath = await saveDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: s.source }) as string | null;
+                if (!outPath) throw cancelledDocumentAction();
+            }
+            requireCurrentDocument(current);
+            const written = await invoke<string>('pdf_session_save', { id: s.id, outPath });
+            entry.stage('published', { saved: true });
+            let next: SessionState | null = null;
+            if (current()) {
+                try { next = await invoke<SessionState>('pdf_session_state', { id: s.id }); }
+                catch (e) {
+                    entry.stage('checkpoint_failed', {}, 'error');
+                    if (current()) error = `${t.save}: ${errorMessage(e)}`;
+                }
+            }
+            return { written, next };
+        }, 'pdf.save', true, { isCurrent: current });
+        if (!receipt || !current()) return;
+        if (receipt.next) { setSession(receipt.next); void refreshThumbs(); }
+        notify(`${t.saved} ${receipt.written}`);
     }
 
     async function exportTemp(): Promise<string> {
@@ -275,14 +339,20 @@
     }
 
     // ── Rendering (thumbnails + page view) ──────────────────────────────
-    async function sourceDocFor(path: string, isCurrent: () => boolean = () => true) {
-        if (!isCurrent()) return null;
+    async function sourceDocFor(path: string, isCurrent?: () => boolean) {
+        const expected = session;
+        const generation = previewGeneration;
+        const current = () => !destroyed && session === expected && generation === previewGeneration && (isCurrent?.() ?? true);
+        if (!expected || !current()) return null;
         let doc = sourceDocs.get(path);
         if (!doc) {
             const bytes = await readFile(path);
-            if (!isCurrent()) return null;
+            if (!current()) return null;
             doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes), useSystemFonts: true, disableFontFace: true }).promise;
-            if (!isCurrent()) { try { await doc.destroy(); } catch { /* ignore */ } return null; }
+            if (!current()) { try { await doc.destroy(); } catch { /* ignore */ } return null; }
+            // A concurrent clean-page render may already own this source.
+            const shared = sourceDocs.get(path);
+            if (shared) { try { await doc.destroy(); } catch { /* ignore */ } return shared; }
             sourceDocs.set(path, doc);
         }
         return doc;
@@ -334,16 +404,17 @@
      * pages come straight from their source file (plus the session's extra
      * rotation); stamped or generated pages need the edited preview.
      */
-    async function docAndPageFor(i: number): Promise<{ doc: any; pageNo: number; rotation: number } | null> {
-        if (!session) return null;
-        const o = session.origins[i];
+    async function docAndPageFor(i: number, expected = session): Promise<{ doc: any; pageNo: number; rotation: number } | null> {
+        if (!expected || session !== expected || destroyed) return null;
+        const current = () => !destroyed && session === expected;
+        const o = expected.origins[i];
         if (!o) return null;
         if (o.source && o.index !== null && !o.dirty) {
-            const doc = await sourceDocFor(o.source);
-            return doc ? { doc, pageNo: o.index + 1, rotation: o.rotation } : null;
+            const doc = await sourceDocFor(o.source, current);
+            return doc && current() ? { doc, pageNo: o.index + 1, rotation: o.rotation } : null;
         }
-        const preview = await refreshPreviewDoc();
-        return preview ? { doc: preview, pageNo: i + 1, rotation: 0 } : null;
+        const preview = await refreshPreviewDoc(current);
+        return preview && current() ? { doc: preview, pageNo: i + 1, rotation: 0 } : null;
     }
 
     async function renderThumb(doc: any, pageNo: number, extraRotation: number): Promise<string> {
@@ -364,22 +435,23 @@
         const epoch = ++thumbRun;
         const isCurrent = () => epoch === thumbRun && session === requestedSession;
         const origins = requestedSession.origins;
-        const started = performance.now();
+        const entry = beginOperation('pdf.thumbnails', { kind: 'pdf', pages: origins.length });
+        let rendered = 0;
+        let failed = 0;
+        try {
 
         // Pages that can't be served from a source file need the edited doc.
         const needsPreview = origins.some((o) => o.dirty || !o.source);
         let preview: any = null;
         if (needsPreview) {
-            try { preview = await refreshPreviewDoc(isCurrent); } catch (e) {
-                flog('error', `[pdf] rendering the edited document failed: ${errorMessage(e)}`);
+            try { preview = await refreshPreviewDoc(isCurrent); } catch {
+                if (isCurrent()) entry.stage('extraction_failed', {}, 'error');
             }
         }
         if (!isCurrent()) return;
         const editedEpoch = previewEpoch;
 
         const next: Record<number, string> = {};
-        let rendered = 0;
-        let failed = 0;
         // Show each tile as soon as it renders: large documents (hundreds of
         // pages) otherwise stay on spinners until the last page is done.
         for (let i = 0; i < origins.length; i++) {
@@ -395,20 +467,22 @@
             try {
                 const doc = fromSource ? await sourceDocFor(o.source!, isCurrent) : preview;
                 if (!isCurrent()) return;
-                const url = doc ? await renderThumb(doc, fromSource ? o.index! + 1 : i + 1, fromSource ? o.rotation : 0) : '';
+                if (!doc) throw new Error('The page preview is unavailable.');
+                const url = await renderThumb(doc, fromSource ? o.index! + 1 : i + 1, fromSource ? o.rotation : 0);
                 if (!isCurrent()) return;
                 if (url) { thumbCache.set(key, url); next[i] = url; thumbs[i] = url; rendered += 1; }
-            } catch (e) {
+            } catch {
+                if (!isCurrent()) return;
                 // A page that fails to rasterise still gets a tile.
                 failed += 1;
-                flog('error', `[pdf] thumbnail for page ${i + 1} failed: ${errorMessage(e)}`);
+                entry.stage('extraction_failed', { page: i + 1, failed }, 'error');
             }
         }
         if (!isCurrent()) return;
         thumbs = next;
-        if (rendered > 0 || failed > 0) {
-            flog('info', `[pdf] rendered ${rendered} thumbnail(s)${failed ? `, ${failed} failed` : ''} in ${Math.round(performance.now() - started)} ms`);
-        }
+        entry.complete({ completed: Object.keys(next).length, failed, reused: rendered === 0, partial: failed > 0 });
+        } catch (e) { entry.fail(e); }
+        finally { if (!isCurrent()) entry.cancel({ completed: rendered, failed }); }
     }
 
     // ── Page view (zoom) ────────────────────────────────────────────────
@@ -451,13 +525,16 @@
         const s = session;
         const canvas = pageCanvas;
         if (!s || !canvas) return;
+        const current = () => !destroyed && seq === renderSeq && session === s && pageCanvas === canvas;
         const idx = Math.min(viewPage, s.origins.length - 1);
+        const entry = beginOperation('pdf.render', { kind: 'pdf', page: idx + 1 });
         viewRendering = true;
         try {
-            const target = await docAndPageFor(idx);
-            if (!target || seq !== renderSeq) return;
+            const target = await docAndPageFor(idx, s);
+            if (!current()) return;
+            if (!target) throw new Error('The page preview is unavailable.');
             const page = await target.doc.getPage(target.pageNo);
-            if (seq !== renderSeq) return;
+            if (!current()) return;
             const rotation = normaliseRotation(page.rotate + target.rotation);
             const base = page.getViewport({ scale: 1, rotation });
             const availW = Math.max(80, viewW - 40);
@@ -472,7 +549,7 @@
                 const prev = renderTask;
                 renderTask = null;
                 try { prev.cancel(); await prev.promise; } catch { /* cancelled */ }
-                if (seq !== renderSeq) return;
+                if (!current()) return;
             }
             canvas.width = Math.max(1, Math.floor(vp.width * dpr));
             canvas.height = Math.max(1, Math.floor(vp.height * dpr));
@@ -484,19 +561,20 @@
             renderTask = task;
             await task.promise;
             if (renderTask === task) renderTask = null;
-            if (seq !== renderSeq) return;
+            if (!current()) return;
             curViewport = vp;
             viewScale = scale;
             vpW = vp.width;
             vpH = vp.height;
             vpVersion += 1;
-            flog('debug', `[pdf] rendered page ${idx + 1} at ${Math.round(scale * 100)} %`);
+            entry.complete();
         } catch (e: any) {
-            if (e?.name === 'RenderingCancelledException') return;
+            if (!current() || e?.name === 'RenderingCancelledException') { entry.cancel(); return; }
             const msg = errorMessage(e);
             error = `${t.page} ${idx + 1}: ${msg}`;
-            flog('error', `[pdf] rendering page ${idx + 1} failed: ${msg}`);
+            entry.fail(e);
         } finally {
+            if (!current()) entry.cancel();
             if (seq === renderSeq) viewRendering = false;
         }
     }
@@ -533,9 +611,13 @@
 
     /** PNG bytes of one page of the edited document at `dpi`. */
     async function renderPagePng(index: number, dpi: number): Promise<Uint8Array> {
-        const target = await docAndPageFor(index);
+        const expected = session;
+        const current = () => !destroyed && session === expected;
+        const target = await docAndPageFor(index, expected);
+        requireCurrentDocument(current);
         if (!target) throw new Error(`page ${index + 1} unavailable`);
         const page = await target.doc.getPage(target.pageNo);
+        requireCurrentDocument(current);
         const vp = page.getViewport({ scale: dpi / 72, rotation: normaliseRotation(page.rotate + target.rotation) });
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.floor(vp.width));
@@ -544,8 +626,11 @@
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        requireCurrentDocument(current);
         const blob: Blob = await new Promise((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error('PNG encoding failed'))), 'image/png'));
-        return new Uint8Array(await blob.arrayBuffer());
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        requireCurrentDocument(current);
+        return bytes;
     }
 
     // ── Coordinates ─────────────────────────────────────────────────────
@@ -608,7 +693,7 @@
     }
 
     function onOverlayDown(ev: PointerEvent) {
-        if (!activeTool || !overlayEl || ev.button !== 0) return;
+        if (busy || !activeTool || !overlayEl || ev.button !== 0) return;
         const p = local(ev);
         if (isRectTool(activeTool)) {
             overlayEl.setPointerCapture?.(ev.pointerId);
@@ -648,6 +733,7 @@
     }
 
     function onOverlayUp() {
+        if (busy) { resetPending(); return; }
         if (!dragging) return;
         dragging = false;
         dragStart = null;
@@ -788,18 +874,19 @@
 
     async function doOverprint() {
         if (!session || !pendingRect) { fail(t.overprint, t.overprint_drag_first); return; }
-        const out = await saveDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'overprinted.pdf' }) as string | null;
-        if (!out) return;
-        const rect = pendingRect;
+        const expected = session;
+        const spec = { page: viewPage, ...pendingRect, text: overprintText, font_size: overprintSize, color: [0, 0, 0], background: [1, 1, 1] };
+        const out = await chooseOutput({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'overprinted.pdf' });
+        if (!out || session !== expected || destroyed) return;
         const ok = await run(t.overprint, async () => {
             const tmp = await exportTemp();
             await invoke<number>('pdf_overprint', {
                 path: tmp,
-                specs: [{ page: viewPage, ...rect, text: overprintText, font_size: overprintSize, color: [0, 0, 0], background: [1, 1, 1] }],
+                specs: [spec],
                 outPath: out,
             });
             return true;
-        });
+        }, 'pdf.export', true);
         if (ok) { pendingRect = null; notify(`${t.overprinted} ${out}`, out); }
     }
 
@@ -846,13 +933,14 @@
     async function doDrawRegion() {
         if (!session || !pendingRect) { fail(t.region, t.region_drag_first); return; }
         if (!regionText.trim()) { fail(t.region, t.text_required); return; }
-        const out = await saveDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'text-region.pdf' }) as string | null;
-        if (!out) return;
+        const expected = session;
         const region = buildRegion(pendingRect);
+        const out = await chooseOutput({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'text-region.pdf' });
+        if (!out || session !== expected || destroyed) return;
         const reports = await run(t.region, async () => {
             const tmp = await exportTemp();
             return await invoke<LayoutReport[]>('pdf_draw_text_regions', { path: tmp, regions: [region], outPath: out });
-        });
+        }, 'pdf.export', true);
         if (reports) { regionReport = reports[0] ?? null; notify(`${t.region_written} ${out}`, out); }
     }
 
@@ -864,14 +952,15 @@
 
     async function doRedact() {
         if (!session || redactRects.length === 0) return;
-        const out = await saveDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'redacted.pdf' }) as string | null;
-        if (!out) return;
-        redactReport = null;
+        const expected = session;
         const regions = redactRects;
+        const out = await chooseOutput({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'redacted.pdf' });
+        if (!out || session !== expected || destroyed) return;
+        redactReport = null;
         const r = await run(t.redact, async () => {
             const tmp = await exportTemp();
             return await invoke<RedactReport>('pdf_redact_hard', { path: tmp, regions, outPath: out });
-        });
+        }, 'pdf.export', true);
         if (r) { redactReport = r; notify(`${t.redacted} ${out}`, out); }
     }
 
@@ -950,14 +1039,14 @@
         const s = session;
         if (!s) return;
         const pages = targetPages();
-        const out = await saveDialog({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'extracted.pdf' }) as string | null;
-        if (!out) return;
+        const out = await chooseOutput({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: 'extracted.pdf' });
+        if (!out || session !== s || destroyed) return;
         const ok = await run(`${t.extract} ${pages.map((p) => p + 1).join(',')}`, async () => {
             // From the *edited* document, so pending edits are in the extract.
             const tmp = await exportTemp();
             await invoke('pdf_extract_pages', { path: tmp, pageIndices: pages, outPath: out });
             return true;
-        });
+        }, 'pdf.export', true);
         if (ok) notify(`${t.extracted} ${out}`, out);
     }
 
@@ -981,7 +1070,7 @@
     let thumbsEl = $state<HTMLDivElement | null>(null);
 
     function onTilePointerDown(i: number, ev: PointerEvent) {
-        if (ev.button !== 0 || (ev.target as HTMLElement).closest('button')) return;
+        if (busy || ev.button !== 0 || (ev.target as HTMLElement).closest('button')) return;
         tileDrag = { from: i, x: ev.clientX, y: ev.clientY, id: ev.pointerId, active: false };
         window.addEventListener('pointermove', onTilePointerMove);
         window.addEventListener('pointerup', onTilePointerUp);
@@ -1032,7 +1121,7 @@
         const d = tileDrag;
         const target = dropAt;
         endTileDrag();
-        if (!d || !d.active) return;
+        if (busy || !d || !d.active) return;
         suppressClick = true;
         setTimeout(() => { suppressClick = false; }, 0);
         const hit = target ?? hitTile(ev.clientX, ev.clientY);
@@ -1075,13 +1164,13 @@
 
     // ── Tool switching ──────────────────────────────────────────────────
     function setTool(next: Tool | null) {
+        if (busy) return;
         const target = activeTool === next ? null : next;
         resetPending();
         regionReport = null;
         menu = null;
         if (target && !session) { fail(t.open, t.no_session); return; }
         activeTool = target;
-        if (target) flog('debug', `[pdf] tool: ${target}`);
         if (target === 'crop') {
             // Crop always starts with the whole page in view, so the box
             // can be drawn anywhere on it.
@@ -1111,14 +1200,14 @@
     // ── One-click document tools & exports ──────────────────────────────
     async function askOut(name: string, ext = 'pdf', label = 'PDF'): Promise<string | null> {
         const base = session?.source.replace(/\.pdf$/i, '') ?? 'document';
-        return await saveDialog({ filters: [{ name: label, extensions: [ext] }], defaultPath: `${base}-${name}.${ext}` }) as string | null;
+        return await chooseOutput({ filters: [{ name: label, extensions: [ext] }], defaultPath: `${base}-${name}.${ext}` });
     }
 
     async function doSignatures() {
         menu = null;
         const s = session;
         if (!s) return;
-        const sigs = await run(t.signatures, () => invoke<any[]>('pdf_detect_signatures', { path: s.source }));
+        const sigs = await run(t.signatures, () => invoke<any[]>('pdf_detect_signatures', { path: s.source }), 'pdf.signatures');
         if (!sigs) return;
         notify(sigs.length === 0
             ? t.no_signatures
@@ -1130,11 +1219,12 @@
         const s = session;
         if (!s) return;
         const out = await askOut(suffix);
-        if (!out) return;
+        if (!out || session !== s || destroyed) return;
+        const operation: OperationName = command === 'pdf_linearize' ? 'pdf.linearize' : command === 'pdf_repair' ? 'pdf.repair' : 'pdf.pdfa';
         const r = await run(label, async () => {
             const path = useSource ? s.source : await exportTemp();
             return await invoke<unknown>(command, { path, outPath: out });
-        });
+        }, operation, true);
         if (r !== undefined) {
             notify(typeof r === 'number' && command === 'pdf_repair'
                 ? i18n.t.pdftools.repaired.replace('{n}', String(r)).replace('{path}', out)
@@ -1145,29 +1235,31 @@
     async function exportText(format: 'docx' | 'markdown' | 'text') {
         menu = null;
         if (!session) return;
+        const expected = session;
         const ext = format === 'docx' ? 'docx' : format === 'markdown' ? 'md' : 'txt';
         const out = await askOut('export', ext, ext.toUpperCase());
-        if (!out) return;
+        if (!out || session !== expected || destroyed) return;
         const label = format === 'docx' ? t.export_docx : format === 'markdown' ? t.export_md : t.export_txt;
         const n = await run(label.replace('…', ''), async () => {
             const tmp = await exportTemp();
             return format === 'docx'
                 ? await invoke<number>('pdf_export_docx', { path: tmp, outPath: out })
                 : await invoke<number>('pdf_export_text', { path: tmp, format, outPath: out });
-        });
+        }, 'pdf.export', true);
         if (n !== undefined) notify(t.exported.replace('{n}', String(n)).replace('{path}', out));
     }
 
     async function exportAnnots(format: 'markdown' | 'csv' | 'json') {
         menu = null;
         if (!session) return;
+        const expected = session;
         const ext = format === 'markdown' ? 'md' : format;
         const out = await askOut('annotations', ext, format.toUpperCase());
-        if (!out) return;
+        if (!out || session !== expected || destroyed) return;
         const n = await run(`${t.export_annots} ${format}`, async () => {
             const tmp = await exportTemp();
             return await invoke<number>('pdf_export_annotations', { path: tmp, format, outPath: out });
-        });
+        }, 'pdf.annotations', true);
         if (n !== undefined) notify(t.annots_exported.replace('{n}', String(n)).replace('{path}', out));
     }
 
@@ -1182,30 +1274,26 @@
     async function doPrint() {
         menu = null;
         if (!session) return;
-        busyCount += 1;
-        error = '';
-        try {
+        const expected = session;
+        const message = await run(t.print, async () => {
             const tmp = await exportTemp();
-            const msg = await invoke<string>('platform_print', { path: tmp });
-            flog('info', `[pdf] ${t.print}: ok`);
-            notify(msg?.trim() ? msg : t.sent_to_printer);
-        } catch (e) {
-            // No printer configured is the common failure; point at the viewer.
-            error = `${t.print}: ${errorMessage(e)} — ${t.print_fallback_hint}`;
-            flog('error', `[pdf] ${t.print} failed: ${errorMessage(e)}`);
-        } finally { busyCount -= 1; }
+            return await invoke<string>('platform_print', { path: tmp });
+        }, 'pdf.print', true);
+        if (session !== expected) return;
+        if (message !== undefined) notify(message?.trim() ? message : t.sent_to_printer);
+        else if (error) error += ` — ${t.print_fallback_hint}`;
     }
 
     async function doOpenExternal() {
         menu = null;
         if (!session) return;
-        await run(t.open_external, async () => { await invoke('platform_open_external', { path: await exportTemp() }); });
+        await run(t.open_external, async () => { await invoke('platform_open_external', { path: await exportTemp() }); }, 'pdf.external', true);
     }
 
     async function doShare() {
         menu = null;
         if (!session) return;
-        const res = await run(t.share, async () => await invoke<ShareResult>('platform_share', { path: await exportTemp() }));
+        const res = await run(t.share, async () => await invoke<ShareResult>('platform_share', { path: await exportTemp() }), 'pdf.share', true);
         if (res) notify(res.note ?? t.shared);
     }
 
@@ -1214,17 +1302,17 @@
         drawerMounted = { ...drawerMounted, [which]: true };
         if (path) drawerPath = { ...drawerPath, [which]: path };
         drawer = which;
-        flog('info', `[pdf] opened ${which === 'docx' ? 'Word document tools' : 'document converter'}${path ? ` for ${path}` : ''}`);
     }
 
     const docToolCtx: DocToolContext = {
-        run: (label, fn) => run(label, fn),
+        run: (label, fn, operation, writesOutput) => run(label, fn, operation, writesOutput),
         apply: (op, label, note) => applyOp(op, label, note),
         exportTemp: () => exportTemp(),
         notify: (msg, openPath) => notify(msg, openPath),
         fail: (label, msg) => fail(label, msg),
         renderPagePng: (i, dpi) => renderPagePng(i, dpi),
         openPath: (p) => openSession(p),
+        isCurrent: (expected) => !destroyed && session === expected,
         close: () => { activeTool = null; },
     };
 
@@ -1232,7 +1320,7 @@
     const CONVERTIBLE = ['pptx', 'ppt', 'odp', 'doc', 'docm', 'odt', 'rtf', 'epub', 'xlsx', 'xls', 'ods', 'csv', 'html', 'htm', 'md', 'txt'];
     function openDropped(paths: string[]) {
         if (!paths?.length) return;
-        flog('info', `[pdf] dropped ${paths.length} file(s): ${paths.join(', ')}`);
+        beginOperation('pdf.drop', { count: paths.length }).complete();
         const pdf = paths.find((p) => /\.pdf$/i.test(p));
         if (pdf) { void openSession(pdf); return; }
         const first = paths[0];
@@ -1247,14 +1335,15 @@
     onMount(() => {
         try {
             getCurrentWebview().onDragDropEvent((event) => {
+                if (!mainEl?.getClientRects().length) return;
                 const p = event.payload as { type: string; paths?: string[] };
                 if (p.type === 'enter' || p.type === 'over') dropHover = true;
                 else if (p.type === 'leave') dropHover = false;
                 else if (p.type === 'drop') { dropHover = false; openDropped(p.paths ?? []); }
             }).then((fn) => { if (destroyed) fn(); else unlistenDrop = fn; })
-              .catch((e) => flog('warn', `[pdf] drag-and-drop unavailable: ${errorMessage(e)}`));
+              .catch((e) => beginOperation('pdf.drop').fail(e));
         } catch (e) {
-            flog('warn', `[pdf] drag-and-drop unavailable: ${errorMessage(e)}`);
+            beginOperation('pdf.drop').fail(e);
         }
     });
 
@@ -1268,6 +1357,7 @@
 
     // ── Keyboard ────────────────────────────────────────────────────────
     function onKeydown(ev: KeyboardEvent) {
+        if (!mainEl?.getClientRects().length) return;
         const target = ev.target as HTMLElement | null;
         if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
         if (ev.key === 'Escape') {
@@ -1278,8 +1368,13 @@
             return;
         }
         if (!session) return;
+        if (drawer) return;
         const mod = ev.metaKey || ev.ctrlKey;
         const k = ev.key.toLowerCase();
+        if (busy) {
+            if ((mod && ['z', 'y', 's'].includes(k)) || ev.key === 'Delete' || ev.key === 'Backspace') ev.preventDefault();
+            return;
+        }
         if (mod && k === 'z') { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); }
         else if (mod && k === 'y') { ev.preventDefault(); redo(); }
         else if (mod && k === 's') { ev.preventDefault(); save(ev.shiftKey); }
@@ -1313,7 +1408,7 @@
 {/snippet}
 
 {#snippet mi(label: string, onclick: () => void, disabled: boolean, Icon: any)}
-    <button class="pe-mi" role="menuitem" {disabled} {onclick}><Icon size={14} /> <span>{label}</span></button>
+    <button class="pe-mi" role="menuitem" disabled={disabled || busy} {onclick}><Icon size={14} /> <span>{label}</span></button>
 {/snippet}
 
 <div class="pe" class:drop-hover={dropHover}>
@@ -1431,11 +1526,11 @@
 
     <!-- Options for the active tool -->
     {#if session && activeTool && isDocTool(activeTool)}
-        {#key activeTool}
-            <PdfDocTools tool={activeTool} {session} selected={selectedSorted()} ctx={docToolCtx} />
+        {#key `${session.id}:${activeTool}`}
+            <PdfDocTools tool={activeTool} {session} {busy} selected={selectedSorted()} ctx={docToolCtx} />
         {/key}
     {:else if session && activeTool}
-        <div class="pe-opts" role="group" aria-label={toolHint(activeTool)}>
+        <fieldset class="pe-opts" disabled={busy} aria-label={toolHint(activeTool)}>
             <span class="pe-hint">{toolHint(activeTool)}</span>
             {#if activeTool === 'crop'}
                 <label><input type="checkbox" bind:checked={cropAllPages} /> {t.crop_all}</label>
@@ -1522,7 +1617,7 @@
             {/if}
             <span class="pe-spacer"></span>
             <button class="pe-x" onclick={() => setTool(null)} aria-label={t.close_tool} title={t.close_tool}><X size={13} /></button>
-        </div>
+        </fieldset>
     {/if}
 
     <!-- Status -->
@@ -1770,6 +1865,7 @@
 
     /* Options bar */
     .pe-opts {
+        margin: 0; min-width: 0; border: 0;
         display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
         padding: 7px 12px; background: #18181b; border-bottom: 1px solid #3f3f46; font-size: 12px;
     }

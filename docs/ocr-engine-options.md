@@ -181,9 +181,11 @@ other engine combinations. See the [audit boundaries](ocr-routing-audit-20261111
 ## Recent integration
 
 The [remote integration audit](remote-integration-audit-20261111.md) accounts
-for all 74 live branch heads and open PRs reviewed in this continuation. Current
-SMB storage work is merged; the application now connects mounted streaming
-reads to transfer, sync and index-promotion consumers. See the
+for all 75 live branch heads and open PRs reviewed in this continuation, including
+the PDF consolidation and advanced SMB head published during the work. The app
+shares SMB transport settings between GUI and CLI and connects streaming reads
+to transfer, sync and index-promotion consumers. The consolidated PDF editor and
+CLI share native text exports and edit operations. See the
 [surface and operation-log audit](surface-observability-audit-20261111.md) for
 critical-step events, CLI/GUI consistency and verification boundaries.
 

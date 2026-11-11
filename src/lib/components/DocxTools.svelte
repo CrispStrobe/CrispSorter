@@ -9,8 +9,9 @@
     // file. Nothing here overwrites the input.
 
     import { invoke } from '@tauri-apps/api/core';
-    import { untrack } from 'svelte';
-    import { flog } from '$lib/log';
+    import { onDestroy, untrack } from 'svelte';
+    import { beginOperation, type OperationName } from '$lib/operationLog';
+    import { createDocumentActions } from './pdf/actionRunner';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
     import {
@@ -45,7 +46,13 @@
 
     // ── State ───────────────────────────────────────────────────────────
     let filePath = $state('');
-    let busy = $state(false);
+    let pending = $state(0);
+    let choosing = $state(false);
+    const busy = $derived(pending > 0 || choosing);
+    let generation = 0;
+    let disposed = false;
+    const actions = createDocumentActions((count) => { pending = count; });
+    onDestroy(() => { disposed = true; generation += 1; });
     let error = $state('');
     let success = $state('');
 
@@ -78,13 +85,14 @@
     $effect(() => { const p = initialPath; if (p) untrack(() => useFile(p)); });
 
     async function openFile() {
+        if (busy) return;
         const p = await pickDocx();
         if (!p) return;
         useFile(p);
     }
 
     function useFile(p: string) {
-        flog('info', `[docx] opened ${p}`);
+        generation += 1;
         filePath = p;
         // Everything on screen described the previous file.
         checkResult = null;
@@ -97,31 +105,38 @@
 
     /** Ask where to write, defaulting next to the input with a suffix. */
     async function askOutput(suffix: string): Promise<string | null> {
+        if (busy || !filePath) return null;
+        const version = generation;
         const base = filePath.replace(/\.docx$/i, '');
-        const out = await saveDialog({
-            filters: [{ name: 'Word document', extensions: ['docx'] }],
-            defaultPath: `${base}-${suffix}.docx`,
-        });
-        return (out as string) ?? null;
+        choosing = true;
+        try {
+            const out = await saveDialog({
+                filters: [{ name: 'Word document', extensions: ['docx'] }],
+                defaultPath: `${base}-${suffix}.docx`,
+            });
+            return !disposed && generation === version && typeof out === 'string' ? out : null;
+        } catch (e) {
+            beginOperation('document.docx').fail(e);
+            if (!disposed && generation === version) error = String(e);
+            return null;
+        } finally { choosing = false; }
     }
 
     /** Run `fn`, routing failures to the status line rather than the console. */
-    async function run<T>(fn: () => Promise<T>): Promise<T | null> {
+    async function run<T>(operation: OperationName, fn: () => Promise<T>, writesOutput = false): Promise<T | null> {
         if (!filePath) { error = i18n.t.docxtools.pick_first; return null; }
-        busy = true;
-        error = '';
-        success = '';
-        try {
-            const r = await fn();
-            flog('info', `[docx] ${activeOp ?? 'operation'} ok: ${filePath}`);
-            return r;
-        } catch (e: any) {
-            error = e?.message ?? String(e);
-            flog('error', `[docx] ${filePath}: ${error}`);
-            return null;
-        } finally {
-            busy = false;
-        }
+        const version = generation;
+        const result = await actions.run({
+            operation, fields: { format: 'docx' }, writesOutput,
+            isCurrent: () => !disposed && generation === version,
+            onError: (e) => { error = e instanceof Error ? e.message : String(e); },
+        }, async (entry) => {
+            error = '';
+            success = '';
+            entry.stage('dispatching');
+            return await fn();
+        });
+        return result ?? null;
     }
 
     function pt(v: number | null): string {
@@ -132,7 +147,7 @@
 
     // ── Operations ──────────────────────────────────────────────────────
     async function doCheck() {
-        const r = await run(() => invoke<DocxCheckResult>('docx_check', { path: filePath }));
+        const r = await run('docx.check', () => invoke<DocxCheckResult>('docx_check', { path: filePath }));
         if (r) {
             checkResult = r;
             success = r.valid ? i18n.t.docxtools.check_ok : '';
@@ -140,12 +155,12 @@
     }
 
     async function doProperties() {
-        const b = await run(() => invoke<DocxBlueprint>('docx_analyze', { path: filePath }));
+        const b = await run('docx.properties', () => invoke<DocxBlueprint>('docx_analyze', { path: filePath }));
         if (b) blueprint = b;
     }
 
     async function doHeadings() {
-        const hs = await run(() => invoke<InferredHeading[]>('docx_infer_headings', { path: filePath }));
+        const hs = await run('docx.headings', () => invoke<InferredHeading[]>('docx_infer_headings', { path: filePath }));
         if (hs) {
             headings = hs;
             if (hs.length === 0) success = i18n.t.docxtools.headings_none;
@@ -159,11 +174,13 @@
 
     async function doRestyle() {
         if (!blueprintPath) { error = i18n.t.docxtools.blueprint_first; return; }
+        const version = generation;
+        const source = filePath, blueprint = blueprintPath;
         const out = await askOutput('restyled');
-        if (!out) return;
-        const r = await run(() => invoke<TransplantResult>('docx_transplant', {
-            source: filePath, blueprint: blueprintPath, output: out,
-        }));
+        if (!out || disposed || version !== generation) return;
+        const r = await run('docx.restyle', () => invoke<TransplantResult>('docx_transplant', {
+            source, blueprint, output: out,
+        }), true);
         if (r) {
             transplant = r;
             success = `${i18n.t.docxtools.written} ${out}`;
@@ -171,29 +188,35 @@
     }
 
     async function doConvertNotes() {
+        const version = generation;
+        const path = filePath, targetKind = notesTarget;
         const out = await askOutput(notesTarget);
-        if (!out) return;
-        const r = await run(() => invoke<string>('docx_convert_notes', {
-            path: filePath, targetKind: notesTarget, output: out,
-        }));
+        if (!out || disposed || version !== generation) return;
+        const r = await run('docx.notes', () => invoke<string>('docx_convert_notes', {
+            path, targetKind, output: out,
+        }), true);
         if (r) success = `${i18n.t.docxtools.written} ${out}`;
     }
 
     async function doNormalizeQuotes() {
+        const version = generation;
+        const path = filePath, style = quoteStyle;
         const out = await askOutput('quotes');
-        if (!out) return;
-        const r = await run(() => invoke<string>('docx_normalize_quotes', {
-            path: filePath, style: quoteStyle, output: out,
-        }));
+        if (!out || disposed || version !== generation) return;
+        const r = await run('docx.quotes', () => invoke<string>('docx_normalize_quotes', {
+            path, style, output: out,
+        }), true);
         if (r) success = `${i18n.t.docxtools.written} ${out}`;
     }
 
     async function doStripRsids() {
+        const version = generation;
+        const path = filePath;
         const out = await askOutput('clean');
-        if (!out) return;
-        const n = await run(() => invoke<number>('docx_strip_rsids', {
-            path: filePath, output: out,
-        }));
+        if (!out || disposed || version !== generation) return;
+        const n = await run('docx.clean', () => invoke<number>('docx_strip_rsids', {
+            path, output: out,
+        }), true);
         if (n !== null) {
             success = i18n.t.docxtools.rsids_stripped
                 .replace('{n}', String(n)).replace('{path}', out);
@@ -211,7 +234,9 @@
     }
 
     async function doInjectFootnotes() {
-        const filled = noteRows.filter((r) => r.text.trim() !== '');
+        const version = generation;
+        const path = filePath;
+        const filled = noteRows.filter((r) => r.text.trim() !== '').map((r) => ({ ...r }));
         if (filled.length === 0) { error = i18n.t.docxtools.notes_empty; return; }
         const seen = new Set<number>();
         for (const r of filled) {
@@ -221,12 +246,12 @@
             seen.add(r.n);
         }
         const out = await askOutput('noted');
-        if (!out) return;
+        if (!out || disposed || version !== generation) return;
         const notes: Record<number, string> = {};
         for (const r of filled) notes[r.n] = r.text;
-        const inserted = await run(() => invoke<number>('docx_inject_footnotes', {
-            path: filePath, notes, output: out,
-        }));
+        const inserted = await run('docx.footnotes', () => invoke<number>('docx_inject_footnotes', {
+            path, notes, output: out,
+        }), true);
         if (inserted !== null) {
             success = i18n.t.docxtools.notes_injected
                 .replace('{n}', String(inserted))
@@ -242,7 +267,7 @@
 
 <div class="dt">
     <div class="dt-toolbar">
-        <button class="dt-btn dt-open" onclick={openFile}>
+        <button class="dt-btn dt-open" onclick={openFile} disabled={busy}>
             <FileUp size={14} /> {i18n.t.docxtools.open}
         </button>
         {#if filePath}

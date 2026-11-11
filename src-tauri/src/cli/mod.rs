@@ -35,11 +35,14 @@
 //!     [--out json|text]
 //! ```
 
+mod smb_options;
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod ocr_options;
+mod pdf_options;
 
 /// Subcommand names our CLI knows about. main.rs uses this for the
 /// argv sniff so we can fall through to the GUI for anything
@@ -699,6 +702,8 @@ enum IntendedPurposeCmd {
 
 #[derive(Subcommand, Debug)]
 enum DrivesCmd {
+    /// Add or change SMB settings (same registry and secret store as the GUI).
+    Smb(smb_options::SmbOptions),
     /// List registered drives: id, kind, label, and whether this build reaches
     /// the provider natively or through the Python CLI.
     List {
@@ -1581,6 +1586,25 @@ enum ChatCmd {
 enum PdfCmd {
     /// Show PDF info — page count, dimensions, metadata.
     Info { file: PathBuf },
+    /// Export the PDF text layer using the same exporter as the PDF editor.
+    /// Scanned pages need `ocr`; this command does not recognize images.
+    Export {
+        file: PathBuf,
+        #[arg(long, default_value = "text", value_parser = ["text", "markdown", "docx"])]
+        to: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Apply an ordered JSON array of the PDF editor's EditOp operations.
+    /// All recipe page indices are zero-based, as in the editor API.
+    Apply {
+        file: PathBuf,
+        /// JSON recipe, at most 1 MiB and 1,024 operations.
+        #[arg(long)]
+        operations: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Merge multiple PDFs into one.
     Merge {
         /// Input PDF files (2+).
@@ -2066,42 +2090,48 @@ enum DocxCmd {
     },
 }
 
+// Same eager-selection bound and syntax as the PDF editor's types.ts helpers.
+const MAX_PDF_SELECTION_PAGES: usize = 100_000;
+
+fn parse_pdf_page_range(part: &str, max_pages: usize) -> Result<(usize, usize), String> {
+    let number = |token: &str| -> Result<usize, String> {
+        let token = token.trim();
+        if token.is_empty() || !token.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("bad page number: {token}"));
+        }
+        token.parse().map_err(|_| format!("bad page number: {token}"))
+    };
+    let (start, end) = match part.trim().split_once('-') {
+        Some((a, b)) => (number(a)?, number(b)?),
+        None => { let page = number(part)?; (page, page) },
+    };
+    if start < 1 || end < start || end > max_pages {
+        return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
+    }
+    Ok((start - 1, end))
+}
+
 /// Parse a page-range string like "1,3,5-7" into 0-based indices.
 fn parse_page_spec(spec: &str, max_pages: usize) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
     for part in spec.split(',') {
-        let part = part.trim();
-        if part.contains('-') {
-            let mut split = part.splitn(2, '-');
-            let start: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
-            let end: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
-            if start < 1 || end < start || end > max_pages {
-                return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
-            }
-            for i in start..=end { out.push(i - 1); }
-        } else {
-            let n: usize = part.parse().map_err(|_| format!("bad page number: {part}"))?;
-            if n < 1 || n > max_pages {
-                return Err(format!("page {n} out of bounds (1..{max_pages})"));
-            }
-            out.push(n - 1);
+        let (start, end) = parse_pdf_page_range(part, max_pages)?;
+        if end - start > MAX_PDF_SELECTION_PAGES - out.len() {
+            return Err("PDF page selection exceeds the 100,000-page limit.".into());
         }
+        out.extend(start..end);
     }
     Ok(out)
 }
 
-/// Parse a split ranges string like "1-5,6-10" into [(start, end)] 0-based half-open.
+/// Parse split ranges or single pages into 0-based, half-open pairs.
 fn parse_split_ranges(spec: &str, max_pages: usize) -> Result<Vec<(usize, usize)>, String> {
     let mut out = Vec::new();
     for part in spec.split(',') {
-        let part = part.trim();
-        let mut split = part.splitn(2, '-');
-        let start: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
-        let end: usize = split.next().ok_or_else(|| format!("range needs start-end: {part}"))?.trim().parse().map_err(|_| format!("bad range: {part}"))?;
-        if start < 1 || end < start || end > max_pages {
-            return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
+        if out.len() >= MAX_PDF_SELECTION_PAGES {
+            return Err("PDF split selection exceeds the 100,000-range limit.".into());
         }
-        out.push((start - 1, end)); // 0-based start, exclusive end
+        out.push(parse_pdf_page_range(part, max_pages)?);
     }
     Ok(out)
 }
@@ -5558,6 +5588,28 @@ fn parse_rgb(spec: &str) -> Result<[f64; 3], String> {
 fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
     use crate::pdf_ops;
     match cmd {
+        PdfCmd::Export { file, to, out: out_path } => {
+            let pages = match to.as_str() {
+                "docx" => crate::pdf_export::export_docx(&file, &out_path)?,
+                _ => crate::pdf_export::export_text(&file, &to, &out_path)?,
+            };
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "pages": pages, "format": to, "output": out_path,
+                    "source": "text_layer",
+                })),
+                OutFormat::Text => println!("Exported {pages} text-layer page(s) to {}", out_path.display()),
+            }
+            Ok(())
+        }
+        PdfCmd::Apply { file, operations, out: out_path } => {
+            let report = pdf_options::apply_recipe(&file, &operations, &out_path)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?),
+                OutFormat::Text => println!("Applied {} edit(s); {} page(s) saved to {}", report.operations, report.pages, report.output),
+            }
+            Ok(())
+        }
         PdfCmd::Info { file } => {
             let info = pdf_ops::pdf_info(&file)?;
             match out {
@@ -5764,15 +5816,11 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             Ok(())
         }
         PdfCmd::ExportAnnotations { file, to, out: out_path } => {
-            let annots = crate::pdf_annots::read_annotations_from_path(&file)?;
-            let title = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let body = match to.as_str() {
-                "csv" => crate::pdf_annots::to_csv(&annots),
-                "json" => serde_json::to_string_pretty(&annots).map_err(|e| e.to_string())?,
-                _ => crate::pdf_annots::to_markdown(&annots, &title),
-            };
-            std::fs::write(&out_path, body).map_err(|e| e.to_string())?;
-            eprintln!("Exported {} annotation(s) → {}", annots.len(), out_path.display());
+            let count = crate::pdf_annots::export_annotations(&file, &to, &out_path)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({"annotations":count, "format":to, "output":out_path})),
+                OutFormat::Text => println!("Exported {count} annotation(s) to {}", out_path.display()),
+            }
             Ok(())
         }
         PdfCmd::FormFields { file } => {
@@ -6070,8 +6118,7 @@ Use `pdf redact-regions` first if it must be removed.");
                 );
             }
             if let Some(p) = out_path {
-                std::fs::write(&p, doc.full_text.as_bytes())
-                    .map_err(|e| format!("writing {}: {e}", p.display()))?;
+                crate::pdf_ops::publish_bytes(&p, doc.full_text.as_bytes())?;
                 eprintln!(
                     "{} char(s) → {}",
                     doc.full_text.chars().count(),
@@ -12591,6 +12638,40 @@ mod tests {
 
     // ── the new pdf surfaces parse (P32.6 / P32.9 / text) ─────────────
     #[test]
+    fn pdf_editor_exports_and_recipes_are_cli_commands() {
+        use clap::Parser;
+        for format in ["text", "markdown", "docx"] {
+            let cli = super::Cli::try_parse_from([
+                "crispsorter", "--format", "json", "pdf", "export", "in.pdf",
+                "--to", format, "--out", "output.file",
+            ]).expect("PDF editor export should parse with the global output format");
+            match cli.command {
+                super::Command::Pdf { cmd: super::PdfCmd::Export { to, out, .. } } => {
+                    assert_eq!(to, format);
+                    assert_eq!(out, std::path::Path::new("output.file"));
+                }
+                other => panic!("wrong subcommand: {other:?}"),
+            }
+        }
+        assert!(super::Cli::try_parse_from([
+            "crispsorter", "pdf", "export", "in.pdf", "--to", "invalid", "--out", "out",
+        ]).is_err());
+        let cli = super::Cli::try_parse_from([
+            "crispsorter", "pdf", "apply", "in.pdf", "--operations", "edits.json", "--out", "out.pdf",
+        ]).unwrap();
+        match cli.command {
+            super::Command::Pdf { cmd: super::PdfCmd::Apply { operations, out, .. } } => {
+                assert_eq!(operations, std::path::Path::new("edits.json"));
+                assert_eq!(out, std::path::Path::new("out.pdf"));
+            }
+            other => panic!("wrong subcommand: {other:?}"),
+        }
+        assert!(super::Cli::try_parse_from([
+            "crispsorter", "pdf", "apply", "in.pdf", "--out", "out.pdf",
+        ]).is_err());
+    }
+
+    #[test]
     fn pdf_compress_parses_with_its_opt_outs() {
         use clap::Parser;
         let cli = super::Cli::try_parse_from([
@@ -12764,12 +12845,23 @@ mod tests {
         assert!(super::parse_split_ranges("1-15", 10).is_err());
     }
     #[test]
-    fn parse_split_ranges_missing_end() {
-        assert!(super::parse_split_ranges("5", 10).is_err());
+    fn parse_split_ranges_accepts_single_pages_like_the_editor() {
+        assert_eq!(super::parse_split_ranges("1-3,5,7-10", 10).unwrap(), vec![(0, 3), (4, 5), (6, 10)]);
+        assert!(super::parse_split_ranges("5-", 10).is_err());
     }
     #[test]
     fn parse_split_ranges_bad_input() {
         assert!(super::parse_split_ranges("a-b", 10).is_err());
+    }
+
+    #[test]
+    fn pdf_page_parsers_agree_on_malformed_ranges_and_bound_expansion() {
+        for spec in ["", "1junk", "+1", "1,", "1,,2", "0", "-1", "5-3", "1.5", "1e3", "1-2-3"] {
+            assert!(super::parse_page_spec(spec, 10).is_err(), "page spec {spec}");
+            assert!(super::parse_split_ranges(spec, 10).is_err(), "split spec {spec}");
+        }
+        assert!(super::parse_page_spec("1-100001", 100001).is_err());
+        assert!(super::parse_page_spec("1-100000,1", 100000).is_err());
     }
 }
 
@@ -13306,9 +13398,14 @@ fn cmd_drives(
     use crate::drives::{DriveRegistry, DriveType};
 
     let data_dir = resolve_data_dir(data_dir)?;
-    let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let mut registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
 
     match cmd {
+        DrivesCmd::Smb(options) => {
+            let config = options.apply(&mut registry, &mut std::io::stdin().lock())?;
+            println!("{}", serde_json::to_string_pretty(&config).map_err(|_| "Cannot serialize SMB settings")?);
+            Ok(())
+        }
         DrivesCmd::List { json } => {
             let json = json || matches!(out, OutFormat::Json);
             // Report which transport this build actually uses, not which the
@@ -13334,7 +13431,8 @@ fn cmd_drives(
                             "label": d.label,
                             "kind": d.kind,
                             "path": d.path,
-                            "transport": transport_of(&d.kind),
+                            "transport": if d.kind == DriveType::Smb { d.smb.clone().unwrap_or_default().backend.name() } else { transport_of(&d.kind) },
+                            "smb": d.smb,
                         })
                     })
                     .collect();
@@ -13354,7 +13452,7 @@ fn cmd_drives(
                         "{:<38}  {:<12}  {:<10}  {}",
                         d.id,
                         d.kind.label(),
-                        transport_of(&d.kind),
+                        if d.kind == DriveType::Smb { d.smb.clone().unwrap_or_default().backend.name() } else { transport_of(&d.kind) },
                         d.label
                     );
                 }

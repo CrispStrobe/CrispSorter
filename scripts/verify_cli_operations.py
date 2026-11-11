@@ -23,6 +23,30 @@ def operations(stderr: str) -> list[dict]:
     return events
 
 
+def text_pdf(path: Path) -> None:
+    """A valid one-page fixture; no external PDF generator or model needed."""
+    content = b"BT /F1 12 Tf 72 720 Td (private-text-sentinel) Tj ET\n"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"endstream",
+    ]
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(body))
+        body.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(body)
+    body.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets:
+        body.extend(f"{offset:010} 00000 n \n".encode())
+    body.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    path.write_bytes(body)
+
+
 def verify(executable: Path) -> None:
     def run(*arguments: str) -> subprocess.CompletedProcess:
         return subprocess.run([str(executable), *arguments], capture_output=True,
@@ -70,7 +94,47 @@ def verify(executable: Path) -> None:
         assert private_name not in json.dumps(events) and config.name not in json.dumps(events)
         assert not (root / "unused-profile").exists(), "explicit snapshot mutated app settings"
 
-    print("CLI operation contract passed: pure JSON, stderr receipts, verbosity, failure and redaction")
+        source = root / "private-source-sentinel.pdf"
+        text_pdf(source)
+        original = source.read_bytes()
+        for kind in ("text", "markdown"):
+            destination = root / f"private-export-sentinel.{kind}"
+            exported = run("--format", "json", "--log-verbosity", "debug", "pdf", "export",
+                           str(source), "--to", kind, "--out", str(destination))
+            assert exported.returncode == 0, exported.stderr
+            result = json.loads(exported.stdout)
+            assert result["pages"] == 1 and result["format"] == kind and result["source"] == "text_layer", result
+            assert "private-text-sentinel" in destination.read_text(encoding="utf-8")
+            events = operations(exported.stderr)
+            receipts = [e for e in events if e["operation"] == "pdf.export_text"]
+            assert receipts[0]["phase"] == "started" and receipts[-1]["phase"] == "completed", receipts
+            assert any(e["operation"] == "output.publish" and e["phase"] == "completed" for e in events), events
+            assert "private-" not in json.dumps(events), "PDF export receipts disclosed input/output content"
+
+        recipe = root / "private-edits-sentinel.json"
+        destination = root / "private-edited-sentinel.pdf"
+        recipe.write_text(json.dumps([{"kind": "rotate", "pages": [0], "degrees": 90}]), encoding="utf-8")
+        edited = run("pdf", "apply", str(source), "--operations", str(recipe), "--out", str(destination))
+        assert edited.returncode == 0, edited.stderr
+        assert json.loads(edited.stdout)["operations"] == 1
+        info = run("pdf", "info", str(destination))
+        assert info.returncode == 0, info.stderr
+        assert json.loads(info.stdout)["pages"][0]["rotation"] == 90, info.stdout
+        completed = destination.read_bytes()
+        recipe.write_text(json.dumps([
+            {"kind": "rotate", "pages": [0], "degrees": 180},
+            {"kind": "remove_pages", "pages": [0]},
+        ]), encoding="utf-8")
+        rejected = run("pdf", "apply", str(source), "--operations", str(recipe), "--out", str(destination))
+        assert rejected.returncode != 0 and not rejected.stdout.strip(), rejected.stdout
+        assert destination.read_bytes() == completed, "failed recipe replaced a complete output"
+        assert source.read_bytes() == original, "PDF operations mutated the input unexpectedly"
+        events = operations(rejected.stderr)
+        receipts = [e for e in events if e["operation"] == "pdf.recipe"]
+        assert [e["phase"] for e in receipts] == ["started", "failed"], receipts
+        assert "private-" not in json.dumps(events), "PDF recipe receipts disclosed input/output content"
+
+    print("CLI operation contract passed: JSON, stderr receipts, verbosity, OCR policy, PDF export/edit, atomic failure and redaction")
 
 
 if __name__ == "__main__":

@@ -370,6 +370,7 @@ pub async fn drive_create(
     username: Option<String>,
     password: Option<String>,
     insecure_tls: Option<bool>,
+    smb: Option<crisp_smb_source::Settings>,
 ) -> Result<DriveConfig, String> {
     let data_dir = state
         .data_dir
@@ -381,6 +382,7 @@ pub async fn drive_create(
         "filen" => DriveType::Filen,
         "internxt" => DriveType::Internxt,
         "sftp" => DriveType::Sftp,
+        "smb" => DriveType::Smb,
         "webdav" => DriveType::WebDav,
         "onedrive" => DriveType::OneDrive,
         "google_drive" => DriveType::GoogleDrive,
@@ -394,12 +396,16 @@ pub async fn drive_create(
         username: None,
         password: None,
         insecure_tls,
+        smb,
         access_token: None,
         refresh_token: None,
         client_id: None,
         client_secret: None,
     };
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    if drive_type == DriveType::Smb {
+        return reg.save_smb(config, username, password).map_err(|e| e.to_string());
+    }
     reg.add(config.clone()).map_err(|e| e.to_string())?;
     if drive_type == DriveType::WebDav {
         super::secret::set_credentials(
@@ -449,6 +455,7 @@ pub async fn drive_update(
     username: Option<String>,
     password: Option<String>,
     insecure_tls: Option<bool>,
+    smb: Option<crisp_smb_source::Settings>,
 ) -> Result<DriveConfig, String> {
     let data_dir = state
         .data_dir
@@ -460,6 +467,7 @@ pub async fn drive_update(
         "filen" => DriveType::Filen,
         "internxt" => DriveType::Internxt,
         "sftp" => DriveType::Sftp,
+        "smb" => DriveType::Smb,
         "webdav" => DriveType::WebDav,
         "onedrive" => DriveType::OneDrive,
         "google_drive" => DriveType::GoogleDrive,
@@ -477,12 +485,16 @@ pub async fn drive_update(
         username: None,
         password: None,
         insecure_tls,
+        smb,
         access_token: None,
         refresh_token: None,
         client_id: None,
         client_secret: None,
     };
     // `add` dedupes by id (replaces) — exactly the semantics we want.
+    if drive_type == DriveType::Smb {
+        return reg.save_smb(updated, username, password).map_err(|e| e.to_string());
+    }
     reg.add(updated.clone()).map_err(|e| e.to_string())?;
     if drive_type == DriveType::WebDav && (username.is_some() || password.is_some()) {
         super::secret::set_credentials(

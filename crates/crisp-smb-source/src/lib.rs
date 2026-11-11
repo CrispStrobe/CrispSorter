@@ -18,7 +18,7 @@ impl SmbSource {
         self.session.request("list", path, "", 0).await
     }
     pub async fn stat(&self, path: &str) -> Result<Value> {
-        self.session.request("stat", path, "", 0).await
+        checked_stat(self.session.request("stat", path, "", 0).await?)
     }
     /// Caller supplies a staging writer and publishes only after success.
     /// Bounded native buffers keep multi-GB sorting/indexing off whole-file APIs.
@@ -108,3 +108,37 @@ impl SmbSource {
         self.session.close().await;
     }
 }
+
+/// The shared core represents a missing path as JSON null. The application
+/// filesystem boundary requires an error, including for a zero-byte file probe.
+fn checked_stat(value: Value) -> Result<Value> {
+    if value.is_null() {
+        return Err(Error::new("NotFound"));
+    }
+    if value["size"].as_u64().is_none() || value["directory"].as_bool().is_none()
+        || !value["version"].is_object() {
+        return Err(Error::new("InvalidData"));
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn missing_stat_is_an_error_but_empty_files_are_valid() {
+        assert_eq!(checked_stat(Value::Null).unwrap_err().code, "NotFound");
+        let empty = serde_json::json!({"size":0,"directory":false,"version":{"size":0}});
+        assert_eq!(checked_stat(empty.clone()).unwrap(), empty);
+        for malformed in [serde_json::json!([]), serde_json::json!({}),
+            serde_json::json!({"size":0,"directory":false})] {
+            assert_eq!(checked_stat(malformed).unwrap_err().code, "InvalidData");
+        }
+    }
+}
+
+mod blocking;
+pub use blocking::BlockingSession;
+mod settings;
+pub use settings::{Backend, Settings, relative_path};

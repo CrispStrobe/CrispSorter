@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 protoc-bin-vendored = "3"
 
 [dependencies]
+crisp-smb-source = { path = "../crates/crisp-smb-source" }
 crisp-search-query = { path = "../crates/crisp-search-query" }
 
 # Wire-format types shared with the in-tree crisp-index-server backend

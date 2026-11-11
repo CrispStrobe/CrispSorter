@@ -749,6 +749,9 @@ async fn run_with_retries<T: TransferOutput + Send + 'static>(
 }
 
 fn is_retryable(error: &anyhow::Error) -> bool {
+    if error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some() {
+        return false;
+    }
     let message = format!("{error:#}").to_ascii_lowercase();
     [
         "timeout",
@@ -1181,6 +1184,28 @@ mod tests {
         assert_eq!(second.progress_rx.borrow().state, TransferState::Cancelled);
         release_tx.send(()).unwrap();
         first.handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn possibly_published_upload_is_not_retried_after_transient_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("published.bin");
+        let destination = target.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&attempts);
+        let queue = TransferQueue::with_concurrency(1);
+        let transfer = queue.submit_upload("smb".into(), "published.bin".into(), b"bytes".to_vec(),
+            move |_, bytes| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::fs::write(&destination, bytes)?;
+                Err(crate::drives::NonReplayableWrite::mark(anyhow!("connection timeout after publication")))
+            });
+        let error = transfer.handle.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("connection timeout after publication"));
+        assert!(error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(target).unwrap(), b"bytes");
+        assert!(matches!(&queue.snapshot()[0].state, TransferState::Failed { .. }));
     }
 
     #[tokio::test]
