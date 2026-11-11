@@ -21,15 +21,20 @@ mod tests {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
                 "crispsorter-mounted-read-{}-{}",
-                std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir(&root).unwrap();
             Self(root)
         }
-        fn file(&self) -> PathBuf { self.0.join("source.bin") }
+        fn file(&self) -> PathBuf {
+            self.0.join("source.bin")
+        }
     }
     impl Drop for Fixture {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
@@ -37,10 +42,15 @@ mod tests {
         let fixture = Fixture::new();
         let block = vec![37; 64 * 1024];
         let mut source = File::create(fixture.file()).unwrap();
-        for _ in 0..128 { source.write_all(&block).unwrap(); }
+        for _ in 0..128 {
+            source.write_all(&block).unwrap();
+        }
         drop(source);
 
-        struct Counter { bytes: usize, largest: usize }
+        struct Counter {
+            bytes: usize,
+            largest: usize,
+        }
         impl Write for Counter {
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 assert!(buf.iter().all(|&b| b == 37));
@@ -48,19 +58,35 @@ mod tests {
                 self.largest = self.largest.max(buf.len());
                 Ok(buf.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut output = Counter { bytes: 0, largest: 0 };
-        assert_eq!(read_to_writer(&fixture.file(), &mut output).unwrap(), 8 * 1024 * 1024);
+        let mut output = Counter {
+            bytes: 0,
+            largest: 0,
+        };
+        assert_eq!(
+            read_to_writer(&fixture.file(), &mut output).unwrap(),
+            8 * 1024 * 1024
+        );
         assert_eq!(output.bytes, 8 * 1024 * 1024);
-        assert!(output.largest <= 64 * 1024, "whole-file buffering regressed");
+        assert!(
+            output.largest <= 64 * 1024,
+            "whole-file buffering regressed"
+        );
     }
 
     #[test]
     fn empty_and_missing_sources() {
         let fixture = Fixture::new();
         let mut output = Vec::new();
-        assert_eq!(read_to_writer(&fixture.file(), &mut output).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            read_to_writer(&fixture.file(), &mut output)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
         File::create(fixture.file()).unwrap();
         assert_eq!(read_to_writer(&fixture.file(), &mut output).unwrap(), 0);
         assert!(output.is_empty());
@@ -74,12 +100,22 @@ mod tests {
         impl Write for FailingWriter {
             fn write(&mut self, _: &[u8]) -> io::Result<usize> {
                 self.0 += 1;
-                Err(io::Error::new(io::ErrorKind::BrokenPipe, "consumer stopped"))
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "consumer stopped",
+                ))
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let mut output = FailingWriter(0);
-        assert_eq!(read_to_writer(&fixture.file(), &mut output).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            read_to_writer(&fixture.file(), &mut output)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
         assert_eq!(output.0, 1);
     }
 
@@ -94,7 +130,9 @@ mod tests {
                 self.0.extend_from_slice(&buf[..len]);
                 Ok(len)
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let mut output = ShortWriter(Vec::new());
         assert_eq!(read_to_writer(&fixture.file(), &mut output).unwrap(), 13);

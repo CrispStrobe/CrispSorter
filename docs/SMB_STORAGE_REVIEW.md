@@ -30,3 +30,17 @@ requirement, evaluate a permissively licensed pure Rust SMB2/3 implementation
 behind CloudDrive, including signing/encryption, credential storage, complete
 dependency-license review and target-platform tests. No new SMB dependency
 or weaker mount security policy is introduced here.
+
+## Implemented and validated on this branch
+LocalDrive now overrides `read_file_to_writer` with `std::io::copy` through
+the small `mounted_read` module. Four production-reader tests passed using
+`bash scripts/test_mounted_read.sh`: an 8 MiB patterned source delivered in
+bounded chunks, empty/missing sources, short destination writes, and immediate
+propagation of a destination error. No Tauri/model downloads are needed for
+this gate; a path-filtered workflow runs it on subsequent changes.
+
+A relative/absolute LocalDrive dispatch test was also added to the application
+suite, but the full Tauri suite was not run in this environment. No live mounted
+NAS throughput measurement or OS security-policy qualification was performed.
+Full streaming capability remains false because the upload fallback still
+buffers; the read improvement does not claim both directions are bounded.
