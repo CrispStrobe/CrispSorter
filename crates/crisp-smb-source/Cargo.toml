@@ -1,0 +1,13 @@
+[package]
+name = "crisp-smb-source"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+# Keep qualification independent of the app's unrelated sibling checkouts.
+[workspace]
+[dependencies]
+crisp_smb = { git = "https://github.com/CrispStrobe/CrispCloud", rev = "ffeae11d53054190cf6f3a6fbcec2eb44b32dfb2" }
+serde_json = "1"
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
