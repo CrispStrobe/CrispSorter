@@ -200,6 +200,26 @@ export function exportProgressLabel(progress: ExportProgress): string {
 }
 
 /** Explicit adapter makes the complete review workflow testable without model downloads. */
+export interface PrepareOptions {
+  /** The user agreed to download the models this preparation needs. */
+  allowDownloads?: boolean;
+  /** Called with each preparation step as it starts (e.g. NAFNet denoise). */
+  onStage?: (stage: string) => void;
+}
+
+/** Prefix of the error that asks for download consent; JSON follows. */
+export const MODEL_DOWNLOAD_REQUIRED = "MODEL_DOWNLOAD_REQUIRED:";
+export interface MissingModel { name: string; purpose: string; license?: string | null }
+export function missingModels(error: unknown): MissingModel[] | null {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  const at = text.indexOf(MODEL_DOWNLOAD_REQUIRED);
+  if (at < 0) return null;
+  try {
+    const parsed = JSON.parse(text.slice(at + MODEL_DOWNLOAD_REQUIRED.length));
+    return Array.isArray(parsed) ? parsed.filter((m) => m && typeof m.name === "string") : null;
+  } catch { return null; }
+}
+
 export interface WorkspaceClient {
   capabilities(): Promise<WorkspaceCapabilities>;
   list(): Promise<ProjectSummary[]>;
@@ -219,6 +239,7 @@ export interface WorkspaceClient {
     config: Record<string, unknown>,
     pageWidthPoints?: number,
     pageHeightPoints?: number,
+    options?: PrepareOptions,
   ): Promise<ImportedPage>;
   exportDocument(request: ExportRequest, options?: ExportOptions): Promise<ExportResult>;
   extractFields(
@@ -450,13 +471,24 @@ export const workspaceClient: WorkspaceClient = {
       quad: options.quad ?? null,
       angle: options.angle ?? null,
     }),
-  prepare: (pagePath, config, pageWidthPoints, pageHeightPoints) =>
-    invoke("ocr_workspace_prepare", {
-      pagePath,
-      config,
-      pageWidthPoints,
-      pageHeightPoints,
-    }),
+  prepare: async (pagePath, config, pageWidthPoints, pageHeightPoints, options) => {
+    let unlisten: (() => void) | undefined;
+    if (options?.onStage) {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlisten = await listen<{ page: string; stage: string }>("ocr-workspace-prepare-stage", (event) => {
+        if (event.payload?.page === pagePath) options.onStage?.(event.payload.stage);
+      });
+    }
+    try {
+      return await invoke("ocr_workspace_prepare", {
+        pagePath,
+        config,
+        pageWidthPoints,
+        pageHeightPoints,
+        allowDownloads: options?.allowDownloads ?? false,
+      });
+    } finally { unlisten?.(); }
+  },
   exportDocument: (request, options) => {
     const requestId = options ? crypto.randomUUID() : undefined;
     return completeMobileExport(request.outputPath, () => trackedExport(request, options, requestId), options, bytes => {
