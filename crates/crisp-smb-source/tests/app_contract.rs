@@ -376,3 +376,87 @@ async fn actual_rust_app_adapter_works_from_tauri_style_runtime() {
     assert!(strict.list_dir(Path::new("/")).is_err()); // No fallback to an OS mount.
                                                        // Both runtime-backed objects are dropped inside Tokio, without a nested-runtime panic.
 }
+
+#[test]
+fn stale_registry_merges_unrelated_drives_and_refuses_conflicting_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut gui = DriveRegistry::open(dir.path()).unwrap();
+    let mut cli = DriveRegistry::open(dir.path()).unwrap();
+    let first = options(&[
+        "--label",
+        "GUI",
+        "--url",
+        "smb://nas/one",
+        "--backend",
+        "rust",
+        "--username",
+        "reader",
+    ])
+    .apply(&mut gui, &mut Cursor::new([]))
+    .unwrap();
+    let second = options(&[
+        "--label",
+        "CLI",
+        "--url",
+        "smb://nas/two",
+        "--backend",
+        "rust",
+        "--username",
+        "reader",
+    ])
+    .apply(&mut cli, &mut Cursor::new([]))
+    .unwrap();
+    assert_eq!(DriveRegistry::open(dir.path()).unwrap().drives.len(), 2);
+    let mut changed = first.clone();
+    changed.label = "updated".into();
+    cli.save_smb(changed, None, None).unwrap();
+    assert!(gui
+        .save_smb(first.clone(), None, Some("must-not-save".into()))
+        .is_err());
+    assert!(drives::secret::get_credentials(&first.id)
+        .unwrap()
+        .unwrap()
+        .password
+        .is_none());
+    assert!(gui.remove(&first.id).is_err());
+    // A stale snapshot may remove an unchanged drive while preserving others.
+    let mut stale = DriveRegistry::open(dir.path()).unwrap();
+    let mut changed = cli
+        .drives
+        .iter()
+        .find(|d| d.id == first.id)
+        .unwrap()
+        .clone();
+    changed.label = "newest".into();
+    cli.add(changed).unwrap();
+    assert!(stale.remove(&second.id).unwrap());
+    let restored = DriveRegistry::open(dir.path()).unwrap();
+    assert_eq!(restored.drives.len(), 1);
+    assert_eq!(restored.drives[0].label, "newest");
+}
+
+#[test]
+fn registry_lock_contention_fails_promptly_and_releases_on_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = DriveRegistry::open(dir.path()).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join("drives.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    assert!(DriveRegistry::open(dir.path()).is_err());
+    assert!(options(&[
+        "--label",
+        "Busy",
+        "--url",
+        "smb://nas/books",
+        "--backend",
+        "rust"
+    ])
+    .apply(&mut registry, &mut Cursor::new([]))
+    .is_err());
+    assert!(registry.drives.is_empty());
+    drop(lock);
+    assert!(DriveRegistry::open(dir.path()).unwrap().drives.is_empty());
+}

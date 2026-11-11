@@ -124,3 +124,20 @@ Local full-app `cargo check` reached the platform dependency build and stopped
 because `glib-2.0` development files are absent. The workflow also includes an
 app type-check job with the GTK/WebKit development packages and pinned sibling
 repositories, so glue code outside the independent contract is checked in CI.
+
+## Concurrent GUI and CLI settings
+
+Both surfaces save through the same registry transaction. A separate `drives.lock`
+file serializes changes across processes, including credential updates and
+rollback. A busy save fails promptly with a retry message. Each transaction reads
+the current registry: changes to other drives are preserved, and an edit based on
+an outdated snapshot of the same drive is refused with a reload message. JSON
+replacement and legacy credential redaction both use a flushed temporary file
+and atomic replacement. Failed writes leave the in-memory registry unchanged.
+
+Regression tests cover independent GUI/CLI snapshots, conflicting settings,
+lock contention, vault rollback and authenticated streaming through the actual
+application adapter. The shared source/fixture pin is the same commit used by
+CrispCloud and CrisperPlayer. The Rust path remains explicit; mounted SMB remains
+the default. GUI backend controls and `drives smb --backend` retain their existing
+behavior and app logs never include credentials or raw remote paths.

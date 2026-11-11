@@ -2349,7 +2349,7 @@ dependencies = [
 [[package]]
 name = "crisp_smb"
 version = "0.1.0"
-source = "git+https://github.com/CrispStrobe/CrispCloud?rev=4b44dc4d44ef05a18d2da2579d2e3b866b245643#4b44dc4d44ef05a18d2da2579d2e3b866b245643"
+source = "git+https://github.com/CrispStrobe/CrispCloud?rev=445c20bfc9d15b40ed65fde07bd0f0198963ff30#445c20bfc9d15b40ed65fde07bd0f0198963ff30"
 dependencies = [
  "serde",
  "serde_json",
