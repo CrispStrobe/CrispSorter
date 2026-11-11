@@ -46,6 +46,12 @@
     } from 'lucide-svelte';
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
+    // Font faces must stay enabled: with `disableFontFace` pdf.js draws
+    // glyph outlines itself, which needs bundled standard-font data for the
+    // 14 base fonts — without it, text in non-embedded Helvetica/Times
+    // (common in generated PDFs, and what free-text annotations use) is
+    // simply not drawn. `useSystemFonts` maps those to the OS fonts.
+    const PDFJS_OPTS = { useSystemFonts: true, disableFontFace: false } as const;
 
     let { initialPath = '' }: { initialPath?: string } = $props();
     // Only `initialPath` may trigger this. openSession reads `session` (via
@@ -348,7 +354,7 @@
         if (!doc) {
             const bytes = await readFile(path);
             if (!current()) return null;
-            doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes), useSystemFonts: true, disableFontFace: true }).promise;
+            doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes), ...PDFJS_OPTS }).promise;
             if (!current()) { try { await doc.destroy(); } catch { /* ignore */ } return null; }
             // A concurrent clean-page render may already own this source.
             const shared = sourceDocs.get(path);
@@ -376,7 +382,7 @@
                 if (!current()) return null;
                 const bytes = await readFile(tmp);
                 if (!current()) return null;
-                const nextPreview = await pdfjsLib.getDocument({ data: new Uint8Array(bytes), useSystemFonts: true, disableFontFace: true }).promise;
+                const nextPreview = await pdfjsLib.getDocument({ data: new Uint8Array(bytes), ...PDFJS_OPTS }).promise;
                 if (!current()) { try { await nextPreview.destroy(); } catch { /* ignore */ } return null; }
                 if (previewDoc) { try { previewDoc.destroy(); } catch { /* ignore */ } }
                 previewDoc = nextPreview;
@@ -538,7 +544,7 @@
             const rotation = normaliseRotation(page.rotate + target.rotation);
             const base = page.getViewport({ scale: 1, rotation });
             const availW = Math.max(80, viewW - 40);
-            const availH = Math.max(80, viewH - 40);
+            const availH = Math.max(80, viewH - 84);
             let scale = zoomMode === 'fit-page'
                 ? Math.min(availW / base.width, availH / base.height)
                 : zoomMode === 'fit-width' ? availW / base.width : zoom;
@@ -990,6 +996,11 @@
     function selectNone() {
         selected = new Set();
         lastAnchor = null;
+        // WebKit does not move focus to a clicked <button>, so the last
+        // clicked tile kept its blue focus ring and still *looked* selected
+        // after "Select none". Drop that focus explicitly.
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.classList.contains('pe-tile')) active.blur();
     }
     const selectedSorted = () => [...selected].sort((a, b) => a - b);
     /** Selected pages, or the page on screen when nothing is selected. */
@@ -1383,6 +1394,9 @@
         else if (mod && (ev.key === '-' || ev.key === '_')) { ev.preventDefault(); zoomOut(); }
         else if (mod && ev.key === '0') { ev.preventDefault(); fitPage(); }
         else if (target?.getAttribute('role') === 'separator') return;
+        // Unmodified keys (Delete!) only act when focus is on the editor
+        // itself — never from the drawer's tools, a menu, or another panel.
+        else if (target && target !== document.body && (!target.closest('.pe') || target.closest('.pe-drawer, .pe-menu'))) return;
         else if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); void removePages(targetPages()); }
         else if (ev.key === 'PageDown' || ev.key === 'ArrowRight' || ev.key === 'ArrowDown') { ev.preventDefault(); goToPage(viewPage + 1); }
         else if (ev.key === 'PageUp' || ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') { ev.preventDefault(); goToPage(viewPage - 1); }
@@ -1509,19 +1523,7 @@
             {/if}
         </div>
 
-        <span class="pe-spacer"></span>
 
-        <div class="pe-group" role="group" aria-label={t.group_view}>
-            {@render tb(t.prev_page, () => goToPage(viewPage - 1), !session || viewPage === 0, false, ChevronLeft)}
-            <span class="pe-pageno-ind" aria-live="polite">{session ? `${viewPage + 1} / ${pageCount}` : '–'}</span>
-            {@render tb(t.next_page, () => goToPage(viewPage + 1), !session || viewPage >= pageCount - 1, false, ChevronRight)}
-            <span class="pe-sep"></span>
-            {@render tb(t.zoom_out, zoomOut, !session, false, ZoomOut)}
-            <span class="pe-zoom" data-testid="pdf-zoom">{Math.round(viewScale * 100)}%</span>
-            {@render tb(t.zoom_in, zoomIn, !session, false, ZoomIn)}
-            {@render tb(t.fit_page, fitPage, !session, zoomMode === 'fit-page', Maximize)}
-            {@render tb(t.fit_width, fitWidth, !session, zoomMode === 'fit-width', MoveHorizontal)}
-        </div>
     </div>
 
     <!-- Options for the active tool -->
@@ -1736,6 +1738,7 @@
                  onpointerdown={onDividerDown} onpointermove={onDividerMove} onpointerup={onDividerUp}
                  onpointercancel={onDividerUp} onkeydown={onDividerKey}></div>
 
+            <div class="pe-view-wrap">
             <div class="pe-view" bind:this={viewEl}>
                 <div class="pe-view-inner">
                     <div class="pe-page" style:width="{vpW}px" style:height="{vpH}px">
@@ -1787,6 +1790,18 @@
                         {#if viewRendering && vpW === 0}<div class="pe-view-busy"><Loader2 size={22} class="spin" /></div>{/if}
                     </div>
                 </div>
+            </div>
+            <div class="pe-viewbar" role="toolbar" aria-label={t.group_view}>
+                {@render tb(t.prev_page, () => goToPage(viewPage - 1), !session || viewPage === 0, false, ChevronLeft)}
+                <span class="pe-pageno-ind" aria-live="polite">{session ? `${viewPage + 1} / ${pageCount}` : '–'}</span>
+                {@render tb(t.next_page, () => goToPage(viewPage + 1), !session || viewPage >= pageCount - 1, false, ChevronRight)}
+                <span class="pe-sep"></span>
+                {@render tb(t.zoom_out, zoomOut, !session, false, ZoomOut)}
+                <span class="pe-zoom" data-testid="pdf-zoom">{Math.round(viewScale * 100)}%</span>
+                {@render tb(t.zoom_in, zoomIn, !session, false, ZoomIn)}
+                {@render tb(t.fit_page, fitPage, !session, zoomMode === 'fit-page', Maximize)}
+                {@render tb(t.fit_width, fitWidth, !session, zoomMode === 'fit-width', MoveHorizontal)}
+            </div>
             </div>
         {/if}
 
@@ -1945,7 +1960,8 @@
         background: #27272a33; cursor: grab; user-select: none; touch-action: none;
     }
     .pe-tile:hover { background: #27272a; }
-    .pe-tile:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+    .pe-tile:focus { outline: none; }
+    .pe-tile:focus-visible { outline: 1px dashed #a1a1aa; outline-offset: 1px; }
     .pe-tile.current { border-color: #3f3f46; background: #27272a; }
     .pe-tile.selected { border-color: #3b82f6; background: rgba(59, 130, 246, 0.14); }
     .pe-tile.dragging { opacity: 0.45; }
@@ -1982,10 +1998,16 @@
     }
     .pe-divider:hover, .pe-divider.active, .pe-divider:focus-visible { background: #3b82f6; outline: none; }
 
+    .pe-view-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
     .pe-view { flex: 1; min-width: 0; overflow: auto; background: #0f0f12; }
+    .pe-viewbar {
+        position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 20;
+        display: inline-flex; align-items: center; gap: 2px; padding: 3px 6px; border-radius: 9px;
+        background: rgba(24, 24, 27, 0.92); border: 1px solid #3f3f46; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    }
     .pe-view-inner {
         min-width: 100%; min-height: 100%; width: max-content; box-sizing: border-box;
-        display: flex; align-items: center; justify-content: center; padding: 20px;
+        display: flex; align-items: center; justify-content: center; padding: 20px 20px 64px;
     }
     .pe-page { position: relative; flex: none; background: #fff; box-shadow: 0 2px 14px rgba(0, 0, 0, 0.6); }
     .pe-canvas { display: block; }
