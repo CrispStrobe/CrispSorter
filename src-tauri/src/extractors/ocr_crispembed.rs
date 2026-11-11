@@ -354,6 +354,16 @@ pub fn restore_page(
 }
 
 #[cfg(not(feature = "crispembed"))]
+pub fn restore_page_checked(_path: &Path, _cfg: &super::OcrPipelineConfig) -> std::result::Result<(tempfile::NamedTempFile, std::path::PathBuf), String> {
+    Err("Restoration requires a build with CrispEmbed.".into())
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn super_resolve_page_checked(_path: &Path, _cfg: &super::OcrPipelineConfig) -> std::result::Result<(tempfile::NamedTempFile, std::path::PathBuf), String> {
+    Err("Super-resolution requires a build with CrispEmbed.".into())
+}
+
+#[cfg(not(feature = "crispembed"))]
 pub fn dewarp_page(
     _path: &Path,
     _cfg: &super::OcrPipelineConfig,
@@ -1148,6 +1158,73 @@ fn resolve(name: &str) -> String {
     crate::model_provisioning::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
 }
 
+/// Why the model cache cannot receive downloads, if it cannot: the native
+/// downloader only prints to stderr, so a dangling link to a disconnected
+/// drive otherwise surfaces as a bare "could not resolve model".
+#[cfg(feature = "crispembed")]
+pub fn cache_problem() -> Option<String> {
+    let dir = std::path::PathBuf::from(crispembed::CrispEmbed::cache_dir());
+    if dir.as_os_str().is_empty() { return Some("The model cache folder is not configured (set CRISPEMBED_CACHE_DIR).".into()); }
+    if let Ok(target) = std::fs::read_link(&dir) {
+        if !dir.exists() {
+            return Some(format!("The model cache {} links to {}, which does not exist (a disconnected drive?). Reconnect it, repoint the link, or set CRISPEMBED_CACHE_DIR.", dir.display(), target.display()));
+        }
+    }
+    if dir.exists() && !dir.is_dir() { return Some(format!("The model cache {} is not a folder.", dir.display())); }
+    if !dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&dir) { return Some(format!("The model cache {} cannot be created: {e}", dir.display())); }
+    }
+    let probe = dir.join(".crispsorter-write-test");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => { let _ = std::fs::remove_file(&probe); None }
+        Err(e) => Some(format!("The model cache {} is not writable: {e}", dir.display())),
+    }
+}
+
+/// True when `name` is a file or a registry model already in the local cache.
+#[cfg(feature = "crispembed")]
+pub fn model_is_local(name: &str) -> bool {
+    Path::new(name).is_file() || crate::model_provisioning::resolve_model(name, Some(false)).is_ok()
+}
+
+#[cfg(feature = "crispembed")]
+pub fn restore_model_name(cfg: &super::OcrPipelineConfig) -> String {
+    cfg.restore_model.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| match cfg.restore_engine.as_str() {
+        "scunet" => "scunet-color", "instructir" => "instructir", _ => "restormer-denoise",
+    }.to_string())
+}
+
+#[cfg(feature = "crispembed")]
+pub fn sr_model_name(cfg: &super::OcrPipelineConfig) -> String {
+    cfg.sr_model.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| match cfg.sr_engine.as_str() {
+        "esrgan" => "esrgan-x4", "safmn" => "safmn-x4", "hat" => "hat-sr-x4", "tbsrn" => "tbsrn-telescope",
+        "dat" => "dat-sr-x2", "swinir" => "swinir-sr-x4", _ => "pan-x4",
+    }.to_string())
+}
+
+/// Restoration with the actual failure reason (model lookup/download, image
+/// read, or the native engine returning no image).
+#[cfg(feature = "crispembed")]
+pub fn restore_page_checked(path: &Path, cfg: &super::OcrPipelineConfig) -> std::result::Result<(tempfile::NamedTempFile, std::path::PathBuf), String> {
+    let engine = if cfg.restore_engine.is_empty() { "restormer" } else { cfg.restore_engine.as_str() };
+    let name = restore_model_name(cfg);
+    resolve_checked(&name).map_err(|e| format!("Restoration ({engine}): {e:#}"))?;
+    let (w, h) = image::image_dimensions(path).map_err(|e| format!("Restoration ({engine}): could not read the page image: {e}"))?;
+    restore_page(path, cfg).ok_or_else(|| format!(
+        "Restoration ({engine}, model {name}) returned no image for this {w}×{h} page: the native engine could not be initialised or failed while processing, and reports no further detail. Try a smaller page, another restoration engine, or disable restoration."))
+}
+
+/// Super-resolution with the actual failure reason.
+#[cfg(feature = "crispembed")]
+pub fn super_resolve_page_checked(path: &Path, cfg: &super::OcrPipelineConfig) -> std::result::Result<(tempfile::NamedTempFile, std::path::PathBuf), String> {
+    let engine = if cfg.sr_engine.is_empty() { "pan" } else { cfg.sr_engine.as_str() };
+    let name = sr_model_name(cfg);
+    resolve_checked(&name).map_err(|e| format!("Super-resolution ({engine}): {e:#}"))?;
+    let (w, h) = image::image_dimensions(path).map_err(|e| format!("Super-resolution ({engine}): could not read the page image: {e}"))?;
+    super_resolve_page(path, cfg).ok_or_else(|| format!(
+        "Super-resolution ({engine}, model {name}) returned no image for this {w}×{h} page: the native engine could not be initialised or failed while processing, and reports no further detail. Try another engine or disable super-resolution."))
+}
+
 /// Interactive OCR must report missing models instead of treating the native
 /// engine's empty fallback as a successfully recognized blank page. Registry
 /// names pass the same licence gate as [`resolve`] before any download.
@@ -1159,7 +1236,7 @@ fn resolve_checked(name: &str) -> Result<String> {
     } else {
         crate::index::license_consent::ensure_registry_download_allowed(name)?;
         crate::model_provisioning::resolve_model(name, Some(true))
-            .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}"))?
+            .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}{}", cache_problem().map(|p| format!(". {p}")).unwrap_or_default()))?
     };
     let mut file = std::fs::File::open(&resolved)
         .with_context(|| format!("OCR model '{name}' is unavailable at {resolved}"))?;

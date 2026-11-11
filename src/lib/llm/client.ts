@@ -18,6 +18,14 @@ export interface LLMProvider {
     requiresCustomHeaders?: Record<string, string>;
 }
 
+/** Settings saved before the OpenAI-compatible Gemini path was used point at
+ *  plain /v1beta, which rejects API keys sent as Bearer tokens. */
+export function normalizeProviderBase(providerId: string, base: string): string {
+    const trimmed = base.replace(/\/+$/, '');
+    if (providerId === 'google' && /generativelanguage\.googleapis\.com\/v1beta$/.test(trimmed)) return `${trimmed}/openai`;
+    return trimmed;
+}
+
 export const OPENAI_COMPATIBLE = {
     'openai': 'https://api.openai.com/v1',
     'nebius': 'https://api.studio.nebius.ai/v1',
@@ -25,6 +33,10 @@ export const OPENAI_COMPATIBLE = {
     'openrouter': 'https://openrouter.ai/api/v1',
     'mistral': 'https://api.mistral.ai/v1',
     'groq': 'https://api.groq.com/openai/v1',
+    // Anthropic and Gemini both serve OpenAI-compatible chat/completions;
+    // Gemini only under /v1beta/openai (plain /v1beta needs OAuth or ?key=).
+    'anthropic': 'https://api.anthropic.com/v1',
+    'google': 'https://generativelanguage.googleapis.com/v1beta/openai',
     'poe': 'https://api.poe.com/v1',
     'ollama': 'http://localhost:11434/v1',
     'llamacpp': 'http://localhost:8080/v1',
@@ -46,7 +58,7 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'nebius', name: 'Nebius', baseUrl: 'https://api.studio.nebius.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'scaleway', name: 'Scaleway', baseUrl: 'https://api.scaleway.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
-    { id: 'google', name: 'Google (Gemini)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', apiKey: '', models: [], selectedModel: '', isConfigured: false },
+    { id: 'google', name: 'Google (Gemini)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: '', models: [], selectedModel: '', isConfigured: false },
 ];
 
 /**
@@ -183,11 +195,34 @@ export class LLMClient {
         // Sentinel-resolve so callers can pass either the raw key or a
         // `@keyring/llm-provider:<id>` sentinel from settings.json.
         const key = await resolveSecret(apiKey || this.keys[providerId]);
-        const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const rawBase = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const base = rawBase ? normalizeProviderBase(providerId, rawBase) : rawBase;
         
         if (!base) {
             console.error(`[LLMClient] Missing Base URL for ${providerId}`);
             throw new Error(`Base URL for ${providerId} is not configured.`);
+        }
+
+        if (providerId === 'anthropic') {
+            // Anthropic's /models needs x-api-key and anthropic-version
+            // (Bearer alone returns 400) and is paginated.
+            if (!key) throw new Error('No API key is saved for Anthropic.');
+            const ids: string[] = [];
+            let after: string | null = null;
+            for (let page = 0; page < 20; page++) {
+                const url = `${base}/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ''}`;
+                const response = await fetch(url, { method: 'GET', connectTimeout: 10000,
+                    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
+                }
+                const data = await response.json();
+                for (const m of data?.data ?? []) if (typeof m?.id === 'string') ids.push(m.id);
+                if (!data?.has_more || !data?.last_id) break;
+                after = data.last_id;
+            }
+            return ids;
         }
 
         try {

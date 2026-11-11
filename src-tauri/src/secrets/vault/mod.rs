@@ -34,9 +34,12 @@
 //!
 //! # Defaults and compatibility
 //!
-//! Absent a stored choice the vault is [`BackendChoice::OsDefault`] —
-//! byte-for-byte the old behaviour, so an existing install keeps reading
-//! the secrets it already has. The chooser is offered, not imposed;
+//! Absent a stored choice the vault is [`BackendChoice::OsDefault`] on
+//! Windows and Linux — byte-for-byte the old behaviour. On macOS no store
+//! is opened until the user chooses one ([`NOT_CHOSEN_REASON`]): the
+//! default there is the login keychain, and reading it would raise the
+//! login-password dialog before the picker could even be reached. Choosing
+//! "System credential store" restores the old macOS behaviour.
 //! [`is_chosen`] tells the UI whether the user has ever answered.
 //!
 //! # The no-more-nagging rule
@@ -103,9 +106,9 @@ impl fmt::Display for Error {
             Error::NoEntry => write!(f, "no secret stored under that account"),
             Error::Denied(s) => write!(
                 f,
-                "the system credential store denied access ({s}). \
-                 CrispSorter will not ask again this run. \
-                 Pick a different secret store in Settings › Security."
+                "the secret store denied access ({s}). \
+                 CrispSorter will not ask again this run; retry or pick a \
+                 different store in Settings › Secret storage."
             ),
             Error::Locked(s) => write!(f, "the secret vault is locked ({s})"),
             Error::Backend(s) => write!(f, "secret store unavailable: {s}"),
@@ -511,6 +514,14 @@ impl Vault for Unavailable {
     }
 }
 
+/// Shown while macOS has no chosen store. Only macOS: there the platform
+/// default is the login keychain, which prompts after every rebuild.
+pub const NOT_CHOSEN_REASON: &str = "no secret store has been chosen yet. On macOS CrispSorter does not open the login keychain unless you choose it; pick a store in Settings → Secret storage";
+
+fn unchosen_reason(from_env: bool, chosen: bool) -> Option<&'static str> {
+    (cfg!(target_os = "macos") && !from_env && !chosen).then_some(NOT_CHOSEN_REASON)
+}
+
 /// Decide the active vault from the environment override and the stored
 /// choice, falling back to [`Unavailable`] — never to the platform default
 /// (that would answer "your chosen store did not open" with "so we used the
@@ -524,6 +535,16 @@ fn resolve(
     let from_env = env.is_some();
     let chosen = stored.is_some();
     let choice = env.or(stored).unwrap_or_default();
+    if let Some(reason) = unchosen_reason(from_env, chosen) {
+        // Do not touch the login keychain before the user has picked a
+        // store: the first read would raise the very dialog the picker
+        // exists to avoid. Reads find nothing and writes explain why.
+        return Slot {
+            choice, chosen, from_env,
+            vault: Arc::new(Unavailable { reason: reason.to_owned() }),
+            error: Some(reason.to_owned()),
+        };
+    }
     let built = contain("opening the secret store", || build(&choice, dir));
     match built {
         Ok(vault) => Slot { choice, chosen, from_env, error: None, vault },
@@ -956,6 +977,18 @@ mod tests {
         assert!(guarded.set("s", "a", "v").is_err());
         assert!(guarded.delete("s", "a").is_err());
         assert!(!guarded.is_unlocked());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn unchosen_store_never_opens_the_login_keychain_on_macos() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = resolve(dir.path(), None, None, |_, _| panic!("no store may be built before the user chooses one on macOS"));
+        assert!(!slot.chosen);
+        assert_eq!(slot.choice, BackendChoice::OsDefault);
+        assert_eq!(slot.error.as_deref(), Some(NOT_CHOSEN_REASON));
+        assert_eq!(slot.vault.get("CrispSorter.LLM", "llm-provider:groq").unwrap(), None);
+        assert!(slot.vault.set("CrispSorter.LLM", "llm-provider:groq", "x").is_err());
     }
 
     #[test]

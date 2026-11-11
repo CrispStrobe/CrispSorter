@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, onDestroy } from 'svelte';
+    import { onMount, onDestroy, untrack } from 'svelte';
     // Art 50: the connection test and the provider benchmark both run a prompt
     // through `llmClient.query` and display the model's answer — the benchmark
     // with a free-form prompt the user writes. Low-traffic, but generated text
@@ -18,6 +18,9 @@
         makeSentinel,
         sentinelAccount,
         llmProviderAccount,
+        getSecret,
+        setSecret,
+        deleteSecret,
     } from '../secrets';
     import {
         getBackendOptions,
@@ -187,7 +190,10 @@
     }
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
+    /** A section to open, e.g. 'security' from the secret-store banner. */
+    let { section = null }: { section?: string | null } = $props();
     let selectedProviderId = $state('global');
+    $effect(() => { if (section) selectedProviderId = section; });
     let selectedProvider = $derived(providers.find(p => p.id === selectedProviderId) || providers[0]);
 
     // Global App Settings
@@ -532,7 +538,9 @@
     let localModels = $state<LocalModel[]>([]);
     let loadingModels = $state(false);
     let testingConnection = $state(false);
-    let testResult = $state<{ success: boolean; message: string } | null>(null);
+    /** Connection-test results per provider, so one provider's result never
+     *  shows on another provider's panel. */
+    let testResults = $state<Record<string, { success: boolean; message: string } | null>>({});
     let mlxPort = $state(8000);
     let llamacppPort = $state(8080);
     let mlxRunning = $state(false);
@@ -1469,7 +1477,9 @@
         licensesLoading = true;
         licensesError = null;
         try {
-            const resp = await fetch('/licenses.json');
+            // A bundled asset: use the webview's own fetch. The imported
+            // plugin-http fetch only speaks http(s) and rejects tauri://.
+            const resp = await globalThis.fetch('/licenses.json');
             if (!resp.ok) {
                 throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
             }
@@ -2570,12 +2580,15 @@
             const resolvedKey = await resolveSecret(selectedProvider.apiKey);
             const models = await llmClient.fetchModels(selectedProvider.id, resolvedKey, selectedProvider.baseUrl);
             selectedProvider.models = models;
+            modelListChecked[selectedProvider.id] = true;
             if (models.length > 0 && !selectedProvider.selectedModel) {
                 selectedProvider.selectedModel = models[0];
             }
             await handleSave();
         } catch (e: any) {
             console.error(`Failed to fetch models for ${selectedProvider.id}:`, e);
+            // Do not retry in a loop; the refresh button stays available.
+            modelListChecked[selectedProvider.id] = true;
         } finally {
             loadingModels = false;
         }
@@ -2597,14 +2610,24 @@
         const pid = selectedProvider.id;
         testingProviders[pid] = true;
         testingConnection = true;
-        testResult = null;
+        testResults[pid] = null;
+        if (selectedModelUnavailable) {
+            testResults[pid] = { success: false, message: `${selectedProvider.selectedModel} is not in ${selectedProvider.name}'s current model list. Choose one of the offered models above.` };
+            delete testingProviders[pid];
+            testingConnection = false;
+            return;
+        }
         try {
             const prompt = "Reply with 'OK' and nothing else.";
             const resolvedKey = await resolveSecret(selectedProvider.apiKey);
             const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, prompt, resolvedKey);
-            testResult = { success: true, message: `Connected! Response: ${response}` };
+            testResults[pid] = { success: true, message: `Connected! Response: ${response}` };
         } catch (e: any) {
-            testResult = { success: false, message: e.message };
+            // Tauri/IPC rejections are often plain strings or objects, not
+            // Error instances; an empty message rendered an empty red box.
+            const detail = (e instanceof Error ? e.message : typeof e === 'string' ? e
+                : e?.message ?? (e == null ? '' : JSON.stringify(e)))?.trim();
+            testResults[pid] = { success: false, message: detail || 'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.' };
         } finally {
             delete testingProviders[pid];
             testingConnection = false;
@@ -2956,6 +2979,129 @@
         }
     }
 
+    /** Providers whose model list was fetched in this session. */
+    let modelListChecked = $state<Record<string, boolean>>({});
+    const LOCAL_MODEL_PROVIDERS = ['mistralrs', 'llamacpp', 'mlx', 'webllm', 'ort'];
+    /** The saved model is missing from the provider's current /models list. */
+    let selectedModelUnavailable = $derived(
+        !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id)
+        && !!modelListChecked[selectedProvider.id]
+        && !!selectedProvider.selectedModel
+        && (selectedProvider.models?.length ?? 0) > 0
+        && !selectedProvider.models!.includes(selectedProvider.selectedModel));
+    /** Embedding-only models cannot answer chat requests. */
+    let selectedModelLooksLikeEmbedding = $derived(
+        /(^|[-_/:.])(e5|bge|gte|minilm|nomic-embed|mxbai-embed|embed|embedding|arctic-embed|snowflake-arctic-embed)([-_/:.]|$)/i
+            .test(selectedProvider.selectedModel ?? ''));
+    // Check the selected model against the provider's live /models list once
+    // per session, when its panel is opened and it can be queried.
+    $effect(() => {
+        const p = selectedProvider;
+        if (!p || LOCAL_MODEL_PROVIDERS.includes(p.id) || modelListChecked[p.id] || loadingModels) return;
+        if (!['ollama'].includes(p.id) && !p.apiKey) return;
+        untrack(() => { void handleRefreshModels(); });
+    });
+
+    /** What each provider's API can report about money for a key. OpenRouter
+     *  reports the remaining balance; Anthropic and OpenAI report spend
+     *  (cost so far this month) through admin/organization credentials. */
+    const BALANCE_PROVIDERS = ['openrouter', 'anthropic', 'openai'];
+    const COST_REPORT_PROVIDERS = ['anthropic', 'openai'];
+    let balance = $state<Record<string, { text: string; error: boolean; at: number }>>({});
+    let costKeyInput = $state<Record<string, string>>({});
+    let costKeySaved = $state<Record<string, boolean>>({});
+    const costKeyAccount = (id: string) => `llm-provider-admin:${id}`;
+    const usd = (n: number) => `$${n.toFixed(2)}`;
+    const monthStart = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); };
+    const apiError = (body: any, status: number) => body?.error?.message || body?.message || `HTTP ${status}`;
+
+    async function refreshCostKeySaved(id: string) {
+        if (!COST_REPORT_PROVIDERS.includes(id)) return;
+        try { costKeySaved[id] = !!(await getSecret(costKeyAccount(id))); } catch { costKeySaved[id] = false; }
+    }
+    $effect(() => { const id = selectedProvider?.id; if (id) untrack(() => { void refreshCostKeySaved(id); }); });
+
+    async function saveCostKey() {
+        const id = selectedProvider.id, value = (costKeyInput[id] ?? '').trim();
+        try {
+            if (value) await setSecret(costKeyAccount(id), value); else await deleteSecret(costKeyAccount(id));
+            costKeyInput[id] = '';
+            await refreshCostKeySaved(id);
+            balance[id] = { text: value ? 'Admin key saved in the secret store.' : 'Admin key removed.', error: false, at: Date.now() };
+        } catch (e: any) {
+            balance[id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
+        }
+    }
+
+    async function openRouterBalance(p: LLMProvider): Promise<string> {
+        const key = await resolveSecret(p.apiKey);
+        if (!key) throw new Error('No API key is saved for this provider.');
+        const base = (p.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+        const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
+        const body = await resp.json().catch(() => null) as any;
+        if (!resp.ok) throw new Error(apiError(body, resp.status));
+        const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
+        if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
+        return `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`;
+    }
+
+    /** Month-to-date cost from Anthropic's Usage and Cost Admin API. Needs an
+     *  Admin API key or an organization-scoped key; workspace keys are refused. */
+    async function anthropicCost(key: string): Promise<string> {
+        const start = monthStart().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const endDate = new Date(); endDate.setUTCHours(24, 0, 0, 0);
+        const end = endDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
+        let cents = 0, page: string | null = null;
+        for (let guard = 0; guard < 20; guard++) {
+            const url = `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${start}&ending_at=${end}` + (page ? `&page=${encodeURIComponent(page)}` : '');
+            const resp = await fetch(url, { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
+            const body = await resp.json().catch(() => null) as any;
+            if (!resp.ok) throw new Error(apiError(body, resp.status));
+            for (const bucket of body?.data ?? []) for (const row of bucket?.results ?? []) cents += Number(row?.amount ?? 0);
+            if (!body?.has_more || !body?.next_page) break;
+            page = body.next_page;
+        }
+        return `${usd(cents / 100)} spent this month (Anthropic does not report a remaining balance)`;
+    }
+
+    /** Month-to-date cost from OpenAI's organization Costs API (admin key). */
+    async function openAiCost(key: string): Promise<string> {
+        const startTime = Math.floor(monthStart().getTime() / 1000);
+        let dollars = 0, page: string | null = null;
+        for (let guard = 0; guard < 20; guard++) {
+            const url = `https://api.openai.com/v1/organization/costs?start_time=${startTime}&limit=31` + (page ? `&page=${encodeURIComponent(page)}` : '');
+            const resp = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+            const body = await resp.json().catch(() => null) as any;
+            if (!resp.ok) throw new Error(apiError(body, resp.status));
+            for (const bucket of body?.data ?? []) for (const row of bucket?.results ?? []) dollars += Number(row?.amount?.value ?? 0);
+            if (!body?.has_more || !body?.next_page) break;
+            page = body.next_page;
+        }
+        return `${usd(dollars)} spent this month (OpenAI does not report a remaining balance)`;
+    }
+
+    async function checkBalance() {
+        const p = selectedProvider;
+        try {
+            let text: string;
+            if (p.id === 'openrouter') text = await openRouterBalance(p);
+            else {
+                const admin = await getSecret(costKeyAccount(p.id)).catch(() => null);
+                const key = admin || await resolveSecret(p.apiKey);
+                if (!key) throw new Error('No API key is saved for this provider.');
+                try {
+                    text = p.id === 'anthropic' ? await anthropicCost(key) : await openAiCost(key);
+                } catch (e: any) {
+                    const reason = e instanceof Error ? e.message : String(e);
+                    throw new Error(admin ? reason : `${reason} Cost reports need an admin or organization-scoped key; add one below.`);
+                }
+            }
+            balance[p.id] = { text, error: false, at: Date.now() };
+        } catch (e: any) {
+            balance[p.id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
+        }
+    }
+
     let availableModels = $derived.by(() => {
         if (selectedProvider.id === 'mistralrs' || selectedProvider.id === 'llamacpp') {
             return localModels.filter(m => m.isDownloaded).map(m => m.path).filter(p => p !== '');
@@ -3025,6 +3171,22 @@
                 ? `Secrets are now kept in: ${describeStore(st.choice)}`
                 : 'Store selected — enter its passphrase below to unlock it.';
         });
+    }
+
+    /** A keychain that is not in the user's search list (e.g. one another
+     *  app keeps in its own folder). macOS asks for its password once. */
+    async function chooseKeychainFile() {
+        const picked = await openDialog({
+            title: 'Choose a keychain file',
+            multiple: false, directory: false,
+            filters: [{ name: 'Keychain', extensions: ['keychain-db', 'keychain'] }],
+        });
+        if (typeof picked !== 'string' || !picked) return;
+        if (/\/login\.keychain(-db)?$/.test(picked)) {
+            secretBackendError = 'The login keychain is the one that keeps prompting; choose a different keychain.';
+            return;
+        }
+        await chooseStore({ kind: 'mac-keychain', path: picked, unlock: 'prompt' });
     }
 
     async function unlockVault() {
@@ -5486,6 +5648,9 @@
                                 disabled={secretBackendBusy}
                                 onclick={() => chooseStore({ kind: 'session' })}>Use this</button>
                         </div>
+                        {#if secretBackendMsg && secretBackend.status.choice.kind !== 'mac-keychain'}
+                            <p class="section-desc" role="status" style="color:#22c55e;">{secretBackendMsg}</p>
+                        {/if}
                     </div>
 
                     {#if secretBackend.supportsNamedKeychains}
@@ -5513,33 +5678,39 @@
                                 </div>
                             {/if}
 
-                            <div class="settings-table-wrap" style="margin-top:10px;">
-                                <table class="settings-table">
-                                    <thead><tr><th>Keychain</th><th>Path</th><th></th></tr></thead>
-                                    <tbody>
-                                        {#each secretBackend.keychains as k (k.path)}
-                                            <tr>
-                                                <td>
-                                                    {k.name}
-                                                    {#if k.isLogin}<span style="color:#eab308;"> (prompts)</span>{/if}
-                                                    {#if k.isOurs}<span style="color:#22c55e;"> (ours)</span>{/if}
-                                                </td>
-                                                <td title={k.path}>{k.path}</td>
-                                                <td>
-                                                    <button
-                                                        class="action-btn secondary"
-                                                        disabled={secretBackendBusy || k.isLogin}
-                                                        onclick={() => chooseStore({
-                                                            kind: 'mac-keychain',
-                                                            path: k.path,
-                                                            unlock: k.isOurs ? 'app-managed' : 'prompt'
-                                                        })}>Use</button>
-                                                </td>
-                                            </tr>
-                                        {/each}
-                                    </tbody>
-                                </table>
-                            </div>
+                            <ul class="keychain-list" aria-label="Keychains">
+                                {#each secretBackend.keychains as k (k.path)}
+                                    {@const active = secretBackend.status.choice.kind === 'mac-keychain' && secretBackend.status.choice.path === k.path}
+                                    <li class="keychain-row" class:active>
+                                        <div class="keychain-info">
+                                            <strong>{k.name}</strong>
+                                            {#if k.isLogin}<span class="keychain-tag warn">prompts for the login password</span>{/if}
+                                            {#if k.isOurs}<span class="keychain-tag ok">created by CrispSorter</span>{/if}
+                                            {#if active}<span class="keychain-tag ok">in use</span>{/if}
+                                            <code class="keychain-path" title={k.path}>{k.path}</code>
+                                        </div>
+                                        <button
+                                            class="action-btn secondary"
+                                            disabled={secretBackendBusy || k.isLogin || active}
+                                            onclick={() => chooseStore({
+                                                kind: 'mac-keychain',
+                                                path: k.path,
+                                                unlock: k.isOurs ? 'app-managed' : 'prompt'
+                                            })}>{active ? 'In use' : 'Use'}</button>
+                                    </li>
+                                {/each}
+                            </ul>
+                            <button
+                                class="action-btn secondary"
+                                style="margin-top:8px;"
+                                disabled={secretBackendBusy}
+                                onclick={chooseKeychainFile}>Choose another keychain file…</button>
+                            {#if secretBackendMsg}
+                                <p class="section-desc" role="status" style="color:#22c55e;">{secretBackendMsg}</p>
+                            {/if}
+                            {#if secretBackendError}
+                                <p class="section-desc" role="alert" style="color:#ef4444;">{secretBackendError}</p>
+                            {/if}
                         </div>
                     {/if}
 
@@ -5707,6 +5878,23 @@
                 </div>
             </div>
             {/if}
+            {#if selectedModelUnavailable}
+                <div class="model-unavailable" role="alert">
+                    <p><strong>{selectedProvider.selectedModel}</strong> is no longer offered by {selectedProvider.name}.
+                        Choose one of the models it currently lists:</p>
+                    <select aria-label="Replacement model" class="styled-select"
+                        onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { selectedProvider.selectedModel = v; void handleSave(); } }}>
+                        <option value="">-- {i18n.t.settings.select_model} --</option>
+                        {#each selectedProvider.models ?? [] as model}<option value={model}>{model}</option>{/each}
+                    </select>
+                </div>
+            {/if}
+            {#if selectedModelLooksLikeEmbedding && !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id)}
+                <p class="hint" role="note" style="color:#eab308;">
+                    <strong>{selectedProvider.selectedModel}</strong> looks like an embedding model. It turns text
+                    into vectors and cannot answer chat requests; choose a chat model for this provider.
+                </p>
+            {/if}
 
             {#if selectedProvider.id !== 'mistralrs'}
                 {#if selectedProvider.id === 'ollama' && selectedProvider.selectedModel}
@@ -5722,8 +5910,33 @@
                         {i18n.t.settings.test_connection}
                     </button>
                 </div>
+                {#if !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id) && selectedProvider.id !== 'ollama'}
+                    <div class="balance-row">
+                        {#if BALANCE_PROVIDERS.includes(selectedProvider.id)}
+                            <button class="action-btn secondary" onclick={checkBalance}
+                                disabled={!selectedProvider.apiKey && !costKeySaved[selectedProvider.id]}>
+                                {selectedProvider.id === 'openrouter' ? 'Check balance' : 'Check spend this month'}</button>
+                            {#if balance[selectedProvider.id]}
+                                <span role="status" class:balance-error={balance[selectedProvider.id].error}>{balance[selectedProvider.id].text}</span>
+                            {/if}
+                        {:else}
+                            <span class="hint">{selectedProvider.name}'s API does not report a balance or spend for an API key; see the provider's console.</span>
+                        {/if}
+                    </div>
+                    {#if COST_REPORT_PROVIDERS.includes(selectedProvider.id)}
+                        <form class="cost-key-row" onsubmit={(e) => { e.preventDefault(); void saveCostKey(); }}>
+                            <label for="cost-key-{selectedProvider.id}">Admin key for cost reports
+                                {#if costKeySaved[selectedProvider.id]}<span class="cost-key-saved">(saved)</span>{/if}</label>
+                            <input id="cost-key-{selectedProvider.id}" type="password" autocomplete="off"
+                                placeholder={selectedProvider.id === 'anthropic' ? 'sk-ant-admin01-… or an organization-scoped key' : 'sk-admin-…'}
+                                bind:value={costKeyInput[selectedProvider.id]} />
+                            <button class="action-btn secondary" type="submit">{costKeyInput[selectedProvider.id]?.trim() ? 'Save' : 'Remove'}</button>
+                        </form>
+                    {/if}
+                {/if}
                 <IntendedPurposeGate blocking={false} />
-                {#if testResult}
+                {#if testResults[selectedProvider.id]}
+                    {@const testResult = testResults[selectedProvider.id]!}
                     <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
                         {#if testResult.success}<AiGeneratedBadge compact />{/if}
                         <span>{testResult.message}</span>
@@ -6194,6 +6407,24 @@
     .store-option:first-of-type { border-top: none; }
     .store-option > div { flex: 1; }
     .store-option button { flex: 0 0 auto; }
+    .model-unavailable { margin: 8px 0 12px; padding: 10px 12px; border: 1px solid #a16207; border-radius: 6px; background: #42200633; color: #fef3c7; }
+    .model-unavailable p { margin: 0 0 8px; overflow-wrap: anywhere; }
+    .balance-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; font-size: 0.85rem; }
+    .balance-row .balance-error { color: #f87171; }
+    .cost-key-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 0.8rem; }
+    .cost-key-row input { flex: 1 1 220px; min-width: 0; }
+    .cost-key-saved { color: #22c55e; margin-left: 4px; }
+    .store-option > div { min-width: 0; overflow-wrap: anywhere; }
+    .keychain-list { list-style: none; margin: 10px 0 0; padding: 0; }
+    .keychain-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 6px; border-top: 1px solid #27272a; }
+    .keychain-row:first-child { border-top: none; }
+    .keychain-row.active { background: #052e1633; }
+    .keychain-info { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+    .keychain-path { flex-basis: 100%; font-size: 11px; color: #a1a1aa; overflow-wrap: anywhere; word-break: break-all; }
+    .keychain-tag { font-size: 11px; }
+    .keychain-tag.warn { color: #eab308; }
+    .keychain-tag.ok { color: #22c55e; }
+    .keychain-row button { flex: 0 0 auto; }
     .link-btn { background: none; border: none; padding: 0; color: #60a5fa; text-decoration: underline; cursor: pointer; font: inherit; }
     .form-group { margin-bottom: 20px; max-width: 600px; }
     .checkbox-group { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
