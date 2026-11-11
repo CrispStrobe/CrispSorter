@@ -154,7 +154,8 @@ test('an edited endpoint discards its pending model list and can refresh the rep
     await release(page, 'https://groq.example/v1/models');
     await expect(page.locator('#model-select-input-groq option')).toHaveText(['-- Active Model --', 'groq-chat']);
     await page.getByRole('button', { name: 'Refresh models', exact: true }).click();
-    await expect(page.locator('#model-select-input-groq option')).toHaveText(['-- Active Model --', 'groq-chat', 'groq-changed']);
+    // fetchModels returns ids sorted; the replacement endpoint lists groq-changed before groq-chat.
+    await expect(page.locator('#model-select-input-groq option')).toHaveText(['-- Active Model --', 'groq-changed', 'groq-chat']);
     await expect.poll(() => page.evaluate(() => (window as any).__providerCalls.map((call: any) => call.url)))
         .toContain('https://groq-changed.example/v1/models');
 });
