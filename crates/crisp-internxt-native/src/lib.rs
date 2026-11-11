@@ -1054,7 +1054,7 @@ impl InternxtNativeClient {
 
     fn list_page(&self, folder_uuid: &str, kind: &str, offset: usize) -> Result<Vec<NativeItem>> {
         let url = format!(
-            "{}/folders/content/{}/{}/",
+            "{}/folders/content/{}/{}",
             self.base_url, folder_uuid, kind
         );
         let mut url = reqwest::Url::parse(&url).context("building Internxt listing URL")?;
@@ -1062,7 +1062,7 @@ impl InternxtNativeClient {
             .append_pair("offset", &offset.to_string())
             .append_pair("limit", "50")
             .append_pair("sort", "plainName")
-            .append_pair("order", "ASC");
+            .append_pair("direction", "ASC");
         let url_text = url.to_string();
         let response = self
             .http

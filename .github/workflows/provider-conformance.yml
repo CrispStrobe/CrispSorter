@@ -1,0 +1,43 @@
+name: Dart and Rust provider compatibility
+on:
+  push:
+    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
+  pull_request:
+    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
+  workflow_dispatch:
+concurrency:
+  group: provider-conformance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-cloud-rs
+          ref: f6add1b13c8a2f8ae3f0c74b4b4d83204197152f
+          path: _provider_conformance
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.13.7'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: _provider_conformance/conformance/rust -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install cryptography==50.0.0
+      - name: Check golden vectors, HTTP mocks and cross-decryption
+        run: python _provider_conformance/conformance/run.py --pointycastle 4.0.0 --dart-pg 2.1.0 --rust-filen crates/crisp-filen-native --rust-internxt crates/crisp-internxt-native
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: provider-conformance
+          path: |
+            _provider_conformance/conformance/results/
+            _provider_conformance/conformance/dart/pubspec.lock
+            _provider_conformance/conformance/rust/Cargo.lock
+          retention-days: 14

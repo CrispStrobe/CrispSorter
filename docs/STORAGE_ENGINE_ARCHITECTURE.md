@@ -165,3 +165,43 @@ Dart worker/runtime, with desktop packaging and platform tests; keeping the Dart
 package does not automatically add that runtime. That is a separate compatibility
 feature if needed. Removing either existing engine would be a separate decision,
 not an assumed outcome of sharing the Rust sources.
+
+
+## Executable Dart / Rust package conformance
+
+`.github/workflows/provider-conformance.yml` runs the shared, pinned
+[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/f6add1b13c8a2f8ae3f0c74b4b4d83204197152f/conformance).
+It tests this repository’s actual native Filen/Internxt crate sources against
+the retained Dart SDKs, without replacing the Sorter crates.
+
+The same independent fixtures run through real package APIs and compiled Dart
+CLI probes with software and native AES backends. Checks include password/key
+derivation, metadata, empty and boundary-sized chunks, CTR streaming and ranges,
+wrong keys, damaged data, Unicode, pagination, cache reuse, HTTP failures,
+read retry and create/rename/move/trash payloads. Each engine decrypts the other
+engines’ exports. Loopback mocks validate authentication and wire requests;
+mutations denied with 403 must not be replayed. No live account is used.
+
+Both GUI and CLI use these package formats. Package parity does not qualify an
+app bridge, GUI settings, session migration, active-job engine selection, native
+mobile packaging or every transfer/resume/cancellation path. Keep the existing
+surface and provider tests, and the rollout gates above, before changing defaults.
+
+CI publishes `report.md`, `report.json`, wire traces and resolved probe lockfiles.
+Unexpected differences fail. Exact reviewed gaps remain visible and set
+`promotion_ready` to false, even when both implementations share a permissive
+parse bug. `--strict` fails on those gaps too. A green regression baseline is
+not permission to switch defaults. Legacy text-secret encoding requires a
+compatibility decision before any format change.
+
+Reproduce from a checkout of the pinned harness, with Python 3.12+, stable Rust
+and Dart 3.13.7. From this app repository’s root:
+
+```sh
+python -m pip install cryptography==50.0.0
+python ../crisp-cloud-rs/conformance/run.py --pointycastle 4.0.0 --dart-pg 2.1.0 --rust-filen crates/crisp-filen-native --rust-internxt crates/crisp-internxt-native
+# Add --strict for the default-promotion gate.
+```
+
+Keep this harness commit pinned and advance it deliberately with the compatibility
+report. Retain both language implementations and explicit engine choices.
