@@ -46,8 +46,8 @@ class IsolatedOcrGeneration(unittest.TestCase):
                     self.assertTrue(modules[name].is_file())
                     relative = modules[name].relative_to(ROOT).as_posix()
                     self.assertIn(relative, receipt['source_files_sha256'])
-                # All three worker modes compile against the production image
-                # dispatcher and review implementation, not inferred probe data.
+                # All three worker modes reference the production image
+                # dispatcher. The Linux native job separately compiles them.
                 self.assertIn('fn ocr_image_page(', source)
                 self.assertIn('fn prepare_ocr_page(', source)
                 self.assertIn('pub fn app_log(', source)

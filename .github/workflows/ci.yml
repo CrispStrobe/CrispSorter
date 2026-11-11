@@ -379,6 +379,12 @@ jobs:
         working-directory: repos/CrispSorter
         run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
 
+      - name: Compile the generated OCR qualification tools against the pinned runtime
+        working-directory: repos/CrispSorter
+        run: |
+          python3 tools/quality/isolated_ocr.py --app . --embed ../CrispEmbed --destination ocr-qualification --panel --worker
+          cargo check --manifest-path ocr-qualification/Cargo.toml --all-targets --target-dir target
+
       - name: Verify the PDF surface against qpdf / poppler / MuPDF / pypdf / pikepdf
         working-directory: repos/CrispSorter
         run: |

@@ -129,7 +129,8 @@ recognizer, worker, license/model resolver and logger, with direct Rust/FFI
 dependencies and source hashes. Its Python regression generates all four
 basic/panel/worker variants. Generation is checked separately from compiling
 or running the generated native crate and does not count as recognition
-qualification.
+qualification. The Linux native job compiles all generated targets against
+the pinned runtime; real-model execution remains a separate qualification.
 
 `scripts/verify_cli_operations.py` launches the actual built executable on
 all three desktop platforms. It checks a complete JSON result, stderr-only
