@@ -456,6 +456,7 @@ pub async fn drive_update(
     password: Option<String>,
     insecure_tls: Option<bool>,
     smb: Option<crisp_smb_source::Settings>,
+    expected: Option<DriveConfig>,
 ) -> Result<DriveConfig, String> {
     let data_dir = state
         .data_dir
@@ -476,6 +477,14 @@ pub async fn drive_update(
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     if !reg.drives.iter().any(|d| d.id == id) {
         return Err(format!("drive '{id}' not found"));
+    }
+    if let Some(snapshot) = expected {
+        if snapshot.id != id {
+            return Err("Drive snapshot does not match".into());
+        }
+        reg.require_snapshot(&snapshot).map_err(|e| e.to_string())?;
+    } else if drive_type == DriveType::Smb {
+        return Err("Reload the SMB drive before saving its settings".into());
     }
     let updated = DriveConfig {
         id,

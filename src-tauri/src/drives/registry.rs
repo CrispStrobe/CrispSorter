@@ -65,6 +65,29 @@ pub struct DriveRegistry {
 impl DriveRegistry {
     pub fn open(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join("drives.json");
+        let _lock = Self::lock(&path)?;
+        Self::load_locked(path)
+    }
+
+    // A separate lock file survives atomic replacement of drives.json. Fail
+    // promptly when another process is saving, rather than blocking the GUI.
+    fn lock(path: &Path) -> Result<std::fs::File> {
+        let parent = path.parent().context("drive registry parent")?;
+        std::fs::create_dir_all(parent).context("creating drive registry directory")?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(parent.join("drives.lock"))
+            .context("opening drive settings lock")?;
+        file.try_lock()
+            .context("Drive settings are busy; retry after the other save finishes")?;
+        Ok(file)
+    }
+
+    fn load_locked(path: PathBuf) -> Result<Self> {
+        let mut migrated = false;
         let drives = if path.exists() {
             let json = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
@@ -73,7 +96,6 @@ impl DriveRegistry {
             // One-time migration for pre-keychain files.  Read legacy fields
             // only to move them into the OS keychain, then rewrite the file
             // through the redacted DriveConfig serializer.
-            let mut migrated = false;
             if let Some(items) = raw.as_array_mut() {
                 for item in items {
                     let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
@@ -128,20 +150,18 @@ impl DriveRegistry {
             }
             let drives = serde_json::from_value::<Vec<DriveConfig>>(raw)
                 .with_context(|| format!("parsing {}", path.display()))?;
-            if migrated {
-                let redacted = serde_json::to_string_pretty(&drives)
-                    .context("redacting legacy drive credentials")?;
-                std::fs::write(&path, redacted)
-                    .with_context(|| format!("rewriting {} without secrets", path.display()))?;
-            }
             drives
         } else {
             Vec::new()
         };
-        Ok(Self { path, drives })
+        let registry = Self { path, drives };
+        if migrated {
+            registry.save_locked()?;
+        }
+        Ok(registry)
     }
 
-    pub fn save(&self) -> Result<()> {
+    fn save_locked(&self) -> Result<()> {
         let json = serde_json::to_string_pretty(&self.drives).context("serialising drives")?;
         // Keep the previous registry intact if writing or flushing fails. The
         // temporary file is on the same filesystem, and persist replaces it
@@ -164,22 +184,65 @@ impl DriveRegistry {
         Ok(())
     }
 
+    /// Check the metadata snapshot displayed by a GUI before accepting its edit.
+    /// Credentials are excluded by DriveConfig's serializer.
+    pub fn require_snapshot(&self, expected: &DriveConfig) -> Result<()> {
+        let current = self.drives.iter().find(|d| d.id == expected.id);
+        if serde_json::to_value(current)? != serde_json::to_value(Some(expected))? {
+            crate::app_log(
+                "warn",
+                "Drive settings conflict: reload before saving".into(),
+            );
+            anyhow::bail!("Drive settings changed; reload before saving");
+        }
+        Ok(())
+    }
+
+    // Merge unrelated changes from other GUI/CLI instances, but refuse a
+    // stale edit of this same drive. Never silently overwrite a newer setting.
+    fn refreshed_locked(&self, id: &str) -> Result<Self> {
+        let fresh = Self::load_locked(self.path.clone())?;
+        let snapshot = serde_json::to_value(self.drives.iter().find(|d| d.id == id))?;
+        let current = serde_json::to_value(fresh.drives.iter().find(|d| d.id == id))?;
+        anyhow::ensure!(
+            snapshot == current,
+            "Drive settings changed; reload before saving"
+        );
+        Ok(fresh)
+    }
+
+    fn add_locked(&mut self, config: DriveConfig) -> Result<()> {
+        let mut updated = self.drives.clone();
+        updated.retain(|d| d.id != config.id);
+        updated.push(config);
+        let staged = Self {
+            path: self.path.clone(),
+            drives: updated,
+        };
+        staged.save_locked()?;
+        self.drives = staged.drives;
+        Ok(())
+    }
+
     pub fn add(&mut self, config: DriveConfig) -> Result<()> {
-        // Deduplicate by id.
-        self.drives.retain(|d| d.id != config.id);
-        self.drives.push(config);
-        self.save()
+        let _lock = Self::lock(&self.path)?;
+        let mut fresh = self.refreshed_locked(&config.id)?;
+        fresh.add_locked(config)?;
+        self.drives = fresh.drives;
+        Ok(())
     }
 
     pub fn remove(&mut self, id: &str) -> Result<bool> {
-        let before = self.drives.len();
-        self.drives.retain(|d| d.id != id);
-        if self.drives.len() < before {
-            self.save()?;
-            Ok(true)
-        } else {
-            Ok(false)
+        let _lock = Self::lock(&self.path)?;
+        let mut fresh = self.refreshed_locked(id)?;
+        let before = fresh.drives.len();
+        fresh.drives.retain(|d| d.id != id);
+        let removed = fresh.drives.len() < before;
+        if removed {
+            fresh.save_locked()?;
         }
+        self.drives = fresh.drives;
+        Ok(removed)
     }
 
     /// Shared GUI/CLI save path. Only non-secret metadata enters drives.json.
@@ -213,6 +276,8 @@ impl DriveRegistry {
         anyhow::ensure!(config.kind == DriveType::Smb, "Choose an SMB drive");
         let settings = config.smb.get_or_insert_with(Default::default);
         settings.validate(&config.path)?;
+        let _lock = Self::lock(&self.path)?;
+        let mut fresh = self.refreshed_locked(&config.id)?;
         let update_credentials = username.is_some() || password.is_some();
         let previous = if update_credentials || settings.backend == crisp_smb_source::Backend::Rust
         {
@@ -242,10 +307,8 @@ impl DriveRegistry {
             crate::drives::secret::set_credentials(&config.id, &credentials)
                 .map_err(|_| anyhow::anyhow!("Cannot save SMB credentials"))?;
         }
-        let before = self.drives.clone();
         log.step("publish", serde_json::Value::Null);
-        if let Err(error) = self.add(config.clone()) {
-            self.drives = before;
+        if let Err(error) = fresh.add_locked(config.clone()) {
             if update_credentials {
                 let rollback = if let Some(old) = previous {
                     crate::drives::secret::set_credentials(&config.id, &old)
@@ -258,6 +321,14 @@ impl DriveRegistry {
             }
             return Err(error);
         }
+        self.drives = fresh.drives;
+        crate::app_log(
+            "info",
+            format!(
+                "SMB settings saved: backend={}",
+                config.smb.as_ref().unwrap().backend.name()
+            ),
+        );
         Ok(config)
     }
 }

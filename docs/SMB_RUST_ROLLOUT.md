@@ -6,6 +6,11 @@ explicit transport: `mounted` (default) or experimental `rust`. Both GUI and CLI
 instantiate the same `SmbDrive` through `DriveRegistry::instantiate_with_proxy`.
 SMB uses TCP directly and does not route through the HTTP proxy setting.
 
+For native Filen/Internxt, the current Dart/Rust split across all three apps and
+the proposed shared provider bridge, see
+[STORAGE_ENGINE_ARCHITECTURE.md](STORAGE_ENGINE_ARCHITECTURE.md). Sorter does not
+add Dart/Rust provider selection or a Dart runtime through that proposal.
+
 | Setting | Mounted path | Direct Rust path |
 | --- | --- | --- |
 | Backend | `mounted` | `rust` |
@@ -102,7 +107,7 @@ paths, usernames, passwords and raw upstream errors. There are no per-chunk logs
 ## Tests and remaining rollout checks
 
 The shared Rust core is pinned to CrispCloud
-`4b44dc4d44ef05a18d2da2579d2e3b866b245643`; libsmb2 remains the default/fallback in
+`13ca681f0c706cf24e65c7906f8a98e20421c590`; libsmb2 remains the default/fallback in
 the Flutter consumers. Sorter's established fallback is the explicit OS mount.
 
 ```sh
@@ -124,9 +129,9 @@ existing mounted files after failed input, structured receipts, typed no-replay
 failures, missing versus zero-byte metadata, and FUSE final-page/EOF behavior.
 The live fixture requires `impacket==0.13.0` and verifies
 real authenticated SMB2 transfers and refusal when SMB3 encryption is required.
-The GUI form's settings mapping has Vitest coverage. Full Tauri builds, successful
-encrypted SMB3/NAS transfers, platform sandboxes and final artifact license notices
-remain rollout gates; these fixture tests do not establish those results.
+The GUI form's settings mapping has Vitest coverage. Full packaged Tauri builds,
+successful encrypted SMB3/NAS transfers, platform sandboxes and final artifact
+license notices remain rollout gates; fixtures do not establish those results.
 
 The browser regression drives the actual Svelte add/edit form and verifies its
 IPC payloads and restored selection. Its IPC backend is a fixture; the Rust
@@ -137,3 +142,34 @@ Local full-app `cargo check` reached the platform dependency build and stopped
 because `glib-2.0` development files are absent. The workflow also includes an
 app type-check job with the GTK/WebKit development packages and pinned sibling
 repositories, so glue code outside the independent contract is checked in CI.
+
+## Concurrent GUI and CLI settings
+
+Both surfaces save through the same registry transaction. A separate `drives.lock`
+file serializes changes across processes, including credential updates and
+rollback. A busy save fails promptly with a retry message. Each transaction reads
+the current registry: changes to other drives are preserved, and an edit based on
+an outdated snapshot of the same drive is refused with a reload message. JSON
+replacement and legacy credential redaction both use a flushed temporary file
+and atomic replacement. Failed writes leave the in-memory registry unchanged.
+
+Regression tests cover independent GUI/CLI snapshots, conflicting settings,
+lock contention, vault rollback and authenticated streaming through the actual
+application adapter. The shared source/fixture pin is the same commit used by
+CrispCloud and CrisperPlayer. The Rust path remains explicit; mounted SMB remains
+the default. GUI backend controls and `drives smb --backend` retain their existing
+behavior and app logs never include credentials or raw remote paths.
+
+The GUI includes the original non-secret drive snapshot with an edit. The command
+checks it against freshly loaded metadata, and the locked save checks again for
+a race during submission. A drive changed by the CLI while the form was open
+is therefore rejected without overwriting settings or credentials.
+
+## CI checkpoint — 11 November 2026
+
+[The workflow at `1c80e98`](https://github.com/CrispStrobe/CrispSorter/actions/runs/43013268979)
+passed the Rust contracts/live SMB2 fixture, mounted-reader tests, frontend
+settings checks, actual Svelte form/IPC browser regression and full application
+`cargo check --all-targets --no-default-features --locked`. The latter uses
+GTK/WebKit development files and pinned sibling sources. It is a type check,
+not a packaged release build, mobile-device run or successful encrypted SMB3 test.
