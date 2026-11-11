@@ -126,6 +126,12 @@ uniform score provenance; mixed or missing scores cannot become a whole-line
 recognition score. Character evidence requires verified codepoint alignment
 for every contributing region.
 
+Paragraph grouping applies the same score checks after line-level layout
+classification. It preserves line breaks inside an enclosing region box;
+multiline PDF placement uses the pinned renderer's estimates within that box.
+This does not establish verified source line or word coordinates. Regions with
+native word evidence remain separate and retain their evidence.
+
 ## Advanced pipeline settings
 
 The [stage editor](../src/lib/components/Settings.svelte) and
@@ -165,7 +171,7 @@ service in an application runtime. They send bounded raw image bytes and one
 captured engine/language/configuration snapshot. PDF extraction preserves usable
 digital text and sends only pages needing OCR (or all pages for forced OCR).
 
-A genuinely browser-only runtime has no CrispEmbed/native execution backend.
+A browser-only runtime has no CrispEmbed/native execution backend.
 Its Automatic choice uses a reusable Tesseract.js worker. Selecting a native
 engine, native tier, custom native pipeline or CPU profile there produces an
 explicit capability error. The browser worker is serialized, retired on failure
@@ -181,11 +187,12 @@ other engine combinations. See the [audit boundaries](ocr-routing-audit-20261111
 ## Recent integration
 
 The [remote integration audit](remote-integration-audit-20261111.md) accounts
-for all 75 live branch heads and open PRs reviewed in this continuation, including
-the PDF consolidation and advanced SMB head published during the work. The app
+for all 76 live branch heads in the 10:37 UTC snapshot and open PRs #44–46,
+including PDF consolidation, OCR document view and the advanced SMB head. The app
 shares SMB transport settings between GUI and CLI and connects streaming reads
 to transfer, sync and index-promotion consumers. The consolidated PDF editor and
-CLI share native text exports and edit operations. See the
+CLI share native text exports and edit operations. Paragraph editing retains
+the same engine policy and confidence-evidence constraints. See the
 [surface and operation-log audit](surface-observability-audit-20261111.md) for
 critical-step events, CLI/GUI consistency and verification boundaries.
 

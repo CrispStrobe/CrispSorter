@@ -69,6 +69,9 @@ if (process.argv.includes('--serve')) {
             page.setDefaultTimeout(10_000);
             page.on('pageerror', error => browserErrors.push({ scenario, message: error.message }));
             page.on('dialog', dialog => void dialog.dismiss());
+            // These scenarios exercise region-by-region review; the workspace
+            // otherwise opens on the page text as one document.
+            await page.addInitScript(() => { try { localStorage.setItem('crispsorter.ocr.reviewView', 'regions'); } catch {} });
             await page.goto(`${url}/?scenario=${scenario}`);
             await page.waitForFunction(expectedName => {
                 const input = document.querySelector('[aria-label="Project name"]');
@@ -1758,7 +1761,7 @@ if (process.argv.includes('--serve')) {
             let component;
             let roundTrip;
             async function passage() {
-                await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+                await page.getByRole('button', { name: 'Passages', exact: true }).click();
                 return page.locator('[data-passage-id]').nth(2);
             }
             for (let iteration = 0; iteration < 2; iteration++) {
@@ -1858,7 +1861,7 @@ if (process.argv.includes('--serve')) {
             const collapsed = original.text.replace('Quarterly  equipment', 'Quarterly equipment');
             const dehyphenated = original.text.replace('preven-\ntive', 'preventive');
             async function openRepair(kind) {
-                await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+                await page.getByRole('button', { name: 'Passages', exact: true }).click();
                 const card = page.locator('[data-passage-id]').first();
                 await card.locator('textarea[data-passage-text]').focus();
                 await card.getByRole('button', { name: 'Repair passage text', exact: true }).click();
@@ -2142,7 +2145,7 @@ if (process.argv.includes('--serve')) {
 
             // Change the underlying source through the normal editor, save it,
             // and actually reload the project: the retained draft is now stale.
-            await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+            await page.getByRole('button', { name: 'Passages', exact: true }).click();
             await page.getByRole('textbox', { name: 'Passage 1 text', exact: true }).fill('Revised heading outside the saved draft');
             await page.getByRole('textbox', { name: 'Passage 1 text', exact: true }).blur();
             const changedSource = await saveSnapshot(page);
@@ -2983,7 +2986,7 @@ if (process.argv.includes('--serve')) {
             const replace = page.getByRole('button', { name: 'Replace', exact: true });
             await page.getByRole('button', { name: 'Next match', exact: true }).click();
             assert.equal(await replace.isEnabled(), true);
-            await page.getByRole('button', { name: 'Text editor', exact: true }).click();
+            await page.getByRole('button', { name: 'Passages', exact: true }).click();
             assert.equal(await replace.isDisabled(), true);
             await page.getByRole('textbox', { name: 'Passage 5 text', exact: true }).fill('A separate passage correction.');
             assert.equal(await replace.isDisabled(), true);

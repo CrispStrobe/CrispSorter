@@ -817,7 +817,7 @@ async fn ocr_workspace_recognize_inner(
     let cpu_budget = config.cpu_pixel_budget;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     log.step("recognizing",Value::Null);
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || -> Result<RecognizedPage, String> {
         let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget, legacy_rec_lang)?;
         if zone.is_some() || !config.enabled {
             // managed_page validated the canonical path used for all I/O.
@@ -827,7 +827,24 @@ async fn ocr_workspace_recognize_inner(
         }
         Ok(result)
     }).await
-        .map_err(|e| format!("Recognition worker: {e}"))?
+        .map_err(|e| format!("Recognition worker: {e}"))??;
+    log_review_grouping(log, &result.diagnostics);
+    Ok(result)
+}
+
+fn log_review_grouping(log: &OperationLog, diagnostics: &Value) {
+    for (stage, before, after) in [
+        ("line_grouping", "words", "lines"),
+        ("paragraph_grouping", "lines", "paragraphs"),
+    ] {
+        if let (Some(count), Some(regions)) = (
+            diagnostics[stage][before].as_u64(), diagnostics[stage][after].as_u64(),
+        ) {
+            // Diagnostics can contain document text and source paths. Emit
+            // only these measured counts on the existing recognition scope.
+            log.step(stage, json!({"count": count, "regions": regions}));
+        }
+    }
 }
 
 /// The CPU pixel budget limits the Qwen2-VL vision input; it has no meaning
@@ -935,16 +952,12 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     if result.regions.is_empty() {
         warnings.push("No text was returned. Verify whether this page is blank, or retry with a different engine. An empty result is not evidence of successful recognition.".into());
     }
-    // Word detectors (DBNet is trained on word boxes) return one region per
-    // word; review, editing and export work on lines.
-    let detected = result.regions.len();
-    result.regions = merge_word_regions_into_lines(std::mem::take(&mut result.regions));
-    if result.regions.len() != detected {
-        result.diagnostics["line_grouping"] = json!({"words": detected, "lines": result.regions.len()});
-    }
-    if config.enabled && config.layout && zone.is_none() {
-        annotate_layout(&recognition_path, config, &mut result.regions, &mut result.diagnostics, &mut warnings);
-    }
+    result.regions = organize_review_regions(std::mem::take(&mut result.regions), &mut result.diagnostics,
+        |regions, diagnostics| {
+            if config.enabled && config.layout && zone.is_none() {
+                annotate_layout(&recognition_path, config, regions, diagnostics, &mut warnings);
+            }
+        });
     for region in &mut result.regions {
         region.x += offset.0 as f32;
         region.y += offset.1 as f32;
@@ -968,6 +981,35 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     }
     result.diagnostics["requested_config"] = serde_json::to_value(config).map_err(|e| e.to_string())?;
     Ok(RecognizedPage { page, regions: result.regions, elapsed_ms: started.elapsed().as_millis() as u64, warnings, diagnostics: result.diagnostics })
+}
+
+/// Classify and order individual lines before joining them into paragraphs.
+/// A layout heading, table or formula must remain a boundary even when its
+/// geometry resembles adjacent prose.
+fn organize_review_regions(
+    regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>,
+    diagnostics: &mut Value,
+    annotate: impl FnOnce(&mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, &mut Value),
+) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
+    let detected = regions.len();
+    let mut regions = merge_word_regions_into_lines(regions);
+    if regions.len() != detected {
+        diagnostics["line_grouping"] = json!({"words": detected, "lines": regions.len()});
+    }
+    annotate(&mut regions, diagnostics);
+    let lines = regions.len();
+    let regions = group_lines_into_paragraphs(regions);
+    if regions.len() != lines {
+        diagnostics["paragraph_grouping"] = json!({"lines": lines, "paragraphs": regions.len()});
+    }
+    regions
+}
+
+fn has_aligned_character_scores(region: &crate::extractors::ocr_crispembed::OcrReviewRegion) -> bool {
+    region.confidence_basis == "recognition" && region.char_conf_aligned
+        && region.char_conf_unit == "unicode_codepoint" && !region.char_conf.is_empty()
+        && region.char_conf.len() == region.text.chars().count()
+        && region.char_conf.iter().all(|score| score.is_finite() && (0.0..=1.0).contains(score))
 }
 
 /// Join word regions that sit on the same text line into one line region.
@@ -1050,10 +1092,7 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
     let uniform_basis = words.iter().all(|r| r.confidence_basis == first.confidence_basis);
     let complete_scores = uniform_basis && words.iter().all(|r| r.confidence
         .is_some_and(|score| score.is_finite() && (0.0..=1.0).contains(&score)));
-    let aligned = words.iter().all(|r| r.confidence_basis == "recognition"
-        && r.char_conf_aligned && r.char_conf_unit == "unicode_codepoint"
-        && r.char_conf.len() == r.text.chars().count()
-        && r.char_conf.iter().all(|score| score.is_finite() && (0.0..=1.0).contains(score)));
+    let aligned = words.iter().all(has_aligned_character_scores);
     let mut text = String::new();
     let mut char_conf: Vec<f32> = Vec::new();
     let (mut weighted, mut weight) = (0.0f64, 0.0f64);
@@ -1087,8 +1126,83 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
     }
 }
 
+/// Joins consecutive text lines (in reading order) into paragraphs: the next
+/// line starts just below the previous one, has a similar height and shares
+/// its horizontal extent. Lines are joined with "\n" so their breaks survive.
+/// Regions with native word evidence (already paragraph-level) and non-text
+/// regions are never joined.
+fn group_lines_into_paragraphs(regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
+    use crate::extractors::ocr_crispembed::OcrReviewRegion;
+    let joinable = |r: &OcrReviewRegion| r.kind == "text" && r.word_evidence.is_none()
+        && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && r.x >= 0.0 && r.y >= 0.0 && r.h > 0.0 && r.w > 0.0;
+    let continues = |paragraph: &[OcrReviewRegion], next: &OcrReviewRegion| {
+        let last = paragraph.last().expect("nonempty paragraph");
+        let height = paragraph.iter().map(|r| r.h).sum::<f32>() / paragraph.len() as f32;
+        let gap = next.y - (last.y + last.h);
+        let similar = next.h <= 1.5 * height && height <= 1.5 * next.h;
+        let left = paragraph.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        let right = paragraph.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
+        let overlap = (right.min(next.x + next.w) - left.max(next.x)).max(0.0);
+        let aligned = (next.x - last.x).abs() <= 2.0 * height || overlap >= 0.5 * next.w.min(right - left);
+        gap > -0.3 * height && gap <= 0.8 * height && similar && aligned
+    };
+    let mut out = Vec::with_capacity(regions.len());
+    let mut paragraph: Vec<OcrReviewRegion> = Vec::new();
+    for region in regions {
+        if joinable(&region) && (paragraph.is_empty() || continues(&paragraph, &region)) {
+            paragraph.push(region);
+            continue;
+        }
+        if !paragraph.is_empty() { out.push(join_paragraph(std::mem::take(&mut paragraph))); }
+        if joinable(&region) { paragraph.push(region); } else { out.push(region); }
+    }
+    if !paragraph.is_empty() { out.push(join_paragraph(paragraph)); }
+    out
+}
+
+fn join_paragraph(mut lines: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> crate::extractors::ocr_crispembed::OcrReviewRegion {
+    if lines.len() == 1 { return lines.pop().unwrap(); }
+    let first = lines[0].clone();
+    let uniform_basis = lines.iter().all(|r| r.confidence_basis == first.confidence_basis);
+    let complete_scores = uniform_basis && lines.iter().all(|r| r.confidence
+        .is_some_and(|score| score.is_finite() && (0.0..=1.0).contains(&score)));
+    let aligned = lines.iter().all(has_aligned_character_scores);
+    let x = lines.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+    let y = lines.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+    let right = lines.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
+    let bottom = lines.iter().map(|r| r.y + r.h).fold(f32::MIN, f32::max);
+    let mut text = String::new();
+    let mut char_conf: Vec<f32> = Vec::new();
+    let (mut weighted, mut weight) = (0.0f64, 0.0f64);
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+            if aligned {
+                let left = char_conf.last().copied().unwrap_or(1.0);
+                char_conf.push(left.min(line.char_conf.first().copied().unwrap_or(left)));
+            }
+        }
+        text.push_str(&line.text);
+        if aligned { char_conf.extend_from_slice(&line.char_conf); }
+        if let Some(score) = line.confidence.filter(|s| s.is_finite() && (0.0..=1.0).contains(s)) {
+            let n = line.text.chars().count().max(1) as f64;
+            weighted += f64::from(score) * n; weight += n;
+        }
+    }
+    crate::extractors::ocr_crispembed::OcrReviewRegion {
+        text, x, y, w: right - x, h: bottom - y,
+        confidence: complete_scores.then(|| (weighted / weight) as f32),
+        confidence_basis: if uniform_basis { first.confidence_basis } else { "unknown".into() },
+        char_conf: if aligned { char_conf } else { Vec::new() },
+        char_conf_unit: if aligned { first.char_conf_unit } else { "unknown".into() },
+        char_conf_aligned: aligned,
+        word_evidence: None,
+        kind: "text".into(),
+    }
+}
+
 fn annotate_layout(path: &Path, config: &crate::extractors::OcrPipelineConfig, regions: &mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, diagnostics: &mut Value, warnings: &mut Vec<String>) {
-    use crate::extractors::layout::{LayoutDetector, RegionKind};
+    use crate::extractors::layout::LayoutDetector;
     let detected = if config.layout_engine == "cc" {
         Ok(crate::extractors::ocr_crispembed::cc_detect_regions(path))
     } else {
@@ -1099,6 +1213,17 @@ fn annotate_layout(path: &Path, config: &crate::extractors::OcrPipelineConfig, r
         Ok(layout) => layout,
         Err(e) => { warnings.push(format!("Layout analysis failed; recognized text was retained: {e:#}")); return; },
     };
+    apply_review_layout(&layout, config, regions, diagnostics, warnings);
+}
+
+fn apply_review_layout(
+    layout: &[crate::extractors::layout::LayoutRegion],
+    config: &crate::extractors::OcrPipelineConfig,
+    regions: &mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>,
+    diagnostics: &mut Value,
+    warnings: &mut Vec<String>,
+) {
+    use crate::extractors::layout::RegionKind;
     diagnostics["layout"] = Value::Array(layout.iter().map(|r| json!({"x":r.x1,"y":r.y1,"w":r.x2-r.x1,"h":r.y2-r.y1,"label":r.label_name,"score":r.score})).collect());
     for region in regions.iter_mut() {
         let best = layout.iter().filter_map(|r| {
@@ -2011,6 +2136,171 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_lines_become_paragraphs_and_separate_blocks_stay_apart() {
+        let mut title = word("Kopf", 0.0, 0.0, 200.0, 40.0, 0.9);
+        title.kind = "title".into();
+        let paragraphs = group_lines_into_paragraphs(vec![
+            title,
+            word("erste Zeile", 0.0, 60.0, 300.0, 20.0, 0.9),
+            word("zweite Zeile", 2.0, 84.0, 280.0, 20.0, 0.5),
+            // A blank line's distance starts a new paragraph.
+            word("neuer Absatz", 0.0, 140.0, 250.0, 20.0, 0.8),
+            // Another column, beside the paragraph above.
+            word("rechte Spalte", 600.0, 162.0, 200.0, 20.0, 0.8),
+        ]);
+        assert_eq!(paragraphs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["Kopf", "erste Zeile\nzweite Zeile", "neuer Absatz", "rechte Spalte"]);
+        let joined = &paragraphs[1];
+        assert_eq!((joined.x, joined.y, joined.w, joined.h), (0.0, 60.0, 300.0, 44.0));
+        assert!(joined.char_conf_aligned);
+        assert_eq!(joined.char_conf.len(), joined.text.chars().count());
+        let expected = (0.9 * 11.0 + 0.5 * 12.0) / 23.0;
+        assert!((joined.confidence.unwrap() - expected as f32).abs() < 1e-6);
+    }
+
+    #[test]
+    fn paragraph_confidence_preserves_only_matching_valid_character_evidence() {
+        let first = word("A💡é", 0.0, 0.0, 100.0, 20.0, 0.9);
+        let second = word("次行", 0.0, 24.0, 100.0, 20.0, 0.6);
+        let joined = group_lines_into_paragraphs(vec![first.clone(), second.clone()]);
+        assert_eq!(joined[0].text, "A💡é\n次行");
+        assert_eq!(joined[0].char_conf, [0.9, 0.9, 0.9, 0.6, 0.6, 0.6]);
+        assert!(joined[0].char_conf_aligned);
+        assert_eq!(joined[0].char_conf_unit, "unicode_codepoint");
+
+        for basis in ["detection", "unknown"] {
+            let mut other = second.clone();
+            other.confidence_basis = basis.into();
+            let joined = group_lines_into_paragraphs(vec![first.clone(), other]);
+            assert_eq!(joined.len(), 1);
+            assert_eq!(joined[0].confidence_basis, "unknown");
+            assert!(joined[0].confidence.is_none());
+            assert!(!joined[0].char_conf_aligned);
+            assert!(joined[0].char_conf.is_empty());
+        }
+        // Equal lengths and matching units do not make token/unknown scores
+        // codepoint evidence, even if every line reports the same unit.
+        for unit in ["token", "unknown"] {
+            let mut a = first.clone();
+            let mut b = second.clone();
+            a.char_conf_unit = unit.into();
+            b.char_conf_unit = unit.into();
+            let joined = group_lines_into_paragraphs(vec![a, b]);
+            assert!(joined[0].confidence.is_some());
+            assert_eq!(joined[0].confidence_basis, "recognition");
+            assert!(!joined[0].char_conf_aligned);
+            assert!(joined[0].char_conf.is_empty());
+            assert_eq!(joined[0].char_conf_unit, "unknown");
+        }
+        for score in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let mut other = second.clone();
+            other.char_conf[0] = score;
+            let joined = group_lines_into_paragraphs(vec![first.clone(), other]);
+            assert!(!joined[0].char_conf_aligned);
+            assert!(joined[0].char_conf.is_empty());
+        }
+        for score in [None, Some(f32::NAN), Some(1.1)] {
+            let mut other = second.clone();
+            other.confidence = score;
+            let joined = group_lines_into_paragraphs(vec![first.clone(), other]);
+            assert!(joined[0].confidence.is_none(), "a partial mean cannot describe the whole paragraph");
+            // Independent, valid codepoint evidence stays usable.
+            assert!(joined[0].char_conf_aligned);
+        }
+        let joined = group_lines_into_paragraphs(vec![
+            word("", 0.0, 0.0, 100.0, 20.0, 0.9),
+            word("", 0.0, 24.0, 100.0, 20.0, 0.9),
+        ]);
+        assert!(!joined[0].char_conf_aligned);
+        assert!(joined[0].char_conf.is_empty(), "an inserted newline must not invent character evidence");
+    }
+
+    #[test]
+    fn paragraph_grouping_keeps_native_evidence_nontext_and_invalid_boxes_untouched() {
+        use crate::ocr_word_evidence::{NativeWordEvidence, WordEvidenceEnvelope};
+        let mut native = word("native", 0.0, 24.0, 100.0, 20.0, 0.8);
+        native.word_evidence = Some(WordEvidenceEnvelope {
+            version: 1, offset_unit: "utf16".into(), source: "tesseract_tsv".into(),
+            words: vec![NativeWordEvidence {
+                text: "native".into(), start: 0, end: 6, x: 0.0, y: 24.0, w: 100.0, h: 20.0,
+                confidence: Some(0.8), confidence_basis: "recognition".into(), alternatives: None,
+            }],
+        });
+        let mut table = word("table", 0.0, 72.0, 100.0, 20.0, 0.8);
+        table.kind = "table".into();
+        let invalid = word("outside", -1.0, 120.0, 100.0, 20.0, 0.8);
+        let expected = [&native, &table, &invalid].map(|r| serde_json::to_value(r).unwrap());
+        let grouped = group_lines_into_paragraphs(vec![
+            word("before", 0.0, 0.0, 100.0, 20.0, 0.9), native,
+            word("between", 0.0, 48.0, 100.0, 20.0, 0.9), table,
+            word("after", 0.0, 96.0, 100.0, 20.0, 0.9), invalid,
+            word("last", 0.0, 144.0, 100.0, 20.0, 0.9),
+        ]);
+        assert_eq!(grouped.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["before", "native", "between", "table", "after", "outside", "last"]);
+        for (index, expected) in [1, 3, 5].into_iter().zip(expected) {
+            assert_eq!(serde_json::to_value(&grouped[index]).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn review_layout_classifies_lines_before_paragraphs_are_joined() {
+        use crate::extractors::layout::{LayoutRegion, RegionKind};
+        let layout = vec![
+            LayoutRegion { x1: 0.0, y1: 0.0, x2: 300.0, y2: 20.0, score: 0.9, kind: RegionKind::Title, label_name: "title".into() },
+            LayoutRegion { x1: 0.0, y1: 24.0, x2: 300.0, y2: 68.0, score: 0.9, kind: RegionKind::Text, label_name: "text".into() },
+            LayoutRegion { x1: 0.0, y1: 72.0, x2: 300.0, y2: 92.0, score: 0.9, kind: RegionKind::Formula, label_name: "formula".into() },
+            LayoutRegion { x1: 0.0, y1: 96.0, x2: 300.0, y2: 116.0, score: 0.9, kind: RegionKind::Text, label_name: "text".into() },
+        ];
+        let config = crate::extractors::OcrPipelineConfig::default();
+        let mut diagnostics = json!({});
+        let mut warnings = vec![];
+        // Every recognizer line starts as ordinary text with identical size
+        // and spacing. Only the real layout classifier provides boundaries.
+        let regions = organize_review_regions(vec![
+            word("heading", 0.0, 0.0, 300.0, 20.0, 0.9),
+            word("body first", 0.0, 24.0, 300.0, 20.0, 0.9),
+            word("body second", 0.0, 48.0, 300.0, 20.0, 0.9),
+            word("x = y", 0.0, 72.0, 300.0, 20.0, 0.9),
+            word("after formula", 0.0, 96.0, 300.0, 20.0, 0.9),
+        ], &mut diagnostics, |regions, diagnostics| {
+            apply_review_layout(&layout, &config, regions, diagnostics, &mut warnings);
+        });
+        assert_eq!(regions.iter().map(|r| (r.kind.as_str(), r.text.as_str())).collect::<Vec<_>>(),
+            [("title", "heading"), ("text", "body first\nbody second"), ("formula", "x = y"), ("text", "after formula")]);
+        assert_eq!(diagnostics["paragraph_grouping"], json!({"lines": 5, "paragraphs": 4}));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn grouping_receipts_share_recognition_scope_without_source_content() {
+        let (_, events) = crate::operation_log::capture(|| {
+            let log = OperationLog::start("ocr.workspace_recognition", json!({"surface":"gui"}));
+            let mut diagnostics = json!({"full_text":"private document text", "recognition_image_path":"/private/source.png"});
+            let regions = organize_review_regions(vec![
+                word("private", 0.0, 0.0, 100.0, 20.0, 0.9),
+                word("document", 110.0, 0.0, 100.0, 20.0, 0.9),
+                word("text", 0.0, 24.0, 200.0, 20.0, 0.9),
+            ], &mut diagnostics, |_, _| {});
+            log_review_grouping(&log, &diagnostics);
+            log.succeed(json!({"regions": regions.len()}));
+        });
+        assert_eq!(events.iter().map(|event| event.phase.as_str()).collect::<Vec<_>>(),
+            ["started", "stage", "stage", "completed"]);
+        assert!(events.iter().all(|event| event.operation_id == events[0].operation_id));
+        assert_eq!(events[1].stage.as_deref(), Some("line_grouping"));
+        assert_eq!(events[1].context["count"], json!(3));
+        assert_eq!(events[1].context["regions"], json!(2));
+        assert_eq!(events[2].stage.as_deref(), Some("paragraph_grouping"));
+        assert_eq!(events[2].context["count"], json!(2));
+        assert_eq!(events[2].context["regions"], json!(1));
+        let logged = serde_json::to_string(&events).unwrap();
+        assert!(!logged.contains("private"));
+        assert!(!logged.contains("source.png"));
+        assert!(!logged.contains("full_text"));
+    }
+
+    #[test]
     fn word_regions_on_one_line_become_one_aligned_line() {
         let lines = merge_word_regions_into_lines(vec![
             word("Welt", 60.0, 11.0, 40.0, 20.0, 0.9), word("Hallo", 0.0, 10.0, 50.0, 20.0, 0.5),
@@ -2899,6 +3189,55 @@ mod tests {
             assert_eq!(validate_export_text(&pages, "pdf").unwrap_err(), crate::ocr_text_export::PDF_BIDI_UNAVAILABLE);
         }
         for format in ["text", "html", "docx"] { assert!(validate_export_text(&pages, format).is_ok()); }
+    }
+
+    #[cfg(feature = "ocr-reviewed-pdf")]
+    #[test]
+    fn grouped_paragraph_survives_workspace_spatial_and_text_exports() {
+        let root = tempfile::tempdir().unwrap();
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(320, 200, image::Rgb([255, 255, 255])));
+        let asset = persist_image(root.path(), &image).unwrap();
+        let grouped = group_lines_into_paragraphs(vec![
+            word("First résumé", 20.0, 20.0, 280.0, 20.0, 0.9),
+            word("Second 東京", 20.0, 44.0, 280.0, 20.0, 0.8),
+        ]);
+        assert_eq!(grouped.len(), 1);
+        let source = &grouped[0];
+        let mut page = export_page(root.path(), &source.text);
+        page.image_path = asset.image_path;
+        page.width = 320;
+        page.height = 200;
+        page.page_width_points = Some(320.0);
+        page.page_height_points = Some(200.0);
+        let region = &mut page.regions[0];
+        (region.x, region.y, region.w, region.h) = (source.x, source.y, source.w, source.h);
+        region.original_text = Some(source.text.clone());
+        region.confidence = source.confidence;
+        region.confidence_basis = Some(source.confidence_basis.clone());
+        region.char_conf = source.char_conf.clone();
+        region.char_conf_unit = Some(source.char_conf_unit.clone());
+        region.char_conf_aligned = Some(source.char_conf_aligned);
+        let pages = vec![page];
+        assert_eq!(export_bytes(&pages, "text", false).unwrap(), source.text.as_bytes());
+        let mapped = reviewed_render_pages(&pages);
+        assert_eq!(mapped[0].regions[0].text, source.text);
+        assert_eq!((mapped[0].regions[0].x, mapped[0].regions[0].y, mapped[0].regions[0].w, mapped[0].regions[0].h),
+            (20.0, 20.0, 280.0, 44.0));
+        for format in ["hocr", "alto"] {
+            let xml = String::from_utf8(export_bytes(&pages, format, false).unwrap()).unwrap();
+            assert!(xml.contains("First résumé&#xA;Second 東京"), "{format} must retain the complete multiline region text");
+        }
+        let pdf = export_bytes(&pages, "pdf", false).unwrap();
+        let document = lopdf::Document::load_mem(&pdf).unwrap();
+        let extracted = document.extract_text(&[1]).unwrap();
+        assert!(extracted.contains("First résumé"));
+        assert!(extracted.contains("Second 東京"));
+        let page_id = document.get_pages()[&1];
+        let content = lopdf::content::Content::decode(&document.get_page_content(page_id).unwrap()).unwrap();
+        let baselines: Vec<_> = content.operations.iter().filter(|op| op.operator == "Tm")
+            .map(|op| op.operands[5].as_float().unwrap()).collect();
+        assert_eq!(baselines.len(), 2, "the paired renderer must lay out both explicit lines");
+        assert!(baselines[0] > baselines[1]);
     }
 
     #[test]

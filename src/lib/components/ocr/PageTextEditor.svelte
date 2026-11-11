@@ -48,12 +48,11 @@
 </script>
 
 <section bind:this={editorRoot} class="page-text-editor" aria-label="Page text editor">
-  <p class="editor-help">
-    Edit complete sentences and paragraphs, paste replacement text, or add line
-    breaks. Each passage stays linked to its source region, in export reading
-    order. Changes save automatically and can be undone.
-  </p>
-  {#if page.structure}<p class="editor-help">Inserted and replaced text uses plain formatting. Unchanged text retains its formatting where its range is certain. Use Structure to review styles, headings, lists, columns, and links.</p>{/if}
+  <details class="editor-help">
+    <summary class="editor-info" aria-label="About passage editing" title="About passage editing">i</summary>
+    <p>{"Edit complete sentences and paragraphs, paste replacement text, or add line breaks. Each passage stays linked to its source region, in export reading order. Changes save automatically and can be undone."
+      + (page.structure ? " Inserted and replaced text uses plain formatting. Unchanged text retains its formatting where its range is certain. Use Structure to review styles, headings, lists, columns, and links." : "")}</p>
+  </details>
   {#each passages as { region, number } (region.id)}
     <article
       class="passage"
@@ -189,4 +188,10 @@
     outline: 2px solid #bfdbfe;
     outline-offset: 2px;
   }
+  details.editor-help { position: relative; align-self: flex-end; }
+  .editor-info { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #52525b; color: #a1a1aa; cursor: pointer;
+    font: italic 600 10px/14px Georgia, serif; text-align: center; list-style: none; }
+  .editor-info::-webkit-details-marker { display: none; }
+  .editor-info:focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
+  details.editor-help p { position: absolute; right: 0; top: 100%; z-index: 20; width: min(320px, calc(100vw - 64px)); margin: 6px 0 0; padding: 10px; box-sizing: border-box; border: 1px solid #3f3f46; border-radius: 6px; background: #27272a; color: #e4e4e7; box-shadow: 0 6px 20px #0008; }
 </style>

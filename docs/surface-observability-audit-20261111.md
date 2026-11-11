@@ -2,11 +2,12 @@
 
 ## Integration boundary
 
-The [remote ledger](remote-integration-audit-20261111.md) records all 75 live
+The [remote ledger](remote-integration-audit-20261111.md) records all 76 live
 branch heads and current PR dispositions. Merge `07548c56` incorporates the
 initial five SMB/storage commits on top of the shared OCR branch. The later
-SMB app-provider head `5c8e84b3` and PDF consolidation `1bdf4dbe` are also included.
-The latter entered through merge `fe274b06`. Older
+SMB app-provider head `5c8e84b3`, qualification follow-up `eba2ca6c`, PDF
+consolidation through `afcb4a25` and OCR document view `dbec5870` are also included.
+The PDF source is PR #46 and the OCR document view is PR #45. Older
 feature and PR work is already present through main. The historical July MAS
 prototype is retained as an alternate branch; its remaining local dependency
 workarounds would remove current supported functionality.
@@ -28,6 +29,7 @@ serializable edit operations, with the same publication and logging boundaries.
 | GUI image and PDF extraction | One immutable selection per job; native application dispatch or capability-checked browser OCR. | Input validation, native dispatch/browser worker acquisition, page decisions, recognition and resource cleanup; failure/cancellation remains distinct. |
 | Native image/PDF/TIFF extraction | Shared selected policy with explicit errors for incompatible routes; no successful truncated document after a page fails. | Resolved policy, input/page validation, digital-text/OCR decision, preparation/model-cache/pipeline stages, page failure and final result. |
 | OCR Workbench | Capability gate includes installed legacy recognizers; project choices remain authoritative. | Import, project save, recognition, preparation/transforms, specialist operations, export and cancellation. |
+| OCR paragraph document view | Classify layout before grouping compatible prose; preserve confidence provenance and native evidence; reconcile editable DOM with project history and locking. | Existing native/frontend edit and history receipts remain authoritative. Line/paragraph grouping emits counts in the recognition scope; no filename/raw-error logging wrappers are added. |
 | CPU OCR worker | Shares the same selection and output contract; its events reach the parent even after successful execution. | Worker launch, typed child events, completion/failure; child events carry the parent operation ID. |
 | Background ingestion | Captures saved OCR policy; queue success follows completed extraction/indexing. | Queue processing, extraction, index write and terminal outcome. |
 | Search and reports | UI errors are retained; cancellation is recognized by the exact error contract. | Search/count, summary generation, report publication and cancellation/failure. A filename containing `cancelled` is an ordinary filename. |

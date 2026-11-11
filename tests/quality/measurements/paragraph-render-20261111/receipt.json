@@ -1,0 +1,22 @@
+{
+  "source_commit": "e14136d3a99572367e68619045943fe77a299caa",
+  "source": "src/ocr_render.cpp",
+  "raster_decoder_tested": false,
+  "app_rust_compiled": false,
+  "multiline_region": {
+    "txt": "passed",
+    "hocr": "passed",
+    "alto": "passed",
+    "pdf_baselines": [
+      158.0,
+      136.0
+    ],
+    "pdf": "passed"
+  },
+  "sha256": {
+    "src/ocr_render.cpp": "248019861a42d493152aef9b4354269613cef67f17851c763d697055af7365be",
+    "src/ocr_render.h": "5430b243ac814f3131fde2fc0e4d190b4f3608081f56bfabff67c916d328788c",
+    "no_image.cpp": "f6079d933be471abc0915b6b07181f92156ab88151c4b02f02eb9605b0b7cac5",
+    "libocr_render_test.so": "8bf9c6d47ad4122413227323ded256ec9de16513430bc790d78933f77db13aa5"
+  }
+}

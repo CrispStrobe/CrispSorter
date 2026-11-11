@@ -2,19 +2,20 @@
 
 ## Scope and result
 
-The initial read-only audit fetched all 74 live GitHub branch heads without pruning or checking out another branch. It compared them with OCR integration baseline `0be20e8a5c004b04bc5c449f16977252d02ba27b` and main `2a9a74d509c6803e50c15e5284d5c95401f8646d`. A second live inventory found 75 heads: a new PDF editor branch and an advanced SMB branch published during this integration. Both newer source heads are included below and were integrated too.
+The initial read-only audit fetched all 74 live GitHub branch heads without pruning or checking out another branch. It compared them with OCR integration baseline `0be20e8a5c004b04bc5c449f16977252d02ba27b` and main `2a9a74d509c6803e50c15e5284d5c95401f8646d`. Work continued to arrive during integration. The final source inventory at **11 November 2026, 10:37 UTC** contains **76 heads**: the PDF editor and OCR document-view branches, plus the advanced SMB head, are all included below. This timestamp and the exact source SHAs define the integration snapshot.
 
 - 71 heads, including main itself, were already ancestors of main. Their work is present by commit ancestry; there is no reason to reapply their commits.
 - `feat/shared-ocr-policy-20261111` was the current integration baseline and contained the three OCR integration commits beyond main.
-- `feature/smb-storage-optimization-2026-11-11` initially had five unique commits, integrated by merge `07548c56dcf3fb0bb67e884a27eb51a022bdd22c`. Its later head `5c8e84b36e55e4e82653caaaf5654426670db16e` adds the actual SMB app provider and is included in the second integration merge.
-- The newly published `feat/pdf-editor-consolidation` at `1bdf4dbe21475b0d3449995baf6225214acfb726` is included by merge `fe274b06ddd7522eabe3eabf5eebfd21f5aa33b7`.
+- `feature/smb-storage-optimization-2026-11-11` initially had five unique commits, integrated by merge `07548c56dcf3fb0bb67e884a27eb51a022bdd22c`. The app-provider commit `5c8e84b3` entered through `bde9dbf2`; its qualification follow-up at final source head `eba2ca6c6974374aa6d34954a03baee457628d54` entered through `29d7d696`.
+- `feat/pdf-editor-consolidation` initially entered at `1bdf4dbe` through merge `fe274b06`. Final source head `afcb4a25fc9af83b250807e1eac23cd5c38b2722`, including view controls and interaction tests, entered through `ad854a2b`.
+- `feat/ocr-document-view` at `dbec5870e8f4593f52e120676f471a7cad085eb9` adds the paragraph document editor and native grouping. It is included with the evidence, layout and editing fixes described below.
 - `mas-sandbox-build` contains one graph-unique July prototype commit. It is not patch-equivalent to current main, but its remaining changes are temporary build workarounds for an old product variant, not a missing current feature. The specific disposition is explained below.
 
 The inventory is a snapshot of the live remote refs at the audit. Remote branches can move after this snapshot. Local stale tracking refs were not used to invent additional candidates.
 
 ## Pull-request coverage
 
-The connected GitHub inventory reported [PR #44](https://github.com/CrispStrobe/CrispSorter/pull/44) as the only open pull request. It tracks the current shared OCR integration branch. Inspecting only open PRs would therefore miss the current SMB feature branch and the historical MAS prototype; both were inspected through their branch heads.
+The initial GitHub inventory reported [PR #44](https://github.com/CrispStrobe/CrispSorter/pull/44) as the only open pull request. A subsequent open-PR check at 10:47 UTC also found draft [PR #45](https://github.com/CrispStrobe/CrispSorter/pull/45) for OCR document view and draft [PR #46](https://github.com/CrispStrobe/CrispSorter/pull/46) for PDF consolidation. Their heads exactly match the final source inventory and are incorporated into PR #44. The SMB feature branch has no open PR, so it was found through the branch audit.
 
 [PR #42](https://github.com/CrispStrobe/CrispSorter/pull/42) is already merged at `2a9a74d5`. Its merge tree is identical to the prior search-workspace feature head `48bab31f`. The older OCR, mobile, search, library, provider, and catalog branches listed below are already integrated by ancestry.
 
@@ -22,7 +23,7 @@ In particular, `feature/catalog-scan-improvements-2026-11-07` at `19ec5a25329c16
 
 ## Integrated SMB work
 
-Initial source head: `e737a132fdade74fed7c6c87566348621319d722`. Latest integrated source head: `5c8e84b36e55e4e82653caaaf5654426670db16e`.
+Initial source head: `e737a132fdade74fed7c6c87566348621319d722`. Final integrated source head: `eba2ca6c6974374aa6d34954a03baee457628d54`.
 
 The branch starts directly from main `2a9a74d5`. These five patch-unique commits were brought in together:
 
@@ -39,6 +40,8 @@ The 17 changed files had no overlap with the 44 OCR integration files changed si
 At the initial source head, direct SMB was a standalone experimental qualification boundary. The later `5c8e84b3` commit registers the SMB app drive and shares its settings between the IndexIngest GUI and `drives smb` CLI. It supports an OS-mounted transport and an explicit experimental Rust transport. The independent crate stays excluded from workspace membership but is now an app path dependency. Both locks and the fixture use immutable CrispCloud core revision `4b44dc4d44ef05a18d2da2579d2e3b866b245643`. Existing local/OS-mounted folders continue to work through LocalDrive.
 
 The second merge preserves the new `filesystem.rs` / `registry.rs` split while carrying forward the staged LocalDrive writes, streaming receipts and bounded reads. The production-source contract harnesses follow the relocated code. Mounted SMB uploads use the same verified staging boundary. Direct Rust uploads retain the upstream create/truncate semantics; failed writes that may have committed are excluded from immediate and durable automatic replay. No atomic direct-SMB upload guarantee is made.
+
+The `eba2ca6c` follow-up adds creation of missing registry directories, the GUI transport label, settings IPC browser coverage, failed-stream/session-reuse cases and a full-app typecheck gate. Its failed-write cleanup is reconciled with verified staging: mounted failures must leave no new destination, while direct transport cleanup handles any partial remote file. A queued mounted upload whose settings later switch to Rust is rejected before replay begins, and its diagnostic record is retained as terminal.
 
 The incoming branch added four isolated production-reader tests, one LocalDrive dispatch test, and one explicitly invoked authenticated SMB fixture. These are source-level inventory counts, not a claim that this audit executed the full Tauri app or real NAS qualification.
 
@@ -67,9 +70,21 @@ The same checkpoint's authenticated SMB fixture exposed a real missing-file bug:
 
 Source head `1bdf4dbe21475b0d3449995baf6225214acfb726` replaces the four overlapping PDF tabs with one editor and a document-tools drawer. It adds drawing/erasing real PDF annotations, shared document actions, and text-layer exports. The source commit merged cleanly, but the integration audit found behavioral conflicts that a textual merge cannot detect.
 
+The later `afcb4a25` follow-up enables font rendering in both document loaders and adds floating view controls and interaction tests. The integration retains all ownership guards and both browser suites: six lifecycle cases plus nine interaction cases. Logging assertions follow the safe event contract; detailed failures remain visible in the UI.
+
 The follow-up protects session ownership across open/edit/save/close, serializes actions, bounds page-range parsing, and avoids form-loading retry loops. DOCX/conversion handoffs reject stale UI results. Native saves and exports stage output before publication; validation failure preserves an existing destination. Save As retargets the session, branch edits after undo remain dirty, and private snapshot names cannot escape their session directory. Shared operation receipts replace path-bearing diagnostics.
 
 CLI parity uses the same native code: `pdf export` provides text, Markdown and feature-gated Word output; `pdf apply` executes the editor's serializable operations, including annotations and erasing, from a bounded JSON recipe. See [PDF editor and CLI](pdf-editor-cli.md). Text-layer export is explicitly separate from recognition; scanned documents continue through the shared OCR policy.
+
+## OCR document view
+
+Source head `dbec5870e8f4593f52e120676f471a7cad085eb9` replaces per-line controls with editable paragraph regions in a continuous page view, compacts the workspace and updates browser/mobile smoke selectors. Its engine catalog and policy API are unchanged; the integration preserves the shared dispatch, capability validation, saves, exports and content-free logging introduced earlier.
+
+Native grouping classifies layout while line boxes are still distinct, then combines compatible prose. Non-text regions and native word evidence remain barriers. Character confidence is retained only when units, provenance, lengths and finite score ranges satisfy the same conservative contract as line grouping. Token scores and unknown/mixed bases are not relabeled as character evidence.
+
+Paragraphs retain line breaks and their enclosing region box. The pinned CrispEmbed renderer supports multiline region text and estimates each line's placement within that box; grouping does not create verified line or word coordinates. Native word-evidence regions are not grouped. Workspace export regressions cover the grouped text and spatial-export contract, while the pinned renderer's own artifact test checks multiline text extraction. A local [reproducible renderer probe](../tests/quality/measurements/paragraph-render-20261111/rebuild.py) also passed exact TXT/hOCR/ALTO text checks and PDF extraction through Poppler and pypdf at source `e14136d3`. Its [receipt](../tests/quality/measurements/paragraph-render-20261111/receipt.json) explicitly excludes image decoding and the application's Rust binding.
+
+The document editor handles plaintext-only contenteditable elements explicitly. Model changes reconcile the DOM while preserving the selection where possible; locking an active editor prevents unrecorded edits. Project undo and subsequent typing are covered by browser regressions, alongside native tests for layout barriers and score provenance. These tests are separate from actual OCR model qualification.
 
 ## Historical MAS branch disposition
 
@@ -87,7 +102,7 @@ Do not mark this commit as merged or patch-equivalent. Retain the historical bra
 
 ## Full live-head inventory
 
-All 75 heads from the second live inventory are listed below. “Already included in main” means `git merge-base --is-ancestor <head> 2a9a74d5` succeeded. The integration branch row records the head at inventory time, before the subsequent merges and fixes.
+All 76 heads from the final source inventory are listed below. “Already included in main” means `git merge-base --is-ancestor <head> 2a9a74d5` succeeded. The integration branch row records the head at inventory time, before the subsequent merges and fixes.
 
 | Remote branch | Audited head | Disposition |
 | --- | --- | --- |
@@ -107,6 +122,7 @@ All 75 heads from the second live inventory are listed below. “Already include
 | `feat/ocr-archival-option-receipt` | `e39529f3f0887eb231a19060c7c5cba049fafa6a` | Already included in main |
 | `feat/ocr-archival-option-semantics` | `76bf5d8d9f388f93b7109558b8bcaf834d8e0c14` | Already included in main |
 | `feat/ocr-document-studio` | `b876fb43eb19cc7de44760400e50735aa27c2c78` | Already included in main |
+| `feat/ocr-document-view` | `dbec5870e8f4593f52e120676f471a7cad085eb9` | Included with paragraph/evidence/editor corrections; PR #45 |
 | `feat/ocr-export-cancel-races` | `33c2d5aef9a689c8e273b2d82f81a3769bd3b40d` | Already included in main |
 | `feat/ocr-export-controls` | `d0f9baa9d424a4aaa3d439ae08965191de715cc8` | Already included in main |
 | `feat/ocr-export-error-identity` | `8bba64f677b5ea8951915116e0f7b75607efdb98` | Already included in main |
@@ -141,16 +157,16 @@ All 75 heads from the second live inventory are listed below. “Already include
 | `feat/ocr-studio-integration` | `ad672046f77e0c873162573a5c2253bdf7b3bf53` | Already included in main |
 | `feat/ocr-word-review` | `37c76dfb6a325561f53b1e5a062ef342106f1a2c` | Already included in main |
 | `feat/ocr-workspace-engines-cpu-budget` | `11515f1580fba95eede4cfd0b4d99da5c1784626` | Already included in main |
-| `feat/pdf-editor-consolidation` | `1bdf4dbe21475b0d3449995baf6225214acfb726` | Merged into integration at `fe274b06` |
+| `feat/pdf-editor-consolidation` | `afcb4a25fc9af83b250807e1eac23cd5c38b2722` | Initial consolidation at `fe274b06`; follow-up at `ad854a2b`; PR #46 |
 | `feat/search-pipeline-20261110` | `8ceb25ff78710d91c39209473c83b2dea0d671f7` | Already included in main |
 | `feat/search-workspace-completion-20261110` | `48bab31f67da2bf09c514c9cdfd7324ab4ef6a3e` | Already included in main |
-| `feat/shared-ocr-policy-20261111` | `34aaaad3236c3898015433b06b037bba04f0a756` | Integration branch at second inventory |
+| `feat/shared-ocr-policy-20261111` | `fe274b06ddd7522eabe3eabf5eebfd21f5aa33b7` | Integration branch at final source inventory |
 | `feat/ux-workflow-essentials` | `d9118c45bef5a7bf8429ed8180fd7d8a8a29d1f4` | Already included in main |
 | `feature/catalog-scan-improvements-2026-11-07` | `19ec5a25329c16a49eff05aa16d021f5d511403e` | Already included in main |
 | `feature/filen-full-parity-backup` | `7bd6d8fd1769b86217a564fb23ac489b87777477` | Already included in main |
 | `feature/ocr-production-workspace` | `3e5e95e5b72cdc55942744dda55a7450a59aee52` | Already included in main |
 | `feature/single-part-default` | `a34e8bb90201aa651f727cf87567fd88d260631d` | Already included in main |
-| `feature/smb-storage-optimization-2026-11-11` | `5c8e84b36e55e4e82653caaaf5654426670db16e` | Initial five commits at `07548c56`; subsequent app-provider commit included in second integration merge |
+| `feature/smb-storage-optimization-2026-11-11` | `eba2ca6c6974374aa6d34954a03baee457628d54` | Initial five commits at `07548c56`; app provider at `bde9dbf2`; qualification at `29d7d696` |
 | `fix-windows-msvc-toolchain` | `149a3c72fc987b0ec6492d61e3ca3ef1a497958d` | Already included in main |
 | `fix/ios-release-unsigned-archive` | `f54137de2a0cf60bf96c41c272df3e829a9ad1e1` | Already included in main |
 | `fix/ocr-review-ux` | `73c6070f1d3688557ccf728a491fe9280e5bd7bc` | Already included in main |
@@ -181,5 +197,5 @@ git diff --name-only <merge-base> <candidate>
 git merge-tree <merge-base> <integration-baseline> <candidate>
 ```
 
-All six commits on the two initially graph-unique branches were also patch-unique according to `git cherry`. The second inventory added one PDF commit and one SMB commit; no other source head moved or appeared. There were no additional non-ancestor, patch-equivalent branches to classify. Two pairs of historical branch names share a head (`feat/ocr-document-studio` / `feat/ocr-import-error-identity`, and `feat/ocr-mobile-documents` / `feat/ocr-mobile-heic-fixture`); they do not represent additional work.
+All six commits on the two initially graph-unique branches were also patch-unique according to `git cherry`. The second inventory added one PDF commit and one SMB commit. The final inventory added OCR document view plus the PDF/SMB follow-ups; no other source branch moved or appeared. There were no additional non-ancestor, patch-equivalent branches to classify. Two pairs of historical branch names share a head (`feat/ocr-document-studio` / `feat/ocr-import-error-identity`, and `feat/ocr-mobile-documents` / `feat/ocr-mobile-heic-fixture`); they do not represent additional work.
 
