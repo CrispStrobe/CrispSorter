@@ -2679,22 +2679,7 @@ fn cmd_zone(
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
     }
-    let data_dir = data_dir.unwrap_or_else(|| {
-        // Same fallback as other CLI commands that need the data dir.
-        #[cfg(target_os = "macos")]
-        let base = std::env::var("HOME")
-            .map(|h| PathBuf::from(h).join("Library/Application Support"))
-            .unwrap_or_else(|_| PathBuf::from("."));
-        #[cfg(not(target_os = "macos"))]
-        let base = std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".local/share"))
-                    .unwrap_or_else(|_| PathBuf::from("."))
-            });
-        base.join("com.crispstrobe.crispsorter")
-    });
+    let data_dir = resolve_data_dir(data_dir)?;
     let store = crate::index::templates::TemplateStore::open_or_create(&data_dir)
         .map_err(|e| format!("opening template store: {e}"))?;
     let template = store.get_template_by_name(&template_name)
