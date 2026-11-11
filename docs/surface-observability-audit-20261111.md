@@ -115,6 +115,22 @@ it covers bounded reads, retries, partial errors, size mismatch, cancellation,
 publication and concurrent requests. CI runs it on Linux, macOS and Windows.
 The SMB fixture runner has separate Python tests for its qualification logic.
 
+The Linux app test/build gate now enables `fuse`, which previously escaped
+compilation in CI. It includes the direct Linux `libc` dependency and finishes
+async provider setup before acquiring the synchronous mount registry lock.
+Unit tests exercise real queue/range/cache reads, concurrent mount reservation
+and mount-directory failure receipts without performing a kernel mount. The
+mount lifecycle logs completion only when the blocking event loop returns;
+creating its thread is not reported as a successfully established mount.
+
+The isolated OCR qualification generator previously referenced a removed
+cache function. It now imports the actual production OCR policy, preparation,
+recognizer, worker, license/model resolver and logger, with direct Rust/FFI
+dependencies and source hashes. Its Python regression generates all four
+basic/panel/worker variants. Generation is checked separately from compiling
+or running the generated native crate and does not count as recognition
+qualification.
+
 `scripts/verify_cli_operations.py` launches the actual built executable on
 all three desktop platforms. It checks a complete JSON result, stderr-only
 correlated receipts, global verbosity, failed input/configuration behavior,

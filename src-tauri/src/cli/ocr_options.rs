@@ -94,15 +94,24 @@ pub(super) fn overlay_options(
 ) -> Result<ExtractOptions, String> {
     let automatic = saved.ocr_pipeline.engine.as_deref().map(str::trim)
         .is_none_or(|engine| engine.is_empty() || engine == "auto");
-    if !explicit.contains("engine") && !saved.ocr_pipeline.enabled && automatic && has_processing_override(explicit) {
-        // Activating a processing option must not bypass a saved legacy tier
-        // merely because enabled=true takes precedence in the shared resolver.
-        let selected = match saved.ocr_tier {
-            OcrTier::Tier1 => Some("system_tesseract"), OcrTier::Tier2 => Some("ocrs"),
-            OcrTier::Tier3 => Some("paddle"), OcrTier::Tier4 => Some("dbnet_trocr"),
-            OcrTier::Auto => None,
-        };
-        if let Some(engine) = selected { saved.ocr_pipeline.engine = Some(engine.into()); }
+    // Explicit flat recognition weights create a new Automatic recipe. Only
+    // preparation/control changes should pin Automatic's current runtime
+    // default; an explicitly saved tier still retains its engine precedence.
+    let flat_recipe_override = automatic && saved.ocr_tier == OcrTier::Auto
+        && ["rec_model", "vlm_ocr_model", "vlm_ocr_engine"].iter().any(|arg| explicit.contains(*arg));
+    if !explicit.contains("engine") && !saved.ocr_pipeline.enabled && automatic
+        && has_processing_override(explicit) && !flat_recipe_override {
+        // Preserve the current effective recognizer, including Automatic's
+        // native fallback in builds without CrispEmbed, before enabled=true
+        // changes precedence. Only copy resolved recognition state: disabled
+        // old stages/weights must stay inactive, while preparation settings
+        // remain available for explicitly requested processing steps.
+        let (resolved, _) = crate::extractors::ocr_policy::resolve_extraction_config(&saved)?;
+        saved.ocr_pipeline.engine = resolved.engine;
+        saved.ocr_pipeline.stages = resolved.stages;
+        saved.ocr_pipeline.det_model = resolved.det_model;
+        saved.ocr_pipeline.rec_model = resolved.rec_model;
+        saved.ocr_pipeline.vlm_ocr_model = resolved.vlm_ocr_model;
     }
     saved.ocr_pipeline = overlay(saved.ocr_pipeline, flags, explicit, source_type)?;
     // An explicit Automatic choice must not be reinterpreted as a saved
@@ -304,6 +313,62 @@ mod tests {
                 assert!(!resolved.sr);
             }
         }
+    }
+
+    #[test]
+    fn explicit_false_preserves_automatic_runtime_engine_without_reviving_disabled_stages() {
+        // This expectation comes from the shared runtime policy, so the same
+        // regression covers embedded Linux and native-only Windows builds.
+        for engine in [None, Some("auto")] {
+            let saved = ExtractOptions { ocr_tier: OcrTier::Auto,
+                ocr_pipeline: config(json!({"enabled":false,"engine":engine,"sr":true,
+                    "det_model":"hidden-det.gguf","rec_model":"hidden-rec.gguf",
+                    "vlm_ocr_model":"hidden-vision.gguf",
+                    "sr_model":"custom-sr.gguf","sr_engine":"safmn",
+                    "stages":[{"engine":"tesseract","rec_model":"hidden-language.gguf"},
+                        {"engine":"qwen2vl","det_model":"hidden-stage-vision.gguf"}]})), ..Default::default() };
+            let (before, _) = crate::extractors::ocr_policy::resolve_extraction_config(&saved).unwrap();
+            let actual = overlay_options(saved, config(json!({"sr":false})), &names(&["sr"]), "auto").unwrap();
+            let (after, _) = crate::extractors::ocr_policy::resolve_extraction_config(&actual).unwrap();
+            assert_eq!(after.engine, before.engine);
+            assert_eq!(serde_json::to_value(&after.stages).unwrap(), serde_json::to_value(&before.stages).unwrap());
+            assert_eq!(after.det_model, before.det_model);
+            assert_eq!(after.rec_model, before.rec_model);
+            assert_eq!(after.vlm_ocr_model, before.vlm_ocr_model);
+            assert!(!after.sr);
+            assert_eq!(after.sr_model.as_deref(), Some("custom-sr.gguf"));
+            assert_eq!(after.sr_engine, "safmn");
+        }
+    }
+
+    #[test]
+    fn explicit_flat_models_create_an_automatic_recipe_instead_of_pinning_the_runtime_default() {
+        for engine in [None, Some("auto")] {
+            for (flags, explicit) in [
+                (config(json!({"rec_model":"custom-rec.gguf"})), names(&["rec_model"])),
+                (config(json!({"vlm_ocr_model":"custom-vision.gguf"})), names(&["vlm_ocr_model"])),
+                (config(json!({"vlm_ocr_model":"custom-qwen3.gguf","vlm_ocr_engine":"qwen3vl"})),
+                    names(&["vlm_ocr_model","vlm_ocr_engine"])),
+            ] {
+                let saved = ExtractOptions { ocr_tier:OcrTier::Auto,
+                    ocr_pipeline:config(json!({"enabled":false,"engine":engine})), ..Default::default() };
+                let actual = overlay_options(saved, flags.clone(), &explicit, "auto").unwrap();
+                let (resolved, _) = crate::extractors::ocr_policy::resolve_extraction_config(&actual).unwrap();
+                assert!(resolved.enabled && resolved.stages.is_empty());
+                assert_eq!(resolved.engine.as_deref(), Some("auto"));
+                assert_eq!(resolved.rec_model, flags.rec_model);
+                assert_eq!(resolved.vlm_ocr_model, flags.vlm_ocr_model);
+                assert_eq!(resolved.vlm_ocr_engine, flags.vlm_ocr_engine);
+            }
+        }
+        // A deliberate Tier4 choice remains DBNet+TrOCR when its weights are
+        // overridden; only saved Automatic permits the flat-recipe exception.
+        let saved = ExtractOptions { ocr_tier:OcrTier::Tier4, ..Default::default() };
+        let actual = overlay_options(saved, config(json!({"rec_model":"tier4-rec.gguf"})),
+            &names(&["rec_model"]), "auto").unwrap();
+        let (resolved, _) = crate::extractors::ocr_policy::resolve_extraction_config(&actual).unwrap();
+        assert_eq!(resolved.engine.as_deref(), Some("dbnet_trocr"));
+        assert_eq!(resolved.stages[0].rec_model.as_deref(), Some("tier4-rec.gguf"));
     }
 
     #[test]

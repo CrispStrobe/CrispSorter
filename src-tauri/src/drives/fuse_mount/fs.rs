@@ -4,7 +4,7 @@
 //! Inode 1 is the root directory.  Inodes are assigned dynamically
 //! on `readdir` and cached in a bidirectional `path ↔ ino` map.
 
-use crate::drives::{CloudDrive, DirEntry, FileStat};
+use crate::drives::{CloudDrive, FileStat};
 use crate::drives::read_cache::{CachedFile, ContentCache};
 use crate::sync::transfer_queue::TransferQueue;
 use anyhow::Result;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 /// TTL for cached attributes (5 seconds).
 const ATTR_TTL: Duration = Duration::from_secs(5);
@@ -105,6 +105,46 @@ impl FuseDriveFs {
             state: Mutex::new(InodeState::new()),
             content_cache: Mutex::new(ContentCache::new(cache_max_bytes)),
         }
+    }
+
+    /// Read one FUSE request through the real queue and cache without coupling
+    /// storage I/O to a kernel reply. This is also testable without mounting.
+    fn read_file_slice(&self, file_path: &Path, offset: u64, size: u32) -> Result<Vec<u8>> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Mounted local/SMB/NFS files support true seek+range reads; a FUSE
+        // page must not allocate or copy the entire mounted file first.
+        if self.drive.drive_type() == crate::drives::DriveType::Local {
+            let drive = Arc::clone(&self.drive);
+            let end = offset.saturating_add(size as u64 - 1);
+            return self.queue.download_blocking(
+                drive.label().to_owned(), file_path.to_owned(), None,
+                move |path| drive.read_range(path, offset, end),
+            );
+        }
+
+        // Other providers materialize once into a private disk-backed LRU.
+        // Each read allocates only the requested slice, including cache hits.
+        let cached = self.content_cache.lock().unwrap().get(file_path);
+        let file = match cached {
+            Some(cached) => cached,
+            None => {
+                let drive = Arc::clone(&self.drive);
+                let drive_id = drive.label().to_owned();
+                let size_hint = drive.stat(file_path).ok().map(|stat| stat.size);
+                let fetched = Arc::new(CachedFile::create(|destination| {
+                    self.queue.download_to_file_blocking(
+                        drive_id, file_path.to_owned(), destination.to_owned(), size_hint,
+                        move |path, writer| drive.read_file_to_writer(path, writer),
+                    )
+                })?);
+                self.content_cache.lock().unwrap().insert(file_path.to_owned(), Arc::clone(&fetched));
+                fetched
+            }
+        };
+        file.read(offset, size)
     }
 
     /// Build a `FileAttr` from a `FileStat` and inode.
@@ -289,42 +329,9 @@ impl Filesystem for FuseDriveFs {
             }
         };
 
-        // Mounted local/SMB/NFS files support true seek+range reads; a FUSE
-        // page must not allocate or copy the entire mounted file first.
-        if self.drive.drive_type() == crate::drives::DriveType::Local {
-            let drive = Arc::clone(&self.drive);
-            let start = offset as u64;
-            let end = start.saturating_add(size as u64 - 1);
-            match self.queue.download_blocking(drive.label().to_owned(), file_path,
-                None, move |path| drive.read_range(path, start, end)) {
-                Ok(bytes) => reply.data(&bytes),
-                Err(_) => reply.error(libc::EIO),
-            }
-            return;
-        }
-
-        // Other providers materialize once into a private disk-backed LRU.
-        // Each read allocates only the requested slice, including cache hits.
-        let cached = self.content_cache.lock().unwrap().get(&file_path);
-        let file = if let Some(cached) = cached {
-            Some(cached)
-        } else {
-            let drive = Arc::clone(&self.drive);
-            let drive_id = drive.label().to_owned();
-            let size_hint = drive.stat(&file_path).ok().map(|stat| stat.size);
-            let fetched = CachedFile::create(|destination| {
-                self.queue.download_to_file_blocking(drive_id, file_path.clone(),
-                    destination.to_owned(), size_hint,
-                    move |path, writer| drive.read_file_to_writer(path, writer))
-            }).map(Arc::new).ok();
-            if let Some(ref file) = fetched {
-                self.content_cache.lock().unwrap().insert(file_path.clone(), Arc::clone(file));
-            }
-            fetched
-        };
-        match file.and_then(|file| file.read(offset as u64, size).ok()) {
-            Some(bytes) => reply.data(&bytes),
-            None => reply.error(libc::EIO),
+        match self.read_file_slice(&file_path, offset as u64, size) {
+            Ok(bytes) => reply.data(&bytes),
+            Err(_) => reply.error(libc::EIO),
         }
     }
 
@@ -382,18 +389,176 @@ pub fn mount_blocking_with_cache(
     mount_point: &Path,
     cache_max_bytes: u64,
 ) -> Result<()> {
-    std::fs::create_dir_all(mount_point)?;
-    let fs = FuseDriveFs::with_cache_limit(drive, cache_max_bytes);
-    let options = vec![
-        fuser::MountOption::RO,
-        fuser::MountOption::FSName("crispsorter".to_string()),
-        fuser::MountOption::AutoUnmount,
-    ];
-    fuser::mount2(fs, mount_point, &options)?;
-    Ok(())
+    let log = crate::operation_log::OperationLog::start(
+        "storage.fuse_mount", serde_json::json!({"surface":"native"}),
+    );
+    let result = (|| -> Result<()> {
+        log.step("prepare_directory", serde_json::Value::Null);
+        std::fs::create_dir_all(mount_point)?;
+        let fs = FuseDriveFs::with_cache_limit(drive, cache_max_bytes);
+        let options = vec![
+            fuser::MountOption::RO,
+            fuser::MountOption::FSName("crispsorter".to_string()),
+            fuser::MountOption::AutoUnmount,
+        ];
+        log.step("mounting", serde_json::Value::Null);
+        fuser::mount2(fs, mount_point, &options)?;
+        Ok(())
+    })();
+    match &result {
+        // mount2 blocks for the entire mounted session. Starting its thread
+        // cannot acknowledge a completed or successfully mounted session.
+        Ok(()) => log.succeed(serde_json::Value::Null),
+        Err(_) => log.fail("fuse_mount_failed"),
+    }
+    result
 }
 
-// Note: tests for the FUSE filesystem require a real FUSE mount which
-// needs root/fuse-group privileges.  Unit tests for the inode mapping
-// and config are in the parent mod.rs (unconditional).  Integration
-// tests are in src-tauri/tests/ and tagged #[ignore].
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drives::{DirEntry, DriveType, LocalDrive};
+    use crate::sync::transfer_queue::TransferState;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Exercise the actual mounted reader while rejecting whole-buffer reads.
+    /// WebDAV mode uses the same source to test the cloud materialization path.
+    struct CheckedDrive {
+        local: LocalDrive,
+        kind: DriveType,
+        downloads: AtomicUsize,
+        fail_download: AtomicBool,
+        ranges: Mutex<Vec<(u64, u64)>>,
+    }
+
+    impl CheckedDrive {
+        fn new(root: &Path, kind: DriveType) -> Self {
+            Self {
+                local: LocalDrive::new("fuse-test", root),
+                kind,
+                downloads: AtomicUsize::new(0),
+                fail_download: AtomicBool::new(false),
+                ranges: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl CloudDrive for CheckedDrive {
+        fn label(&self) -> &str { self.local.label() }
+        fn drive_type(&self) -> DriveType { self.kind.clone() }
+        fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> { self.local.list_dir(path) }
+        fn stat(&self, path: &Path) -> Result<FileStat> { self.local.stat(path) }
+        fn read_file(&self, _path: &Path) -> Result<Vec<u8>> {
+            panic!("FUSE must not use whole-buffer reads");
+        }
+        fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
+            assert_eq!(self.kind, DriveType::Local);
+            self.ranges.lock().unwrap().push((start, end));
+            self.local.read_range(path, start, end)
+        }
+        fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
+            assert_ne!(self.kind, DriveType::Local, "local reads must use ranges");
+            self.downloads.fetch_add(1, Ordering::SeqCst);
+            if self.fail_download.swap(false, Ordering::SeqCst) {
+                writer.write_all(b"partial")?;
+                anyhow::bail!("scripted incomplete file");
+            }
+            self.local.read_file_to_writer(path, writer)
+        }
+        fn write_file(&self, _path: &Path, _data: &[u8]) -> Result<()> {
+            anyhow::bail!("read-only test drive")
+        }
+        fn delete(&self, _path: &Path) -> Result<()> {
+            anyhow::bail!("read-only test drive")
+        }
+    }
+
+    #[test]
+    fn invalid_mount_directory_emits_failure_without_a_kernel_mount() {
+        let directory = tempfile::tempdir().unwrap();
+        let mount_point = directory.path().join("private-mount-target");
+        std::fs::write(&mount_point, b"existing file").unwrap();
+        let drive = Arc::new(LocalDrive::new("private-drive-label", directory.path()));
+        let (result, events) = crate::operation_log::capture(|| {
+            mount_blocking_with_cache(drive, &mount_point, 64)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(events.iter().map(|event| event.phase.as_str()).collect::<Vec<_>>(),
+            ["started", "stage", "failed"]);
+        assert!(events.iter().all(|event| event.operation == "storage.fuse_mount"
+            && event.operation_id == events[0].operation_id));
+        assert_eq!(events[1].stage.as_deref(), Some("prepare_directory"));
+        assert_eq!(events[2].code.as_deref(), Some("fuse_mount_failed"));
+        assert_eq!(std::fs::read(&mount_point).unwrap(), b"existing file");
+        let logged = serde_json::to_string(&events).unwrap();
+        assert!(!logged.contains("private-mount-target"));
+        assert!(!logged.contains("private-drive-label"));
+        assert!(!logged.contains(directory.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn local_fuse_reads_use_exact_ranges_without_content_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Path::new("document");
+        std::fs::write(directory.path().join(path), b"abcdefghij").unwrap();
+        let drive = Arc::new(CheckedDrive::new(directory.path(), DriveType::Local));
+        let queue = TransferQueue::with_concurrency(1);
+        let fs = FuseDriveFs::with_queue_and_cache(drive.clone(), queue.clone(), 64);
+
+        assert_eq!(fs.read_file_slice(path, 2, 3).unwrap(), b"cde");
+        std::fs::write(directory.path().join(path), b"0123456789").unwrap();
+        assert_eq!(fs.read_file_slice(path, 8, 4).unwrap(), b"89");
+        assert!(fs.read_file_slice(path, 10, 2).unwrap().is_empty());
+        assert!(fs.read_file_slice(path, 0, 0).unwrap().is_empty());
+        assert_eq!(*drive.ranges.lock().unwrap(), vec![(2, 4), (8, 11), (10, 11)]);
+        assert_eq!(drive.downloads.load(Ordering::SeqCst), 0);
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (0, 0));
+        assert_eq!(queue.snapshot().len(), 3);
+        assert!(queue.snapshot().iter().all(|job| matches!(&job.state, TransferState::Done)));
+    }
+
+    #[test]
+    fn cloud_fuse_reads_stream_once_and_reuse_only_the_requested_slice() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Path::new("document");
+        std::fs::write(directory.path().join(path), b"abcdefghij").unwrap();
+        let drive = Arc::new(CheckedDrive::new(directory.path(), DriveType::WebDav));
+        let queue = TransferQueue::with_concurrency(1);
+        let fs = FuseDriveFs::with_queue_and_cache(drive.clone(), queue.clone(), 64);
+
+        assert_eq!(fs.read_file_slice(path, 2, 3).unwrap(), b"cde");
+        // A cache hit must not contact the provider again.
+        std::fs::remove_file(directory.path().join(path)).unwrap();
+        assert_eq!(fs.read_file_slice(path, 8, 4).unwrap(), b"ij");
+        assert!(fs.read_file_slice(path, 10, 2).unwrap().is_empty());
+        assert_eq!(drive.downloads.load(Ordering::SeqCst), 1);
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (10, 1));
+        let jobs = queue.snapshot();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].bytes_done, 10);
+        assert!(matches!(&jobs[0].state, TransferState::Done));
+    }
+
+    #[test]
+    fn failed_fuse_download_never_caches_partial_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Path::new("document");
+        std::fs::write(directory.path().join(path), b"abcdefghij").unwrap();
+        let drive = Arc::new(CheckedDrive::new(directory.path(), DriveType::WebDav));
+        drive.fail_download.store(true, Ordering::SeqCst);
+        let queue = TransferQueue::with_concurrency(1);
+        let fs = FuseDriveFs::with_queue_and_cache(drive.clone(), queue.clone(), 64);
+
+        assert!(fs.read_file_slice(path, 0, 10).is_err());
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (0, 0));
+        assert_eq!(fs.read_file_slice(path, 0, 10).unwrap(), b"abcdefghij");
+        assert_eq!(drive.downloads.load(Ordering::SeqCst), 2);
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (10, 1));
+        let jobs = queue.snapshot();
+        assert_eq!(jobs.len(), 2);
+        assert!(matches!(&jobs[0].state, TransferState::Failed { .. }));
+        assert!(matches!(&jobs[1].state, TransferState::Done));
+    }
+}

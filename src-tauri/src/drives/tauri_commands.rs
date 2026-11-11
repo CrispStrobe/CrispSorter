@@ -14,6 +14,26 @@ use tauri::State;
 #[cfg(feature = "fuse")]
 static FUSE_MOUNTS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
 
+/// Reserve a mount only after async provider setup has finished. Checking and
+/// inserting under one lock prevents concurrent requests from mounting twice.
+#[cfg(feature = "fuse")]
+fn reserve_fuse_mount(
+    mounts: &Mutex<HashMap<String, PathBuf>>,
+    drive_id: &str,
+    mount_point: PathBuf,
+) -> Result<(), String> {
+    let mut active = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?;
+    match active.entry(drive_id.to_owned()) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(mount_point);
+            Ok(())
+        }
+        std::collections::hash_map::Entry::Occupied(_) => {
+            Err(format!("drive '{drive_id}' is already mounted"))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DriveCredentialsStatus {
     pub has_username: bool,
@@ -163,22 +183,19 @@ pub async fn drive_mount(
         if !mount_point.is_absolute() {
             return Err("FUSE mount point must be an absolute path".into());
         }
-        let mounts = FUSE_MOUNTS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut active = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?;
-        if active.contains_key(&drive_id) {
-            return Err(format!("drive '{drive_id}' is already mounted"));
-        }
+        // Provider setup awaits app state; no standard mutex guard may cross
+        // that boundary in this Send command future.
         let drive: std::sync::Arc<dyn super::CloudDrive> =
             std::sync::Arc::from(instantiate_registered(&state, &config).await?);
         let id = drive_id.clone();
         let point = mount_point.clone();
         let cache_max_bytes = cache_max_bytes.unwrap_or(super::fuse_mount::fs::DEFAULT_CACHE_MAX_BYTES);
-        active.insert(drive_id.clone(), mount_point);
-        drop(active);
+        let mounts = FUSE_MOUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+        reserve_fuse_mount(mounts, &drive_id, mount_point)?;
         let spawned = std::thread::Builder::new().name(format!("fuse-{id}")).spawn(move || {
-            if let Err(error) = super::fuse_mount::fs::mount_blocking_with_cache(drive, &point, cache_max_bytes) {
-                eprintln!("FUSE mount {id} failed: {error:#}");
-            }
+            // The worker emits content-free lifecycle receipts to the app log.
+            // Thread creation alone does not mean that the kernel mount worked.
+            let _ = super::fuse_mount::fs::mount_blocking_with_cache(drive, &point, cache_max_bytes);
             if let Some(mounts) = FUSE_MOUNTS.get() {
                 if let Ok(mut active) = mounts.lock() { active.remove(&id); }
             }
@@ -1379,6 +1396,40 @@ mod native_support_tests {
         let support = drive_native_support();
         assert_eq!(support.filen, cfg!(feature = "drive-filen-native"));
         assert_eq!(support.internxt, cfg!(feature = "drive-internxt-native"));
+    }
+}
+
+#[cfg(all(test, feature = "fuse"))]
+mod fuse_mount_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn concurrent_mount_reservations_keep_exactly_one_destination() {
+        let mounts = Arc::new(Mutex::new(HashMap::new()));
+        let ready = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = ["/mnt/first", "/mnt/second"]
+            .into_iter()
+            .map(|point| {
+                let mounts = Arc::clone(&mounts);
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    let point = PathBuf::from(point);
+                    ready.wait();
+                    let result = reserve_fuse_mount(&mounts, "same-drive", point.clone());
+                    (point, result)
+                })
+            })
+            .collect();
+        ready.wait();
+        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        let winners: Vec<_> = results.iter().filter(|(_, result)| result.is_ok()).collect();
+        assert_eq!(winners.len(), 1);
+        let failed = results.iter().find_map(|(_, result)| result.as_ref().err()).unwrap();
+        assert!(failed.contains("already mounted"));
+        let active = mounts.lock().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get("same-drive"), Some(&winners[0].0));
     }
 }
 
