@@ -112,6 +112,7 @@
     type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
+  import { missingModels } from "$lib/ocr/client";
   import { checkExportText, resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
   import {
@@ -1762,7 +1763,16 @@
       busy = "";
     }
   }
-  async function prepareImage(override?: Record<string, unknown>, confirmed = false, pageId = activePage?.id) {
+  /** Undo of the last preparation stays offered until another edit. */
+  let undoPreparationDepth = $state<number | null>(null);
+  const canUndoPreparation = $derived(undoPreparationDepth !== null && history.past.length === undoPreparationDepth);
+  function undoPreparation() {
+    if (!canUndoPreparation || locked) return;
+    undo();
+    undoPreparationDepth = null;
+    notice = "Preparation undone. The previous page image, text and approval were restored.";
+  }
+  async function prepareImage(override?: Record<string, unknown>, confirmed = false, pageId = activePage?.id, allowDownloads = false) {
     if (!pageId || locked || !capabilities.crispembed) return;
     const page = project.pages.find((candidate) => candidate.id === pageId);
     if (!page) return;
@@ -1771,18 +1781,22 @@
         "Prepare this structured page?",
         `${page.name} has document structure. If preparation changes the image, its current recognition, formatting, and links need to be rebuilt and reviewed. Previous document structure remains inspectable in saved history; Undo restores the prior page.`,
         "Prepare page",
-        () => prepareImage(override, true, page.id),
+        () => prepareImage(override, true, page.id, allowDownloads),
       );
       return;
     }
-    busy = "Repairing scan";
+    busy = "Preparing the page…";
     error = "";
+    const started = Date.now();
+    let stage = "Starting";
+    const tick = setInterval(() => { busy = `Preparing: ${stage} · ${Math.round((Date.now() - started) / 1000)}s`; }, 1000);
     try {
       const result = await client.prepare(
         page.imagePath,
         override ?? config,
         page.widthPoints,
         page.heightPoints,
+        { allowDownloads, onStage: (next) => { stage = next; busy = `Preparing: ${stage} · ${Math.round((Date.now() - started) / 1000)}s`; } },
       );
       const warnings = (result.warnings ?? []).filter(
         (value): value is string => typeof value === "string",
@@ -1816,6 +1830,7 @@
       if (pixelsChanged) {
         if (selectedPageId === page.id) selectedRegionId = null;
         showOriginal = false;
+        undoPreparationDepth = history.past.length;
       }
       notice = [
         pixelsChanged
@@ -1824,9 +1839,22 @@
         ...warnings,
       ].join(" · ");
     } catch (e) {
+      const missing = missingModels(e);
+      if (missing && !allowDownloads) {
+        const list = missing.map((m) => `${m.name} (${m.purpose}${m.license ? `, licence ${m.license}` : ""})`).join(", ");
+        busy = "";
+        confirmation(
+          missing.length === 1 ? "Download the model for this preparation?" : "Download the models for this preparation?",
+          `This preparation needs ${list}, which ${missing.length === 1 ? "is" : "are"} not on this computer yet. Download now and continue? Downloads are verified before use.`,
+          "Download and prepare",
+          () => prepareImage(override, true, page.id, true),
+        );
+        return;
+      }
       fail(e);
     } finally {
-      busy = "";
+      clearInterval(tick);
+      if (busy.startsWith("Preparing")) busy = "";
     }
   }
   async function recognizeZone(rect: PixelRectangle, pageId = activePage?.id) {
@@ -4235,6 +4263,7 @@
     <span class="status-dot" class:working={!!busy || queueActive}></span><span
       class="status-message">{busy || notice || "Ready"}</span
     >
+    {#if canUndoPreparation && !busy}<button class="button undo-preparation" onclick={undoPreparation} disabled={locked}>Undo preparation</button>{/if}
     {#if importController}<button class="button cancel-import" onclick={cancelImport} disabled={importStopping}>{importStopping ? "Stopping…" : "Cancel import"}</button>{/if}
     {#if exportController && exportPhase}<button class="button cancel-export" onclick={cancelExport} disabled={!exportCancellable || exportStopping}
         title={exportPhase === "destination" ? "Use the system save dialog to finish or cancel" : exportPhase === "committing" ? "The export is finishing" : "Stop the export before it is saved"}

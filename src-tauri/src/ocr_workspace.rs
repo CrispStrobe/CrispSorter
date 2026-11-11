@@ -510,22 +510,80 @@ pub async fn ocr_workspace_prepare(
     config: crate::extractors::OcrPipelineConfig,
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
+    allow_downloads: Option<bool>,
 ) -> Result<PreparedPage, String> {
     let root = workspace_root(&app)?;
     let path = managed_page(&root, &page_path)?;
     validate_config(&config)?;
     let size = checked_physical_size(page_width_points, page_height_points)?;
-    tokio::task::spawn_blocking(move || prepare_page(&root, &path, &config, size)).await
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        // Models are downloaded only after the user agreed for this request.
+        if !allow_downloads.unwrap_or(false) {
+            let missing = missing_preparation_models(&config);
+            if !missing.is_empty() {
+                let names = missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
+                crate::app_log("info", format!("OCR preparation of {name}: waiting for consent to download {names}"));
+                return Err(format!("{MODEL_DOWNLOAD_REQUIRED}{}", serde_json::to_string(&missing).unwrap_or_default()));
+            }
+        }
+        let started = std::time::Instant::now();
+        crate::app_log("info", format!("OCR preparation of {name} started"));
+        let progress = |stage: &str| {
+            crate::app_log("info", format!("OCR preparation of {name}: {stage} ({:.1}s)", started.elapsed().as_secs_f64()));
+            let _ = app.emit("ocr-workspace-prepare-stage", json!({ "page": page_path, "stage": stage }));
+        };
+        let result = prepare_page_with_progress(&root, &path, &config, size, &progress);
+        match &result {
+            Ok(prepared) => {
+                for warning in &prepared.warnings { crate::app_log("warn", format!("OCR preparation of {name}: {warning}")); }
+                crate::app_log("info", format!("OCR preparation of {name} finished in {:.1}s", started.elapsed().as_secs_f64()));
+            }
+            Err(error) => crate::app_log("error", format!("OCR preparation of {name} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
+        }
+        result
+    }).await
         .map_err(|e| format!("Page preparation worker: {e}"))?
 }
 
-fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig, mut physical_size: Option<(f64, f64)>) -> Result<PreparedPage, String> {
+/// Error prefix the UI turns into a download confirmation; JSON follows.
+pub const MODEL_DOWNLOAD_REQUIRED: &str = "MODEL_DOWNLOAD_REQUIRED:";
+
+#[derive(Debug, Serialize)]
+struct MissingModel { name: String, purpose: &'static str, license: Option<String> }
+
+/// Registry models the configured preparation needs that are not yet local.
+#[cfg(feature = "crispembed")]
+fn missing_preparation_models(config: &crate::extractors::OcrPipelineConfig) -> Vec<MissingModel> {
+    use crate::extractors::ocr_crispembed;
+    let mut wanted: Vec<(String, &'static str)> = Vec::new();
+    if config.restore { wanted.push((ocr_crispembed::restore_model_name(config), "restoration")); }
+    if config.sr { wanted.push((ocr_crispembed::sr_model_name(config), "super-resolution")); }
+    if config.denoise || config.stages.iter().any(|s| s.cleanup.denoise) {
+        wanted.push((config.nafnet_model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| "nafnet-denoise".into()), "learned denoise"));
+    }
+    if config.dewarp && config.dewarp_engine == "tps" { wanted.push(("tps-loc".into(), "dewarp")); }
+    wanted.into_iter().filter(|(name, _)| !ocr_crispembed::model_is_local(name)).map(|(name, purpose)| {
+        let license = crispembed::CrispEmbed::model_license_info(&name).map(|info| info.spdx).filter(|s| !s.is_empty());
+        MissingModel { name, purpose, license }
+    }).collect()
+}
+
+#[cfg(not(feature = "crispembed"))]
+fn missing_preparation_models(_config: &crate::extractors::OcrPipelineConfig) -> Vec<MissingModel> { Vec::new() }
+
+fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig, physical_size: Option<(f64, f64)>) -> Result<PreparedPage, String> {
+    prepare_page_with_progress(root, source, config, physical_size, &|_| {})
+}
+
+fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig, mut physical_size: Option<(f64, f64)>, progress: &dyn Fn(&str)) -> Result<PreparedPage, String> {
     use crate::extractors::ocr_crispembed;
     let mut path = source.to_path_buf();
     let mut guards = Vec::new();
     let mut warnings = Vec::new();
     checked_dimensions(&path)?;
     if config.dewarp {
+        progress("Straightening curved lines");
         if let Some((guard, output)) = ocr_crispembed::dewarp_page(&path, config) {
             path = output; guards.push(guard);
         } else {
@@ -533,8 +591,8 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
         }
     }
     if config.restore {
-        let (guard, output) = ocr_crispembed::restore_page(&path, config)
-            .ok_or("The selected restoration engine did not produce an image. Check the model installation or disable restoration and retry.")?;
+        progress(&format!("Image restoration ({})", if config.restore_engine.is_empty() { "restormer" } else { config.restore_engine.as_str() }));
+        let (guard, output) = ocr_crispembed::restore_page_checked(&path, config)?;
         path = output; guards.push(guard);
     }
     if config.sr {
@@ -543,8 +601,8 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
             if u64::from(w) * u64::from(h) * 16 > MAX_PAGE_PIXELS {
                 return Err("A 4× upscale would exceed the 100 megapixel page limit. Crop the page or disable super-resolution.".into());
             }
-            let (guard, output) = ocr_crispembed::super_resolve_page(&path, config)
-                .ok_or("The selected super-resolution engine did not produce an image. Check the model installation or disable super-resolution and retry.")?;
+            progress(&format!("Upscaling ({})", if config.sr_engine.is_empty() { "pan" } else { config.sr_engine.as_str() }));
+            let (guard, output) = ocr_crispembed::super_resolve_page_checked(&path, config)?;
             path = output; guards.push(guard);
         }
     }
@@ -558,6 +616,8 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
     }
     let use_cleanup = config.cleanup_enabled || config.stages.iter().any(|s| s.cleanup.enabled);
     let denoise = config.denoise || config.stages.iter().any(|s| s.cleanup.denoise);
+    if denoise { progress("Learned denoise (NAFNet) — can take a while on large pages"); }
+    else if use_cleanup { progress("Deskew and clean"); }
     let image = if use_cleanup || denoise {
         if config.stages.len() > 1 && config.stages.iter().any(|s| s.cleanup.enabled) {
             warnings.push("Review uses the first stage's cleanup recipe for one shared page image. Internal stage cleanup is disabled so every recognition box aligns with that image.".into());
@@ -565,6 +625,7 @@ fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipel
         cleanup_image(image, config, &recipe, use_cleanup, denoise)?
     } else { image };
     physical_size = physical_size.map(|(w, h)| (w * f64::from(image.width()) / f64::from(before_cleanup.0), h * f64::from(image.height()) / f64::from(before_cleanup.1)));
+    progress("Saving the prepared page");
     let page = persist_image(root, &image)?;
     let page = if recipe.auto_crop {
         if let Some((left, top, right, bottom)) = ocr_crispembed::content_bbox(Path::new(&page.image_path)) {
@@ -747,7 +808,35 @@ pub struct RecognizedPage {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ocr_workspace_recognize(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    page_path: String,
+    config: Option<crate::extractors::OcrPipelineConfig>,
+    engine: Option<String>,
+    language: Option<String>,
+    zone: Option<PixelRect>,
+    page_width_points: Option<f64>,
+    page_height_points: Option<f64>,
+    cpu_pixel_budget: Option<bool>,
+) -> Result<RecognizedPage, String> {
+    let name = Path::new(&page_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let what = format!("OCR recognition of {name} (engine {}, language {}{})", engine.as_deref().unwrap_or("default"),
+        language.as_deref().unwrap_or("default"), if zone.is_some() { ", selected area" } else { "" });
+    let started = std::time::Instant::now();
+    crate::app_log("info", format!("{what} started"));
+    let result = ocr_workspace_recognize_inner(app, state, page_path, config, engine, language, zone,
+        page_width_points, page_height_points, cpu_pixel_budget).await;
+    match &result {
+        Ok(page) => crate::app_log("info", format!("{what} finished in {:.1}s: {} regions", started.elapsed().as_secs_f64(), page.regions.len())),
+        Err(error) => crate::app_log("error", format!("{what} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ocr_workspace_recognize_inner(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     page_path: String,
