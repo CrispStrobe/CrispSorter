@@ -288,48 +288,84 @@ fn reviewed_pdf_available() -> bool {
     crate::extractors::ocr_render::reviewed_pdf_render_available()
 }
 
+/// The file name of a path or URI, for log entries.
+fn file_label(location: &str) -> String {
+    let trimmed = location.trim_end_matches('/');
+    trimmed.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).unwrap_or(trimmed).to_string()
+}
+
+/// One log entry per finished workspace step, with its duration or real failure reason.
+fn log_step<T>(what: &str, started: std::time::Instant, result: Result<T, String>) -> Result<T, String> {
+    let seconds = started.elapsed().as_secs_f64();
+    match &result {
+        Ok(_) => crate::app_log("info", format!("{what} finished in {seconds:.1}s")),
+        Err(error) => crate::app_log("error", format!("{what} failed after {seconds:.1}s: {error}")),
+    }
+    result
+}
+
+/// Frequent steps (autosave) log only their failures.
+fn log_failure<T>(what: &str, started: std::time::Instant, result: Result<T, String>) -> Result<T, String> {
+    if let Err(error) = &result {
+        crate::app_log("error", format!("{what} failed after {:.1}s: {error}", started.elapsed().as_secs_f64()));
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn ocr_workspace_import(app: tauri::AppHandle, location_uri: String, request_id: Option<String>) -> Result<ImportedDocument, String> {
-    let root = workspace_root(&app)?;
-    let path = local_file(&location_uri)?;
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let bytes = tokio::task::spawn_blocking(move || {
-            let file = File::open(path).map_err(|e| format!("Open selected document: {e}"))?;
-            if file.metadata().map_err(|e| e.to_string())?.len() > MAX_CAPTURE_BYTES as u64 { return Err("This document exceeds the 32 MiB mobile import limit.".to_string()); }
-            let mut bytes = Vec::new();
-            file.take(MAX_CAPTURE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-            Ok(bytes)
-        }).await.map_err(|e| format!("Read import worker: {e}"))??;
-        let metadata = ImportMetadata { name, source_uri: None, request_id };
-        let mut document = document_import::from_bytes(app, root, metadata, bytes, true).await?;
-        document.source_uri = location_uri;
-        Ok(document)
-    }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let job = document_import::ImportJob::begin(app, request_id)?;
-        tokio::task::spawn_blocking(move || import_document_with_progress(&root, &path, Some(&job))).await
-            .map_err(|e| format!("Import worker: {e}"))?
-    }
+    let started = std::time::Instant::now();
+    let what = format!("OCR import of {}", file_label(&location_uri));
+    log_step(&what, started, async move {
+        let root = workspace_root(&app)?;
+        let path = local_file(&location_uri)?;
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let bytes = tokio::task::spawn_blocking(move || {
+                let file = File::open(path).map_err(|e| format!("Open selected document: {e}"))?;
+                if file.metadata().map_err(|e| e.to_string())?.len() > MAX_CAPTURE_BYTES as u64 { return Err("This document exceeds the 32 MiB mobile import limit.".to_string()); }
+                let mut bytes = Vec::new();
+                file.take(MAX_CAPTURE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                Ok(bytes)
+            }).await.map_err(|e| format!("Read import worker: {e}"))??;
+            let metadata = ImportMetadata { name, source_uri: None, request_id };
+            let mut document = document_import::from_bytes(app, root, metadata, bytes, true).await?;
+            document.source_uri = location_uri;
+            Ok(document)
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let job = document_import::ImportJob::begin(app, request_id)?;
+            tokio::task::spawn_blocking(move || import_document_with_progress(&root, &path, Some(&job))).await
+                .map_err(|e| format!("Import worker: {e}"))?
+        }
+    }.await)
 }
 
 /// Camera and provider bytes never become paths supplied by the webview. Keep
 /// their originals by content hash before creating the oriented page assets.
 #[tauri::command]
 pub async fn ocr_workspace_import_image(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
-    let (mut metadata, bytes) = import_request(&request)?;
-    let root = workspace_root(&app)?;
-    metadata.source_uri = None;
-    document_import::from_bytes(app, root, metadata, bytes, false).await
+    let started = std::time::Instant::now();
+    let what = "OCR photo import".to_string();
+    log_step(&what, started, async move {
+        let (mut metadata, bytes) = import_request(&request)?;
+        let root = workspace_root(&app)?;
+        metadata.source_uri = None;
+        document_import::from_bytes(app, root, metadata, bytes, false).await
+    }.await)
 }
 
 #[tauri::command]
 pub async fn ocr_workspace_import_bytes(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<ImportedDocument, String> {
-    let (metadata, bytes) = import_request(&request)?;
-    let root = workspace_root(&app)?;
-    document_import::from_bytes(app, root, metadata, bytes, true).await
+    let started = std::time::Instant::now();
+    let what = "OCR document import".to_string();
+    log_step(&what, started, async move {
+        let (metadata, bytes) = import_request(&request)?;
+        let root = workspace_root(&app)?;
+        document_import::from_bytes(app, root, metadata, bytes, true).await
+    }.await)
 }
 
 #[tauri::command]
@@ -371,14 +407,18 @@ fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_u
 
 #[tauri::command]
 pub async fn ocr_workspace_assess_photo(app: tauri::AppHandle, page_path: String) -> Result<PhotoAssessment, String> {
-    let root = workspace_root(&app)?;
-    let path = managed_page(&root, &page_path)?;
-    tokio::task::spawn_blocking(move || {
-        let image = decode_page(&path)?;
-        if image.color().has_alpha() { crate::ocr_photo::assess(&opaque_page(&image)) }
-        else { crate::ocr_photo::assess(&image) }
-    }).await
-        .map_err(|e| format!("Photo assessment worker: {e}"))?
+    let started = std::time::Instant::now();
+    let what = format!("OCR photo check of {}", file_label(&page_path));
+    log_step(&what, started, async move {
+        let root = workspace_root(&app)?;
+        let path = managed_page(&root, &page_path)?;
+        tokio::task::spawn_blocking(move || {
+            let image = decode_page(&path)?;
+            if image.color().has_alpha() { crate::ocr_photo::assess(&opaque_page(&image)) }
+            else { crate::ocr_photo::assess(&image) }
+        }).await
+            .map_err(|e| format!("Photo assessment worker: {e}"))?
+    }.await)
 }
 
 fn import_document(root: &Path, path: &Path) -> Result<ImportedDocument, String> {
@@ -452,11 +492,15 @@ pub async fn ocr_workspace_transform(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
 ) -> Result<TransformedPages, String> {
-    let root = workspace_root(&app)?;
-    let path = managed_page(&root, &page_path)?;
-    let size = checked_physical_size(page_width_points, page_height_points)?;
-    tokio::task::spawn_blocking(move || transform_page_with_photo(&root, &path, &operation, degrees, crop, split_x, size, quad, angle)).await
-        .map_err(|e| format!("Page transform worker: {e}"))?
+    let started = std::time::Instant::now();
+    let what = format!("OCR page {operation} of {}", file_label(&page_path));
+    log_step(&what, started, async move {
+        let root = workspace_root(&app)?;
+        let path = managed_page(&root, &page_path)?;
+        let size = checked_physical_size(page_width_points, page_height_points)?;
+        tokio::task::spawn_blocking(move || transform_page_with_photo(&root, &path, &operation, degrees, crop, split_x, size, quad, angle)).await
+            .map_err(|e| format!("Page transform worker: {e}"))?
+    }.await)
 }
 
 fn transform_page(root: &Path, path: &Path, operation: &str, degrees: Option<i32>, crop: Option<PixelRect>, split_x: Option<u32>, physical_size: Option<(f64, f64)>) -> Result<TransformedPages, String> {
@@ -1021,6 +1065,12 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     if result.regions.len() != detected {
         result.diagnostics["line_grouping"] = json!({"words": detected, "lines": result.regions.len()});
     }
+    // Line recognizers return one region per line; review works on paragraphs.
+    let lines = result.regions.len();
+    result.regions = group_lines_into_paragraphs(std::mem::take(&mut result.regions));
+    if result.regions.len() != lines {
+        result.diagnostics["paragraph_grouping"] = json!({"lines": lines, "paragraphs": result.regions.len()});
+    }
     if config.layout && zone.is_none() {
         annotate_layout(&recognition_path, config, &mut result.regions, &mut result.diagnostics, &mut warnings);
     }
@@ -1160,6 +1210,82 @@ fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>)
         confidence_basis: if uniform_basis { first.confidence_basis.clone() } else { "unknown".into() },
         char_conf: if aligned { char_conf } else { Vec::new() },
         char_conf_unit: if aligned { first.char_conf_unit.clone() } else { "unknown".into() },
+        char_conf_aligned: aligned,
+        word_evidence: None,
+        kind: "text".into(),
+    }
+}
+
+/// Joins consecutive text lines (in reading order) into paragraphs: the next
+/// line starts just below the previous one, has a similar height and shares
+/// its horizontal extent. Lines are joined with "\n" so their breaks survive.
+/// Regions with native word evidence (already paragraph-level) and non-text
+/// regions are never joined.
+fn group_lines_into_paragraphs(regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
+    use crate::extractors::ocr_crispembed::OcrReviewRegion;
+    let joinable = |r: &OcrReviewRegion| r.kind == "text" && r.word_evidence.is_none()
+        && [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && r.h > 0.0 && r.w > 0.0;
+    let continues = |paragraph: &[OcrReviewRegion], next: &OcrReviewRegion| {
+        let last = paragraph.last().expect("nonempty paragraph");
+        let height = paragraph.iter().map(|r| r.h).sum::<f32>() / paragraph.len() as f32;
+        let gap = next.y - (last.y + last.h);
+        let similar = next.h <= 1.5 * height && height <= 1.5 * next.h;
+        let left = paragraph.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        let right = paragraph.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
+        let overlap = (right.min(next.x + next.w) - left.max(next.x)).max(0.0);
+        let aligned = (next.x - last.x).abs() <= 2.0 * height || overlap >= 0.5 * next.w.min(right - left);
+        gap > -0.3 * height && gap <= 0.8 * height && similar && aligned
+    };
+    let mut out = Vec::with_capacity(regions.len());
+    let mut paragraph: Vec<OcrReviewRegion> = Vec::new();
+    for region in regions {
+        if joinable(&region) && (paragraph.is_empty() || continues(&paragraph, &region)) {
+            paragraph.push(region);
+            continue;
+        }
+        if !paragraph.is_empty() { out.push(join_paragraph(std::mem::take(&mut paragraph))); }
+        if joinable(&region) { paragraph.push(region); } else { out.push(region); }
+    }
+    if !paragraph.is_empty() { out.push(join_paragraph(paragraph)); }
+    out
+}
+
+fn join_paragraph(mut lines: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> crate::extractors::ocr_crispembed::OcrReviewRegion {
+    if lines.len() == 1 { return lines.pop().unwrap(); }
+    let first = lines[0].clone();
+    let uniform_basis = lines.iter().all(|r| r.confidence_basis == first.confidence_basis);
+    let complete_scores = uniform_basis && lines.iter().all(|r| r.confidence
+        .is_some_and(|score| score.is_finite() && (0.0..=1.0).contains(&score)));
+    let aligned = lines.iter().all(|r| r.char_conf_aligned && r.char_conf_unit == first.char_conf_unit
+        && r.char_conf.len() == r.text.chars().count());
+    let x = lines.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+    let y = lines.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+    let right = lines.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
+    let bottom = lines.iter().map(|r| r.y + r.h).fold(f32::MIN, f32::max);
+    let mut text = String::new();
+    let mut char_conf: Vec<f32> = Vec::new();
+    let (mut weighted, mut weight) = (0.0f64, 0.0f64);
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            text.push('\n');
+            if aligned {
+                let left = char_conf.last().copied().unwrap_or(1.0);
+                char_conf.push(left.min(line.char_conf.first().copied().unwrap_or(left)));
+            }
+        }
+        text.push_str(&line.text);
+        if aligned { char_conf.extend_from_slice(&line.char_conf); }
+        if let Some(score) = line.confidence.filter(|s| s.is_finite() && (0.0..=1.0).contains(s)) {
+            let n = line.text.chars().count().max(1) as f64;
+            weighted += f64::from(score) * n; weight += n;
+        }
+    }
+    crate::extractors::ocr_crispembed::OcrReviewRegion {
+        text, x, y, w: right - x, h: bottom - y,
+        confidence: complete_scores.then(|| (weighted / weight) as f32),
+        confidence_basis: if uniform_basis { first.confidence_basis } else { "unknown".into() },
+        char_conf: if aligned { char_conf } else { Vec::new() },
+        char_conf_unit: if aligned { first.char_conf_unit } else { "unknown".into() },
         char_conf_aligned: aligned,
         word_evidence: None,
         kind: "text".into(),
@@ -1318,9 +1444,13 @@ fn save_project(root: &Path, project: Value, expected_revision: u64) -> Result<S
 
 #[tauri::command]
 pub async fn ocr_workspace_save(app: tauri::AppHandle, project: Value, expected_revision: Option<u64>) -> Result<SavedProject, String> {
-    let root = workspace_root(&app)?;
-    tokio::task::spawn_blocking(move || save_project(&root, project, expected_revision.unwrap_or(0))).await
-        .map_err(|e| format!("Project save worker: {e}"))?
+    let started = std::time::Instant::now();
+    let what = "OCR project save".to_string();
+    log_failure(&what, started, async move {
+        let root = workspace_root(&app)?;
+        tokio::task::spawn_blocking(move || save_project(&root, project, expected_revision.unwrap_or(0))).await
+            .map_err(|e| format!("Project save worker: {e}"))?
+    }.await)
 }
 
 #[tauri::command]
@@ -1896,58 +2026,62 @@ pub async fn ocr_workspace_export(
     office_options: Option<crate::ocr_office::OfficeOptions>,
     workbook_options: Option<crate::ocr_office::WorkbookOptions>,
 ) -> Result<WorkspaceExportResult, String> {
-    let job = ExportJob::begin(request_id)?;
-    let root = workspace_root(&app)?;
-    tokio::task::spawn_blocking(move || {
-        if office_options.is_some() && format != "docx" {
-            return Err("Word object placement options are only supported for DOCX export.".into());
-        }
-        if workbook_options.is_some() && format != "xlsx" {
-            return Err("Workbook worksheet choices are only supported for XLSX export.".into());
-        }
-        if format != "xlsx" {
-            for page in &pages { managed_page(&root, &page.image_path)?; }
-            validate_export_pages(&pages)?;
-        } else if pages.is_empty() || pages.len() > MAX_PAGES {
-            return Err("Select saved tables from 1–10,000 source pages for this workbook.".into());
-        }
-        let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
-        #[allow(unused_mut)]
-        let (mut prepared, mut warnings, mut sheets, mut exported_pages) = (None, vec![], None, pages.len());
-        if format == "xlsx" && !pdfa {
-            #[cfg(feature = "ocr-office")]
-            {
-                let options = workbook_options.ok_or("Select at least one saved table for this workbook.")?;
-                let output = export_xlsx(&pages, &options)?;
-                exported_pages = options.sheets.iter().map(|sheet| sheet.page_id.as_str()).collect::<HashSet<_>>().len();
-                sheets = Some(options.sheets.len());
-                warnings = output.warnings;
-                prepared = Some(output.bytes);
+    let started = std::time::Instant::now();
+    let what = format!("OCR export ({format}{}) to {}", if pdfa { ", PDF/A" } else { "" }, file_label(&output_path));
+    log_step(&what, started, async move {
+        let job = ExportJob::begin(request_id)?;
+        let root = workspace_root(&app)?;
+        tokio::task::spawn_blocking(move || {
+            if office_options.is_some() && format != "docx" {
+                return Err("Word object placement options are only supported for DOCX export.".into());
             }
-            #[cfg(not(feature = "ocr-office"))]
-            { let _ = workbook_options; return Err("Workbook export is unavailable in this build. Install a build with Office export support.".into()); }
-        } else if format == "docx" && !pdfa {
-            #[cfg(feature = "ocr-office")]
-            {
-                let output = export_docx(&pages, &office_options.unwrap_or_default())?;
-                warnings = output.warnings;
-                prepared = Some(output.bytes);
+            if workbook_options.is_some() && format != "xlsx" {
+                return Err("Workbook worksheet choices are only supported for XLSX export.".into());
             }
-            #[cfg(not(feature = "ocr-office"))]
-            { let _ = office_options; }
-        }
-        let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
-            MAX_STREAMED_PDF_BYTES, prepared, job.control(), |phase, bytes| {
-                let _ = app.emit("ocr-workspace-export", json!({
-                    "request_id": job.id(), "phase": phase, "bytes": bytes,
-                }));
-            })?;
-        Ok(WorkspaceExportResult {
-            saved_path: path.to_string_lossy().into_owned(), bytes, pages: exported_pages,
-            format: if pdfa { "pdfa".into() } else { format },
-            warnings, sheets,
-        })
-    }).await.map_err(|e| format!("Export worker: {e}"))?
+            if format != "xlsx" {
+                for page in &pages { managed_page(&root, &page.image_path)?; }
+                validate_export_pages(&pages)?;
+            } else if pages.is_empty() || pages.len() > MAX_PAGES {
+                return Err("Select saved tables from 1–10,000 source pages for this workbook.".into());
+            }
+            let path = self::output_path(&output_path, &pages, &source_uris.unwrap_or_default(), &root)?;
+            #[allow(unused_mut)]
+            let (mut prepared, mut warnings, mut sheets, mut exported_pages) = (None, vec![], None, pages.len());
+            if format == "xlsx" && !pdfa {
+                #[cfg(feature = "ocr-office")]
+                {
+                    let options = workbook_options.ok_or("Select at least one saved table for this workbook.")?;
+                    let output = export_xlsx(&pages, &options)?;
+                    exported_pages = options.sheets.iter().map(|sheet| sheet.page_id.as_str()).collect::<HashSet<_>>().len();
+                    sheets = Some(options.sheets.len());
+                    warnings = output.warnings;
+                    prepared = Some(output.bytes);
+                }
+                #[cfg(not(feature = "ocr-office"))]
+                { let _ = workbook_options; return Err("Workbook export is unavailable in this build. Install a build with Office export support.".into()); }
+            } else if format == "docx" && !pdfa {
+                #[cfg(feature = "ocr-office")]
+                {
+                    let output = export_docx(&pages, &office_options.unwrap_or_default())?;
+                    warnings = output.warnings;
+                    prepared = Some(output.bytes);
+                }
+                #[cfg(not(feature = "ocr-office"))]
+                { let _ = office_options; }
+            }
+            let bytes = write_export(&path, &pages, &format, pdfa, overwrite.unwrap_or(false),
+                MAX_STREAMED_PDF_BYTES, prepared, job.control(), |phase, bytes| {
+                    let _ = app.emit("ocr-workspace-export", json!({
+                        "request_id": job.id(), "phase": phase, "bytes": bytes,
+                    }));
+                })?;
+            Ok(WorkspaceExportResult {
+                saved_path: path.to_string_lossy().into_owned(), bytes, pages: exported_pages,
+                format: if pdfa { "pdfa".into() } else { format },
+                warnings, sheets,
+            })
+        }).await.map_err(|e| format!("Export worker: {e}"))?
+    }.await)
 }
 
 /// Create a private render destination before showing the mobile save picker.
@@ -2050,6 +2184,29 @@ mod tests {
             char_conf: vec![score; text.chars().count()], char_conf_unit: "unicode_codepoint".into(),
             char_conf_aligned: true, word_evidence: None, kind: "text".into(),
         }
+    }
+
+    #[test]
+    fn consecutive_lines_become_paragraphs_and_separate_blocks_stay_apart() {
+        let mut title = word("Kopf", 0.0, 0.0, 200.0, 40.0, 0.9);
+        title.kind = "title".into();
+        let paragraphs = group_lines_into_paragraphs(vec![
+            title,
+            word("erste Zeile", 0.0, 60.0, 300.0, 20.0, 0.9),
+            word("zweite Zeile", 2.0, 84.0, 280.0, 20.0, 0.5),
+            // A blank line's distance starts a new paragraph.
+            word("neuer Absatz", 0.0, 140.0, 250.0, 20.0, 0.8),
+            // Another column, beside the paragraph above.
+            word("rechte Spalte", 600.0, 162.0, 200.0, 20.0, 0.8),
+        ]);
+        assert_eq!(paragraphs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["Kopf", "erste Zeile\nzweite Zeile", "neuer Absatz", "rechte Spalte"]);
+        let joined = &paragraphs[1];
+        assert_eq!((joined.x, joined.y, joined.w, joined.h), (0.0, 60.0, 300.0, 44.0));
+        assert!(joined.char_conf_aligned);
+        assert_eq!(joined.char_conf.len(), joined.text.chars().count());
+        let expected = (0.9 * 11.0 + 0.5 * 12.0) / 23.0;
+        assert!((joined.confidence.unwrap() - expected as f32).abs() < 1e-6);
     }
 
     #[test]

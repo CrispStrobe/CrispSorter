@@ -1061,7 +1061,7 @@ async function main() {
       await page.waitForFunction(name => {
         const section = document.querySelector('section[aria-label="OCR document workspace"]');
         return section?.querySelector('input[aria-label="Project name"]')?.value === name
-          && [...section.querySelectorAll('button')].some(button => button.textContent.includes('Capture photo') && !button.disabled);
+          && [...section.querySelectorAll('button')].some(button => (button.getAttribute('aria-label') ?? button.textContent).includes('Capture photo') && !button.disabled);
       }, saved.project.name, { timeout: budget(30_000, 'restore current project in the UI') });
       // Use a second real UI-created project. Reimporting the original into
       // the native-command project correctly deduplicates by source/archive;
