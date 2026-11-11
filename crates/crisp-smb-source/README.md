@@ -11,7 +11,7 @@ Use staging files and publish only after success. Uploads create/truncate and ar
 not atomic or resumable. Blocking `Read`/`Write` sinks must run on a storage worker,
 not the Tauri UI executor. The native core serializes each session's operations.
 
-This is a qualified integration boundary, **not a registered app drive or UI**.
+This is an experimental integration boundary, **not a registered app drive or UI**.
 The app continues using `LocalDrive` for SMB mounts and its bounded mounted-file
 copy path. Direct-SMB registration and credential UI remain a later rollout step
 after real NAS/security tests and packaging approval.
