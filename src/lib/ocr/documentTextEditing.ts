@@ -25,12 +25,31 @@ export function remapTextSelection(previous: string, next: string, selection: Te
     while (oldEnd > start && newEnd > start && previous[oldEnd - 1] === next[newEnd - 1]) { oldEnd--; newEnd--; }
     // Keep a shared low surrogate with its high surrogate in the changed span.
     if (boundary(previous, oldEnd) !== oldEnd || boundary(next, newEnd) !== newEnd) { oldEnd++; newEnd++; }
+    // A repeated character makes the span ambiguous ("a b" -> "a x b" can be
+    // " x" or "x "). For a collapsed caret, slide the span left towards it so
+    // undo/redo leave the caret where the edit happened.
+    if (selection.anchor === selection.focus) {
+        const caret = selection.anchor;
+        while (start > 0 && oldEnd > caret
+            && previous[start - 1] === previous[oldEnd - 1] && next[start - 1] === next[newEnd - 1]
+            && boundary(previous, start - 1) === start - 1 && boundary(next, start - 1) === start - 1) {
+            start--; oldEnd--; newEnd--;
+        }
+    }
     const map = (offset: number) => {
         const at = boundary(previous, offset);
         const mapped = at < start ? at : at >= oldEnd ? at + newEnd - oldEnd : start + Math.min(at - start, newEnd - start);
         return boundary(next, mapped);
     };
     return { anchor: map(selection.anchor), focus: map(selection.focus) };
+}
+
+/** Replace the editor's text. A trailing line break has no caret position
+ * after it unless something follows, so add the placeholder <br> browsers use
+ * themselves; it contributes nothing to textContent or text offsets. */
+function setEditableText(element: HTMLElement, text: string): void {
+    element.textContent = text;
+    if (text.endsWith('\n')) element.append(element.ownerDocument.createElement('br'));
 }
 
 export function readTextSelection(element: HTMLElement): TextSelection | null {
@@ -81,7 +100,7 @@ export function editableDocumentText(element: HTMLElement, initial: EditableText
         if (before !== next.text) {
             if (composing && !force && !next.disabled) { externalDuringComposition = true; return; }
             const selection = element.ownerDocument.activeElement === element ? readTextSelection(element) : null;
-            element.textContent = next.text;
+            setEditableText(element, next.text);
             if (selection && !next.disabled) {
                 writeTextSelection(element, previousKey === next.key
                     ? remapTextSelection(before, next.text, selection)
@@ -114,7 +133,7 @@ export function editableDocumentText(element: HTMLElement, initial: EditableText
         const start = boundary(before, Math.min(selection.anchor, selection.focus));
         const end = boundary(before, Math.max(selection.anchor, selection.focus));
         const next = before.slice(0, start) + text + before.slice(end);
-        element.textContent = next;
+        setEditableText(element, next);
         writeTextSelection(element, { anchor: start + text.length, focus: start + text.length });
         if (next !== model.text) options.oninput(next);
     };
@@ -151,7 +170,7 @@ export function editableDocumentText(element: HTMLElement, initial: EditableText
         else input();
     };
 
-    element.textContent = initial.text;
+    setEditableText(element, initial.text);
     reconcile(initial);
     if (!initial.disabled) {
         element.focus();

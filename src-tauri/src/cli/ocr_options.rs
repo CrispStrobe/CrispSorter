@@ -486,7 +486,11 @@ mod tests {
             assert!(overlay(Default::default(), Default::default(), &names(&["source_type"]), source)
                 .unwrap_err().contains("--ocr-config"));
         }
-        for saved in [OcrPipelineConfig::default(), config(json!({"enabled":true,"engine":"tesseract"}))] {
+        // The unconfigured default only resolves to a fixed engine when the
+        // embedded engines are compiled in; builds without them keep routing.
+        let mut fixed = vec![config(json!({"enabled":true,"engine":"tesseract"}))];
+        if cfg!(feature = "crispembed") { fixed.push(OcrPipelineConfig::default()); }
+        for saved in fixed {
             assert!(overlay(saved, Default::default(), &names(&["source_type"]), "auto")
                 .unwrap_err().contains("--ocr-config"));
         }
