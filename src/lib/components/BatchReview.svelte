@@ -19,6 +19,10 @@
     const availableStatuses = $derived((['queued', 'unfinished', 'extracting', 'analyzing', 'review', 'ready', 'moving', 'error', 'done'] as BatchStatus[]).filter(status =>
         status === 'done' ? workflow === 'inbox' && stageItems.some(hasSortWarning) : inWorkflow({ status }, workflow)));
     const resumableItems = $derived(batchManager.items.filter(canProcessBatchItem));
+    /** Editing metadata stays open while analysis runs: the analysis keeps
+     * hand-set fields (batchManager.markManual). Only operations that rewrite
+     * or move the batch itself block it. */
+    const editBusy = $derived(!batchManager.sessionReady || batchManager.isExecuting || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
     const batchBusy = $derived(!batchManager.sessionReady || batchManager.isProcessing || batchManager.isExecuting || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
     const additionsBusy = $derived(!batchManager.sessionReady || batchManager.isCleaningDuplicates || batchManager.isUpdatingBatch || reviewDrafts.applyingId != null);
     import {
@@ -132,16 +136,29 @@
 
     // Per-document drafts are independent of selection and approval.
     const detailDraft = $derived(selectedItem ? reviewDrafts.get(selectedItem) : undefined);
-    const detailMetadata = $derived(detailDraft ?? (selectedItem ? itemMetadata(selectedItem) : { title: '', author: '', year: '' }));
+    /** A draft overrides only the fields the user changed; the others follow
+     * the item, so results that analysis delivers meanwhile still show. */
+    const detailMetadata = $derived.by(() => {
+        if (!selectedItem) return { title: '', author: '', year: '' };
+        const current = itemMetadata(selectedItem);
+        if (!detailDraft) return current;
+        return {
+            title: detailDraft.title !== detailDraft.base.title ? detailDraft.title : current.title,
+            author: detailDraft.author !== detailDraft.base.author ? detailDraft.author : current.author,
+            year: detailDraft.year !== detailDraft.base.year ? detailDraft.year : current.year,
+        };
+    });
     const detailDirty = $derived(!!detailDraft);
     const draftItems = $derived(stageItems.filter(item => reviewDrafts.get(item)));
     const detailSaving = $derived(reviewDrafts.applyingId != null);
     let detailSaveError = $state('');
 
     function editDetail(field: keyof ReviewMetadata, value: string) {
-        if (!selectedItem || detailSaving || batchBusy || preparingSort || confirmingSort || sortPlan || selectedItem.status === 'done') return;
+        if (!selectedItem || detailSaving || editBusy || preparingSort || confirmingSort || sortPlan || selectedItem.status === 'done') return;
         detailSaveError = '';
-        reviewDrafts.set(selectedItem, { ...detailMetadata, [field]: value });
+        // Untouched fields keep the draft's own values (equal to its base), so
+        // they stay "unchanged" even if analysis updates the item meanwhile.
+        reviewDrafts.set(selectedItem, { ...(detailDraft ?? itemMetadata(selectedItem)), [field]: value });
     }
 
     function stepDocument(direction: -1 | 1) {
@@ -174,15 +191,18 @@
     }
 
     async function saveDetailChanges(advance = false) {
-        if (!selectedItem || !detailDraft || detailSaving || batchBusy) return;
+        if (!selectedItem || !detailDraft || detailSaving || editBusy) return;
         const item = selectedItem;
-        const draft = { ...detailDraft };
+        const base = detailDraft.base;
+        const changed = (['title', 'author', 'year'] as const).filter(field => detailDraft![field] !== base[field]);
+        const draft = { ...detailMetadata };
         const previous = { suggestedTitle: item.suggestedTitle, suggestedAuthor: item.suggestedAuthor,
             suggestedYear: item.suggestedYear, targetPath: item.targetPath, isAccepted: item.isAccepted };
         const nextId = sortedItems[selectedIndex + 1]?.id;
         reviewDrafts.applyingId = item.id;
         detailSaveError = '';
         try {
+            batchManager.markManual(item.id, changed);
             item.suggestedTitle = draft.title;
             item.suggestedAuthor = draft.author;
             item.suggestedYear = draft.year;
@@ -1819,11 +1839,11 @@
                                                 </span>
                                             {/if}
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy || item.status === 'done'} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={editBusy || item.status === 'done'} onchange={() => { batchManager.markManual(item.id, ['title']); batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error))); }} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy || item.status === 'done'} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={editBusy || item.status === 'done'} onchange={() => { batchManager.markManual(item.id, ['author']); batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error))); }} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={batchBusy || item.status === 'done'} onchange={() => batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error)))} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} disabled={editBusy || item.status === 'done'} onchange={() => { batchManager.markManual(item.id, ['year']); batchManager.recalculateTargetPath(item.id).catch(error => showToast(String(error))); }} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}
@@ -1921,7 +1941,7 @@
                                     <button class="action-btn small danger" disabled={detailSaving} onclick={() => reviewDrafts.discard([selectedItem!.id])}>
                                         <X size={12} /> {reviewLabels.discard}
                                     </button>
-                                    <button class="action-btn small success" disabled={detailSaving || batchBusy} onclick={() => saveDetailChanges()}>
+                                    <button class="action-btn small success" disabled={detailSaving || editBusy} onclick={() => saveDetailChanges()}>
                                         <Check size={12} /> {reviewLabels.save}
                                     </button>
                                 </div>
@@ -1935,20 +1955,20 @@
                         <div class="edit-fields" role="group" aria-label="Edit metadata">
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.title}</span>
-                                <input type="text" value={detailMetadata.title} oninput={event => editDetail('title', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || batchBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Title" />
+                                <input type="text" value={detailMetadata.title} oninput={event => editDetail('title', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || editBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Title" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.author}</span>
-                                <input type="text" value={detailMetadata.author} oninput={event => editDetail('author', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || batchBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Author" />
+                                <input type="text" value={detailMetadata.author} oninput={event => editDetail('author', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || editBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Author" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.year}</span>
-                                <input type="text" value={detailMetadata.year} oninput={event => editDetail('year', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || batchBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Year" />
+                                <input type="text" value={detailMetadata.year} oninput={event => editDetail('year', event.currentTarget.value)} onkeydown={onMetaKey} disabled={!reviewDrafts.ready || detailSaving || editBusy || preparingSort || confirmingSort || !!sortPlan || selectedItem.status === 'done'} aria-label="Edit Year" />
                             </div>
                         </div>
                         <p class="draft-hint">{reviewLabels.draftHint}</p>
                         {#if detailDirty && selectedIndex >= 0 && selectedIndex < sortedItems.length - 1}
-                            <button class="action-btn small success" disabled={detailSaving || batchBusy} onclick={() => saveDetailChanges(true)}>{reviewLabels.saveNext} →</button>
+                            <button class="action-btn small success" disabled={detailSaving || editBusy} onclick={() => saveDetailChanges(true)}>{reviewLabels.saveNext} →</button>
                         {/if}
                     </div>
 
